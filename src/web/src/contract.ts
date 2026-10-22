@@ -265,6 +265,23 @@ export interface StatusSnapshot {
   /** Closeout videos and screenshots of the visible items, oldest first. */
   evidence?: StatusEvidence[];
   agentCloseout?: StatusAgentCloseout[];
+  /** A Paws update that waits for running work, applies, or failed. */
+  update?: StatusPawsUpdate;
+}
+
+export const UPDATE_STATUSES = ["waiting", "applying", "failed"] as const;
+export const UPDATE_HOLD_PHASES = ["working", "closeout", "resuming"] as const;
+
+export interface StatusPawsUpdate {
+  target: string;
+  current: string;
+  status: (typeof UPDATE_STATUSES)[number];
+  nowRequested: boolean;
+  error: string | null;
+  /** Every task that holds the update, visible or not. */
+  waitingFor: number;
+  /** The visible tasks that hold the update. */
+  holding: { id: string; title: string; phase: (typeof UPDATE_HOLD_PHASES)[number] }[];
 }
 
 export const EVIDENCE_KINDS = ["video", "image"] as const;
@@ -396,6 +413,28 @@ function readSnapshot(input: unknown): StatusSnapshot {
             readAgentCloseout(entry, `agentCloseout[${index}]`),
           ),
         }),
+    ...(body.update === undefined ? {} : { update: readUpdate(body.update) }),
+  };
+}
+
+function readUpdate(input: unknown): StatusPawsUpdate {
+  const body = object(input, "update");
+  return {
+    target: text(body, "target", "update"),
+    current: text(body, "current", "update"),
+    status: oneOf(string(body, "status", "update"), UPDATE_STATUSES, "update.status"),
+    nowRequested: boolean(body, "nowRequested", "update"),
+    error: optionalText(body, "error"),
+    waitingFor: count(body, "waitingFor", "update"),
+    holding: array(body, "holding", "update").map((entry, index) => {
+      const path = `update.holding[${index}]`;
+      const row = object(entry, path);
+      return {
+        id: text(row, "id", path),
+        title: string(row, "title", path),
+        phase: oneOf(string(row, "phase", path), UPDATE_HOLD_PHASES, `${path}.phase`),
+      };
+    }),
   };
 }
 

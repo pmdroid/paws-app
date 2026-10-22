@@ -64,6 +64,7 @@ const MODULES = [
   "runner-artifacts",
   "runner-inputs",
   "evidence",
+  "self-update",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -78,6 +79,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   slack: ["config", "credentials"],
   core: [],
   db: ["core"],
+  "self-update": ["db"],
   linear: ["core", "credentials"],
   intake: ["core", "db", "linear"],
   "execution-controls": ["core", "db", "workspace"],

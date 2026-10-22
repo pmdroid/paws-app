@@ -496,6 +496,8 @@ function onClick(event: MouseEvent): void {
     if (currentRoute().view === "projects") void projects.refresh();
   }
   if (action === "source") openDialog();
+  if (action === "paws-update-now" || action === "paws-update-cancel")
+    void submitUpdateAction(action === "paws-update-now" ? "now" : "cancel");
   if (action === "issue-filter") {
     const filter = target.closest("[data-issue-filter]")?.getAttribute("data-issue-filter");
     if (filter === "all" || filter === "active" || filter === "needs" || filter === "done") {
@@ -787,5 +789,30 @@ function storageSet(key: string, value: string | null): void {
     else localStorage.setItem(key, value);
   } catch {
     /* private mode */
+  }
+}
+
+/** **Update now** and **Cancel**. Owners and admins only; the engine says so otherwise. */
+async function submitUpdateAction(action: "now" | "cancel"): Promise<void> {
+  const buttons = document.querySelectorAll<HTMLButtonElement>("[data-action^=paws-update-]");
+  for (const button of buttons) button.disabled = true;
+  try {
+    const response = await fetch("/api/paws-update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-paws-csrf": readCsrfToken(document) },
+      body: JSON.stringify({ action }),
+    });
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok)
+      throw new Error(
+        typeof body === "object" && body && "error" in body && typeof body.error === "string"
+          ? body.error
+          : "The update action failed. Refresh and try again.",
+      );
+    await reload();
+  } catch (failure) {
+    const message = document.querySelector<HTMLElement>("[data-paws-update-message]");
+    if (message) message.textContent = failure instanceof Error ? failure.message : "Try again.";
+    for (const button of buttons) button.disabled = false;
   }
 }

@@ -1964,4 +1964,20 @@ ALTER TABLE runner_work ADD COLUMN consumed_sequence INTEGER NOT NULL DEFAULT 0 
 ALTER TABLE evidence ADD COLUMN asset_url TEXT;
 `,
   },
+  {
+    id: "084_paws_update",
+    sql: `
+CREATE TABLE paws_update (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  target TEXT NOT NULL,
+  current TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('waiting','applying','failed')),
+  source TEXT NOT NULL CHECK(source IN ('automatic','manual')),
+  now_requested INTEGER NOT NULL DEFAULT 0 CHECK(now_requested IN (0,1)),
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

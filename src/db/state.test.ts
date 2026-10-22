@@ -26,6 +26,7 @@ import {
   recoverOnStartup,
   saveCheckpoint,
   saveRunResult,
+  saveTaskMode,
   submitCommand,
   syncClock,
   TransitionRejectedError,
@@ -41,7 +42,7 @@ function harness() {
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 2, baseSha: "base" };
 
 describe("restart recovery", () => {
-  test("the first start resumes from the checkpoint and the next one fails the item", () => {
+  test("the first start resumes from the checkpoint and the next one asks in Linear", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -55,23 +56,81 @@ describe("restart recovery", () => {
     const resume = listJobs(db).find((job) => job.queue === "run.resume");
     expect(resume?.status).toBe("pending");
     expect(resume?.payload).toMatchObject({ freshSession: true, runId: run.id, checkpoint });
+    expect(resume?.payload).not.toHaveProperty("handoff");
 
-    expect(recoverOnStartup(db, clock.now())[0]).toEqual({
-      type: "fail",
-      reason: "resume_already_attempted",
+    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "ask_restart" }]);
+    expect(getWorkItem(db, item.id)).toMatchObject({
+      state: "awaiting_input",
+      recoveryAttempts: 1,
+      checkpoint: { ...checkpoint, phase: "awaiting_input" },
     });
-    expect(getWorkItem(db, item.id)?.state).toBe("failed");
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect(getRun(db, run.id)?.status).toBe("ended");
     expect(listJobs(db).find((job) => job.queue === "run.resume")?.status).toBe("cancelled");
+    const question = db
+      .query<{ id: string; body: string }, []>(
+        "SELECT id, body FROM question WHERE status = 'open'",
+      )
+      .get();
+    expect(question?.body).toContain("Start it again from its branch in a fresh session?");
+    const [ask] = listOutbox(db);
     expect(listOutbox(db)).toHaveLength(1);
+    expect(ask).toMatchObject({ op: "elicitation", orderingKey: "ses" });
+    expect(ask?.payload).toMatchObject({ sessionId: "ses", questionId: question?.id });
+
+    expect(recoverOnStartup(db, clock.now())).toEqual([]);
+    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    db.run(
+      "UPDATE question SET status = 'answered', answer = 'Start again', answered_by = 'human', answered_at = ? WHERE id = ?",
+      [clock.now(), question!.id],
+    );
+    recoverOnStartup(db, clock.now());
+    expect(getWorkItem(db, item.id)?.state).toBe("running");
+    const restarted = listJobs(db).find((job) => job.jobKey === `resume:answer:${question!.id}`);
+    expect(restarted?.status).toBe("pending");
+    expect(restarted?.payload).toMatchObject({ itemId: item.id, freshSession: true });
   });
 
-  test("a run with no checkpoint fails", () => {
+  test("a second restart without a Linear session fails the item", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
-    beginImplementRun(db, item.id, clock.now());
-    expect(recoverOnStartup(db, clock.now())[0]).toEqual({ type: "fail", reason: "no_checkpoint" });
+    db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
+    beginImplementRun(db, item.id, clock.now(), checkpoint);
+    recoverOnStartup(db, clock.now());
+    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "ask_restart" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    expect(listOutbox(db)[0]?.payload).toMatchObject({
+      kind: "error",
+      body: "Stopped after a restart because this run was already resumed once.",
+    });
+  });
+
+  test("a code task with no checkpoint starts again from its branch", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, {
+      id: "eng-2",
+      sessionKey: "ses",
+      branchName: "paws/eng-2",
+      now: clock.now(),
+    });
+    saveTaskMode(db, item.id, "code", 0);
+    const { run } = beginImplementRun(db, item.id, clock.now());
+    expect(recoverOnStartup(db, clock.now())).toEqual([
+      { type: "resume", freshSession: true, checkpoint: null },
+    ]);
+    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+    const resume = listJobs(db).find((job) => job.queue === "run.resume");
+    expect(resume?.status).toBe("pending");
+    expect(resume?.payload).toMatchObject({
+      itemId: item.id,
+      runId: run.id,
+      freshSession: true,
+      checkpoint: null,
+      reason: "process_restart",
+    });
+    expect(resume?.payload).toMatchObject({
+      handoff: expect.stringContaining("from the branch paws/eng-2"),
+    });
+    expect(listOutbox(db)).toHaveLength(0);
   });
 
   test("restarts keep a task running while its runner still holds the work", () => {
@@ -110,7 +169,7 @@ describe("restart recovery", () => {
 
   test("shutdown leaves the run recoverable and the next start can resume it once", () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { now: clock.now() });
+    const item = insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
     prepareShutdown(db, clock.now());
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 0 });
@@ -123,7 +182,7 @@ describe("restart recovery", () => {
     prepareShutdown(db, clock.now());
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
     recoverOnStartup(db, clock.now());
-    expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
   });
 
   test("a merge that was in progress is re-verified and does not continue", () => {

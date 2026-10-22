@@ -85,6 +85,8 @@ export type PawsConfigFile = {
   closeoutAfterUpdate?: boolean;
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
+  /** `[update] automatic`. Missing means Paws checks `origin/main` every 10 minutes. */
+  updateAutomatic?: boolean;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
 };
@@ -418,6 +420,10 @@ function assignConfig(
   if (section === "merge") {
     if (key === "closeout_after_update") config.closeoutAfterUpdate = asBoolean(value, line);
     if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
+    return;
+  }
+  if (section === "update") {
+    if (key === "automatic") config.updateAutomatic = asBoolean(value, line);
     return;
   }
   if (section === "checkout") {
