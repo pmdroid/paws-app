@@ -8,11 +8,18 @@ import {
 } from "../core";
 import { applyDecision } from "./decisions";
 import { enqueueJobOnce } from "./jobs";
-import { applyWorkItemEvent, listInFlightItems, listWorkItemsByStates } from "./items";
+import {
+  applyWorkItemEvent,
+  listInFlightItems,
+  listWorkItemsByStates,
+  setCurrentRun,
+  setRecoveryAttempts,
+} from "./items";
 import type { WorkItemRecord } from "./items";
 import { markRun, releaseRunCapacity } from "./runs";
 import { immediate } from "./tx";
 import { getTaskMode } from "./tasks";
+import { getUsageLimitPause } from "./usage-limit-pause";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
 export type ShutdownWipCommit = (item: WorkItemRecord) => void;
@@ -31,6 +38,10 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     const decisions: StartupDecision[] = [];
     for (const item of items) {
       if (hasPendingAnswerResume(db, item.id)) continue;
+      if (item.state !== "merge_queue" && getUsageLimitPause(db, item.id)) {
+        decisions.push(resumeUsageLimitWait(db, item, now));
+        continue;
+      }
       const decision = decideStartup({
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
@@ -46,6 +57,29 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     }
     return decisions;
   });
+}
+
+/**
+ * A task waiting for a usage limit to reset was not interrupted by the restart, so the wait
+ * continues without using the one restart resume. Work that never reached a checkpoint starts
+ * again from the queue. The pause row stays, so the wait keeps its reset time and Linear line.
+ */
+function resumeUsageLimitWait(db: Database, item: WorkItemRecord, now: number): StartupDecision {
+  const taskMode = getTaskMode(db, item.id);
+  if (!item.checkpoint && taskMode !== "answer" && taskMode !== "artifact") {
+    if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
+    setCurrentRun(db, item.id, null);
+    applyWorkItemEvent(db, item.id, "restart");
+    return { type: "none" };
+  }
+  const decision: StartupDecision = {
+    type: "resume",
+    freshSession: true,
+    checkpoint: item.checkpoint,
+  };
+  applyDecision(db, item, decision, now);
+  setRecoveryAttempts(db, item.id, item.recoveryAttempts);
+  return decision;
 }
 
 function hasPendingAnswerResume(db: Database, itemId: string): boolean {

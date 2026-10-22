@@ -1841,7 +1841,8 @@ export async function probeRunnerBackend(
       result: {
         ...result(artifactCommand),
         stopReason: "error",
-        errorMessage: "You've hit your session limit. Retry-After: 120",
+        authRequired: true,
+        errorMessage: "Sign in again to continue.",
       },
     });
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, hostIds[0]!]);
@@ -1889,6 +1890,9 @@ export async function probeRunnerBackend(
     );
     {
       now += 120_001;
+      db.run("UPDATE runner_agent_policy SET ready=1,auth_expired=0 WHERE runner_id=?", [
+        hostIds[0]!,
+      ]);
       for (const id of hostIds) work.heartbeat(id);
       const reviewEvents: string[] = [];
       const independentReview = placedBackend.forItem(artifactItem.id)(
@@ -2116,6 +2120,77 @@ export async function probeRunnerBackend(
         "only runners on 0.1.19 or later receive the task's main commit and checkpoint opt-out",
         true,
         { legacy: legacy.repository.baseSha, current: current.repository.mainSha },
+      );
+      await drain();
+      reportVersion("0.1.25");
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      const wip = tracked();
+      const wipRun = placedBackend.forItem(wip.id)(input(wip));
+      void wipRun.catch(() => undefined);
+      const interrupted = await firstDispatch();
+      if (interrupted.type !== "run") throw new Error("Expected run command");
+      db.run(
+        "UPDATE runner_agent_policy SET cooldown_until=? WHERE agent='codex' AND runner_id<>?",
+        [now + 3_600_000, interrupted.runnerId],
+      );
+      const wipGrant = work.issueGrant({
+        runnerId: interrupted.runnerId,
+        runId: interrupted.runId,
+        commandId: interrupted.id,
+        generation: interrupted.generation,
+      });
+      results.submit({
+        runnerId: interrupted.runnerId,
+        runId: interrupted.runId,
+        generation: interrupted.generation,
+        token: wipGrant.token,
+        result: {
+          ...result(interrupted),
+          stopReason: "error",
+          errorMessage: "You've hit your session limit. Retry-After: 120",
+          candidateSha: head,
+        },
+      });
+      assert.equal((await next(interrupted.runnerId, false)).type, "cancel");
+      for (const envelope of work.commands(interrupted.runnerId)) {
+        const command = JSON.parse(
+          Buffer.from(envelope.payload, "base64url").toString(),
+        ) as RunnerCommand;
+        if (command.type === "cancel") work.acknowledge(interrupted.runnerId, command.id);
+      }
+      const session = { runnerId: interrupted.runnerId, sessionId: `session-${interrupted.id}` };
+      await assert.rejects(
+        wipRun,
+        (error: unknown) =>
+          error instanceof UsageLimitError &&
+          error.runnerId === interrupted.runnerId &&
+          error.session?.sessionId === session.sessionId &&
+          error.session.runnerId === session.runnerId,
+      );
+      assert.equal(getWorkItem(db, wip.id)!.checkpoint?.wipCommit, head);
+      await drain();
+      db.run("UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=?", [
+        session.runnerId,
+      ]);
+      const stopContinued = new AbortController();
+      const continuedRun = placedBackend.forItem(wip.id)(
+        input(wip, { signal: stopContinued.signal, runnerSession: session }),
+      );
+      void continuedRun.catch(() => undefined);
+      const continued = await firstDispatch();
+      stopContinued.abort();
+      await continuedRun.catch(() => undefined);
+      await drain();
+      await git(["-C", source, "reset", "--hard", base]);
+      if (continued.type !== "run") throw new Error("Expected run command");
+      coolDown(0);
+      assert.equal(continued.runnerId, session.runnerId);
+      assert.equal(continued.resumeSessionId, session.sessionId);
+      assert.equal(continued.resumeReason, "usage_limit");
+      observe(
+        "a usage limit after a WIP commit keeps the commit and pauses with the agent session to continue",
+        true,
+        { wipCommit: head, session, continuedOn: continued.runnerId },
       );
     }
   } finally {

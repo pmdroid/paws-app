@@ -11,6 +11,12 @@ import {
   getWorkItem,
   insertQueuedItem,
   JobLoop,
+  listJobs,
+  recoverOnStartup,
+  resumeUsageLimitPauseNow,
+  saveCheckpoint,
+  saveUsageLimitPause,
+  setRecoveryAttempts,
   migrate,
   openDatabase,
   OutboxDispatcher,
@@ -32,7 +38,7 @@ type FakeRunner = {
   /** The account's cooldown. Placement skips the runner until then. */
   cooldownUntil: number;
   /** What the next prompt on this runner does. */
-  next: Array<{ limit: number | null } | "ok">;
+  next: Array<{ limit: number | null; published?: boolean } | "ok">;
 };
 
 /**
@@ -40,7 +46,13 @@ type FakeRunner = {
  * limit puts the account in cooldown, and with nobody left the run stops with `UsageLimitError`.
  */
 function fakeRemote(clock: FakeClock, runners: FakeRunner[]) {
-  const calls: { runner: string; prompt: string; runId: string; at: number }[] = [];
+  const calls: {
+    runner: string;
+    prompt: string;
+    runId: string;
+    at: number;
+    session?: RunAgentOptions["runnerSession"];
+  }[] = [];
   const run = (input: RunAgentOptions) =>
     runWithFailover(
       input,
@@ -60,6 +72,7 @@ function fakeRemote(clock: FakeClock, runners: FakeRunner[]) {
           prompt: attempt.prompt,
           runId: attempt.runId,
           at: clock.now(),
+          ...(attempt.runnerSession ? { session: attempt.runnerSession } : {}),
         });
         const step = runner.next.shift() ?? "ok";
         if (step !== "ok") {
@@ -68,8 +81,12 @@ function fakeRemote(clock: FakeClock, runners: FakeRunner[]) {
             runner.id,
             "The runner agent exhausted its observed quota.",
             undefined,
-            false,
-            { agent: "claude", resetsAt: step.limit },
+            step.published ?? false,
+            {
+              agent: "claude",
+              resetsAt: step.limit,
+              sessionId: `${runner.id}-session-${calls.length}`,
+            },
           );
         }
         await attempt.onEvent?.({ type: "prompt_complete", stopReason: "end_turn" });
@@ -177,8 +194,13 @@ test("a usage limit mid-run pauses the task with one Linear line and continues t
     ["agentbox", RESET + 60_000, run.id],
   ]);
   expect(remote.calls[1]!.prompt).toStartWith(
-    "Implement PAS-431\n\nContinue in a fresh agent session.",
+    "Implement PAS-431\n\nThe agent stopped at its usage limit. Continue the task where it stopped.",
   );
+  expect(remote.calls[0]!.session).toBeUndefined();
+  expect(remote.calls[1]!.session).toEqual({
+    runnerId: "agentbox",
+    sessionId: "agentbox-session-1",
+  });
   expect(getUsageLimitPause(db, item.id)).toBeNull();
   expect(linearLines(db)).toEqual([
     "Paused: Claude reached its usage limit. Paws continues at 18:00 UTC.",
@@ -264,4 +286,103 @@ test("Resume now ends the wait early", async () => {
   await result;
   expect(remote.calls.map((call) => call.at)).toEqual([START, START]);
   expect(await orchestrator.resumeUsageLimit(item.id)).toBe(false);
+});
+
+test("a usage limit after the agent published an artifact still pauses without asking anyone", async () => {
+  const runner = { id: "agentbox", cooldownUntil: 0, next: [{ limit: RESET, published: true }] };
+  const { db, clock, item, remote, prompt } = setup([runner]);
+  const result = prompt();
+  await until(() => getUsageLimitPause(db, item.id) !== null);
+  clock.advance(RESET + 60_000 - START);
+  expect((await result).stopReason).toBe("end_turn");
+  expect(remote.calls).toHaveLength(2);
+});
+
+test("a paused task continues at the earliest reset of any eligible account", async () => {
+  const early = Date.parse("2026-10-21T17:00:00.000Z");
+  const limited = { id: "agentbox", cooldownUntil: 0, next: [{ limit: RESET }] };
+  const other = { id: "sparebox", cooldownUntil: early, next: [] };
+  const { db, item, prompt, controller } = setup([limited, other]);
+  const result = prompt();
+  await until(() => getUsageLimitPause(db, item.id) !== null);
+  expect(getUsageLimitPause(db, item.id)).toMatchObject({
+    resetsAt: early,
+    resumeAt: early + 60_000,
+  });
+  controller.abort(new Error("cancelled"));
+  await result.catch(() => undefined);
+});
+
+test("a restart keeps a usage-limit wait instead of failing it or using the restart resume", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-usage-limit-"));
+  const db = openDatabase(join(root, "paws.db"));
+  migrate(db);
+  cleanups.push(() => {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const pause = (itemId: string, runId: string) =>
+    saveUsageLimitPause(db, {
+      itemId,
+      runId,
+      agent: "claude",
+      runnerId: null,
+      resetsAt: RESET,
+      resumeAt: RESET + 60_000,
+      pausedAt: START,
+    });
+  const fresh = insertQueuedItem(db, { id: "fresh", sessionKey: "session-fresh", now: START });
+  pause(fresh.id, beginImplementRun(db, fresh.id, START).run.id);
+  const started = insertQueuedItem(db, {
+    id: "started",
+    sessionKey: "session-started",
+    now: START,
+  });
+  pause(started.id, beginImplementRun(db, started.id, START).run.id);
+  saveCheckpoint(db, started.id, { phase: "running", baseSha: "a".repeat(40) });
+  setRecoveryAttempts(db, started.id, 1);
+  recoverOnStartup(db, START + 1000);
+  expect(getWorkItem(db, fresh.id)).toMatchObject({ state: "queued", currentRunId: null });
+  expect(getWorkItem(db, started.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+  expect(listJobs(db).some((job) => JSON.stringify(job.payload).includes('"started"'))).toBe(true);
+  expect(getUsageLimitPause(db, fresh.id)).not.toBeNull();
+  expect(getUsageLimitPause(db, started.id)).not.toBeNull();
+  expect(pause(started.id, "another-run")).toBe(false);
+});
+
+test("Resume now lifts cooldowns only on runners the task can use", () => {
+  const { db, item } = setup([]);
+  db.run("PRAGMA foreign_keys=OFF");
+  db.run(
+    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Ours',0),('other','org-2','Theirs',0)",
+  );
+  db.run(
+    "INSERT INTO linear_session(session_id,organization_id,created_at) VALUES('session-1','org',0) ON CONFLICT(session_id) DO UPDATE SET organization_id='org'",
+  );
+  db.run(
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('ours','ws','u','ours','active',0),('theirs','other','u','theirs','active',0)",
+  );
+  db.run(
+    "INSERT INTO runner_agent_policy(runner_id,agent,cooldown_until) VALUES('ours','claude',?1),('theirs','claude',?1)",
+    [RESET],
+  );
+  saveUsageLimitPause(db, {
+    itemId: item.id,
+    runId: "run",
+    agent: "claude",
+    runnerId: null,
+    resetsAt: RESET,
+    resumeAt: RESET + 60_000,
+    pausedAt: START,
+  });
+  expect(resumeUsageLimitPauseNow(db, item.id, START)).toBe(true);
+  const cooldowns = db
+    .query<{ id: string; until: number }, []>(
+      "SELECT runner_id AS id,cooldown_until AS until FROM runner_agent_policy ORDER BY runner_id",
+    )
+    .all();
+  expect(cooldowns).toEqual([
+    { id: "ours", until: 0 },
+    { id: "theirs", until: RESET },
+  ]);
 });

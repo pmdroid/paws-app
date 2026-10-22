@@ -3616,6 +3616,7 @@ export class Orchestrator {
             input = {
               ...input,
               prompt: error.prompt ?? input.prompt,
+              ...(error.session ? { runnerSession: error.session } : {}),
               onEvent: async (event) => {
                 await resumed();
                 await options.onEvent?.(event);

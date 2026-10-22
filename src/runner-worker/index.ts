@@ -88,6 +88,9 @@ export interface RunnerWorkerOptions {
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
 
+export const USAGE_LIMIT_RESUME_PROMPT =
+  "Your usage limit has reset. Check git status and the workspace, then continue where you left off.";
+
 export async function runWithFollowUps(
   agent: RunAgentOptions,
   next: (sequence: number, signal: AbortSignal) => Promise<string>,
@@ -474,7 +477,12 @@ export async function executeRunnerCommand(
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
-    const earlierSession = command.type === "run" ? command.resumeSessionId : undefined;
+    // A command can name an earlier agent session to load. After a usage limit the command prompt
+    // already carries the conversation, so it is the replay when the session is gone.
+    const earlier =
+      !resumed && (command.type === "run" || command.type === "review") ? command : undefined;
+    const earlierSession = earlier?.resumeSessionId;
+    const continued = earlierSession !== undefined && earlier?.resumeReason === "usage_limit";
     const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
@@ -506,12 +514,12 @@ export async function executeRunnerCommand(
       runId: job.executionId,
       prompt: resumed
         ? RESUME_PROMPT
-        : earlierSession
-          ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
-          : prompt,
-      ...(earlierSession && !resumed
-        ? { resume: { sessionId: earlierSession, replayPrompt: prompt } }
-        : {}),
+        : continued
+          ? USAGE_LIMIT_RESUME_PROMPT
+          : earlierSession
+            ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
+            : prompt,
+      ...(earlierSession ? { resume: { sessionId: earlierSession, replayPrompt: prompt } } : {}),
       ...(resumed
         ? {
             resume: {

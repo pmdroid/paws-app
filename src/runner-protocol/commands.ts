@@ -96,6 +96,10 @@ const work = {
   prompt: z.string().min(1).max(65_536),
   inputFiles: RunnerInputFilesSchema.optional(),
   promptContext: RunnerPromptContextSchema.optional(),
+  /** An agent session from an earlier command on this runner to continue. */
+  resumeSessionId: id.optional(),
+  /** Set when the session continues after the agent's usage limit reset. */
+  resumeReason: z.literal("usage_limit").optional(),
 };
 
 export const RunnerCommandSchema = z
@@ -108,7 +112,6 @@ export const RunnerCommandSchema = z
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
       checkpoint: z.literal(false).optional(),
-      resumeSessionId: id.optional(),
     }),
     z.strictObject({ ...common, type: z.literal("review"), ...work }),
     z.strictObject({

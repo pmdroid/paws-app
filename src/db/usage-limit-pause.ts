@@ -26,7 +26,10 @@ export function getUsageLimitPause(db: Database, itemId: string): UsageLimitPaus
   );
 }
 
-/** Records the pause and returns true when the item was not already waiting. */
+/**
+ * Records the pause and returns true when the item was not already waiting. A pause that survives
+ * a restart keeps waiting under the same row, so Linear does not hear about it twice.
+ */
 export function saveUsageLimitPause(db: Database, pause: UsageLimitPause): boolean {
   const existing = getUsageLimitPause(db, pause.itemId);
   db.run(
@@ -43,12 +46,13 @@ export function saveUsageLimitPause(db: Database, pause: UsageLimitPause): boole
       pause.pausedAt,
     ],
   );
-  return existing === null || existing.runId !== pause.runId;
+  return existing === null;
 }
 
 /**
- * Makes the pause due now and lifts the agent's cooldown, on the paused runner when one is known,
- * so placement tries the agent again instead of pausing on the same cooldown.
+ * Makes the pause due now and lifts the agent's cooldown so placement tries the agent again
+ * instead of pausing on the same cooldown. Only runners the task can be placed on change: the
+ * paused runner when one is known, otherwise the runners of the task's Linear workspace.
  */
 export function resumeUsageLimitPauseNow(db: Database, itemId: string, now: number): boolean {
   const pause = getUsageLimitPause(db, itemId);
@@ -56,8 +60,13 @@ export function resumeUsageLimitPauseNow(db: Database, itemId: string, now: numb
   db.run("UPDATE usage_limit_pause SET resume_at=MIN(resume_at,?) WHERE item_id=?", [now, itemId]);
   for (const table of ["runner_member_account", "runner_agent_policy"])
     db.run(
-      `UPDATE ${table} SET cooldown_until=0 WHERE agent=?1 AND cooldown_until>?2 AND (?3 IS NULL OR runner_id=?3)`,
-      [pause.agent, now, pause.runnerId],
+      `UPDATE ${table} SET cooldown_until=0 WHERE agent=?1 AND cooldown_until>?2
+       AND (?3 IS NULL OR runner_id=?3) AND runner_id IN (
+         SELECT r.id FROM runner r JOIN workspace w ON w.id=r.workspace_id
+         JOIN linear_session s ON s.organization_id=w.linear_organization_id
+         JOIN work_item i ON i.session_key=s.session_id
+         WHERE i.id=?4 AND r.status='active' AND r.revoked_at IS NULL)`,
+      [pause.agent, now, pause.runnerId, itemId],
     );
   return true;
 }

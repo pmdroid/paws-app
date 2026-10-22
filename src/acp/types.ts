@@ -125,6 +125,8 @@ export interface RunAgentOptions {
   checkpoint?: boolean;
   mainSha?: string;
   resume?: { sessionId: string; replayPrompt: string };
+  /** The agent session a remote run continues when it lands on the runner that still holds it. */
+  runnerSession?: { runnerId: string; sessionId: string };
 }
 
 export interface RunAgentResult {
