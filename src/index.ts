@@ -392,6 +392,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             }),
           beforeEvent: async (event, request) => {
             const issueEvent = acceptedIssueChange(event);
+            if (issueEvent) linearTaskAccess?.invalidate({ issueId: issueEvent.issueId });
             if (issueEvent && reconciler) {
               const targets = await reconciler.issueChanged(issueEvent);
               if (targets.length > 0) orchestrator?.reconcileExecution();
@@ -448,6 +449,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               })
             ) {
               const administration = parseLinearAdministration(event);
+              if (administration?.kind === "revoked" || administration?.kind === "teams")
+                linearTaskAccess?.invalidate();
               if (
                 workspace !== undefined &&
                 administration?.kind === "teams" &&
