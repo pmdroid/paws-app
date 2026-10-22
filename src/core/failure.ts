@@ -8,6 +8,7 @@ const TRANSIENT_ERROR_NAMES = new Set([
   "RunnerUnavailableError",
   "PawsShutdown",
   "TimeoutError",
+  "GitTransportError",
 ]);
 
 const TRANSIENT_CODES = new Set([
