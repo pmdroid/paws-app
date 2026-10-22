@@ -2460,6 +2460,7 @@ export class Orchestrator {
     const priorVerification = ciWaitVerification(payload);
     if (priorVerification)
       publicationCandidate = { sha: priorVerification.head, baseSha: priorVerification.base };
+    const freshReads = new Set<string>();
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
@@ -2481,7 +2482,9 @@ export class Orchestrator {
           live.controller.signal,
           publicationCandidate,
         );
-        await this.taskAccess()?.assert(current, live.controller.signal);
+        const fresh = (purpose === "pr" || purpose === "merge") && !freshReads.has(purpose);
+        await this.taskAccess()?.assert(current, live.controller.signal, { fresh });
+        if (fresh) freshReads.add(purpose);
         const auth = this.authorization(current);
         if (auth && !(await auth.ensure(current, "publication", live.controller.signal)))
           throw new Error("GitHub sign-in is required before publication.");
@@ -3304,6 +3307,7 @@ export class Orchestrator {
 
   private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
     if (sessionId === null) return;
+    this.taskAccess()?.invalidate({ sessionId });
     const requestedAt = at > 0 ? at : this.now();
     const agentSession = this.options.channel !== "comments";
     const commands: LinearCommand[] = [];
