@@ -198,6 +198,7 @@ import type {
 import {
   FIRST_ACTIVITY_BODY,
   LinearIntakePendingError,
+  LinearRateLimitError,
   isMergeConflictRequest,
   parseLinearSessionContext,
   renderLinearSessionContext,
@@ -1671,7 +1672,15 @@ export class Orchestrator {
         !current.cancelRequested
       ) {
         const message = error instanceof Error ? error.message : String(error);
-        this.fail(current, "run_error", message);
+        if (
+          (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(message)) &&
+          (current.state === "running" || current.state === "verifying")
+        )
+          this.continueAfterRateLimit(
+            current,
+            error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
+          );
+        else this.fail(current, "run_error", message);
       }
     } finally {
       activity.flush();
@@ -3780,6 +3789,23 @@ export class Orchestrator {
     return run;
   }
 
+  private continueAfterRateLimit(item: WorkItemRecord, retryAfterMs: number): void {
+    const key = `linear-rate-limit:${item.id}:${item.version}`;
+    enqueueJobOnce(this.db, {
+      queue: item.state === "running" ? JOB_KIND.resume : JOB_KIND.reverify,
+      jobKey: key,
+      payload: { itemId: item.id, reason: "linear-rate-limit" },
+      runAt: this.now() + Math.max(retryAfterMs, RATE_LIMIT_RETRY_MS),
+      now: this.now(),
+    });
+    this.post(
+      item,
+      "thought",
+      "Linear is rate-limiting Paws. The task continues when the limit resets.",
+      key,
+    );
+  }
+
   private fail(item: WorkItemRecord, reason: string, text: string): void {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id) ?? item;
@@ -5091,6 +5117,9 @@ export class Orchestrator {
     return (this.options.clock ?? systemClock).now();
   }
 }
+
+const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
+const RATE_LIMIT_RETRY_MS = 5_000;
 
 export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
