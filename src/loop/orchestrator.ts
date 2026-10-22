@@ -160,7 +160,9 @@ import {
   listRepositoryCandidates,
   type JobLoop,
   type JobContext,
+  type OutboxDeliveryContext,
   type OutboxDispatcher,
+  type OutboxRow,
   type WorkItemRecord,
   getTaskMergeSettings,
   keepTaskMergeSettings,
@@ -199,6 +201,7 @@ import {
   FIRST_ACTIVITY_BODY,
   LinearIntakePendingError,
   LinearRateLimitError,
+  linearCaller,
   isMergeConflictRequest,
   parseLinearSessionContext,
   renderLinearSessionContext,
@@ -1071,51 +1074,58 @@ export class Orchestrator {
         signal: context.signal,
       });
     });
-    this.options.outbox.setHandler(async (message, context) => {
-      if (message.target !== "linear") return;
-      const requestSignal = this.activityRequests.get(message.id);
-      if (requestSignal)
-        context = { ...context, signal: AbortSignal.any([context.signal, requestSignal]) };
-      context.signal.throwIfAborted();
-      const tracker = this.tracker;
-      if (tracker === null) throw new Error("Linear is not connected");
+    this.options.outbox.setHandler((message, context) =>
+      linearCaller("outbox", () => this.deliverLinearMessage(message, context)),
+    );
+  }
+
+  private async deliverLinearMessage(
+    message: OutboxRow,
+    context: OutboxDeliveryContext,
+  ): Promise<void> {
+    if (message.target !== "linear") return;
+    const requestSignal = this.activityRequests.get(message.id);
+    if (requestSignal)
+      context = { ...context, signal: AbortSignal.any([context.signal, requestSignal]) };
+    context.signal.throwIfAborted();
+    const tracker = this.tracker;
+    if (tracker === null) throw new Error("Linear is not connected");
+    if (
+      this.options.linearAccess &&
+      this.options.channel !== "comments" &&
+      message.orderingKey &&
+      message.op !== "catchup" &&
+      message.op !== "linear.catchup"
+    ) {
+      const itemId =
+        readString(message.payload, "itemId") ??
+        (message.orderingKey ? workItemForSession(this.db, message.orderingKey)?.id : undefined);
+      const issueId =
+        readString(message.payload, "linearIssueId") ??
+        readString(message.payload, "issueId") ??
+        undefined;
       if (
-        this.options.linearAccess &&
-        this.options.channel !== "comments" &&
-        message.orderingKey &&
-        message.op !== "catchup" &&
-        message.op !== "linear.catchup"
-      ) {
-        const itemId =
-          readString(message.payload, "itemId") ??
-          (message.orderingKey ? workItemForSession(this.db, message.orderingKey)?.id : undefined);
-        const issueId =
-          readString(message.payload, "linearIssueId") ??
-          readString(message.payload, "issueId") ??
-          undefined;
-        if (
-          message.op === "status" &&
-          (!itemId || !issueId || !getLinearTaskDelegation(this.db, itemId, issueId)?.humanActorId)
-        )
-          throw new Error("Linear workflow updates require verified human task ownership.");
-        await this.options.linearAccess.assertDelivery(message.orderingKey, context.signal, {
-          itemId,
-          issueId,
-          stop: message.delivery === "stop",
-          isCurrent: context.isCurrent,
-        });
-      }
-      const files = this.options.files;
-      const root = this.options.evidence?.root;
-      await deliverLinearOutbox(
-        message,
-        tracker,
-        () => this.catchUpFn(),
-        context,
-        this.db,
-        files && root ? { files, root } : undefined,
-      );
-    });
+        message.op === "status" &&
+        (!itemId || !issueId || !getLinearTaskDelegation(this.db, itemId, issueId)?.humanActorId)
+      )
+        throw new Error("Linear workflow updates require verified human task ownership.");
+      await this.options.linearAccess.assertDelivery(message.orderingKey, context.signal, {
+        itemId,
+        issueId,
+        stop: message.delivery === "stop",
+        isCurrent: context.isCurrent,
+      });
+    }
+    const files = this.options.files;
+    const root = this.options.evidence?.root;
+    await deliverLinearOutbox(
+      message,
+      tracker,
+      () => this.catchUpFn(),
+      context,
+      this.db,
+      files && root ? { files, root } : undefined,
+    );
   }
 
   private async executeQueued(payload: unknown): Promise<void> {

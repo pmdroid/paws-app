@@ -6,8 +6,14 @@ export {
 } from "./acknowledge";
 export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
-export { linearBudget, LinearRateLimitError } from "./budget";
-export type { LinearRateBudget } from "./budget";
+export {
+  createLinearLedger,
+  linearBudget,
+  linearCaller,
+  linearCallerFor,
+  LinearRateLimitError,
+} from "./budget";
+export type { LinearCallerUsage, LinearLedger, LinearRateBudget, LinearUsage } from "./budget";
 export { createIntakePollSource } from "./catchup";
 export type {
   IntakePollSource,
