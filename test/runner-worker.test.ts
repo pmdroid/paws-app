@@ -13,7 +13,7 @@ test("remote worker executes real ACP against exact Git snapshots through a cred
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 16);
+    assert.equal(observations.length, 17);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
