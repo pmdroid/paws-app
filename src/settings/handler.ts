@@ -9,9 +9,10 @@ import {
   readAgentSettings,
   readMergeSettings,
   readQueueSettings,
+  storedMerge,
   writeAgentSettings,
-  type MergeSettings,
   type QueueSettings,
+  type StoredMerge,
 } from "../config";
 
 export type AgentSettingsOptions = {
@@ -46,7 +47,7 @@ export async function handleAgentSettingsRequest(
       return json({
         ...settings,
         projects: [...projects.values()],
-        merge: readMergeSettings(config),
+        merge: { ciFixAttempts: readMergeSettings(config).ciFixAttempts },
         queue: readQueueSettings(config),
       });
     } catch {
@@ -75,21 +76,17 @@ export async function handleAgentSettingsRequest(
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
   // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
-  let previous: MergeSettings | null = null;
+  let previous: StoredMerge = { projects: {}, rules: [] };
   let previousQueue: QueueSettings | null = null;
   try {
     const config = loadConfigFile(options.configPath);
-    previous = readMergeSettings(config);
+    previous = storedMerge(config);
     previousQueue = readQueueSettings(config);
   } catch {}
-  let merge: MergeSettings | undefined;
+  let merge: StoredMerge | undefined;
   let queue: QueueSettings | undefined;
   try {
-    if (mergeBody !== undefined)
-      merge = {
-        ...(previous ?? { closeoutAfterUpdate: false, ciFixAttempts: DEFAULT_CI_FIX_ATTEMPTS }),
-        ...parseMergeSettings(mergeBody),
-      };
+    if (mergeBody !== undefined) merge = { ...previous, ...parseMergeSettings(mergeBody) };
     if (queueBody !== undefined)
       queue = {
         ...(previousQueue ?? { startTimeoutHours: DEFAULT_QUEUE_START_TIMEOUT_HOURS }),
@@ -98,18 +95,18 @@ export async function handleAgentSettingsRequest(
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
-  let saved: MergeSettings;
+  let saved: number;
   let savedQueue: QueueSettings;
   try {
     writeAgentSettings(options.configPath, settings, merge, queue);
     const config = loadConfigFile(options.configPath);
-    saved = merge ?? readMergeSettings(config);
+    saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);
   } catch {
     return json({ error: "Agent settings could not be saved" }, 503);
   }
-  const before = previous?.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS;
-  if (merge !== undefined && merge.ciFixAttempts !== before)
+  const before = previous.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS;
+  if (merge?.ciFixAttempts !== undefined && merge.ciFixAttempts !== before)
     options.audit?.(
       "settings.ci-fix-attempts",
       `CI fix attempts ${before} → ${merge.ciFixAttempts}`,
@@ -120,7 +117,7 @@ export async function handleAgentSettingsRequest(
       "settings.queue-start-timeout",
       `Queue start timeout ${hoursBefore} h → ${queue.startTimeoutHours} h`,
     );
-  return json({ ...settings, merge: saved, queue: savedQueue });
+  return json({ ...settings, merge: { ciFixAttempts: saved }, queue: savedQueue });
 }
 
 export function localRequest(request: Request, trustedOrigin?: string): boolean {

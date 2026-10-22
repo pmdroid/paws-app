@@ -60,7 +60,7 @@ describe("local agent settings API", () => {
         { repo: "pmdroid/library" },
         { repo: "pmdroid/barkvisor" },
       ],
-      merge: { closeoutAfterUpdate: false, ciFixAttempts: 3 },
+      merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24 },
     });
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
@@ -73,57 +73,36 @@ describe("local agent settings API", () => {
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
       ...settings,
-      merge: { closeoutAfterUpdate: false, ciFixAttempts: 3 },
+      merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24 },
     });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
   });
 
-  test("reads and writes the Closeout after update switch, and a missing key means off", async () => {
+  test("agent settings carry only CI fix attempts and keep the Merging tables", async () => {
     const { options } = fixture();
-    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
-    const read = async () =>
-      ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
-        .merge;
-    expect(await read()).toEqual({ closeoutAfterUpdate: false, ciFixAttempts: 3 });
-
-    const on = await handleAgentSettingsRequest(
-      request(undefined, "PUT", { ...settings, merge: { closeoutAfterUpdate: true } }),
-      options,
+    writeFileSync(
+      options.configPath,
+      '[caps]\nmax_turns = 31\n\n[merge]\nmain_moved = "closeout"\n\n[[merge.rules]]\nlabel = "Bug"\norder = "ci-green"\n',
     );
-    expect(on?.status).toBe(200);
-    expect(((await on!.json()) as { merge: unknown }).merge).toEqual({
-      closeoutAfterUpdate: true,
-      ciFixAttempts: 3,
-    });
-    expect(readFileSync(options.configPath, "utf8")).toContain(
-      "[merge]\ncloseout_after_update = true",
-    );
-    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 3 });
-
-    // Saving profiles without the switch keeps the stored value.
-    await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
-    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 3 });
-
-    await handleAgentSettingsRequest(
-      request(undefined, "PUT", { ...settings, merge: { closeoutAfterUpdate: false } }),
-      options,
-    );
-    expect(await read()).toEqual({ closeoutAfterUpdate: false, ciFixAttempts: 3 });
-    const text = readFileSync(options.configPath, "utf8");
-    expect(text.match(/\[merge\]/g)).toHaveLength(1);
-    expect(text).toContain("max_turns = 31");
-    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
-
-    for (const merge of [{ closeoutAfterUpdate: "yes" }, { other: true }, true]) {
+    for (const merge of [{ closeoutAfterUpdate: true }, { other: true }, true]) {
       const rejected = await handleAgentSettingsRequest(
         request(undefined, "PUT", { ...settings, merge }),
         options,
       );
       expect(rejected?.status).toBe(400);
     }
-    expect(await read()).toEqual({ closeoutAfterUpdate: false, ciFixAttempts: 3 });
+    const saved = await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, merge: { ciFixAttempts: 4 } }),
+      options,
+    );
+    expect(((await saved!.json()) as { merge: unknown }).merge).toEqual({ ciFixAttempts: 4 });
+    const text = readFileSync(options.configPath, "utf8");
+    expect(text).toContain('[merge]\nmain_moved = "closeout"\nci_fix_attempts = 4');
+    expect(text).toContain('[[merge.rules]]\nlabel = "Bug"\norder = "ci-green"');
+    expect(text).toContain("max_turns = 31");
+    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
   });
 
   test("reads and writes CI fix attempts from 0 to 10 and audits each change", async () => {
@@ -134,21 +113,21 @@ describe("local agent settings API", () => {
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
         .merge;
-    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 3 });
+    expect(await read()).toEqual({ ciFixAttempts: 3 });
 
     const put = (merge: unknown) =>
       handleAgentSettingsRequest(request(undefined, "PUT", { ...settings, merge }), options);
     expect((await put({ ciFixAttempts: 5 }))?.status).toBe(200);
-    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 5 });
+    expect(await read()).toEqual({ ciFixAttempts: 5 });
     expect(readFileSync(options.configPath, "utf8")).toContain(
-      "[merge]\ncloseout_after_update = true\nci_fix_attempts = 5",
+      '[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5',
     );
-    expect((await put({ closeoutAfterUpdate: true, ciFixAttempts: 0 }))?.status).toBe(200);
-    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 0 });
-    // Saving the same value, or only the switch, is not a change.
-    await put({ closeoutAfterUpdate: false, ciFixAttempts: 0 });
-    await put({ closeoutAfterUpdate: true });
-    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 0 });
+    expect((await put({ ciFixAttempts: 0 }))?.status).toBe(200);
+    expect(await read()).toEqual({ ciFixAttempts: 0 });
+    // Saving the same value, or no merge settings, is not a change.
+    await put({ ciFixAttempts: 0 });
+    await put({});
+    expect(await read()).toEqual({ ciFixAttempts: 0 });
     expect(audits).toEqual([
       ["settings.ci-fix-attempts", "CI fix attempts 3 → 5"],
       ["settings.ci-fix-attempts", "CI fix attempts 5 → 0"],
@@ -158,7 +137,7 @@ describe("local agent settings API", () => {
       const rejected = await put({ ciFixAttempts });
       expect(rejected?.status).toBe(400);
     }
-    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 0 });
+    expect(await read()).toEqual({ ciFixAttempts: 0 });
     expect(audits).toHaveLength(2);
   });
 

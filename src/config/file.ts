@@ -17,7 +17,17 @@ import {
   type AgentSettings,
 } from "./agents";
 
-import { renderMergeSettings } from "./merge";
+import {
+  MAIN_MOVED,
+  MERGE_ORDERS,
+  parseMergeTables,
+  renderMergeSettings,
+  storedMerge,
+  type MainMoved,
+  type MergeOrder,
+  type MergeOverride,
+  type MergeRule,
+} from "./merge";
 import { renderQueueSettings } from "./queue";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
 
@@ -82,8 +92,16 @@ export type PawsConfigFile = {
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
-  /** `[merge] closeout_after_update`. Missing means off. */
+  /** `[merge] closeout_after_update`, the PAS-389 switch. `main_moved` replaces it. */
   closeoutAfterUpdate?: boolean;
+  /** `[merge] order`. Missing means the merge queue. */
+  mergeOrder?: MergeOrder;
+  /** `[merge] main_moved`. Missing means `closeout_after_update`, then `ci`. */
+  mainMoved?: MainMoved;
+  /** `[merge.projects."<Linear project id>"]`. */
+  mergeProjects?: Record<string, MergeOverride>;
+  /** `[[merge.rules]]`. */
+  mergeRules?: MergeRule[];
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
   /** `[queue] start_timeout_hours`. Missing means the default of 24. */
@@ -153,7 +171,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
   for (let index = 0; index < lines.length; index += 1) {
     const line = stripComment(lines[index] ?? "").trim();
     if (line.length === 0) continue;
-    const heading = /^\[([^\]]+)\]$/.exec(line);
+    const heading = /^\[\[?\s*([^[\]]+?)\s*\]\]?$/.exec(line);
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       continue;
@@ -173,6 +191,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
   if (Object.keys(projects).length) config.checkoutProjects = projects;
   const settings = parseAgentSettingsToml(text, config.agents.implementer);
   if (settings !== null) config.agentSettings = settings;
+  Object.assign(config, parseMergeTables(text));
   return config;
 }
 
@@ -235,7 +254,7 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     }) +
     renderCheckoutProjects(parseCheckoutProjects(current)) +
     renderProjectSkills(parseProjectSkills(current)) +
-    renderMergeSettings(parseConfigToml(current)) +
+    renderMergeSettings(storedMerge(parseConfigToml(current))) +
     renderQueueSettings({ startTimeoutHours: parseConfigToml(current).queueStartTimeoutHours });
   const next =
     profiles === null
@@ -424,6 +443,8 @@ function assignConfig(
   if (section === "merge") {
     if (key === "closeout_after_update") config.closeoutAfterUpdate = asBoolean(value, line);
     if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
+    if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
+    if (key === "main_moved") config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");
     return;
   }
   if (section === "queue") {
@@ -507,6 +528,18 @@ export function writeGitHubAuth(
   writeFileSync(temporary, `${kept.join("\n").trimEnd()}\n`, { mode: 0o600 });
   chmodSync(temporary, 0o600);
   renameSync(temporary, path);
+}
+
+function oneOf<T extends string>(
+  choices: readonly T[],
+  value: string | number | boolean | string[],
+  line: number,
+  name: string,
+): T {
+  const text = asString(value, line);
+  if (!(choices as readonly string[]).includes(text))
+    throw new Error(`config.toml line ${line} ${name} must be ${choices.join(", ")}`);
+  return text as T;
 }
 
 function implementerName(
