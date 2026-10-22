@@ -145,6 +145,7 @@ export async function openRunnerHealthRuntime(options: {
         active = { id: row.id, command, result, deadline: monotonic() + command.expiresAt - now() };
       } else db.run("UPDATE health_execution SET phase='interrupted' WHERE id=?", [row.id]);
     }
+    await broker.sweep?.();
   } catch (error) {
     db.close();
     throw error;

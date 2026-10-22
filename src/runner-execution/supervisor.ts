@@ -13,22 +13,11 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { ExecutionIdSchema } from "./jobs";
+import { executionScope, executionTag, startTime, stopExecutionProcesses } from "./processes";
 import { readRunnerJob, type RunnerSpool } from "./spool";
 import type { RunnerResults } from "./results";
 import type { RunnerBrokerClient } from "./broker";
 import type { RunnerSkillInstaller } from "./skills";
-
-function startTime(pid: number): string | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const command = stat.lastIndexOf(")");
-    if (command < 0) return;
-    return stat.slice(command + 2).split(" ")[19];
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-}
 
 function openDirectory(path: string): number {
   if (!isAbsolute(path) || path.split("/").some((part) => part === "." || part === ".."))
@@ -99,7 +88,13 @@ function killRecorded(pid: number): void {
   }
 }
 
-function workerLaunch(executionId: string, home: string, log: number, resume?: boolean) {
+function workerLaunch(
+  executionId: string,
+  home: string,
+  log: number,
+  resume?: boolean,
+  tag: Record<string, string> = {},
+) {
   const script = process.argv[1];
   const worker = [
     "runner",
@@ -113,6 +108,7 @@ function workerLaunch(executionId: string, home: string, log: number, resume?: b
     HOME: home,
     PATH: "/opt/paws-runner/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     LANG: "C.UTF-8",
+    ...tag,
   };
   for (const key of ["USER", "LOGNAME"] as const) {
     const value = process.env[key];
@@ -140,6 +136,8 @@ export function createDirectWorkerSupervisor(options: {
     home: string,
     log: number,
     resume?: boolean,
+    /** Environment that marks the worker and everything it starts as this execution's. */
+    tag?: Record<string, string>,
   ) => {
     pid?: number;
     unref(): void;
@@ -149,6 +147,7 @@ export function createDirectWorkerSupervisor(options: {
   const taskRoot = options.taskRoot ?? "/var/lib/paws-agent-tasks";
   const agentHome = options.agentHome ?? "/var/lib/paws-agent";
   const launch = options.launch ?? workerLaunch;
+  const scope = executionScope(options.stateRoot);
   mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
   function homeFor(executionId: string): string {
     if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
@@ -193,6 +192,7 @@ export function createDirectWorkerSupervisor(options: {
     alive,
     async resume(executionId) {
       if (alive(executionId)) throw new Error("Runner worker is still running");
+      await stopExecutionProcesses(scope, (id) => id === executionId);
       try {
         unlinkSync(receipt(executionId));
       } catch (error) {
@@ -211,22 +211,20 @@ export function createDirectWorkerSupervisor(options: {
     },
     async stop(executionId) {
       const worker = recorded(executionId);
-      if (!worker || startTime(worker.pid) !== worker.born) {
-        options.skills?.release(executionId);
-        return;
-      }
-      const { pid, born } = worker;
-      killRecorded(pid);
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        if (startTime(pid) !== born) {
-          options.skills?.release(executionId);
-          return;
+      if (worker && startTime(worker.pid) === worker.born) {
+        const { pid, born } = worker;
+        killRecorded(pid);
+        const deadline = Date.now() + 5_000;
+        while (startTime(pid) === born) {
+          if (Date.now() >= deadline) throw new Error("Runner worker did not exit");
+          await new Promise((resolve) => setTimeout(resolve, 20));
         }
-        await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      throw new Error("Runner worker did not exit");
+      await stopExecutionProcesses(scope, (id) => id === executionId);
+      options.skills?.release(executionId);
     },
+    /** Stops processes left by executions whose worker is gone, such as before a restart. */
+    sweep: () => stopExecutionProcesses(scope, (id) => !alive(id)),
   };
   async function admit(executionId: string, resume: boolean) {
     const path = receipt(executionId);
@@ -247,7 +245,7 @@ export function createDirectWorkerSupervisor(options: {
     try {
       options.skills?.prepareHome(home);
       options.skills?.hold(home, executionId);
-      child = launch(executionId, home, log, resume);
+      child = launch(executionId, home, log, resume, executionTag(scope, executionId));
       child.on?.("exit", (code, signal) => {
         try {
           const exit = openSync(logPath(executionId), constants.O_WRONLY | constants.O_APPEND);

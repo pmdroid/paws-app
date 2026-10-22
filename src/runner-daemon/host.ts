@@ -1,9 +1,10 @@
-import { readFileSync, realpathSync, statfsSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statfsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   RunnerHostStatusSchema,
   releaseVersionFromPath,
   type RunnerHostStatus,
+  type RunnerStrayProcess,
 } from "../runner-protocol";
 
 export type RunnerHostSamplerOptions = {
@@ -12,6 +13,9 @@ export type RunnerHostSamplerOptions = {
   procRoot?: string;
   osRelease?: string;
   executable?: string;
+  /** The runner process. Processes of its user outside its tree are reported as strays. */
+  rootPid?: number;
+  uid?: number;
 };
 
 type CpuTicks = { idle: number; total: number };
@@ -20,6 +24,11 @@ type CpuTicks = { idle: number; total: number };
 export function createRunnerHostSampler(options: RunnerHostSamplerOptions) {
   const proc = options.procRoot ?? "/proc";
   let previous: CpuTicks | undefined;
+  const strays = createStraySampler(
+    proc,
+    options.rootPid ?? process.pid,
+    options.uid ?? process.getuid?.() ?? -1,
+  );
   return (): RunnerHostStatus => {
     const sample: Record<string, unknown> = {};
     const stat = attempt(() => readFileSync(join(proc, "stat"), "utf8"));
@@ -47,12 +56,90 @@ export function createRunnerHostSampler(options: RunnerHostSamplerOptions) {
       releaseVersionFromPath(realpathSync(options.executable ?? process.execPath)),
     );
     if (version) sample.runnerVersion = version;
+    sample.strayProcesses = attempt(strays);
     const kept: Record<string, unknown> = {};
     for (const [name, value] of Object.entries(sample)) {
       const field = RunnerHostStatusSchema.shape[name as keyof typeof RunnerHostStatusSchema.shape];
       if (value !== undefined && field?.safeParse(value).success) kept[name] = value;
     }
     return kept as RunnerHostStatus;
+  };
+}
+
+/** Linux reports process times in USER_HZ, which is 100 on every supported architecture. */
+const TICKS_PER_SECOND = 100;
+
+type ProcessStat = { pid: number; name: string; parent: number; started: number; ticks: number };
+
+function processStat(proc: string, entry: string): ProcessStat | undefined {
+  const stat = readFileSync(join(proc, entry, "stat"), "utf8");
+  const open = stat.indexOf("(");
+  const close = stat.lastIndexOf(")");
+  if (open < 0 || close < open) return undefined;
+  const fields = stat.slice(close + 2).split(" ");
+  if (fields[0] === "Z" || fields[0] === "X") return undefined;
+  const name = stat.slice(open + 1, close).replace(/[^\x20-\x7e]/g, "?") || "?";
+  return {
+    pid: Number(entry),
+    name,
+    parent: Number(fields[1]),
+    started: Number(fields[19]),
+    ticks: Number(fields[11]) + Number(fields[12]),
+  };
+}
+
+/**
+ * Processes of the runner user that are not below the runner process, busiest first. A run's
+ * processes all descend from the runner, so anything else of that user outlived its run.
+ * CPU is measured since the previous sample, or over the process lifetime on first sight.
+ */
+export function createStraySampler(proc: string, rootPid: number, uid: number) {
+  let previous = new Map<string, { ticks: number; at: number }>();
+  return (): RunnerStrayProcess[] => {
+    const uptime = Number(readFileSync(join(proc, "uptime"), "utf8").split(" ")[0]);
+    if (!Number.isFinite(uptime)) throw new Error("Unreadable uptime");
+    const table = new Map<number, ProcessStat>();
+    const owned = new Set<number>();
+    for (const entry of readdirSync(proc)) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = processStat(proc, entry);
+        if (!stat) continue;
+        table.set(stat.pid, stat);
+        if (statSync(join(proc, entry)).uid === uid) owned.add(stat.pid);
+      } catch {}
+    }
+    const insideRunner = (pid: number) => {
+      for (let current: number | undefined = pid, hops = 0; current && hops < 4096; hops += 1) {
+        if (current === rootPid) return true;
+        current = table.get(current)?.parent;
+      }
+      return false;
+    };
+    const seen = new Map<string, { ticks: number; at: number }>();
+    const found: RunnerStrayProcess[] = [];
+    for (const pid of owned) {
+      const stat = table.get(pid)!;
+      if (pid <= 1 || insideRunner(pid)) continue;
+      const key = `${pid}:${stat.started}`;
+      seen.set(key, { ticks: stat.ticks, at: uptime });
+      const age = Math.max(0, uptime - stat.started / TICKS_PER_SECOND);
+      const before = previous.get(key);
+      const busy =
+        before && uptime > before.at
+          ? (stat.ticks - before.ticks) / TICKS_PER_SECOND / (uptime - before.at)
+          : age > 0
+            ? stat.ticks / TICKS_PER_SECOND / age
+            : 0;
+      found.push({
+        pid,
+        name: stat.name,
+        ageSeconds: Math.floor(age),
+        cpuPercent: Math.round(Math.min(4096, Math.max(0, busy)) * 1000) / 10,
+      });
+    }
+    previous = seen;
+    return found.sort((a, b) => b.cpuPercent - a.cpuPercent || a.pid - b.pid).slice(0, 20);
   };
 }
 

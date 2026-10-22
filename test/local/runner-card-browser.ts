@@ -32,6 +32,11 @@ function runners() {
         load15: 5.98,
         diskTotalBytes: 953 * GB,
         diskFreeBytes: 223 * GB,
+        strayProcesses: [
+          { pid: 2184572, name: "bun", ageSeconds: 5 * 3600 + 120, cpuPercent: 161.2 },
+          { pid: 2184573, name: "bun", ageSeconds: 5 * 3600 + 120, cpuPercent: 158.7 },
+          { pid: 2127564, name: "bg.sh", ageSeconds: 9 * 3600 + 2400, cpuPercent: 0 },
+        ],
         reportedAt: now - 5_000,
       },
       os: { id: "ubuntu", version: "24.04" },
