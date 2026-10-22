@@ -2850,7 +2850,14 @@ export class Orchestrator {
         });
         return;
       }
-      this.fail(item, "merge", merged.message ?? merged.outcome);
+      this.fail(
+        item,
+        "merge",
+        merged.outcome === "conflict" &&
+          this.agentReturns(item.id, "rebase-conflict") >= MAX_REBASE_RETURNS
+          ? `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts to resolve the conflict.`
+          : (merged.message ?? merged.outcome),
+      );
       return;
     }
     this.post(item, "thought", `Merged ${item.linearIdentifier}.`, `${item.id}:merged`);
@@ -3051,16 +3058,17 @@ export class Orchestrator {
       if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
       const returns = this.agentReturns(current.id, reason);
       if (returns >= limit) return false;
+      const round = `${this.latestUserTurn(current.id)}:${returns}`;
       const running = applyWorkItemEvent(this.db, current.id, "ejected");
       if (current.checkpoint)
         saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "running" });
       enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
-        jobKey: `${reason}:${current.id}:${returns}`,
+        jobKey: `${reason}:${current.id}:${round}`,
         payload: { itemId: current.id, handoff, reason },
         now: this.now(),
       });
-      const key = `${current.id}:${reason}:${returns}`;
+      const key = `${current.id}:${reason}:${round}`;
       if (reason === "ci-failed") this.statusAfterPullRequest(running, thought(returns + 1), key);
       else this.post(running, "thought", thought(returns + 1), key);
       return true;
@@ -3090,13 +3098,24 @@ export class Orchestrator {
 
   private agentReturns(itemId: string, reason: string): number {
     const row = this.db
-      .query<{ n: number }, [string, string, string]>(
+      .query<{ n: number }, [string, string, string, number]>(
         `SELECT COUNT(*) AS n FROM job
          WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-           AND json_extract(payload, '$.reason') = ?`,
+           AND json_extract(payload, '$.reason') = ? AND id >= ?`,
       )
-      .get(JOB_KIND.resume, itemId, reason);
+      .get(JOB_KIND.resume, itemId, reason, this.latestUserTurn(itemId));
     return Number(row?.n ?? 0);
+  }
+
+  private latestUserTurn(itemId: string): number {
+    const row = this.db
+      .query<{ id: number | null }, [string, string]>(
+        `SELECT MAX(id) AS id FROM job
+         WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
+           AND job_key LIKE 'linear-turn:%'`,
+      )
+      .get(JOB_KIND.resume, itemId);
+    return Number(row?.id ?? 0);
   }
 
   private askHook(item: WorkItemRecord, runId: string): AskTeamHook {

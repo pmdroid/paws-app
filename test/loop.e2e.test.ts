@@ -3690,8 +3690,20 @@ test("after 3 rebase conflict returns the item fails", async () => {
     result.prompts.filter((prompt) => prompt.includes(REBASE_INSTRUCTION)),
     result.detail,
   ).toHaveLength(3);
-  expect(result.thoughts, result.detail).toContain("rebase conflict");
+  expect(result.thoughts, result.detail).toContain(
+    "The branch still conflicts with main after 3 attempts to resolve the conflict.",
+  );
 }, 120_000);
+
+test("a user's retry after the rebase-conflict returns are used up returns the next conflict to the agent", async () => {
+  const result = await runRebaseConflict("retry");
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.merged, result.detail).toBe(1);
+  expect(
+    result.handoffs.filter((handoff) => handoff === REBASE_INSTRUCTION),
+    result.detail,
+  ).toHaveLength(4);
+}, 180_000);
 
 test("a rebase_failed merge fails the item", async () => {
   const result = await runRebaseConflict("rebase-failed");
@@ -3710,7 +3722,7 @@ test("a rebase_failed merge fails the item", async () => {
 }, 60_000);
 
 async function runRebaseConflict(
-  mode: "resolve" | "repeat" | "rebase-failed" | "clean" | "linear",
+  mode: "resolve" | "repeat" | "rebase-failed" | "clean" | "linear" | "retry",
   githubAuth?: FakeHostGitHubAuth,
   closeoutAfterUpdate?: boolean,
   merging?: { toml: string; labels: string[] },
@@ -3744,7 +3756,9 @@ async function runRebaseConflict(
           ? "ENG-73"
           : mode === "linear"
             ? "ENG-74"
-            : "ENG-72";
+            : mode === "retry"
+              ? "ENG-75"
+              : "ENG-72";
   const tracker = createFakeTracker([
     {
       linearIssueId: `rebase-${mode}`,
@@ -3800,6 +3814,7 @@ async function runRebaseConflict(
       if (input.purpose === "review" || input.purpose === "prepare") steps = emptyReview().steps;
       else if ((mode === "resolve" || mode === "linear") && implementTurns > 0)
         steps = rebaseOntoMainSteps();
+      else if (mode === "retry" && implementTurns > 4) steps = squashOntoMainSteps();
       else steps = [writeOk(input.worktree, `agent-${implementTurns}\n`), { type: "end" }];
       if (input.purpose === "implement") implementTurns += 1;
       if (input.purpose === "review") reviews += 1;
@@ -3874,20 +3889,29 @@ async function runRebaseConflict(
     }
     const returnPhases: (string | null)[] = [];
     const requeuedBases: (string | null)[] = [];
-    let idle = 0;
-    for (let turn = 0; turn < 40;) {
-      const state = stateOf(db, identifier);
-      if (state === "merged" || state === "failed") break;
-      const job = await jobs.tick();
-      const next = stateOf(db, identifier);
-      if (state === "merge_queue" && next === "running")
-        returnPhases.push(checkpointPhaseOf(db, identifier));
-      if (state !== "merge_queue" && next === "merge_queue")
-        requeuedBases.push(checkpointBaseOf(db, identifier));
-      if (job !== null) turn += 1;
-      if (job !== null || next !== state) idle = 0;
-      else if (idle++ < 2400) await Bun.sleep(25);
-      else break;
+    const settle = async () => {
+      let idle = 0;
+      for (let turn = 0; turn < 40;) {
+        const state = stateOf(db, identifier);
+        if (state === "merged" || state === "failed") break;
+        const job = await jobs.tick();
+        const next = stateOf(db, identifier);
+        if (state === "merge_queue" && next === "running")
+          returnPhases.push(checkpointPhaseOf(db, identifier));
+        if (state !== "merge_queue" && next === "merge_queue")
+          requeuedBases.push(checkpointBaseOf(db, identifier));
+        if (job !== null) turn += 1;
+        if (job !== null || next !== state) idle = 0;
+        else if (idle++ < 2400) await Bun.sleep(25);
+        else break;
+      }
+    };
+    await settle();
+    if (mode === "retry") {
+      expect(stateOf(db, identifier), debug(layout, db)).toBe("failed");
+      await commitOnMain(layout.bare, "from-main-again\n");
+      await orchestrator.onLinearEvent(linearEvent("prompted", "retry", null, `rebase-${mode}`));
+      await settle();
     }
     while (outbox.tick().length > 0) await outbox.idle();
     const prompts: string[] = [];
@@ -3948,6 +3972,25 @@ function rebaseOntoMainSteps(): FakeScript["steps"] {
           "git add ok.txt",
           "git_c rebase --continue",
           "fi",
+        ].join("\n"),
+      ],
+    },
+    { type: "end", stopReason: "end_turn" },
+  ];
+}
+
+function squashOntoMainSteps(): FakeScript["steps"] {
+  return [
+    {
+      type: "terminal",
+      command: "sh",
+      args: [
+        "-c",
+        [
+          'git reset --soft "$(git rev-parse --verify --quiet refs/paws/upstream-main || echo origin/main)"',
+          "printf 'ok\\n' > ok.txt",
+          "git add ok.txt",
+          "git -c user.email=paws-test@example.com -c user.name=Paws -c commit.gpgsign=false commit -qm 'Resolve the conflict with main'",
         ].join("\n"),
       ],
     },
