@@ -16,8 +16,11 @@ import {
   insertRun,
   setCurrentRun,
   getWorkItem,
+  listOutbox,
   listWorkItems,
   migrate,
+  putWorkspaceUser,
+  syncWorkspaceMember,
   markRun,
   recoverOnStartup,
   openDatabase,
@@ -40,6 +43,7 @@ export async function probeRunnerOrchestration(
   root: string,
   observe: (name: string, passed: boolean, value: unknown) => void,
   mergeDependencyYield = false,
+  only?: readonly string[],
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const source = join(root, "source");
@@ -101,27 +105,28 @@ export async function probeRunnerOrchestration(
   await git(["-C", source, "add", "."]);
   await git(["-C", source, "commit", "-m", "Fixture policy"]);
   await git(["clone", "--bare", source, origin]);
-  for (const scenario of mergeDependencyYield
-    ? ["merge"]
-    : [
-        "success",
-        "error",
-        "cancelled",
-        "reassigned",
-        "stale",
-        "merge",
-        "unavailable",
-        "crashed-implementation",
-        "crashed-review",
-        "start-lease",
-        "resume-lease",
-        "reverify-lease",
-        "merge-lease",
-        "rebase",
-        "rebase-failing",
-        "rebase-unreachable",
-        "rebase-empty-report",
-      ]) {
+  for (const scenario of only ??
+    (mergeDependencyYield
+      ? ["merge"]
+      : [
+          "success",
+          "error",
+          "cancelled",
+          "reassigned",
+          "stale",
+          "merge",
+          "unavailable",
+          "crashed-implementation",
+          "crashed-review",
+          "start-lease",
+          "resume-lease",
+          "reverify-lease",
+          "merge-lease",
+          "rebase",
+          "rebase-failing",
+          "rebase-unreachable",
+          "rebase-empty-report",
+        ])) {
     const unavailable = scenario === "unavailable";
     const rebase = scenario.startsWith("rebase");
     const merging = scenario === "merge" || scenario === "merge-lease" || rebase;
@@ -218,6 +223,104 @@ export async function probeRunnerOrchestration(
       leaseAborted = signal.aborted;
       assert(leaseAborted);
     }
+    // runner-wait: the task's runner is paused when Closeout starts and resumes later.
+    const runnerWait = scenario === "runner-wait";
+    const waitReason = "Waiting: runner goldbox is paused. Resume it on the Runners page.";
+    let runnerResumed = false;
+    let runnerWatch: Promise<void> | undefined;
+    function pauseTaskRunner(runId: string) {
+      const now = Date.now();
+      const userId = putWorkspaceUser(db, {
+        id: "user-1",
+        linearUserId: "user-linear",
+        name: "Owner",
+        email: "owner@example.invalid",
+      });
+      db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
+      syncWorkspaceMember(db, {
+        workspaceId: "ws-1",
+        userId,
+        role: "owner",
+        active: true,
+        teamIds: [],
+        now,
+      });
+      db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'paused',?,?)",
+        ["runner-1", "ws-1", userId, "goldbox", now, now],
+      );
+      db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",
+        [runId, "runner-1", "ws-1", `cmd-${runId}`, now + 600_000],
+      );
+    }
+    async function until(label: string, check: () => boolean) {
+      for (let tries = 0; tries < 500; tries++) {
+        if (check()) return;
+        await Bun.sleep(10);
+      }
+      throw new Error(`Timed out waiting until ${label}`);
+    }
+    async function watchRunnerWait(itemId: string) {
+      const waiting = () =>
+        db
+          .query<{ id: string; attempt: number; detail: string | null }, [string]>(
+            `SELECT s.step_id AS id,s.attempt,s.detail FROM closeout_step s
+             JOIN closeout_progress p ON p.id=s.progress_id WHERE p.item_id=? AND s.state='running'`,
+          )
+          .all(itemId);
+      const thoughts = () =>
+        listOutbox(db).filter((row) => (row.payload as { body?: string }).body === waitReason)
+          .length;
+      await until("the waiting step shows its reason", () =>
+        waiting().some((step) => step.detail === waitReason),
+      );
+      assert.equal(
+        calls.filter((call) => call.checks).length,
+        0,
+        "no checks are sent to a paused runner",
+      );
+      await until("the team is asked about the unavailable runner", () =>
+        Boolean(findOpenQuestion(db, "session")),
+      );
+      const question = findOpenQuestion(db, "session")!;
+      assert(question.body.includes("Runner goldbox has been unavailable"), question.body);
+      assert.deepEqual(question.options, ["Move to another runner", "Keep waiting"]);
+      assert(
+        listOutbox(db).some(
+          (row) =>
+            row.op === "elicitation" &&
+            (row.payload as { questionId?: string }).questionId === question.id,
+        ),
+      );
+      await orchestrator.onLinearEvent({
+        dedupeKey: "activity:keep-waiting",
+        deliveryId: null,
+        source: "webhook",
+        action: "prompted",
+        sessionId: "session",
+        issueId: "issue",
+        activityId: "keep-waiting",
+        actorId: "human-1",
+        body: "Keep waiting",
+        signal: null,
+        updatedAtMs: Date.now() + 1_000,
+        payload: "{}",
+      });
+      await until("the answer is recorded", () => !findOpenQuestion(db, "session"));
+      assert.equal(getWorkItem(db, itemId)?.state, "verifying");
+      await Bun.sleep(100);
+      const held = waiting();
+      assert(held.some((step) => step.detail === waitReason && step.attempt <= 1));
+      assert.equal(calls.filter((call) => call.checks).length, 0);
+      assert.equal(thoughts(), 1, "one Linear thought for the wait");
+      runnerResumed = true;
+      db.run("UPDATE runner SET status='active',last_seen_at=? WHERE id='runner-1'", [Date.now()]);
+      observe("Closeout waits for a paused runner and asks after the wait limit", true, {
+        steps: held,
+        question: question.body,
+      });
+    }
     let changed = false;
     let laterDispatches = 0;
     const crashed = scenario.startsWith("crashed-");
@@ -272,6 +375,7 @@ export async function probeRunnerOrchestration(
           }
         : {}),
       remoteCloseoutRetry: { attempts: 2, delayMs: 0 },
+      ...(runnerWait ? { runnerWait: { pollMs: 20, askAfterMs: 300 } } : {}),
       ...(merging
         ? {
             github: {
@@ -364,6 +468,7 @@ export async function probeRunnerOrchestration(
             if (unavailable) throw new Error("fixture remote transport unavailable");
             if (checks) {
               assert.equal(options.role, "implementer");
+              if (runnerWait) assert(runnerResumed, "checks wait until the runner resumes");
               assert(options.closeoutPolicy);
               if (scenario === "rebase-unreachable" && reverifying)
                 throw new Error("fixture runner is offline");
@@ -466,6 +571,10 @@ export async function probeRunnerOrchestration(
             const reviewer = options.role === "reviewer";
             const answer = mergeDependencyYield && itemId === "new-blocker";
             if (!reviewer && !options.prepareOnly) implementationCount++;
+            if (runnerWait && !reviewer && !options.prepareOnly && implementationCount === 1) {
+              pauseTaskRunner(item.currentRunId!);
+              runnerWatch = watchRunnerWait(item.id);
+            }
             if (reverifying && reviewing) {
               assert.equal(item.state, "verifying");
               assert.notEqual(item.currentRunId, originalRunId);
@@ -676,6 +785,21 @@ export async function probeRunnerOrchestration(
       }
       assert.equal(getRun(db, item.currentRunId!)?.status, "ended");
       assert.equal(existsSync(join(home, "local-agent")), false);
+      if (runnerWait) {
+        await runnerWatch;
+        const steps = db
+          .query<{ detail: string | null }, [string]>(
+            `SELECT s.detail FROM closeout_step s JOIN closeout_progress p ON p.id=s.progress_id
+             WHERE p.item_id=?`,
+          )
+          .all(item.id);
+        assert(steps.every((step) => step.detail !== waitReason));
+        observe("resuming the runner continues Closeout without using an attempt", true, {
+          state: item.state,
+          checks: calls.filter((call) => call.checks).length,
+        });
+        continue;
+      }
       if (!unavailable) {
         originalRunId = item.currentRunId!;
         originalProfile = readFileSync(join(home, "runs", originalRunId, "agent-profile.json"));
