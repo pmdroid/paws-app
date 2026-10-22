@@ -12,6 +12,7 @@ export class RetryableRunnerError extends Error {
     readonly transcriptPath?: string,
     readonly publishedEffects = false,
     readonly usageLimit?: { resetsAt: number | null },
+    readonly restarted = false,
   ) {
     super(message);
   }
@@ -95,7 +96,7 @@ export async function runWithFailover(
         };
       else {
         index++;
-        excluded.push(error.runnerId);
+        if (!error.restarted) excluded.push(error.runnerId);
       }
       let approved = "";
       if (error.publishedEffects) {
