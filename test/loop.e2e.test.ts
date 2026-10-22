@@ -2157,6 +2157,7 @@ test("a conflicting rebase sends the item back to the agent and then merges", as
   ).toHaveLength(1);
   expect(result.handoffs, result.detail).toEqual([REBASE_INSTRUCTION]);
   expect(result.returnPhases, result.detail).toEqual(["running"]);
+  expect(result.requeuedBases, result.detail).toEqual([result.movedMain]);
 }, 90_000);
 
 test("with the switch off, a branch update waits for CI and merges without running Closeout again", async () => {
@@ -3052,6 +3053,7 @@ async function runRebaseConflict(
   prompts: string[];
   handoffs: string[];
   returnPhases: (string | null)[];
+  requeuedBases: (string | null)[];
   merged: number;
   rounds: string[];
   detail: string;
@@ -3153,6 +3155,7 @@ async function runRebaseConflict(
       await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
     ).stdout.trim();
     const returnPhases: (string | null)[] = [];
+    const requeuedBases: (string | null)[] = [];
     let idle = 0;
     for (let turn = 0; turn < 40;) {
       const state = stateOf(db, identifier);
@@ -3161,6 +3164,8 @@ async function runRebaseConflict(
       const next = stateOf(db, identifier);
       if (state === "merge_queue" && next === "running")
         returnPhases.push(checkpointPhaseOf(db, identifier));
+      if (state !== "merge_queue" && next === "merge_queue")
+        requeuedBases.push(checkpointBaseOf(db, identifier));
       if (job !== null) turn += 1;
       if (job !== null || next !== state) idle = 0;
       else if (idle++ < 2400) await Bun.sleep(25);
@@ -3191,6 +3196,7 @@ async function runRebaseConflict(
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { handoff?: string }).handoff ?? ""),
       returnPhases,
+      requeuedBases,
       merged: github.merged.length,
       rounds: listCloseoutRounds(db).map((round) => round.head),
       detail: debug(layout, db),
@@ -3651,6 +3657,13 @@ async function seedCloseoutPolicy(seed: string): Promise<void> {
   );
   await writeFile(path.join(seed, "check.test.ts"), SEEDED_TEST);
   await writeFile(path.join(seed, "README.md"), "paws demo\n");
+}
+
+function checkpointBaseOf(db: Database, identifier: string): string | null {
+  const row = db
+    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .get(identifier);
+  return row ? (getWorkItem(db, row.id)?.checkpoint?.baseSha ?? null) : null;
 }
 
 function checkpointPhaseOf(db: Database, identifier: string): string | null {
