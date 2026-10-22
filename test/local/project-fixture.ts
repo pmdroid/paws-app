@@ -1,3 +1,4 @@
+import "../quiet-journal";
 import assert from "node:assert/strict";
 import { CommandBus, FakeClock } from "../../src/core";
 import {
