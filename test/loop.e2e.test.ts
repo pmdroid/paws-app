@@ -55,6 +55,7 @@ import {
   createFakeLinearIssueLifecycle,
   parseAgentEvent,
   createLinearFileTransfer,
+  LinearRateLimitError,
   type AcceptedLinearEvent,
   type SessionUpdate,
 } from "../src/linear";
@@ -2990,6 +2991,12 @@ test.each([false, true])(
   120_000,
 );
 
+test("a Linear rate limit during a run waits for the reset and merges instead of failing", async () => {
+  const result = await runCiFix({ failRounds: 0, rateLimitFirstLaunch: true });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(1);
+}, 120_000);
+
 test("CI green on the first round merges without a fix round", async () => {
   const result = await runCiFix({ failRounds: 0 });
   expect(result.state, result.detail).toBe("merged");
@@ -3053,6 +3060,7 @@ async function runCiFix(options: {
   failRounds: number;
   answer?: string;
   attemptsAfterFirstFix?: number;
+  rateLimitFirstLaunch?: boolean;
 }): Promise<{
   state: string | null;
   implementRuns: number;
@@ -3083,6 +3091,7 @@ async function runCiFix(options: {
   const prompts: string[] = [];
   let sequence = 0;
   let implementRuns = 0;
+  let launches = 0;
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -3111,6 +3120,8 @@ async function runCiFix(options: {
       },
     },
     launch(input) {
+      if (input.purpose === "implement" && ++launches === 1 && options.rateLimitFirstLaunch)
+        throw new LinearRateLimitError(0, {} as never);
       sequence += 1;
       const scriptPath = path.join(layout.root, `ci-rounds-${sequence}.json`);
       const resultPath =

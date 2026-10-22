@@ -14,6 +14,7 @@ import {
   openDatabase,
   saveCheckpoint,
 } from "../db";
+import { LinearRateLimitError } from "../linear";
 import { FakeHostGitHubAuth } from "./fake-auth";
 import { GitHubAuthQuestions } from "./github-auth";
 
@@ -396,6 +397,37 @@ test("a check that fails briefly is retried quietly before the task is held", as
   });
   try {
     const item = f.item("restarted");
+    expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
+    expect(listOutbox(f.db)).toHaveLength(0);
+  } finally {
+    f.auth.close();
+    f.db.close();
+  }
+});
+
+test("a rate-limited check keeps retrying quietly and posts nothing in Linear", async () => {
+  const f = fixture();
+  let limited = 5;
+  Object.assign(f.integration, {
+    unavailableRetryMs: [0, 0],
+    async check() {
+      if (limited-- > 0)
+        throw new LinearRateLimitError(0, {
+          requestsRemaining: 0,
+          requestsLimit: 5000,
+          requestsResetMs: null,
+          complexityRemaining: null,
+          complexityLimit: null,
+          complexityResetMs: null,
+          complexity: null,
+        });
+      return true;
+    },
+  });
+  try {
+    const item = f.item("limited");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
     expect(getWorkItem(f.db, item.id)?.state).toBe("running");
     expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);

@@ -57,7 +57,7 @@ import {
   type UsageLimitWait,
 } from "./failover";
 import { PawsShutdown } from "../core";
-import type { RunnerPlacement } from "../runner-placement";
+import { quotaSignal, type RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {
   override readonly name = "RunnerUnavailableError";
@@ -83,8 +83,8 @@ function earlierSession(
 /** The runner and agent that hold the item's last resumable agent session. */
 function sessionHolder(db: Database, itemId: string): SessionHolder | undefined {
   const rows = db
-    .query<{ envelope: string; payload: string }, [string]>(
-      `SELECT c.envelope, rr.payload FROM runner_result rr
+    .query<{ envelope: string; payload: string; receivedAt: number }, [string]>(
+      `SELECT c.envelope, rr.payload, rr.received_at AS receivedAt FROM runner_result rr
        JOIN runner_command c ON c.id=rr.command_id
        JOIN run ON run.id=rr.run_id
        WHERE run.item_id=? AND c.kind='run'
@@ -102,11 +102,17 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       profile?: { agent?: string };
     };
     if (command.checkpoint === false) continue;
-    const result = JSON.parse(row.payload) as { stopReason?: string; sessionId?: string };
-    return command.runnerId &&
-      command.profile?.agent &&
-      result.stopReason !== "error" &&
-      result.sessionId
+    const result = JSON.parse(row.payload) as {
+      stopReason?: string;
+      sessionId?: string;
+      errorMessage?: string;
+    };
+    // An errored session may hold the prompt that failed; a usage-limit stop does not.
+    const resumable =
+      result.stopReason !== "error" ||
+      (result.errorMessage !== undefined &&
+        quotaSignal(result.errorMessage, row.receivedAt)?.state === "exhausted");
+    return command.runnerId && command.profile?.agent && resumable && result.sessionId
       ? {
           runnerId: command.runnerId,
           agent: command.profile.agent,
