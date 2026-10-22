@@ -81,7 +81,7 @@ export async function runGitHubGit(input: {
         throw new Error(redact(input.token, detail), { cause: error });
       }
     },
-    true,
+    { tokenInFile: true },
   );
 }
 

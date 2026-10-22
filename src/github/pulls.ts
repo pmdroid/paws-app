@@ -10,15 +10,10 @@ import { applyPawsLabel, withPawsEvidenceMarker } from "./auth/pr";
 import type { GitHubCredentialInput, GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, githubHttpsUrl, pullRequestBody } from "./branch";
 import { repoApiPath } from "./client";
-import { defaultGitExec, git, redact, withCredential } from "./git";
+import { defaultGitExec, git, gitFailureReason } from "./git";
+import { pushWithLease } from "./push";
 import { splitRepository } from "./token";
-import {
-  GitCommandError,
-  type GitExec,
-  type GitHubClient,
-  type OpenedPull,
-  type PublishResult,
-} from "./types";
+import { type GitExec, type GitHubClient, type OpenedPull, type PublishResult } from "./types";
 
 export async function pushBranch(
   input: {
@@ -36,49 +31,12 @@ export async function pushBranch(
   const gitExec = input.gitExec ?? defaultGitExec();
   const token = await acquireOperationToken(input, "push");
   try {
-    const remote = await remoteBranchTip(input.worktree, url, branch, token, gitExec);
-    await withCredential(token, gitExec, async (helper) => {
-      const args = [...helper.argsPrefix, "push"];
-      if (remote) args.push(`--force-with-lease=refs/heads/${branch}:${remote}`);
-      args.push(url, `HEAD:refs/heads/${branch}`);
-      try {
-        await helper.exec(args, { cwd: input.worktree, env: helper.env });
-      } catch (error) {
-        const stderr = error instanceof GitCommandError ? error.stderr : "";
-        throw new Error(redact(token, `push failed: ${stderr}`), { cause: error });
-      }
-    });
+    await pushWithLease({ worktree: input.worktree, url, branch, token, gitExec });
   } catch (error) {
-    throw new Error(redact(token, error instanceof Error ? error.message : String(error)), {
-      cause: error,
-    });
+    throw new Error(`push failed: ${gitFailureReason(token, error)}`, { cause: error });
   }
   const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
   return { branch, head };
-}
-
-async function remoteBranchTip(
-  worktree: string,
-  url: string,
-  branch: string,
-  token: string,
-  gitExec: GitExec,
-): Promise<string | null> {
-  return withCredential(token, gitExec, async (helper) => {
-    const result = await helper.exec(
-      [...helper.argsPrefix, "ls-remote", url, `refs/heads/${branch}`],
-      { cwd: worktree, env: helper.env },
-    );
-    const lines = result.stdout
-      .trim()
-      .split("\n")
-      .filter((entry) => entry !== "");
-    if (lines.length === 0) return null;
-    if (lines.length !== 1) throw new Error("ls-remote returned more than one branch");
-    const sha = lines[0]?.split("\t")[0];
-    if (!sha) throw new Error("ls-remote returned an empty sha");
-    return sha;
-  });
 }
 
 export async function openPullRequest(

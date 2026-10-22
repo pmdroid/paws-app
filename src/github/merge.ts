@@ -4,10 +4,11 @@ import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
-import { defaultGitExec, git, redact, withCredential } from "./git";
+import { defaultGitExec, git, gitFailureReason, redact, withCredential } from "./git";
+import { pushWithLease } from "./push";
 import { waitForMergeReadiness } from "./readiness";
+import { hasGitTransportCause } from "./transport";
 import {
-  GitCommandError,
   MAX_SHA_GUARD_CYCLES,
   UPSTREAM_MAIN_REF,
   type GitExec,
@@ -133,7 +134,7 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     const mergeToken = await operationToken(input, "merge");
     input.onCredential?.("merge", mergeToken);
     const headNow = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
-    await fetchMain(input.worktree, url, mergeToken, gitExec);
+    await fetchMain(input.worktree, url, mergeToken, gitExec, input.sleep);
     const baseNow = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
     if (headNow !== pushed.head || baseNow !== pushed.base) {
       lastGuard = "sha";
@@ -221,7 +222,7 @@ async function pushRebased(
   const minted = await operationToken(input, "push");
   input.onCredential?.("push", minted);
   try {
-    await fetchMain(input.worktree, url, minted, gitExec);
+    await fetchMain(input.worktree, url, minted, gitExec, input.sleep);
     const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
     const commitExec: GitExec = input.commitEnv
       ? (args, options) =>
@@ -240,21 +241,22 @@ async function pushRebased(
         },
       };
     }
-    const remote = await remoteBranchSha(input.worktree, url, branch, minted, gitExec);
-    await withCredential(minted, gitExec, async (helper) => {
-      const args = [...helper.argsPrefix, "push"];
-      if (remote) args.push(`--force-with-lease=refs/heads/${branch}:${remote}`);
-      args.push(url, `HEAD:refs/heads/${branch}`);
-      try {
-        await helper.exec(args, { cwd: input.worktree, env: helper.env });
-      } catch (error) {
-        const stderr = error instanceof GitCommandError ? redact(minted, error.stderr) : "";
-        throw new Error(`push rejected: ${stderr}`, { cause: error });
-      }
-    });
+    try {
+      await pushWithLease({
+        worktree: input.worktree,
+        url,
+        branch,
+        token: minted,
+        gitExec,
+        sleep: input.sleep,
+      });
+    } catch (error) {
+      throw new Error(`push rejected: ${gitFailureReason(minted, error)}`, { cause: error });
+    }
     const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
     return { ok: true, base, head };
   } catch (error) {
+    if (hasGitTransportCause(error)) throw error;
     const message = redact(minted, error instanceof Error ? error.message : String(error));
     return { ok: false, result: { merged: false, outcome: "push_rejected", branch, message } };
   }
@@ -284,42 +286,23 @@ async function fetchMain(
   url: string,
   token: string,
   gitExec: GitExec,
+  sleep?: (ms: number) => Promise<void>,
 ): Promise<void> {
-  await withCredential(token, gitExec, async (helper) => {
-    try {
-      await helper.exec(
-        [...helper.argsPrefix, "fetch", url, `+refs/heads/main:${UPSTREAM_MAIN_REF}`],
-        { cwd: worktree, env: helper.env },
-      );
-    } catch (error) {
-      const stderr = error instanceof GitCommandError ? redact(token, error.stderr) : "";
-      throw new Error(`fetch failed: ${stderr}`, { cause: error });
-    }
-  });
-}
-
-async function remoteBranchSha(
-  worktree: string,
-  url: string,
-  branch: string,
-  token: string,
-  gitExec: GitExec,
-): Promise<string | null> {
-  return withCredential(token, gitExec, async (helper) => {
-    const result = await helper.exec(
-      [...helper.argsPrefix, "ls-remote", url, `refs/heads/${branch}`],
-      { cwd: worktree, env: helper.env },
-    );
-    const line = result.stdout
-      .trim()
-      .split("\n")
-      .filter((entry) => entry !== "");
-    if (line.length === 0) return null;
-    if (line.length !== 1) throw new Error("ls-remote returned more than one branch");
-    const sha = line[0]?.split("\t")[0];
-    if (!sha) throw new Error("ls-remote returned an empty sha");
-    return sha;
-  });
+  await withCredential(
+    token,
+    gitExec,
+    async (helper) => {
+      try {
+        await helper.exec(
+          [...helper.argsPrefix, "fetch", url, `+refs/heads/main:${UPSTREAM_MAIN_REF}`],
+          { cwd: worktree, env: helper.env },
+        );
+      } catch (error) {
+        throw new Error(`fetch failed: ${gitFailureReason(token, error)}`, { cause: error });
+      }
+    },
+    { sleep },
+  );
 }
 
 async function rebaseOnto(
