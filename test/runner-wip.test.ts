@@ -68,6 +68,24 @@ test("a remote run that stops early still reports its work as a WIP candidate", 
         model: "fixture-model",
         steps: [
           { type: "fs_write", path: join(checkout, "partial.txt"), content: "half done\n" },
+          {
+            type: "update",
+            update: {
+              sessionUpdate: "usage_update",
+              used: 1200,
+              size: 200000,
+              _meta: {
+                "_claude/rateLimit": {
+                  status: "allowed",
+                  rateLimitType: "five_hour",
+                  unifiedWindows: {
+                    five_hour: { utilization: 0.16, resetsAt: 1792650600 },
+                    seven_day: { utilization: 0.03, resetsAt: 1792987200 },
+                  },
+                },
+              },
+            },
+          },
           { type: "end", stopReason: "max_turn_requests" },
         ],
       }),
@@ -84,6 +102,10 @@ test("a remote run that stops early still reports its work as a WIP candidate", 
       launch: { command: process.execPath, args: [fake, join(root, "trace.json"), script] },
     });
     expect(result.run.stopReason).toBe("max_turn_requests");
+    expect(result.run.agentLimits).toEqual([
+      { window: "5-hour", usedPercent: 16, resetsAt: 1792650600_000 },
+      { window: "Weekly", usedPercent: 3, resetsAt: 1792987200_000 },
+    ]);
     expect(result.candidateSha).toBeDefined();
     expect(result.candidateSha).not.toBe(baseSha);
     expect(

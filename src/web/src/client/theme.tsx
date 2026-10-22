@@ -412,6 +412,7 @@ function replace(node: DOMNode): ReactElement | undefined {
         has("stale") && "opacity-60 grayscale",
       ),
     );
+  if (has("agent-usage")) return styled("flex min-w-0 flex-col gap-3");
   if (has("agent-limits"))
     return styled("m-0 grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2");
   if (has("gauge-bar")) return styled("flex h-4 items-center");
