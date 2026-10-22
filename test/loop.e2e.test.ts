@@ -2178,7 +2178,7 @@ test("Linear's Fix merge conflicts request on a conflicting pull request is a re
 
 test("with the switch off, a branch update waits for CI and merges without running Closeout again", async () => {
   const result = await withGitIdentity(() => runRebaseConflict("clean", undefined, false));
-  const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI. Closeout does not run again, because "Run Closeout again after a branch update" is off in Settings → Agents.`;
+  const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
   // One comparison so a failure shows every fact at once.
   expect(
     {
@@ -2204,6 +2204,18 @@ test("with the switch off, a branch update waits for CI and merges without runni
     updatedNote: true,
     recheckNote: false,
   });
+}, 120_000);
+
+test("an issue rule for the task's Linear label runs Closeout again after a branch update", async () => {
+  const result = await withGitIdentity(() =>
+    runRebaseConflict("clean", undefined, undefined, {
+      toml: '[merge]\nmain_moved = "ci"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"\n',
+      labels: ["Feature", "bug"],
+    }),
+  );
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.rounds, result.detail).toHaveLength(1);
+  expect(result.thoughts, result.detail).toContain("Branch updated, running Closeout again.");
 }, 120_000);
 
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
@@ -3056,6 +3068,7 @@ async function runRebaseConflict(
   mode: "resolve" | "repeat" | "rebase-failed" | "clean" | "linear",
   githubAuth?: FakeHostGitHubAuth,
   closeoutAfterUpdate?: boolean,
+  merging?: { toml: string; labels: string[] },
 ): Promise<{
   state: string | null;
   reviews: number;
@@ -3100,6 +3113,10 @@ async function runRebaseConflict(
       path.join(layout.pawsRoot, "config.toml"),
       `[merge]\ncloseout_after_update = ${closeoutAfterUpdate}\n`,
     );
+  if (merging !== undefined) {
+    await writeFile(path.join(layout.pawsRoot, "config.toml"), merging.toml);
+    tracker.mergeContexts.set(`rebase-${mode}`, { projectId: null, labels: merging.labels });
+  }
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const jobs = new JobLoop(db, systemClock);

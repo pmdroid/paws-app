@@ -14,6 +14,7 @@ import {
   renderConfigToml,
   writeConfigFile,
   writeImplementer,
+  readMergeSettings,
 } from "../src/config";
 import { tempHome } from "./helpers";
 
@@ -46,7 +47,7 @@ describe("config", () => {
     });
     writeConfigFile(paths.configFile, { ...setup, maxTurns: 50 });
     expect(loadConfigFile(paths.configFile).githubRepos).toEqual(["acme/one", "acme/two"]);
-    expect(loadConfigFile(paths.configFile).closeoutAfterUpdate).toBe(true);
+    expect(readMergeSettings(loadConfigFile(paths.configFile)).default.mainMoved).toBe("closeout");
     expect(closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "Acme/One")).toBe(
       join(paths.home, "policies/one"),
     );

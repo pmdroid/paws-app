@@ -2026,4 +2026,16 @@ CREATE TABLE queue_position (
 ) STRICT;
 `,
   },
+  {
+    id: "089_work_item_merge_settings",
+    sql: `
+CREATE TABLE work_item_merge_settings (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  merge_order TEXT NOT NULL CHECK(merge_order IN ('queue','ci-green','github-queue')),
+  main_moved TEXT NOT NULL CHECK(main_moved IN ('overlap','ci','closeout')),
+  resolved_json TEXT NOT NULL,
+  resolved_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

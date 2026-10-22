@@ -21,8 +21,11 @@ import { EVIDENCE_API_PATH, handleEvidenceRequest } from "../evidence";
 import {
   SKILL_SETTINGS_PATH,
   handleAgentSettingsRequest,
+  handleMergeSettingsRequest,
   handleSkillSettingsRequest,
+  MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
+  type MergeChoices,
 } from "../settings";
 import type { SkillResolver } from "../skills";
 import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
@@ -69,7 +72,10 @@ export type ServerOptions = {
   evidenceDir?: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
-  agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
+  agentSettings?: Omit<AgentSettingsOptions, "csrfToken"> & {
+    /** Linear projects and labels for Settings → Merging. */
+    mergeChoices?: (signal: AbortSignal) => Promise<MergeChoices>;
+  };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: { root: string; resolver: SkillResolver; limit?: number };
 };
@@ -167,7 +173,7 @@ type Secrets = {
   csrfToken: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
-  agentSettings?: AgentSettingsOptions;
+  agentSettings?: ServerOptions["agentSettings"] & { csrfToken: string };
   skillSettings?: ServerOptions["skillSettings"];
   db?: Database;
   statusEnv?: Record<string, string | undefined>;
@@ -259,8 +265,11 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         path.startsWith("/api/auth/github") ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
-      // Admins manage skills next to owners; every other setting stays with owners.
-      const roles = path === SKILL_SETTINGS_PATH ? ["owner", "admin"] : ["owner"];
+      // Admins manage skills and merging next to owners; every other setting stays with owners.
+      const roles =
+        path === SKILL_SETTINGS_PATH || path === MERGE_SETTINGS_PATH
+          ? ["owner", "admin"]
+          : ["owner"];
       if (
         (privileged && !roles.includes(access.principal.role)) ||
         (unsafe &&
@@ -360,8 +369,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const settings = await handleAgentSettingsRequest(request, {
-      ...secrets.agentSettings,
+    const { mergeChoices, ...agentSettings } = secrets.agentSettings;
+    const shared = {
+      ...agentSettings,
       csrfToken,
       ...(principal === undefined || secrets.db === undefined
         ? {}
@@ -376,7 +386,13 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
               }),
           }),
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
-    });
+    };
+    const settings =
+      (await handleAgentSettingsRequest(request, shared)) ??
+      (await handleMergeSettingsRequest(request, {
+        ...shared,
+        ...(mergeChoices ? { choices: mergeChoices } : {}),
+      }));
     if (settings !== null) return settings;
   }
   const status = await handleStatusRequest(request, {
