@@ -2267,21 +2267,21 @@ export async function probeRunnerBackend(
         input(restarted, { signal: restartAbort.signal }),
       );
       void restartedRun.catch((error: unknown) => (restartFailure = error));
-      const beforeRestart = await nextRun();
-      db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [now - 1, beforeRestart.runId]);
+      const firstPlacement = await nextRun();
+      db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [now - 1, firstPlacement.runId]);
       for (const hostId of hostIds) work.heartbeat(hostId);
       await delay(50);
       assert.equal(restartFailure, null);
-      const afterRestart = await nextRun();
-      assert.equal(afterRestart.runId, beforeRestart.runId);
-      assert.equal(afterRestart.generation, beforeRestart.generation + 1);
+      const secondPlacement = await nextRun();
+      assert.equal(secondPlacement.runId, firstPlacement.runId);
+      assert.equal(secondPlacement.generation, firstPlacement.generation + 1);
       restartAbort.abort();
       await restartedRun.catch(() => undefined);
       await drain();
       observe(
         "a runner restart that expires the work's lease places the run again instead of failing",
         true,
-        { generations: [beforeRestart.generation, afterRestart.generation] },
+        { generations: [firstPlacement.generation, secondPlacement.generation] },
       );
       const offlineAt = now - 120_000;
       for (const hostId of hostIds)
