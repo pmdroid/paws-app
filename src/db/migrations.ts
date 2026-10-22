@@ -2127,4 +2127,17 @@ CREATE TABLE runner_skill (
 ) STRICT;
 `,
   },
+  {
+    id: "096_run_agent_setup",
+    sql: `
+ALTER TABLE runner_skill ADD COLUMN error TEXT;
+CREATE TABLE run_agent_setup (
+  run_id TEXT PRIMARY KEY REFERENCES run(id),
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  skills TEXT NOT NULL,
+  hooks TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

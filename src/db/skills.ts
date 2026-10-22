@@ -113,6 +113,8 @@ export type RunnerSkillStatus = {
   version: string;
   sha256: string;
   status: "installed" | "pending" | "refused";
+  /** Why the runner refused the bundle. Older runners do not say. */
+  error: string | null;
   reportedAt: number;
 };
 
@@ -120,25 +122,181 @@ export type RunnerSkillStatus = {
 export function recordRunnerSkills(
   db: Database,
   runnerId: string,
-  skills: readonly Omit<RunnerSkillStatus, "reportedAt">[],
+  skills: readonly (Omit<RunnerSkillStatus, "reportedAt" | "error"> & { error?: string })[],
   reportedAt: number,
 ): void {
   db.run("DELETE FROM runner_skill WHERE runner_id=?", [runnerId]);
   for (const skill of skills)
-    db.run("INSERT INTO runner_skill VALUES(?,?,?,?,?,?)", [
-      runnerId,
-      skill.name,
-      skill.version,
-      skill.sha256,
-      skill.status,
-      reportedAt,
-    ]);
+    db.run(
+      "INSERT INTO runner_skill(runner_id,name,version,sha256,status,error,reported_at) VALUES(?,?,?,?,?,?,?)",
+      [
+        runnerId,
+        skill.name,
+        skill.version,
+        skill.sha256,
+        skill.status,
+        skill.status === "refused" ? (skill.error ?? null) : null,
+        reportedAt,
+      ],
+    );
 }
 
 export function listRunnerSkills(db: Database, runnerId: string): RunnerSkillStatus[] {
   return db
     .query<RunnerSkillStatus, [string]>(
-      "SELECT name,version,sha256,status,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
+      "SELECT name,version,sha256,status,error,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
     )
     .all(runnerId);
+}
+
+/**
+ * How a runner stands against one registered skill. `installing`: the runner has not reported
+ * the pinned bundle yet, or a home is still being brought to it. `out_of_date`: it still reports
+ * an earlier bundle. `failed`: it refused the pinned bundle.
+ */
+export type RunnerSkillState = "up_to_date" | "installing" | "out_of_date" | "failed";
+
+export type RunnerSkillView = {
+  name: string;
+  /** The pinned version. */
+  version: string;
+  /** What the runner reports for this skill; null when it reports nothing usable. */
+  installedVersion: string | null;
+  state: RunnerSkillState;
+  error: string | null;
+  reportedAt: number | null;
+};
+
+/** Every registered skill as `runnerId` last reported it, in pin order. */
+export function runnerSkillStates(
+  db: Database,
+  runnerId: string,
+  pins: readonly SkillPin[] = listSkills(db),
+): RunnerSkillView[] {
+  const reported = new Map(listRunnerSkills(db, runnerId).map((row) => [row.name, row]));
+  return pins
+    .filter((entry) => entry.removedAt === null)
+    .map((entry) => {
+      const row = reported.get(entry.name);
+      const current = row?.sha256 === entry.sha256;
+      const state: RunnerSkillState =
+        row === undefined
+          ? "installing"
+          : current
+            ? row.status === "installed"
+              ? "up_to_date"
+              : row.status === "pending"
+                ? "installing"
+                : "failed"
+            : // A refusal of an earlier pin is retried with the new one on the next heartbeat.
+              row.status === "refused"
+              ? "installing"
+              : "out_of_date";
+      return {
+        name: entry.name,
+        version: entry.version,
+        installedVersion: row && row.status !== "refused" ? row.version : null,
+        state,
+        error: state === "failed" ? row!.error : null,
+        reportedAt: row?.reportedAt ?? null,
+      };
+    });
+}
+
+/** Per registered skill: how many runners that are not revoked have the pinned bundle. */
+export type SkillRollout = {
+  name: string;
+  total: number;
+  upToDate: number;
+  /** Runner names per state other than up to date. */
+  installing: string[];
+  outOfDate: string[];
+  failed: string[];
+};
+
+export function skillRollouts(
+  db: Database,
+  pins: readonly SkillPin[] = listSkills(db),
+): SkillRollout[] {
+  const runners = db
+    .query<{ id: string; name: string }, []>(
+      "SELECT id,name FROM runner WHERE revoked_at IS NULL AND status<>'revoked' ORDER BY created_at,id",
+    )
+    .all();
+  const rollouts = new Map<string, SkillRollout>(
+    pins
+      .filter((entry) => entry.removedAt === null)
+      .map((entry) => [
+        entry.name,
+        { name: entry.name, total: 0, upToDate: 0, installing: [], outOfDate: [], failed: [] },
+      ]),
+  );
+  for (const runner of runners)
+    for (const skill of runnerSkillStates(db, runner.id, pins)) {
+      const rollout = rollouts.get(skill.name)!;
+      rollout.total += 1;
+      if (skill.state === "up_to_date") rollout.upToDate += 1;
+      else if (skill.state === "installing") rollout.installing.push(runner.name);
+      else if (skill.state === "out_of_date") rollout.outOfDate.push(runner.name);
+      else rollout.failed.push(runner.name);
+    }
+  return [...rollouts.values()];
+}
+
+/** A hook that ran beside the agent, such as Paws's own Closeout Stop hook. */
+export type RunHook = { name: string; event: "stop" };
+
+/** The skills and hooks a run started with, on the runner that took it. */
+export type RunAgentSetup = {
+  runnerId: string;
+  /** `pending`: the runner was still installing this version, so the run may have had the one before. */
+  skills: { name: string; version: string; status: "installed" | "pending" }[];
+  hooks: RunHook[];
+  recordedAt: number;
+};
+
+/**
+ * Snapshot what `runnerId` reports for the skills that apply to `agent` as the run is assigned.
+ * A later attempt on another runner replaces it.
+ */
+export function recordRunAgentSetup(
+  db: Database,
+  input: { runId: string; runnerId: string; agent: string; hooks: RunHook[]; at: number },
+): void {
+  const pins = new Map(
+    listSkills(db)
+      .filter(
+        (entry) => entry.removedAt === null && entry.agents.includes(input.agent as SkillAgent),
+      )
+      .map((entry) => [entry.name, entry]),
+  );
+  const skills = listRunnerSkills(db, input.runnerId)
+    .filter((row) => pins.has(row.name) && row.status !== "refused")
+    .map((row) => ({
+      name: row.name,
+      version: row.version,
+      status: row.status as "installed" | "pending",
+    }));
+  db.run(
+    `INSERT INTO run_agent_setup(run_id,runner_id,skills,hooks,recorded_at) VALUES(?,?,?,?,?)
+     ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,skills=excluded.skills,
+       hooks=excluded.hooks,recorded_at=excluded.recorded_at`,
+    [input.runId, input.runnerId, JSON.stringify(skills), JSON.stringify(input.hooks), input.at],
+  );
+}
+
+export function runAgentSetup(db: Database, runId: string): RunAgentSetup | null {
+  const row = db
+    .query<{ runnerId: string; skills: string; hooks: string; recordedAt: number }, [string]>(
+      "SELECT runner_id AS runnerId,skills,hooks,recorded_at AS recordedAt FROM run_agent_setup WHERE run_id=?",
+    )
+    .get(runId);
+  return row
+    ? {
+        runnerId: row.runnerId,
+        skills: JSON.parse(row.skills) as RunAgentSetup["skills"],
+        hooks: JSON.parse(row.hooks) as RunHook[],
+        recordedAt: row.recordedAt,
+      }
+    : null;
 }

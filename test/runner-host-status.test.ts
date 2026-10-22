@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
   listRunnerSkills,
+  skillRollouts,
+  type RunnerSkillView,
   markSkillRemoved,
   migrate,
   openDatabase,
@@ -297,7 +299,19 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
     },
   ]);
   expect(listRunnerSkills(runner.db, runner.runnerId)).toEqual([
-    { ...installed[0]!, status: "installed", reportedAt: runner.now() },
+    { ...installed[0]!, status: "installed", error: null, reportedAt: runner.now() },
+  ]);
+  // A refused bundle carries the runner's reason; Paws keeps it for the runner page.
+  const refused = {
+    name: "impeccable",
+    version: "2.4.1",
+    sha256: "a".repeat(64),
+    status: "refused",
+    error: "Skill impeccable 2.4.1 failed its checksum and was not installed.",
+  };
+  expect((await runner.heartbeat({ skills: [refused] }))!.status).toBe(200);
+  expect(listRunnerSkills(runner.db, runner.runnerId)).toEqual([
+    { ...refused, status: "refused", reportedAt: runner.now() },
   ]);
 
   const download = (await runner.fetch("/v1/skills/impeccable/2.4.1"))!;
@@ -306,4 +320,87 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
   expect((await runner.fetch("/v1/skills/impeccable/2.4.0"))!.status).toBe(403);
   expect((await runner.fetch("/v1/skills/gone/1.0.0"))!.status).toBe(403);
   expect((await runner.fetch("/v1/skills/..%2Fimpeccable/2.4.1"))!.status).toBe(403);
+});
+
+test("the runner list shows each registered skill as up to date, installing, out of date or failed", async () => {
+  const runner = await fixture();
+  const pin = {
+    source: { kind: "npm" as const, package: "skill" },
+    sha256: "b".repeat(64),
+    sizeBytes: 4,
+    agents: ["claude" as const],
+    updatedAt: runner.now(),
+  };
+  for (const name of ["current", "failing", "missing", "older", "pending"])
+    saveSkill(runner.db, { ...pin, name, version: "2.0.0" });
+  const reported = (name: string, status: string, sha256 = pin.sha256, version = "2.0.0") => ({
+    name,
+    version,
+    sha256,
+    status,
+  });
+  expect(
+    (
+      await runner.heartbeat({
+        skills: [
+          reported("current", "installed"),
+          { ...reported("failing", "refused"), error: "Skill failing has no SKILL.md." },
+          reported("older", "installed", "c".repeat(64), "1.9.0"),
+          reported("pending", "pending"),
+        ],
+      })
+    )?.status,
+  ).toBe(200);
+  const list = (await runner.list()) as unknown as {
+    runners: { skills: RunnerSkillView[] }[];
+  };
+  expect(list.runners[0]!.skills).toEqual([
+    {
+      name: "current",
+      version: "2.0.0",
+      installedVersion: "2.0.0",
+      state: "up_to_date",
+      error: null,
+      reportedAt: runner.now(),
+    },
+    {
+      name: "failing",
+      version: "2.0.0",
+      installedVersion: null,
+      state: "failed",
+      error: "Skill failing has no SKILL.md.",
+      reportedAt: runner.now(),
+    },
+    {
+      name: "missing",
+      version: "2.0.0",
+      installedVersion: null,
+      state: "installing",
+      error: null,
+      reportedAt: null,
+    },
+    {
+      name: "older",
+      version: "2.0.0",
+      installedVersion: "1.9.0",
+      state: "out_of_date",
+      error: null,
+      reportedAt: runner.now(),
+    },
+    {
+      name: "pending",
+      version: "2.0.0",
+      installedVersion: "2.0.0",
+      state: "installing",
+      error: null,
+      reportedAt: runner.now(),
+    },
+  ]);
+  expect(skillRollouts(runner.db).map(({ name, ...rollout }) => [name, rollout])).toEqual([
+    ["current", { total: 1, upToDate: 1, installing: [], outOfDate: [], failed: [] }],
+    ["failing", { total: 1, upToDate: 0, installing: [], outOfDate: [], failed: ["Host VM"] }],
+    ["missing", { total: 1, upToDate: 0, installing: ["Host VM"], outOfDate: [], failed: [] }],
+    ["older", { total: 1, upToDate: 0, installing: [], outOfDate: ["Host VM"], failed: [] }],
+    ["pending", { total: 1, upToDate: 0, installing: ["Host VM"], outOfDate: [], failed: [] }],
+  ]);
 });

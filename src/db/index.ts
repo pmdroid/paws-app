@@ -387,8 +387,22 @@ export {
   listRunnerSkills,
   listSkills,
   markSkillRemoved,
+  recordRunAgentSetup,
   recordRunnerSkills,
+  runAgentSetup,
+  runnerSkillStates,
   saveSkill,
   setSkillAgents,
+  skillRollouts,
 } from "./skills";
-export type { RunnerSkillStatus, SkillAgent, SkillPin, SkillSource } from "./skills";
+export type {
+  RunAgentSetup,
+  RunHook,
+  RunnerSkillState,
+  RunnerSkillStatus,
+  RunnerSkillView,
+  SkillAgent,
+  SkillPin,
+  SkillRollout,
+  SkillSource,
+} from "./skills";
