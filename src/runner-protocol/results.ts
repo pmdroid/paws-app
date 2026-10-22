@@ -43,6 +43,17 @@ export const RunnerResultSchema = z.strictObject({
     )
     .optional(),
   closeoutReport: z.string().max(65_536).optional(),
+  agentLimits: z
+    .array(
+      z.strictObject({
+        window: z.string().min(1).max(32),
+        usedPercent: z.number().min(0).max(100),
+        resetsAt: z.number().int().positive().nullable(),
+      }),
+    )
+    .min(1)
+    .max(4)
+    .optional(),
 });
 
 export type RunnerResult = z.infer<typeof RunnerResultSchema>;

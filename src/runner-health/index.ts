@@ -2,7 +2,15 @@ import { authorizeRunnerAccount } from "../runner-accounts";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { auditWorkspaceAccess, getRunner, immediate, workspaceMember } from "../db";
+import {
+  auditWorkspaceAccess,
+  getRunner,
+  immediate,
+  recordRunnerAgentUsage,
+  runnerAgentUsage,
+  workspaceMember,
+  type RunnerAgentLimit,
+} from "../db";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerWork } from "../runner-work";
 import {
@@ -24,6 +32,8 @@ export type AgentSignIn = {
   status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "unknown";
   checkedAt: number | null;
   resetsAt?: number | null;
+  limits?: RunnerAgentLimit[];
+  limitsAt?: number;
 };
 type Target = { memberId?: string; agent: Agent };
 type History = {
@@ -265,8 +275,11 @@ export function createRunnerHealth(options: {
                 "SELECT COALESCE(resets_at,cooldown_until) AS resetsAt FROM runner_agent_policy WHERE runner_id=? AND agent=? AND quota_state='exhausted' AND cooldown_until>?",
               )
               .get(runner.id, agent, at);
-        if (limit) return { agent, status: "usage_limit", checkedAt, resetsAt: limit.resetsAt };
-        if (entry?.result) return { agent, status: "signed_in", checkedAt };
+        const usage = runnerAgentUsage(db, runnerId, member ? principal.userId : undefined, agent);
+        const limits = usage ? { limits: usage.limits, limitsAt: usage.observedAt } : {};
+        if (limit)
+          return { agent, status: "usage_limit", checkedAt, resetsAt: limit.resetsAt, ...limits };
+        if (entry?.result) return { agent, status: "signed_in", checkedAt, ...limits };
         return { agent, status: "unknown", checkedAt };
       });
     },
@@ -324,6 +337,14 @@ export function createRunnerHealth(options: {
             "UPDATE runner_member_account SET connected=?,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
             [result.login.authenticated ? 1 : 0, at, runnerId, assigned.memberId, assigned.agent],
           );
+        if (result.agentLimits)
+          recordRunnerAgentUsage(db, {
+            runnerId,
+            memberId: assigned.memberId,
+            agent: assigned.type === "login_check" ? assigned.agent : assigned.profile.agent,
+            limits: result.agentLimits,
+            observedAt: at,
+          });
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         return { duplicate: false };
       });

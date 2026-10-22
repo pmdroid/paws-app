@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { immediate } from "../db";
+import { immediate, recordRunnerAgentUsage } from "../db";
 import {
   RUNNER_RESULT_BODY_LIMIT,
   RunnerResultSchema,
@@ -72,13 +72,22 @@ export function createRunnerResults(options: {
           if (existing.payload !== payload) throw new Error("Runner result is immutable.");
           return { duplicate: true };
         }
+        const at = now();
         db.run("INSERT INTO runner_result VALUES(?,?,?,?,?)", [
           input.runId,
           input.generation,
           command.id,
           payload,
-          now(),
+          at,
         ]);
+        if (result.agentLimits)
+          recordRunnerAgentUsage(db, {
+            runnerId: input.runnerId,
+            memberId: command.memberId,
+            agent: command.profile.agent,
+            limits: result.agentLimits,
+            observedAt: at,
+          });
         return { duplicate: false };
       });
     },
