@@ -1,4 +1,3 @@
-import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AcpEvent } from "../acp";
 import type { ActivityKind, ProgressUpdate, SessionPlanStep } from "../linear";
 import { scrubText } from "../closeout";
@@ -30,14 +29,12 @@ export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
     case "progress":
       return clip("thought", event.text);
     case "session_update":
-      return fromSessionUpdate(event.update);
+      return null;
     case "error":
       return clip("error", event.message);
     case "permission":
       if (event.decision !== "deny") return null;
       return clip("action", event.title?.trim() || event.reason);
-    case "prompt_complete":
-      return clip("thought", `Agent turn ended (${event.stopReason}).`);
     case "cancelled":
       if (event.reason === "follow_up") return null;
       return clip("error", event.reason === "timeout" ? "Run timed out." : "Run cancelled.");
@@ -57,7 +54,6 @@ export function createAcpActivityReporter(
   resultBody(): string;
 } {
   let pending = "";
-  let publicMessage = "";
   let resultBody = "";
 
   function post(activity: AcpActivity) {
@@ -65,29 +61,15 @@ export function createAcpActivityReporter(
       emit({ ...activity, body: activity.body.slice(start, start + ACTIVITY_PART_LENGTH) });
   }
 
-  function flushPublicMessage() {
-    const activity = clip("thought", publicToolText(publicMessage));
-    publicMessage = "";
-    if (activity) post(activity);
-  }
-
-  function flush(): boolean {
-    flushPublicMessage();
+  function flush() {
     const body = pending.trim();
-    const activity = clip("thought", publicToolText(body));
     pending = "";
-    if (activity === null) return false;
-    resultBody = body;
-    post(activity);
-    return true;
+    if (body !== "") resultBody = body;
   }
 
   return {
     onEvent(event) {
-      if (event.type === "progress" && event.messageChunk) {
-        publicMessage += event.text;
-        return;
-      }
+      if (event.type === "progress" && event.messageChunk) return;
       if (event.type === "session_update") {
         const update = event.update;
         if (update.sessionUpdate === "plan") {
@@ -97,6 +79,7 @@ export function createAcpActivityReporter(
               status: entry.status === "in_progress" ? "inProgress" : entry.status,
             })),
           );
+          return;
         }
         if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
           if (update.kind !== "think" && update.kind !== "switch_mode") flush();
@@ -104,38 +87,19 @@ export function createAcpActivityReporter(
         }
         if (update.sessionUpdate === "agent_thought_chunk") return;
         if (update.sessionUpdate === "agent_message_chunk") {
-          flushPublicMessage();
           pending += textOf(update.content);
           return;
         }
       }
+      if (event.type === "prompt_complete") flush();
       const activity = activityFromAcpEvent(event);
       if (activity === null) return;
-      const flushed = flush();
-      if (event.type === "prompt_complete" && flushed) return;
+      flush();
       post(activity);
     },
     flush,
     resultBody: () => resultBody,
   };
-}
-
-function fromSessionUpdate(update: SessionUpdate): AcpActivity | null {
-  switch (update.sessionUpdate) {
-    case "agent_thought_chunk":
-      return null;
-    case "agent_message_chunk":
-      return clip("thought", textOf(update.content));
-    case "plan": {
-      const body = update.entries
-        .map((entry) => entry.content)
-        .filter((line) => line.trim() !== "")
-        .join("; ");
-      return clip("thought", body || "Updated the plan.");
-    }
-    default:
-      return null;
-  }
 }
 
 function textOf(content: { type: string; text?: string }): string {
