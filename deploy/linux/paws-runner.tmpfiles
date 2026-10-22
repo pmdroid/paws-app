@@ -4,4 +4,3 @@ d /var/lib/paws-agent-tasks 0711 paws-runner paws-runner -
 d /var/lib/paws-runner-spool 2750 paws-runner paws-agent -
 d /var/lib/paws-agent-results 0750 paws-runner paws-results -
 d /run/systemd/system 0755 root root -
-d /var/lib/paws-runner-members 0711 paws-runner paws-runner -

@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -17,8 +16,6 @@ import { ExecutionIdSchema } from "./jobs";
 import { readRunnerJob, type RunnerSpool } from "./spool";
 import type { RunnerResults } from "./results";
 import type { RunnerBrokerClient } from "./broker";
-
-const MEMBER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 function startTime(pid: number): string | undefined {
   try {
@@ -133,7 +130,6 @@ export function createDirectWorkerSupervisor(options: {
   spool?: RunnerSpool;
   results?: RunnerResults;
   taskRoot?: string;
-  memberHomes?: string;
   launch?: (
     executionId: string,
     home: string,
@@ -146,7 +142,6 @@ export function createDirectWorkerSupervisor(options: {
   };
 }): RunnerBrokerClient {
   const taskRoot = options.taskRoot ?? "/var/lib/paws-agent-tasks";
-  const memberHomes = options.memberHomes ?? "/var/lib/paws-runner-members";
   const launch = options.launch ?? workerLaunch;
   mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
   function homeFor(executionId: string): string {
@@ -161,16 +156,7 @@ export function createDirectWorkerSupervisor(options: {
     const gid = process.getgid?.() ?? options.results.agentUid;
     if (job.command.type === "task")
       ensureDirectory(join(taskRoot, executionId), options.results.agentUid, gid, 0o700);
-    const member = job.command.memberId;
-    if (member === undefined) return "/var/lib/paws-agent";
-    if (!MEMBER.test(member) || !MEMBER.test(job.command.workspaceId))
-      throw new Error("Invalid member identity");
-    const identity = createHash("sha256")
-      .update(JSON.stringify([job.command.workspaceId, member]))
-      .digest("hex");
-    const home = join(memberHomes, identity);
-    ensureDirectory(home, options.results.agentUid, gid, 0o700);
-    return home;
+    return "/var/lib/paws-agent";
   }
   function receipt(executionId: string): string {
     ExecutionIdSchema.parse(executionId);
