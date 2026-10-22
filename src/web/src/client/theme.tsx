@@ -372,6 +372,30 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("runner-row-tags")) return styled("flex flex-wrap gap-2 sm:justify-end");
   if (has("runner-head")) return styled("flex min-w-0 items-start justify-between gap-3");
   if (has("runner-title")) return styled("flex min-w-0 flex-col gap-2");
+  if (has("runner-block"))
+    return styled("flex min-w-0 flex-col gap-3 border-t-2 border-border pt-5");
+  if (has("runner-block-head"))
+    return styled("flex min-h-control min-w-0 flex-wrap items-center justify-between gap-3");
+  if (name === "ul" && has("slot-list"))
+    return styled(
+      "m-0 grid min-w-0 list-none grid-cols-[auto_auto_minmax(0,1fr)] gap-x-3 gap-y-3 p-0 sm:grid-cols-[auto_auto_minmax(0,1fr)_auto]",
+    );
+  if (has("slot-row"))
+    return styled(
+      "col-span-full grid min-w-0 grid-cols-subgrid items-start gap-y-1 sm:items-center [&>.slot-facts]:col-start-3 sm:[&>.slot-facts]:col-start-auto [&>.lin-id]:justify-self-start [&>span.muted]:col-span-2 sm:[&>span.muted]:col-span-3",
+    );
+  if (has("slot-mark"))
+    return styled(
+      cn(
+        "h-6 w-3 rounded-base border-2 border-border",
+        has("used")
+          ? has("high")
+            ? "bg-main"
+            : "bg-gauge"
+          : "border-dashed bg-secondary-background",
+      ),
+    );
+  if (has("slot-facts")) return styled("flex items-center gap-2 text-sm");
   if (has("runner-status"))
     return styled(
       "flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-semibold [&>span:not(.tag,:last-child)]:after:ml-3 [&>span:not(.tag,:last-child)]:after:content-['·']",
@@ -381,22 +405,19 @@ function replace(node: DOMNode): ReactElement | undefined {
       "flex flex-wrap gap-x-2 text-sm leading-relaxed [&>span]:whitespace-nowrap [&>span:not(:last-child)]:after:ml-2 [&>span:not(:last-child)]:after:content-['·']",
     );
   if (has("runner-host")) return styled("flex min-w-0 flex-col gap-3");
-  if (has("runner-updated")) return styled("flex flex-wrap items-center gap-2 text-sm");
-  if (has("runner-gauges", "runner-slots"))
+  if (has("runner-gauges"))
     return styled(
       cn(
-        "m-0 grid min-w-0 grid-cols-2 gap-x-6 gap-y-5",
-        has("runner-gauges") ? "lg:grid-cols-4" : "grid-cols-1 sm:grid-cols-2",
+        "m-0 grid min-w-0 grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-4",
         has("stale") && "opacity-60 grayscale",
       ),
     );
+  if (has("agent-limits"))
+    return styled("m-0 grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2");
+  if (has("gauge-bar")) return styled("flex h-4 items-center");
   if (has("runner-gauge"))
     return styled(
-      "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1.5 [&>dd]:m-0 [&>dd:nth-child(2)]:justify-self-end [&>dd:nth-child(n+3)]:col-span-full [&>dt]:text-sm [&>dt]:leading-6 [&>dt]:font-semibold [&>dt]:whitespace-nowrap",
-    );
-  if (has("runner-concurrency"))
-    return styled(
-      "flex min-w-0 flex-col gap-1.5 [&>dd]:m-0 [&>dt]:text-sm [&>dt]:leading-6 [&>dt]:font-semibold",
+      "grid min-w-0 content-start grid-cols-[auto_minmax(0,1fr)] grid-rows-[1.75rem] items-center gap-x-2 gap-y-1.5 [&>dd]:m-0 [&>dd:nth-child(2)]:justify-self-end [&>dd:nth-child(n+3)]:col-span-full [&>dt]:text-sm [&>dt]:leading-6 [&>dt]:font-semibold [&>dt]:whitespace-nowrap",
     );
   if (has("gauge-value"))
     return styled(
@@ -424,19 +445,18 @@ function replace(node: DOMNode): ReactElement | undefined {
       </span>
     );
   }
-  if (has("slots")) return styled("flex h-4 w-full gap-1");
-  if (has("slot"))
-    return styled(
-      cn(
-        "h-full min-w-0 flex-1 rounded-base border-2 border-border",
-        has("used") ? (has("high") ? "bg-main" : "bg-gauge") : "bg-secondary-background",
-      ),
-    );
-  if (has("runner-agents-row"))
-    return styled("flex min-w-0 flex-wrap items-center gap-x-6 gap-y-3");
   if (name === "ul" && has("runner-agent-list"))
-    return styled("m-0 flex min-w-0 list-none flex-wrap items-center gap-x-5 gap-y-2 p-0");
-  if (has("runner-agent")) return styled("flex flex-wrap items-center gap-2 text-sm");
+    return styled("m-0 flex min-w-0 list-none flex-col gap-5 p-0");
+  if (has("runner-agent"))
+    return styled(
+      "grid min-w-0 grid-cols-1 items-start gap-x-6 gap-y-3 sm:grid-cols-[10rem_minmax(0,1fr)]",
+    );
+  if (has("runner-agent-name")) return styled("flex min-h-6 items-center gap-2 text-sm");
+  if (has("runner-settings")) return styled("flex min-w-0 flex-col gap-5");
+  if (has("runner-setting"))
+    return styled(
+      "grid min-w-0 grid-cols-1 items-center gap-x-6 gap-y-2 sm:grid-cols-[10rem_minmax(0,1fr)]",
+    );
   if (has("issue-row", "issue-title"))
     return styled(
       "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 [&>.st]:mt-0.5 [&>.st]:justify-self-end [&>.issue-facts]:col-span-full",
