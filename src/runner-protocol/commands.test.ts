@@ -288,3 +288,23 @@ test("helper commands accept only bounded session-owned routing purposes", () =>
   ])
     expect(RunnerCommandSchema.safeParse({ ...helper, ...changed }).success).toBe(false);
 });
+
+test("run, review and answer or artifact tasks can name the agent session to continue", () => {
+  const task: RunnerCommand = {
+    ...common,
+    type: "task",
+    runId: "run-1",
+    itemId: "item-1",
+    generation: 2,
+    sessionId: "session-1",
+    sessionGeneration: 1,
+    taskModeGeneration: 1,
+    purpose: "artifact",
+    profile,
+    prompt: "Write the report",
+  };
+  for (const command of [run, { ...run, type: "review" as const }, task])
+    expect(RunnerCommandSchema.safeParse({ ...command, resumeSessionId: "earlier" }).success).toBe(
+      true,
+    );
+});

@@ -1984,6 +1984,80 @@ export async function probeRunnerBackend(
       );
     }
     {
+      for (const id of hostIds) work.heartbeat(id);
+      const limitedReview = placedBackend.forItem(artifactItem.id)(
+        input(artifactItem, {
+          role: "reviewer",
+          readOnly: true,
+          profile: { agent: "codex", model: "review-model" },
+        }),
+      );
+      void limitedReview.catch(() => undefined);
+      let limitedCommand: RunnerCommand | undefined;
+      for (let attempt = 0; !limitedCommand && attempt < 500; attempt++) {
+        const host = hostIds.find((hostId) => work.commands(hostId).length);
+        if (host) limitedCommand = await next(host);
+        else await delay(2);
+      }
+      if (limitedCommand?.type !== "review") throw new Error("Expected review command");
+      db.run(
+        "UPDATE runner_agent_policy SET cooldown_until=? WHERE agent='codex' AND runner_id<>?",
+        [now + 3_600_000, limitedCommand.runnerId],
+      );
+      const limitGrant = work.issueGrant({
+        runnerId: limitedCommand.runnerId,
+        runId: limitedCommand.runId,
+        commandId: limitedCommand.id,
+        generation: limitedCommand.generation,
+      });
+      work.event({
+        runnerId: limitedCommand.runnerId,
+        runId: limitedCommand.runId,
+        generation: limitedCommand.generation,
+        token: limitGrant.token,
+        sequence: 1,
+        event: {
+          type: "activity",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "review-read",
+            title: "Read REVIEW_CONTEXT_SENTINEL",
+            kind: "read",
+            status: "completed",
+          },
+        },
+      });
+      results.submit({
+        runnerId: limitedCommand.runnerId,
+        runId: limitedCommand.runId,
+        generation: limitedCommand.generation,
+        token: limitGrant.token,
+        result: {
+          ...result(limitedCommand, "reviewer"),
+          stopReason: "error",
+          errorMessage: "You've hit your session limit. Retry-After: 120",
+        },
+      });
+      assert.equal((await next(limitedCommand.runnerId, false)).type, "cancel");
+      for (const envelope of work.commands(limitedCommand.runnerId)) {
+        const command = JSON.parse(
+          Buffer.from(envelope.payload, "base64url").toString(),
+        ) as RunnerCommand;
+        if (command.type === "cancel") work.acknowledge(limitedCommand.runnerId, command.id);
+      }
+      let limited: unknown;
+      await limitedReview.catch((error: unknown) => {
+        limited = error;
+      });
+      if (!(limited instanceof UsageLimitError)) throw limited;
+      assert.equal(limited.runnerId, limitedCommand.runnerId);
+      assert(limited.prompt?.includes("REVIEW_CONTEXT_SENTINEL"));
+      db.run("UPDATE runner_agent_policy SET cooldown_until=0 WHERE agent='codex'");
+      observe("a reviewer usage limit keeps the interrupted review in its continuation", true, {
+        review: limitedCommand.id,
+      });
+    }
+    {
       const coolDown = (until: number, known = true) =>
         db.run("UPDATE runner_agent_policy SET cooldown_until=?,resets_at=? WHERE agent='codex'", [
           until,
@@ -2226,20 +2300,20 @@ export async function probeRunnerBackend(
         input(wip, { signal: stopContinued.signal, runnerSession: session }),
       );
       void continuedRun.catch(() => undefined);
-      const continued = await firstDispatch();
+      const continuedCommand = await firstDispatch();
       stopContinued.abort();
       await continuedRun.catch(() => undefined);
       await drain();
       await git(["-C", source, "reset", "--hard", base]);
-      if (continued.type !== "run") throw new Error("Expected run command");
+      if (continuedCommand.type !== "run") throw new Error("Expected run command");
       coolDown(0);
-      assert.equal(continued.runnerId, session.runnerId);
-      assert.equal(continued.resumeSessionId, session.sessionId);
-      assert.equal(continued.resumeReason, "usage_limit");
+      assert.equal(continuedCommand.runnerId, session.runnerId);
+      assert.equal(continuedCommand.resumeSessionId, session.sessionId);
+      assert.equal(continuedCommand.resumeReason, "usage_limit");
       observe(
         "a usage limit after a WIP commit keeps the commit and pauses with the agent session to continue",
         true,
-        { wipCommit: head, session, continuedOn: continued.runnerId },
+        { wipCommit: head, session, continuedOn: continuedCommand.runnerId },
       );
     }
   } finally {

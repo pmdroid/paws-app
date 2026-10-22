@@ -525,6 +525,34 @@ test("a reviewer retried after a restart continues its saved review, a new revie
   expect(getUsageLimitContinuation(db, item.id)).toBeNull();
 });
 
+test("a fix round's saved conversation survives the implementation call recovery runs first", async () => {
+  const runner = { id: "agentbox", cooldownUntil: 0, next: [] };
+  const { db, item, remote, prompt, agent, root, controller } = setup([runner]);
+  const saved = {
+    itemId: item.id,
+    runKey: `implementer:fix-${item.id}-1`,
+    prompt: "Fix the findings\n\nObserved prior conversation: HALF THE FIX",
+    session: { runnerId: "agentbox", sessionId: "fix-session" },
+  };
+  saveUsageLimitContinuation(db, saved);
+  await prompt("Implement PAS-431 after the restart");
+  expect(remote.calls.at(-1)!.prompt).toBe("Implement PAS-431 after the restart");
+  expect(remote.calls.at(-1)!.session).toBeUndefined();
+  expect(getUsageLimitContinuation(db, item.id)).toMatchObject({ runKey: saved.runKey });
+  await agent({
+    role: "implementer",
+    itemId: item.id,
+    runId: `fix-${item.id}-1`,
+    prompt: "Fix the findings",
+    worktreePath: root,
+    pawsRoot: root,
+    signal: controller.signal,
+  });
+  expect(remote.calls.at(-1)!.prompt).toBe(saved.prompt);
+  expect(remote.calls.at(-1)!.session).toEqual(saved.session);
+  expect(getUsageLimitContinuation(db, item.id)).toBeNull();
+});
+
 test("usage-limit text from a retry that hits the limit again does not end the pause", async () => {
   const later = RESET + 3_600_000;
   const runner = {

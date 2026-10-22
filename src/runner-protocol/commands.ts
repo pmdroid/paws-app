@@ -129,6 +129,8 @@ export const RunnerCommandSchema = z
       prompt: work.prompt,
       inputFiles: work.inputFiles,
       promptContext: work.promptContext,
+      resumeSessionId: work.resumeSessionId,
+      resumeReason: work.resumeReason,
     }),
     z.strictObject({
       ...common,
