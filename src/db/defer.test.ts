@@ -10,6 +10,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  setJournalSink,
 } from "./index";
 
 test("deferring a running item loses its run, moves it to recovering, and schedules a resume", () => {
@@ -17,6 +18,8 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
   migrate(db);
   insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   const { item, run } = beginImplementRun(db, "item-1", 1_000);
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
   deferWorkItem(db, item, {
     retry: 2,
     delayMs: 5_000,
@@ -24,6 +27,8 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
     message: "Linear GraphQL: RATELIMITED. Paws tries again in 5 s.",
     now: 2_000,
   });
+  restore();
+  expect(lines).toContain("item item-1 deferred: retry 2 in 5000 ms");
   expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
   expect(getRun(db, run.id)?.status).toBe("lost");
   expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toMatchObject([

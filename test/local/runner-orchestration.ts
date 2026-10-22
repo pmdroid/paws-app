@@ -589,7 +589,7 @@ export async function probeRunnerOrchestration(
             if (reverifying && reviewing) {
               assert.equal(item.state, "verifying");
               assert.notEqual(item.currentRunId, originalRunId);
-              assert.equal(getRun(db, item.currentRunId!)?.kind, "review");
+              assert.equal(getRun(db, item.currentRunId!)?.kind, "recheck");
               reviewRunId = item.currentRunId!;
               if (implementationCount === 2)
                 assert.deepEqual(

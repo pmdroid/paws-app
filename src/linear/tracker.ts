@@ -7,6 +7,7 @@ import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
 import type { LinearClient } from "./graphql";
+import { linearDefaultCallers } from "./budget";
 import { createLinearMergeReads } from "./merge-context";
 import { createLinearRepositoryMethods, type LinearRepositoryAdapter } from "./repositories";
 import { isRecord, readNumber, readString } from "./read";
@@ -64,13 +65,50 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
   canceled: ["Canceled", "Cancelled"],
 };
 
-export function createLinearTracker(
-  client: LinearClient,
-): LinearSessionAdapter &
+type LinearTracker = LinearSessionAdapter &
   ReturnType<typeof createLinearSessionReads> &
   LinearRepositoryAdapter &
   ReturnType<typeof createLinearAttributionReads> &
-  ReturnType<typeof createLinearMergeReads> {
+  ReturnType<typeof createLinearMergeReads>;
+
+type TrackerMethod = {
+  [K in keyof LinearTracker]-?: NonNullable<LinearTracker[K]> extends (...args: never[]) => unknown
+    ? K
+    : never;
+}[keyof LinearTracker];
+
+const TRACKER_CALLERS: Record<TrackerMethod, string> = {
+  getSession: "session-read",
+  listSessionActivities: "session-activities",
+  getIssueContext: "issue-context",
+  createActivity: "activity-post",
+  createElicitation: "elicitation-post",
+  updateSession: "session-update",
+  createSessionOnIssue: "session-create",
+  createSessionOnComment: "session-create",
+  listProjectMembers: "project-members",
+  projectOverview: "project-overview",
+  loadProject: "project-snapshot",
+  getIssueAttribution: "issue-attribution",
+  issueRepositorySuggestions: "repository-suggestions",
+  issueRepositoryHints: "repository-hints",
+  addRepositoryLabel: "repository-label",
+  issueMergeContext: "merge-context",
+  mergeChoices: "merge-choices",
+  createIssueAttachment: "issue-attachment",
+  listIssuePullRequests: "issue-pull-requests",
+  loadEpic: "issue-snapshot",
+  listDeps: "issue-relations",
+  postProgress: "activity-post",
+  askQuestion: "elicitation-post",
+  setStatus: "issue-status",
+};
+
+export function createLinearTracker(client: LinearClient): LinearTracker {
+  return linearDefaultCallers(createUnlabelledTracker(client), TRACKER_CALLERS);
+}
+
+function createUnlabelledTracker(client: LinearClient): LinearTracker {
   const sessions = createLinearSessionMethods(client);
   return {
     supportsActivityReconciliation: true,
