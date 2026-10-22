@@ -4,7 +4,9 @@ import {
   applyWorkItemEvent,
   bindLinearSessionTask,
   bindWorkItemRepository,
+  claimNextJob,
   consumeWorkspaceBootstrap,
+  enqueueJob,
   ensureLinearSession,
   insertQueuedItem,
   putWorkspaceUser,
@@ -14,6 +16,7 @@ import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/i
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { dispatchReadyItems, saveSchedulingContext } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { JOB_KIND } from "../src/core";
 import { tempDb } from "./helpers";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
@@ -247,6 +250,27 @@ test("queued items wait for a free runner slot, and work in flight keeps its slo
     assert.deepEqual(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ready }), []);
     applyWorkItemEvent(db, "busy", "blocking_question");
     assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ready }), ["b"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("work back in flight without an admission is re-admitted, so its jobs run in parallel", () => {
+  const db = tempDb();
+  try {
+    for (const id of ["a", "b"]) {
+      insertQueuedItem(db, { id, now: 0 });
+      bindWorkItemRepository(db, id, repository);
+      applyWorkItemEvent(db, id, "dispatched");
+      applyWorkItemEvent(db, id, "turn_ended");
+      enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: id }, now: 0 });
+    }
+    dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: [] });
+    const claimed = [claimNextJob(db, { now: 1000 }), claimNextJob(db, { now: 1000 })];
+    assert.deepEqual(
+      claimed.map((job) => (job?.payload as { itemId?: string } | undefined)?.itemId ?? null),
+      ["a", "b"],
+    );
   } finally {
     db.close();
   }
