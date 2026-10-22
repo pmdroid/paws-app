@@ -6,12 +6,14 @@ import {
   applyLinearCommand,
   enqueueJobOnce,
   enqueueOutboxOnce,
+  getLinearSession,
   getLinearSessionGeneration,
   getWorkItem,
   immediate,
   type WorkItemRecord,
 } from "../db";
 import { answerQuestion, findOpenQuestion, getQuestion, openQuestion } from "../questions";
+import { TASK_ACCESS_TTL_MS } from "./linear-task-access";
 
 export type GitHubIntegration = {
   attributionReady?(item: WorkItemRecord): Promise<boolean>;
@@ -42,7 +44,17 @@ const TRANSIENT_CHECK_ERROR =
 
 export class GitHubIntegrationHolds {
   private closed = false;
-  private readonly lastReady = new Map<string, { authority: string; at: number }>();
+  private readonly lastReady = new Map<
+    string,
+    {
+      authority: string;
+      generation: number;
+      runId: string | null;
+      checkpoint: string;
+      at: number;
+      reusable: boolean;
+    }
+  >();
 
   constructor(
     private readonly db: Database,
@@ -62,6 +74,21 @@ export class GitHubIntegrationHolds {
     this.closed = true;
   }
 
+  invalidate(scope: { sessionId?: string; issueId?: string } = {}): void {
+    for (const [itemId, ready] of this.lastReady) {
+      const item = getWorkItem(this.db, itemId);
+      if (
+        item === null ||
+        ((scope.sessionId === undefined || item.sessionKey === scope.sessionId) &&
+          (scope.issueId === undefined ||
+            item.linearIssueId === scope.issueId ||
+            (item.sessionKey !== null &&
+              getLinearSession(this.db, item.sessionKey)?.issueId === scope.issueId)))
+      )
+        ready.reusable = false;
+    }
+  }
+
   revoke(itemId: string): void {
     this.db.run(
       "UPDATE github_integration_hold SET status='revoked' WHERE item_id=? AND status='pending'",
@@ -73,6 +100,7 @@ export class GitHubIntegrationHolds {
     item: WorkItemRecord,
     phase: "initial" | "publication",
     signal: AbortSignal,
+    options: { fresh?: boolean } = {},
   ): Promise<boolean> {
     const version = item.version;
     const generation = this.generation(item);
@@ -84,7 +112,10 @@ export class GitHubIntegrationHolds {
       this.deny(item.id);
       return false;
     }
-    const result = await this.probe(item, signal);
+    const result =
+      !options.fresh && this.reusable(item, authority, generation)
+        ? "ready"
+        : await this.probe(item, signal);
     if (this.closed || signal.aborted) return false;
     const current = getWorkItem(this.db, item.id);
     if (
@@ -247,7 +278,14 @@ export class GitHubIntegrationHolds {
     try {
       const result = await this.check(item, signal);
       if (result === "ready")
-        this.lastReady.set(item.id, { authority: this.integration.identity(item), at: this.now() });
+        this.lastReady.set(item.id, {
+          authority: this.integration.identity(item),
+          generation: this.generation(item),
+          runId: item.currentRunId,
+          checkpoint: JSON.stringify(item.checkpoint),
+          at: this.now(),
+          reusable: true,
+        });
       else this.lastReady.delete(item.id);
       return result;
     } catch (error) {
@@ -277,12 +315,23 @@ export class GitHubIntegrationHolds {
     }
   }
 
+  private reusable(item: WorkItemRecord, authority: string, generation: number): boolean {
+    const last = this.lastReady.get(item.id);
+    return (
+      last !== undefined &&
+      last.reusable &&
+      last.authority === authority &&
+      last.generation === generation &&
+      last.runId === item.currentRunId &&
+      last.checkpoint === JSON.stringify(item.checkpoint) &&
+      this.now() - last.at < TASK_ACCESS_TTL_MS
+    );
+  }
+
   private async check(
     item: WorkItemRecord,
     signal: AbortSignal,
   ): Promise<"ready" | "installation" | "denied" | "attribution"> {
-    if (this.integration.authorize && !(await this.integration.authorize(item, signal)))
-      return "denied";
     const ready = await this.integration.check(item, signal);
     if (this.integration.authorize && !(await this.integration.authorize(item, signal)))
       return "denied";

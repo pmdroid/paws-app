@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { createFakeLinearAccessReads, createFakeLinearIssueLifecycle } from "../src/linear";
 import { loadRuntime } from "../src/config";
 import { createLinearGitHubAuth } from "../src/index";
-import { GitHubAuthQuestions, LinearTaskAccess, authorizeLinearTask } from "../src/loop";
+import {
+  GitHubAuthQuestions,
+  LinearTaskAccess,
+  TASK_ACCESS_TTL_MS,
+  authorizeLinearTask,
+} from "../src/loop";
 import {
   beginImplementRun,
   getWorkItem,
@@ -266,7 +271,7 @@ for (const [later, outcome] of [
   });
 }
 
-test("a denied authorization right after a passed check still stops the task", async () => {
+test("a denied authorization after an issue change still stops the task", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   const env = { GITHUB_AUTH: "app" };
@@ -291,6 +296,7 @@ test("a denied authorization right after a passed check still stops the task", a
   try {
     expect(await auth.ensure(getWorkItem(db, "revoked")!, "initial", signal)).toBe(true);
     allowed = false;
+    auth.invalidate({ issueId: "lin-item-revoked" });
     expect(await auth.ensure(getWorkItem(db, "revoked")!, "initial", signal)).toBe(false);
     expect(getWorkItem(db, "revoked")?.state).not.toBe("running");
   } finally {
@@ -310,4 +316,125 @@ test("production App authorization retries an unavailable check for about a minu
   const total = (host.integration!.unavailableRetryMs ?? []).reduce((sum, ms) => sum + ms, 0);
   expect(total).toBeGreaterThanOrEqual(60_000);
   rmSync(env.PAWS_HOME, { recursive: true, force: true });
+});
+
+function cachedAuthorization() {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const env = { GITHUB_AUTH: "app" };
+  const reads = { membership: 0, attribution: 0 };
+  let ready = true;
+  const host = createLinearGitHubAuth({
+    runtime: loadRuntime(env),
+    env,
+    repositoryForItem: () => ({
+      owner: "acme",
+      repo: "widgets",
+      remoteUrl: "https://github.com/acme/widgets.git",
+    }),
+    actorForItem: () => "member",
+    authorizeItem: async () => {
+      reads.membership++;
+      return true;
+    },
+    attributionReady: async () => {
+      reads.attribution++;
+      return ready;
+    },
+  });
+  host.integration!.check = async () => true;
+  host.integration!.unavailableRetryMs = [];
+  const clock = { now: 1_000 };
+  const auth = new GitHubAuthQuestions(db, host, () => clock.now);
+  insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
+  beginImplementRun(db, "task", clock.now);
+  const ensure = (options?: { fresh?: boolean }) =>
+    auth.ensure(getWorkItem(db, "task")!, "initial", new AbortController().signal, options);
+  return {
+    db,
+    auth,
+    host,
+    reads,
+    clock,
+    ensure,
+    blockAttribution: (blocked: boolean) => {
+      ready = !blocked;
+    },
+    close: () => {
+      auth.close();
+      db.close();
+    },
+  };
+}
+
+test("ten git operations in one task read membership and attribution once", async () => {
+  const f = cachedAuthorization();
+  try {
+    for (let i = 0; i < 10; i++) expect(await f.ensure()).toBe(true);
+    expect(f.reads).toEqual({ membership: 1, attribution: 1 });
+    f.clock.now += TASK_ACCESS_TTL_MS;
+    expect(await f.ensure()).toBe(true);
+    expect(f.reads).toEqual({ membership: 2, attribution: 2 });
+  } finally {
+    f.close();
+  }
+});
+
+for (const scope of [{ issueId: "lin-item-task" }, { sessionId: "session" }, {}])
+  test(`invalidating ${JSON.stringify(scope)} makes the next check read Linear again`, async () => {
+    const f = cachedAuthorization();
+    try {
+      await f.ensure();
+      f.auth.invalidate({ issueId: "another-issue" });
+      f.auth.invalidate({ sessionId: "another-session" });
+      await f.ensure();
+      expect(f.reads.membership).toBe(1);
+      f.auth.invalidate(scope);
+      await f.ensure();
+      expect(f.reads).toEqual({ membership: 2, attribution: 2 });
+    } finally {
+      f.close();
+    }
+  });
+
+test("a check that is not ready is never reused", async () => {
+  const f = cachedAuthorization();
+  try {
+    f.blockAttribution(true);
+    expect(await f.ensure()).toBe(false);
+    f.blockAttribution(false);
+    expect(await f.ensure()).toBe(true);
+    expect(f.reads).toEqual({ membership: 2, attribution: 2 });
+  } finally {
+    f.close();
+  }
+});
+
+test("a fresh check before publication always reads Linear and refreshes the cache", async () => {
+  const f = cachedAuthorization();
+  try {
+    await f.ensure();
+    await f.ensure({ fresh: true });
+    await f.ensure({ fresh: true });
+    expect(f.reads).toEqual({ membership: 3, attribution: 3 });
+    await f.ensure();
+    expect(f.reads.membership).toBe(3);
+  } finally {
+    f.close();
+  }
+});
+
+test("an invalidation still keeps the recent ready check as a fallback for a transient outage", async () => {
+  const f = cachedAuthorization();
+  try {
+    await f.ensure();
+    f.auth.invalidate();
+    f.host.integration!.check = async () => {
+      throw new Error("GitHub API request failed with 502");
+    };
+    expect(await f.ensure()).toBe(true);
+    expect(getWorkItem(f.db, "task")?.state).toBe("running");
+  } finally {
+    f.close();
+  }
 });
