@@ -211,14 +211,16 @@ test.each([false, true, "cap"] as const)(
       const progressDeadline = performance.now() + 10_000;
       while (
         performance.now() < progressDeadline &&
-        (!tracker.progress.some((update) => update.body === "Fixing the missing output.") ||
+        (!tracker.progress.some((update) => /fix attempt 1 of 5/i.test(update.body)) ||
           metadata("linear.session.summary")?.summary !== "ENG-302: fixing Closeout findings" ||
           metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress")
       ) {
         while (outbox.tick().length > 0) await outbox.idle();
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
-      expect(tracker.progress.map((update) => update.body)).toContain("Fixing the missing output.");
+      expect(tracker.progress.map((update) => update.body)).not.toContain(
+        "Fixing the missing output.",
+      );
       expect(tracker.progress.map((update) => update.body)).not.toContain("Write repaired output");
       expect(tracker.progress.some((update) => /fix attempt 1 of 5/i.test(update.body))).toBe(true);
       expect(metadata("linear.session.summary")?.summary).toBe("ENG-302: fixing Closeout findings");
@@ -236,7 +238,7 @@ test.each([false, true, "cap"] as const)(
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) throw new Error("Invalid status snapshot");
       const run = parsed.snapshot.runs.find((entry) => entry.itemId === "ENG-302");
-      expect(run?.activity.map((entry) => entry.text)).toContain("Fixing the missing output.");
+      expect(run?.activity.map((entry) => entry.text)).not.toContain("Fixing the missing output.");
       expect(run?.summary).toContain("fix attempt 1 of 5");
       expect(JSON.stringify(tracker.progress)).not.toContain("PRIVATE_FIX_REASONING");
       expect(JSON.stringify(parsed.snapshot)).not.toContain("PRIVATE_FIX_REASONING");

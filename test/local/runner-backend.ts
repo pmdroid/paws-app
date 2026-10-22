@@ -980,12 +980,7 @@ export async function probeRunnerBackend(
             .map((event) => (event.type === "progress" ? event.text : "")),
           ['Setting up the frontend. token="split', '-credential".'],
         );
-        assert.equal(
-          publicActivities.filter(
-            (activity) => activity.body === 'Setting up the frontend. token="[redacted]".',
-          ).length,
-          1,
-        );
+        assert(!JSON.stringify(publicActivities).includes("Setting up the frontend"));
         assert(!JSON.stringify(publicActivities).includes("Screenshot saved"));
         assert(!JSON.stringify(publicActivities).includes("private-typed-input"));
         assert(!JSON.stringify(publicActivities).includes("private-typed-output"));
