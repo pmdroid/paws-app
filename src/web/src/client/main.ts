@@ -30,6 +30,7 @@ import { RUN_FILTER_KEYS, runFilterSearch, type RunFilters } from "./runs-list";
 
 import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
+import { createMergeSettings } from "./merge-settings";
 import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
@@ -48,6 +49,7 @@ const router = shell.router;
 
 const settings = createAgentSettings(() => paint());
 const skillSettings = createSkillSettings();
+const mergeSettings = createMergeSettings(() => paint());
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const projects = createProjects();
@@ -280,7 +282,7 @@ function paint(): void {
     access.hidden =
       !showSettings ||
       model.route.view !== "settings" ||
-      (model.route.page ?? "agents") === "agents";
+      ["agents", "merging"].includes(model.route.page ?? "agents");
   if (auth)
     auth.hidden =
       !showSettings ||
@@ -302,6 +304,8 @@ function paint(): void {
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
   const skillsRoot = document.querySelector<HTMLElement>("#skill-settings");
   if (skillsRoot) skillSettings.mount(skillsRoot, currentEngine());
+  const mergeRoot = document.querySelector<HTMLElement>("#merge-settings");
+  if (mergeRoot) mergeSettings.mount(mergeRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot)
     sessionStart.mount(sessionRoot, currentEngine(), source(), model.route.view === "sessions");

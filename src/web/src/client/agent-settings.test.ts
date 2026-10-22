@@ -53,13 +53,10 @@ describe("agent settings", () => {
     expect(settingsProblems(data)[0]).toStartWith("Global defaults:");
   });
 
-  test("the Merging section shows the Closeout after update switch, off when missing", () => {
-    const off = renderAgentSettings(view());
-    expect(off).toContain("<h2>Merging</h2>");
-    expect(off).toContain("Run Closeout again after a branch update");
-    expect(off).toMatch(/name="merge-closeout-after-update"[^>]*aria-describedby="[^"]+" >/);
-    const on = renderAgentSettings(view({ ...settings(), merge: { closeoutAfterUpdate: true } }));
-    expect(on).toMatch(/name="merge-closeout-after-update"[^>]*checked>/);
+  test("the Agents page leaves the merge choices to Settings → Merging", () => {
+    const html = renderAgentSettings(view());
+    expect(html).not.toContain("<h2>Merging</h2>");
+    expect(html).not.toContain("merge-closeout-after-update");
   });
 
   test("the Pull request checks section shows CI fix attempts, 3 when missing", () => {
@@ -70,13 +67,13 @@ describe("agent settings", () => {
       /name="merge-ci-fix-attempts" type="number"[^>]*min="0" max="10"[^>]*value="3"/,
     );
     expect(html).toContain("With 0, Paws asks in Linear on the first failure.");
-    const zero = { ...settings(), merge: { closeoutAfterUpdate: false, ciFixAttempts: 0 } };
+    const zero = { ...settings(), merge: { ciFixAttempts: 0 } };
     expect(renderAgentSettings(view(zero))).toMatch(/name="merge-ci-fix-attempts"[^>]*value="0"/);
     expect(settingsProblems(zero)).toEqual([]);
     for (const ciFixAttempts of [11, -1, 1.5, NaN])
-      expect(
-        settingsProblems({ ...settings(), merge: { closeoutAfterUpdate: false, ciFixAttempts } }),
-      ).toEqual(["CI fix attempts: enter a whole number from 0 to 10."]);
+      expect(settingsProblems({ ...settings(), merge: { ciFixAttempts } })).toEqual([
+        "CI fix attempts: enter a whole number from 0 to 10.",
+      ]);
   });
 
   test("the Queue section shows the start timeout in hours, 24 when missing", () => {
