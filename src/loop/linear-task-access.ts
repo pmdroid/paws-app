@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
   advanceLinearSessionGeneration,
   ensureLinearSession,
+  getLinearInstallationPermissions,
   getLinearSession,
   getLinearSessionAccess,
   getLinearSessionGeneration,
@@ -31,7 +32,19 @@ import {
 
 export class LinearAccessRemovedError extends Error {}
 
+const TASK_ACCESS_TTL_MS = 2 * 60_000;
+
+type VerifiedTaskAccess = {
+  generation: number;
+  permissionsAt: number | null;
+  readAt: number;
+  session: LinearSessionInstallation;
+  teams: Set<string>;
+};
+
 export class LinearTaskAccess {
+  private readonly verified = new Map<string, VerifiedTaskAccess>();
+
   constructor(
     private readonly db: Database,
     private readonly options: {
@@ -62,6 +75,7 @@ export class LinearTaskAccess {
 
   async accept(event: AcceptedLinearEvent, options?: TrackerRequestOptions): Promise<boolean> {
     if (event.sessionId === null || !["created", "prompted"].includes(event.action)) return false;
+    this.verified.delete(event.sessionId);
     const generation = getLinearSessionGeneration(this.db, event.sessionId);
     if (getLinearSessionAccess(this.db, event.sessionId) === "revoked") return false;
     if (event.action === "created" && getLinearSession(this.db, event.sessionId)?.stoppedAt != null)
@@ -105,6 +119,7 @@ export class LinearTaskAccess {
 
   async revalidateSessions(sessionIds: readonly string[]): Promise<void> {
     const affected = new Set(sessionIds);
+    for (const sessionId of affected) this.verified.delete(sessionId);
     const active = new Set(
       listWorkItems(this.db)
         .filter(
@@ -263,23 +278,50 @@ export class LinearTaskAccess {
         throw new LinearAccessRemovedError("Linear installation access is unavailable.");
     };
     current(true);
-    const access = await this.options.access.session(sessionId, { signal });
+    const now = this.options.now ?? Date.now;
+    const cached = this.verified.get(sessionId);
+    const installation = getLinearSessionInstallation(this.db, sessionId);
+    const permissionsAt = installation
+      ? (getLinearInstallationPermissions(this.db, installation)?.observedAtMs ?? null)
+      : null;
+    const reused =
+      cached?.generation === generation &&
+      cached.permissionsAt === permissionsAt &&
+      now() - cached.readAt < TASK_ACCESS_TTL_MS
+        ? cached
+        : null;
+    if (reused === null) this.verified.delete(sessionId);
+    const readAt = now();
+    const access = reused?.session ?? (await this.options.access.session(sessionId, { signal }));
     current(true);
-    this.record(access);
+    if (reused === null) this.record(access);
     current();
+    const verified = reused ?? {
+      generation,
+      permissionsAt,
+      readAt,
+      session: access,
+      teams: new Set<string>(),
+    };
     const issues: LinearIssueOwnership[] = [];
     for (const issueId of new Set([access.issueId, item.linearIssueId])) {
       const issue = await this.options.lifecycle.inspect(issueId, { signal });
       current();
       if (issue.id !== issueId) throw new Error("Linear returned another task issue.");
       this.ownership(item, sessionId, access, issue, allowTerminalIssue);
-      if (!(await this.options.access.team(issue.teamId, { signal }))) {
+      if (
+        !verified.teams.has(issue.teamId) &&
+        !(await this.options.access.team(issue.teamId, { signal }))
+      ) {
+        this.verified.delete(sessionId);
         this.options.stopSession(sessionId);
         throw new LinearAccessRemovedError("Linear task team access was removed.");
       }
       current();
+      verified.teams.add(issue.teamId);
       issues.push(issue);
     }
+    this.verified.set(sessionId, verified);
     const eligible: string[] = [];
     if (!prepare) return eligible;
     for (const issue of issues.reverse()) {
@@ -324,6 +366,7 @@ export class LinearTaskAccess {
       (required !== null &&
         (required.appUserId !== access.appUserId || issue.delegateId !== access.appUserId))
     ) {
+      this.verified.delete(sessionId);
       this.options.stopSession(sessionId);
       throw new LinearAccessRemovedError("Linear task delegation or workflow access was removed.");
     }
@@ -338,6 +381,7 @@ export class LinearTaskAccess {
 
   private allowed(sessionId: string): boolean {
     if (getLinearSessionAccess(this.db, sessionId) === "allowed") return true;
+    this.verified.delete(sessionId);
     this.options.stopSession(sessionId);
     return false;
   }

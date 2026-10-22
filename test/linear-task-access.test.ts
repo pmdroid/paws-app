@@ -241,8 +241,18 @@ test("a public-team permission drop triggers fresh team access rather than assum
     addedTeamIds: [],
     removedTeamIds: [],
   });
+  const before = f.access.calls.length;
   await f.gate.assert(f.item, new AbortController().signal);
+  expect(f.access.calls.slice(before)).toContainEqual({ method: "team", id: "child-team" });
   f.access.state.teams.delete("child-team");
+  changeLinearTeamAccess(f.db, {
+    ...scope,
+    eventKey: "public-drop-again",
+    createdAtMs: 30,
+    canAccessAllPublicTeams: false,
+    addedTeamIds: [],
+    removedTeamIds: [],
+  });
   await expect(f.gate.assert(f.item, new AbortController().signal)).rejects.toThrow("team access");
 });
 
