@@ -1590,6 +1590,7 @@ export class Orchestrator {
         onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
+        ...(launched.cancelGraceMs !== undefined ? { cancelGraceMs: launched.cancelGraceMs } : {}),
       });
       this.assertJobCurrent(item.id);
       controller.signal.throwIfAborted();
