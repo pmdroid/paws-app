@@ -117,10 +117,12 @@ function profileFields(
   const disabled = inherited ? "disabled" : "";
   const label = role === "implementer" ? "Implementer" : "Reviewer";
   const catalog = catalogs.find((value) => value.agent === profile.agent);
-  const efforts =
-    profile.model === null
-      ? catalog?.efforts
-      : catalog?.models.find((model) => model.id === profile.model)?.efforts;
+  const selected = catalog?.models.find((model) => model.id === profile.model);
+  const longContext =
+    profile.agent === "claude" &&
+    profile.model !== null &&
+    (selected?.longContext ?? /\[1m\]$/i.test(profile.model));
+  const efforts = profile.model === null ? catalog?.efforts : selected?.efforts;
   const choices = (
     field: "model" | "effort",
     value: string | null | undefined,
@@ -131,7 +133,8 @@ function profileFields(
     );
     if (value && !available.some((option) => option.id === value))
       available.unshift({ id: value, name: value });
-    return `<select id="${key}-${field}" name="${key}-${field}" ${disabled || (options == null ? "disabled" : "")}><option value="" ${value ? "" : "selected"}>Agent default</option>${available.map((option) => `<option value="${esc(option.id)}" ${option.id === value ? "selected" : ""}>${esc(option.name)}</option>`).join("")}</select>`;
+    const hint = field === "model" && longContext ? ` aria-describedby="${key}-model-hint"` : "";
+    return `<select id="${key}-${field}" name="${key}-${field}"${hint} ${disabled || (options == null ? "disabled" : "")}><option value="" ${value ? "" : "selected"}>Agent default</option>${available.map((option) => `<option value="${esc(option.id)}" ${option.id === value ? "selected" : ""}>${esc(option.name)}</option>`).join("")}</select>`;
   };
   return `<div class="settings-profile"><div class="settings-role"><h3>${label}</h3>${inherited !== null ? `<label class="settings-inherit"><input type="checkbox" name="${key}-inherit" ${inherited ? "checked" : ""}>Use global default</label>` : ""}</div>
     <div class="settings-controls"><div class="settings-field"><label for="${key}-agent">Agent</label><select id="${key}-agent" name="${key}-agent" ${disabled}>${Object.entries(
@@ -142,7 +145,7 @@ function profileFields(
           `<option value="${id}" ${id === profile.agent ? "selected" : ""}>${name}</option>`,
       )
       .join("")}</select></div>
-    <div class="settings-field"><label for="${key}-model">Model</label>${choices("model", profile.model, catalog?.models)}${catalog ? "" : '<small class="sub">Sign in on a runner to load model choices.</small>'}</div>
+    <div class="settings-field"><label for="${key}-model">Model</label>${choices("model", profile.model, catalog?.models)}${longContext ? `<small class="sub" id="${key}-model-hint">1M context uses more of your Claude usage.</small>` : ""}${catalog ? "" : '<small class="sub">Sign in on a runner to load model choices.</small>'}</div>
     <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div></div></div>`;
 }
 

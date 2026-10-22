@@ -149,6 +149,8 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
           ...spawnOf(launch),
           onEvent(event) {
             if (event.type === "permission" && event.decision === "deny") refusals.push(event);
+            if (event.type === "progress" && !event.messageChunk)
+              void deps.postUpdate?.post(event.text).catch(() => undefined);
             if (event.type !== "session_update") return;
             if (event.update.sessionUpdate !== "agent_message_chunk") return;
             if (event.update.content.type === "text") text += event.update.content.text ?? "";

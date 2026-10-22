@@ -12,7 +12,13 @@ export type AgentSettings = {
 };
 export type AgentModelCatalog = {
   agent: AgentProfile["agent"];
-  models: { id: string; name: string; efforts: { id: string; name: string }[] | null }[];
+  models: {
+    id: string;
+    /** "Opus 5.5 · 1M context" for a 1M context entry. */
+    name: string;
+    longContext?: boolean;
+    efforts: { id: string; name: string }[] | null;
+  }[];
   efforts: { id: string; name: string }[];
   updatedAt: number;
 };
