@@ -79,6 +79,24 @@ describe("agent settings", () => {
       ).toEqual(["CI fix attempts: enter a whole number from 0 to 10."]);
   });
 
+  test("the Queue section shows the start timeout in hours, 24 when missing", () => {
+    const html = renderAgentSettings(view());
+    expect(html).toContain("<h2>Queue</h2>");
+    expect(html).toContain(
+      '<label for="queue-start-timeout">Fail a task that has not started after</label>',
+    );
+    expect(html).toMatch(
+      /name="queue-start-timeout" type="number"[^>]*min="1" max="720"[^>]*value="24"/,
+    );
+    const six = { ...settings(), queue: { startTimeoutHours: 6 } };
+    expect(renderAgentSettings(view(six))).toMatch(/name="queue-start-timeout"[^>]*value="6"/);
+    expect(settingsProblems(six)).toEqual([]);
+    for (const startTimeoutHours of [0, 721, 1.5, NaN])
+      expect(settingsProblems({ ...settings(), queue: { startTimeoutHours } })).toEqual([
+        "Queue start timeout: enter a whole number of hours from 1 to 720.",
+      ]);
+  });
+
   test("settings remain reachable before any status items exist", () => {
     expect(parseRoute("/settings")).toEqual({ view: "settings" });
     expect(routeHref({ view: "settings" })).toBe("/settings");
