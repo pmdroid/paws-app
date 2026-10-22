@@ -3,6 +3,7 @@ import {
   capActivityText,
   capReason,
   isAwakeItemState,
+  JOB_KIND,
   OUTBOX_ACTIVITY,
   transition,
   type Checkpoint,
@@ -10,9 +11,9 @@ import {
   type WorkItemState,
   type WorkBrief,
 } from "../core";
-import { cancelOpenJobs } from "./jobs";
+import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
-import { markRun } from "./runs";
+import { getRun, markRun } from "./runs";
 import { immediate } from "./tx";
 
 export type WorkItemRecord = {
@@ -269,6 +270,44 @@ export function failWorkItem(
     idempotencyKey: `fail:${item.id}:${version}:${reason}`,
     payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
     now,
+  });
+}
+
+export function deferWorkItem(
+  db: Database,
+  item: WorkItemRecord,
+  input: { retry: number; delayMs: number; handoff: string | null; message: string; now: number },
+): void {
+  immediate(db, () => {
+    if (item.state === "running" || item.state === "verifying")
+      applyWorkItemEvent(db, item.id, "lease_expired");
+    const current = getWorkItem(db, item.id) ?? item;
+    if (current.currentRunId !== null) {
+      const run = getRun(db, current.currentRunId);
+      if (run && (run.status === "active" || run.status === "provisioning"))
+        markRun(db, run.id, "lost", input.now);
+    }
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.resume,
+      jobKey: `resume:${item.id}:${current.version}`,
+      runAt: input.now + input.delayMs,
+      payload: {
+        itemId: item.id,
+        runId: current.currentRunId,
+        reason: "transient_failure",
+        retry: input.retry,
+        ...(input.handoff === null ? {} : { handoff: input.handoff }),
+      },
+      now: input.now,
+    });
+    enqueueOutboxOnce(db, {
+      target: OUTBOX_ACTIVITY.target,
+      op: OUTBOX_ACTIVITY.op,
+      orderingKey: item.sessionKey ?? item.id,
+      idempotencyKey: `retry:${item.id}:${current.version}`,
+      payload: { sessionId: item.sessionKey ?? item.id, kind: "thought", body: input.message },
+      now: input.now,
+    });
   });
 }
 
