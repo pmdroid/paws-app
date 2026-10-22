@@ -139,6 +139,6 @@ export { assertNonSecretArtifactPath } from "./artifacts";
 
 export { appBotCommitIdentity } from "../core";
 
-export { validateCandidateAttribution } from "./commit-policy";
+export { assertDescendsFromAny, validateCandidateAttribution } from "./commit-policy";
 
 export { snapshotImplementationSkills, materializeImplementationSkills } from "./skill-bundle";
