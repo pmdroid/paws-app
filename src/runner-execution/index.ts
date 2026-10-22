@@ -12,3 +12,8 @@ export {
 export { createRunnerBrokerClient, type RunnerBrokerClient } from "./broker";
 export { createDirectWorkerSupervisor } from "./supervisor";
 export { runnerResultDirectory, readRunnerResultFile, type RunnerResults } from "./results";
+export {
+  createRunnerSkillInstaller,
+  type RunnerSkillInstaller,
+  type RunnerSkillInstallerOptions,
+} from "./skills";

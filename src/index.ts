@@ -586,6 +586,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           tls: tls!,
           repositoryAccess,
           transcriptObjects,
+          skillsRoot: paths.skillsDir,
           onError: () => console.error("Paws runner connection failed."),
         }).then(async (value) => {
           if (runnerStopping) {

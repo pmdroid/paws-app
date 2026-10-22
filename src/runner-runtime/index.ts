@@ -12,6 +12,7 @@ import {
   publishRunnerJob,
   readRunnerResultFile,
   type RunnerBrokerClient,
+  type RunnerSkillInstaller,
   type RunnerSpool,
   type RunnerResults,
 } from "../runner-execution";
@@ -88,6 +89,8 @@ export async function openRunnerRuntime(options: {
   repositoryRoot: string;
   home: string;
   broker?: RunnerBrokerClient;
+  /** Installs registered skills from the heartbeat manifest and reports what is installed. */
+  skills?: RunnerSkillInstaller;
   networkGit?: Parameters<typeof createRunnerRepositories>[0]["networkGit"];
   now?: () => number;
   monotonic?: () => number;
@@ -105,6 +108,7 @@ export async function openRunnerRuntime(options: {
       stateRoot: join(options.root, "workers"),
       spool: options.spool,
       results: options.results,
+      skills: options.skills,
     });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
@@ -296,8 +300,11 @@ export async function openRunnerRuntime(options: {
     if (closed) return Promise.resolve();
     pulsing = (async () => {
       const started = monotonic();
-      const response = await options.daemon.heartbeat();
+      const response = await options.daemon.heartbeat(options.skills?.installed());
       if (closed) return;
+      // Downloads can take longer than a heartbeat, so they run beside the lease renewal.
+      if (response.skills && options.skills)
+        void options.skills.sync(response.skills).catch(report);
       const observed = monotonic();
       leases.clear();
       for (const lease of response.leases)

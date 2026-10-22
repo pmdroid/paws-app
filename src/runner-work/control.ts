@@ -1,4 +1,9 @@
-import { recordRunnerCapacity, teamRepositoryAllowedSql } from "../db";
+import {
+  listSkills,
+  recordRunnerCapacity,
+  recordRunnerSkills,
+  teamRepositoryAllowedSql,
+} from "../db";
 import type { KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -21,6 +26,8 @@ import {
   type RunnerEvent,
   signRunnerCommand,
   type RunnerCommand,
+  type RunnerInstalledSkill,
+  type RunnerSkill,
   type SignedRunnerCommand,
 } from "../runner-protocol";
 import { workspaceSecret, workspaceTokenHash } from "../workspace";
@@ -67,6 +74,18 @@ export function createRunnerWork(options: {
       WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND m.active=1`,
       )
       .get(id);
+  }
+  /** Registered skills a runner should have installed. Removed ones are left out, so runners delete them. */
+  function skillManifest(): RunnerSkill[] {
+    return listSkills(db)
+      .filter((skill) => skill.removedAt === null)
+      .map(({ name, version, sha256, sizeBytes, agents }) => ({
+        name,
+        version,
+        sha256,
+        sizeBytes,
+        agents,
+      }));
   }
   function runner(id: string) {
     const row = availableIdentity(id);
@@ -418,8 +437,17 @@ export function createRunnerWork(options: {
       )
         throw new Error("Runner command is unknown.");
     },
-    /** `ceiling` comes from runners that apply the desired concurrency from the reply. */
-    heartbeat(runnerId: string, capacity = 1, host: RunnerHostSample = {}, ceiling?: number) {
+    /**
+     * `ceiling` comes from runners that apply the desired concurrency from the reply. `installed`
+     * comes from runners that install skills; only they get the skill manifest back.
+     */
+    heartbeat(
+      runnerId: string,
+      capacity = 1,
+      host: RunnerHostSample = {},
+      ceiling?: number,
+      installed?: readonly RunnerInstalledSkill[],
+    ) {
       return immediate(db, () => {
         runner(runnerId);
         const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling);
@@ -427,6 +455,8 @@ export function createRunnerWork(options: {
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         if (Object.values(host).some((value) => value !== undefined))
           recordRunnerHostStatus(db, runnerId, host, at);
+        const skills: RunnerSkill[] | undefined = installed && skillManifest();
+        if (installed) recordRunnerSkills(db, runnerId, installed, at);
         const rows = db
           .query<Assignment, [string]>(
             `SELECT ${columns} FROM runner_work WHERE runner_id=? AND ended_at IS NULL`,
@@ -446,8 +476,20 @@ export function createRunnerWork(options: {
             fenced.push({ runId: row.runId, generation: row.generation });
           }
         }
-        return concurrency === undefined ? { leases, fenced } : { leases, fenced, concurrency };
+        return {
+          leases,
+          fenced,
+          ...(concurrency === undefined ? {} : { concurrency }),
+          ...(skills === undefined ? {} : { skills }),
+        };
       });
+    },
+    /** The registered bundle a runner may download: only the current pin of a skill that is not removed. */
+    skillBundle(runnerId: string, name: string, version: string): RunnerSkill {
+      runner(runnerId);
+      const skill = skillManifest().find((entry) => entry.name === name);
+      if (!skill || skill.version !== version) throw new Error("Skill bundle is not registered.");
+      return skill;
     },
     issueGrant(input: { runnerId: string; runId: string; commandId: string; generation: number }) {
       return immediate(db, () => {

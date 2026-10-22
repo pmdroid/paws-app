@@ -106,3 +106,39 @@ export function markSkillRemoved(db: Database, name: string, now: number): void 
     name,
   ]);
 }
+
+/** A skill as a runner last reported it in its heartbeat. */
+export type RunnerSkillStatus = {
+  name: string;
+  version: string;
+  sha256: string;
+  status: "installed" | "pending" | "refused";
+  reportedAt: number;
+};
+
+/** Replace what the runner reported last; skills it no longer lists are gone from it. */
+export function recordRunnerSkills(
+  db: Database,
+  runnerId: string,
+  skills: readonly Omit<RunnerSkillStatus, "reportedAt">[],
+  reportedAt: number,
+): void {
+  db.run("DELETE FROM runner_skill WHERE runner_id=?", [runnerId]);
+  for (const skill of skills)
+    db.run("INSERT INTO runner_skill VALUES(?,?,?,?,?,?)", [
+      runnerId,
+      skill.name,
+      skill.version,
+      skill.sha256,
+      skill.status,
+      reportedAt,
+    ]);
+}
+
+export function listRunnerSkills(db: Database, runnerId: string): RunnerSkillStatus[] {
+  return db
+    .query<RunnerSkillStatus, [string]>(
+      "SELECT name,version,sha256,status,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
+    )
+    .all(runnerId);
+}
