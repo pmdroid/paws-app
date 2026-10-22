@@ -27,6 +27,7 @@ export {
 } from "./agents";
 export {
   Orchestrator,
+  REBASE_CONFLICT_INSTRUCTION,
   attachOrchestrator,
   type GitHubBinding,
   type OrchestratorOptions,
