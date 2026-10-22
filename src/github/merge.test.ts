@@ -7,9 +7,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { branchForIssue, fixesLine } from "./branch";
 import { fakeMergeReadiness, fakeRequiredChecks } from "./fake";
+import { defaultGitExec } from "./git";
 import { serialMerge } from "./merge";
 import { openPullRequest, publishAccepted, pushBranch } from "./pulls";
 import {
+  GitCommandError,
   INSTALLATION_PERMISSIONS,
   type GitExec,
   type GitHubClient,
@@ -710,6 +712,174 @@ function ciClient(bare: string, pending: () => boolean): GitHubClient {
     },
   };
 }
+
+describe("Git transport failures and rejected pushes", () => {
+  const timedOut =
+    "fatal: unable to access 'https://github.com/pmdroid/paws-app.git/': Connection timed out after 300047 milliseconds\n";
+
+  function networkExec(
+    bare: string,
+    onCall: (command: "fetch" | "push", args: string[]) => Promise<void>,
+  ): GitExec {
+    const real = defaultGitExec();
+    return async (args, options) => {
+      const command = args.includes("push") ? "push" : args.includes("fetch") ? "fetch" : null;
+      if (command && args.includes(bare)) await onCall(command, args);
+      return real(args, options);
+    };
+  }
+
+  test("a fetch that times out twice and then succeeds still merges", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      let fetches = 0;
+      const sleeps: number[] = [];
+      const result = await serialMerge({
+        ...creds(mergingClient(repo.bare, [])),
+        worktree: repo.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: repo.bare,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        gitExec: networkExec(repo.bare, async (command, args) => {
+          if (command !== "fetch") return;
+          fetches += 1;
+          if (fetches <= 2) throw new GitCommandError(args, timedOut);
+        }),
+        reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+      });
+      expect(result).toMatchObject({ merged: true, outcome: "merged" });
+      expect(sleeps.slice(0, 2)).toEqual([5_000, 20_000]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a fetch that keeps timing out throws a transient error for the job to retry", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      let fetches = 0;
+      const merging = serialMerge({
+        ...creds(mergingClient(repo.bare, [])),
+        worktree: repo.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: repo.bare,
+        sleep: async () => {},
+        gitExec: networkExec(repo.bare, async (command, args) => {
+          if (command !== "fetch") return;
+          fetches += 1;
+          throw new GitCommandError(args, timedOut);
+        }),
+        reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+      });
+      const error = await merging.then(
+        () => null,
+        (failure: unknown) => failure,
+      );
+      expect(fetches).toBe(3);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("fetch failed: fatal: unable to access");
+      expect(((error as Error).cause as Error).name).toBe("GitTransportError");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a rejected push reports Git's reason without the token", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      const result = await serialMerge({
+        ...creds(mergingClient(repo.bare, [])),
+        worktree: repo.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: repo.bare,
+        sleep: async () => {},
+        gitExec: networkExec(repo.bare, async (command, args) => {
+          if (command !== "push") return;
+          throw new GitCommandError(
+            args,
+            "remote: error: GH006: Protected branch update failed for refs/heads/paws/ENG-8.\nerror: failed to push some refs to 'https://x-access-token:ghs_abcdefghijklmnopqrstuvwxyz@github.com/pmdroid/paws-demo.git'\n",
+          );
+        }),
+        reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+      });
+      expect(result.outcome).toBe("push_rejected");
+      expect(result.message).toContain("push rejected: remote: error: GH006: Protected branch");
+      expect(result.message).not.toContain("ghs_abcdefghijklmnopqrstuvwxyz");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a push refused before Git ran reports that reason", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      const result = await serialMerge({
+        ...creds(mergingClient(repo.bare, [])),
+        worktree: repo.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: repo.bare,
+        sleep: async () => {},
+        gitExec: networkExec(repo.bare, async (command) => {
+          if (command === "push") throw new Error("The Linear publication was superseded.");
+        }),
+        reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+      });
+      expect(result).toMatchObject({
+        outcome: "push_rejected",
+        message: "push rejected: The Linear publication was superseded.",
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  for (const moves of [1, 2]) {
+    test(`a lease conflict re-reads the branch and pushes once more (${moves} remote move)`, async () => {
+      const repo = await oneClone();
+      const other = await cloneOf(repo.bare);
+      try {
+        await exec("git", ["-C", other, "push", "origin", "HEAD:refs/heads/paws/ENG-8"]);
+        await commitFile(repo.work, "file.txt", "candidate\n");
+        let pushes = 0;
+        const result = await serialMerge({
+          ...creds(mergingClient(repo.bare, [])),
+          worktree: repo.work,
+          issue: "ENG-8",
+          prNumber: 8,
+          remoteUrl: repo.bare,
+          sleep: async () => {},
+          gitExec: networkExec(repo.bare, async (command) => {
+            if (command !== "push") return;
+            pushes += 1;
+            if (pushes > moves) return;
+            await commitFile(other, `moved-${pushes}.txt`, "moved\n");
+            await exec("git", ["-C", other, "push", "-f", "origin", "HEAD:refs/heads/paws/ENG-8"]);
+          }),
+          reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+        });
+        expect(pushes).toBe(2);
+        if (moves === 1) expect(result).toMatchObject({ merged: true, outcome: "merged" });
+        else {
+          expect(result.outcome).toBe("push_rejected");
+          expect(result.message).toContain("stale info");
+        }
+      } finally {
+        await rm(other, { recursive: true, force: true });
+        await repo.cleanup();
+      }
+    });
+  }
+});
 
 function creds(client: GitHubClient) {
   return {

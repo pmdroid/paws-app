@@ -13,6 +13,10 @@ describe("isTransientFailure", () => {
     ["a runner failover that ran out of runners", named("RetryableRunnerError")],
     ["an agent usage limit", named("UsageLimitPause")],
     ["no paired runner right now", named("RunnerUnavailableError")],
+    [
+      "a Git fetch that kept timing out",
+      new Error("fetch failed: Connection timed out", { cause: named("GitTransportError") }),
+    ],
     ["Paws restarting", new PawsShutdown()],
     ["a request timeout", new DOMException("The operation timed out.", "TimeoutError")],
     ["a reset connection", Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" })],
