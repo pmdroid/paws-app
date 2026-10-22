@@ -1004,7 +1004,13 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
-          if (command && !(signal.reason instanceof PawsShutdown)) {
+          const detached =
+            signal.reason instanceof PawsShutdown &&
+            command?.type === "run" &&
+            command.checkpoint !== false &&
+            !responseTask &&
+            getWorkItem(db, itemId)?.state === "running";
+          if (command && !detached) {
             try {
               const issuedAt = now();
               work.enqueue({

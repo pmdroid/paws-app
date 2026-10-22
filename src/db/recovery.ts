@@ -136,7 +136,11 @@ export function prepareShutdown(
 }
 
 function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boolean {
+  const mode = getTaskMode(db, item.id);
   return (
+    item.state === "running" &&
+    mode !== "answer" &&
+    mode !== "artifact" &&
     item.currentRunId !== null &&
     db
       .query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?")
