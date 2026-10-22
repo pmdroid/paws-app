@@ -182,9 +182,7 @@ describe("restart recovery", () => {
       expect(
         listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
       ).toHaveLength(1);
-      db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.resume'", [
-        clock.now(),
-      ]);
+      db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.resume'", [clock.now()]);
       clock.advance(20 * 60_000);
     }
   });
