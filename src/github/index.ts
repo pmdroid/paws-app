@@ -8,8 +8,30 @@ export type {
   PullRequestRef,
   PullRequests,
 } from "./app";
-export { createFakeGitHub, fakeMergeReadiness, fakeRequiredChecks } from "./fake";
-export type { FakeGitHub } from "./fake";
+export {
+  createFakeGitHub,
+  createFakeMergeQueue,
+  fakeMergeReadiness,
+  fakeRequiredChecks,
+} from "./fake";
+export type { FakeGitHub, FakeMergeQueue } from "./fake";
+export {
+  classifyRemoval,
+  enqueuePullRequest,
+  githubQueueLine,
+  githubQueueMerge,
+  hasMergeQueue,
+  readMergeQueueEntry,
+} from "./merge-queue";
+export type {
+  EnqueueResult,
+  GitHubQueueMergeInput,
+  GitHubQueueMergeResult,
+  MergeQueueEntryRead,
+  MergeQueueEntryState,
+  MergeQueueRemoval,
+  MergeQueueRemovalCause,
+} from "./merge-queue";
 export { checkGitHubSignature, handleGitHubWebhook } from "./webhook";
 export type { SignatureCheck } from "./webhook";
 export { signAppJwt } from "./jwt";
