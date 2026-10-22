@@ -16,7 +16,7 @@ import {
   openDatabase,
   setCurrentRun,
 } from "../../src/db";
-import { createLinearClient, createLinearTracker } from "../../src/linear";
+import { createLinearClient, createLinearLedger, createLinearTracker } from "../../src/linear";
 import { createAcpActivityReporter, deliverLinearOutbox } from "../../src/loop";
 
 export async function probeLinearActivityBudget(
@@ -83,6 +83,7 @@ export async function probeLinearActivityBudget(
         forceRefresh: async () => "fixture",
       },
       fetch: (_input, init) => fetch(`http://127.0.0.1:${server.port}/graphql`, init),
+      ledger: createLinearLedger({ now: () => clock.now(), random: () => 0, log: () => {} }),
     }),
   );
   function dispatcher() {

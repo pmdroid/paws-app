@@ -165,7 +165,9 @@ import {
   type Job,
   type JobLoop,
   type JobContext,
+  type OutboxDeliveryContext,
   type OutboxDispatcher,
+  type OutboxRow,
   type WorkItemRecord,
   deferWorkItem,
   getTaskMergeSettings,
@@ -204,6 +206,8 @@ import type {
 import {
   FIRST_ACTIVITY_BODY,
   LinearIntakePendingError,
+  LinearRateLimitError,
+  linearCaller,
   isMergeConflictRequest,
   parseLinearSessionContext,
   renderLinearSessionContext,
@@ -1077,51 +1081,67 @@ export class Orchestrator {
         signal: context.signal,
       });
     });
-    this.options.outbox.setHandler(async (message, context) => {
-      if (message.target !== "linear") return;
-      const requestSignal = this.activityRequests.get(message.id);
-      if (requestSignal)
-        context = { ...context, signal: AbortSignal.any([context.signal, requestSignal]) };
-      context.signal.throwIfAborted();
-      const tracker = this.tracker;
-      if (tracker === null) throw new Error("Linear is not connected");
+    this.options.outbox.setHandler((message, context) =>
+      linearCaller(
+        "outbox",
+        () => this.deliverLinearMessage(message, context),
+        message.op === "elicitation" ||
+          message.delivery === "critical" ||
+          message.delivery === "stop" ||
+          message.delivery === "terminal"
+          ? "critical"
+          : "normal",
+      ),
+    );
+  }
+
+  private async deliverLinearMessage(
+    message: OutboxRow,
+    context: OutboxDeliveryContext,
+  ): Promise<void> {
+    if (message.target !== "linear") return;
+    const requestSignal = this.activityRequests.get(message.id);
+    if (requestSignal)
+      context = { ...context, signal: AbortSignal.any([context.signal, requestSignal]) };
+    context.signal.throwIfAborted();
+    const tracker = this.tracker;
+    if (tracker === null) throw new Error("Linear is not connected");
+    if (
+      this.options.linearAccess &&
+      this.options.channel !== "comments" &&
+      message.orderingKey &&
+      message.op !== "catchup" &&
+      message.op !== "linear.catchup"
+    ) {
+      const itemId =
+        readString(message.payload, "itemId") ??
+        (message.orderingKey ? workItemForSession(this.db, message.orderingKey)?.id : undefined);
+      const issueId =
+        readString(message.payload, "linearIssueId") ??
+        readString(message.payload, "issueId") ??
+        undefined;
       if (
-        this.options.linearAccess &&
-        this.options.channel !== "comments" &&
-        message.orderingKey &&
-        message.op !== "catchup" &&
-        message.op !== "linear.catchup"
-      ) {
-        const itemId =
-          readString(message.payload, "itemId") ??
-          (message.orderingKey ? workItemForSession(this.db, message.orderingKey)?.id : undefined);
-        const issueId =
-          readString(message.payload, "linearIssueId") ??
-          readString(message.payload, "issueId") ??
-          undefined;
-        if (
-          message.op === "status" &&
-          (!itemId || !issueId || !getLinearTaskDelegation(this.db, itemId, issueId)?.humanActorId)
-        )
-          throw new Error("Linear workflow updates require verified human task ownership.");
-        await this.options.linearAccess.assertDelivery(message.orderingKey, context.signal, {
-          itemId,
-          issueId,
-          stop: message.delivery === "stop",
-          isCurrent: context.isCurrent,
-        });
-      }
-      const files = this.options.files;
-      const root = this.options.evidence?.root;
-      await deliverLinearOutbox(
-        message,
-        tracker,
-        () => this.catchUpFn(),
-        context,
-        this.db,
-        files && root ? { files, root } : undefined,
-      );
-    });
+        message.op === "status" &&
+        (!itemId || !issueId || !getLinearTaskDelegation(this.db, itemId, issueId)?.humanActorId)
+      )
+        throw new Error("Linear workflow updates require verified human task ownership.");
+      await this.options.linearAccess.assertDelivery(message.orderingKey, context.signal, {
+        itemId,
+        issueId,
+        stop: message.delivery === "stop",
+        isCurrent: context.isCurrent,
+      });
+    }
+    const files = this.options.files;
+    const root = this.options.evidence?.root;
+    await deliverLinearOutbox(
+      message,
+      tracker,
+      () => this.catchUpFn(),
+      context,
+      this.db,
+      files && root ? { files, root } : undefined,
+    );
   }
 
   private async executeRetried(job: Job, context: JobContext): Promise<void> {
@@ -1731,9 +1751,17 @@ export class Orchestrator {
         current.state !== "awaiting_input" &&
         !current.cancelRequested
       ) {
-        if (isTransientFailure(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
-        this.fail(current, "run_error", message, error);
+        if (
+          (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(message)) &&
+          (current.state === "running" || current.state === "verifying")
+        )
+          this.continueAfterRateLimit(
+            current,
+            error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
+          );
+        else if (isTransientFailure(error)) throw error;
+        else this.fail(current, "run_error", message, error);
       }
     } finally {
       activity.flush();
@@ -2108,6 +2136,7 @@ export class Orchestrator {
     };
     const runner = deps.agentRunner;
     let reason = "remote execution is unavailable";
+    const rateLimitDeadline = this.now() + CHECKS_RATE_LIMIT_WAIT_MS;
     for (let attempt = 1; attempt <= (runner ? attempts : 0); attempt++) {
       assertCurrent();
       await this.waitForTaskRunner(item, head, input.stepId, deps.signal, assertCurrent);
@@ -2156,6 +2185,23 @@ export class Orchestrator {
         assertCurrent();
         if (deps.signal?.aborted) throw error;
         reason = error instanceof Error ? error.message : String(error);
+        if (
+          (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(reason)) &&
+          this.now() < rateLimitDeadline
+        ) {
+          input.report(
+            `Linear is rate-limiting Paws. The Closeout checks for ${item.linearIdentifier} run again when the limit resets.`,
+          );
+          await delay(
+            error instanceof LinearRateLimitError
+              ? Math.min(error.retryAfterMs, CHECKS_RATE_LIMIT_WAIT_MS)
+              : CHECKS_RATE_LIMIT_RETRY_MS,
+            undefined,
+            deps.signal ? { signal: deps.signal } : {},
+          );
+          assertCurrent();
+          attempt -= 1;
+        }
       }
     }
     throw new Error(
@@ -3842,6 +3888,23 @@ export class Orchestrator {
     return run;
   }
 
+  private continueAfterRateLimit(item: WorkItemRecord, retryAfterMs: number): void {
+    const key = `linear-rate-limit:${item.id}:${item.version}`;
+    enqueueJobOnce(this.db, {
+      queue: item.state === "running" ? JOB_KIND.resume : JOB_KIND.reverify,
+      jobKey: key,
+      payload: { itemId: item.id, reason: "linear-rate-limit" },
+      runAt: this.now() + Math.max(retryAfterMs, RATE_LIMIT_RETRY_MS),
+      now: this.now(),
+    });
+    this.post(
+      item,
+      "thought",
+      "Linear is rate-limiting Paws. The task continues when the limit resets.",
+      key,
+    );
+  }
+
   private fail(item: WorkItemRecord, reason: string, text: string, cause?: unknown): void {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id) ?? item;
@@ -4442,8 +4505,22 @@ export class Orchestrator {
         }),
       );
     }
-    if (!this.tracker?.listSessionActivities) return;
-    const activities = await this.tracker.listSessionActivities(sessionId, { signal });
+    const tracker = this.tracker;
+    if (!tracker?.listSessionActivities) return;
+    let activities;
+    try {
+      activities = await linearCaller("context", () =>
+        tracker.listSessionActivities!(sessionId, { signal }),
+      );
+    } catch (error) {
+      signal.throwIfAborted();
+      if (
+        error instanceof LinearRateLimitError &&
+        listLinearActivitySnapshots(this.db, sessionId).length > 0
+      )
+        return;
+      throw error;
+    }
     signal.throwIfAborted();
     immediate(this.db, () => {
       for (const activity of activities)
@@ -5008,9 +5085,11 @@ export class Orchestrator {
         try {
           hinted = hintedRepository(
             candidates,
-            await this.tracker.issueRepositoryHints(item.linearIssueId, {
-              signal: controller.signal,
-            }),
+            await linearCaller("repository-hints", () =>
+              this.tracker!.issueRepositoryHints!(item.linearIssueId, {
+                signal: controller.signal,
+              }),
+            ),
           );
         } catch (error) {
           controller.signal.throwIfAborted();
@@ -5027,15 +5106,17 @@ export class Orchestrator {
         !(hinted && "bind" in hinted) && this.tracker?.issueRepositorySuggestions ? 3 : 0;
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
-          const read = await this.tracker!.issueRepositorySuggestions!(
-            {
-              issueId: item.linearIssueId,
-              candidateRepositories: pool.map((candidate) => ({
-                hostname: "github.com",
-                repositoryFullName: `${candidate.owner}/${candidate.repo}`,
-              })),
-            },
-            { signal: controller.signal },
+          const read = await linearCaller("repository-hints", () =>
+            this.tracker!.issueRepositorySuggestions!(
+              {
+                issueId: item.linearIssueId,
+                candidateRepositories: pool.map((candidate) => ({
+                  hostname: "github.com",
+                  repositoryFullName: `${candidate.owner}/${candidate.repo}`,
+                })),
+              },
+              { signal: controller.signal },
+            ),
           );
           for (const suggestion of read) {
             const key = suggestion.repositoryFullName.toLowerCase();
@@ -5158,6 +5239,11 @@ export class Orchestrator {
     return (this.options.clock ?? systemClock).now();
   }
 }
+
+const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
+const RATE_LIMIT_RETRY_MS = 5_000;
+const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
+const CHECKS_RATE_LIMIT_WAIT_MS = 60 * 60_000;
 
 export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
