@@ -39,6 +39,7 @@ export type {
   RepositoryHints,
   RepositorySuggestionsInput,
 } from "./repositories";
+export { isMergeConflictRequest } from "./merge-conflict-request";
 export { createInboxStore } from "./inbox";
 export type { CommitResult, InboxStore } from "./inbox";
 export {

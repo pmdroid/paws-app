@@ -258,6 +258,25 @@ async function pushRebased(
   }
 }
 
+export type FetchUpstreamMainInput = Pick<
+  SerialMergeInput,
+  "worktree" | "owner" | "repo" | "client" | "tokenProvider" | "remoteUrl" | "now" | "gitExec"
+> &
+  Partial<Pick<SerialMergeInput, "appId" | "installationId" | "privateKeyPem">>;
+
+/** Fetch main into {@link UPSTREAM_MAIN_REF}, as a merge pass does before it rebases. Returns its sha. */
+export async function fetchUpstreamMain(input: FetchUpstreamMainInput): Promise<string> {
+  const gitExec = input.gitExec ?? defaultGitExec();
+  const token = await operationToken(input, "push");
+  await fetchMain(
+    input.worktree,
+    input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo),
+    token,
+    gitExec,
+  );
+  return git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
+}
+
 async function fetchMain(
   worktree: string,
   url: string,
@@ -342,7 +361,7 @@ async function squash(
   });
 }
 
-function operationToken(input: SerialMergeInput, purpose: "push" | "merge"): Promise<string> {
+function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"): Promise<string> {
   return acquireOperationToken(
     {
       tokenProvider: input.tokenProvider,
