@@ -627,6 +627,7 @@ export async function probeRunnerBackend(
         role: "reviewer",
         checkoutExclusions: ["captured"],
         readOnly: true,
+        resume: { sessionId: "earlier-review", replayPrompt: "Replayed review" },
         onEvent: (e) => {
           if (
             e.type === "session_update" &&
@@ -645,6 +646,7 @@ export async function probeRunnerBackend(
     assert.equal(review.type, "review");
     if (review.type !== "review") throw new Error("Unexpected command");
     assert.deepEqual(review.repository.checkoutExclusions, ["captured"]);
+    assert.equal(review.prompt, "Replayed review");
     const reviewGrant = work.issueGrant({
       runnerId,
       runId: review.runId,
@@ -679,7 +681,7 @@ export async function probeRunnerBackend(
     assert.equal(text, "[]");
     assert.equal(fetched, 1);
     observe(
-      "independent remote review forwards final findings once and cannot publish a candidate",
+      "independent remote review replays a resumed prompt, forwards final findings once and cannot publish a candidate",
       true,
       { reviewText: text, implementationFetches: fetched },
     );
