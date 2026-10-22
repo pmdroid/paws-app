@@ -2097,4 +2097,20 @@ CREATE TABLE ci_round (
 ) STRICT;
 `,
   },
+  {
+    id: "094_task_linear_reads",
+    sql: `
+CREATE TABLE work_item_linear_read (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  kind TEXT NOT NULL CHECK(kind IN ('project_overview','repository_hints','repository_suggestions')),
+  value_json TEXT NOT NULL CHECK(json_valid(value_json)),
+  read_at INTEGER NOT NULL,
+  PRIMARY KEY (item_id, kind)
+) STRICT;
+CREATE TABLE linear_activity_listing (
+  session_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
