@@ -24,6 +24,8 @@ export { branchForIssue, fixesLine, githubHttpsUrl, pullRequestBody } from "./br
 export { createPullRequests, openPullRequest, publishAccepted, pushBranch } from "./pulls";
 export type { PullRequestClientOptions } from "./pulls";
 export { fetchUpstreamMain, serialMerge } from "./merge";
+export { readPullReview } from "./review";
+export type { PullReview } from "./review";
 export type { FetchUpstreamMainInput, SerialMergeInput } from "./merge";
 export {
   agentEnv,

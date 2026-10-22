@@ -95,4 +95,4 @@ export {
 } from "./delegation";
 
 export { PawsShutdown, RunnerSlotsBusyError, UserFacingError } from "./user-facing-error";
-export { ordinal, queueLine } from "./queue-line";
+export { mergeQueueLine, ordinal, queueLine } from "./queue-line";
