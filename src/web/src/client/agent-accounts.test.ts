@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { accountStatus } from "./agent-accounts";
 
-const idle = { agent: "claude" as const, connected: false, updatedAt: null, session: null };
+const idle = { agent: "claude" as const, connected: false, session: null };
 
 test("the dialog reports the runner's own sign-in that the card shows", () => {
   expect(accountStatus(idle, "signed_in")).toBe("Signed in on this runner");

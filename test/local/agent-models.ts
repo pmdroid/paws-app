@@ -54,10 +54,7 @@ export async function probeAgentModels(
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
     [runnerId, workspace, userId, "Models host", now, now],
   );
-  db.run(
-    "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES(?,?,'codex',1,?)",
-    [runnerId, userId, now],
-  );
+  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [runnerId]);
   const key = generateKeyPairSync("ed25519");
   const work = () =>
     createRunnerWork({ db, keyId: "models-proof", privateKey: key.privateKey, now: () => now });
@@ -186,7 +183,7 @@ export async function probeAgentModels(
     assert.deepEqual(catalog.read({ workspaceId: otherWorkspace, userId }), []);
     observe("catalog reads are scoped to workspace and signed-in member", true, {});
     db.run("UPDATE runner SET last_seen_at=0 WHERE id=?", [runnerId]);
-    db.run("UPDATE runner_member_account SET cooldown_until=? WHERE runner_id=?", [
+    db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id=?", [
       now + 60_000,
       runnerId,
     ]);
@@ -217,13 +214,13 @@ export async function probeAgentModels(
     catalog.refresh();
     assert.equal(count(), afterFailure);
     observe("failed refresh preserves last good cache and backs off", true, {});
-    db.run("UPDATE runner_member_account SET connected=0 WHERE runner_id=?", [runnerId]);
+    db.run("UPDATE runner_agent_policy SET auth_expired=1 WHERE runner_id=?", [runnerId]);
     assert.deepEqual(catalog.read(principal), []);
     const beforeDisconnected = count();
     catalog.refresh();
     assert.equal(count(), beforeDisconnected);
     observe("disconnected agent accounts cannot supply new or cached choices", true, {});
-    db.run("UPDATE runner_member_account SET connected=1 WHERE runner_id=?", [runnerId]);
+    db.run("UPDATE runner_agent_policy SET auth_expired=0 WHERE runner_id=?", [runnerId]);
     db.run("UPDATE workspace_member SET active=0,checked_at=? WHERE workspace_id=? AND user_id=?", [
       now + 1,
       workspace,

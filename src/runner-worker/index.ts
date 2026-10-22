@@ -473,12 +473,8 @@ export async function executeRunnerCommand(
       PATH: "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,
       HOME: options.home,
-      ...(command.memberId
-        ? {
-            CODEX_HOME: join(options.home, ".codex"),
-            CLAUDE_CONFIG_DIR: join(options.home, ".claude"),
-          }
-        : {}),
+      CODEX_HOME: join(options.home, ".codex"),
+      CLAUDE_CONFIG_DIR: join(options.home, ".claude"),
     });
     const prompt =
       repository || task || command.type === "helper"

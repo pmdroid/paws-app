@@ -83,7 +83,6 @@ export function createRunnerResults(options: {
         if (result.agentLimits)
           recordRunnerAgentUsage(db, {
             runnerId: input.runnerId,
-            memberId: command.memberId,
             agent: command.profile.agent,
             limits: result.agentLimits,
             observedAt: at,

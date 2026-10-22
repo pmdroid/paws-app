@@ -230,7 +230,7 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
   });
   const resetsAt = f.now() + 3_600_000;
   f.db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,resets_at,cooldown_until) VALUES(?,'claude','exhausted',?,?)",
+    "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,resets_at,cooldown_until) VALUES(?1,'claude','exhausted',?2,?3) ON CONFLICT(runner_id,agent) DO UPDATE SET quota_state='exhausted',resets_at=?2,cooldown_until=?3",
     [runnerId, resetsAt, resetsAt],
   );
   expect(statuses().claude).toEqual({ status: "usage_limit", checkedAt: f.now(), resetsAt });
@@ -278,7 +278,7 @@ test("the latest usage windows reach the runner list with when they were read", 
   });
   const resetsAt = f.now() + 60_000;
   f.db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,resets_at,cooldown_until) VALUES(?,'claude','exhausted',?,?)",
+    "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,resets_at,cooldown_until) VALUES(?1,'claude','exhausted',?2,?3) ON CONFLICT(runner_id,agent) DO UPDATE SET quota_state='exhausted',resets_at=?2,cooldown_until=?3",
     [runnerId, resetsAt, resetsAt],
   );
   expect(status()).toEqual({
@@ -301,40 +301,36 @@ test("the latest usage windows reach the runner list with when they were read", 
     expect(schema.safeParse([bad]).success).toBe(false);
 });
 
-test("an older usage reading never replaces a newer one, and members keep their own", () => {
+test("an older usage reading never replaces a newer one", () => {
   const f = fixture();
   const runnerId = f.runner();
   const reading = (usedPercent: number) => [{ window: "Weekly", usedPercent, resetsAt: null }];
-  const record = (memberId: string | undefined, usedPercent: number, observedAt: number) =>
+  const record = (usedPercent: number, observedAt: number) =>
     recordRunnerAgentUsage(f.db, {
       runnerId,
-      memberId,
       agent: "codex",
       limits: reading(usedPercent),
       observedAt,
     });
-  record(undefined, 40, 2_000);
-  record(undefined, 10, 1_000);
-  expect(runnerAgentUsage(f.db, runnerId, undefined, "codex")).toEqual({
+  record(40, 2_000);
+  record(10, 1_000);
+  expect(runnerAgentUsage(f.db, runnerId, "codex")).toEqual({
     limits: reading(40),
     observedAt: 2_000,
   });
-  record(undefined, 55, 3_000);
-  record("member", 90, 1_500);
-  expect(runnerAgentUsage(f.db, runnerId, undefined, "codex")!.limits).toEqual(reading(55));
-  expect(runnerAgentUsage(f.db, runnerId, "member", "codex")!.limits).toEqual(reading(90));
-  expect(runnerAgentUsage(f.db, runnerId, "member", "claude")).toBeNull();
+  record(55, 3_000);
+  expect(runnerAgentUsage(f.db, runnerId, "codex")!.limits).toEqual(reading(55));
+  expect(runnerAgentUsage(f.db, runnerId, "claude")).toBeNull();
 });
 
-test("a completed member sign-in queues one login check for that member and agent", () => {
+test("a completed sign-in queues one login check for that agent", () => {
   const f = fixture();
   const runnerId = f.runner();
   const login = createRunnerLogin({
     db: f.db,
     work: f.work,
     now: f.now,
-    onSignedIn: (signedIn) =>
-      f.health.afterSignIn(signedIn.runnerId, signedIn.memberId, signedIn.agent),
+    onSignedIn: (signedIn) => f.health.afterSignIn(signedIn.runnerId, signedIn.agent),
   });
   const session = login.start(f.owner, runnerId, "claude");
   expect(f.checks()).toHaveLength(0);
@@ -345,11 +341,9 @@ test("a completed member sign-in queues one login check for that member and agen
     inputId: null,
   });
   expect(f.checks().map(({ agent, memberId }) => [agent, memberId])).toEqual([
-    ["claude", f.owner.userId],
+    ["claude", undefined],
   ]);
-  expect(f.health.afterSignIn(runnerId, f.owner.userId, "claude")).toBe(false);
-  f.health.refresh();
-  expect(f.checks()).toHaveLength(1);
+  expect(f.health.afterSignIn(runnerId, "claude")).toBe(false);
   expect(f.health.agents(f.owner, runnerId).map(({ agent, status }) => [agent, status])).toEqual([
     ["claude", "checking"],
     ["codex", "unknown"],
@@ -357,35 +351,24 @@ test("a completed member sign-in queues one login check for that member and agen
   ]);
 });
 
-test("an authenticated member login check restores the account model catalogs use", () => {
+test("a login check readies the runner's agent or marks it signed out", () => {
   const f = fixture();
   const runnerId = f.runner();
-  const login = createRunnerLogin({ db: f.db, work: f.work, now: f.now });
-  const session = login.start(f.owner, runnerId, "grok");
-  login.exchange(runnerId, session.id, {
-    state: "connected",
-    terminal: "",
-    authorization: null,
-    inputId: null,
-  });
-  const connected = () =>
+  const policy = () =>
     f.db
-      .query<{ connected: number }, [string]>(
-        "SELECT connected FROM runner_member_account WHERE runner_id=? AND agent='grok'",
+      .query<{ ready: number; authExpired: number }, [string]>(
+        "SELECT ready,auth_expired AS authExpired FROM runner_agent_policy WHERE runner_id=? AND agent='grok'",
       )
-      .get(runnerId)!.connected;
-  f.db.run("UPDATE runner_member_account SET connected=0 WHERE runner_id=? AND agent='grok'", [
-    runnerId,
-  ]);
+      .get(runnerId);
   f.health.refresh();
-  const check = f.checks(runnerId).find((command) => command.agent === "grok");
-  f.answer(check!);
-  expect(connected()).toBe(1);
-  f.db.run(
-    "UPDATE runner_member_account SET connected=0,updated_at=? WHERE runner_id=? AND agent='grok'",
-    [f.now() - 1, runnerId],
+  f.answer(f.checks(runnerId).find((command) => command.agent === "grok")!);
+  expect(policy()).toEqual({ ready: 1, authExpired: 0 });
+  f.advance(5 * 60_000 + 1);
+  f.seen(runnerId);
+  f.health.refresh();
+  f.answer(
+    f.checks(runnerId).findLast((command) => command.agent === "grok")!,
+    false,
   );
-  f.advance(1);
-  f.health.refresh();
-  expect(connected()).toBe(1);
+  expect(policy()).toEqual({ ready: 0, authExpired: 1 });
 });

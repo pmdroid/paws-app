@@ -294,7 +294,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             adopt_tree(pathlib.Path("/var/lib/paws-agent"), runner.pw_uid, runner.pw_gid, 0o700)
             adopt_tree(pathlib.Path("/var/lib/paws-agent-tasks"), runner.pw_uid, runner.pw_gid, 0o711)
             adopt_tree(pathlib.Path("/var/lib/paws-agent-results"), runner.pw_uid, results_group.gr_gid, 0o750)
-            adopt_tree(pathlib.Path("/var/lib/paws-runner-members"), runner.pw_uid, runner.pw_gid, 0o711)
+            shutil.rmtree("/var/lib/paws-runner-members", ignore_errors=True)
             validate_identity_separation()
             runner = pwd.getpwnam("paws-runner")
             agent = pwd.getpwnam("paws-agent")
@@ -303,7 +303,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             results_group = grp.getgrnam("paws-results")
             if runner.pw_uid <= 0 or agent.pw_uid <= 0 or runner.pw_uid == agent.pw_uid or runner.pw_gid != runner_group.gr_gid or agent.pw_gid != agent_group.gr_gid or runner.pw_gid == agent.pw_gid or runner.pw_shell != "/usr/sbin/nologin" or agent.pw_shell != "/usr/sbin/nologin" or runner.pw_dir != "/var/lib/paws-runner" or agent.pw_dir != "/var/lib/paws-agent" or "paws-agent" in runner_group.gr_mem:
                 raise ValueError("Unsafe runner service identities")
-            for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", runner.pw_uid, runner.pw_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-tasks", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-agent-results", runner.pw_uid, results_group.gr_gid, 0o750), ("/var/lib/paws-runner-members", runner.pw_uid, runner.pw_gid, 0o711)):
+            for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", runner.pw_uid, runner.pw_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-tasks", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-agent-results", runner.pw_uid, results_group.gr_gid, 0o750)):
                 info = pathlib.Path(path).lstat()
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
                     raise ValueError(f"Unsafe runner installation state directory: {path}")

@@ -3,7 +3,6 @@ import type { Database } from "bun:sqlite";
 import { auditWorkspaceAccess, getRunner, immediate, workspaceMember } from "../db";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerWork } from "../runner-work";
-import { authorizeRunnerMember } from "../runner-accounts";
 import {
   RunnerLoginInputSchema,
   RunnerLoginUpdateSchema,
@@ -33,7 +32,7 @@ export function createRunnerLogin(options: {
   work: RunnerWork;
   now?: () => number;
   /** Called after a sign-in completes, outside its transaction. */
-  onSignedIn?: (input: { runnerId: string; memberId: string; agent: Agent }) => void;
+  onSignedIn?: (input: { runnerId: string; agent: Agent }) => void;
 }) {
   const { db, work } = options;
   const now = options.now ?? Date.now;
@@ -46,6 +45,7 @@ export function createRunnerLogin(options: {
       member.role === "observer" ||
       !runner ||
       runner.workspaceId !== workspaceId ||
+      runner.ownerUserId !== userId ||
       runner.status !== "active" ||
       !workspaceMember(db, workspaceId, runner.ownerUserId)?.active
     )
@@ -107,10 +107,10 @@ export function createRunnerLogin(options: {
       return {
         accounts: (["claude", "codex", "grok"] as const).map((agent) => {
           const account = db
-            .query<{ connected: number; updatedAt: number }, [string, string, string]>(
-              "SELECT connected,updated_at AS updatedAt FROM runner_member_account WHERE runner_id=? AND user_id=? AND agent=?",
+            .query<{ connected: number }, [string, string]>(
+              "SELECT ready=1 AND auth_expired=0 AS connected FROM runner_agent_policy WHERE runner_id=? AND agent=?",
             )
-            .get(runnerId, principal.userId, agent);
+            .get(runnerId, agent);
           const session = db
             .query<{ id: string }, [string, string, string]>(
               "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? ORDER BY rowid DESC LIMIT 1",
@@ -119,7 +119,6 @@ export function createRunnerLogin(options: {
           return {
             agent,
             connected: account?.connected === 1,
-            updatedAt: account?.updatedAt ?? null,
             session: session ? snapshot(read(session.id)) : null,
           };
         }),
@@ -128,11 +127,6 @@ export function createRunnerLogin(options: {
     start(principal: WorkspacePrincipal, runnerId: string, agent: Agent) {
       return immediate(db, () => {
         access(principal.workspaceId, principal.userId, runnerId);
-        authorizeRunnerMember(db, {
-          workspaceId: principal.workspaceId,
-          runnerId,
-          memberId: principal.userId,
-        });
         const at = now();
         for (const sessionId of inputs.keys()) read(sessionId);
         const existing = db
@@ -162,7 +156,6 @@ export function createRunnerLogin(options: {
           type: "login",
           runnerId,
           workspaceId: principal.workspaceId,
-          memberId: principal.userId,
           agent,
           issuedAt: at,
           expiresAt,
@@ -170,10 +163,6 @@ export function createRunnerLogin(options: {
         db.run(
           "INSERT INTO runner_login(id,runner_id,workspace_id,user_id,agent,state,expires_at,updated_at) VALUES(?,?,?,?,?,'starting',?,?)",
           [id, runnerId, principal.workspaceId, principal.userId, agent, expiresAt, at],
-        );
-        db.run(
-          "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES(?,?,?,0,?) ON CONFLICT(runner_id,user_id,agent) DO UPDATE SET updated_at=excluded.updated_at",
-          [runnerId, principal.userId, agent, at],
         );
         auditWorkspaceAccess(db, {
           workspaceId: principal.workspaceId,
@@ -187,17 +176,12 @@ export function createRunnerLogin(options: {
     },
     exchange(runnerId: string, id: string, input: RunnerLoginUpdate) {
       const update = RunnerLoginUpdateSchema.parse(input);
-      let signedIn: { runnerId: string; memberId: string; agent: Agent } | undefined;
+      let signedIn: { runnerId: string; agent: Agent } | undefined;
       const reply = immediate(db, () => {
         const row = read(id);
         if (row.runnerId !== runnerId) throw new Error("Login runner changed");
         try {
           access(row.workspaceId, row.userId, runnerId);
-          authorizeRunnerMember(db, {
-            workspaceId: row.workspaceId,
-            runnerId,
-            memberId: row.userId,
-          });
         } catch {
           inputs.delete(id);
           db.run(
@@ -236,11 +220,11 @@ export function createRunnerLogin(options: {
         );
         if (update.state === "connected") {
           db.run(
-            "UPDATE runner_member_account SET connected=1,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
-            [now(), runnerId, row.userId, row.agent],
+            "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1,auth_expired=0",
+            [runnerId, row.agent],
           );
           inputs.delete(id);
-          signedIn = { runnerId, memberId: row.userId, agent: row.agent };
+          signedIn = { runnerId, agent: row.agent };
         }
         return {
           cancelled: false,

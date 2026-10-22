@@ -6,7 +6,6 @@ const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
   "onboarding",
-  "runner-accounts",
   "runner-login",
   "runner-login-worker",
   "worktree-checkout",
@@ -148,8 +147,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-inputs": ["runner-protocol", "runner-work"],
   "runner-artifacts": ["acp", "runner-protocol", "runner-work"],
   "runner-protocol": [],
-  "runner-accounts": ["db", "runner-protocol"],
-  "runner-login": ["db", "workspace", "runner-work", "runner-protocol", "runner-accounts"],
+  "runner-login": ["db", "workspace", "runner-work", "runner-protocol"],
   "runner-login-worker": ["acp", "install", "runner-protocol"],
   "runner-execution": ["runner-protocol"],
   "runner-repositories": ["github", "runner-protocol", "core"],
@@ -179,7 +177,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-protocol",
     "runner-transcripts",
   ],
-  "runner-work": ["runner-accounts", "db", "workspace", "runner-protocol", "questions"],
+  "runner-work": ["db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
     "core",
@@ -199,7 +197,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-results": ["db", "runner-work", "runner-protocol"],
   "runner-journal": ["db", "runner-protocol"],
-  "runner-helpers": ["runner-accounts", "db", "runner-protocol", "workspace"],
+  "runner-helpers": ["db", "runner-protocol", "workspace"],
   "runner-runtime": [
     "acp",
     "runner-transcripts",
@@ -212,7 +210,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-journal",
     "github",
   ],
-  "runner-health": ["runner-accounts", "db", "workspace", "runner-work", "runner-protocol"],
+  "runner-health": ["db", "workspace", "runner-work", "runner-protocol"],
   "runner-health-runtime": [
     "runner-answers",
     "db",

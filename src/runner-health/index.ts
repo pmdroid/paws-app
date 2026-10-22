@@ -1,4 +1,3 @@
-import { authorizeRunnerAccount } from "../runner-accounts";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -35,7 +34,6 @@ export type AgentSignIn = {
   limits?: RunnerAgentLimit[];
   limitsAt?: number;
 };
-type Target = { memberId?: string; agent: Agent };
 type History = {
   inFlight: boolean;
   issuedAt: number;
@@ -85,10 +83,7 @@ export function createRunnerHealth(options: {
       )
       .get(runnerId, at)!.count;
   }
-  function memberAccounts(runnerId: string) {
-    return db.query("SELECT 1 FROM runner_member_account WHERE runner_id=?").get(runnerId) !== null;
-  }
-  /** Latest sign-in checks per member and agent. Bounded so old command rows are not rescanned. */
+  /** Latest sign-in checks per agent. Bounded so old command rows are not rescanned. */
   function history(runnerId: string, at: number) {
     const latest = new Map<string, History>();
     const rows = db
@@ -111,15 +106,17 @@ export function createRunnerHealth(options: {
         id: string;
         type: string;
         runnerId: string;
-        memberId?: string;
         agent: Agent;
         issuedAt: number;
       };
       if (value.type !== "login_check" || value.id !== row.id || value.runnerId !== runnerId)
         continue;
-      const key = `${value.memberId ?? ""}/${value.agent}`;
-      const entry = latest.get(key) ?? { inFlight: false, issuedAt: value.issuedAt, result: null };
-      latest.set(key, entry);
+      const entry = latest.get(value.agent) ?? {
+        inFlight: false,
+        issuedAt: value.issuedAt,
+        result: null,
+      };
+      latest.set(value.agent, entry);
       if (row.resultJson === null) {
         if (row.expiresAt > at) entry.inFlight = true;
       } else if (!entry.result) {
@@ -128,28 +125,15 @@ export function createRunnerHealth(options: {
           entry.result = { authenticated: login.authenticated, receivedAt: row.receivedAt! };
       }
     }
-    return (target: Target) => latest.get(`${target.memberId ?? ""}/${target.agent}`);
+    return (agent: Agent) => latest.get(agent);
   }
-  function targets(runnerId: string): Target[] {
-    if (!memberAccounts(runnerId)) return runnerAgents.map((agent) => ({ agent }));
-    return db
-      .query<{ memberId: string; agent: Agent }, [string]>(
-        `SELECT a.user_id AS memberId,a.agent FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
-        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=a.user_id
-        LEFT JOIN runner_policy p ON p.runner_id=r.id
-        WHERE a.runner_id=? AND m.active=1 AND m.role<>'observer'
-        AND (a.user_id=r.owner_user_id OR COALESCE(p.sharing,0)=1) ORDER BY a.user_id,a.agent`,
-      )
-      .all(runnerId);
-  }
-  function queueCheck(runner: { id: string; workspaceId: string }, target: Target, at: number) {
+  function queueCheck(runner: { id: string; workspaceId: string }, agent: Agent, at: number) {
     work.enqueue({
       id: randomUUID(),
       type: "login_check",
       runnerId: runner.id,
       workspaceId: runner.workspaceId,
-      ...(target.memberId ? { memberId: target.memberId } : {}),
-      agent: target.agent,
+      agent,
       issuedAt: at,
       expiresAt: at + 120_000,
     });
@@ -170,7 +154,6 @@ export function createRunnerHealth(options: {
           id: commandId,
           runnerId,
           workspaceId: runner.workspaceId,
-          ...(memberAccounts(runnerId) ? { memberId: principal.userId } : {}),
           issuedAt: at,
           expiresAt,
           ...parsed,
@@ -204,20 +187,10 @@ export function createRunnerHealth(options: {
         try {
           immediate(db, () => {
             const last = history(runner.id, at);
-            const due = targets(runner.id);
-            for (const target of due) {
-              if (!target.memberId) continue;
-              const entry = last(target);
-              if (!entry?.result?.authenticated || entry.inFlight) continue;
-              db.run(
-                "UPDATE runner_member_account SET connected=1,updated_at=? WHERE runner_id=? AND user_id=? AND agent=? AND connected=0 AND updated_at<?",
-                [at, runner.id, target.memberId, target.agent, entry.result.receivedAt],
-              );
-            }
             let pending = pendingChecks(runner.id, at);
-            for (const target of due) {
+            for (const agent of runnerAgents) {
               if (pending >= 4) return;
-              const entry = last(target);
+              const entry = last(agent);
               if (
                 entry &&
                 (entry.inFlight ||
@@ -225,7 +198,7 @@ export function createRunnerHealth(options: {
                   (entry.result && entry.result.receivedAt > at - SIGN_IN_INTERVAL_MS))
               )
                 continue;
-              queueCheck(runner, target, at);
+              queueCheck(runner, agent, at);
               pending += 1;
             }
           });
@@ -236,7 +209,7 @@ export function createRunnerHealth(options: {
       if (errors.length) throw errors[0];
     },
     /** Checks an agent right after its sign-in completes, unless a check is already in flight. */
-    afterSignIn(runnerId: string, memberId: string, agent: Agent) {
+    afterSignIn(runnerId: string, agent: Agent) {
       return immediate(db, () => {
         const at = now();
         const runner = getRunner(db, runnerId);
@@ -244,38 +217,30 @@ export function createRunnerHealth(options: {
           !runner ||
           runner.status !== "active" ||
           !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active ||
-          history(runnerId, at)({ memberId, agent })?.inFlight ||
+          history(runnerId, at)(agent)?.inFlight ||
           pendingChecks(runnerId, at) >= 4
         )
           return false;
-        queueCheck(runner, { memberId, agent }, at);
+        queueCheck(runner, agent, at);
         return true;
       });
     },
-    /** Sign-in status per agent, for the principal's own account on member-account runners. */
     agents(principal: WorkspacePrincipal, runnerId: string): AgentSignIn[] {
       const { runner } = visible(principal, runnerId);
       const at = now();
       const last = history(runnerId, at);
-      const member = memberAccounts(runnerId);
       return runnerAgents.map((agent) => {
-        const entry = last(member ? { memberId: principal.userId, agent } : { agent });
+        const entry = last(agent);
         const checkedAt = entry?.result?.receivedAt ?? null;
         if (entry?.inFlight) return { agent, status: "checking", checkedAt };
         if (entry?.result && !entry.result.authenticated)
           return { agent, status: "signed_out", checkedAt };
-        const limit = member
-          ? db
-              .query<{ resetsAt: number }, [string, string, string, number]>(
-                "SELECT cooldown_until AS resetsAt FROM runner_member_account WHERE runner_id=? AND user_id=? AND agent=? AND cooldown_until>?",
-              )
-              .get(runnerId, principal.userId, agent, at)
-          : db
-              .query<{ resetsAt: number }, [string, string, number]>(
-                "SELECT COALESCE(resets_at,cooldown_until) AS resetsAt FROM runner_agent_policy WHERE runner_id=? AND agent=? AND quota_state='exhausted' AND cooldown_until>?",
-              )
-              .get(runner.id, agent, at);
-        const usage = runnerAgentUsage(db, runnerId, member ? principal.userId : undefined, agent);
+        const limit = db
+          .query<{ resetsAt: number }, [string, string, number]>(
+            "SELECT COALESCE(resets_at,cooldown_until) AS resetsAt FROM runner_agent_policy WHERE runner_id=? AND agent=? AND quota_state='exhausted' AND cooldown_until>?",
+          )
+          .get(runner.id, agent, at);
+        const usage = runnerAgentUsage(db, runnerId, agent);
         const limits = usage ? { limits: usage.limits, limitsAt: usage.observedAt } : {};
         if (limit)
           return { agent, status: "usage_limit", checkedAt, resetsAt: limit.resetsAt, ...limits };
@@ -294,7 +259,6 @@ export function createRunnerHealth(options: {
         )
           throw new Error("Runner identity is unavailable");
         const assigned = command(result.commandId, runnerId);
-        authorizeRunnerAccount(db, assigned);
         const at = now();
         if (
           assigned.workspaceId !== runner.workspaceId ||
@@ -332,15 +296,14 @@ export function createRunnerHealth(options: {
           value,
           at,
         ]);
-        if (assigned.type === "login_check" && assigned.memberId && result.login)
+        if (assigned.type === "login_check" && result.login)
           db.run(
-            "UPDATE runner_member_account SET connected=?,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
-            [result.login.authenticated ? 1 : 0, at, runnerId, assigned.memberId, assigned.agent],
+            "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?1,?2,?3,1-?3) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=?3,auth_expired=1-?3",
+            [runnerId, assigned.agent, result.login.authenticated ? 1 : 0],
           );
         if (result.agentLimits)
           recordRunnerAgentUsage(db, {
             runnerId,
-            memberId: assigned.memberId,
             agent: assigned.type === "login_check" ? assigned.agent : assigned.profile.agent,
             limits: result.agentLimits,
             observedAt: at,
@@ -357,7 +320,6 @@ export function createRunnerHealth(options: {
         !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active
       )
         throw new Error("Runner identity is unavailable");
-      authorizeRunnerAccount(db, command(commandId, runnerId));
       if (command(commandId, runnerId).expiresAt <= now())
         throw new Error("Runner health command has expired");
       const row = db

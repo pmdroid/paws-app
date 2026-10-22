@@ -147,7 +147,7 @@ test("Runner placement uses actual ownership, explicit sharing, provider evidenc
   try {
     const observations: boolean[] = [];
     await probeRunnerPlacement(root, (_name, passed) => observations.push(passed));
-    expect(observations).toHaveLength(16);
+    expect(observations).toHaveLength(15);
     expect(observations.every(Boolean)).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -178,23 +178,6 @@ test("a project item runs on another project member's shared runner", async () =
   const placed = await placeItem(true);
   try {
     expect(await placed.ids()).toEqual(["own", "api", "shared"]);
-  } finally {
-    placed.db.close();
-    rmSync(placed.root, { recursive: true, force: true });
-  }
-});
-
-test("a member's own signed-in account runs their work", async () => {
-  const placed = await placeItem(false);
-  try {
-    const owner = placed.db
-      .query<{ id: string }, []>("SELECT id FROM workspace_user WHERE linear_user_id='owner'")
-      .get()!.id;
-    placed.db.run(
-      "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES('own',?,'codex',1,?)",
-      [owner, Date.now()],
-    );
-    expect(await placed.ids()).toEqual(["own"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -252,15 +235,11 @@ test("a continuing task lands on the runner of its last session, or elsewhere af
   }
 });
 
-test("a continuing task does not wait for an offline session runner or another account's session", async () => {
+test("a continuing task does not wait for an offline session runner", async () => {
   const placed = await placeItem(true);
   try {
     placed.db.run("UPDATE runner SET last_seen_at=0 WHERE id='shared'");
     expect(await placed.ids({ session: { runnerId: "shared" } })).toEqual(["own", "api"]);
-    expect(await placed.ids({ session: { runnerId: "api", memberId: "other" } })).toEqual([
-      "own",
-      "api",
-    ]);
     expect(await placed.ids({ session: { runnerId: "api" } })).toEqual(["api", "own"]);
   } finally {
     placed.db.close();
