@@ -405,6 +405,20 @@ describe("hard caps", () => {
     clock.advance(100);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.awakeMs).toBe(100);
   });
+
+  test("time waiting in the merge queue is not awake time", () => {
+    const { clock, db } = harness();
+    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    beginImplementRun(db, item.id, clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    clock.advance(4 * 60 * 60_000);
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    expect(result.capped).toBe(false);
+    expect(result.item.awakeMs).toBe(0);
+    expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+  });
 });
 
 describe("linear commands", () => {
