@@ -3,6 +3,7 @@ import {
   capActivityText,
   capReason,
   isAwakeItemState,
+  JOB_KIND,
   OUTBOX_ACTIVITY,
   transition,
   type Checkpoint,
@@ -10,9 +11,10 @@ import {
   type WorkItemState,
   type WorkBrief,
 } from "../core";
-import { cancelOpenJobs } from "./jobs";
+import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
+import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
-import { markRun } from "./runs";
+import { getRun, markRun } from "./runs";
 import { immediate } from "./tx";
 
 export type WorkItemRecord = {
@@ -131,6 +133,9 @@ export function applyWorkItemEvent(db: Database, id: string, event: WorkItemEven
   }
   const next = getWorkItem(db, id);
   if (next === null) throw new Error(`work item ${id} not found`);
+  journal(
+    `transition ${next.linearIdentifier} ${current.state} --${event}--> ${next.state} v${next.version}`,
+  );
   return next;
 }
 
@@ -259,6 +264,7 @@ export function failWorkItem(
   now: number,
 ): void {
   const version = moveToFailed(db, item);
+  journal(`item ${item.linearIdentifier} failed: ${reason}`);
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
   cancelOpenJobs(db, { itemId: item.id, reason, now });
@@ -272,6 +278,45 @@ export function failWorkItem(
   });
 }
 
+export function deferWorkItem(
+  db: Database,
+  item: WorkItemRecord,
+  input: { retry: number; delayMs: number; handoff: string | null; message: string; now: number },
+): void {
+  immediate(db, () => {
+    if (item.state === "running" || item.state === "verifying")
+      applyWorkItemEvent(db, item.id, "lease_expired");
+    const current = getWorkItem(db, item.id) ?? item;
+    journal(`item ${item.linearIdentifier} deferred: retry ${input.retry} in ${input.delayMs} ms`);
+    if (current.currentRunId !== null) {
+      const run = getRun(db, current.currentRunId);
+      if (run && (run.status === "active" || run.status === "provisioning"))
+        markRun(db, run.id, "lost", input.now);
+    }
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.resume,
+      jobKey: `resume:${item.id}:${current.version}`,
+      runAt: input.now + input.delayMs,
+      payload: {
+        itemId: item.id,
+        runId: current.currentRunId,
+        reason: "transient_failure",
+        retry: input.retry,
+        ...(input.handoff === null ? {} : { handoff: input.handoff }),
+      },
+      now: input.now,
+    });
+    enqueueOutboxOnce(db, {
+      target: OUTBOX_ACTIVITY.target,
+      op: OUTBOX_ACTIVITY.op,
+      orderingKey: item.sessionKey ?? item.id,
+      idempotencyKey: `retry:${item.id}:${current.version}`,
+      payload: { sessionId: item.sessionKey ?? item.id, kind: "thought", body: input.message },
+      now: input.now,
+    });
+  });
+}
+
 function failForCap(
   db: Database,
   item: WorkItemRecord,
@@ -279,8 +324,10 @@ function failForCap(
   now: number,
 ): void {
   const version = moveToFailed(db, item);
+  journal(`item ${item.linearIdentifier} failed: ${reason}`);
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
+  journal(`item ${item.linearIdentifier} failed: cap:${reason}`);
   cancelOpenJobs(db, { itemId: item.id, reason: `cap:${reason}`, now });
   enqueueOutboxOnce(db, {
     target: OUTBOX_ACTIVITY.target,

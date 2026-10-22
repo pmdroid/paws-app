@@ -21,7 +21,7 @@ import {
   LinearRateLimitError,
   parseAgentEvent,
 } from "../src/linear";
-import { LinearTaskAccess } from "../src/loop";
+import { LinearTaskAccess, TASK_ACCESS_TTL_MS } from "../src/loop";
 import { tempHome } from "./helpers";
 
 const databases: Database[] = [];
@@ -87,6 +87,7 @@ async function fixture(child = false, actorId: string | null = "human") {
     stateType: "unstarted",
   });
   const stopped: string[] = [];
+  const clock = { now: 10 };
   const gate = new LinearTaskAccess(db, {
     access: access.adapter,
     lifecycle,
@@ -95,10 +96,10 @@ async function fixture(child = false, actorId: string | null = "human") {
     stopSession: (id) => {
       stopped.push(id);
     },
-    now: () => 10,
+    now: () => clock.now,
   });
   const item = getWorkItem(db, task.items[0]!.id)!;
-  return { db, path, task, item, access, lifecycle, stopped, gate };
+  return { db, path, task, item, access, lifecycle, stopped, gate, clock };
 }
 
 test("code preparation starts canonical parent and child while preserving human assignees", async () => {
@@ -241,18 +242,9 @@ test("a public-team permission drop triggers fresh team access rather than assum
     addedTeamIds: [],
     removedTeamIds: [],
   });
-  const before = f.access.calls.length;
   await f.gate.assert(f.item, new AbortController().signal);
-  expect(f.access.calls.slice(before)).toContainEqual({ method: "team", id: "child-team" });
   f.access.state.teams.delete("child-team");
-  changeLinearTeamAccess(f.db, {
-    ...scope,
-    eventKey: "public-drop-again",
-    createdAtMs: 30,
-    canAccessAllPublicTeams: false,
-    addedTeamIds: [],
-    removedTeamIds: [],
-  });
+  f.gate.invalidate({ sessionId: "session" });
   await expect(f.gate.assert(f.item, new AbortController().signal)).rejects.toThrow("team access");
 });
 
@@ -325,48 +317,53 @@ test("a Linear rate limit while checking task access waits for the reset instead
   expect(f.stopped).toEqual([]);
 });
 
-test("a resumed task check makes no session or team read the first check already made", async () => {
-  const f = await fixture();
-  let now = 10;
-  const gate = new LinearTaskAccess(f.db, {
-    access: f.access.adapter,
-    lifecycle: f.lifecycle,
-    oauthClientId: "client",
-    appUserId: null,
-    stopSession: () => {},
-    now: () => now,
-  });
-  const signal = new AbortController().signal;
-  await gate.assert(f.item, signal);
-  const first = [...f.access.calls];
-  expect(first).toEqual([
-    { method: "session", id: "session" },
-    { method: "team", id: "parent-team" },
-  ]);
-  await gate.prepare(f.item, signal);
-  await gate.assert(f.item, signal);
-  expect(f.access.calls).toEqual(first);
+function linearReads(f: Awaited<ReturnType<typeof fixture>>) {
+  return f.access.calls.length + f.lifecycle.inspected.length;
+}
 
-  advanceLinearSessionGeneration(f.db, "session");
-  await gate.assert(f.item, signal);
-  expect(f.access.calls).toEqual([...first, ...first]);
-
-  now += 5 * 60_000;
-  await gate.assert(f.item, signal);
-  expect(f.access.calls).toEqual([...first, ...first, ...first]);
-
-  await gate.revalidateSessions(["session"]);
-  expect(f.access.calls).toEqual([...first, ...first, ...first, ...first]);
-  await gate.assert(f.item, signal);
-  expect(f.access.calls).toHaveLength(8);
+test("repeated task access checks within the cache window read Linear once", async () => {
+  const f = await fixture(true);
+  await f.gate.prepare(f.item, new AbortController().signal);
+  const before = linearReads(f);
+  for (let i = 0; i < 10; i++) await f.gate.assert(f.item, new AbortController().signal);
+  expect(linearReads(f) - before).toBe(5);
+  f.clock.now += TASK_ACCESS_TTL_MS;
+  await f.gate.assert(f.item, new AbortController().signal);
+  expect(linearReads(f) - before).toBe(10);
+  expect(f.stopped).toEqual([]);
 });
 
-test("a cached task check fails once a revalidation finds the team access removed", async () => {
-  const f = await fixture();
-  const signal = new AbortController().signal;
-  await f.gate.assert(f.item, signal);
-  f.access.state.teams.delete("parent-team");
-  await f.gate.revalidateSessions(["session"]);
+test("an undelegation invalidates the cached access and the re-read stops the task", async () => {
+  const f = await fixture(true);
+  await f.gate.prepare(f.item, new AbortController().signal);
+  await f.gate.assert(f.item, new AbortController().signal);
+  f.lifecycle.issue.delegateId = null;
+  await f.gate.assert(f.item, new AbortController().signal);
+  expect(f.stopped).toEqual([]);
+  f.gate.invalidate({ issueId: "parent" });
+  await expect(f.gate.assert(f.item, new AbortController().signal)).rejects.toThrow("removed");
   expect(f.stopped).toEqual(["session"]);
-  await expect(f.gate.assert(f.item, signal)).rejects.toThrow("team access was removed");
+  await expect(f.gate.assert(f.item, new AbortController().signal)).rejects.toThrow("removed");
+});
+
+test("a publication-critical check always reads Linear", async () => {
+  const f = await fixture(true);
+  await f.gate.prepare(f.item, new AbortController().signal);
+  await f.gate.assert(f.item, new AbortController().signal);
+  const before = linearReads(f);
+  await f.gate.assert(f.item, new AbortController().signal, { fresh: true });
+  expect(linearReads(f) - before).toBe(5);
+  f.lifecycle.issue.delegateId = null;
+  await expect(
+    f.gate.assert(f.item, new AbortController().signal, { fresh: true }),
+  ).rejects.toThrow("removed");
+});
+
+test("a failed access check is never cached", async () => {
+  const f = await fixture();
+  f.access.adapter.session = async () => {
+    throw new Error("Temporary offline read");
+  };
+  await expect(f.gate.assert(f.item, new AbortController().signal)).rejects.toThrow("offline");
+  await expect(f.gate.assert(f.item, new AbortController().signal)).rejects.toThrow("offline");
 });

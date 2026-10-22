@@ -272,6 +272,90 @@ test.each([false, true, "cap"] as const)(
   20000,
 );
 
+test("a task retried after failing moves its Linear issue to started again", async () => {
+  const layout = await repoLayout();
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "retry",
+      identifier: "ENG-303",
+      title: "Retry after a cap",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  let launches = 0;
+  const entered = (launch: number) => path.join(layout.root, `entered-${launch}`);
+  const release = path.join(layout.root, "release");
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    launch(input) {
+      const launch = input.purpose === "implement" ? ++launches : 0;
+      const scriptPath = path.join(layout.root, `retry-${input.purpose}-${launch}.json`);
+      const script: FakeScript = {
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+        steps:
+          input.purpose === "review"
+            ? emptyReview().steps
+            : [
+                {
+                  type: "terminal",
+                  command: "bun",
+                  args: [
+                    "-e",
+                    `await Bun.write(${JSON.stringify(entered(launch))}, "ready"); while (!(await Bun.file(${JSON.stringify(release)}).exists())) await Bun.sleep(10);`,
+                  ],
+                },
+                writeOk(input.worktree),
+                { type: "end" },
+              ],
+      };
+      writeFileSync(scriptPath, JSON.stringify(script));
+      return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+    },
+  });
+  const started = () => tracker.statuses.filter((update) => update.stateType === "started");
+  const waitFor = async (file: string) => {
+    for (let i = 0; i < 1_000 && !existsSync(file); i++) await Bun.sleep(10);
+    expect(existsSync(file), debug(layout, db)).toBe(true);
+  };
+  let running: Promise<unknown> | undefined;
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "retry"));
+    running = jobs.tick();
+    await waitFor(entered(1));
+    while (outbox.tick().length > 0) await outbox.idle();
+    expect(started()).toHaveLength(1);
+    const item = listWorkItems(db)[0]!;
+    configureWorkItem(db, item.id, { maxAwakeMs: 1_000 });
+    accrueAwake(db, item.id, 0);
+    accrueAwake(db, item.id, 1_000);
+    expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    await orchestrator.onLinearEvent(linearEvent("prompted", "Try again", null));
+    await running;
+    running = jobs.tick();
+    await waitFor(entered(2));
+    while (outbox.tick().length > 0) await outbox.idle();
+    expect(started(), debug(layout, db)).toHaveLength(2);
+  } finally {
+    writeFileSync(release, "go");
+    await running;
+    await orchestrator.shutdown();
+    db.close();
+    await layout.cleanup();
+  }
+}, 30_000);
+
 test("a frontend change without visual proof gets a fix round, publishes a screenshot, and Closeout accepts", async () => {
   const layout = await repoLayout();
   const seed = path.join(layout.root, "seed");
@@ -2997,6 +3081,12 @@ test("a Linear rate limit during a run waits for the reset and merges instead of
   expect(result.implementRuns, result.detail).toBe(1);
 }, 120_000);
 
+test("a Closeout policy without a review check never starts the reviewer", async () => {
+  const result = await runCiFix({ failRounds: 0, withoutReview: true });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.reviewerLaunches, result.detail).toBe(0);
+}, 120_000);
+
 test("CI green on the first round merges without a fix round", async () => {
   const result = await runCiFix({ failRounds: 0 });
   expect(result.state, result.detail).toBe("merged");
@@ -3082,9 +3172,11 @@ async function runCiFix(options: {
   answer?: string;
   attemptsAfterFirstFix?: number;
   rateLimitFirstLaunch?: boolean;
+  withoutReview?: boolean;
 }): Promise<{
   state: string | null;
   implementRuns: number;
+  reviewerLaunches: number;
   lines: string[];
   questions: string[];
   prompts: string[];
@@ -3093,6 +3185,10 @@ async function runCiFix(options: {
 }> {
   const layout = await repoLayout();
   const configPath = path.join(layout.pawsRoot, "config.toml");
+  if (options.withoutReview)
+    await withGitIdentity(() =>
+      commitOnMain(layout.bare, CLOSEOUT_POLICY_WITHOUT_REVIEW, ".agents/closeout.yaml"),
+    );
   if (options.attempts !== undefined)
     await writeFile(configPath, `[merge]\nci_fix_attempts = ${options.attempts}\n`);
   const tracker = createFakeTracker([
@@ -3114,6 +3210,7 @@ async function runCiFix(options: {
   let sequence = 0;
   let implementRuns = 0;
   let launches = 0;
+  let reviewerLaunches = 0;
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -3151,6 +3248,7 @@ async function runCiFix(options: {
       },
     },
     launch(input) {
+      if (input.role === "reviewer") reviewerLaunches += 1;
       if (input.purpose === "implement" && ++launches === 1 && options.rateLimitFirstLaunch)
         throw new LinearRateLimitError(0, {} as never);
       sequence += 1;
@@ -3207,6 +3305,7 @@ async function runCiFix(options: {
     return {
       state: stateOf(db, "ENG-94"),
       implementRuns,
+      reviewerLaunches,
       lines: tracker.progress
         .map((update) => update.body)
         .filter((body) => body.startsWith("CI: ")),
@@ -4014,6 +4113,18 @@ items:
       differentSession: true
       differentModel: true
     failOn: P1
+`;
+
+const CLOSEOUT_POLICY_WITHOUT_REVIEW = `specVersion: "0.1"
+retry:
+  maxFailedAttemptsPerItem: 3
+  scope: task
+items:
+  - id: test
+    kind: command
+    gate: beforePR
+    exec: ["bun", "test", "check.test.ts"]
+    timeoutSeconds: 60
 `;
 
 const REVIEW_SKILL = `---

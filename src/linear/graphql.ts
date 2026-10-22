@@ -3,6 +3,7 @@ import {
   createLinearLedger,
   currentLinearCaller,
   linearCaller,
+  linearDefaultCaller,
   linearLedger,
   rateLimitFrom,
   useLinearLedger,
@@ -35,7 +36,7 @@ export function createLinearClient(options: {
         if (isCurrent && !isCurrent()) throw new Error("Linear request was superseded.");
       };
       current();
-      const { caller, priority } = currentLinearCaller();
+      const { caller, priority, item } = currentLinearCaller();
       const held = ledger.admit(caller, priority);
       if (held !== null) throw held;
       const run = async (token: string) => {
@@ -58,7 +59,7 @@ export function createLinearClient(options: {
         response = await run(token);
       }
       const budget = budgetFromHeaders(response.headers);
-      ledger.observe(caller, budget);
+      ledger.observe(caller, budget, item);
       const json: unknown = await abortable(response.json(), signal).catch((error: unknown) => {
         signal?.throwIfAborted();
         if (error instanceof Error && error.name === "AbortError") throw error;
@@ -90,6 +91,15 @@ export function createLinearClient(options: {
   };
   useLinearLedger(client, ledger);
   return client;
+}
+
+export function defaultCallerClient(client: LinearClient, caller: string): LinearClient {
+  const labelled: LinearClient = {
+    query: (...args) => linearDefaultCaller(caller, () => client.query(...args)),
+  };
+  const ledger = linearLedger(client);
+  if (ledger !== null) useLinearLedger(labelled, ledger);
+  return labelled;
 }
 
 export function callerClient(

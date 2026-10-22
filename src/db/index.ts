@@ -22,6 +22,7 @@ export {
   applyWorkItemEvent,
   clearProgress,
   configureWorkItem,
+  deferWorkItem,
   failWorkItem,
   getWorkItem,
   listInFlightItems,
@@ -79,6 +80,7 @@ export {
 export { migrations } from "./migrations";
 export type { Migration } from "./migrations";
 export { openDatabase } from "./open";
+export { setJournalSink } from "./journal";
 export { assertLinearQueue } from "./legacy-tracker";
 export {
   advanceOutboxSession,
