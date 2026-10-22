@@ -18,6 +18,7 @@ import {
   itemLabel,
   linkButtons,
   linkList,
+  mergeQueueLine,
   queueLine,
   runLabel,
   PHASE_NAMES,
@@ -275,6 +276,7 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
       <div class="row">${linkList(item.links)}</div>
     </div>
     ${queueNotice(item)}
+    ${mergeQueueNotice(item)}
     <h3>Runs</h3>
     ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><div class="between"><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a>${statePill(run.state, runLabel(run.state))}</div></li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
     <h3>Blocked by</h3>
@@ -355,6 +357,7 @@ function viewRuns(
     </header>
     ${phaseStrip(item, selected, verdict, agent)}
     ${item ? queueNotice(item) : ""}
+    ${item ? mergeQueueNotice(item) : ""}
     ${selected.usagePause ? usagePauseSection(selected, selected.usagePause) : executionControls(selected)}
     ${snapshot.questions
       .filter((question) => question.itemId === selected.itemId)
@@ -389,6 +392,17 @@ function usagePauseSection(run: StatusRun, pause: StatusUsagePause): string {
 function queueNotice(item: StatusItem): string {
   if (item.state !== "queued" || !item.queue) return "";
   return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>Paws starts ${esc(item.id)} when a slot frees. It holds no runner slot while it waits.</p></div></section>`;
+}
+
+/** Where a task stands in its repository's merge queue. Only the first one moves. */
+function mergeQueueNotice(item: StatusItem): string {
+  const queue = item.state === "merge_queue" ? item.mergeQueue : undefined;
+  if (!queue) return "";
+  const detail =
+    queue.position === 1
+      ? "This pull request moves now: Paws updates its branch onto main if main moved, waits for CI on that commit, and merges it."
+      : `${queue.ahead ?? "The task ahead"} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
+  return `<section class="closeout-result queue-notice" aria-labelledby="merge-queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${queue.position}</span><div><h3 id="merge-queue-${esc(item.id)}">${esc(mergeQueueLine(queue))}</h3><p>${esc(detail)}</p></div></section>`;
 }
 
 /** The transcript and the run's own links, as one row of buttons above the log. */
@@ -456,7 +470,9 @@ function phaseStrip(
         ? `${name} · Agent Closeout ${agentProgress(agent)}`
         : index === 1 && verdict
           ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
-          : name,
+          : index === 2 && item?.state === "merge_queue" && item.mergeQueue
+            ? `${name} · #${item.mergeQueue.position} in queue`
+            : name,
   );
   const marks = names
     .map((name, index) => {

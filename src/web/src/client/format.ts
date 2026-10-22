@@ -236,6 +236,27 @@ function initials(name: string): string {
   return letters.toUpperCase() || "?";
 }
 
+const PLACES = [
+  "First",
+  "Second",
+  "Third",
+  "Fourth",
+  "Fifth",
+  "Sixth",
+  "Seventh",
+  "Eighth",
+  "Ninth",
+  "Tenth",
+];
+
+/** "Second in the acme/platform queue". Matches the Linear update. */
+export function mergeQueueLine(queue: { position: number; repository: string }): string {
+  const tens = queue.position % 100;
+  const suffix =
+    tens >= 11 && tens <= 13 ? "th" : (["th", "st", "nd", "rd"][queue.position % 10] ?? "th");
+  return `${PLACES[queue.position - 1] ?? `${queue.position}${suffix}`} in the ${queue.repository} queue`;
+}
+
 /** "Queued, 2nd in line. 4 of 4 runner slots are busy." Matches the Linear thought. */
 export function queueLine(queue: StatusQueuePosition): string {
   const tens = queue.position % 100;

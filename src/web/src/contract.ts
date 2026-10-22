@@ -106,6 +106,18 @@ export interface StatusItem {
   links: StatusLink[];
   /** A queued item's place among the items waiting for a runner slot. */
   queue?: StatusQueuePosition;
+  /** A task's place in its repository's merge queue. 1 merges next. */
+  mergeQueue?: StatusMergeQueue;
+}
+
+export interface StatusMergeQueue {
+  /** `owner/repo`. */
+  repository: string;
+  /** 1 is the pull request that moves. */
+  position: number;
+  total: number;
+  /** The issue in front, or null for the first. */
+  ahead: string | null;
 }
 
 export interface StatusQueuePosition {
@@ -546,6 +558,19 @@ function readItem(input: unknown, index: number): StatusItem {
     pr: readPr(body.pr, `${path}.pr`),
     links: readLinks(body.links, `${path}.links`),
     ...(body.queue === undefined ? {} : { queue: readQueue(body.queue, `${path}.queue`) }),
+    ...(body.mergeQueue === undefined
+      ? {}
+      : { mergeQueue: readMergeQueue(body.mergeQueue, `${path}.mergeQueue`) }),
+  };
+}
+
+function readMergeQueue(input: unknown, path: string): StatusMergeQueue {
+  const body = object(input, path);
+  return {
+    repository: text(body, "repository", path),
+    position: positiveInteger(body, "position", path),
+    total: positiveInteger(body, "total", path),
+    ahead: nullableText(body, "ahead", path),
   };
 }
 
