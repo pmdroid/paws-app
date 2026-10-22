@@ -55,7 +55,15 @@ import {
   type RunnerSpool,
 } from "../runner-execution";
 import { readRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
-import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
+import {
+  checkDeveloperLogin,
+  claudeLimits,
+  codexLimits,
+  readCodexRateLimits,
+  type AgentLimit,
+  type CodexRateLimitReader,
+  type LoginCommandRunner,
+} from "../install";
 import {
   RunnerArtifactSchema,
   RunnerEventSchema,
@@ -82,6 +90,7 @@ export interface RunnerWorkerOptions {
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
   followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
   loginCommand?: LoginCommandRunner;
+  codexRateLimits?: CodexRateLimitReader;
   resume?: boolean;
 }
 
@@ -144,7 +153,7 @@ export type RunnerWorkerEvent =
 export interface RunnerWorkerResult {
   executionId: string;
   commandId: string;
-  run: RunAgentResult;
+  run: RunAgentResult & { agentLimits?: AgentLimit[] };
   candidateSha?: string;
   reviewText?: string;
   text?: string;
@@ -457,6 +466,7 @@ export async function executeRunnerCommand(
       }
     }
     let reviewText = "";
+    let agentLimits: AgentLimit[] = [];
     let eventFailure: Error | undefined;
     const agentEnv = minimalAgentEnv({
       PATH: "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
@@ -543,6 +553,10 @@ export async function executeRunnerCommand(
             if (command.type === "helper") RunnerHelperResultSchema.shape.text.parse(reviewText);
             else if (Buffer.byteLength(reviewText) > 524_288)
               throw new Error("Runner response exceeds size limit");
+          }
+          if (event.type === "session_update" && event.update.sessionUpdate === "usage_update") {
+            const limits = claudeLimits(event.update["_meta"]?.["_claude/rateLimit"]);
+            if (limits.length) agentLimits = limits;
           }
           emit({ type: "acp", event: compactAcpEvent(event) });
           if (event.type === "progress" && !event.messageChunk) {
@@ -691,6 +705,10 @@ export async function executeRunnerCommand(
         !run.authRequired &&
         !run.errorMessage &&
         (checked?.loggedIn ?? Boolean(run.identity));
+      if (authenticated && command.agent === "codex")
+        agentLimits = codexLimits(
+          await (options.codexRateLimits ?? readCodexRateLimits)(agentEnv).catch(() => null),
+        );
       result.login = {
         agent: command.agent,
         authenticated,
@@ -709,6 +727,7 @@ export async function executeRunnerCommand(
               : "grok login",
       };
     }
+    if (agentLimits.length) result.run = { ...run, agentLimits };
     const clean = run.stopReason === "end_turn" && !run.errorMessage;
     const wip = !clean && command.type === "run" && !run.cancelled;
     const recordCandidate = async () => {
