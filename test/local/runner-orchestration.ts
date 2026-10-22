@@ -925,6 +925,13 @@ export async function probeRunnerOrchestration(
             assert(rebased && rebased !== accepted);
             await git(["-C", source, "merge-base", "--is-ancestor", movedMain, rebased]);
             assert.equal(reverifyChecks.length, scenario === "rebase-rate-limited" ? 3 : 1);
+            assert.deepEqual(
+              db
+                .query<{ payload: string }, []>("SELECT payload FROM outbox")
+                .all()
+                .filter((row) => row.payload.includes("rate-limiting")),
+              [],
+            );
             assert.equal(reverifyChecks.at(-1)!.mainSha, movedMain);
             assert.notEqual(reviewRunId, "");
             if (scenario === "rebase-failing") {
