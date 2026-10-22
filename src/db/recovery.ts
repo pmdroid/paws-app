@@ -24,11 +24,15 @@ const STARTUP_STATES = [
   "merge_queue",
 ] as const satisfies readonly WorkItemState[];
 
+const STARTUP_RESUME_SPACING_MS = 5_000;
+
 /** On process start, resume a live run once or ask whether to start it again. Merges fail closed. */
 export function recoverOnStartup(db: Database, now = Date.now()): StartupDecision[] {
   return immediate(db, () => {
     const items = listWorkItemsByStates(db, STARTUP_STATES);
     const decisions: StartupDecision[] = [];
+    let resumes = 0;
+    const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
     for (const item of items) {
       if (hasPendingAnswerResume(db, item.id)) continue;
       const decision = decideStartup({
@@ -38,12 +42,14 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
         runnerHoldsWork: runnerHoldsWork(db, item, now),
         ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
       });
-      applyDecision(db, item, decision, now);
+      applyDecision(db, item, decision, now, {
+        ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
+      });
       decisions.push(decision);
     }
     for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
       if (item.currentRunId !== null) releaseRunCapacity(db, item.currentRunId, now);
-      resumeAnsweredQuestion(db, item, now);
+      resumeAnsweredQuestion(db, item, now, nextResumeAt);
     }
     return decisions;
   });
@@ -60,7 +66,12 @@ function hasPendingAnswerResume(db: Database, itemId: string): boolean {
   );
 }
 
-function resumeAnsweredQuestion(db: Database, item: WorkItemRecord, now: number): void {
+function resumeAnsweredQuestion(
+  db: Database,
+  item: WorkItemRecord,
+  now: number,
+  nextResumeAt: () => number,
+): void {
   const row = db
     .query<
       { id: string; body: string; options: string | null; status: string; answer: string | null },
@@ -97,6 +108,7 @@ function resumeAnsweredQuestion(db: Database, item: WorkItemRecord, now: number)
       }),
       reason: "answer",
     },
+    runAt: nextResumeAt(),
     now,
   });
 }
