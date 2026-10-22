@@ -17,6 +17,7 @@ export type GitHubMethod = "GET" | "POST" | "PUT" | "PATCH";
 export type GitHubResponse = {
   status: number;
   body: unknown;
+  retryAfterMs?: number;
 };
 
 /**
@@ -64,9 +65,13 @@ export type AppCredentials = {
 };
 
 export class GitHubTokenError extends Error {
-  constructor(message: string) {
+  readonly status?: number;
+  readonly retryAfterMs?: number;
+  constructor(message: string, response?: { status: number; retryAfterMs?: number }) {
     super(message);
     this.name = "GitHubTokenError";
+    this.status = response?.status;
+    this.retryAfterMs = response?.retryAfterMs;
   }
 }
 

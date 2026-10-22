@@ -6,6 +6,7 @@ import {
   TOKEN_TTL_SKEW_MS,
   GitHubTokenError,
   type GitHubClient,
+  type GitHubResponse,
 } from "./types";
 
 const ALLOWED_PERMISSIONS = new Set(["contents", "pull_requests", "checks", "issues", "metadata"]);
@@ -46,10 +47,25 @@ export async function mintInstallationToken(input: {
         input.access === "read" ? { contents: "read", metadata: "read" } : INSTALLATION_PERMISSIONS,
     },
   });
-  if (response.status !== 201) {
-    throw new GitHubTokenError(`installation token request failed with status ${response.status}`);
-  }
+  if (response.status !== 201) throw mintFailure(response);
   return assertScopedToken(response.body, input.owner, input.repo, now, input.access);
+}
+
+function mintFailure(response: GitHubResponse): GitHubTokenError {
+  const message = (response.body as { message?: unknown } | null)?.message;
+  const rateLimited =
+    response.status === 429 ||
+    (response.status === 403 && typeof message === "string" && /rate limit/i.test(message));
+  if (!rateLimited) {
+    return new GitHubTokenError(
+      `installation token request failed with status ${response.status}`,
+      response,
+    );
+  }
+  return new GitHubTokenError(
+    `installation token request was rate limited by GitHub (status ${response.status})`,
+    { status: 429, retryAfterMs: response.retryAfterMs },
+  );
 }
 
 export function assertScopedToken(
