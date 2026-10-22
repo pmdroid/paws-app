@@ -21,6 +21,8 @@ export type {
   DecisionName,
   DecisionPolicy,
   DecisionWarning,
+  EvidenceApproval,
+  EvidenceApprovalMode,
   EvidenceInvalid,
   EvidenceMedia,
   EvidenceRecord,

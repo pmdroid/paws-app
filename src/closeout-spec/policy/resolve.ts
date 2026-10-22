@@ -184,6 +184,7 @@ function walk(
         minimum: raw.minimum ?? 1,
       };
       if (raw.hint !== undefined) item.hint = raw.hint;
+      if (raw.approval !== undefined) item.approval = raw.approval;
       if (paths.paths.length > 0) item.paths = paths.paths;
       state.items.push(item);
       continue;

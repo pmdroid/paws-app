@@ -90,6 +90,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         media: item.media,
         minimum: item.minimum,
         ...(item.hint !== undefined ? { hint: item.hint } : {}),
+        ...(item.approval !== undefined ? { approval: item.approval } : {}),
       },
       item.paths,
     );
