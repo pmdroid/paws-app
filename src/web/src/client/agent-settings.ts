@@ -7,6 +7,8 @@ import { readCsrfToken } from "./github-auth";
 const ROLES: AgentRole[] = ["implementer", "reviewer"];
 const CI_FIX_ATTEMPTS_DEFAULT = 3;
 const CI_FIX_ATTEMPTS_MAX = 10;
+const QUEUE_TIMEOUT_DEFAULT_HOURS = 24;
+const QUEUE_TIMEOUT_MAX_HOURS = 720;
 const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok" };
 
 export function settingsProblems(settings: AgentSettings): string[] {
@@ -19,10 +21,13 @@ export function settingsProblems(settings: AgentSettings): string[] {
     })),
   ];
   const attempts = settings.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT;
-  const checks =
+  const checks: string[] =
     Number.isInteger(attempts) && attempts >= 0 && attempts <= CI_FIX_ATTEMPTS_MAX
       ? []
       : [`CI fix attempts: enter a whole number from 0 to ${CI_FIX_ATTEMPTS_MAX}.`];
+  const hours = settings.queue?.startTimeoutHours ?? QUEUE_TIMEOUT_DEFAULT_HOURS;
+  if (!Number.isInteger(hours) || hours < 1 || hours > QUEUE_TIMEOUT_MAX_HOURS)
+    checks.push("Queue: enter a whole number of hours or days, up to 30 days.");
   return profiles
     .filter(
       ({ implementer, reviewer }) =>
@@ -89,6 +94,7 @@ export function renderAgentSettings(view: SettingsView): string {
       <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
       ${mergingSection(view.data.merge?.closeoutAfterUpdate === true)}
       ${checksSection(view.data.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT)}
+      ${queueSection(view.data.queue?.startTimeoutHours ?? QUEUE_TIMEOUT_DEFAULT_HOURS)}
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <div class="settings-actions"><button class="btn primary" type="submit" ${problems.length ? "disabled" : ""}>Save settings</button><button class="btn" type="button" data-settings="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
@@ -104,6 +110,14 @@ function checksSection(attempts: number): string {
   return `<section class="settings-section"><div class="settings-label"><h2>Pull request checks</h2><p class="sub">When CI fails on a pull request, Paws sends the failing checks and their links back to the implementing agent. After the last attempt, Paws asks in the issue's Linear session.</p></div><div class="col">
       <label for="merge-ci-fix-attempts">CI fix attempts</label><input id="merge-ci-fix-attempts" name="merge-ci-fix-attempts" type="number" inputmode="numeric" min="0" max="${CI_FIX_ATTEMPTS_MAX}" step="1" required value="${Number.isFinite(attempts) ? attempts : ""}" aria-describedby="merge-ci-fix-attempts-help">
       <p class="sub" id="merge-ci-fix-attempts-help">From 0 to ${CI_FIX_ATTEMPTS_MAX}. With 0, Paws asks in Linear on the first failure.</p></div></section>`;
+}
+
+function queueSection(hours: number): string {
+  const days = Number.isInteger(hours) && hours >= 48 && hours % 24 === 0;
+  const amount = Number.isFinite(hours) ? (days ? hours / 24 : hours) : "";
+  return `<section class="settings-section"><div class="settings-label"><h2>Queue</h2><p class="sub">When every runner slot is busy, a delegated issue waits in line and starts when a slot frees.</p></div><div class="col">
+      <label for="queue-start-timeout">Fail a task that has not started after</label><div class="row"><input id="queue-start-timeout" name="queue-start-timeout" type="number" inputmode="numeric" min="1" max="${days ? QUEUE_TIMEOUT_MAX_HOURS / 24 : QUEUE_TIMEOUT_MAX_HOURS}" step="1" required value="${amount}" aria-describedby="queue-start-timeout-help"><select id="queue-start-timeout-unit" name="queue-start-timeout-unit" aria-label="Unit"><option value="hours" ${days ? "" : "selected"}>hours</option><option value="days" ${days ? "selected" : ""}>days</option></select></div>
+      <p class="sub" id="queue-start-timeout-help">Up to 30 days. Paws fails the task in Linear with a note to delegate it again.</p></div></section>`;
 }
 
 function profileFields(
@@ -217,6 +231,12 @@ export function createAgentSettings(invalidate: () => void): {
             ? {}
             : { ciFixAttempts: view.data.merge.ciFixAttempts }),
       };
+    const timeout = form.querySelector<HTMLInputElement>('[name="queue-start-timeout"]');
+    if (timeout) {
+      const unit = form.querySelector<HTMLSelectElement>('[name="queue-start-timeout-unit"]');
+      const amount = timeout.value.trim() === "" ? NaN : Number(timeout.value);
+      view.data.queue = { startTimeoutHours: unit?.value === "days" ? amount * 24 : amount };
+    }
     view.repoDraft = form.querySelector<HTMLInputElement>('[name="repo"]')?.value ?? "";
     view.saved = false;
     view.error = null;

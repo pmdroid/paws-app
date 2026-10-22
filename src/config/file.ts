@@ -18,6 +18,7 @@ import {
 } from "./agents";
 
 import { renderMergeSettings } from "./merge";
+import { renderQueueSettings } from "./queue";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
 
 export type LinearConfigMode = "comments" | "agent-session";
@@ -85,6 +86,8 @@ export type PawsConfigFile = {
   closeoutAfterUpdate?: boolean;
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
+  /** `[queue] start_timeout_hours`. Missing means the default of 24. */
+  queueStartTimeoutHours?: number;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
 };
@@ -230,7 +233,8 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     }) +
     renderCheckoutProjects(parseCheckoutProjects(current)) +
     renderProjectSkills(parseProjectSkills(current)) +
-    renderMergeSettings(parseConfigToml(current));
+    renderMergeSettings(parseConfigToml(current)) +
+    renderQueueSettings(parseConfigToml(current));
   const next =
     profiles === null
       ? rendered
@@ -418,6 +422,10 @@ function assignConfig(
   if (section === "merge") {
     if (key === "closeout_after_update") config.closeoutAfterUpdate = asBoolean(value, line);
     if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
+    return;
+  }
+  if (section === "queue") {
+    if (key === "start_timeout_hours") config.queueStartTimeoutHours = asInt(value, line);
     return;
   }
   if (section === "checkout") {
