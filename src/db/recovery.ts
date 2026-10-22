@@ -36,6 +36,7 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
         recoveryAttempts: item.recoveryAttempts,
         checkpoint: item.checkpoint,
         runnerHoldsWork: runnerHoldsWork(db, item, now),
+        ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
       });
       applyDecision(db, item, decision, now);
       decisions.push(decision);

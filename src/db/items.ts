@@ -28,6 +28,7 @@ export type WorkItemRecord = {
   version: number;
   checkpoint: Checkpoint | null;
   recoveryAttempts: number;
+  resumedAt: number | null;
   awakeMs: number;
   lastMonoMs: number | null;
   turnCount: number;
@@ -52,6 +53,7 @@ type ItemSql = {
   version: number;
   checkpoint: string | null;
   recovery_attempts: number;
+  resumed_at: number | null;
   awake_ms: number;
   last_mono_ms: number | null;
   turn_count: number;
@@ -157,6 +159,10 @@ export function saveCheckpoint(db: Database, id: string, checkpoint: Checkpoint 
 
 export function setRecoveryAttempts(db: Database, id: string, attempts: number): void {
   db.run("UPDATE work_item SET recovery_attempts = ? WHERE id = ?", [attempts, id]);
+}
+
+export function markResumed(db: Database, id: string, now: number): void {
+  db.run("UPDATE work_item SET recovery_attempts = 1, resumed_at = ? WHERE id = ?", [now, id]);
 }
 
 export function setCurrentRun(db: Database, id: string, runId: string | null): void {
@@ -333,6 +339,7 @@ function mapItem(row: ItemSql): WorkItemRecord {
     version: row.version,
     checkpoint: parseCheckpoint(row.checkpoint),
     recoveryAttempts: row.recovery_attempts,
+    resumedAt: row.resumed_at,
     awakeMs: row.awake_ms,
     lastMonoMs: row.last_mono_ms,
     turnCount: row.turn_count,

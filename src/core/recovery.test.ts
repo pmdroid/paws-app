@@ -47,6 +47,25 @@ describe("startup recovery", () => {
     ).toEqual({ type: "ask_restart" });
   });
 
+  test("resumes again when the earlier resume was long enough ago to rule out a crash loop", () => {
+    expect(
+      decideStartup({
+        itemState: "recovering",
+        recoveryAttempts: 1,
+        checkpoint: checkpoint("running"),
+        sinceResumeMs: 45 * 60_000,
+      }),
+    ).toEqual({ type: "resume", freshSession: true, checkpoint: checkpoint("running") });
+    expect(
+      decideStartup({
+        itemState: "recovering",
+        recoveryAttempts: 1,
+        checkpoint: checkpoint("running"),
+        sinceResumeMs: 5 * 60_000,
+      }),
+    ).toEqual({ type: "ask_restart" });
+  });
+
   test("starts the item again without a checkpoint, once", () => {
     expect(decideStartup({ itemState: "running", recoveryAttempts: 0, checkpoint: null })).toEqual({
       type: "resume",
