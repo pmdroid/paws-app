@@ -130,6 +130,8 @@ export {
   listRunners,
   listRunnerOverview,
   recordRunnerHostStatus,
+  recordRunnerAgentUsage,
+  runnerAgentUsage,
   getRunnerCertificate,
   runnerForCertificate,
   approveRunnerPairing,
@@ -141,6 +143,7 @@ export {
   type RunnerSession,
   type RunnerSessionPhase,
   type RunnerHostSample,
+  type RunnerAgentLimit,
   type RunnerPairing,
   type StoredRunnerCertificate,
 } from "./runners";
