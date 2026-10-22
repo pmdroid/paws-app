@@ -355,6 +355,12 @@ export {
 } from "./queue-wait";
 export type { QueuePosition } from "./queue-wait";
 export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
+export {
+  getTaskLinearRead,
+  keepTaskLinearRead,
+  linearActivitiesListedAt,
+  markLinearActivitiesListed,
+} from "./linear-reads";
 export type { TaskMergeSettings } from "./merge-settings";
 export {
   joinMergeQueue,
