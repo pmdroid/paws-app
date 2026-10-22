@@ -37,6 +37,7 @@ export async function runGitHubGit(input: {
   cwd: string;
   dest?: string;
   refspec?: string;
+  lease?: string;
   env?: NodeJS.ProcessEnv;
   gitBin?: string;
   signal?: AbortSignal;
@@ -60,7 +61,14 @@ export async function runGitHubGit(input: {
         args = ["fetch", input.remoteUrl, "+refs/heads/*:refs/heads/*"];
       } else {
         if (!input.refspec) throw new Error("push needs a refspec");
-        args = ["push", input.remoteUrl, input.refspec];
+        args = input.lease
+          ? [
+              "push",
+              `--force-with-lease=${input.refspec.split(":")[1]}:${input.lease}`,
+              input.remoteUrl,
+              input.refspec,
+            ]
+          : ["push", input.remoteUrl, input.refspec];
       }
       try {
         await helper.exec([...helper.argsPrefix, ...args], {

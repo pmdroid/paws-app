@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
-import { git } from "../acp";
+import { assertDescendsFromAny, git } from "../acp";
 
 export async function fetchRunnerCandidate(input: {
   worktree: string;
   baseSha: string;
+  mainSha?: string;
   candidateSha: string;
   branch: string;
   remoteUrl: string;
@@ -15,6 +16,7 @@ export async function fetchRunnerCandidate(input: {
   if (
     !isAbsolute(input.worktree) ||
     !/^[a-f0-9]{40}$/.test(input.baseSha) ||
+    (input.mainSha !== undefined && !/^[a-f0-9]{40}$/.test(input.mainSha)) ||
     !/^[a-f0-9]{40}$/.test(input.candidateSha) ||
     typeof input.networkGit !== "function"
   )
@@ -41,7 +43,11 @@ export async function fetchRunnerCandidate(input: {
     input.signal.throwIfAborted();
     if ((await run(["rev-parse", "--verify", `${ref}^{commit}`])).trim() !== input.candidateSha)
       throw new Error("Fetched runner candidate does not match.");
-    await run(["merge-base", "--is-ancestor", input.baseSha, input.candidateSha]);
+    await assertDescendsFromAny(
+      run,
+      input.mainSha ? [input.baseSha, input.mainSha] : [input.baseSha],
+      input.candidateSha,
+    );
     await unchanged();
     input.signal.throwIfAborted();
     await run(["reset", "--hard", input.candidateSha]);

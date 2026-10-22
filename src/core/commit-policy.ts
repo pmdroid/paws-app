@@ -96,3 +96,20 @@ export function commitCoauthorTrailers(message: string): string[] {
     .filter((line) => /^Co-authored-by:/i.test(line))
     .map((line) => line.slice(line.indexOf(":") + 1).trim());
 }
+
+export async function assertDescendsFromAny(
+  invoke: (args: string[]) => Promise<string>,
+  bases: readonly string[],
+  head: string,
+): Promise<void> {
+  let failure: unknown;
+  for (const base of bases) {
+    try {
+      await invoke(["merge-base", "--is-ancestor", base, head]);
+      return;
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure;
+}

@@ -67,7 +67,7 @@ test("worker publications stay hidden until ownership is ready", async () => {
       },
       worker.executeRunnerCommand,
     );
-    assert.equal(observations.length, 15);
+    assert.equal(observations.length, 16);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

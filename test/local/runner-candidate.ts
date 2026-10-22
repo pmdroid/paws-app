@@ -88,6 +88,33 @@ export async function probeRunnerCandidate(
   observe("a moved publication branch cannot import a different reported candidate", true, {
     head: await head(),
   });
+  await run(["-C", source, "checkout", "-q", "-b", "moved", baseSha]);
+  writeFileSync(join(source, "moved.txt"), "moved main");
+  await run(["-C", source, "add", "."]);
+  await run(["-C", source, "commit", "-m", "Moved main"]);
+  const movedSha = (await run(["-C", source, "rev-parse", "HEAD"])).trim();
+  await run(["-C", source, "push", remote, "HEAD:refs/heads/moved-main"]);
+  writeFileSync(join(source, "result.txt"), "rebased");
+  await run(["-C", source, "commit", "-am", "Rebased"]);
+  const rebasedSha = (await run(["-C", source, "rev-parse", "HEAD"])).trim();
+  await run(["-C", source, "push", remote, "HEAD:refs/heads/rebased"]);
+  await run(["-C", worktree, "fetch", remote, "refs/heads/moved-main:refs/paws/upstream-main"]);
+  await run(["-C", worktree, "reset", "--hard", candidateSha]);
+  const rebasedInput = {
+    ...input,
+    baseSha: candidateSha,
+    candidateSha: rebasedSha,
+    branch: "rebased",
+  };
+  await assert.rejects(fetchRunnerCandidate(rebasedInput));
+  await fetchRunnerCandidate({ ...rebasedInput, mainSha: movedSha });
+  const rebasedHead = await head();
+  await run(["-C", worktree, "reset", "--hard", baseSha]);
+  observe(
+    "a candidate rebased onto the run's main imports only when that main is named",
+    rebasedHead === rebasedSha,
+    { baseSha: candidateSha, mainSha: movedSha, rebasedSha },
+  );
   await assert.rejects(fetchRunnerCandidate({ ...input, branch: "missing" }));
   await assert.rejects(
     fetchRunnerCandidate({ ...input, candidateSha: "a".repeat(40) }),

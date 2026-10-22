@@ -26,6 +26,7 @@ import {
   appBotCommitIdentity,
   createUpdateLimiter,
   validateCandidateAttribution,
+  assertDescendsFromAny,
   ArtifactRejectedError,
   createAcpPromptLifecycle,
   git,
@@ -399,8 +400,11 @@ export async function executeRunnerCommand(
       options.signal?.throwIfAborted();
       await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
       const main = command.repository.mainSha ?? base;
-      if (main !== base)
-        await invokeGit(["-C", worktree, "merge-base", "--is-ancestor", main, base]);
+      if (
+        (await invokeGit(["-C", worktree, "rev-parse", "--verify", `${main}^{commit}`])).trim() !==
+        main
+      )
+        throw new Error("Runner repository main mismatch");
       await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", main]);
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
@@ -699,19 +703,14 @@ export async function executeRunnerCommand(
       if (command.type !== "run" && command.type !== "review") return;
       const sha = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
       if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Invalid runner candidate commit");
-      await invokeGit([
-        "-C",
-        worktree,
-        "merge-base",
-        "--is-ancestor",
-        command.repository.baseSha,
-        sha,
-      ]);
+      const bases = [command.repository.baseSha];
+      if (command.repository.mainSha) bases.push(command.repository.mainSha);
+      await assertDescendsFromAny((args) => invokeGit(["-C", worktree, ...args]), bases, sha);
       if (command.type === "run") {
         if (command.commitPolicy)
           await validateCandidateAttribution(
             worktree,
-            command.repository.baseSha,
+            bases,
             sha,
             command.commitPolicy,
             env,
@@ -729,7 +728,7 @@ export async function executeRunnerCommand(
             "create",
             candidatePath,
             "HEAD",
-            `^${command.repository.baseSha}`,
+            ...bases.filter((base) => base !== sha).map((base) => `^${base}`),
           ]);
           const candidate = openSync(candidatePath, constants.O_RDONLY | constants.O_NOFOLLOW);
           try {
