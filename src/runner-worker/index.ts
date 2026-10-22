@@ -31,6 +31,7 @@ import {
   createAcpPromptLifecycle,
   git,
   runAgent,
+  runWithShellRecovery,
   minimalAgentEnv,
   reconstructAcpPrompt,
   currentRequest,
@@ -682,10 +683,25 @@ export async function executeRunnerCommand(
               },
             },
     };
+    const runner =
+      command.type === "run"
+        ? (input: RunAgentOptions) =>
+            runWithShellRecovery(input, {
+              notice: (text) => emit({ type: "progress", text, notice: true }),
+              log: (detection) =>
+                console.warn(
+                  JSON.stringify({
+                    event: "agent_shell_broken",
+                    executionId: job.executionId,
+                    ...detection,
+                  }),
+                ),
+            })
+        : runAgent;
     const run =
       command.type === "run" && options.followUp
-        ? await runWithFollowUps(agent, options.followUp)
-        : await runAgent(agent);
+        ? await runWithFollowUps(agent, options.followUp, runner)
+        : await runner(agent);
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");

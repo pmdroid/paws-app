@@ -31,6 +31,18 @@ const state: FakeResult = {
   terminals: [],
 };
 
+/** `sessions` scripts successive spawns; a counter next to the script picks one. */
+const spawnSteps = (() => {
+  if (!script.sessions?.length || !scriptPath) return script.steps;
+  const counter = `${scriptPath}.spawns`;
+  let spawned = 0;
+  try {
+    spawned = Number(readFileSync(counter, "utf8")) || 0;
+  } catch {}
+  writeFileSync(counter, String(spawned + 1));
+  return script.sessions[Math.min(spawned, script.sessions.length - 1)]!;
+})();
+
 function present(key: string): boolean {
   const value = process.env[key];
   return typeof value === "string" && value.length > 0;
@@ -227,7 +239,7 @@ async function handle(message: {
     state.prompts.push(message.params?.prompt);
     persist();
     try {
-      const finished = await runSteps(script.steps, message.id ?? null);
+      const finished = await runSteps(spawnSteps, message.id ?? null);
       if (!finished) {
         send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
       }

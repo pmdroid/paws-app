@@ -109,6 +109,15 @@ export {
 } from "./permissions";
 export { probeAgentProfile } from "./probe";
 export { checkOwnLogin, runAgent } from "./run";
+export {
+  SHELL_BREAK_LIMIT,
+  SHELL_RESTART_NOTICE,
+  classifyExecuteResult,
+  createShellBreakDetector,
+  runWithShellRecovery,
+  type ShellBreak,
+  type ShellRecoveryHooks,
+} from "./shell-health";
 export type { CheckOwnLoginOptions } from "./run";
 export type { AcpRunner, AcpStopReason, AcpUpdate, AcpUpdateKind, StartAcpRun } from "./runner";
 export {

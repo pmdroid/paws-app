@@ -59,6 +59,8 @@ export interface FakeScript {
   hangInitialize?: boolean;
   loadSession?: boolean;
   steps: FakeStep[];
+  /** Steps for each successive spawn of the agent; the last entry repeats. */
+  sessions?: FakeStep[][];
 }
 
 export interface FakeResult {
