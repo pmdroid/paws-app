@@ -30,6 +30,9 @@ type Candidate = {
   resolvedModel: string | null;
 };
 
+/** How long a continuing task waits for the busy runner that holds its agent session. */
+export const SESSION_GRACE_MS = 2 * 60_000;
+
 export function createRunnerPlacement(options: {
   db: Database;
   lifecycle: LinearIssueLifecycle;
@@ -49,6 +52,8 @@ export function createRunnerPlacement(options: {
       memberId?: string;
     }
   >();
+  // Per item: since when placement has held a task for its busy session runner.
+  const sessionWaits = new Map<string, { runnerId: string; since: number; seen: number }>();
   function admissionKey(
     runnerId: string,
     input: Pick<PlacementRequest, "itemId" | "sessionId" | "purpose" | "role" | "profile">,
@@ -330,6 +335,28 @@ export function createRunnerPlacement(options: {
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
         return [{ runner, rank: reviewRank * 10 + (own ? 0 : 1) }];
       });
+      const session = input.role === "implementer" && input.purpose === "work" && input.session;
+      const holder = session
+        ? ranked.find(
+            ({ runner }) => runner.id === session.runnerId && runner.memberId === session.memberId,
+          )
+        : undefined;
+      let heldForSession = false;
+      if (holder && input.itemId) {
+        if (runnerHasCapacity(db, holder.runner.id, at)) {
+          holder.rank = -1;
+          sessionWaits.delete(input.itemId);
+        } else {
+          const waiting = sessionWaits.get(input.itemId);
+          const since =
+            waiting?.runnerId === holder.runner.id && at - waiting.seen < 60_000
+              ? waiting.since
+              : at;
+          sessionWaits.set(input.itemId, { runnerId: holder.runner.id, since, seen: at });
+          heldForSession = at - since < SESSION_GRACE_MS;
+        }
+      } else if (session && input.itemId) sessionWaits.delete(input.itemId);
+      if (heldForSession) ranked.splice(0, ranked.length, holder!);
       ranked.sort(
         (a, b) =>
           a.rank - b.rank ||
@@ -400,6 +427,8 @@ export function createRunnerPlacement(options: {
         );
         admissions.delete(admissionKey(input.runnerId, input));
       });
+      if (input.itemId && input.role === "implementer" && input.purpose === "work")
+        sessionWaits.delete(input.itemId);
     },
     finished(input) {
       return immediate(db, () => {
