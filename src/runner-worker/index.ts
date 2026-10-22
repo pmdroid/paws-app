@@ -177,6 +177,26 @@ function outputFile(directory: string, name: string, resultsGid: number): number
   }
 }
 
+/** Where the worker records which workspace held an agent session, keyed by a hash of its ID. */
+function sessionRecord(workRoot: string, sessionId: string): string {
+  return join(workRoot, ".sessions", createHash("sha256").update(sessionId).digest("hex"));
+}
+
+/** The workspace of the earlier command that ran this agent session, when it is still there. */
+function sessionWorkspace(workRoot: string, sessionId: string): string | undefined {
+  try {
+    const executionId = readFileSync(sessionRecord(workRoot, sessionId), "utf8").trim();
+    if (!/^[0-9A-Za-z_-]{1,64}$/.test(executionId)) return undefined;
+    const path = join(workRoot, executionId);
+    const info = lstatSync(path);
+    return info.isDirectory() && !info.isSymbolicLink() && info.uid === process.getuid!()
+      ? path
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function createJournal(options: { outputDirectory: string; resultsGid: number }): number {
   const journalName = `.events-${randomUUID()}.tmp`;
   const journalPath = join(options.outputDirectory, journalName);
@@ -311,6 +331,19 @@ export async function executeRunnerCommand(
     }
     if (!task) mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
     const worktree = join(options.workRoot, job.executionId);
+    // After a usage limit, load the earlier agent session when the agent still has it. The command
+    // prompt already carries the conversation, so it is the replay when the session is gone.
+    const earlier =
+      !resumed && (command.type === "run" || command.type === "review" || command.type === "task")
+        ? command
+        : undefined;
+    const earlierSession = earlier?.resumeSessionId;
+    const continued = earlierSession !== undefined && earlier?.resumeReason === "usage_limit";
+    // The continued session keeps working in the workspace it left, with files outside Git.
+    const previous = earlierSession
+      ? sessionWorkspace(options.workRoot, earlierSession)
+      : undefined;
+    let reused = false;
     if (task) {
       const directory = openSync(
         worktree,
@@ -327,7 +360,11 @@ export async function executeRunnerCommand(
       } finally {
         closeSync(directory);
       }
-      if (options.repositorySnapshot && !resumed) {
+      if (previous) {
+        for (const name of readdirSync(previous))
+          renameSync(join(previous, name), join(worktree, name));
+        reused = true;
+      } else if (options.repositorySnapshot && !resumed) {
         const repositoryPath = join(worktree, "repository");
         cpSync(options.repositorySnapshot, repositoryPath, {
           recursive: true,
@@ -353,8 +390,37 @@ export async function executeRunnerCommand(
       GIT_TERMINAL_PROMPT: "0",
     };
     const invokeGit = (args: string[]) => git(args, { env, signal: options.signal });
+    if (previous && repository) {
+      // Continue in the earlier workspace when it holds the requested base, else clone afresh.
+      reused = await invokeGit([
+        "-C",
+        previous,
+        "merge-base",
+        "--is-ancestor",
+        command.repository.baseSha,
+        "HEAD",
+      ])
+        .then(() => true)
+        .catch(() => false);
+      if (reused) {
+        renameSync(previous, worktree);
+        const head = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
+        await invokeGit([
+          "-C",
+          worktree,
+          "symbolic-ref",
+          "HEAD",
+          `refs/heads/paws/${job.executionId}`,
+        ]);
+        await invokeGit(["-C", worktree, "update-ref", "HEAD", head]);
+        const main = command.repository.mainSha ?? command.repository.baseSha;
+        await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", main]);
+      }
+    }
     if (resumed) {
       if (!lstatSync(worktree).isDirectory()) throw new Error("Runner workspace is missing");
+    } else if (reused) {
+      // The earlier workspace is already in place.
     } else if (repository) {
       const bundle = openSync(
         options.repositoryBundle!,
@@ -456,6 +522,9 @@ export async function executeRunnerCommand(
           if (!info.isDirectory() || info.isSymbolicLink())
             throw new Error("Unsafe runner input workspace");
         }
+        // A reused workspace already has the earlier copy of the input; replace a plain file only.
+        if (reused && lstatSync(join(worktree, file.path), { throwIfNoEntry: false })?.isFile())
+          rmSync(join(worktree, file.path));
         writeFileSync(join(worktree, file.path), file.bytes, { flag: "wx", mode: 0o600 });
       }
     }
@@ -477,12 +546,6 @@ export async function executeRunnerCommand(
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
-    // A command can name an earlier agent session to load. After a usage limit the command prompt
-    // already carries the conversation, so it is the replay when the session is gone.
-    const earlier =
-      !resumed && (command.type === "run" || command.type === "review") ? command : undefined;
-    const earlierSession = earlier?.resumeSessionId;
-    const continued = earlierSession !== undefined && earlier?.resumeReason === "usage_limit";
     const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
@@ -517,7 +580,7 @@ export async function executeRunnerCommand(
         : continued
           ? USAGE_LIMIT_RESUME_PROMPT
           : earlierSession
-            ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
+            ? `This continues your earlier session ${reused ? "in the workspace it left" : "in a fresh checkout"} at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
             : prompt,
       ...(earlierSession ? { resume: { sessionId: earlierSession, replayPrompt: prompt } } : {}),
       ...(resumed
@@ -677,6 +740,15 @@ export async function executeRunnerCommand(
       command.type === "run" && options.followUp
         ? await runWithFollowUps(agent, options.followUp)
         : await runAgent(agent);
+    // Remember the workspace of this agent session, so a usage-limit continuation can reuse it.
+    const session = run.identity?.session ?? run.sessionId;
+    if (session && (repository || task))
+      try {
+        mkdirSync(join(options.workRoot, ".sessions"), { recursive: true, mode: 0o700 });
+        writeFileSync(sessionRecord(options.workRoot, session), job.executionId, { mode: 0o600 });
+      } catch {
+        // Without the record a continuation clones a fresh workspace and replays the conversation.
+      }
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");

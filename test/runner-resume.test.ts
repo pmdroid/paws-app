@@ -232,12 +232,21 @@ test("a run after a usage limit loads the named agent session or replays the con
     expect((loaded.loaded as { sessionId: string }).sessionId).toBe("earlier-session");
     expect(JSON.stringify(loaded.prompts)).toContain("usage limit has reset");
     expect(JSON.stringify(loaded.prompts)).not.toContain("WORKING ON IT");
+    // Files outside Git, such as ignored build output, stay with the continued session.
+    const first = join(workRoot, "01J00000000000000000000002");
+    writeFileSync(join(first, "scratch.txt"), "scratch");
 
     const replayed = await execute("replayed", "01J00000000000000000000003", {
       steps: [{ type: "end" }],
     });
     expect(replayed.methods).toContain("session/new");
     expect(JSON.stringify(replayed.prompts)).toContain("WORKING ON IT");
+    const second = join(workRoot, "01J00000000000000000000003");
+    expect(readFileSync(join(second, "scratch.txt"), "utf8")).toBe("scratch");
+    expect(existsSync(first)).toBe(false);
+    expect((await git(["-C", second, "symbolic-ref", "HEAD"])).trim()).toBe(
+      "refs/heads/paws/01J00000000000000000000003",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

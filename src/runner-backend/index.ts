@@ -497,7 +497,6 @@ export function createRemoteAgentRunner(options: {
             : undefined;
           // After a usage limit, only the runner that hit it can still hold the agent session.
           const usageLimitSession =
-            !taskScope &&
             input.runnerSession?.runnerId === selected.id &&
             versionAtLeast(runnerVersion, USAGE_LIMIT_SESSION_RUNNER_VERSION)
               ? input.runnerSession.sessionId
@@ -598,6 +597,8 @@ export function createRemoteAgentRunner(options: {
                   sessionGeneration: taskScope.sessionGeneration,
                   taskModeGeneration: taskScope.taskModeGeneration,
                   purpose: taskScope.purpose,
+                  ...(resumeSessionId ? { resumeSessionId } : {}),
+                  ...(usageLimitSession ? { resumeReason: "usage_limit" as const } : {}),
                   ...(taskScope.repository
                     ? {
                         repository: {
@@ -662,7 +663,14 @@ export function createRemoteAgentRunner(options: {
                   finishedAt: now(),
                 }),
               );
-            if (complete && disposition?.retryable && input.role === "reviewer")
+            // A reviewer usage limit still drains its events and downloads the transcript below, so
+            // the continuation carries the interrupted review.
+            if (
+              complete &&
+              disposition?.retryable &&
+              !disposition.usageLimit &&
+              input.role === "reviewer"
+            )
               throw new RetryableRunnerError(
                 selected.id,
                 "The reviewer runner requires a fresh eligible agent.",
@@ -873,10 +881,11 @@ export function createRemoteAgentRunner(options: {
           }
           if (
             disposition?.retryable &&
-            complete.agentExited &&
-            !complete.cancelled &&
-            !complete.timedOut &&
-            !complete.candidateSha
+            ((disposition.usageLimit && input.role === "reviewer") ||
+              (complete.agentExited &&
+                !complete.cancelled &&
+                !complete.timedOut &&
+                !complete.candidateSha))
           )
             throw new RetryableRunnerError(
               selected.id,

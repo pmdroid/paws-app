@@ -3653,14 +3653,11 @@ export class Orchestrator {
             const result = await runner(input);
             this.assertJobCurrent(itemId);
             await resumed();
-            // A finished call of the same role supersedes an older interrupted one. Another role's
-            // continuation stays, so a review interrupted before a restart continues after it.
-            if (
-              runKey &&
-              result.stopReason === "end_turn" &&
-              getUsageLimitContinuation(this.db, itemId)?.runKey.startsWith(`${options.role}:`)
-            )
-              clearUsageLimitContinuation(this.db, itemId);
+            // A finished call supersedes only its own interrupted conversation, such as a review of
+            // an older commit. Another call's continuation stays until that call runs again, so a
+            // fix round or review interrupted before a restart continues after recovery.
+            if (runKey && result.stopReason === "end_turn")
+              clearUsageLimitContinuation(this.db, itemId, runKey);
             return result;
           } catch (error) {
             if (!(error instanceof UsageLimitError)) throw error;
