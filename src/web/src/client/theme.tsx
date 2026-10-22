@@ -484,6 +484,8 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)] [&>*]:min-w-0 [&>div:first-child]:space-y-4",
     );
+  if (has("skill-name")) return styled("flex min-w-0 flex-wrap items-baseline gap-x-2");
+  if (has("skill-actions")) return styled("flex flex-col items-stretch gap-2 sm:flex-row");
   if (has("settings-account")) return styled("flex min-w-0 flex-col items-start gap-4");
   if (has("settings-section")) return styled(SETTINGS_SECTION_LAYOUT);
   if (has("overview-section"))
@@ -608,8 +610,13 @@ function replace(node: DOMNode): ReactElement | undefined {
 
 function tableCell(has: (...names: string[]) => boolean): string | undefined {
   return (
-    cn(has("hide-phone") && "hidden sm:table-cell", has("run-cell") && "px-2 py-3 sm:p-4") ||
-    undefined
+    cn(
+      has("hide-phone") && "hidden sm:table-cell",
+      has("run-cell") && "px-2 py-3 sm:p-4",
+      has("skill-cell") &&
+        "skill-cell min-w-0 space-y-1 px-3 py-3 align-top [overflow-wrap:anywhere] sm:p-4",
+      has("skill-state") && "skill-state w-px px-3 py-3 align-top [overflow-wrap:normal] sm:p-4",
+    ) || undefined
   );
 }
 
