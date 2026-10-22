@@ -1,4 +1,10 @@
-import type { ItemState, RunState, StatusLink, VerdictDecision } from "../contract";
+import type {
+  ItemState,
+  RunState,
+  StatusLink,
+  StatusQueuePosition,
+  VerdictDecision,
+} from "../contract";
 
 const ITEM_LABEL: Record<ItemState, string> = {
   queued: "Queued",
@@ -228,4 +234,13 @@ function initials(name: string): string {
   const parts = name.trim().split(/\s+/).slice(0, 2);
   const letters = parts.map((part) => part[0] ?? "").join("");
   return letters.toUpperCase() || "?";
+}
+
+/** "Queued, 2nd in line. 4 of 4 runner slots are busy." Matches the Linear thought. */
+export function queueLine(queue: StatusQueuePosition): string {
+  const tens = queue.position % 100;
+  const suffix =
+    tens >= 11 && tens <= 13 ? "th" : (["th", "st", "nd", "rd"][queue.position % 10] ?? "th");
+  const slots = queue.totalSlots === 1 ? "runner slot" : "runner slots";
+  return `Queued, ${queue.position}${suffix} in line. ${queue.busySlots} of ${queue.totalSlots} ${slots} ${queue.busySlots === 1 ? "is" : "are"} busy.`;
 }
