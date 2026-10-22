@@ -183,7 +183,7 @@ export function startCatchUpPoller(options: {
 
   async function pollBody(): Promise<void> {
     for (const event of options.store.listUnhandled()) {
-      await deliver(event);
+      await deliverOrSkip(event);
     }
     const saved = options.store.getCursor(CURSOR_NAME);
     const since = saved === null ? now() - INITIAL_LOOKBACK_MS : Math.max(0, saved - OVERLAP_MS);
@@ -217,10 +217,20 @@ export function startCatchUpPoller(options: {
     for (const event of events) {
       const committed = options.store.commit(event);
       if (!committed.inserted && committed.handled) continue;
-      await deliver(event);
+      await deliverOrSkip(event);
     }
     if (sighting.caughtUp) options.store.setCursor(CURSOR_NAME, now());
     rateAttempts = 0;
+  }
+
+  async function deliverOrSkip(event: AcceptedLinearEvent): Promise<void> {
+    try {
+      await deliver(event);
+    } catch (error) {
+      if (error instanceof LinearRateLimitError || control.stopped) throw error;
+      const message = error instanceof Error ? error.message : "delivery failed";
+      console.error(`linear event ${event.dedupeKey} stays pending: ${message}`);
+    }
   }
 
   async function deliver(event: AcceptedLinearEvent): Promise<void> {
