@@ -39,13 +39,16 @@ Paws applies these exclusions before checking out files, including in detached C
 
 `GET /health` returns JSON. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 
-## Updates
+## Deploys
 
-When Paws runs from a git checkout, such as `~/.local/share/paws/app`, it compares its commit with `origin/main` every 10 minutes. When `main` is ahead it schedules an update: new work waits, running work finishes, and tasks waiting for an answer, for CI or in the merge queue do not hold it. Then Paws fast-forwards the checkout, runs `bun install --frozen-lockfile` and `bun run build:status`, and exits with code 75 so `systemd` (`Restart=on-failure`) starts the new code. A failed step returns to the old commit and the overview says why. `bun run paws update` schedules an update by hand. The overview shows **Paws update waiting** with **Update now** and **Cancel** for owners and admins. To turn the automatic check off:
+Paws never changes its own checkout or restarts itself. To deploy a new commit, update the checkout Paws runs from and restart the service:
 
-```toml
-[update]
-automatic = false
+```sh
+cd ~/.local/share/paws/app
+git fetch && git checkout <commit>
+bun install --frozen-lockfile
+bun run build:status
+systemctl --user restart paws.service
 ```
 
 ## Status dashboard

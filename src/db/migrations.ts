@@ -2077,4 +2077,8 @@ DROP TABLE runner_agent_usage;
 ALTER TABLE runner_agent_usage_owner RENAME TO runner_agent_usage;
 `,
   },
+  {
+    id: "092_drop_paws_update",
+    sql: `DROP TABLE paws_update;`,
+  },
 ];

@@ -365,16 +365,6 @@ export {
 } from "./merge-queue";
 export type { MergeQueuePosition } from "./merge-queue";
 export {
-  cancelPawsUpdate,
-  clearPawsUpdate,
-  getPawsUpdate,
-  listUpdateHolders,
-  markPawsUpdate,
-  requestPawsUpdateNow,
-  schedulePawsUpdate,
-  type PawsUpdate,
-} from "./paws-update";
-export {
   clearUsagePauses,
   endUsagePause,
   resumeUsagePauseNow,

@@ -39,7 +39,6 @@ import type {
 } from "../../../db";
 import {
   getLinearConversationSource,
-  getPawsUpdate,
   getRun,
   listAgentCloseout,
   listCloseoutProgress,
@@ -55,7 +54,6 @@ import {
   runRunnerName,
   usagePause,
   listTaskBlockers,
-  listUpdateHolders,
   listWorkItemFacts,
   listWorkItemsByStates,
   type CloseoutProgressRecord,
@@ -74,7 +72,6 @@ import {
   type RunState,
   type StatusActivity,
   type StatusAgentCloseout,
-  type StatusPawsUpdate,
   type StatusCheck,
   type StatusCloseoutAttempt,
   type StatusEvent,
@@ -168,9 +165,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
         (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
     )
     .sort((left, right) => compareNewest(left, right, facts));
-  const update = updateFor(db, options.sessionIds);
-  if (records.length === 0)
-    return { ...emptyLiveSnapshot(now, options.project), ...(update ? { update } : {}) };
+  if (records.length === 0) return emptyLiveSnapshot(now, options.project);
   const rows = listOutbox(db).filter(
     (row) =>
       options.sessionIds === undefined ||
@@ -217,37 +212,6 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     events: eventsFor(rows),
     evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
-    ...(update ? { update } : {}),
-  };
-}
-
-const HOLD_PHASE = { running: "working", verifying: "closeout", recovering: "resuming" } as const;
-
-function updateFor(
-  db: Database,
-  sessionIds: readonly string[] | undefined,
-): StatusPawsUpdate | null {
-  const update = getPawsUpdate(db);
-  if (update === null) return null;
-  const holders = listUpdateHolders(db);
-  return {
-    target: update.target,
-    current: update.current,
-    status: update.status,
-    nowRequested: update.nowRequested,
-    error: update.error,
-    waitingFor: holders.length,
-    holding: holders
-      .filter(
-        (item) =>
-          sessionIds === undefined ||
-          (item.sessionKey !== null && sessionIds.includes(item.sessionKey)),
-      )
-      .map((item) => ({
-        id: textOr(item.linearIdentifier, item.id),
-        title: item.title,
-        phase: HOLD_PHASE[item.state as keyof typeof HOLD_PHASE] ?? "working",
-      })),
   };
 }
 
