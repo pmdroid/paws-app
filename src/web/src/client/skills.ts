@@ -17,8 +17,20 @@ export type SkillPin = {
   removedAt: number | null;
 };
 
+/** How many runners that are not revoked have a skill's pinned bundle, and which ones lag. */
+export type SkillRollout = {
+  name: string;
+  total: number;
+  upToDate: number;
+  installing: string[];
+  outOfDate: string[];
+  failed: string[];
+};
+
 export type SkillListing = {
   skills: SkillPin[];
+  /** Older Paws releases leave it out. */
+  rollouts?: SkillRollout[];
   agents: SkillAgent[];
   limitBytes: number;
   notice?: string;
@@ -87,13 +99,36 @@ function shortVersion(skill: SkillPin): string {
   return skill.source.kind === "git" ? skill.version.slice(0, 7) : skill.version;
 }
 
-function skillRow(skill: SkillPin, busy: boolean): string {
+function runnerNames(names: readonly string[], state: string): string {
+  return names.length <= 2 ? `${names.join(", ")} ${state}` : `${names.length} runners ${state}`;
+}
+
+/** "2 of 2 up to date", then one badge per runner state that lags behind the pin. */
+export function skillRolloutMarkup(rollout: SkillRollout | undefined): string {
+  if (!rollout) return "";
+  if (rollout.total === 0)
+    return '<div class="skill-runners"><span class="tag">No runners yet</span></div>';
+  const behind = [
+    rollout.failed.length
+      ? `<span class="tag bad wrap">${esc(runnerNames(rollout.failed, "failed"))}</span>`
+      : "",
+    rollout.installing.length
+      ? `<span class="tag running wrap">${esc(runnerNames(rollout.installing, "installing"))}</span>`
+      : "",
+    rollout.outOfDate.length
+      ? `<span class="tag warn wrap">${esc(runnerNames(rollout.outOfDate, "out of date"))}</span>`
+      : "",
+  ].join("");
+  return `<div class="skill-runners"><span class="tag">${rollout.upToDate} of ${rollout.total} up to date</span>${behind}</div>`;
+}
+
+function skillRow(skill: SkillPin, busy: boolean, rollout?: SkillRollout): string {
   const name = esc(skill.name);
   const removed = skill.removedAt !== null;
   const actions = removed
     ? ""
     : `<div class="skill-actions">${skill.source.kind === "upload" ? "" : `<button class="btn" type="button" data-skill="update" data-name="${name}" ${busy ? "disabled" : ""} aria-label="Update ${name}">Update</button>`}<button class="btn" type="button" data-skill="remove" data-name="${name}" ${busy ? "disabled" : ""} aria-label="Remove ${name}">Remove</button></div>`;
-  return `<tr><td class="skill-cell"><div class="skill-name"><b>${name}</b><span>${esc(shortVersion(skill))}</span>${removed ? '<span class="tag warn">Removing from runners</span>' : ""}</div><p class="sub">${esc(skillSourceLabel(skill))} · ${skill.agents.map((agent) => AGENT_NAMES[agent]).join(", ")}</p><p class="mono" title="SHA-256 ${esc(skill.sha256)}">sha256 ${esc(skill.sha256.slice(0, 12))}</p></td><td class="skill-state">${actions}</td></tr>`;
+  return `<tr><td class="skill-cell"><div class="skill-name"><b>${name}</b><span>${esc(shortVersion(skill))}</span>${removed ? '<span class="tag warn">Removing from runners</span>' : ""}</div><p class="sub">${esc(skillSourceLabel(skill))} · ${skill.agents.map((agent) => AGENT_NAMES[agent]).join(", ")}</p><p class="mono" title="SHA-256 ${esc(skill.sha256)}">sha256 ${esc(skill.sha256.slice(0, 12))}</p></td><td class="skill-state">${removed ? "" : skillRolloutMarkup(rollout)}${actions}</td></tr>`;
 }
 
 export function renderSkillSettings(view: SkillView): string {
@@ -104,7 +139,15 @@ export function renderSkillSettings(view: SkillView): string {
   const draft = view.draft ?? { source: "", ref: "", subfolder: "", agents: view.data.agents };
   const busy = view.busy !== null;
   const table = view.data.skills.length
-    ? `<table class="skills-table"><thead><tr><th>Skill</th><th class="skill-state">Pin</th></tr></thead><tbody>${view.data.skills.map((skill) => skillRow(skill, busy)).join("")}</tbody></table>`
+    ? `<table class="skills-table"><thead><tr><th>Skill</th><th class="skill-state">Runners</th></tr></thead><tbody>${view.data.skills
+        .map((skill) =>
+          skillRow(
+            skill,
+            busy,
+            view.data!.rollouts?.find((rollout) => rollout.name === skill.name),
+          ),
+        )
+        .join("")}</tbody></table>`
     : '<p class="settings-message">No skills yet. Agents only load what is in their own home and the repository.</p>';
   const feedback = view.error
     ? `<p class="settings-message err" role="alert">${esc(view.error)}</p>`

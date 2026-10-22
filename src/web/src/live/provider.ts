@@ -59,6 +59,7 @@ import {
   listMergeQueues,
   listQueuePositions,
   listRuns,
+  runAgentSetup,
   runRunnerName,
   usagePause,
   listTaskBlockers,
@@ -521,6 +522,7 @@ function runsFor(
     const activity = activityFor(db, record, stored, rows, generatedAt);
     const recent = activity.at(-1);
     const pause = record.currentRunId === current.id ? usagePause(db, current.id) : null;
+    const setup = runAgentSetup(db, current.id);
     runs.push({
       id: first.id,
       attempts: stored.map((run) => run.id),
@@ -541,6 +543,18 @@ function runsFor(
             usagePause: {
               agent: agentName(pause.agent),
               resumeAt: iso(pause.resumeAt, generatedAt),
+            },
+          }
+        : {}),
+      ...(setup
+        ? {
+            setup: {
+              skills: setup.skills.map((skill) => ({
+                name: skill.name,
+                version: skill.version,
+                installing: skill.status === "pending",
+              })),
+              hooks: setup.hooks,
             },
           }
         : {}),
