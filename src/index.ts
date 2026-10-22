@@ -107,6 +107,8 @@ import {
   REDELEGATION_CHECK_DELAY_MS,
   createIntakePollSource,
   createLinearTracker,
+  linearCaller,
+  linearCallerFor,
   openLinear,
   readStoredToken,
   startCatchUpPoller,
@@ -407,30 +409,38 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   if (linearTaskAccess === null) throw new Error("Linear is not connected.");
                   await linearTaskAccess.revalidateSessions(sessionIds);
                 },
-                reconcile: async (notification) => {
-                  if (notification.action === "issueAssignedToYou") {
-                    inbox.setCursor(`delegated:${notification.issueId}`, notification.createdAtMs);
-                    enqueueJobOnce(db, {
-                      queue: "linear.redelegation",
-                      jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
-                      payload: {
+                reconcile: (notification) =>
+                  linearCaller("notifications", async () => {
+                    if (notification.action === "issueAssignedToYou") {
+                      inbox.setCursor(
+                        `delegated:${notification.issueId}`,
+                        notification.createdAtMs,
+                      );
+                      enqueueJobOnce(db, {
+                        queue: "linear.redelegation",
+                        jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
+                        payload: {
+                          issueId: notification.issueId,
+                          delegatedAtMs: notification.createdAtMs,
+                        },
+                        runAt: Date.now() + REDELEGATION_CHECK_DELAY_MS,
+                        now: Date.now(),
+                      });
+                    }
+                    if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+                    if (reconciler)
+                      await reconciler.issueChanged({
                         issueId: notification.issueId,
-                        delegatedAtMs: notification.createdAtMs,
-                      },
-                      runAt: Date.now() + REDELEGATION_CHECK_DELAY_MS,
-                      now: Date.now(),
-                    });
-                  }
-                  if (linearTaskAccess === null) throw new Error("Linear is not connected.");
-                  if (reconciler)
-                    await reconciler.issueChanged({
-                      issueId: notification.issueId,
-                      organizationId: notification.organizationId,
-                    });
-                  await linearTaskAccess.reconcile(notification.issueId);
-                  orchestrator?.reconcileExecution();
-                  await refreshLinearNotificationContext(db, linear?.tracker ?? null, notification);
-                },
+                        organizationId: notification.organizationId,
+                      });
+                    await linearTaskAccess.reconcile(notification.issueId);
+                    orchestrator?.reconcileExecution();
+                    await refreshLinearNotificationContext(
+                      db,
+                      linear?.tracker ?? null,
+                      notification,
+                    );
+                  }),
                 notify: (command) => {
                   if (orchestrator === null) throw new Error("The loop is not attached.");
                   orchestrator.bus.emit(command);
@@ -472,8 +482,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   if (linear !== null)
     linearTaskAccess = new LinearTaskAccess(db, {
-      access: linear.access,
-      lifecycle: linear.issueLifecycle,
+      access: linear.access && linearCallerFor(linear.access, "task-access"),
+      lifecycle: linear.issueLifecycle && linearCallerFor(linear.issueLifecycle, "task-access"),
       oauthClientId: runtime.linearClientId,
       appUserId: runtime.linearViewerId,
       stopSession: stopLinearSession,
@@ -656,6 +666,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   try {
     server = startServer({
       server: options?.server,
+      linearUsage: linear === null ? undefined : () => linear.usage(),
       onboarding: async (request) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
@@ -1101,15 +1112,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           const lifecycle = linear?.issueLifecycle;
           const onEvent = linear?.webhook.onEvent;
           if (!lifecycle || !onEvent) return;
-          await checkRedelegation(
-            {
-              db,
-              store: inbox,
-              appUserId: runtime.linearViewerId,
-              inspect: (issueId) => lifecycle.inspect(issueId, { signal: abort.signal }),
-              onEvent,
-            },
-            job.payload as { issueId: string; delegatedAtMs: number },
+          await linearCaller("redelegation", () =>
+            checkRedelegation(
+              {
+                db,
+                store: inbox,
+                appUserId: runtime.linearViewerId,
+                inspect: (issueId) => lifecycle.inspect(issueId, { signal: abort.signal }),
+                onEvent,
+              },
+              job.payload as { issueId: string; delegatedAtMs: number },
+            ),
           );
         });
         created.jobs.register("linear.item.reconcile", async (job) => {

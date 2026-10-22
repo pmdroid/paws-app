@@ -10,7 +10,12 @@ import {
 } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
-import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
+import {
+  handleLinearWebhook,
+  webhookChecksNeeded,
+  type LinearUsage,
+  type LinearWebhookDeps,
+} from "../linear";
 import {
   fakeStatusProvider,
   handleStatusRequest,
@@ -57,6 +62,7 @@ export type ServerOptions = {
   githubWebhook?: GitHubWebhook;
   slackSigningSecret?: string | null;
   linearWebhook?: LinearWebhookDeps;
+  linearUsage?: () => LinearUsage;
   /**
    * Webhook routes. Default follows `LINEAR_WEBHOOKS` via `webhookChecksNeeded`.
    * Off, every `/webhooks/*` path is 404.
@@ -118,6 +124,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           githubWebhook,
           githubWebhookSecret,
           linearWebhook,
+          linearUsage: options.linearUsage,
           webhooks,
           githubAuth,
           csrfToken,
@@ -164,6 +171,7 @@ type Secrets = {
   githubWebhookSecret: string | null;
   githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
+  linearUsage?: (() => LinearUsage) | undefined;
   webhooks: boolean;
   githubAuth: ReturnType<typeof createDashboardGitHubAuth>;
   csrfToken: string;
@@ -181,7 +189,8 @@ type Secrets = {
 async function route(request: Request, secrets: Secrets): Promise<Response> {
   const path = new URL(request.url).pathname;
   if (request.method === "GET" && path === "/health") {
-    return Response.json({ ok: true, service: "paws" });
+    const usage = secrets.linearUsage?.();
+    return Response.json({ ok: true, service: "paws", ...(usage ? { linear: usage } : {}) });
   }
   if (path === "/api/runner-pairings" && secrets.runnerEnrollment !== undefined)
     return secrets.runnerEnrollment(request);

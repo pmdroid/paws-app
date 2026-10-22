@@ -513,6 +513,32 @@ export async function probeRunnerBackend(
     observe("an early-stopped remote run keeps its work for the next run of the item", true, {
       wipCommit: head,
     });
+    const stoppedWith = async (errorMessage: string, sessionId: string) => {
+      const record = item();
+      const run = backend.forItem(record.id)(input(record));
+      const command = await next();
+      if (command.type !== "run") throw new Error("Expected an implementation run");
+      const stopGrant = work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      });
+      results.submit({
+        runnerId,
+        runId: command.runId,
+        generation: command.generation,
+        token: stopGrant.token,
+        result: { ...result(command), stopReason: "error", errorMessage, sessionId },
+      });
+      assert.equal((await run).stopReason, "error");
+      return record;
+    };
+    const usageLimited = await stoppedWith(
+      "You've hit your usage limit. Your limit resets in 2h.",
+      "limited-session",
+    );
+    const tooLong = await stoppedWith("Prompt is too long", "too-long-session");
     db.run(
       "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
       [runnerId, "0.1.24", Date.now()],
@@ -521,6 +547,8 @@ export async function probeRunnerBackend(
     for (const [name, record] of [
       ["ended", first],
       ["errored", stopped],
+      ["limited", usageLimited],
+      ["tooLong", tooLong],
     ] as const) {
       const stop = new AbortController();
       const again = backend.forItem(record.id)(input(record, { signal: stop.signal }));
@@ -534,8 +562,11 @@ export async function probeRunnerBackend(
     while (work.commands(runnerId).length) await next();
     db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
     observe(
-      "a later run resumes the agent session of the item's last run unless that run errored",
-      continued.ended === "first-session" && continued.errored === null,
+      "a later run resumes the agent session of the item's last run unless that run errored other than at the usage limit",
+      continued.ended === "first-session" &&
+        continued.errored === null &&
+        continued.limited === "limited-session" &&
+        continued.tooLong === null,
       continued,
     );
     await git(["-C", source, "reset", "--hard", base]);
