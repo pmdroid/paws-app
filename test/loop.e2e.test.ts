@@ -36,6 +36,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  listUpToDateRuleRepositories,
 } from "../src/db";
 import {
   INSTALLATION_PERMISSIONS,
@@ -2218,6 +2219,89 @@ test("an issue rule for the task's Linear label runs Closeout again after a bran
   expect(result.thoughts, result.detail).toContain("Branch updated, running Closeout again.");
 }, 120_000);
 
+test("main moved on other files: overlap-only merges the accepted head without an update", async () => {
+  const result = await withGitIdentity(() =>
+    runRebaseConflict("clean", undefined, undefined, {
+      toml: '[merge]\nmain_moved = "overlap"\n',
+      labels: [],
+    }),
+  );
+  const apart = `Main moved to ${result.movedMain.slice(0, 7)} on other files and packages only. Merging this pull request's head ${result.acceptedHead.slice(0, 7)} on its own green CI, without updating the branch.`;
+  expect(
+    {
+      state: result.state,
+      merged: result.merged,
+      rounds: result.rounds,
+      reviewsAfterUpdate: result.reviews - result.reviewsBeforeUpdate,
+      mergedAcceptedHead: result.mergedHeads[0] === result.acceptedHead,
+      apartNote: result.thoughts.includes(apart),
+      updated: result.thoughts.some((body) => body.startsWith("Branch updated")),
+    },
+    `${result.detail}\n${JSON.stringify(result.thoughts)}`,
+  ).toEqual({
+    state: "merged",
+    merged: 1,
+    rounds: [],
+    reviewsAfterUpdate: 0,
+    mergedAcceptedHead: true,
+    apartNote: true,
+    updated: false,
+  });
+}, 120_000);
+
+test("GitHub's up-to-date rule on: overlap-only updates the branch, waits for CI and notes why once", async () => {
+  const result = await withGitIdentity(() =>
+    runRebaseConflict("clean", undefined, undefined, {
+      toml: '[merge]\nmain_moved = "overlap"\n',
+      labels: [],
+      client: (inner) => ({
+        async request(req) {
+          if (req.method === "GET" && req.path.includes("/rules/branches/"))
+            return {
+              status: 200,
+              body: [
+                {
+                  type: "required_status_checks",
+                  parameters: { strict_required_status_checks_policy: true },
+                },
+              ],
+            };
+          return inner.request(req);
+        },
+      }),
+    }),
+  );
+  const note = result.thoughts.filter((body) =>
+    body.startsWith(
+      "GitHub requires branches to be up to date before merging in pmdroid/paws-demo",
+    ),
+  );
+  expect(
+    {
+      state: result.state,
+      merged: result.merged,
+      rounds: result.rounds,
+      mergedAcceptedHead: result.mergedHeads[0] === result.acceptedHead,
+      mergedOnMovedMain: result.mergedOnMovedMain,
+      notes: note.length,
+      updated: result.thoughts.includes(
+        `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI.`,
+      ),
+      upToDateRule: result.upToDateRule,
+    },
+    `${result.detail}\n${JSON.stringify(result.thoughts)}`,
+  ).toEqual({
+    state: "merged",
+    merged: 1,
+    rounds: [],
+    mergedAcceptedHead: false,
+    mergedOnMovedMain: true,
+    notes: 1,
+    updated: true,
+    upToDateRule: ["pmdroid/paws-demo"],
+  });
+}, 120_000);
+
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
   let checks = 0;
   const host = Object.assign(new FakeHostGitHubAuth(), {
@@ -3068,7 +3152,11 @@ async function runRebaseConflict(
   mode: "resolve" | "repeat" | "rebase-failed" | "clean" | "linear",
   githubAuth?: FakeHostGitHubAuth,
   closeoutAfterUpdate?: boolean,
-  merging?: { toml: string; labels: string[] },
+  merging?: {
+    toml: string;
+    labels: string[];
+    client?: (inner: GitHubClient) => GitHubClient;
+  },
 ): Promise<{
   state: string | null;
   reviews: number;
@@ -3085,6 +3173,7 @@ async function runRebaseConflict(
   requeuedBases: (string | null)[];
   merged: number;
   rounds: string[];
+  upToDateRule: string[];
   linearRequest?: { jobs: { reason?: string; handoff?: string }[]; upstreamMain: string };
   detail: string;
 }> {
@@ -3138,7 +3227,7 @@ async function runRebaseConflict(
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
-      client: githubClient(layout.bare, github),
+      client: (merging?.client ?? ((inner) => inner))(githubClient(layout.bare, github)),
     },
     ...(githubAuth ? { githubAuth } : {}),
     launch(input) {
@@ -3270,6 +3359,7 @@ async function runRebaseConflict(
       requeuedBases,
       merged: github.merged.length,
       rounds: listCloseoutRounds(db).map((round) => round.head),
+      upToDateRule: listUpToDateRuleRepositories(db),
       ...(linearRequest ? { linearRequest } : {}),
       detail: debug(layout, db),
     };

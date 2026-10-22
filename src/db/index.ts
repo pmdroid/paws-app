@@ -354,7 +354,12 @@ export {
   saveQueuePositions,
 } from "./queue-wait";
 export type { QueuePosition } from "./queue-wait";
-export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
+export {
+  getTaskMergeSettings,
+  keepTaskMergeSettings,
+  listUpToDateRuleRepositories,
+  recordUpToDateRule,
+} from "./merge-settings";
 export type { TaskMergeSettings } from "./merge-settings";
 export {
   cancelPawsUpdate,

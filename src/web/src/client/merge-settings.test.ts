@@ -46,6 +46,20 @@ describe("Settings → Merging", () => {
     expect(picker).not.toContain(">Paws<");
   });
 
+  test("says where GitHub's up-to-date rule makes overlap-only updates fall back", () => {
+    const html = renderMergeSettings({
+      data: { ...data(), upToDateRule: ["acme/platform"] },
+      busy: null,
+      error: null,
+      saved: false,
+    });
+    expect(html).toContain(
+      "GitHub requires branches to be up to date in acme/platform, so merges there always update the branch and wait for CI.",
+    );
+    // A level that always updates keeps its own help.
+    expect(html).toContain("A Closeout re-check starts with a fresh retry budget.");
+  });
+
   test("falls back to typed project ids and labels when Linear choices are unavailable", () => {
     const html = renderMergeSettings({
       data: {

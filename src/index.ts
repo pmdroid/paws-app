@@ -85,6 +85,7 @@ import {
   submitCommand,
   type WorkItemRecord,
   runnerHasCapacity,
+  listUpToDateRuleRepositories,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import {
@@ -782,6 +783,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       agentSettings: {
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
+        upToDateRule: () => listUpToDateRuleRepositories(db),
         ...(linear?.tracker?.mergeChoices
           ? {
               mergeChoices: (signal: AbortSignal) => linear.tracker!.mergeChoices!({ signal }),

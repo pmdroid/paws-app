@@ -37,6 +37,7 @@ import {
   readMergeSettings,
   readQueueSettings,
   resolveAgentProfiles,
+  repositoryPackages,
   resolveMergeSettings,
   type AgentProfile,
 } from "../config";
@@ -163,6 +164,7 @@ import {
   type WorkItemRecord,
   getTaskMergeSettings,
   keepTaskMergeSettings,
+  recordUpToDateRule,
   type TaskMergeSettings,
 } from "../db";
 import {
@@ -2480,9 +2482,9 @@ export class Orchestrator {
     let closeoutFailure: CloseoutVerdict | null = null;
     let verifying = item;
     const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
-    // Overlap-only updates (PAS-394) wait for CI like `ci` until they land.
-    const closeoutAfterUpdate =
-      (await this.mergeSettingsFor(item, live.controller.signal)).mainMoved === "closeout";
+    const mainMoved = (await this.mergeSettingsFor(item, live.controller.signal)).mainMoved;
+    const closeoutAfterUpdate = mainMoved === "closeout";
+    const repositoryName = `${repository.owner}/${repository.repo}`;
     const merged = await serialMerge({
       worktree,
       issue: item.linearIdentifier,
@@ -2503,15 +2505,53 @@ export class Orchestrator {
       isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
       releaseWhilePending: true,
       ...(priorVerification === undefined ? {} : { priorVerification }),
+      ...(mainMoved === "overlap"
+        ? {
+            updateOnOverlap: {
+              packages: this.repositoryPackages(repositoryName),
+              onUpToDateRule: async (required) => {
+                recordUpToDateRule(this.db, repositoryName, required, this.now());
+                if (!required) return;
+                // One note per task: every later pass falls back the same way.
+                this.postAfterPullRequest(
+                  item,
+                  upToDateRuleMessage(repositoryName),
+                  `${item.id}:up-to-date-rule`,
+                );
+                await this.flush();
+              },
+            },
+          }
+        : {}),
       onWait: async (message) => {
         this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
         await this.flush();
       },
       reverify: async (input) => {
+        if (input.kept) {
+          // Main changed other files only: the head merges on its own green CI.
+          publicationCandidate = { sha: input.head, baseSha: input.base };
+          this.postAfterPullRequest(
+            item,
+            mainMovedApartMessage(input.base, input.head),
+            `${item.id}:main-moved-apart:${input.head}`,
+          );
+          await this.flush();
+          const filesReady = artifactPublicationReady(this.db, item.id);
+          return {
+            accepted: filesReady,
+            outcome: filesReady ? "merged" : "blocked",
+            summary: filesReady ? summary : "A requested artifact has not been uploaded.",
+          };
+        }
         const updated = acceptedHead !== null && input.head !== acceptedHead;
         if (updated && !closeoutAfterUpdate) {
           publicationCandidate = { sha: input.head, baseSha: input.base };
-          this.postBranchUpdate(item, input.head, branchUpdatedMessage(input.base));
+          this.postBranchUpdate(
+            item,
+            input.head,
+            branchUpdatedMessage(input.base, mainMoved, input.overlap),
+          );
           await this.flush();
           const filesReady = artifactPublicationReady(this.db, item.id);
           return {
@@ -2680,6 +2720,18 @@ export class Orchestrator {
         .startTimeoutHours;
     } catch {
       return DEFAULT_QUEUE_START_TIMEOUT_HOURS;
+    }
+  }
+
+  /** `[merge.repositories."owner/repo"] packages`. Unreadable means none: the same file overlaps. */
+  private repositoryPackages(repository: string): string[] {
+    try {
+      return repositoryPackages(
+        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        repository,
+      );
+    } catch {
+      return [];
     }
   }
 
@@ -5017,8 +5069,21 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
   );
 }
 
-function branchUpdatedMessage(base: string): string {
-  return `Branch updated onto main ${base.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
+function branchUpdatedMessage(base: string, mainMoved: string, overlap?: string[]): string {
+  const updated = `Branch updated onto main ${base.slice(0, 7)}, waiting for CI.`;
+  if (mainMoved !== "overlap")
+    return `${updated} Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
+  if (!overlap?.length) return updated;
+  const listed = overlap.slice(0, 5).join(", ") + (overlap.length > 5 ? ", …" : "");
+  return `Main changed ${listed}, which this pull request changes too. ${updated}`;
+}
+
+function mainMovedApartMessage(base: string, head: string): string {
+  return `Main moved to ${base.slice(0, 7)} on other files and packages only. Merging this pull request's head ${head.slice(0, 7)} on its own green CI, without updating the branch.`;
+}
+
+function upToDateRuleMessage(repository: string): string {
+  return `GitHub requires branches to be up to date before merging in ${repository}, so Paws updates the branch and waits for CI even when main changed other files. Turn off "Require branches to be up to date before merging" for the base branch to merge without an update.`;
 }
 
 function readString(payload: unknown, key: string): string | null {
