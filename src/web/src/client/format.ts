@@ -1,4 +1,10 @@
-import type { ItemState, RunState, StatusLink, VerdictDecision } from "../contract";
+import type {
+  ItemState,
+  RunState,
+  StatusLink,
+  StatusQueuePosition,
+  VerdictDecision,
+} from "../contract";
 
 const ITEM_LABEL: Record<ItemState, string> = {
   queued: "Queued",
@@ -222,4 +228,19 @@ function initials(name: string): string {
   const parts = name.trim().split(/\s+/).slice(0, 2);
   const letters = parts.map((part) => part[0] ?? "").join("");
   return letters.toUpperCase() || "?";
+}
+
+const ORDINAL = new Intl.PluralRules("en-US", { type: "ordinal" });
+const ORDINAL_SUFFIX: Record<string, string> = { one: "st", two: "nd", few: "rd", other: "th" };
+
+/** "Queued, 2nd in line." and "4 of 4 runner slots are busy." */
+export function queueText(queue: StatusQueuePosition): { place: string; slots: string } {
+  const place = `${queue.position}${ORDINAL_SUFFIX[ORDINAL.select(queue.position)] ?? "th"}`;
+  return {
+    place: `Queued, ${place} in line.`,
+    slots:
+      queue.totalSlots === 1
+        ? `${queue.busySlots} of 1 runner slot is busy.`
+        : `${queue.busySlots} of ${queue.totalSlots} runner slots are busy.`,
+  };
 }

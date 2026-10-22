@@ -38,6 +38,7 @@ import type {
 } from "../../../db";
 import {
   getLinearConversationSource,
+  getQueuePosition,
   getRun,
   listAgentCloseout,
   listCloseoutProgress,
@@ -268,7 +269,23 @@ function toItem(
     runId,
     pr,
     links: pr === null ? [] : [{ label: `PR #${pr.number}`, href: pr.url }],
+    ...queueOf(db, record),
   };
+}
+
+/** The scheduler's last line. A row left from before the item started is not shown. */
+function queueOf(db: Database, record: WorkItemRecord): Pick<StatusItem, "queue"> {
+  if (record.state !== "queued" || record.cancelRequested) return {};
+  const row = getQueuePosition(db, record.id);
+  return row === null
+    ? {}
+    : {
+        queue: {
+          position: row.position,
+          busySlots: row.busySlots,
+          totalSlots: row.totalSlots,
+        },
+      };
 }
 
 function runsFor(
