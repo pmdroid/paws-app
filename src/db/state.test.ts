@@ -233,6 +233,25 @@ describe("restart recovery", () => {
     expect(listOutbox(db)).toHaveLength(0);
   });
 
+  test("a second restart during a merge re-verifies again", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { id: "eng-twice", now: clock.now() });
+    beginImplementRun(db, item.id, clock.now(), checkpoint);
+    enterMergeQueue(db, item.id, checkpoint);
+    recoverOnStartup(db, clock.now());
+    db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.reverify'", [
+      clock.now(),
+    ]);
+    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    clock.advance(10 * 60_000);
+
+    expect(recoverOnStartup(db, clock.now())[0]).toEqual({ type: "reverify" });
+    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    expect(
+      listJobs(db).filter((job) => job.queue === "run.reverify" && job.status === "pending"),
+    ).toHaveLength(1);
+  });
+
   test("a question that is waiting for Linear survives a restart", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
