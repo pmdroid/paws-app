@@ -39,13 +39,15 @@ export const RunnerSkillManifestSchema = z
 /**
  * A skill as the runner reports it. `installed`: every idle home has it. `pending`: a home
  * with a run in progress still holds the version that run started with. `refused`: the bundle
- * failed its checksum or download, and the previous version (if any) stays installed.
+ * failed its checksum or download, and the previous version (if any) stays installed. `error`
+ * says why, for a refused skill only.
  */
 export const RunnerInstalledSkillSchema = z.strictObject({
   name,
   version,
   sha256,
   status: z.enum(["installed", "pending", "refused"]),
+  error: z.string().min(1).max(500).optional(),
 });
 
 export const RunnerInstalledSkillsSchema = z.array(RunnerInstalledSkillSchema).max(256);
