@@ -189,3 +189,36 @@ test("recovery preserves complete ACP history among worker question and artifact
     },
   ]);
 });
+
+test("a replayed history over the budget keeps the task request and the newest entries", () => {
+  const task = { kind: "request" as const, body: "Implement the task." };
+  const old = Array.from({ length: 40 }, (_, index) => ({
+    kind: "tool_result" as const,
+    body: `old-${index} ${"x".repeat(100_000)}`,
+  }));
+  const latest = { kind: "response" as const, body: "Latest answer." };
+  const prompt = reconstructAcpPrompt("Continue.", [task, ...old, latest]);
+  const context = JSON.parse(prompt.split("\n\n")[2]!) as { kind: string; body: string }[];
+  expect({
+    withinBudget: prompt.length < 900_000,
+    first: context[0],
+    omitted: context[1]?.body,
+    last: context.at(-1),
+    keptNewest: context.at(-2)?.body.startsWith("old-39 "),
+    request: prompt.endsWith("Current user request:\n\nContinue."),
+  }).toEqual({
+    withinBudget: true,
+    first: task,
+    omitted: expect.stringMatching(/^\d+ earlier entries are left out/),
+    last: latest,
+    keptNewest: true,
+    request: true,
+  });
+});
+
+test("a single replayed entry over the budget is cut to fit", () => {
+  const prompt = reconstructAcpPrompt("Continue.", [
+    { kind: "request", body: "y".repeat(2_000_000) },
+  ]);
+  expect(prompt.length).toBeLessThan(900_000);
+});
