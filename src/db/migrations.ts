@@ -1952,4 +1952,10 @@ CREATE TABLE runner_agent_usage (
 ) STRICT;
 `,
   },
+  {
+    id: "082_runner_work_cursor",
+    sql: `
+ALTER TABLE runner_work ADD COLUMN consumed_sequence INTEGER NOT NULL DEFAULT 0 CHECK(consumed_sequence>=0);
+`,
+  },
 ];

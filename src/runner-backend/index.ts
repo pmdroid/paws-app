@@ -40,6 +40,7 @@ import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
 import { RetryableRunnerError, runWithFailover } from "./failover";
+import { PawsShutdown } from "../core";
 import type { RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {}
@@ -263,6 +264,41 @@ export function createRemoteAgentRunner(options: {
     }
     return null;
   }
+  function attachedWork(itemId: string, role: RunAgentOptions["role"]) {
+    const runId = getWorkItem(db, itemId)?.currentRunId;
+    if (!runId) return undefined;
+    const row = db
+      .query<
+        { runnerId: string; workspaceId: string; envelope: string; cursor: number },
+        [string, number]
+      >(
+        `SELECT w.runner_id AS runnerId, w.workspace_id AS workspaceId, c.envelope,
+         w.consumed_sequence AS cursor
+         FROM runner_work w JOIN runner_command c ON c.id=w.command_id
+         WHERE w.run_id=? AND w.ended_at IS NULL AND w.lease_until>?`,
+      )
+      .get(runId, now());
+    if (!row) return undefined;
+    const command = JSON.parse(
+      Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(
+        "utf8",
+      ),
+    ) as WorkCommand;
+    if (command.type !== (role === "reviewer" ? "review" : "run")) return undefined;
+    return {
+      selected: {
+        id: row.runnerId,
+        workspaceId: row.workspaceId,
+        ...(command.memberId ? { memberId: command.memberId } : {}),
+        runId,
+      },
+      assigned: command,
+      baseSha: command.repository!.baseSha,
+      mainSha: command.repository!.mainSha,
+      deadline: command.expiresAt,
+      cursor: row.cursor,
+    };
+  }
   const cancelItem = createRemoteCancellation(options);
   return {
     cancelItem,
@@ -295,7 +331,9 @@ export function createRemoteAgentRunner(options: {
           excludeRunnerIds: excluded,
           signal: input.signal,
         };
-        const selected = await select(itemId, placementRequest);
+        const attached =
+          !input.prepareOnly && !responseTask ? attachedWork(itemId, input.role) : undefined;
+        const selected = attached?.selected ?? (await select(itemId, placementRequest));
         const controller = new AbortController();
         const abort = () => controller.abort(input.signal?.reason);
         input.signal?.addEventListener("abort", abort, { once: true });
@@ -390,237 +428,249 @@ export function createRemoteAgentRunner(options: {
             }
             throw new Error("Remote agent preparation timed out");
           }
-          const prepared = input.prepareInputFiles
-            ? await input.prepareInputFiles({
-                workspace: input.worktreePath,
-                prompt: input.prompt,
-                signal,
-              })
-            : { prompt: input.prompt, inputFiles: [] };
-          const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
-          const files = snapshotAgentInputs(input.worktreePath, [
-            ...suppliedInputs,
-            ...prepared.inputFiles,
-          ]);
-          const skillBundle =
-            !taskScope && input.role === "implementer"
-              ? await snapshotImplementationSkills({
-                  pawsRoot: input.pawsRoot,
-                  worktree: input.worktreePath,
-                  repository: `${scoped.repository!.owner}/${scoped.repository!.repo}`,
-                  signal,
-                })
-              : undefined;
-          const skillsInputId = skillBundle ? files.length : undefined;
-          if (skillBundle)
-            files.push({
-              path: `${input.worktreePath}/.paws-skills-${randomUUID()}.json`,
-              mimeType: "application/vnd.paws.skills+json",
-              bytes: skillBundle,
-            });
-          if (files.length && !options.inputs)
-            throw new Error("Remote agent input transfer is unavailable");
-          if (prepared.prompt.length > 65_536 && !options.inputs)
-            throw new Error("Remote conversation context transfer is unavailable");
-          const commandId = randomUUID();
-          const inputFiles = files.length
-            ? options.inputs!.stage(
-                commandId,
-                files.map((file) => ({
-                  ...file,
-                  path: relative(input.worktreePath, file.path).split(sep).join("/"),
-                })),
-              )
-            : undefined;
-          const promptContext =
-            prepared.prompt.length > 65_536
-              ? options.inputs!.stagePrompt(commandId, prepared.prompt)
-              : undefined;
-          const baseSha = taskScope
-            ? taskScope.repository
-              ? snapshotCommit(input.worktreePath, taskScope.repository)
-              : undefined
-            : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
-          if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
-            saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
-          const acceptsMainCommit = versionAtLeast(
-            db
-              .query<{ version: string | null }, [string]>(
-                "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-              )
-              .get(selected.id)?.version,
-            MAIN_COMMIT_RUNNER_VERSION,
-          );
-          const acceptsRebase =
-            !taskScope &&
-            versionAtLeast(
-              db
-                .query<{ version: string | null }, [string]>(
-                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                )
-                .get(selected.id)?.version,
-              REBASE_RUNNER_VERSION,
-            );
-          const fetchedMain = acceptsRebase
-            ? await git([
-                "-C",
-                input.worktreePath,
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                "refs/paws/upstream-main^{commit}",
-              ]).then(
-                (sha) => sha.trim() || undefined,
-                () => undefined,
-              )
-            : undefined;
-          const mainCandidate =
-            input.mainSha ?? fetchedMain ?? getWorkItem(db, itemId)?.checkpoint?.baseSha;
-          const mainSha =
-            !taskScope &&
-            acceptsMainCommit &&
-            baseSha &&
-            mainCandidate &&
-            mainCandidate !== baseSha &&
-            (acceptsRebase ||
-              (await git([
-                "-C",
-                input.worktreePath,
-                "merge-base",
-                "--is-ancestor",
-                mainCandidate,
-                baseSha,
-              ])
-                .then(() => true)
-                .catch(() => false)))
-              ? mainCandidate
-              : undefined;
-          const generation =
-            (db
-              .query<{ generation: number }, [string]>(
-                "SELECT generation FROM runner_work WHERE run_id=?",
-              )
-              .get(selected.runId)?.generation ?? 0) + 1;
-          const issuedAt = now();
-          const deadline = issuedAt + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
-          const checkpointBot =
-            !taskScope && input.role === "implementer"
-              ? await options.checkpointBot?.(
-                  `${scoped.repository!.owner}/${scoped.repository!.repo}`,
-                )
-              : undefined;
-          if (
-            input.commitPolicy &&
-            checkpointBot &&
-            (input.commitPolicy.bot.appId !== checkpointBot.appId ||
-              input.commitPolicy.bot.id !== checkpointBot.id ||
-              input.commitPolicy.bot.login !== checkpointBot.login)
-          )
-            throw new Error("Run attribution App bot authority changed");
-          if (options.placement) {
-            const admitted = (await options.placement.candidates(placementRequest)).some(
-              (runner) =>
-                runner.id === selected.id &&
-                runner.workspaceId === selected.workspaceId &&
-                runner.memberId === selected.memberId,
-            );
-            if (!admitted)
-              throw new RunnerUnavailableError(
-                "Selected runner is no longer available after preparation",
+          const placed =
+            attached ??
+            (await (async () => {
+              const prepared = input.prepareInputFiles
+                ? await input.prepareInputFiles({
+                    workspace: input.worktreePath,
+                    prompt: input.prompt,
+                    signal,
+                  })
+                : { prompt: input.prompt, inputFiles: [] };
+              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
+              const files = snapshotAgentInputs(input.worktreePath, [
+                ...suppliedInputs,
+                ...prepared.inputFiles,
+              ]);
+              const skillBundle =
+                !taskScope && input.role === "implementer"
+                  ? await snapshotImplementationSkills({
+                      pawsRoot: input.pawsRoot,
+                      worktree: input.worktreePath,
+                      repository: `${scoped.repository!.owner}/${scoped.repository!.repo}`,
+                      signal,
+                    })
+                  : undefined;
+              const skillsInputId = skillBundle ? files.length : undefined;
+              if (skillBundle)
+                files.push({
+                  path: `${input.worktreePath}/.paws-skills-${randomUUID()}.json`,
+                  mimeType: "application/vnd.paws.skills+json",
+                  bytes: skillBundle,
+                });
+              if (files.length && !options.inputs)
+                throw new Error("Remote agent input transfer is unavailable");
+              if (prepared.prompt.length > 65_536 && !options.inputs)
+                throw new Error("Remote conversation context transfer is unavailable");
+              const commandId = randomUUID();
+              const inputFiles = files.length
+                ? options.inputs!.stage(
+                    commandId,
+                    files.map((file) => ({
+                      ...file,
+                      path: relative(input.worktreePath, file.path).split(sep).join("/"),
+                    })),
+                  )
+                : undefined;
+              const promptContext =
+                prepared.prompt.length > 65_536
+                  ? options.inputs!.stagePrompt(commandId, prepared.prompt)
+                  : undefined;
+              const baseSha = taskScope
+                ? taskScope.repository
+                  ? snapshotCommit(input.worktreePath, taskScope.repository)
+                  : undefined
+                : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+              if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
+                saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
+              const acceptsMainCommit = versionAtLeast(
+                db
+                  .query<{ version: string | null }, [string]>(
+                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                  )
+                  .get(selected.id)?.version,
+                MAIN_COMMIT_RUNNER_VERSION,
               );
-          }
-          signal.throwIfAborted();
-          const boundRepository = taskScope?.repository ?? scoped.repository;
-          const checkoutExclusions = input.checkoutExclusions
-            ? [...input.checkoutExclusions]
-            : boundRepository
-              ? loadConfigFile(join(input.pawsRoot, "config.toml")).checkoutProjects?.[
-                  `${boundRepository.owner}/${boundRepository.repo}`.toLowerCase()
-                ]?.exclude
-              : undefined;
-          const resumeSessionId =
-            !taskScope &&
-            input.role === "implementer" &&
-            input.checkpoint !== false &&
-            versionAtLeast(
-              db
-                .query<{ version: string | null }, [string]>(
-                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+              const acceptsRebase =
+                !taskScope &&
+                versionAtLeast(
+                  db
+                    .query<{ version: string | null }, [string]>(
+                      "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                    )
+                    .get(selected.id)?.version,
+                  REBASE_RUNNER_VERSION,
+                );
+              const fetchedMain = acceptsRebase
+                ? await git([
+                    "-C",
+                    input.worktreePath,
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "refs/paws/upstream-main^{commit}",
+                  ]).then(
+                    (sha) => sha.trim() || undefined,
+                    () => undefined,
+                  )
+                : undefined;
+              const mainCandidate =
+                input.mainSha ?? fetchedMain ?? getWorkItem(db, itemId)?.checkpoint?.baseSha;
+              const mainSha =
+                !taskScope &&
+                acceptsMainCommit &&
+                baseSha &&
+                mainCandidate &&
+                mainCandidate !== baseSha &&
+                (acceptsRebase ||
+                  (await git([
+                    "-C",
+                    input.worktreePath,
+                    "merge-base",
+                    "--is-ancestor",
+                    mainCandidate,
+                    baseSha,
+                  ])
+                    .then(() => true)
+                    .catch(() => false)))
+                  ? mainCandidate
+                  : undefined;
+              const generation =
+                (db
+                  .query<{ generation: number }, [string]>(
+                    "SELECT generation FROM runner_work WHERE run_id=?",
+                  )
+                  .get(selected.runId)?.generation ?? 0) + 1;
+              const issuedAt = now();
+              const deadline = issuedAt + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
+              const checkpointBot =
+                !taskScope && input.role === "implementer"
+                  ? await options.checkpointBot?.(
+                      `${scoped.repository!.owner}/${scoped.repository!.repo}`,
+                    )
+                  : undefined;
+              if (
+                input.commitPolicy &&
+                checkpointBot &&
+                (input.commitPolicy.bot.appId !== checkpointBot.appId ||
+                  input.commitPolicy.bot.id !== checkpointBot.id ||
+                  input.commitPolicy.bot.login !== checkpointBot.login)
+              )
+                throw new Error("Run attribution App bot authority changed");
+              if (options.placement) {
+                const admitted = (await options.placement.candidates(placementRequest)).some(
+                  (runner) =>
+                    runner.id === selected.id &&
+                    runner.workspaceId === selected.workspaceId &&
+                    runner.memberId === selected.memberId,
+                );
+                if (!admitted)
+                  throw new RunnerUnavailableError(
+                    "Selected runner is no longer available after preparation",
+                  );
+              }
+              signal.throwIfAborted();
+              const boundRepository = taskScope?.repository ?? scoped.repository;
+              const checkoutExclusions = input.checkoutExclusions
+                ? [...input.checkoutExclusions]
+                : boundRepository
+                  ? loadConfigFile(join(input.pawsRoot, "config.toml")).checkoutProjects?.[
+                      `${boundRepository.owner}/${boundRepository.repo}`.toLowerCase()
+                    ]?.exclude
+                  : undefined;
+              const resumeSessionId =
+                !taskScope &&
+                input.role === "implementer" &&
+                input.checkpoint !== false &&
+                versionAtLeast(
+                  db
+                    .query<{ version: string | null }, [string]>(
+                      "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                    )
+                    .get(selected.id)?.version,
+                  SESSION_RESUME_RUNNER_VERSION,
                 )
-                .get(selected.id)?.version,
-              SESSION_RESUME_RUNNER_VERSION,
-            )
-              ? earlierSession(db, itemId, selected.id, profile.agent)
-              : undefined;
-          const assigned: WorkCommand = {
-            id: commandId,
-            runnerId: selected.id,
-            workspaceId: selected.workspaceId,
-            ...(selected.memberId ? { memberId: selected.memberId } : {}),
-            issuedAt,
-            expiresAt: deadline,
-            runId: selected.runId,
-            itemId,
-            generation,
-            profile,
-            prompt: promptContext
-              ? "Use the complete supplied conversation context."
-              : prepared.prompt,
-            inputFiles,
-            promptContext,
-            ...(taskScope
-              ? {
-                  type: "task" as const,
-                  sessionId: taskScope.sessionId,
-                  sessionGeneration: taskScope.sessionGeneration,
-                  taskModeGeneration: taskScope.taskModeGeneration,
-                  purpose: taskScope.purpose,
-                  ...(taskScope.repository
-                    ? {
-                        repository: {
-                          ...taskScope.repository,
-                          baseSha: baseSha!,
-                          checkoutExclusions,
-                        },
-                      }
-                    : {}),
-                }
-              : {
-                  type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
-                  ...(skillsInputId !== undefined ? { skillsInputId } : {}),
-                  repository: {
-                    ...scoped.repository!,
-                    baseSha: baseSha!,
-                    checkoutExclusions,
-                    ...(mainSha ? { mainSha } : {}),
-                  },
-                  ...(acceptsMainCommit && input.role !== "reviewer" && input.checkpoint === false
-                    ? { checkpoint: false as const }
-                    : {}),
-                  ...(resumeSessionId ? { resumeSessionId } : {}),
-                  ...(checkpointBot ? { checkpointBot } : {}),
-                  ...(input.commitPolicy
-                    ? { commitPolicy: input.commitPolicy, checkpointBot: input.commitPolicy.bot }
-                    : {}),
-                }),
-          };
-          immediate(db, () => {
-            if (!runnerHasCapacity(db, selected.id, now()))
-              throw new Error("Runner became busy before assignment");
-            work.assign(assigned);
-            options.placement?.started({
-              commandId: assigned.id,
-              runnerId: selected.id,
-              itemId,
-              runId: selected.runId,
-              profile,
-              role: input.role,
-              purpose: "work",
-              startedAt: issuedAt,
-            });
-          });
+                  ? earlierSession(db, itemId, selected.id, profile.agent)
+                  : undefined;
+              const assigned: WorkCommand = {
+                id: commandId,
+                runnerId: selected.id,
+                workspaceId: selected.workspaceId,
+                ...(selected.memberId ? { memberId: selected.memberId } : {}),
+                issuedAt,
+                expiresAt: deadline,
+                runId: selected.runId,
+                itemId,
+                generation,
+                profile,
+                prompt: promptContext
+                  ? "Use the complete supplied conversation context."
+                  : prepared.prompt,
+                inputFiles,
+                promptContext,
+                ...(taskScope
+                  ? {
+                      type: "task" as const,
+                      sessionId: taskScope.sessionId,
+                      sessionGeneration: taskScope.sessionGeneration,
+                      taskModeGeneration: taskScope.taskModeGeneration,
+                      purpose: taskScope.purpose,
+                      ...(taskScope.repository
+                        ? {
+                            repository: {
+                              ...taskScope.repository,
+                              baseSha: baseSha!,
+                              checkoutExclusions,
+                            },
+                          }
+                        : {}),
+                    }
+                  : {
+                      type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
+                      ...(skillsInputId !== undefined ? { skillsInputId } : {}),
+                      repository: {
+                        ...scoped.repository!,
+                        baseSha: baseSha!,
+                        checkoutExclusions,
+                        ...(mainSha ? { mainSha } : {}),
+                      },
+                      ...(acceptsMainCommit &&
+                      input.role !== "reviewer" &&
+                      input.checkpoint === false
+                        ? { checkpoint: false as const }
+                        : {}),
+                      ...(resumeSessionId ? { resumeSessionId } : {}),
+                      ...(checkpointBot ? { checkpointBot } : {}),
+                      ...(input.commitPolicy
+                        ? {
+                            commitPolicy: input.commitPolicy,
+                            checkpointBot: input.commitPolicy.bot,
+                          }
+                        : {}),
+                    }),
+              };
+              immediate(db, () => {
+                if (!runnerHasCapacity(db, selected.id, now()))
+                  throw new Error("Runner became busy before assignment");
+                work.assign(assigned);
+                options.placement?.started({
+                  commandId: assigned.id,
+                  runnerId: selected.id,
+                  itemId,
+                  runId: selected.runId,
+                  profile,
+                  role: input.role,
+                  purpose: "work",
+                  startedAt: issuedAt,
+                });
+              });
+              return { assigned, baseSha, mainSha, deadline };
+            })());
+          const { assigned, baseSha, mainSha, deadline } = placed;
+          const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
           command = assigned;
-          let cursor = 0;
+          let cursor = attached?.cursor ?? 0;
           let complete: RunnerResult | null = null;
           let disposition: { retryable: boolean } | undefined;
           while (now() < deadline) {
@@ -787,6 +837,11 @@ export function createRemoteAgentRunner(options: {
                   });
               }
               cursor = row.sequence;
+              db.run("UPDATE runner_work SET consumed_sequence=? WHERE run_id=? AND generation=?", [
+                cursor,
+                assigned.runId,
+                assigned.generation,
+              ]);
             }
             if (complete && pendingEvents.length < 64) break;
             if (pendingEvents.length === 64) continue;
@@ -949,7 +1004,7 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
-          if (command) {
+          if (command && !(signal.reason instanceof PawsShutdown)) {
             try {
               const issuedAt = now();
               work.enqueue({

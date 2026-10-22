@@ -536,6 +536,7 @@ export async function probeRunnerBackend(
       continued.ended === "first-session" && continued.errored === null,
       continued,
     );
+    await git(["-C", source, "reset", "--hard", base]);
     const detached = item();
     const shutdown = new AbortController();
     const before: string[] = [];
@@ -596,9 +597,11 @@ export async function probeRunnerBackend(
       runId: detachedCommand.runId,
       generation: detachedCommand.generation,
       token: detachedGrant.token,
-      result: result(detachedCommand),
+      result: { ...result(detachedCommand), candidateSha: head },
     });
+    const fetchedBeforeRestart = fetched;
     const reattached = await afterRestart;
+    fetched = fetchedBeforeRestart;
     const redispatched = work.commands(runnerId).length > 0;
     observe(
       "a Paws restart leaves a runner's work running and the next call picks up its later events and result",
