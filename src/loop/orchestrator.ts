@@ -4043,7 +4043,7 @@ export class Orchestrator {
       target: "linear",
       op: "status",
       orderingKey: sessionId,
-      idempotencyKey: `status:${item.id}:${issueId}:${stateType}`,
+      idempotencyKey: `status:${item.id}:${issueId}:${stateType}:${item.version}`,
       payload: { itemId: item.id, linearIssueId: issueId, stateType },
       now: this.now(),
     });
