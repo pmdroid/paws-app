@@ -441,9 +441,9 @@ async function handleConnection(
       attempt?.complete();
       const label = name.replace(/[\\[\]]/g, "\\$&");
       const image = artifact.mimeType.startsWith("image/") && !evidence;
-      socket.end(
-        `${JSON.stringify({ id, answer: `${image ? "!" : ""}[${label}](<${url.href}>)` })}\n`,
-      );
+      const link = `${image ? "!" : ""}[${label}](<${url.href}>)`;
+      const note = typeof published.note === "string" ? published.note.trim() : "";
+      socket.end(`${JSON.stringify({ id, answer: note ? `${link}\n\n${note}` : link })}\n`);
       return;
     }
     if (parsed.tool && parsed.tool !== "ask_team") throw new Error("unknown host tool");
