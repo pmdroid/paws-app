@@ -23,8 +23,8 @@ export type { FetchLike } from "./client";
 export { branchForIssue, fixesLine, githubHttpsUrl, pullRequestBody } from "./branch";
 export { createPullRequests, openPullRequest, publishAccepted, pushBranch } from "./pulls";
 export type { PullRequestClientOptions } from "./pulls";
-export { serialMerge } from "./merge";
-export type { SerialMergeInput } from "./merge";
+export { fetchUpstreamMain, serialMerge } from "./merge";
+export type { FetchUpstreamMainInput, SerialMergeInput } from "./merge";
 export {
   agentEnv,
   checkGhAuthStatus,
