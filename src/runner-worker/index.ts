@@ -482,6 +482,9 @@ export async function executeRunnerCommand(
       env: agentEnv,
       checkpointEnv: env,
       commitPolicy: command.type === "run" ? command.commitPolicy : undefined,
+      ...(command.type === "run" && command.repository.mainSha
+        ? { mainSha: command.repository.mainSha }
+        : {}),
       ...(command.type === "run" && options.answer
         ? {
             closeoutPolicy: remoteCloseoutPolicy(
