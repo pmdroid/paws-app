@@ -1621,6 +1621,7 @@ export function createLinearGitHubAuth(input: {
             recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/settings/integrations`,
             administrators: input.administratorsForItem ?? (() => []),
             current: input.currentIntegrationItem ?? (() => true),
+            unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
             identity:
               input.integrationIdentity ??
               ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
