@@ -36,5 +36,5 @@ export type SettingsPage = (typeof SETTINGS_PAGES)[number]["id"];
 
 export function renderSettingsPage(page: SettingsPage = "agents"): string {
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `<h1 class="sr-only">${current.name}</h1><p class="sub">${current.description}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : ""}`;
+  return `<h1 class="sr-only">${current.name}</h1><p class="sub">${current.description}</p>${page === "agents" ? '<div id="skill-settings" class="skill-settings"></div><div id="agent-settings" class="agent-settings"></div>' : ""}`;
 }

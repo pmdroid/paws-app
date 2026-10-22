@@ -39,6 +39,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/server`    | `Bun.serve` on `127.0.0.1:8787`, `/health`, route table  | `config`, `linear`, `github`, `web` |
 | `src/web`       | Static status dashboard (`/status`, `GET /api/status`)   | nothing in `src`                    |
 | `src/evidence`  | Closeout videos and screenshots, `GET /api/evidence/:id` | `db`                                |
+| `src/skills`    | Agent skill sources, pinned versions, bundles            | `db`                                |
 
 Import another module only through its `index.ts`. `test/boundaries.test.ts` fails the build otherwise. A new npm dependency is fine; a deep import is not.
 

@@ -1998,4 +1998,20 @@ CREATE TABLE usage_pause (
 ) STRICT;
 `,
   },
+  {
+    id: "087_agent_skill",
+    sql: `
+CREATE TABLE agent_skill (
+  name TEXT PRIMARY KEY CHECK(length(name) BETWEEN 1 AND 64),
+  source TEXT NOT NULL CHECK(json_valid(source)),
+  version TEXT NOT NULL CHECK(length(version) BETWEEN 1 AND 128),
+  sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+  size_bytes INTEGER NOT NULL CHECK(size_bytes>0),
+  agents TEXT NOT NULL CHECK(json_valid(agents)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  removed_at INTEGER
+) STRICT;
+`,
+  },
 ];
