@@ -193,6 +193,8 @@ import {
   publishAccepted,
   closeStoppedPull,
   fetchUpstreamMain,
+  githubQueueLine,
+  githubQueueMerge,
   mergedPullHeads,
   readPullReview,
   serialMerge,
@@ -240,7 +242,9 @@ import { askForVisualReview, postNote, remindVisualReview } from "./visual-revie
 import {
   ciWaitVerification,
   enqueueVerifiedMerge,
+  githubQueueWatch,
   parkMergeForCi,
+  type GitHubQueueWatch,
   type MergeWaitReason,
 } from "./merge-jobs";
 import {
@@ -389,7 +393,10 @@ export type ExecutionChanges = {
 
 class LinearReconciliationPendingError extends Error {}
 
-/** A merge pass that waits. `queued` waits in the merge queue or for a review, with no deadline. */
+/**
+ * A merge pass that waits. `queued` waits in the merge queue or for a review, with no deadline.
+ * `githubQueue` is set while the task waits on GitHub's merge queue.
+ */
 type MergeWait = {
   message: string;
   base?: string;
@@ -397,10 +404,18 @@ type MergeWait = {
   summary?: string;
   queued?: boolean;
   reason: MergeWaitReason;
+  /** Set while the task uses GitHub's merge queue. */
+  githubQueue?: GitHubQueueWatch;
 };
 
 /** Rebase conflicts keep a fixed limit. CI failures use the `[merge] ci_fix_attempts` setting. */
 const MAX_REBASE_RETURNS = 3;
+/** The first line of a CI fix handoff under the GitHub merge queue order. */
+const CI_FIX_SOURCE = {
+  pull: "The pull request's own checks failed before Paws could add it to the GitHub merge queue.",
+  queue:
+    "GitHub's merge queue removed the pull request because a check failed on the combined commit it tested with the pull requests ahead of it. Main may have changed since this branch was made.",
+};
 export const REBASE_CONFLICT_INSTRUCTION =
   "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 const REBASE_CONFLICT_THOUGHT =
@@ -1098,7 +1113,12 @@ export class Orchestrator {
           job,
           this.now(),
           { base: waiting.base, head: waiting.head, summary: waiting.summary },
-          { queued: waiting.queued === true, reason: waiting.reason, message: waiting.message },
+          {
+            queued: waiting.queued === true,
+            reason: waiting.reason,
+            message: waiting.message,
+            ...(waiting.githubQueue ? { githubQueue: waiting.githubQueue } : {}),
+          },
         ) !== "expired"
       )
         return;
@@ -2677,9 +2697,21 @@ export class Orchestrator {
     let verifying = item;
     const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
     const mergeSettings = await this.mergeSettingsFor(item, live.controller.signal);
+    if (mergeSettings.order === "github-queue") {
+      const handed = await this.mergeThroughGitHubQueue({
+        item,
+        payload,
+        repository,
+        github,
+        pull: published.pull,
+        head: published.head,
+        signal: live.controller.signal,
+      });
+      if (handed !== "no_queue") return handed;
+    }
     // Overlap-only updates (PAS-394) wait for CI like `ci` until they land.
     const closeoutAfterUpdate = mergeSettings.mainMoved === "closeout";
-    // The GitHub merge queue (PAS-395) merges each on its own until it lands.
+    // Under "Add to the GitHub merge queue", a base branch without one merges each on its own.
     const queued = mergeSettings.order === "queue";
     if (queued) {
       const wait = await this.mergeQueueTurn(item, repository, github, {
@@ -2880,9 +2912,13 @@ export class Orchestrator {
       );
       return;
     }
+    await this.completeMerge(item, repository);
+  }
+
+  private async completeMerge(item: WorkItemRecord, repository: RepositoryBinding): Promise<void> {
     this.post(item, "thought", `Merged ${item.linearIdentifier}.`, `${item.id}:merged`);
     applyWorkItemEvent(this.db, item.id, "merge_accepted");
-    sessionProgress?.phase("completed");
+    this.sessionProgress(item)?.phase("completed");
     this.postStatus(item, "completed");
     await removeWorktree({
       owner: repository.owner,
@@ -2958,6 +2994,177 @@ export class Orchestrator {
       queued: true,
       reason: "ahead",
     };
+  }
+
+  /**
+   * Settings → Merging "Add to the GitHub merge queue". Paws neither rebases nor runs Closeout
+   * again: GitHub tests the combined result. Once the pull request's own checks pass, Paws
+   * queues it and reads the entry on each pass. A failing check or a conflict goes back to the
+   * agent like CI does today, and a fixed head is queued again after Closeout accepts it. Any
+   * other removal, such as a person dequeuing it, asks in Linear. `no_queue` means the base branch
+   * has no merge queue, and Paws merges the pull request itself.
+   */
+  private async mergeThroughGitHubQueue(input: {
+    item: WorkItemRecord;
+    payload: unknown;
+    repository: RepositoryBinding;
+    github: GitHubBinding;
+    pull: { number: number; url: string | null };
+    head: string;
+    signal: AbortSignal;
+  }): Promise<MergeWait | undefined | "no_queue"> {
+    const { item, repository, github, pull } = input;
+    const name = `${repository.owner}/${repository.repo}`;
+    const watch = githubQueueWatch(input.payload) ?? { queued: false };
+    const result = await githubQueueMerge({
+      owner: repository.owner,
+      repo: repository.repo,
+      prNumber: pull.number,
+      head: input.head,
+      client: github.client,
+      appId: github.appId,
+      installationId: github.installationId,
+      privateKeyPem: github.privateKeyPem,
+      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
+      queued: watch.queued,
+      isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
+      signal: input.signal,
+    });
+    if (this.stopped(item.id)) return;
+    switch (result.outcome) {
+      case "no_queue":
+        this.postAfterPullRequest(
+          item,
+          `${result.message} Paws merges the pull request itself when its CI is green.`,
+          `${item.id}:github-queue:none:${input.head}`,
+        );
+        return "no_queue";
+      case "checks_pending":
+      case "unreadable":
+        return { message: result.message, head: input.head, reason: "ci", githubQueue: watch };
+      case "queued": {
+        const line = githubQueueLine(name, result.position, result.state);
+        if (!watch.queued)
+          this.postAfterPullRequest(
+            item,
+            `Added ${pull.url ?? `pull request #${pull.number}`} to the GitHub merge queue. ${line}`,
+            `${item.id}:github-queue:added:${input.head}`,
+          );
+        else if (watch.position !== result.position || watch.state !== result.state)
+          this.postAfterPullRequest(
+            item,
+            line,
+            `${item.id}:github-queue:${input.head}:${result.position}:${result.state}`,
+          );
+        await this.flush();
+        return {
+          message: line,
+          head: input.head,
+          reason: (result.position ?? 1) > 1 ? "ahead" : "ci",
+          githubQueue: { queued: true, position: result.position, state: result.state },
+        };
+      }
+      case "merged":
+        recordConfirmedRemoteMerge(this.db, {
+          itemId: item.id,
+          repositoryOwner: repository.owner,
+          repositoryName: repository.repo,
+          pullNumber: pull.number,
+          pullUrl: pull.url,
+          mergeSha: result.sha,
+          confirmedAt: this.now(),
+        });
+        await this.completeMerge(item, repository);
+        return;
+      case "ci_failed":
+        return this.githubQueueCiFailed(item, result.failedChecks, pull.url, CI_FIX_SOURCE.pull);
+      case "removed": {
+        const { removal } = result;
+        const why = removal.reason ? ` (${removal.reason})` : "";
+        if (removal.cause === "failed")
+          return this.githubQueueCiFailed(
+            item,
+            [{ name: removal.reason || "merge queue checks", url: pull.url }],
+            pull.url,
+            CI_FIX_SOURCE.queue,
+          );
+        if (removal.cause === "conflict") {
+          if (
+            (await this.fetchUpstreamMain(item).catch(() => false)) &&
+            this.returnToAgent(
+              item,
+              "rebase-conflict",
+              MAX_REBASE_RETURNS,
+              REBASE_CONFLICT_INSTRUCTION,
+              () =>
+                `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
+            )
+          )
+            return;
+          this.fail(
+            item,
+            "merge",
+            `GitHub's merge queue removed the pull request for a conflict${why}.`,
+          );
+          return;
+        }
+        await this.askGitHubQueueRemoval(
+          item,
+          `${removal.actor ? `@${removal.actor}` : "Someone"} removed ${pull.url ?? `pull request #${pull.number}`} from the ${name} GitHub merge queue${why}.`,
+        );
+        return;
+      }
+      case "closed":
+        await this.askGitHubQueueRemoval(
+          item,
+          `${pull.url ?? `Pull request #${pull.number}`} was closed on GitHub while it waited for the ${name} merge queue.`,
+        );
+        return;
+      case "blocked":
+      case "sha_moved":
+        this.fail(item, "merge", result.message);
+        return;
+    }
+  }
+
+  /** A failing check sends the task back to the agent, at most `ci_fix_attempts` times, then asks. */
+  private async githubQueueCiFailed(
+    item: WorkItemRecord,
+    checks: readonly { name: string; url: string | null }[],
+    pullUrl: string | null,
+    source: string,
+  ): Promise<undefined> {
+    const limit = this.ciFixAttempts();
+    if (
+      this.returnToAgent(
+        item,
+        "ci-failed",
+        limit,
+        `${source}\n\n${ciFixHandoff(checks)}`,
+        (attempt) => ciFixRoundLine(checks, attempt, limit),
+      )
+    )
+      return;
+    if (this.askCiHelp(item, ciFixQuestion(checks, limit, pullUrl))) {
+      await this.flush();
+      return;
+    }
+    this.fail(item, "merge", `CI failed: ${checks.map((check) => check.name).join(", ")}`);
+    return;
+  }
+
+  /** The pull request left GitHub's merge queue for a reason Paws should not decide alone. */
+  private async askGitHubQueueRemoval(item: WorkItemRecord, what: string): Promise<void> {
+    const body = [
+      what,
+      "",
+      "What should Paws do? Reply with what to change, and the agent works on it. Paws adds the pull request to the merge queue again after Closeout accepts the change. To leave it as it is, stop the task.",
+    ].join("\n");
+    if (this.askCiHelp(item, body)) {
+      await this.flush();
+      return;
+    }
+    this.fail(item, "merge", what);
   }
 
   private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {

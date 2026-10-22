@@ -171,10 +171,14 @@ export type FakeMergeQueue = {
   branches: Set<string>;
   /** Every `enqueuePullRequest` call. */
   enqueued: { pullRequestId: string; head: string }[];
-  /** How many merge queue GraphQL reads and writes were made. */
+  /** Each merge queue GraphQL read and write, in order. */
   calls: string[];
   /** Answer a merge queue GraphQL request, or null for any other request. */
-  respond(request: { method: string; path: string; body?: unknown }): Promise<GitHubResponse | null>;
+  respond(request: {
+    method: string;
+    path: string;
+    body?: unknown;
+  }): Promise<GitHubResponse | null>;
   /** GitHub merged the queued pull request. */
   merge(number: number, sha?: string): void;
   /** GitHub, or a person when `actor` is a login, removed the pull request from the queue. */
@@ -261,14 +265,14 @@ export function createFakeMergeQueue(
                       last === null
                         ? []
                         : last.type === "added"
-                          ? [{ __typename: "AddedToMergeQueueEvent" }]
+                          ? [{ kind: "AddedToMergeQueueEvent" }]
                           : [
                               {
-                                __typename: "RemovedFromMergeQueueEvent",
+                                kind: "RemovedFromMergeQueueEvent",
                                 reason: last.reason,
                                 actor: last.actor
-                                  ? { __typename: "User", login: last.actor }
-                                  : { __typename: "Bot", login: "github-merge-queue" },
+                                  ? { login: last.actor }
+                                  : { login: "github-merge-queue" },
                               },
                             ],
                   },

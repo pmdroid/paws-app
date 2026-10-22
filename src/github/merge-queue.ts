@@ -65,8 +65,8 @@ const entryQuery = `query MergeQueueEntry($owner: String!, $repo: String!, $numb
       mergeQueueEntry { position state }
       timelineItems(last: 1, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
         nodes {
-          __typename
-          ... on RemovedFromMergeQueueEvent { reason actor { __typename login } }
+          kind: __typename
+          ... on RemovedFromMergeQueueEvent { reason actor { login } }
         }
       }
     }
@@ -79,7 +79,13 @@ const enqueueMutation = `mutation EnqueuePullRequest($id: ID!, $head: GitObjectI
   }
 }`;
 
-const entryStateSchema = z.enum(["QUEUED", "AWAITING_CHECKS", "MERGEABLE", "UNMERGEABLE", "LOCKED"]);
+const entryStateSchema = z.enum([
+  "QUEUED",
+  "AWAITING_CHECKS",
+  "MERGEABLE",
+  "UNMERGEABLE",
+  "LOCKED",
+]);
 const entrySchema = z
   .object({ position: z.number().int().nullable().optional(), state: entryStateSchema })
   .nullable()
@@ -108,12 +114,9 @@ const entryResponseSchema = z.object({
             nodes: z.array(
               z
                 .object({
-                  __typename: z.string(),
+                  kind: z.string(),
                   reason: z.string().nullable().optional(),
-                  actor: z
-                    .object({ __typename: z.string().optional(), login: z.string() })
-                    .nullable()
-                    .optional(),
+                  actor: z.object({ login: z.string() }).nullable().optional(),
                 })
                 .nullable(),
             ),
@@ -205,7 +208,7 @@ export async function readMergeQueueEntry(
       head: pull.headRefOid,
       baseBranch: pull.baseRefName,
       lastRemoval:
-        last?.__typename === "RemovedFromMergeQueueEvent"
+        last?.kind === "RemovedFromMergeQueueEvent"
           ? classifyRemoval(last.reason ?? "", last.actor ?? null)
           : null,
     };
@@ -222,7 +225,7 @@ export async function readMergeQueueEntry(
  */
 export function classifyRemoval(
   reason: string,
-  actor: { __typename?: string; login: string } | null,
+  actor: { login: string } | null,
 ): MergeQueueRemoval {
   const text = reason.toLowerCase().replaceAll("_", " ");
   const cause: MergeQueueRemovalCause = /conflict/.test(text)

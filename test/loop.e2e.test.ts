@@ -42,7 +42,17 @@ import {
   openDatabase,
   type CiRound,
 } from "../src/db";
-import { createFakeGitHub, fakeMergeReadiness, type GitHubTokenProvider } from "../src/github";
+import {
+  INSTALLATION_PERMISSIONS,
+  createFakeGitHub,
+  createFakeMergeQueue,
+  fakeMergeReadiness,
+  type FakeMergeQueue,
+  fakeRequiredChecks,
+  type GitHubClient,
+  type GitHubResponse,
+  type GitHubTokenProvider,
+} from "../src/github";
 import {
   createFakeTracker,
   createFakeLinearAccessReads,
@@ -3209,6 +3219,240 @@ test("a changed CI fix setting applies to the next CI round of a running task", 
   expect(result.questions).toHaveLength(1);
   expect(result.questions[0]).toContain("The agent used all 1 CI fix attempt.");
 }, 120_000);
+
+test("with the GitHub merge queue order, Paws queues the accepted pull request and GitHub merges it", async () => {
+  const result = await runGitHubQueue((queue, pull, round) => {
+    if (round === 0) queue.move(pull, 1, "AWAITING_CHECKS");
+    else queue.merge(pull);
+  });
+  expect(
+    {
+      state: result.state,
+      implementRuns: result.implementRuns,
+      enqueued: result.enqueued,
+      selfMerges: result.selfMerges,
+      added: result.lines.some(
+        (line) =>
+          line.startsWith("Added ") &&
+          line.endsWith(
+            "to the GitHub merge queue. Second in the pmdroid/paws-demo GitHub merge queue, queued.",
+          ),
+      ),
+      moved: result.lines.includes(
+        "First in the pmdroid/paws-demo GitHub merge queue, waiting for checks.",
+      ),
+      rebaseOrRecheck: result.lines.some((line) => line.startsWith("Branch updated")),
+    },
+    result.detail,
+  ).toEqual({
+    state: "merged",
+    implementRuns: 1,
+    enqueued: 1,
+    selfMerges: 0,
+    added: true,
+    moved: true,
+    rebaseOrRecheck: false,
+  });
+}, 120_000);
+
+test("a GitHub merge queue removal for a failing check goes back to the agent and queues the fix again", async () => {
+  const result = await runGitHubQueue((queue, pull, round, enqueued) => {
+    if (enqueued === 1) queue.remove(pull, "FAILED_CHECKS");
+    else queue.merge(pull);
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns).toBe(2);
+  expect(result.enqueued).toBe(2);
+  expect(result.selfMerges).toBe(0);
+  expect(result.lines).toContain("CI: `FAILED_CHECKS` failed. Sent back to the agent, fix 1 of 3.");
+  expect(result.prompts[1]).toContain("GitHub's merge queue removed the pull request");
+  expect(result.questions).toEqual([]);
+}, 120_000);
+
+test("a person removing the pull request from the GitHub merge queue makes Paws ask in Linear", async () => {
+  const result = await runGitHubQueue((queue, pull) => queue.remove(pull, "MANUAL", "octocat"));
+  expect(result.state, result.detail).toBe("awaiting_input");
+  expect(result.implementRuns).toBe(1);
+  expect(result.enqueued).toBe(1);
+  expect(result.questions).toHaveLength(1);
+  expect(result.questions[0]).toContain("@octocat removed");
+  expect(result.questions[0]).toContain("from the pmdroid/paws-demo GitHub merge queue (MANUAL).");
+  expect(result.questions[0]).toContain("What should Paws do?");
+}, 120_000);
+
+test("without a merge queue on main, the GitHub merge queue order merges the pull request itself", async () => {
+  const result = await runGitHubQueue(() => undefined, { branches: [] });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.enqueued).toBe(0);
+  expect(result.selfMerges).toBe(1);
+  expect(result.lines).toContain(
+    "main in pmdroid/paws-demo has no GitHub merge queue. Paws merges the pull request itself when its CI is green.",
+  );
+}, 120_000);
+
+/**
+ * One task under `[merge] order = "github-queue"`. `onQueued` runs on each pass that finds the
+ * pull request in GitHub's merge queue: `round` counts those passes for the current enqueue.
+ */
+async function runGitHubQueue(
+  onQueued: (queue: FakeMergeQueue, pull: number, round: number, enqueued: number) => void,
+  options: { branches?: string[] } = {},
+): Promise<{
+  state: string | null;
+  implementRuns: number;
+  enqueued: number;
+  selfMerges: number;
+  lines: string[];
+  questions: string[];
+  prompts: string[];
+  detail: string;
+}> {
+  const layout = await repoLayout();
+  await writeFile(path.join(layout.pawsRoot, "config.toml"), '[merge]\norder = "github-queue"\n');
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "gh-queue",
+      identifier: "ENG-95",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const base = githubClient(layout.bare, github);
+  const queue = createFakeMergeQueue({
+    ...(options.branches ? { branches: options.branches } : {}),
+    ahead: 1,
+    headOf: async () =>
+      (
+        await exec("git", [
+          "--git-dir",
+          layout.bare,
+          "for-each-ref",
+          "--format=%(objectname)",
+          "refs/heads/paws",
+        ])
+      ).stdout
+        .trim()
+        .split("\n")[0] ?? "",
+  });
+  const prompts: string[] = [];
+  const pulls = new Map<string, number>();
+  let sequence = 0;
+  let implementRuns = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: {
+        async request(req) {
+          const answered = await queue.respond(req);
+          if (answered) return answered;
+          // GitHub keeps one pull request per branch, so a later pass gets the same number.
+          if (req.method === "POST" && req.path.endsWith("/pulls")) {
+            const head = (req.body as { head: string }).head;
+            const known = pulls.get(head);
+            if (known !== undefined)
+              return {
+                status: 201,
+                body: {
+                  number: known,
+                  html_url: `https://github.com/pmdroid/paws-demo/pull/${known}`,
+                  body: (req.body as { body: string }).body,
+                },
+              };
+            const opened = await base.request(req);
+            pulls.set(head, (opened.body as { number: number }).number);
+            return opened;
+          }
+          return base.request(req);
+        },
+      },
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `gh-queue-${sequence}.json`);
+      const resultPath =
+        input.purpose === "implement"
+          ? path.join(layout.root, `gh-queue-result-${sequence}.json`)
+          : "";
+      if (input.purpose === "implement") {
+        implementRuns += 1;
+        prompts.push(input.prompt);
+      }
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [writeOk(input.worktree, `ok-${implementRuns}\n`), { type: "end" }]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, resultPath, scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "gh-queue"));
+    const deadline = Date.now() + 90_000;
+    let rounds = 0;
+    let lastEnqueued = 0;
+    while (Date.now() < deadline) {
+      const state = stateOf(db, "ENG-95") ?? "";
+      if (["merged", "failed", "awaiting_input"].includes(state)) break;
+      if (queue.enqueued.length !== lastEnqueued) {
+        lastEnqueued = queue.enqueued.length;
+        rounds = 0;
+      }
+      if ((await jobs.tick()) !== null) continue;
+      const pull = [...pulls.values()][0] ?? 0;
+      if (pull > 0 && queue.isQueued(pull)) {
+        // The pull request waits in GitHub's queue: act as GitHub, then let the parked merge job
+        // read it again now instead of after its poll interval.
+        onQueued(queue, pull, rounds, queue.enqueued.length);
+        rounds += 1;
+        db.run("UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'", [
+          JOB_KIND.merge,
+        ]);
+        continue;
+      }
+      await Bun.sleep(25);
+    }
+    while (outbox.tick().length > 0) await outbox.idle();
+    return {
+      state: stateOf(db, "ENG-95"),
+      implementRuns,
+      enqueued: queue.enqueued.length,
+      selfMerges: github.merged.length,
+      lines: tracker.progress.map((update) => update.body),
+      questions: tracker.questions.map((question) => question.body),
+      prompts,
+      detail: debug(layout, db),
+    };
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}
 
 async function runCiFix(options: {
   attempts?: number;
