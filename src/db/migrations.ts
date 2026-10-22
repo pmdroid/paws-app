@@ -1958,4 +1958,10 @@ CREATE TABLE runner_agent_usage (
 ALTER TABLE runner_work ADD COLUMN consumed_sequence INTEGER NOT NULL DEFAULT 0 CHECK(consumed_sequence>=0);
 `,
   },
+  {
+    id: "083_evidence_asset_url",
+    sql: `
+ALTER TABLE evidence ADD COLUMN asset_url TEXT;
+`,
+  },
 ];

@@ -97,7 +97,15 @@ export function openLinear(options: {
   const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
   const tracker = client === null ? null : createLinearTracker(client);
   const files =
-    client === null ? null : createLinearFileTransfer({ client, auth, fetch: options.fetch });
+    client === null
+      ? null
+      : createLinearFileTransfer({
+          client,
+          auth,
+          fetch: options.fetch,
+          // Closeout videos embed in Linear up to 50 MB.
+          maxBytes: 50 * 1024 * 1024,
+        });
   const onEvent =
     tracker === null && options.beforeEvent === undefined
       ? undefined
