@@ -36,6 +36,7 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
         recoveryAttempts: item.recoveryAttempts,
         checkpoint: item.checkpoint,
         taskMode: getTaskMode(db, item.id),
+        runnerHoldsWork: runnerHoldsWork(db, item, now),
       });
       applyDecision(db, item, decision, now);
       decisions.push(decision);
@@ -122,6 +123,7 @@ export function prepareShutdown(
   immediate(db, () => {
     const running = listWorkItemsByStates(db, ["running", "verifying"]);
     for (const item of running) {
+      if (runnerHoldsWork(db, item, now)) continue;
       if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
       applyWorkItemEvent(db, item.id, "lease_expired");
     }
@@ -131,4 +133,17 @@ export function prepareShutdown(
       applyWorkItemEvent(db, item.id, "lease_expired");
     }
   });
+}
+
+function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boolean {
+  const mode = getTaskMode(db, item.id);
+  return (
+    item.state === "running" &&
+    mode !== "answer" &&
+    mode !== "artifact" &&
+    item.currentRunId !== null &&
+    db
+      .query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?")
+      .get(item.currentRunId, now) !== null
+  );
 }

@@ -21,6 +21,22 @@ describe("startup recovery", () => {
     ).toEqual({ type: "resume", freshSession: true, checkpoint: checkpoint("running") });
   });
 
+  test("reattaches without spending the resume attempt while a runner still holds the work", () => {
+    expect(
+      decideStartup({
+        itemState: "recovering",
+        recoveryAttempts: 1,
+        checkpoint: checkpoint("running"),
+        runnerHoldsWork: true,
+      }),
+    ).toEqual({
+      type: "resume",
+      freshSession: true,
+      checkpoint: checkpoint("running"),
+      reattach: true,
+    });
+  });
+
   test("fails the item when it was already resumed", () => {
     expect(
       decideStartup({

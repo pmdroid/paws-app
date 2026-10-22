@@ -8,3 +8,10 @@ export class RunnerSlotsBusyError extends UserFacingError {
     super("Queued: every runner slot is busy. Paws starts this issue when a slot frees.");
   }
 }
+
+export class PawsShutdown extends Error {
+  override readonly name = "PawsShutdown";
+  constructor() {
+    super("Paws is restarting");
+  }
+}

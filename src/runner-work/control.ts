@@ -339,7 +339,7 @@ export function createRunnerWork(options: {
         const envelope = queue(command);
         db.run(
           `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
-          VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,workspace_id=excluded.workspace_id,generation=excluded.generation,runner_fence=excluded.runner_fence,command_id=excluded.command_id,lease_until=excluded.lease_until,last_sequence=0,ended_at=NULL`,
+          VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,workspace_id=excluded.workspace_id,generation=excluded.generation,runner_fence=excluded.runner_fence,command_id=excluded.command_id,lease_until=excluded.lease_until,last_sequence=0,consumed_sequence=0,ended_at=NULL`,
           [
             command.runId,
             command.runnerId,
