@@ -16,17 +16,6 @@ export type PawsUpdate = {
   updatedAt: number;
 };
 
-type Row = {
-  target: string;
-  current: string;
-  status: PawsUpdateStatus;
-  source: "automatic" | "manual";
-  now_requested: number;
-  error: string | null;
-  created_at: number;
-  updated_at: number;
-};
-
 /** Work that holds an update. Questions, CI and the merge queue do not. */
 export const UPDATE_HOLDING_STATES = [
   "running",
@@ -35,18 +24,13 @@ export const UPDATE_HOLDING_STATES = [
 ] as const satisfies readonly WorkItemState[];
 
 export function getPawsUpdate(db: Database): PawsUpdate | null {
-  const row = db.query<Row, []>("SELECT * FROM paws_update WHERE id = 1").get();
-  if (row === null) return null;
-  return {
-    target: row.target,
-    current: row.current,
-    status: row.status,
-    source: row.source,
-    nowRequested: row.now_requested === 1,
-    error: row.error,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+  const row = db
+    .query<Omit<PawsUpdate, "nowRequested"> & { nowRequested: number }, []>(
+      `SELECT target, current, status, source, now_requested AS nowRequested, error,
+         created_at AS createdAt, updated_at AS updatedAt FROM paws_update WHERE id = 1`,
+    )
+    .get();
+  return row === null ? null : { ...row, nowRequested: row.nowRequested === 1 };
 }
 
 /**
