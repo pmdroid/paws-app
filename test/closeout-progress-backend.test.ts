@@ -25,6 +25,7 @@ import {
   type CloseoutProgressRecord,
 } from "../src/db";
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
+import { createLiveStatusProvider } from "../src/web/src/live/provider";
 
 const exec = promisify(execFile);
 const TASK = "ENG-74";
@@ -375,6 +376,69 @@ describe("closeout progress backend", () => {
     } finally {
       if (previous === undefined) delete process.env.DEMO_API_KEY;
       else process.env.DEMO_API_KEY = previous;
+      await repo.cleanup();
+    }
+  });
+
+  test("a thrown evaluation stops its running step and the retry starts clean", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    const db = openDatabase(":memory:");
+    migrate(db);
+    insertQueuedItem(db, { id: "item-1", now: 1 });
+    beginImplementRun(db, "item-1", 1, {
+      phase: "running",
+      baseSha: repo.head,
+      wipCommit: repo.head,
+    });
+    applyWorkItemEvent(db, "item-1", "turn_ended");
+    const progress = createDbCloseoutProgress(db, "item-1");
+    const outage = Object.assign(new Error("503 Service Unavailable"), { status: 503 });
+    try {
+      const thrown = await evaluateCandidate({
+        ...evalInput(repo, progress),
+        reviewRetryDelaysMs: [],
+        reviewer: {
+          async review() {
+            await wait(20);
+            throw outage;
+          },
+        },
+      }).catch((error: unknown) => error);
+      expect(thrown).toBe(outage);
+      const stopped = listCloseoutProgress(db)[0];
+      const step = stopped?.steps.find((entry) => entry.kind === "review");
+      expect(stopped?.steps.some((entry) => entry.state === "running")).toBe(false);
+      expect(stopped?.finishedAt).not.toBeNull();
+      expect(step?.state).toBe("blocked");
+      expect(step?.detail).toStartWith("Stopped:");
+      expect(step?.finishedAt).not.toBeNull();
+      const check = createLiveStatusProvider(db)
+        .snapshot()
+        .verdicts[0]?.checks.find((entry) => entry.id === "adversarial-review");
+      expect(check?.active).toBe(false);
+      expect(check?.state).toBe("blocked");
+      expect(check?.detail).toStartWith("Stopped:");
+
+      const retried = await evaluateCandidate({
+        ...evalInput(repo, progress),
+        reviewer: {
+          async review() {
+            const row = listCloseoutProgress(db)[0];
+            expect(row?.decision).toBeNull();
+            expect(row?.finishedAt).toBeNull();
+            return { session: "review-session", model: "gpt-5", provider: "openai", findings: [] };
+          },
+        },
+      });
+      expect(retried.outcome).toBe("accepted");
+      const sealed = listCloseoutProgress(db);
+      expect(sealed).toHaveLength(1);
+      expect(sealed[0]?.decision).toBe("accepted");
+      expect(sealed[0]?.steps.find((entry) => entry.kind === "review")?.state).toBe("passed");
+    } finally {
       await repo.cleanup();
     }
   });
