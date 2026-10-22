@@ -1984,8 +1984,11 @@ export async function probeRunnerBackend(
       );
     }
     {
-      const coolDown = (until: number) =>
-        db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE agent='codex'", [until]);
+      const coolDown = (until: number, known = true) =>
+        db.run("UPDATE runner_agent_policy SET cooldown_until=?,resets_at=? WHERE agent='codex'", [
+          until,
+          known && until ? until : null,
+        ]);
       const dispatched = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds) if (work.commands(hostId).length) return hostId;
@@ -2022,6 +2025,20 @@ export async function probeRunnerBackend(
         observe(name, true, { until });
       }
       {
+        const limited = tracked();
+        coolDown(now + 15 * 60_000, false);
+        await assert.rejects(
+          placedBackend.forItem(limited.id)(input(limited)),
+          (error: unknown) => error instanceof UsageLimitError && error.resetsAt === null,
+        );
+        coolDown(0);
+        observe(
+          "a fallback cooldown without a reset time pauses on the retry schedule, not as a reset",
+          true,
+          {},
+        );
+      }
+      {
         const busyHosts = hostIds.slice(1).map((hostId) => {
           db.run(
             "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
@@ -2035,7 +2052,7 @@ export async function probeRunnerBackend(
           );
           return `full-${hostId}`;
         });
-        db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id=?", [
+        db.run("UPDATE runner_agent_policy SET cooldown_until=?1,resets_at=?1 WHERE runner_id=?2", [
           now + 120_000,
           hostIds[0]!,
         ]);

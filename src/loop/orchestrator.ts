@@ -3596,12 +3596,43 @@ export class Orchestrator {
     const runner = this.options.remoteExecution?.agentForItem(itemId);
     if (!runner) return undefined;
     return async (options: RunAgentOptions) => {
-      let input = options;
-      // A pause ends once the resumed agent reports activity, so a retry that hits the limit
-      // again keeps the same pause and does not post another pair of Linear lines.
+      // A pause ends once the resumed agent does real work: it calls a tool, sets a plan or the
+      // run succeeds. Message text alone may be the agent repeating its usage-limit error, and a
+      // retry that hits the limit again keeps the same pause and posts no new Linear lines.
       const resumed = async () => {
         if (getUsageLimitPause(this.db, itemId)) this.endUsageLimitPause(itemId, true);
       };
+      const watched: RunAgentOptions["onEvent"] = async (event) => {
+        if (
+          event.type === "permission" ||
+          (event.type === "session_update" &&
+            ["tool_call", "tool_call_update", "plan"].includes(event.update.sessionUpdate))
+        )
+          await resumed();
+        await options.onEvent?.(event);
+      };
+      let input = options;
+      // A pause that survived a restart still waits for its resume time, then continues the
+      // interrupted conversation and agent session it saved.
+      const saved = getUsageLimitPause(this.db, itemId);
+      if (saved) {
+        await this.waitForResume(itemId, options.signal);
+        const same = saved.runId === options.runId && saved.role === options.role;
+        input = {
+          ...options,
+          ...(same && saved.prompt
+            ? {
+                prompt: [
+                  saved.prompt,
+                  "Paws restarted while the task waited for the usage limit to reset. The latest instructions follow.",
+                  options.prompt,
+                ].join("\n\n"),
+              }
+            : {}),
+          ...(same && saved.session ? { runnerSession: saved.session } : {}),
+          onEvent: watched,
+        };
+      }
       try {
         for (;;) {
           this.assertJobCurrent(itemId);
@@ -3617,10 +3648,7 @@ export class Orchestrator {
               ...input,
               prompt: error.prompt ?? input.prompt,
               ...(error.session ? { runnerSession: error.session } : {}),
-              onEvent: async (event) => {
-                await resumed();
-                await options.onEvent?.(event);
-              },
+              onEvent: watched,
             };
           }
         }
@@ -3656,6 +3684,9 @@ export class Orchestrator {
         resetsAt: error.resetsAt,
         resumeAt,
         pausedAt,
+        role: input.role,
+        prompt: error.prompt ?? input.prompt,
+        session: error.session ?? null,
       }),
     );
     if (started)
@@ -3669,7 +3700,12 @@ export class Orchestrator {
         }`,
         `usage-limit-pause:${itemId}:${pausedAt}`,
       );
-    const signal = input.signal ?? new AbortController().signal;
+    await this.waitForResume(itemId, input.signal);
+  }
+
+  /** Waits until the item's usage-limit pause is due, Resume now ends it, or the task stops. */
+  private async waitForResume(itemId: string, abort?: AbortSignal): Promise<void> {
+    const signal = abort ?? new AbortController().signal;
     const poll = this.options.usageLimitPollMs ?? 30_000;
     for (;;) {
       signal.throwIfAborted();
