@@ -383,3 +383,46 @@ test("recovery replaces an unavailable message with the current commit policy bl
     f.db.close();
   }
 });
+
+test("a check that fails briefly is retried quietly before the task is held", async () => {
+  const f = fixture();
+  let failures = 2;
+  Object.assign(f.integration, {
+    unavailableRetryMs: [0, 0, 0],
+    async check() {
+      if (failures-- > 0) throw new Error("Linear GraphQL returned no data");
+      return true;
+    },
+  });
+  try {
+    const item = f.item("restarted");
+    expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
+    expect(listOutbox(f.db)).toHaveLength(0);
+  } finally {
+    f.auth.close();
+    f.db.close();
+  }
+});
+
+test("a check that keeps failing still holds the task after the quiet retries", async () => {
+  const f = fixture();
+  let calls = 0;
+  Object.assign(f.integration, {
+    unavailableRetryMs: [0, 0],
+    async check() {
+      calls += 1;
+      throw new Error("Linear GraphQL returned no data");
+    },
+  });
+  try {
+    const item = f.item("outage");
+    expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
+    expect(calls).toBe(3);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+  } finally {
+    f.auth.close();
+    f.db.close();
+  }
+});

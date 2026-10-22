@@ -41,6 +41,7 @@ test("transient production authorization persists a wait, survives restart and r
     },
   });
   host.integration!.check = async () => true;
+  host.integration!.unavailableRetryMs = [];
   const auth = new GitHubAuthQuestions(db, host, () => 1000);
   insertQueuedItem(db, { id: "unavailable", sessionKey: "unavailable", title: "unavailable" });
   beginImplementRun(db, "unavailable", 1000);
@@ -71,6 +72,7 @@ test("transient production authorization persists a wait, survives restart and r
     host.integration!.check = async (item) => item.id !== "sibling";
     await recovered.ensure(getWorkItem(reopened, "sibling")!, "initial", signal);
     host.integration!.check = async () => true;
+    host.integration!.unavailableRetryMs = [];
     await recovered.recover();
     expect(getWorkItem(reopened, first.id)?.state).toBe("awaiting_input");
     expect(getWorkItem(reopened, "sibling")?.state).toBe("running");
@@ -138,6 +140,7 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     authorizeItem: (current, signal) => authorizeLinearTask(gate, current, signal),
   });
   host.integration!.check = async () => true;
+  host.integration!.unavailableRetryMs = [];
   const auth = new GitHubAuthQuestions(db, host, () => 1000);
   try {
     await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal);
@@ -180,6 +183,7 @@ test("fresh onboarding checks attribution with the selected repository before bi
     },
   });
   host.integration!.check = async () => true;
+  host.integration!.unavailableRetryMs = [];
   const auth = new GitHubAuthQuestions(db, host, () => 1000);
   const item = insertQueuedItem(db, { id: "unbound", sessionKey: "session" });
   db.run("UPDATE work_item SET state='running' WHERE id=?", [item.id]);
@@ -239,6 +243,7 @@ for (const [later, outcome] of [
       authorizeItem: async () => true,
     });
     host.integration!.check = async () => true;
+    host.integration!.unavailableRetryMs = [];
     let now = 1_000;
     const auth = new GitHubAuthQuestions(db, host, () => now);
     insertQueuedItem(db, { id: "cached", sessionKey: "cached", title: "cached" });
@@ -278,6 +283,7 @@ test("a denied authorization right after a passed check still stops the task", a
     authorizeItem: async () => allowed,
   });
   host.integration!.check = async () => true;
+  host.integration!.unavailableRetryMs = [];
   const auth = new GitHubAuthQuestions(db, host, () => 1_000);
   insertQueuedItem(db, { id: "revoked", sessionKey: "revoked", title: "revoked" });
   beginImplementRun(db, "revoked", 1_000);
@@ -291,4 +297,17 @@ test("a denied authorization right after a passed check still stops the task", a
     auth.close();
     db.close();
   }
+});
+
+test("production App authorization retries an unavailable check for about a minute", () => {
+  const env = { GITHUB_AUTH: "app", PAWS_HOME: mkdtempSync(join(tmpdir(), "paws-retry-")) };
+  const host = createLinearGitHubAuth({
+    runtime: loadRuntime(env),
+    env,
+    repositoryForItem: () => null,
+    actorForItem: () => "member",
+  });
+  const total = (host.integration!.unavailableRetryMs ?? []).reduce((sum, ms) => sum + ms, 0);
+  expect(total).toBeGreaterThanOrEqual(60_000);
+  rmSync(env.PAWS_HOME, { recursive: true, force: true });
 });
