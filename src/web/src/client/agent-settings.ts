@@ -116,7 +116,7 @@ function checksSection(attempts: number): string {
 
 function queueSection(hours: number): string {
   return `<section class="settings-section"><div class="settings-label"><h2>Queue</h2><p class="sub">While every runner slot is busy, a delegated task waits in line and Linear shows its place.</p></div><div class="col">
-      <label for="queue-start-timeout">Fail a task that has not started after</label><div class="row"><input id="queue-start-timeout" name="queue-start-timeout" type="number" inputmode="numeric" min="1" max="${QUEUE_START_TIMEOUT_MAX}" step="1" required value="${Number.isFinite(hours) ? hours : ""}" aria-describedby="queue-start-timeout-help"><span>hours</span></div>
+      <label for="queue-start-timeout">Fail a task that has not started after, in hours</label><input id="queue-start-timeout" name="queue-start-timeout" type="number" inputmode="numeric" min="1" max="${QUEUE_START_TIMEOUT_MAX}" step="1" required value="${Number.isFinite(hours) ? hours : ""}" aria-describedby="queue-start-timeout-help">
       <p class="sub" id="queue-start-timeout-help">From 1 to ${QUEUE_START_TIMEOUT_MAX} hours. The default is ${QUEUE_START_TIMEOUT_DEFAULT}. Paws then fails the task in Linear, and delegating it again retries.</p></div></section>`;
 }
 
