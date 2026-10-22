@@ -1,5 +1,6 @@
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
+import { mergeQueueCount } from "./merge-queue";
 import { createSourceDialog } from "./source-dialog";
 
 import { parseStatusSnapshot, STATUS_API_VERSION, type StatusSnapshot } from "../contract";
@@ -270,6 +271,7 @@ function paint(): void {
       : route.view === "evidence"
         ? snapshot?.evidence?.find((entry) => entry.id === route.id)
         : null;
+  if (snapshot) shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
   shell.setBreadcrumb(
     detail
       ? { issueId: detail.itemId, entityId: detail.id }
