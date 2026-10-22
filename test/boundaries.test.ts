@@ -65,6 +65,7 @@ const MODULES = [
   "runner-inputs",
   "evidence",
   "self-update",
+  "skills",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -102,11 +103,13 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "web",
     "auth",
     "settings",
+    "skills",
     "db",
     "workspace",
     "deployment",
   ],
-  settings: ["config"],
+  settings: ["config", "db", "skills"],
+  skills: ["db"],
   host: ["core", "db"],
   loop: [
     "decisions",

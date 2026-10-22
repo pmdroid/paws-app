@@ -18,7 +18,13 @@ import {
   type StartLinearSession,
 } from "../web";
 import { EVIDENCE_API_PATH, handleEvidenceRequest } from "../evidence";
-import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
+import {
+  SKILL_SETTINGS_PATH,
+  handleAgentSettingsRequest,
+  handleSkillSettingsRequest,
+  type AgentSettingsOptions,
+} from "../settings";
+import type { SkillResolver } from "../skills";
 import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
@@ -64,6 +70,8 @@ export type ServerOptions = {
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
+  /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
+  skillSettings?: { root: string; resolver: SkillResolver; limit?: number };
 };
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
@@ -120,6 +128,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.agentSettings
             ? { agentSettings: { ...options.agentSettings, csrfToken } }
             : {}),
+          ...(options.skillSettings ? { skillSettings: options.skillSettings } : {}),
           ...(db ? { db } : {}),
           ...(statusEnv ? { statusEnv } : {}),
           ...(closeoutHome ? { closeoutHome } : {}),
@@ -159,6 +168,7 @@ type Secrets = {
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: AgentSettingsOptions;
+  skillSettings?: ServerOptions["skillSettings"];
   db?: Database;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
@@ -186,7 +196,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const workspace = secrets.workspaceAccess ?? undefined;
   let csrfToken = secrets.csrfToken;
   let sessionIds: readonly string[] | undefined;
-  let principal: { workspaceId: string; userId: string } | undefined;
+  let principal: WorkspacePrincipal | undefined;
   if (workspace !== undefined) {
     const auth = await workspace.handle(request);
     if (auth !== null) return auth;
@@ -249,8 +259,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         path.startsWith("/api/auth/github") ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+      // Admins manage skills next to owners; every other setting stays with owners.
+      const roles = path === SKILL_SETTINGS_PATH ? ["owner", "admin"] : ["owner"];
       if (
-        (privileged && access.principal.role !== "owner") ||
+        (privileged && !roles.includes(access.principal.role)) ||
         (unsafe &&
           (request.headers.get("origin") !== workspace.origin ||
             !validWorkspaceCsrf(request, access.session)))
@@ -329,6 +341,24 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       setupRequired: true,
       workspaceReady: workspace !== undefined,
     });
+  if (path === SKILL_SETTINGS_PATH && secrets.skillSettings && secrets.db) {
+    const db = secrets.db;
+    return (await handleSkillSettingsRequest(request, {
+      ...secrets.skillSettings,
+      db,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(db, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
   if (secrets.agentSettings) {
     const settings = await handleAgentSettingsRequest(request, {
       ...secrets.agentSettings,
