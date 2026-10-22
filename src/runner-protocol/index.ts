@@ -64,3 +64,16 @@ export { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 export { RunnerHostStatusSchema, releaseVersionFromPath, type RunnerHostStatus } from "./host";
 
 export { labelModels, longContextModel } from "./models";
+
+export {
+  RUNNER_SKILL_BUNDLE_LIMIT,
+  RUNNER_SKILL_FOLDERS,
+  RunnerInstalledSkillSchema,
+  RunnerInstalledSkillsSchema,
+  RunnerSkillManifestSchema,
+  RunnerSkillSchema,
+  runnerSkillPath,
+  type RunnerInstalledSkill,
+  type RunnerSkill,
+  type RunnerSkillAgent,
+} from "./skills";

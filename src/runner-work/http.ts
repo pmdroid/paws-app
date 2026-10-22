@@ -1,5 +1,10 @@
+import { join } from "node:path";
 import { z } from "zod";
-import { RunnerHostStatusSchema } from "../runner-protocol";
+import {
+  RunnerHostStatusSchema,
+  RunnerInstalledSkillsSchema,
+  RunnerSkillSchema,
+} from "../runner-protocol";
 import { RunnerEventSchema, RunnerWorkFencedError, type RunnerWork } from "./control";
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
@@ -8,6 +13,7 @@ const empty = z.strictObject({});
 const heartbeat = RunnerHostStatusSchema.extend({
   capacity: z.number().int().min(1).max(16).optional(),
   ceiling: z.number().int().min(1).max(16).optional(),
+  skills: RunnerInstalledSkillsSchema.optional(),
 });
 const grant = z.strictObject({ commandId: id, generation });
 const event = z.strictObject({
@@ -17,15 +23,29 @@ const event = z.strictObject({
   event: RunnerEventSchema,
 });
 
-export function createRunnerWorkHttp(work: RunnerWork) {
+/** `skillsRoot` holds registered bundles at `<name>/<version>/skill.tar.gz`. */
+export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: string } = {}) {
   return async (request: Request, runnerId: string): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     try {
       if (path === "/v1/commands" && request.method === "GET")
         return json({ commands: work.commands(runnerId) });
       if (path === "/v1/heartbeat" && request.method === "POST") {
-        const { capacity, ceiling, ...host } = heartbeat.parse(await body(request));
-        return json(work.heartbeat(runnerId, capacity ?? 1, host, ceiling));
+        const { capacity, ceiling, skills, ...host } = heartbeat.parse(await body(request));
+        return json(work.heartbeat(runnerId, capacity ?? 1, host, ceiling, skills));
+      }
+      const download = /^\/v1\/skills\/([^/]+)\/([^/]+)$/.exec(path);
+      if (download && request.method === "GET" && options.skillsRoot) {
+        const skill = work.skillBundle(
+          runnerId,
+          RunnerSkillSchema.shape.name.parse(decodeURIComponent(download[1]!)),
+          RunnerSkillSchema.shape.version.parse(decodeURIComponent(download[2]!)),
+        );
+        const file = Bun.file(join(options.skillsRoot, skill.name, skill.version, "skill.tar.gz"));
+        if (!(await file.exists())) return json({ error: "Skill bundle is missing." }, 404);
+        return new Response(file, {
+          headers: { "content-type": "application/gzip", "cache-control": "no-store" },
+        });
       }
       const acknowledgment = /^\/v1\/commands\/([^/]+)\/ack$/.exec(path);
       if (acknowledgment && request.method === "POST") {

@@ -2113,4 +2113,18 @@ CREATE TABLE linear_activity_listing (
 ) STRICT;
 `,
   },
+  {
+    id: "095_runner_skill",
+    sql: `
+CREATE TABLE runner_skill (
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('installed','pending','refused')),
+  reported_at INTEGER NOT NULL,
+  PRIMARY KEY (runner_id, name)
+) STRICT;
+`,
+  },
 ];
