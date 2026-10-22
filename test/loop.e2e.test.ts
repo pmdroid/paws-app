@@ -2065,7 +2065,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
           privateKeyPem: PRIVATE_KEY,
           client: {
             async request(request) {
-              if (movedHead && request.path === "/graphql" && rejectedHeads < 2) {
+              if (movedHead && isMergeReadiness(request) && rejectedHeads < 2) {
                 rejectedHeads++;
                 return { status: 200, body: fakeMergeReadiness("c".repeat(40)) };
               }
@@ -2645,7 +2645,7 @@ test.each([false, true])(
         privateKeyPem: PRIVATE_KEY,
         client: {
           async request(req) {
-            if (req.path !== "/graphql") return client.request(req);
+            if (!isMergeReadiness(req)) return client.request(req);
             const head = (req.body as { variables: { head: string } }).variables.head;
             if (failedHeads.size > 0 && !failedHeads.has(head)) return client.request(req);
             failedHeads.add(head);
@@ -2832,7 +2832,7 @@ async function runCiFix(options: {
       privateKeyPem: PRIVATE_KEY,
       client: {
         async request(req) {
-          if (req.path !== "/graphql") return client.request(req);
+          if (!isMergeReadiness(req)) return client.request(req);
           const head = (req.body as { variables: { head: string } }).variables.head;
           if (!heads.includes(head)) heads.push(head);
           if (heads.indexOf(head) >= options.failRounds) return client.request(req);
@@ -2955,7 +2955,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
       privateKeyPem: PRIVATE_KEY,
       client: {
         async request(req) {
-          if (req.path !== "/graphql") return client.request(req);
+          if (!isMergeReadiness(req)) return client.request(req);
           seen.reads += 1;
           const body = fakeMergeReadiness(
             (req.body as { variables: { head: string } }).variables.head,
@@ -3545,6 +3545,15 @@ function linearEvent(
     updatedAtMs: Date.now(),
     payload: "{}",
   };
+}
+
+/** The CI read for one head. The merge queue's review read carries no head. */
+function isMergeReadiness(req: { path: string; body?: unknown }): boolean {
+  return (
+    req.path === "/graphql" &&
+    typeof (req.body as { variables?: { head?: unknown } } | undefined)?.variables?.head ===
+      "string"
+  );
 }
 
 function githubClient(

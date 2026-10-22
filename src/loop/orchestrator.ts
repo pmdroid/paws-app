@@ -74,6 +74,7 @@ import {
   PawsShutdown,
   RunnerSlotsBusyError,
   queueLine,
+  mergeQueueLine,
   systemClock,
   parseLinearCommand,
 } from "../core";
@@ -164,12 +165,17 @@ import {
   getTaskMergeSettings,
   keepTaskMergeSettings,
   type TaskMergeSettings,
+  joinMergeQueue,
+  leaveMergeQueue,
+  markMergeQueueNotified,
+  mergeQueuePosition,
 } from "../db";
 import {
   publishAccepted,
   closeStoppedPull,
   fetchUpstreamMain,
   mergedPullHeads,
+  readPullReview,
   serialMerge,
   UPSTREAM_MAIN_REF,
   type GitHubClient,
@@ -349,6 +355,15 @@ export type ExecutionChanges = {
 };
 
 class LinearReconciliationPendingError extends Error {}
+
+/** A merge pass that waits. `queued` waits in the merge queue or for a review, with no deadline. */
+type MergeWait = {
+  message: string;
+  base?: string;
+  head?: string;
+  summary?: string;
+  queued?: boolean;
+};
 
 /** Rebase conflicts keep a fixed limit. CI failures use the `[merge] ci_fix_attempts` setting. */
 const MAX_REBASE_RETURNS = 3;
@@ -997,7 +1012,7 @@ export class Orchestrator {
       ),
     );
     jobs.register(JOB_KIND.merge, async (job, context) => {
-      let waiting: { message: string; base?: string; head?: string; summary?: string } | undefined;
+      let waiting: MergeWait | undefined;
       await this.runLeasedJob(job.payload, context, async () => {
         try {
           await this.runOwnedJob(job.payload, async () => {
@@ -1024,11 +1039,13 @@ export class Orchestrator {
       });
       if (waiting === undefined) return;
       if (
-        parkMergeForCi(this.db, job, this.now(), {
-          base: waiting.base,
-          head: waiting.head,
-          summary: waiting.summary,
-        }) !== "expired"
+        parkMergeForCi(
+          this.db,
+          job,
+          this.now(),
+          { base: waiting.base, head: waiting.head, summary: waiting.summary },
+          { queued: waiting.queued === true },
+        ) !== "expired"
       )
         return;
       const itemId = readString(job.payload, "itemId");
@@ -1702,6 +1719,8 @@ export class Orchestrator {
         baseSha: base,
         wipCommit: acceptedHead,
       });
+      // New work passed Closeout: the task joins the merge queue at the end, not its old place.
+      leaveMergeQueue(this.db, item.id);
       enqueueVerifiedMerge(this.db, {
         itemId: item.id,
         head: acceptedHead,
@@ -2333,10 +2352,7 @@ export class Orchestrator {
     });
   }
 
-  private async merge(
-    payload: unknown,
-    jobId: number,
-  ): Promise<{ message: string; base?: string; head?: string; summary?: string } | undefined> {
+  private async merge(payload: unknown, jobId: number): Promise<MergeWait | undefined> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
@@ -2480,9 +2496,19 @@ export class Orchestrator {
     let closeoutFailure: CloseoutVerdict | null = null;
     let verifying = item;
     const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
+    const mergeSettings = await this.mergeSettingsFor(item, live.controller.signal);
     // Overlap-only updates (PAS-394) wait for CI like `ci` until they land.
-    const closeoutAfterUpdate =
-      (await this.mergeSettingsFor(item, live.controller.signal)).mainMoved === "closeout";
+    const closeoutAfterUpdate = mergeSettings.mainMoved === "closeout";
+    // The GitHub merge queue (PAS-395) merges each on its own until it lands.
+    const queued = mergeSettings.order === "queue";
+    if (queued) {
+      const wait = await this.mergeQueueTurn(item, repository, github, {
+        number: published.pull.number,
+        head: priorVerification?.head ?? acceptedHead ?? "",
+      });
+      if (wait) return wait;
+      if (this.stopped(item.id)) return;
+    }
     const merged = await serialMerge({
       worktree,
       issue: item.linearIdentifier,
@@ -2549,6 +2575,18 @@ export class Orchestrator {
         };
       },
     });
+    // The first task keeps its place while it waits for CI or runs Closeout again after main moved.
+    // Any other outcome takes it out of the queue; after a fix it rejoins at the end.
+    if (
+      queued &&
+      merged.outcome !== "waiting" &&
+      !(
+        closeoutAfterUpdate &&
+        closeoutFailure === null &&
+        (merged.outcome === "sha_moved" || merged.outcome === "rejected")
+      )
+    )
+      leaveMergeQueue(this.db, item.id);
     if (merged.outcome === "waiting") {
       if (this.stopped(item.id)) return;
       return {
@@ -2655,6 +2693,63 @@ export class Orchestrator {
     }).catch(() => undefined);
     this.pump();
     await this.flush();
+  }
+
+  /**
+   * Settings → Merging: Merge queue. A task joins its repository's queue once it is approved or
+   * needs no review, in the order tasks became ready. Only the first one moves. The others wait,
+   * and Linear hears once each time the position changes. A missing or dismissed approval takes
+   * the task out of the queue until it is approved again.
+   */
+  private async mergeQueueTurn(
+    item: WorkItemRecord,
+    repository: { owner: string; repo: string },
+    github: GitHubBinding,
+    pull: { number: number; head: string },
+  ): Promise<MergeWait | undefined> {
+    const prNumber = pull.number;
+    const name = `${repository.owner}/${repository.repo}`;
+    const review = await readPullReview({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      prNumber,
+      ...this.gitHubCredentials(github),
+    });
+    if (this.stopped(item.id)) return undefined;
+    if (review === "unreadable" && mergeQueuePosition(this.db, item.id) === null)
+      return { message: "Could not read the pull request's reviews.", queued: true };
+    if (review === "required" || review === "changes_requested") {
+      leaveMergeQueue(this.db, item.id);
+      const body =
+        review === "required"
+          ? `Waiting for an approving review on pull request #${prNumber}. It joins the ${name} merge queue once approved.`
+          : `Changes were requested on pull request #${prNumber}. It joins the ${name} merge queue once approved.`;
+      this.postAfterPullRequest(item, body, `${item.id}:merge-review:${review}:${pull.head}`);
+      return { message: body, queued: true };
+    }
+    joinMergeQueue(this.db, { itemId: item.id, repository: name, now: this.now() });
+    const place = mergeQueuePosition(this.db, item.id);
+    if (place === null) return undefined;
+    if (
+      place.notifiedPosition !== place.position &&
+      (place.position > 1 || place.notifiedPosition !== null)
+    ) {
+      const ahead = place.aheadItemId ? getWorkItem(this.db, place.aheadItemId) : null;
+      const line = mergeQueueLine(place);
+      const body =
+        place.position === 1
+          ? `${line}. Merging next.`
+          : `${line}. ${ahead?.linearIdentifier ?? "The task ahead"} merges first.`;
+      this.postAfterPullRequest(
+        item,
+        body,
+        `${item.id}:merge-queue:${place.readyAt}:${place.position}`,
+      );
+      markMergeQueueNotified(this.db, item.id, place.position);
+    }
+    if (place.position === 1) return undefined;
+    return { message: `${mergeQueueLine(place)}.`, queued: true };
   }
 
   private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {
