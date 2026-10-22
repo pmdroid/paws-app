@@ -73,6 +73,7 @@ import {
   startLoops,
   submitCommand,
   type WorkItemRecord,
+  runnerHasCapacity,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import {
@@ -601,6 +602,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           const backend = await remote;
           await backend.agents.cancelItem(itemId);
         },
+        slotFree: () =>
+          db
+            .query<{ id: string }, []>(
+              "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL",
+            )
+            .all()
+            .some((host) => runnerHasCapacity(db, host.id, Date.now())),
         agentForItem: (itemId) => async (input) => {
           input.signal?.throwIfAborted();
           await ready;
