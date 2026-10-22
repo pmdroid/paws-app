@@ -154,3 +154,36 @@ test("a reply in the Linear session shows in the run's timeline with its author,
     db.close();
   }
 });
+
+test("a Closeout re-check shows as a re-check, not as a review by the reviewer agent", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const item = insertQueuedItem(db, { id: "01RECHECKITEM", sessionKey: "ses_8", now: NOW });
+    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-8", item.id]);
+    const { run: first } = beginImplementRun(db, item.id, NOW);
+    markRun(db, first.id, "ended", NOW + 1_000);
+    const recheck = insertRun(db, {
+      itemId: item.id,
+      kind: "recheck",
+      agent: "claude",
+      status: "active",
+      now: NOW + 2_000,
+    });
+    setCurrentRun(db, item.id, recheck.id);
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    const parsed = parseStatusSnapshot(await response?.json());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const session = parsed.snapshot.runs.find((run) => run.itemId === "ENG-8")!;
+    const texts = session.activity.map((line) => line.text);
+    expect(texts).toContain("Closeout re-check started.");
+    expect(texts.some((text) => text.startsWith("Review started"))).toBe(false);
+    expect(session.agent).toBe("Claude");
+  } finally {
+    db.close();
+  }
+});

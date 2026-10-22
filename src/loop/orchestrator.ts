@@ -136,6 +136,9 @@ import {
   listCloseoutRecoveries,
   saveCloseoutRecovery,
   listCloseoutRounds,
+  recordCiRound,
+  type CiRound,
+  type CiRoundCheck,
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
@@ -208,6 +211,7 @@ import {
   LinearIntakePendingError,
   LinearRateLimitError,
   linearCaller,
+  linearItem,
   isMergeConflictRequest,
   parseLinearSessionContext,
   renderLinearSessionContext,
@@ -990,8 +994,20 @@ export class Orchestrator {
     return this.options.db;
   }
 
+  private forItem<T>(payload: unknown, run: () => T): T {
+    const itemId = readString(payload, "itemId");
+    const item = itemId ? getWorkItem(this.db, itemId) : null;
+    return item ? linearItem(item.linearIdentifier, run) : run();
+  }
+
   private register(): void {
-    const jobs = this.options.jobs;
+    const loop = this.options.jobs;
+    const jobs: Pick<typeof loop, "register"> = {
+      register: (queue, handler) =>
+        loop.register(queue, (job, context) =>
+          this.forItem(job.payload, () => handler(job, context)),
+        ),
+    };
     jobs.register(JOB_KIND.command, async (job, context) => {
       if (!context.isCurrent()) return;
       const command = parseLinearCommand(job.payload);
@@ -1084,7 +1100,7 @@ export class Orchestrator {
     this.options.outbox.setHandler((message, context) =>
       linearCaller(
         "outbox",
-        () => this.deliverLinearMessage(message, context),
+        () => this.forItem(message.payload, () => this.deliverLinearMessage(message, context)),
         message.op === "elicitation" ||
           message.delivery === "critical" ||
           message.delivery === "stop" ||
@@ -1868,8 +1884,8 @@ export class Orchestrator {
         if (enteredFromQueue) applyWorkItemEvent(this.db, current.id, "reverify_requested");
         const run = insertRun(this.db, {
           itemId: current.id,
-          kind: "review",
-          agent: snapshot.profiles.reviewer.agent,
+          kind: "recheck",
+          agent: prior.agent,
           status: "active",
           freshSession: true,
           now: this.now(),
@@ -2518,6 +2534,7 @@ export class Orchestrator {
     const priorVerification = ciWaitVerification(payload);
     if (priorVerification)
       publicationCandidate = { sha: priorVerification.head, baseSha: priorVerification.base };
+    const freshReads = new Set<string>();
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
@@ -2539,7 +2556,9 @@ export class Orchestrator {
           live.controller.signal,
           publicationCandidate,
         );
-        await this.taskAccess()?.assert(current, live.controller.signal);
+        const fresh = (purpose === "pr" || purpose === "merge") && !freshReads.has(purpose);
+        await this.taskAccess()?.assert(current, live.controller.signal, { fresh });
+        if (fresh) freshReads.add(purpose);
         const auth = this.authorization(current);
         if (auth && !(await auth.ensure(current, "publication", live.controller.signal)))
           throw new Error("GitHub sign-in is required before publication.");
@@ -2747,16 +2766,22 @@ export class Orchestrator {
         const checks = merged.failedChecks ?? [];
         // Read on every round, so a changed setting applies to the next round of a running task.
         const limit = this.ciFixAttempts();
+        const round = (next: CiRound["next"]) =>
+          this.recordCiRound(item, merged.head, merged.checks, next, limit);
         if (
           this.returnToAgent(item, "ci-failed", limit, ciFixHandoff(checks), (attempt) =>
             ciFixRoundLine(checks, attempt, limit),
           )
-        )
+        ) {
+          round("agent");
           return;
+        }
         if (this.askCiHelp(item, ciFixQuestion(checks, limit, published.pull.url))) {
+          round("asked");
           await this.flush();
           return;
         }
+        round("failed");
       }
       this.post(
         item,
@@ -2988,6 +3013,27 @@ export class Orchestrator {
       if (reason === "ci-failed") this.postAfterPullRequest(running, thought(returns + 1), key);
       else this.post(running, "thought", thought(returns + 1), key);
       return true;
+    });
+  }
+
+  /** The checks of a failed CI read and what Paws did next, for the run page. */
+  private recordCiRound(
+    item: WorkItemRecord,
+    head: string | undefined,
+    checks: readonly CiRoundCheck[] | undefined,
+    next: CiRound["next"],
+    limit: number,
+  ): void {
+    if (!head) return;
+    recordCiRound(this.db, {
+      itemId: item.id,
+      head,
+      runId: getWorkItem(this.db, item.id)?.currentRunId ?? item.currentRunId,
+      next,
+      fix: next === "agent" ? this.agentReturns(item.id, "ci-failed") : null,
+      fixLimit: limit,
+      checks: [...(checks ?? [])],
+      recordedAt: this.now(),
     });
   }
 
@@ -3335,6 +3381,7 @@ export class Orchestrator {
 
   private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
     if (sessionId === null) return;
+    this.taskAccess()?.invalidate({ sessionId });
     const requestedAt = at > 0 ? at : this.now();
     const agentSession = this.options.channel !== "comments";
     const commands: LinearCommand[] = [];
@@ -4061,7 +4108,7 @@ export class Orchestrator {
       target: "linear",
       op: "status",
       orderingKey: sessionId,
-      idempotencyKey: `status:${item.id}:${issueId}:${stateType}`,
+      idempotencyKey: `status:${item.id}:${issueId}:${stateType}:${item.version}`,
       payload: { itemId: item.id, linearIssueId: issueId, stateType },
       now: this.now(),
     });

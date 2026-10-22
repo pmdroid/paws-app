@@ -80,6 +80,7 @@ export {
 export { migrations } from "./migrations";
 export type { Migration } from "./migrations";
 export { openDatabase } from "./open";
+export { setJournalSink } from "./journal";
 export { assertLinearQueue } from "./legacy-tracker";
 export {
   advanceOutboxSession,
@@ -176,6 +177,7 @@ export {
   type CloseoutRecovery,
 } from "./closeout-recovery";
 export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./closeout-rounds";
+export { listCiRounds, recordCiRound, type CiRound, type CiRoundCheck } from "./ci-rounds";
 export {
   recordGitHubDelivery,
   listGitHubDeliveries,

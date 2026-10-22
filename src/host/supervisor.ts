@@ -105,7 +105,7 @@ export class HostSupervisor {
           } else failWorkItem(this.db, item, "restart_blocked", blocked, now);
           continue;
         }
-        applyDecision(this.db, item, decision, now, stamp);
+        applyDecision(this.db, item, decision, now, { stamp });
         if (decision.type === "restart_from_main") restarts.push(item);
         const outcome = pauseOutcome(decision);
         if (outcome) postPauseNote(this.db, item, sleptMs, outcome, sample.fromWall, now);
