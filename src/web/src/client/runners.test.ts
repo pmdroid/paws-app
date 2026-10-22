@@ -282,6 +282,32 @@ describe("runner details", () => {
     expect(html).not.toContain("Check connection");
   });
 
+  test("stray processes are listed with their age and CPU, busiest flagged", () => {
+    expect(runnerDetailMarkup(runner, view)).not.toContain("Stray processes");
+    const html = runnerDetailMarkup(
+      {
+        ...runner,
+        metrics: {
+          ...runner.metrics!,
+          strayProcesses: [
+            { pid: 4242, name: "bun", ageSeconds: 5 * 3600, cpuPercent: 160.4 },
+            { pid: 77, name: "<bg>", ageSeconds: 90, cpuPercent: 0 },
+          ],
+        },
+      },
+      view,
+    );
+    expect(html).toContain(`<h3 id="runner-${runner.id}-strays">Stray processes</h3>`);
+    expect(html).toContain('data-stray-pid="4242"');
+    expect(html).toContain(
+      '<span class="gauge-value high">160% CPU<span class="sr-only">, high</span>',
+    );
+    expect(html).toContain('data-stray-pid="77"');
+    expect(html).toContain("&lt;bg&gt;");
+    expect(html).toContain('<span class="gauge-value">0% CPU</span>');
+    expect(html).toContain("PID 4242");
+  });
+
   test("a busy runner says so", () => {
     const html = runnerDetailMarkup({ ...runner, idle: false }, view);
     expect(html).toContain('<span class="tag running">Busy</span>');

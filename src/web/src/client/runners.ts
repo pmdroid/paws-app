@@ -39,6 +39,8 @@ export type Runner = {
     load15: number | null;
     diskTotalBytes: number | null;
     diskFreeBytes: number | null;
+    /** Processes of the runner user outside any run; older runners do not report them. */
+    strayProcesses?: StrayProcess[] | null;
     reportedAt: number;
   } | null;
   os: { id: string | null; version: string | null } | null;
@@ -51,6 +53,7 @@ export type Runner = {
   /** Sessions with a live work lease on this runner, oldest first. */
   running?: RunningSession[];
 };
+export type StrayProcess = { pid: number; name: string; ageSeconds: number; cpuPercent: number };
 export type RunningSession = {
   runId: string;
   identifier: string;
@@ -286,6 +289,18 @@ export function runnerRunningMarkup(
       ? `<li class="slot-row"><span class="slot-mark" aria-hidden="true"></span><span class="muted">${free === total ? "Nothing running · " : ""}${free} ${free === 1 ? "slot" : "slots"} free</span></li>`
       : "";
   return `<ul class="slot-list" role="list" aria-label="Slots">${rows}${busy}${idle}</ul>`;
+}
+
+/** Processes that outlived their run, busiest first, so someone can stop them. */
+export function runnerStrayMarkup(strays: readonly StrayProcess[]): string {
+  const rows = strays
+    .map((stray) => {
+      const busy = stray.cpuPercent >= 50;
+      const cpu = `${Math.round(stray.cpuPercent)}% CPU`;
+      return `<li class="slot-row" data-stray-pid="${stray.pid}"><span class="slot-mark used${busy ? " high" : ""}" aria-hidden="true"></span><span class="lin-id">${esc(stray.name)}</span><span class="work-title">PID ${stray.pid}</span><span class="slot-facts">${busy ? `<span class="gauge-value high">${esc(cpu)}<span class="sr-only">, high</span></span>` : `<span class="gauge-value">${esc(cpu)}</span>`}<span class="muted">Running ${esc(elapsedLabel(stray.ageSeconds * 1000))}</span></span></li>`;
+    })
+    .join("");
+  return `<p class="muted">Running as the runner user after their run ended.</p><ul class="slot-list" role="list" aria-label="Stray processes">${rows}</ul>`;
 }
 
 export function runnerActionsMarkup(
@@ -532,7 +547,11 @@ export function runnerDetailMarkup(
           signIn,
           `<ul class="runner-agent-list" role="list" aria-label="Agent sign-in and usage">${signIns.map((entry) => agentMarkup(entry, view.now)).join("")}</ul>`,
         )
-  }${block("host", "Host", "", runnerMetricsMarkup(metrics, view.now))}</section>`;
+  }${block("host", "Host", "", runnerMetricsMarkup(metrics, view.now))}${
+    metrics?.strayProcesses?.length
+      ? block("strays", "Stray processes", "", runnerStrayMarkup(metrics.strayProcesses))
+      : ""
+  }</section>`;
   const concurrency = runnerConcurrencyMarkup(runner, {
     manages,
     busy: view.busy,
