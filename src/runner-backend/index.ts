@@ -19,6 +19,7 @@ import type { Database } from "bun:sqlite";
 import { getTaskMode, getWorkItem, immediate, runnerHasCapacity, saveCheckpoint } from "../db";
 import {
   ArtifactRejectedError,
+  assertDescendsFromAny,
   DEFAULT_RUN_TIMEOUT_MS,
   git,
   recoverAcpConversation,
@@ -46,6 +47,7 @@ class RunnerUnavailableError extends Error {}
 const USAGE_LIMIT_WAIT_MS = 10 * 60_000;
 const CAPACITY_WAIT_MS = 60 * 60_000;
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
+const REBASE_RUNNER_VERSION = [0, 1, 23];
 
 function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
   const parts = version
@@ -415,23 +417,48 @@ export function createRemoteAgentRunner(options: {
               .get(selected.id)?.version,
             MAIN_COMMIT_RUNNER_VERSION,
           );
-          const mainCandidate = input.mainSha ?? getWorkItem(db, itemId)?.checkpoint?.baseSha;
+          const acceptsRebase =
+            !taskScope &&
+            versionAtLeast(
+              db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(selected.id)?.version,
+              REBASE_RUNNER_VERSION,
+            );
+          const fetchedMain = acceptsRebase
+            ? await git([
+                "-C",
+                input.worktreePath,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/paws/upstream-main^{commit}",
+              ]).then(
+                (sha) => sha.trim() || undefined,
+                () => undefined,
+              )
+            : undefined;
+          const mainCandidate =
+            input.mainSha ?? fetchedMain ?? getWorkItem(db, itemId)?.checkpoint?.baseSha;
           const mainSha =
             !taskScope &&
             acceptsMainCommit &&
             baseSha &&
             mainCandidate &&
             mainCandidate !== baseSha &&
-            (await git([
-              "-C",
-              input.worktreePath,
-              "merge-base",
-              "--is-ancestor",
-              mainCandidate,
-              baseSha,
-            ])
-              .then(() => true)
-              .catch(() => false))
+            (acceptsRebase ||
+              (await git([
+                "-C",
+                input.worktreePath,
+                "merge-base",
+                "--is-ancestor",
+                mainCandidate,
+                baseSha,
+              ])
+                .then(() => true)
+                .catch(() => false)))
               ? mainCandidate
               : undefined;
           const generation =
@@ -812,6 +839,7 @@ export function createRemoteAgentRunner(options: {
               itemId,
               worktree: input.worktreePath,
               baseSha: baseSha!,
+              ...(mainSha ? { mainSha } : {}),
               candidateSha: complete.candidateSha,
               branch: scoped.item.branchName,
               remoteUrl: assigned.repository.remoteUrl,
@@ -825,14 +853,11 @@ export function createRemoteAgentRunner(options: {
               complete.candidateSha
             )
               throw new Error("Fetched runner candidate HEAD does not match");
-            await git([
-              "-C",
-              input.worktreePath,
-              "merge-base",
-              "--is-ancestor",
-              baseSha!,
+            await assertDescendsFromAny(
+              (args) => git(["-C", input.worktreePath, ...args]),
+              mainSha ? [baseSha!, mainSha] : [baseSha!],
               complete.candidateSha,
-            ]);
+            );
             if (complete.stopReason !== "end_turn" || complete.errorMessage)
               saveCheckpoint(db, itemId, {
                 phase: "running",
