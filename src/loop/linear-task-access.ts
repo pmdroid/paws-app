@@ -16,8 +16,10 @@ import {
   requireLinearTaskDelegation,
   type WorkItemRecord,
 } from "../db";
+import { sleep } from "../core";
 import {
   LinearIssueClosedError,
+  LinearRateLimitError,
   parseLinearSessionInstallation,
   type AcceptedLinearEvent,
   type LinearAccessReads,
@@ -170,7 +172,7 @@ export class LinearTaskAccess {
   }
 
   async prepare(item: WorkItemRecord, signal: AbortSignal): Promise<readonly string[]> {
-    return this.check(item, signal, true);
+    return outlastRateLimits(signal, () => this.check(item, signal, true));
   }
 
   async assert(
@@ -178,7 +180,9 @@ export class LinearTaskAccess {
     signal: AbortSignal,
     options: { allowTerminalIssue?: boolean } = {},
   ): Promise<void> {
-    await this.check(item, signal, false, options.allowTerminalIssue ?? false);
+    await outlastRateLimits(signal, () =>
+      this.check(item, signal, false, options.allowTerminalIssue ?? false),
+    );
   }
 
   async assertDelivery(
@@ -363,5 +367,20 @@ export async function authorizeLinearTask(
   } catch (error) {
     if (error instanceof LinearAccessRemovedError) return false;
     throw error;
+  }
+}
+
+const RATE_LIMIT_WAIT_MS = 15 * 60_000;
+
+async function outlastRateLimits<T>(signal: AbortSignal, read: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + RATE_LIMIT_WAIT_MS;
+  for (;;) {
+    try {
+      return await read();
+    } catch (error) {
+      if (!(error instanceof LinearRateLimitError) || Date.now() >= deadline) throw error;
+      await sleep(Math.min(Math.max(error.retryAfterMs, 1_000), 60_000), signal);
+      signal.throwIfAborted();
+    }
   }
 }
