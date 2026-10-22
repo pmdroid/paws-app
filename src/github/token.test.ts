@@ -70,6 +70,21 @@ describe("GitHub App tokens", () => {
     expect(request.path).toBe("/app/installations/7/access_tokens");
     expect(request.body.repositories).toEqual(["paws-demo"]);
     expect(request.body.permissions).toEqual(INSTALLATION_PERMISSIONS);
+    // Job logs of failed CI checks need Actions read access on private repositories.
+    expect(request.body.permissions).toMatchObject({ actions: "read" });
+    const issued = new Date("2026-10-09T12:00:00.000Z");
+    const scoped = (actions: string | undefined) =>
+      assertScopedToken(
+        tokenBody("ghs_actions", {
+          expires_at: "2026-10-09T13:00:00.000Z",
+          permissions: { ...INSTALLATION_PERMISSIONS, metadata: "read", actions },
+        }),
+        "pmdroid",
+        "paws-demo",
+        issued,
+      );
+    expect(() => scoped("write")).toThrow(/actions permission must be read/);
+    expect(() => scoped(undefined)).toThrow(/actions permission must be read/);
 
     const now = new Date("2026-10-09T12:00:00.000Z");
     expect(
