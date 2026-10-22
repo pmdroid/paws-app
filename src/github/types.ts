@@ -8,6 +8,8 @@ export const INSTALLATION_PERMISSIONS = {
   pull_requests: "write",
   checks: "write",
   issues: "write",
+  /** Reads GitHub Actions job logs for a failed CI check. */
+  actions: "read",
 } as const;
 
 export const UPSTREAM_MAIN_REF = "refs/paws/upstream-main";
@@ -108,7 +110,11 @@ export type SerialMergeResult = {
   failedChecks?: { name: string; url: string | null; logTail?: string | null }[];
   /** Every check on `head` at the last read, with log tails for the failed ones. */
   checks?: CiCheck[];
+  ciOutcome?: CiOutcome;
 };
+
+/** CI on one head: a failed check, every expected check green, or still waiting. */
+export type CiOutcome = "running" | "failed" | "passed";
 
 export type CiCheckState = "passed" | "failed" | "running" | "skipped" | "neutral";
 
