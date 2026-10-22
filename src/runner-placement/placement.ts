@@ -479,18 +479,17 @@ export function createRunnerPlacement(options: {
               )
               .get(input.runnerId, usage.ownerId, usage.agent)
           : null;
-        if (memberAccount && quota)
+        if (memberAccount && quota) {
           db.run(
-            "UPDATE runner_member_account SET cooldown_until=?,resets_at=?,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
-            [
-              quota.cooldownUntil,
-              quota.resetsAt,
-              input.finishedAt,
-              input.runnerId,
-              usage.ownerId,
-              usage.agent!,
-            ],
+            "UPDATE runner_member_account SET cooldown_until=?,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
+            [quota.cooldownUntil, input.finishedAt, input.runnerId, usage.ownerId, usage.agent!],
           );
+          // Whether the cooldown is a reported reset or only the fallback retry interval.
+          db.run(
+            "INSERT OR REPLACE INTO runner_member_account_reset(runner_id,user_id,agent,resets_at) VALUES(?,?,?,?)",
+            [input.runnerId, usage.ownerId, usage.agent!, quota.resetsAt],
+          );
+        }
         if (memberAccount && success)
           db.run(
             "UPDATE runner_member_account SET cooldown_until=CASE WHEN ? THEN cooldown_until ELSE 0 END,resolved_model=COALESCE(?,resolved_model),updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",

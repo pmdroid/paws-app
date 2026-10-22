@@ -1955,7 +1955,13 @@ CREATE TABLE usage_limit_pause (
   session_runner_id TEXT,
   session_id TEXT
 ) STRICT;
-ALTER TABLE runner_member_account ADD COLUMN resets_at INTEGER;
+CREATE TABLE runner_member_account_reset (
+  runner_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  resets_at INTEGER,
+  PRIMARY KEY (runner_id, user_id, agent)
+) STRICT;
 `,
   },
 ];

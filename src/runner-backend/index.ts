@@ -170,7 +170,8 @@ export function createRemoteAgentRunner(options: {
     const row = db
       .query<{ until: number; resetsAt: number | null }, [string, string | null, number]>(
         `SELECT until,resets_at AS resetsAt FROM (
-         SELECT a.cooldown_until AS until,a.resets_at FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
+         SELECT a.cooldown_until AS until,x.resets_at FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
+         LEFT JOIN runner_member_account_reset x ON x.runner_id=a.runner_id AND x.user_id=a.user_id AND x.agent=a.agent
          WHERE a.agent=?1 AND a.connected=1 AND a.cooldown_until>?3 AND ${runnerInScope}
          UNION ALL
          SELECT p.cooldown_until,p.resets_at FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
