@@ -299,6 +299,9 @@ describe("linear intake poll", () => {
     expect(pollIntervalMs(true)).toBe(POLL_INTERVAL_ACTIVE_MS);
     expect(pollIntervalMs(false)).toBe(POLL_INTERVAL_IDLE_MS);
     expect(pollIntervalMs(true)).toBe(5_000);
+    expect(pollIntervalMs(true, { now: NOW, lastWebhookMs: NOW - 30 * 60_000 })).toBe(
+      POLL_INTERVAL_WEBHOOK_MS,
+    );
     expect(pollIntervalMs(false)).toBe(15_000);
     expect(
       sleepGapMs({ previousWallMs: 0, previousMonoMs: 0, wallMs: 120_000, monoMs: 1_000 }),
