@@ -61,6 +61,7 @@ describe("local agent settings API", () => {
         { repo: "pmdroid/barkvisor" },
       ],
       merge: { closeoutAfterUpdate: false, ciFixAttempts: 3 },
+      queue: { startTimeoutHours: 24 },
     });
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
   });
@@ -73,6 +74,7 @@ describe("local agent settings API", () => {
     expect(await response!.json()).toEqual({
       ...settings,
       merge: { closeoutAfterUpdate: false, ciFixAttempts: 3 },
+      queue: { startTimeoutHours: 24 },
     });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
@@ -158,6 +160,50 @@ describe("local agent settings API", () => {
     }
     expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 0 });
     expect(audits).toHaveLength(2);
+  });
+
+  test("reads and writes the queue start timeout from 1 hour to 30 days and audits each change", async () => {
+    const { options } = fixture();
+    const audits: [string, string][] = [];
+    options.audit = (action, subject) => audits.push([action, subject]);
+    writeFileSync(options.configPath, "[merge]\nci_fix_attempts = 5\n");
+    const read = async () =>
+      ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { queue: unknown })
+        .queue;
+    expect(await read()).toEqual({ startTimeoutHours: 24 });
+
+    const put = (queue: unknown) =>
+      handleAgentSettingsRequest(request(undefined, "PUT", { ...settings, queue }), options);
+    expect((await put({ startTimeoutHours: 72 }))?.status).toBe(200);
+    expect(await read()).toEqual({ startTimeoutHours: 72 });
+    const text = readFileSync(options.configPath, "utf8");
+    expect(text).toContain("[queue]\nstart_timeout_hours = 72");
+    expect(text).toContain("ci_fix_attempts = 5");
+    expect(loadConfigFile(options.configPath).queueStartTimeoutHours).toBe(72);
+
+    // Saving profiles without the queue keeps the stored value, and the same value is not a change.
+    await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
+    await put({ startTimeoutHours: 72 });
+    expect(await read()).toEqual({ startTimeoutHours: 72 });
+    expect((await put({ startTimeoutHours: 1 }))?.status).toBe(200);
+    expect(readFileSync(options.configPath, "utf8").match(/\[queue\]/g)).toHaveLength(1);
+
+    for (const queue of [
+      { startTimeoutHours: 0 },
+      { startTimeoutHours: 721 },
+      { startTimeoutHours: 2.5 },
+      { startTimeoutHours: "24" },
+      { other: 1 },
+      {},
+      24,
+    ]) {
+      expect((await put(queue))?.status).toBe(400);
+    }
+    expect(await read()).toEqual({ startTimeoutHours: 1 });
+    expect(audits).toEqual([
+      ["settings.queue-start-timeout", "Queue start timeout 24 hours → 3 days"],
+      ["settings.queue-start-timeout", "Queue start timeout 3 days → 1 hour"],
+    ]);
   });
 
   test("PUT repairs malformed saved profile sections without changing unrelated config", async () => {

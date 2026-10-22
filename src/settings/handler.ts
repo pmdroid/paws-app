@@ -1,13 +1,18 @@
 import { timingSafeEqual } from "node:crypto";
 import {
   DEFAULT_CI_FIX_ATTEMPTS,
+  DEFAULT_QUEUE_START_TIMEOUT_HOURS,
+  formatQueueTimeout,
   loadConfigFile,
   parseAgentSettings,
   parseMergeSettings,
+  parseQueueSettings,
   readAgentSettings,
   readMergeSettings,
+  readQueueSettings,
   writeAgentSettings,
   type MergeSettings,
+  type QueueSettings,
 } from "../config";
 
 export type AgentSettingsOptions = {
@@ -43,6 +48,7 @@ export async function handleAgentSettingsRequest(
         ...settings,
         projects: [...projects.values()],
         merge: readMergeSettings(config),
+        queue: readQueueSettings(config),
       });
     } catch {
       return json({ error: "Agent settings could not be read" }, 503);
@@ -59,18 +65,27 @@ export async function handleAgentSettingsRequest(
   }
   let settings;
   let mergeBody: unknown;
+  let queue: QueueSettings | undefined;
   try {
-    // The workspace merge settings travel next to the agent profiles.
-    const { merge, ...agents }: Record<string, unknown> = isRecord(body) ? body : {};
+    // The workspace merge and queue settings travel next to the agent profiles.
+    const {
+      merge,
+      queue: queueBody,
+      ...agents
+    }: Record<string, unknown> = isRecord(body) ? body : {};
     settings = parseAgentSettings(isRecord(body) ? agents : body);
     mergeBody = merge;
+    if (queueBody !== undefined) queue = parseQueueSettings(queueBody);
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
   // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
   let previous: MergeSettings | null = null;
+  let previousQueue: QueueSettings | null = null;
   try {
-    previous = readMergeSettings(loadConfigFile(options.configPath));
+    const config = loadConfigFile(options.configPath);
+    previous = readMergeSettings(config);
+    previousQueue = readQueueSettings(config);
   } catch {}
   let merge: MergeSettings | undefined;
   try {
@@ -83,9 +98,12 @@ export async function handleAgentSettingsRequest(
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
   let saved: MergeSettings;
+  let savedQueue: QueueSettings;
   try {
-    writeAgentSettings(options.configPath, settings, merge);
-    saved = merge ?? readMergeSettings(loadConfigFile(options.configPath));
+    writeAgentSettings(options.configPath, settings, merge, queue);
+    const config = loadConfigFile(options.configPath);
+    saved = merge ?? readMergeSettings(config);
+    savedQueue = queue ?? readQueueSettings(config);
   } catch {
     return json({ error: "Agent settings could not be saved" }, 503);
   }
@@ -95,7 +113,13 @@ export async function handleAgentSettingsRequest(
       "settings.ci-fix-attempts",
       `CI fix attempts ${before} → ${merge.ciFixAttempts}`,
     );
-  return json({ ...settings, merge: saved });
+  const timeoutBefore = previousQueue?.startTimeoutHours ?? DEFAULT_QUEUE_START_TIMEOUT_HOURS;
+  if (queue !== undefined && queue.startTimeoutHours !== timeoutBefore)
+    options.audit?.(
+      "settings.queue-start-timeout",
+      `Queue start timeout ${formatQueueTimeout(timeoutBefore)} → ${formatQueueTimeout(queue.startTimeoutHours)}`,
+    );
+  return json({ ...settings, merge: saved, queue: savedQueue });
 }
 
 function localRequest(request: Request, trustedOrigin?: string): boolean {

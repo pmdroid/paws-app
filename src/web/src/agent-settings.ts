@@ -9,6 +9,8 @@ export type AgentSettings = {
   projects: { repo: string; implementer?: AgentProfile; reviewer?: AgentProfile }[];
   /** Workspace merge settings. A missing switch means off, missing attempts mean 3. */
   merge?: { closeoutAfterUpdate: boolean; ciFixAttempts?: number };
+  /** Workspace queue settings. Missing means a 24 hour start timeout. */
+  queue?: { startTimeoutHours: number };
 };
 export type AgentModelCatalog = {
   agent: AgentProfile["agent"];
