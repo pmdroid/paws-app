@@ -23,6 +23,7 @@ import {
   History,
   Menu,
   BookOpen,
+  GitMerge,
 } from "lucide-react";
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
@@ -48,6 +49,7 @@ const ICONS = {
   sessions: MessagesSquare,
   runners: Server,
   agents: Bot,
+  merging: GitMerge,
   integrations: Plug,
   workspace: Users,
   account: UserRound,

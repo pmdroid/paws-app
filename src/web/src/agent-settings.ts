@@ -7,8 +7,8 @@ export type AgentRole = "implementer" | "reviewer";
 export type AgentSettings = {
   defaults: Record<AgentRole, AgentProfile>;
   projects: { repo: string; implementer?: AgentProfile; reviewer?: AgentProfile }[];
-  /** Workspace merge settings. A missing switch means off, missing attempts mean 3. */
-  merge?: { closeoutAfterUpdate: boolean; ciFixAttempts?: number };
+  /** CI fix attempts. Missing means 3. Settings → Merging owns the other merge choices. */
+  merge?: { ciFixAttempts?: number };
   /** How long a task may wait for a runner slot. Missing means 24 hours. */
   queue?: { startTimeoutHours: number };
 };
