@@ -315,7 +315,6 @@ async function runRemoteFault(fault: Fault) {
         work.acknowledge(runnerId, command.id);
         if (command.type === "cancel" && runner.stale) {
           work.heartbeat(runnerId);
-          health.request(owner, runnerId, { type: "login_check", agent: runner.stale });
           runner.stale = null;
         }
         if (command.type === "login_check")
