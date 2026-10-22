@@ -1,4 +1,4 @@
-import { LONG_SLEEP_MS } from "./limits";
+import { LONG_SLEEP_MS, RESUME_AGAIN_AFTER_MS } from "./limits";
 import type { WorkItemState } from "./states";
 import type { Checkpoint } from "./types";
 
@@ -62,12 +62,14 @@ export function decideStartup(input: {
   recoveryAttempts: number;
   checkpoint: Checkpoint | null;
   runnerHoldsWork?: boolean;
+  sinceResumeMs?: number;
 }): StartupDecision {
   if (!RESUMABLE.has(input.itemState)) return { type: "none" };
   if (mergeWasInProgress(input.itemState, input.checkpoint)) return { type: "reverify" };
   if (input.runnerHoldsWork)
     return { type: "resume", freshSession: true, checkpoint: input.checkpoint, reattach: true };
-  if (input.recoveryAttempts >= 1) return { type: "ask_restart" };
+  if (input.recoveryAttempts >= 1 && (input.sinceResumeMs ?? 0) < RESUME_AGAIN_AFTER_MS)
+    return { type: "ask_restart" };
   return { type: "resume", freshSession: true, checkpoint: input.checkpoint };
 }
 
