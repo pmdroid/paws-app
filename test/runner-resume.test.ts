@@ -144,3 +144,101 @@ test("a crashed worker resumes its session in the same workspace", async () => {
     rmSync(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("a run after a usage limit loads the named agent session or replays the conversation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-runner-continue-"));
+  try {
+    const source = join(root, "source");
+    const home = join(root, "home");
+    const workRoot = join(root, "work");
+    for (const path of [source, home, workRoot]) mkdirSync(path, { recursive: true });
+    const env = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+    };
+    await git(["init", "-b", "main", source]);
+    writeFileSync(join(source, "original.txt"), "original");
+    await git(["-C", source, "add", "."]);
+    await git(["-C", source, "commit", "-m", "initial"], { env });
+    const baseSha = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+    const repositoryBundle = join(root, "source.bundle");
+    await git(["-C", source, "bundle", "create", repositoryBundle, "--all"]);
+    chmodSync(repositoryBundle, 0o600);
+    const spool = {
+      root: join(root, "spool"),
+      runnerUid: process.getuid!(),
+      agentGid: process.getgid!(),
+    };
+    mkdirSync(spool.root);
+    chmodSync(spool.root, 0o750);
+    const fake = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
+    const execute = async (name: string, executionId: string, script: FakeScript) => {
+      const job: RunnerJob = {
+        executionId,
+        command: {
+          type: "run",
+          id: `cmd-${name}`,
+          runnerId: "runner",
+          workspaceId: "workspace",
+          runId: "run",
+          itemId: "item",
+          generation: 2,
+          issuedAt: 1,
+          expiresAt: Date.now() + 60_000,
+          profile: { agent: "claude", model: "fixture-model" },
+          repository: {
+            owner: "acme",
+            repo: "repo",
+            remoteUrl: "https://github.com/acme/repo.git",
+            baseSha,
+          },
+          prompt: "Implement the original request\n\nObserved prior conversation: WORKING ON IT",
+          resumeSessionId: "earlier-session",
+          resumeReason: "usage_limit",
+        },
+      };
+      publishRunnerJob(spool, job, { repositoryBundle });
+      const outputDirectory = join(root, `${name}-output`);
+      mkdirSync(outputDirectory);
+      writeFileSync(
+        join(root, `${name}.json`),
+        JSON.stringify({ model: "fixture-model", ...script }),
+      );
+      await executeRunnerCommand({
+        job,
+        repositoryBundle,
+        inputs: readRunnerJobInputs(spool, job.executionId),
+        outputDirectory,
+        workRoot,
+        home,
+        resultsGid: process.getgid!(),
+        launch: {
+          command: process.execPath,
+          args: [fake, join(root, `${name}-trace.json`), join(root, `${name}.json`)],
+        },
+      });
+      return JSON.parse(readFileSync(join(root, `${name}-trace.json`), "utf8")) as FakeResult;
+    };
+
+    const loaded = await execute("loaded", "01J00000000000000000000002", {
+      loadSession: true,
+      steps: [{ type: "end" }],
+    });
+    expect(loaded.methods).toContain("session/load");
+    expect(loaded.methods).not.toContain("session/new");
+    expect((loaded.loaded as { sessionId: string }).sessionId).toBe("earlier-session");
+    expect(JSON.stringify(loaded.prompts)).toContain("usage limit has reset");
+    expect(JSON.stringify(loaded.prompts)).not.toContain("WORKING ON IT");
+
+    const replayed = await execute("replayed", "01J00000000000000000000003", {
+      steps: [{ type: "end" }],
+    });
+    expect(replayed.methods).toContain("session/new");
+    expect(JSON.stringify(replayed.prompts)).toContain("WORKING ON IT");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);

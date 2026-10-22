@@ -82,6 +82,8 @@ function earlierSession(
   }
   return undefined;
 }
+// Continuing a usage-limit session on any command, with resumeReason, needs a newer runner.
+const USAGE_LIMIT_SESSION_RUNNER_VERSION = [0, 1, 25];
 
 function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
   const parts = version
@@ -281,11 +283,18 @@ export function createRemoteAgentRunner(options: {
           throw new Error("Read-only remote work requires the reviewer role");
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
-        const usageLimit = (disposition?: { usageLimit?: { resetsAt: number | null } }) =>
-          disposition?.usageLimit && {
+        const usageLimit = (
+          disposition?: { usageLimit?: { resetsAt: number | null } },
+          result?: RunnerResult,
+        ) => {
+          if (!disposition?.usageLimit) return undefined;
+          const sessionId = result?.identity?.session ?? result?.sessionId;
+          return {
             agent: profile.agent,
             resetsAt: disposition.usageLimit.resetsAt,
+            ...(sessionId ? { sessionId } : {}),
           };
+        };
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
@@ -445,24 +454,13 @@ export function createRemoteAgentRunner(options: {
             : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
           if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
             saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
-          const acceptsMainCommit = versionAtLeast(
-            db
-              .query<{ version: string | null }, [string]>(
-                "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-              )
-              .get(selected.id)?.version,
-            MAIN_COMMIT_RUNNER_VERSION,
-          );
-          const acceptsRebase =
-            !taskScope &&
-            versionAtLeast(
-              db
-                .query<{ version: string | null }, [string]>(
-                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                )
-                .get(selected.id)?.version,
-              REBASE_RUNNER_VERSION,
-            );
+          const runnerVersion = db
+            .query<{ version: string | null }, [string]>(
+              "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+            )
+            .get(selected.id)?.version;
+          const acceptsMainCommit = versionAtLeast(runnerVersion, MAIN_COMMIT_RUNNER_VERSION);
+          const acceptsRebase = !taskScope && versionAtLeast(runnerVersion, REBASE_RUNNER_VERSION);
           const fetchedMain = acceptsRebase
             ? await git([
                 "-C",
@@ -476,6 +474,22 @@ export function createRemoteAgentRunner(options: {
                 () => undefined,
               )
             : undefined;
+          // After a usage limit, only the runner that hit it can still hold the agent session.
+          const usageLimitSession =
+            !taskScope &&
+            input.runnerSession?.runnerId === selected.id &&
+            versionAtLeast(runnerVersion, USAGE_LIMIT_SESSION_RUNNER_VERSION)
+              ? input.runnerSession.sessionId
+              : undefined;
+          // Otherwise an implementation run continues the agent session of the item's last run.
+          const resumeSessionId =
+            usageLimitSession ??
+            (!taskScope &&
+            input.role === "implementer" &&
+            input.checkpoint !== false &&
+            versionAtLeast(runnerVersion, SESSION_RESUME_RUNNER_VERSION)
+              ? earlierSession(db, itemId, selected.id, profile.agent)
+              : undefined);
           const mainCandidate =
             input.mainSha ?? fetchedMain ?? getWorkItem(db, itemId)?.checkpoint?.baseSha;
           const mainSha =
@@ -540,20 +554,6 @@ export function createRemoteAgentRunner(options: {
                   `${boundRepository.owner}/${boundRepository.repo}`.toLowerCase()
                 ]?.exclude
               : undefined;
-          const resumeSessionId =
-            !taskScope &&
-            input.role === "implementer" &&
-            input.checkpoint !== false &&
-            versionAtLeast(
-              db
-                .query<{ version: string | null }, [string]>(
-                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                )
-                .get(selected.id)?.version,
-              SESSION_RESUME_RUNNER_VERSION,
-            )
-              ? earlierSession(db, itemId, selected.id, profile.agent)
-              : undefined;
           const assigned: WorkCommand = {
             id: commandId,
             runnerId: selected.id,
@@ -589,6 +589,8 @@ export function createRemoteAgentRunner(options: {
                 }
               : {
                   type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
+                  ...(resumeSessionId ? { resumeSessionId } : {}),
+                  ...(usageLimitSession ? { resumeReason: "usage_limit" as const } : {}),
                   ...(skillsInputId !== undefined ? { skillsInputId } : {}),
                   repository: {
                     ...scoped.repository!,
@@ -599,7 +601,6 @@ export function createRemoteAgentRunner(options: {
                   ...(acceptsMainCommit && input.role !== "reviewer" && input.checkpoint === false
                     ? { checkpoint: false as const }
                     : {}),
-                  ...(resumeSessionId ? { resumeSessionId } : {}),
                   ...(checkpointBot ? { checkpointBot } : {}),
                   ...(input.commitPolicy
                     ? { commitPolicy: input.commitPolicy, checkpointBot: input.commitPolicy.bot }
@@ -646,7 +647,7 @@ export function createRemoteAgentRunner(options: {
                 "The reviewer runner requires a fresh eligible agent.",
                 transcript,
                 publishedEffects,
-                usageLimit(disposition),
+                usageLimit(disposition, complete),
               );
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
@@ -863,7 +864,7 @@ export function createRemoteAgentRunner(options: {
                 : "The runner agent exhausted its observed quota.",
               transcript,
               publishedEffects,
-              usageLimit(disposition),
+              usageLimit(disposition, complete),
             );
           if (complete.reviewText)
             await emit({
@@ -918,6 +919,22 @@ export function createRemoteAgentRunner(options: {
                 wipCommit: complete.candidateSha,
               });
           }
+          // A usage limit can end a run that committed work in progress. The commit is now the
+          // task's checkpoint, and the task pauses for the reset instead of failing.
+          if (
+            disposition?.usageLimit &&
+            complete.candidateSha &&
+            complete.agentExited &&
+            !complete.cancelled &&
+            !complete.timedOut
+          )
+            throw new RetryableRunnerError(
+              selected.id,
+              "The runner agent exhausted its observed quota.",
+              transcript,
+              publishedEffects,
+              usageLimit(disposition, complete),
+            );
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
             signal.throwIfAborted();
