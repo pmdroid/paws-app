@@ -3227,17 +3227,18 @@ test("with the GitHub merge queue order, Paws queues the accepted pull request a
       implementRuns: result.implementRuns,
       enqueued: result.enqueued,
       selfMerges: result.selfMerges,
-      added: result.lines.some(
+      added: result.summaries.some(
         (line) =>
           line.startsWith("Added ") &&
           line.endsWith(
             "to the GitHub merge queue. Second in the pmdroid/paws-demo GitHub merge queue, queued.",
           ),
       ),
-      moved: result.lines.includes(
+      moved: result.summaries.includes(
         "First in the pmdroid/paws-demo GitHub merge queue, waiting for checks.",
       ),
-      rebaseOrRecheck: result.lines.some((line) => line.startsWith("Branch updated")),
+      rebaseOrRecheck: result.summaries.some((line) => line.startsWith("Branch updated")),
+      queueResponses: result.lines.filter((line) => line.includes("GitHub merge queue")),
       dashboard: result.dashboard,
     },
     result.detail,
@@ -3249,6 +3250,7 @@ test("with the GitHub merge queue order, Paws queues the accepted pull request a
     added: true,
     moved: true,
     rebaseOrRecheck: false,
+    queueResponses: [],
     dashboard: [
       "Second in the pmdroid/paws-demo GitHub merge queue, queued.",
       "First in the pmdroid/paws-demo GitHub merge queue, waiting for checks.",
@@ -3265,7 +3267,9 @@ test("a GitHub merge queue removal for a failing check goes back to the agent an
   expect(result.implementRuns).toBe(2);
   expect(result.enqueued).toBe(2);
   expect(result.selfMerges).toBe(0);
-  expect(result.lines).toContain("CI: `FAILED_CHECKS` failed. Sent back to the agent, fix 1 of 3.");
+  expect(result.summaries).toContain(
+    "CI: `FAILED_CHECKS` failed. Sent back to the agent, fix 1 of 3.",
+  );
   expect(result.prompts[1]).toContain("GitHub's merge queue removed the pull request");
   expect(result.questions).toEqual([]);
 }, 120_000);
@@ -3286,7 +3290,7 @@ test("without a merge queue on main, the GitHub merge queue order merges the pul
   expect(result.state, result.detail).toBe("merged");
   expect(result.enqueued).toBe(0);
   expect(result.selfMerges).toBe(1);
-  expect(result.lines).toContain(
+  expect(result.summaries).toContain(
     "main in pmdroid/paws-demo has no GitHub merge queue. Paws merges the pull request itself when its CI is green.",
   );
 }, 120_000);
@@ -3304,6 +3308,7 @@ async function runGitHubQueue(
   enqueued: number;
   selfMerges: number;
   lines: string[];
+  summaries: string[];
   questions: string[];
   prompts: string[];
   /** The dashboard's GitHub merge queue line for the item, each time GitHub acted. */
@@ -3324,6 +3329,7 @@ async function runGitHubQueue(
   ]);
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
+  const queuedSummary = queuedSummaries(db);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -3455,6 +3461,7 @@ async function runGitHubQueue(
       enqueued: queue.enqueued.length,
       selfMerges: github.merged.length,
       lines: tracker.progress.map((update) => update.body),
+      summaries: queuedSummary(),
       questions: tracker.questions.map((question) => question.body),
       prompts,
       dashboard,

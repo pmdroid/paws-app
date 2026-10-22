@@ -3033,7 +3033,7 @@ export class Orchestrator {
     if (this.stopped(item.id)) return;
     switch (result.outcome) {
       case "no_queue":
-        this.postAfterPullRequest(
+        this.statusAfterPullRequest(
           item,
           `${result.message} Paws merges the pull request itself when its CI is green.`,
           `${item.id}:github-queue:none:${input.head}`,
@@ -3045,13 +3045,13 @@ export class Orchestrator {
       case "queued": {
         const line = githubQueueLine(name, result.position, result.state);
         if (!watch.queued)
-          this.postAfterPullRequest(
+          this.statusAfterPullRequest(
             item,
             `Added ${pull.url ?? `pull request #${pull.number}`} to the GitHub merge queue. ${line}`,
             `${item.id}:github-queue:added:${input.head}`,
           );
         else if (watch.position !== result.position || watch.state !== result.state)
-          this.postAfterPullRequest(
+          this.statusAfterPullRequest(
             item,
             line,
             `${item.id}:github-queue:${input.head}:${result.position}:${result.state}`,
