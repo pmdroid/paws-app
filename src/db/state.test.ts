@@ -167,6 +167,26 @@ describe("restart recovery", () => {
     }).toMatchObject({ item: { state: "running", recoveryAttempts: 0 }, run: "active" });
   });
 
+  test("each restart that reattaches a running task queues a job to follow it", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { now: clock.now() });
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
+      [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 3_600_000],
+    );
+    for (let restart = 0; restart < 2; restart++) {
+      prepareShutdown(db, clock.now());
+      recoverOnStartup(db, clock.now());
+      expect(
+        listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+      ).toHaveLength(1);
+      db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.resume'", [clock.now()]);
+      clock.advance(20 * 60_000);
+    }
+  });
+
   test("a verifying task whose runner holds Closeout work resumes instead of reattaching", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });

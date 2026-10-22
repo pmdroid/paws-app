@@ -116,7 +116,7 @@ function applyResume(
       : null;
   enqueueJobOnce(db, {
     queue: JOB_KIND.resume,
-    jobKey: `resume:${item.id}:${current.version}`,
+    jobKey: `resume:${item.id}:${current.version}:${now}`,
     payload: {
       itemId: item.id,
       runId: current.currentRunId,
