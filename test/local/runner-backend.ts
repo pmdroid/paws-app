@@ -2310,6 +2310,52 @@ export async function probeRunnerBackend(
       observe("placement waits for a paired runner to come online instead of failing", true, {
         placedWhenOnline,
       });
+      const raced = tracked();
+      const racedAbort = new AbortController();
+      let racedFailure: unknown = null;
+      let filled: string[] = [];
+      const racedRun = placedBackend.forItem(raced.id)(
+        input(raced, {
+          signal: racedAbort.signal,
+          prepareInputFiles: async ({ prompt }) => {
+            if (!filled.length)
+              filled = hostIds.map((hostId) => {
+                const busy = tracked();
+                db.run(
+                  "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
+                  [
+                    getWorkItem(db, busy.id)!.currentRunId!,
+                    hostId,
+                    workspace.id,
+                    `raced-${hostId}`,
+                    Date.now() + 3_600_000,
+                  ],
+                );
+                return `raced-${hostId}`;
+              });
+            return { prompt, inputFiles: [] };
+          },
+        }),
+      );
+      void racedRun.catch((error: unknown) => (racedFailure = error));
+      for (let attempt = 0; attempt < 500 && !filled.length; attempt++) await delay(2);
+      await delay(60);
+      assert.equal(racedFailure, null);
+      db.run(
+        `UPDATE runner_work SET ended_at=? WHERE command_id IN (${filled.map(() => "?").join(",")})`,
+        [Date.now(), ...filled],
+      );
+      const placedAfterRace = await dispatched();
+      assert.notEqual(placedAfterRace, null);
+      assert.equal(racedFailure, null);
+      racedAbort.abort();
+      await racedRun.catch(() => undefined);
+      await drain();
+      observe(
+        "a runner that fills up between selection and assignment places the run again instead of failing",
+        true,
+        { placedAfterRace },
+      );
     }
   } finally {
     failoverAbort.abort();
