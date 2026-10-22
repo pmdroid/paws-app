@@ -15,6 +15,7 @@ import {
   createItemReconciler,
   intakeDelegatedIssue,
   readyItems,
+  SWEEP_FULL_REFRESH_MS,
   type ItemChanges,
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
@@ -246,12 +247,12 @@ export async function probeEpicReconciliation(root: string) {
       readyItems(db, { itemId: b, workspaceId: target.workspaceId }),
     );
     const beforeSweep = recorded.length;
-    await reconciler.sweep({ now: 1000 });
-    await reconciler.sweep({ now: 300999 });
+    const sweptAt = Date.now();
+    await reconciler.sweep({ now: sweptAt });
+    assert.equal(recorded.length, beforeSweep);
+    await reconciler.sweep({ now: sweptAt + SWEEP_FULL_REFRESH_MS });
     assert.equal(recorded.length, beforeSweep + 1);
-    await reconciler.sweep({ now: 301000 });
-    assert.equal(recorded.length, beforeSweep + 2);
-    observe("Active epic sweeps run immediately and then every five minutes", {
+    observe("Active epic sweeps skip unchanged epics until the full refresh window", {
       beforeSweep,
       afterSweep: recorded.length,
     });
