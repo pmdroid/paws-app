@@ -1656,7 +1656,7 @@ export class Orchestrator {
       this.post(
         item,
         "thought",
-        live.progress ?? `Still working on ${item.linearIdentifier}.`,
+        live.progress ?? `Working on ${item.linearIdentifier}.`,
         `${run.id}:keep:${this.now()}`,
         { ephemeral: true },
         "critical",
@@ -2139,7 +2139,7 @@ export class Orchestrator {
       },
       recorder: {
         record: async (verdict) => {
-          if (deps.signal?.aborted) return;
+          if (deps.signal?.aborted || verdict.outcome === "accepted") return;
           this.post(
             item,
             "thought",
@@ -2154,8 +2154,6 @@ export class Orchestrator {
       progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
     try {
-      report(`Closeout is checking ${item.linearIdentifier}.`);
-      await this.flush();
       return await gate.run({
         taskId: itemPathId(item),
         worktree,
@@ -2244,9 +2242,6 @@ export class Orchestrator {
           (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(reason)) &&
           this.now() < rateLimitDeadline
         ) {
-          input.report(
-            `Linear is rate-limiting Paws. The Closeout checks for ${item.linearIdentifier} run again when the limit resets.`,
-          );
           await delay(
             error instanceof LinearRateLimitError
               ? Math.min(error.retryAfterMs, CHECKS_RATE_LIMIT_WAIT_MS)
@@ -2918,7 +2913,7 @@ export class Orchestrator {
         place.position === 1
           ? `${line}. Merging next.`
           : `${line}. ${ahead?.linearIdentifier ?? "The task ahead"} merges first.`;
-      this.postAfterPullRequest(
+      this.statusAfterPullRequest(
         item,
         body,
         `${item.id}:merge-queue:${place.readyAt}:${place.position}`,
@@ -2930,7 +2925,18 @@ export class Orchestrator {
   }
 
   private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {
-    this.postAfterPullRequest(item, body, `${item.id}:branch-updated:${head}`);
+    this.statusAfterPullRequest(item, body, `${item.id}:branch-updated:${head}`);
+  }
+
+  private statusAfterPullRequest(item: WorkItemRecord, body: string, key: string): void {
+    if (this.options.channel === "comments") {
+      this.post(item, "thought", body, key);
+      return;
+    }
+    if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
+    if (getWorkItem(this.db, item.id)?.state === "cancelled") return;
+    this.sessionProgress(item)?.status(body);
+    void this.flush().catch(() => {});
   }
 
   /** Progress is quiet once the pull request is open, so this posts like the pull request note. */
@@ -3055,7 +3061,7 @@ export class Orchestrator {
         now: this.now(),
       });
       const key = `${current.id}:${reason}:${returns}`;
-      if (reason === "ci-failed") this.postAfterPullRequest(running, thought(returns + 1), key);
+      if (reason === "ci-failed") this.statusAfterPullRequest(running, thought(returns + 1), key);
       else this.post(running, "thought", thought(returns + 1), key);
       return true;
     });
@@ -3988,12 +3994,6 @@ export class Orchestrator {
       runAt: this.now() + Math.max(retryAfterMs, RATE_LIMIT_RETRY_MS),
       now: this.now(),
     });
-    this.post(
-      item,
-      "thought",
-      "Linear is rate-limiting Paws. The task continues when the limit resets.",
-      key,
-    );
   }
 
   private fail(item: WorkItemRecord, reason: string, text: string, cause?: unknown): void {

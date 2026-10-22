@@ -2282,10 +2282,11 @@ test("with the switch off, a branch update waits for CI and merges without runni
       reverifyJobs: result.queues.filter((queue) => queue === JOB_KIND.reverify).length,
       mergedAcceptedHead: result.mergedHeads[0] === result.acceptedHead,
       mergedOnMovedMain: result.mergedOnMovedMain,
-      updatedNote: result.thoughts.includes(updated),
-      recheckNote: result.thoughts.includes("Branch updated, running Closeout again."),
+      updatedNote: result.summaries.includes(updated),
+      postedNote: result.thoughts.includes(updated),
+      recheckNote: result.summaries.includes("Branch updated, running Closeout again."),
     },
-    `${result.detail}\n${JSON.stringify(result.thoughts)}`,
+    `${result.detail}\n${JSON.stringify(result.summaries)}`,
   ).toEqual({
     state: "merged",
     merged: 1,
@@ -2295,6 +2296,7 @@ test("with the switch off, a branch update waits for CI and merges without runni
     mergedAcceptedHead: false,
     mergedOnMovedMain: true,
     updatedNote: true,
+    postedNote: false,
     recheckNote: false,
   });
 }, 120_000);
@@ -2308,7 +2310,8 @@ test("an issue rule for the task's Linear label runs Closeout again after a bran
   );
   expect(result.state, result.detail).toBe("merged");
   expect(result.rounds, result.detail).toHaveLength(1);
-  expect(result.thoughts, result.detail).toContain("Branch updated, running Closeout again.");
+  expect(result.summaries, result.detail).toContain("Branch updated, running Closeout again.");
+  expect(result.thoughts, result.detail).not.toContain("Branch updated, running Closeout again.");
 }, 120_000);
 
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
@@ -2330,7 +2333,8 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
   expect(result.merged, result.detail).toBe(1);
   expect(result.rounds, result.detail).toHaveLength(1);
   expect(result.reviews, result.detail).toBeGreaterThan(result.reviewsBeforeUpdate);
-  expect(result.thoughts, result.detail).toContain("Branch updated, running Closeout again.");
+  expect(result.summaries, result.detail).toContain("Branch updated, running Closeout again.");
+  expect(result.thoughts, result.detail).not.toContain("Branch updated, running Closeout again.");
   expect(checks).toBeGreaterThan(0);
 }, 120_000);
 
@@ -2629,6 +2633,8 @@ type MergeQueueRun = {
   /** `ci-failed` returns to the agent, by identifier. */
   ciReturns: string[];
   bodies: string[];
+  summaries: string[];
+  notifying: string[];
   detail: string;
 };
 
@@ -2664,6 +2670,7 @@ async function runMergeQueue(options: {
     tracker.mergeContexts.set(issueId(identifier), { projectId: null, labels: ["Hotfix"] });
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
+  const queuedSummary = queuedSummaries(db);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -2817,6 +2824,13 @@ async function runMergeQueue(options: {
         )
         .map((job) => identifierOf((job.payload as { itemId: string }).itemId)),
       bodies: tracker.progress.map((update) => update.body),
+      summaries: queuedSummary(),
+      notifying: [
+        ...tracker.progress
+          .filter((update) => ["response", "error", "elicitation"].includes(update.kind))
+          .map((update) => update.body),
+        ...tracker.questions.map((question) => question.body),
+      ],
       detail: debug(layout, db),
     };
   } finally {
@@ -2835,8 +2849,18 @@ test("three ready tasks merge one at a time in the order they became ready", asy
   // Only the first moves: nothing merged while its CI was pending.
   expect(result.mergedWhileHeld, result.detail).toEqual([]);
   expect(result.merged, result.detail).toEqual(["ENG-103", "ENG-101", "ENG-102"]);
-  // Linear hears each position once, not on every poll.
-  const queueLines = result.bodies.filter((body) => body.includes("pmdroid/paws-demo queue"));
+  // Linear hears each position once, not on every poll, and only as the session summary.
+  expect(
+    result.bodies.filter((body) => body.includes("pmdroid/paws-demo queue")),
+    result.detail,
+  ).toEqual([]);
+  // Main moves twice while the queue drains; only the pull request responses notify.
+  expect(
+    result.notifying.filter((body) => !body.startsWith("Opened ")),
+    result.detail,
+  ).toEqual([]);
+  expect(result.notifying, result.detail).toHaveLength(3);
+  const queueLines = result.summaries.filter((body) => body.includes("pmdroid/paws-demo queue"));
   expect(queueLines.toSorted(), result.detail).toEqual(
     [
       "Second in the pmdroid/paws-demo queue. ENG-103 merges first.",
@@ -2977,6 +3001,7 @@ test.each([false, true])(
     ]);
     const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
     migrate(db);
+    const queuedSummary = queuedSummaries(db);
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     const github = createFakeGitHub();
@@ -3053,7 +3078,7 @@ test.each([false, true])(
       while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-91") ?? "")) {
         if (findOpenQuestion(db, "ses_1")) {
           expect(tracker.questions.at(-1)?.body).toContain("Which CI fix should I use?");
-          expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(2);
+          expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
           await orchestrator.onLinearEvent(
             linearEvent("prompted", "Use the compatible fix", null, "ci-fail"),
           );
@@ -3063,11 +3088,12 @@ test.each([false, true])(
       expect(stateOf(db, "ENG-91"), debug(layout, db)).toBe("merged");
       expect(implementRuns).toBe(ask ? 3 : 2);
       expect(prompts[1]).toContain("- test (https://ci.example/1)");
-      expect(tracker.progress.map((update) => update.body)).toContain(
+      expect(tracker.progress.map((update) => update.body)).not.toContain(
         "CI: `test` failed. Sent back to the agent, fix 1 of 3.",
       );
+      expect(queuedSummary()).toContain("CI: `test` failed. Sent back to the agent, fix 1 of 3.");
       expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(
-        ask ? 3 : 2,
+        ask ? 2 : 1,
       );
       if (ask) expect(prompts[2]).toContain("Use the compatible fix");
     } finally {
@@ -3083,6 +3109,10 @@ test("a Linear rate limit during a run waits for the reset and merges instead of
   const result = await runCiFix({ failRounds: 0, rateLimitFirstLaunch: true });
   expect(result.state, result.detail).toBe("merged");
   expect(result.implementRuns, result.detail).toBe(1);
+  expect(
+    result.bodies.filter((body) => body.includes("rate-limiting")),
+    result.detail,
+  ).toEqual([]);
 }, 120_000);
 
 test("a Closeout policy without a review check never starts the reviewer", async () => {
@@ -3096,6 +3126,15 @@ test("CI green on the first round merges without a fix round", async () => {
   expect(result.state, result.detail).toBe("merged");
   expect(result.implementRuns).toBe(1);
   expect(result.lines).toEqual([]);
+  expect(
+    result.bodies.filter(
+      (body) =>
+        body.startsWith("Closeout is checking") ||
+        body.startsWith("Closeout: accepted") ||
+        body.startsWith("Still working on"),
+    ),
+    result.detail,
+  ).toEqual([]);
   expect(result.questions).toEqual([]);
 }, 120_000);
 
@@ -3182,6 +3221,7 @@ async function runCiFix(options: {
   implementRuns: number;
   reviewerLaunches: number;
   lines: string[];
+  bodies: string[];
   questions: string[];
   prompts: string[];
   rounds: CiRound[];
@@ -3206,6 +3246,7 @@ async function runCiFix(options: {
   ]);
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
+  const queuedSummary = queuedSummaries(db);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const client = githubClient(layout.bare, createFakeGitHub());
@@ -3310,9 +3351,8 @@ async function runCiFix(options: {
       state: stateOf(db, "ENG-94"),
       implementRuns,
       reviewerLaunches,
-      lines: tracker.progress
-        .map((update) => update.body)
-        .filter((body) => body.startsWith("CI: ")),
+      lines: queuedSummary().filter((body) => body.startsWith("CI: ")),
+      bodies: tracker.progress.map((update) => update.body),
       questions: tracker.questions.map((question) => question.body),
       prompts,
       rounds: listCiRounds(db),
@@ -3682,6 +3722,7 @@ async function runRebaseConflict(
   mergedOnMovedMain: boolean;
   movedMain: string;
   thoughts: string[];
+  summaries: string[];
   prompts: string[];
   handoffs: string[];
   returnPhases: (string | null)[];
@@ -3722,6 +3763,7 @@ async function runRebaseConflict(
   }
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
+  const queuedSummary = queuedSummaries(db);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -3865,6 +3907,7 @@ async function runRebaseConflict(
         (await isAncestor(layout.bare, movedMain, github.merged[0]!.expectedHeadSha)),
       movedMain,
       thoughts: tracker.progress.map((update) => update.body),
+      summaries: queuedSummary(),
       prompts,
       handoffs: listJobs(db)
         .filter((job) => job.queue === JOB_KIND.resume)
@@ -4160,6 +4203,21 @@ function checkpointPhaseOf(db: Database, identifier: string): string | null {
 function delegationMerged(db: Database): boolean {
   const items = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
   return items.length > 0 && items.every((item) => item.state === "merged");
+}
+
+function queuedSummaries(db: Database): () => string[] {
+  db.run("CREATE TEMP TABLE queued_summary (summary TEXT)");
+  for (const event of ["INSERT", "UPDATE OF payload"])
+    db.run(
+      `CREATE TEMP TRIGGER "queued_summary_${event}" AFTER ${event} ON outbox
+       WHEN NEW.op = 'linear.session.summary'
+       BEGIN INSERT INTO queued_summary VALUES (json_extract(NEW.payload, '$.summary')); END`,
+    );
+  return () =>
+    db
+      .query<{ summary: string }, []>("SELECT summary FROM queued_summary ORDER BY rowid")
+      .all()
+      .map((row) => row.summary);
 }
 
 function debug(layout: { pawsRoot: string }, db: Database): string {
