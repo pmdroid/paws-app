@@ -27,10 +27,10 @@ const id = "01K00000000000000000000000";
 
 function alive(pid: number): boolean {
   try {
-    process.kill(pid, 0);
-    return true;
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return !["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2)[0]!);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
     throw error;
   }
 }
