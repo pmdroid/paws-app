@@ -78,6 +78,33 @@ export const RunnerProfileSchema = z.strictObject({
   effort: z.string().trim().min(1).max(64).optional(),
 });
 
+const oneLine = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((value) => !/[\0\r\n]/.test(value));
+const hookEvent = z.enum(["after_edit", "before_shell", "before_tool", "stop"]);
+
+/** A workspace hook Paws signed into the run. The runner merges it after Closeout's Stop hook. */
+export const RunnerHookSchema = z
+  .strictObject({
+    id,
+    event: hookEvent,
+    matcher: oneLine(256).nullable(),
+    command: oneLine(4096),
+    timeoutSeconds: z.number().int().min(1).max(600),
+    agents: z
+      .array(z.enum(["claude", "codex"]))
+      .min(1)
+      .max(2),
+    skill: z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/)
+      .nullable(),
+  })
+  .refine((hook) => hook.matcher === null || hook.event === "before_tool");
+
 const common = {
   id,
   runnerId: id,
@@ -105,6 +132,7 @@ export const RunnerCommandSchema = z
       type: z.literal("run"),
       ...work,
       skillsInputId: z.number().int().min(0).max(20).optional(),
+      hooks: z.array(RunnerHookSchema).max(20).optional(),
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
       checkpoint: z.literal(false).optional(),
@@ -187,4 +215,5 @@ export const SignedRunnerCommandSchema = z.strictObject({
 export type RunnerCommand = z.infer<typeof RunnerCommandSchema>;
 export type RunnerRepository = z.infer<typeof RunnerRepositorySchema>;
 export type RunnerProfile = z.infer<typeof RunnerProfileSchema>;
+export type RunnerHook = z.infer<typeof RunnerHookSchema>;
 export type SignedRunnerCommand = z.infer<typeof SignedRunnerCommandSchema>;

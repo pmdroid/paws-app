@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { WorkspaceHook } from "../core";
+import {
+  codexHookTrust,
+  installWorkspaceHooks,
+  mergeHooks,
+  type AgentHooks,
+  type InstalledWorkspaceHook,
+} from "./workspace-hooks";
 
 export const CLOSEOUT_STOP_TIMEOUT_SECONDS = 30;
 
@@ -66,17 +74,29 @@ export function closeoutFinishLine(report: string): string {
 }
 
 export function codexStopHookTrustHash(command: string, timeoutSeconds: number): string {
-  const body = canonicalJson({
+  return codexHookHash({
     event_name: "stop",
     hooks: [{ async: false, command, timeout: timeoutSeconds, type: "command" }],
   });
-  return `sha256:${createHash("sha256").update(body).digest("hex")}`;
+}
+
+/** The `currentHash` Codex lists for a hook group: SHA-256 of its canonical JSON. */
+export function codexHookHash(body: Record<string, unknown>): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(body)).digest("hex")}`;
 }
 
 export function codexConfigWithStopHook(
   source: string,
   stateKey: string,
   trustedHash: string,
+): string {
+  return codexConfigWithTrustedHooks(source, [{ key: stateKey, hash: trustedHash }]);
+}
+
+/** Turn hooks on and trust each listed hook, the same way for Closeout's and the workspace's. */
+export function codexConfigWithTrustedHooks(
+  source: string,
+  trusted: readonly { key: string; hash: string }[],
 ): string {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   if (lines.at(-1) === "") lines.pop();
@@ -125,13 +145,15 @@ export function codexConfigWithStopHook(
     if (lines.length > 0) lines.push("");
     lines.push("[features]", "hooks = true");
   }
-  const quoted = stateKey.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-  lines.push(
-    "",
-    `[hooks.state."${quoted}"]`,
-    `trusted_hash = ${JSON.stringify(trustedHash)}`,
-    "enabled = true",
-  );
+  for (const { key, hash } of trusted) {
+    const quoted = key.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    lines.push(
+      "",
+      `[hooks.state."${quoted}"]`,
+      `trusted_hash = ${JSON.stringify(hash)}`,
+      "enabled = true",
+    );
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -193,6 +215,8 @@ export async function installCloseoutStopHook(input: {
   runDirectory: string;
   socketPath: string;
   sourceEnv: NodeJS.ProcessEnv;
+  /** Registered workspace hooks. Each one runs after Closeout's, never in its place. */
+  workspaceHooks?: readonly WorkspaceHook[];
 }): Promise<InstalledCloseoutStopHook | undefined> {
   if (input.agent === "grok") return undefined;
   const pythonPath = Bun.which("python3");
@@ -201,52 +225,68 @@ export async function installCloseoutStopHook(input: {
   const scriptPath = join(input.runDirectory, "closeout-stop");
   await writeFile(scriptPath, closeoutStopScript(input.socketPath, pythonPath), { mode: 0o700 });
   await chmod(scriptPath, 0o700);
+  const workspace = await installWorkspaceHooks({
+    agent: input.agent,
+    hooks: input.workspaceHooks ?? [],
+    runDirectory: input.runDirectory,
+    pythonPath,
+  });
   if (input.agent === "claude") {
     return {
       scriptPath,
       env: {},
-      sessionMeta: claudeStopMeta(scriptPath, pythonPath),
+      sessionMeta: claudeStopMeta(scriptPath, pythonPath, workspace),
     };
   }
   const overlay = join(input.runDirectory, "codex-home");
   const hooksPath = join(overlay, "hooks.json");
   const sourceConfig = await linkCodexHome(codexSourceHome(input.sourceEnv), overlay);
-  const trustedHash = codexStopHookTrustHash(scriptPath, CLOSEOUT_STOP_TIMEOUT_SECONDS);
-  const stateKey = `${hooksPath}:stop:0:0`;
-  await writeFile(hooksPath, `${JSON.stringify(codexHooksDocument(scriptPath))}\n`, {
+  const document = codexHooksDocument(scriptPath, workspace);
+  await writeFile(hooksPath, `${JSON.stringify(document)}\n`, {
     mode: 0o600,
   });
   await chmod(hooksPath, 0o600);
   const configPath = join(overlay, "config.toml");
-  await writeFile(configPath, codexConfigWithStopHook(sourceConfig ?? "", stateKey, trustedHash), {
-    mode: 0o600,
-  });
+  await writeFile(
+    configPath,
+    codexConfigWithTrustedHooks(
+      sourceConfig ?? "",
+      codexHookTrust(hooksPath, document.hooks, codexHookHash),
+    ),
+    {
+      mode: 0o600,
+    },
+  );
   await chmod(configPath, 0o600);
   await chmod(overlay, 0o700);
   return { scriptPath, env: { CODEX_HOME: overlay } };
 }
 
-function claudeStopMeta(scriptPath: string, pythonPath: string): Record<string, unknown> {
+function claudeStopMeta(
+  scriptPath: string,
+  pythonPath: string,
+  workspace: readonly InstalledWorkspaceHook[],
+): Record<string, unknown> {
   return {
     claudeCode: {
       options: {
         settingSources: ["user", "project"],
         settings: {
           attribution: { commit: "", pr: "" },
-          hooks: {
-            Stop: [
-              {
-                hooks: [
-                  {
-                    type: "command",
-                    command: pythonPath,
-                    args: [scriptPath],
-                    timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS,
-                  },
-                ],
-              },
-            ],
-          },
+          hooks: mergeHooks(
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: pythonPath,
+                  args: [scriptPath],
+                  timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS,
+                },
+              ],
+            },
+            workspace,
+            (hook) => ({ command: pythonPath, args: [hook.scriptPath] }),
+          ),
         },
         env: {
           CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: "100",
@@ -256,21 +296,18 @@ function claudeStopMeta(scriptPath: string, pythonPath: string): Record<string, 
   };
 }
 
-function codexHooksDocument(scriptPath: string): Record<string, unknown> {
+function codexHooksDocument(
+  scriptPath: string,
+  workspace: readonly InstalledWorkspaceHook[],
+): { hooks: AgentHooks } {
   return {
-    hooks: {
-      Stop: [
-        {
-          hooks: [
-            {
-              type: "command",
-              command: scriptPath,
-              timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS,
-            },
-          ],
-        },
-      ],
-    },
+    hooks: mergeHooks(
+      {
+        hooks: [{ type: "command", command: scriptPath, timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS }],
+      },
+      workspace,
+      (hook) => ({ command: hook.scriptPath }),
+    ),
   };
 }
 

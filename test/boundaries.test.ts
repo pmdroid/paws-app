@@ -105,7 +105,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "workspace",
     "deployment",
   ],
-  settings: ["config", "db", "skills"],
+  settings: ["config", "core", "db", "skills"],
   skills: ["db"],
   host: ["core", "db"],
   loop: [

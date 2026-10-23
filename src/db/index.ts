@@ -392,3 +392,4 @@ export {
   setSkillAgents,
 } from "./skills";
 export type { RunnerSkillStatus, SkillAgent, SkillPin, SkillSource } from "./skills";
+export { deleteHook, listHooks, saveHook } from "./hooks";

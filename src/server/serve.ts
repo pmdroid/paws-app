@@ -24,9 +24,11 @@ import {
 } from "../web";
 import { EVIDENCE_API_PATH, handleEvidenceRequest } from "../evidence";
 import {
+  HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
   handleAgentSettingsRequest,
   handleMergeSettingsRequest,
+  handleHookSettingsRequest,
   handleSkillSettingsRequest,
   MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
@@ -271,10 +273,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       // Admins manage skills and merging next to owners; every other setting stays with owners.
-      const roles =
-        path === SKILL_SETTINGS_PATH || path === MERGE_SETTINGS_PATH
-          ? ["owner", "admin"]
-          : ["owner"];
+      const roles = [SKILL_SETTINGS_PATH, MERGE_SETTINGS_PATH, HOOK_SETTINGS_PATH].includes(path)
+        ? ["owner", "admin"]
+        : ["owner"];
       if (
         (privileged && !roles.includes(access.principal.role)) ||
         (unsafe &&
@@ -355,6 +356,23 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const db = secrets.db;
     return (await handleSkillSettingsRequest(request, {
       ...secrets.skillSettings,
+      db,
+      csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(db, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === HOOK_SETTINGS_PATH && secrets.db) {
+    const db = secrets.db;
+    return (await handleHookSettingsRequest(request, {
       db,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),

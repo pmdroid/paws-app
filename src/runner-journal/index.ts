@@ -197,6 +197,16 @@ export function openExecutionJournal(root: string) {
               if (!parsed.success || parsed.data.type !== "closeout")
                 throw new Error("Invalid runner Closeout progress");
               event = parsed.data;
+            } else if (
+              raw &&
+              typeof raw === "object" &&
+              "type" in raw &&
+              raw.type === "hook_failed"
+            ) {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (!parsed.success || parsed.data.type !== "hook_failed")
+                throw new Error("Invalid runner hook failure");
+              event = parsed.data;
             } else if (raw && typeof raw === "object" && "type" in raw && raw.type === "progress") {
               const parsed = RunnerEventSchema.safeParse(raw);
               if (!parsed.success || parsed.data.type !== "progress")

@@ -1,4 +1,5 @@
-const ALLOWED_ENV = new Set([
+/** Variables an agent and its hooks may inherit. Everything else stays with Paws. */
+export const ALLOWED_AGENT_ENV: readonly string[] = [
   "HOME",
   "PATH",
   "USER",
@@ -55,7 +56,8 @@ const ALLOWED_ENV = new Set([
   "HOMEPATH",
   "APPDATA",
   "LOCALAPPDATA",
-]);
+];
+const ALLOWED_ENV = new Set(ALLOWED_AGENT_ENV);
 
 const PROXY_ENV = new Set([
   "HTTP_PROXY",
