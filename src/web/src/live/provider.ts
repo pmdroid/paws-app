@@ -33,12 +33,15 @@ import type {
   StoredRun,
   OpenQuestionRecord,
   OutboxRow,
+  MergeQueuePosition,
   QueuePosition,
   WorkItemFact,
   WorkItemRecord,
 } from "../../../db";
 import {
+  getConfirmedRemoteMerge,
   getLinearConversationSource,
+  getTaskMergeSettings,
   getRun,
   listAgentCloseout,
   listCloseoutProgress,
@@ -81,6 +84,8 @@ import {
   type StatusItem,
   type StatusMergeQueue,
   type StatusMergeEntry,
+  type StatusMergeOutcome,
+  type StatusMergeSettings,
   type StatusProject,
   type StatusPullRequest,
   type StatusQuestion,
@@ -110,6 +115,17 @@ const WORK_ITEM_STATES = [
 ] as const;
 
 const MERGE_QUEUE = "github.merge";
+const RESUME_QUEUE = "run.resume";
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** A task that went back to the agent after CI or a conflict is still on its way back. */
+const BACK_WITH_AGENT_STATES = new Set<string>([
+  "queued",
+  "running",
+  "paused",
+  "awaiting_input",
+  "recovering",
+  "verifying",
+]);
 const MAX_CLOSEOUT_ATTEMPTS = 3;
 
 const MERGE_STEPS = ["Rebase onto main", "Re-run Closeout", "Squash merge"] as const;
@@ -180,8 +196,9 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
   const queue = new Map(listQueuePositions(db).map((entry) => [entry.itemId, entry]));
   const recordsById = new Map(records.map((record) => [record.id, record]));
+  const queues = listMergeQueues(db);
   const merging = new Map<string, StatusMergeQueue>(
-    listMergeQueues(db).map((entry) => {
+    queues.map((entry) => {
       const ahead = entry.aheadItemId ? recordsById.get(entry.aheadItemId) : undefined;
       return [
         entry.itemId,
@@ -210,7 +227,15 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     verdicts: records.flatMap((record) =>
       verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env),
     ),
-    mergeQueue: mergeQueueFor(records, jobs, generatedAt),
+    ...mergeQueueFor(db, {
+      records,
+      items,
+      jobs,
+      queues,
+      generatedAt,
+      now: now.getTime(),
+      repo: options.project?.repo,
+    }),
     events: eventsFor(rows),
     evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
@@ -848,27 +873,191 @@ function impliedDecision(state: WorkItemRecord["state"]): VerdictDecision | null
   }
 }
 
-function byPosition(left: WorkItemRecord, right: WorkItemRecord): number {
-  return left.position - right.position || publicId(left).localeCompare(publicId(right));
-}
+type MergeQueueInput = {
+  records: readonly WorkItemRecord[];
+  items: readonly StatusItem[];
+  jobs: readonly Job[];
+  queues: readonly MergeQueuePosition[];
+  generatedAt: string;
+  now: number;
+  repo: string | undefined;
+};
 
+/**
+ * Every task Closeout accepted that waits to merge, per repository in queue order, and what
+ * merged or went back to the agent in the last 24 hours. A task waiting for a review is listed
+ * without a place: it holds none until it is approved.
+ */
 function mergeQueueFor(
-  records: readonly WorkItemRecord[],
-  jobs: readonly Job[],
-  generatedAt: string,
-): StatusMergeEntry[] {
-  return records
-    .filter((record) => record.state === "merge_queue")
-    .sort(byPosition)
-    .map((record, index) => {
+  db: Database,
+  input: MergeQueueInput,
+): Pick<StatusSnapshot, "mergeQueue" | "mergeHistory"> {
+  const { records, jobs, generatedAt } = input;
+  const items = new Map(input.items.map((item) => [item.id, item]));
+  const places = new Map(input.queues.map((entry) => [entry.itemId, entry]));
+  const repositoryOf = (record: WorkItemRecord): string =>
+    places.get(record.id)?.repository ??
+    pullRepository(items.get(publicId(record))?.pr?.url) ??
+    input.repo ??
+    "unknown";
+  const waiting = records
+    .filter(
+      (record) =>
+        record.state === "merge_queue" || (record.state === "verifying" && places.has(record.id)),
+    )
+    .map((record): StatusMergeEntry => {
       const job = mergeJob(record.id, jobs);
+      const place = places.get(record.id);
+      const wait = mergeWait(job);
+      const reason =
+        record.state === "verifying"
+          ? "closeout"
+          : place && place.position > 1
+            ? "ahead"
+            : (wait?.reason ?? "ci");
+      const ahead = place?.aheadItemId
+        ? records.find((candidate) => candidate.id === place.aheadItemId)
+        : undefined;
       return {
-        position: index + 1,
+        position: place?.position ?? null,
         itemId: publicId(record),
-        enqueuedAt: enqueuedAt(record.id, jobs, generatedAt),
+        repository: repositoryOf(record),
+        enqueuedAt: place
+          ? iso(place.readyAt, generatedAt)
+          : enqueuedAt(record.id, jobs, generatedAt),
+        acceptedAt: acceptedAt(record.id, jobs, generatedAt),
+        waitingFor: reason,
+        detail:
+          reason === "ahead"
+            ? ahead
+              ? `Starts when ${aheadLabel(ahead, items)} merges`
+              : null
+            : reason === "closeout"
+              ? "Branch updated. Closeout runs again."
+              : (wait?.message ?? null),
+        settings: mergeSettings(db, record.id),
         steps: mergeSteps(job),
       };
+    })
+    .sort(
+      (left, right) =>
+        left.repository.localeCompare(right.repository) ||
+        (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER) ||
+        left.acceptedAt.localeCompare(right.acceptedAt) ||
+        left.itemId.localeCompare(right.itemId),
+    );
+  const since = input.now - DAY_MS;
+  const history: StatusMergeOutcome[] = [];
+  for (const record of records) {
+    if (record.state === "merged" || record.state === "completed") {
+      const merge = getConfirmedRemoteMerge(db, record.id);
+      if (!merge || merge.confirmedAt < since) continue;
+      history.push({
+        itemId: publicId(record),
+        repository: `${merge.repositoryOwner}/${merge.repositoryName}`,
+        outcome: "merged",
+        reason: null,
+        at: iso(merge.confirmedAt, generatedAt),
+        settings: mergeSettings(db, record.id),
+      });
+      continue;
+    }
+    if (!BACK_WITH_AGENT_STATES.has(record.state) || places.has(record.id)) continue;
+    const back = backWithAgent(record.id, jobs);
+    if (!back || back.at < since) continue;
+    history.push({
+      itemId: publicId(record),
+      repository: repositoryOf(record),
+      outcome: "back_with_agent",
+      reason: back.reason,
+      at: iso(back.at, generatedAt),
+      settings: mergeSettings(db, record.id),
     });
+  }
+  history.sort((left, right) => right.at.localeCompare(left.at));
+  return { mergeQueue: waiting, mergeHistory: history };
+}
+
+function aheadLabel(record: WorkItemRecord, items: ReadonlyMap<string, StatusItem>): string {
+  const pr = items.get(publicId(record))?.pr;
+  return pr ? `#${pr.number}` : publicId(record);
+}
+
+/** `https://github.com/acme/platform/pull/412` is `acme/platform`. */
+function pullRepository(url: string | undefined): string | null {
+  const match = url ? /github\.com\/([^/\s]+\/[^/\s]+)\/pull\//.exec(url) : null;
+  return match?.[1] ?? null;
+}
+
+/** The settings the task resolved when its merge started. The workspace default until then. */
+function mergeSettings(db: Database, itemId: string): StatusMergeSettings {
+  const kept = getTaskMergeSettings(db, itemId);
+  if (!kept) return { order: "queue", mainMoved: "ci", rule: null };
+  const sources = isRecord(kept.resolved.sources) ? kept.resolved.sources : {};
+  const rule = isRecord(kept.resolved.rule) ? readString(kept.resolved.rule, "label") : null;
+  const ruled = sources.order === "rule" || sources.mainMoved === "rule";
+  return { order: kept.order, mainMoved: kept.mainMoved, rule: ruled ? rule : null };
+}
+
+/** What the merge job said it waits for the last time it parked. */
+function mergeWait(
+  job: Job | undefined,
+): { reason: "ci" | "review" | "branch_update" | "ahead"; message: string | null } | null {
+  const wait = isRecord(job?.payload) ? job.payload.mergeWait : undefined;
+  if (!isRecord(wait)) return null;
+  const reason = wait.reason;
+  if (reason !== "ci" && reason !== "review" && reason !== "branch_update" && reason !== "ahead")
+    return null;
+  return { reason, message: blank(readString(wait, "message")) };
+}
+
+/** The latest hand-back to the agent after a merge, when no merge started since. */
+function backWithAgent(
+  itemId: string,
+  jobs: readonly Job[],
+): { reason: "ci_failed" | "conflict"; at: number } | null {
+  const resume = newest(
+    jobs.filter(
+      (job) => job.queue === RESUME_QUEUE && readString(job.payload, "itemId") === itemId,
+    ),
+  );
+  const reason = readString(resume?.payload, "reason");
+  if (!resume || (reason !== "ci-failed" && reason !== "rebase-conflict")) return null;
+  const merge = newest(
+    jobs.filter((job) => isMergeJob(job.queue) && readString(job.payload, "itemId") === itemId),
+  );
+  if (merge && merge.createdAt > resume.createdAt) return null;
+  return { reason: reason === "ci-failed" ? "ci_failed" : "conflict", at: resume.createdAt };
+}
+
+function newest(jobs: readonly Job[]): Job | undefined {
+  return jobs.reduce<Job | undefined>(
+    (best, job) =>
+      best === undefined ||
+      job.createdAt > best.createdAt ||
+      (job.createdAt === best.createdAt && job.id > best.id)
+        ? job
+        : best,
+    undefined,
+  );
+}
+
+/**
+ * When Closeout accepted the change now waiting: the first merge job since the agent last
+ * resumed. A Closeout re-check after a branch update keeps the original time.
+ */
+function acceptedAt(itemId: string, jobs: readonly Job[], generatedAt: string): string {
+  const mine = (queue: (name: string) => boolean) =>
+    jobs.filter((job) => queue(job.queue) && readString(job.payload, "itemId") === itemId);
+  const resumed = newest(mine((name) => name === RESUME_QUEUE))?.createdAt ?? -1;
+  const since = mine(isMergeJob).filter((job) => job.createdAt > resumed);
+  const first = since.reduce<Job | undefined>(
+    (best, job) => (best === undefined || job.createdAt < best.createdAt ? job : best),
+    undefined,
+  );
+  return first === undefined
+    ? enqueuedAt(itemId, jobs, generatedAt)
+    : iso(first.createdAt, generatedAt);
 }
 
 function mergeJob(itemId: string, jobs: readonly Job[]): Job | undefined {

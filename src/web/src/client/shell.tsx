@@ -24,6 +24,7 @@ import {
   Menu,
   BookOpen,
   GitMerge,
+  GitPullRequestArrow,
 } from "lucide-react";
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
@@ -45,6 +46,7 @@ const ICONS = {
   issues: ListTodo,
   projects: GitBranch,
   runs: Terminal,
+  mergeQueue: GitPullRequestArrow,
   questions: CircleHelp,
   sessions: MessagesSquare,
   runners: Server,
@@ -71,7 +73,18 @@ const ControllerRegions = memo(function ControllerRegions() {
   );
 });
 
-function Navigation({ route, onNavigate }: { route: Route; onNavigate?: () => void }) {
+/** Pages whose entry carries a count, such as the tasks waiting to merge. */
+export type NavigationCounts = Partial<Record<Route["view"], number>>;
+
+function Navigation({
+  route,
+  counts,
+  onNavigate,
+}: {
+  route: Route;
+  counts: NavigationCounts;
+  onNavigate?: () => void;
+}) {
   return (
     <nav aria-label="Main navigation">
       {NAVIGATION.map((group) => (
@@ -80,6 +93,7 @@ function Navigation({ route, onNavigate }: { route: Route; onNavigate?: () => vo
           <SidebarMenu>
             {group.views.map((view) => {
               const Icon = ICONS[view];
+              const count = counts[view] ?? 0;
               return (
                 <li key={view}>
                   <SidebarMenuLink
@@ -89,6 +103,14 @@ function Navigation({ route, onNavigate }: { route: Route; onNavigate?: () => vo
                   >
                     <Icon className="size-4 shrink-0" aria-hidden="true" />
                     <span>{PAGES[view].title}</span>
+                    {count > 0 && (
+                      <span
+                        className="ml-auto rounded-base border-2 border-border bg-secondary-background px-1.5 text-xs font-bold leading-5 text-foreground"
+                        aria-label={`${count} waiting`}
+                      >
+                        {count}
+                      </span>
+                    )}
                   </SidebarMenuLink>
                 </li>
               );
@@ -124,18 +146,29 @@ export function mountShell(): {
   router: DataRouter;
   setAuthenticated(value: boolean): void;
   setBreadcrumb(value: { issueId: string | null; entityId: string } | null): void;
+  setCounts(value: NavigationCounts): void;
 } {
   initializeAppearance();
   const root = document.querySelector<HTMLElement>("#app");
   if (!root) throw new Error("Dashboard root is missing");
   let authenticate = (_value: boolean) => {};
   let breadcrumb = (_value: { issueId: string | null; entityId: string } | null) => {};
+  let counted = (_value: NavigationCounts) => {};
   function Shell() {
     const { pathname } = useLocation();
     const route = parseRoute(pathname);
     const [authenticated, setAuthenticated] = useState(false);
     const [detail, setDetail] = useState<{ issueId: string | null; entityId: string } | null>(null);
     breadcrumb = (value) => setDetail(value);
+    const [counts, setCounts] = useState<NavigationCounts>({});
+    counted = (value) =>
+      setCounts((current) =>
+        Object.keys({ ...current, ...value }).every(
+          (key) => current[key as Route["view"]] === value[key as Route["view"]],
+        )
+          ? current
+          : value,
+      );
     const [open, setOpen] = useState(false);
     const menu = useRef<HTMLButtonElement>(null);
     const navigating = useRef(false);
@@ -179,7 +212,7 @@ export function mountShell(): {
                 </Link>
               </SidebarHeader>
               <SidebarContent>
-                <Navigation route={route} />
+                <Navigation route={route} counts={counts} />
               </SidebarContent>
             </div>
           </Sidebar>
@@ -225,6 +258,7 @@ export function mountShell(): {
                     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
                       <Navigation
                         route={route}
+                        counts={counts}
                         onNavigate={() => {
                           navigating.current = true;
                           setOpen(false);
@@ -293,6 +327,9 @@ export function mountShell(): {
     router,
     setBreadcrumb(value) {
       flushSync(() => breadcrumb(value));
+    },
+    setCounts(value) {
+      flushSync(() => counted(value));
     },
     setAuthenticated(value) {
       flushSync(() => authenticate(value));

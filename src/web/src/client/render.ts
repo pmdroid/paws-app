@@ -34,6 +34,7 @@ import { renderConversations, type ConversationModel } from "./conversations";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
 import { renderRunsList } from "./runs-list";
+import { renderMergeQueue } from "./merge-queue";
 
 export interface RenderModel {
   conversations?: ConversationModel;
@@ -117,6 +118,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
         model.engineUrl,
         model.search ?? "",
       );
+    case "mergeQueue":
+      return `${pageHeading("mergeQueue")}${renderMergeQueue(snapshot)}`;
     case "questions":
       return viewQuestions(snapshot, model.route.id);
     case "evidence":

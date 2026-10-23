@@ -17,6 +17,10 @@ export const PAGES = {
     title: "Runs",
     description: "Agent activity, execution controls and verification evidence.",
   },
+  mergeQueue: {
+    title: "Merge queue",
+    description: "Every issue Closeout accepted that is waiting to merge, per repository.",
+  },
   evidence: {
     title: "Evidence",
     description: "A Closeout video or screenshot the agent published with a run.",
@@ -42,7 +46,7 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "issues", "projects", "questions", "runs", "sessions"],
+    views: ["overview", "issues", "projects", "questions", "runs", "mergeQueue", "sessions"],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;

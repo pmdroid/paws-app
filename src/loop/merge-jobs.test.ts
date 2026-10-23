@@ -26,6 +26,36 @@ function queue() {
 }
 
 describe("merge CI wait", () => {
+  test("a parked merge remembers what it waits for, for the Merge queue page", async () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      lane: MERGE_LANE,
+      payload: { itemId: "eng-1" },
+      now: clock.now(),
+    });
+    const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
+    let reason: "review" | "ci" = "review";
+    loop.register(JOB_KIND.merge, (job) => {
+      parkMergeForCi(db, job, clock.now(), undefined, {
+        queued: reason === "review",
+        reason,
+        message: reason === "review" ? "Waiting for an approving review." : "CI 4 of 6 done.",
+      });
+    });
+    const ran = await loop.tick();
+    expect(getJob(db, ran!.id)?.payload).toMatchObject({
+      mergeWait: { reason: "review", message: "Waiting for an approving review." },
+    });
+    reason = "ci";
+    clock.advance(60_000);
+    await loop.tick();
+    expect(getJob(db, ran!.id)?.payload).toMatchObject({
+      mergeWait: { reason: "ci", message: "CI 4 of 6 done." },
+    });
+  });
+
   test("a merge whose CI is still pending does not keep a running job", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
