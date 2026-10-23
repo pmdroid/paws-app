@@ -2366,6 +2366,10 @@ ALTER TABLE work_item ADD COLUMN agent_ms INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE work_item ADD COLUMN closeout_ms INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE work_item ADD COLUMN waiting_ms INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE work_item ADD COLUMN recheck_ms INTEGER NOT NULL DEFAULT 0;
+UPDATE work_item SET accepted_head = json_extract(checkpoint, '$.wipCommit')
+WHERE checkpoint IS NOT NULL AND json_valid(checkpoint)
+  AND json_extract(checkpoint, '$.wipCommit') IS NOT NULL
+  AND (state = 'merge_queue' OR json_extract(checkpoint, '$.phase') = 'merge_queue');
 `,
   },
 ];

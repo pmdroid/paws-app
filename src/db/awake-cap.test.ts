@@ -15,6 +15,7 @@ import {
   openDatabase,
   recoverOnStartup,
   saveCheckpoint,
+  setCurrentRun,
 } from "./index";
 
 const MINUTE = 60_000;
@@ -136,6 +137,57 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(listOutbox(db).at(-1)?.payload).toMatchObject({
       kind: "error",
       body: "Run hit the awake time cap (30 min). Counted: agent turns 30 min, Closeout 0 min. Not counted: waiting for answers 1 h 30 min.",
+    });
+  });
+
+  test("a task Closeout accepted before the upgrade is still protected after a restart", () => {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 30 * MINUTE, now: 0 });
+    beginImplementRun(db, item.id, clock.now());
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "accepted" });
+    for (const column of ["accepted_head", "agent_ms", "closeout_ms", "waiting_ms", "recheck_ms"])
+      db.run(`ALTER TABLE work_item DROP COLUMN ${column}`);
+    db.run("DELETE FROM schema_migration WHERE id = '115_work_item_awake_breakdown'");
+    db.run("UPDATE work_item SET awake_ms = ? WHERE id = ?", [29 * MINUTE, item.id]);
+
+    migrate(db);
+    expect(getWorkItem(db, item.id)?.acceptedHead).toBe("accepted");
+    recoverOnStartup(db, clock.now());
+    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    clock.advance(32 * MINUTE);
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    expect(result.capped).toBe(false);
+    expect(result.item).toMatchObject({ awakeMs: 29 * MINUTE, recheckMs: 32 * MINUTE });
+  });
+
+  test("without a Linear session, a resumed agent at the cap pauses instead of failing", () => {
+    const { clock, db, item, run } = acceptedItem(30 * MINUTE);
+    db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
+    applyWorkItemEvent(db, item.id, "ejected");
+    setCurrentRun(db, item.id, run.id);
+    saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    clock.advance(20 * MINUTE);
+
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    expect(result.capped).toBe(false);
+    expect(result.item).toMatchObject({
+      state: "paused",
+      cancelRequested: false,
+      maxAwakeMs: 35 * MINUTE + 60 * MINUTE,
+    });
+    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
+      false,
+    );
+    expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+      kind: "thought",
+      body: expect.stringMatching(/^Paused at the time limit\. /),
     });
   });
 });
