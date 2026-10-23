@@ -137,7 +137,6 @@ test("the scheduler admits an item without reading the epic table", async () => 
     expect(
       dispatch(db, {
         now: 2,
-        legacyReadyItemIds: intake.items.map((item) => item.id),
       }),
     ).toEqual([intake.items[0]!.id]);
   } finally {

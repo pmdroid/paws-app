@@ -22,7 +22,7 @@ test("reconciliation runs while every execution worker holds a handler open", as
     bindWorkItemRepository(db, id, repository);
     saveSchedulingContext(db, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] });
   }
-  expect(dispatch(db, { now: clock.now(), legacyReadyItemIds: ids })).toEqual(ids);
+  expect(dispatch(db, { now: clock.now() })).toEqual(ids);
   const loop = new JobLoop(db, clock, { concurrency: 4, pollMs: 1 });
   const held: string[] = [];
   let release!: () => void;

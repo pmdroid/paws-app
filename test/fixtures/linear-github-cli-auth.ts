@@ -64,7 +64,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
 const path = join(home, "paws.db");
 let db = openDatabase(path);
 migrate(db);
-const item = insertQueuedItem(db, { id: "task", sessionKey: "session" });
+const item = insertQueuedItem(db, { id: "task", sessionKey: "session", now: Date.now() + 60_000 });
 if (!denied) beginImplementRun(db, item.id, 1);
 const host = createLinearGitHubAuth({
   runtime: loadRuntime(env),

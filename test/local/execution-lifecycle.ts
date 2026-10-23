@@ -28,18 +28,14 @@ export async function probeExecutionLifecycle(
   const clock = new FakeClock(1000);
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
-  const create = (
-    dispatchReady?: (input: { legacyReadyItemIds: readonly string[] }) => void,
-    channel?: "comments",
-  ) =>
+  const create = (scheduling?: () => object) =>
     new Orchestrator({
       db,
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       clock,
       pawsRoot: root,
-      dispatchReady,
-      channel,
+      scheduling,
       tracker: createFakeTracker(),
     });
   let orchestrator = create();
@@ -144,7 +140,7 @@ export async function probeExecutionLifecycle(
     orchestrator.reconcileExecution();
     const starts = db
       .query<{ payload: string }, []>(
-        "SELECT payload FROM job WHERE job_key LIKE 'start:handoff-1%'",
+        "SELECT payload FROM job WHERE queue='item.start' AND json_extract(payload,'$.itemId')='handoff-1'",
       )
       .all();
     observe(
@@ -210,14 +206,13 @@ export async function probeExecutionLifecycle(
       { state: state("external"), notices: notices("external") },
     );
     await orchestrator.shutdown();
-    const captured: string[][] = [];
-    orchestrator = create(({ legacyReadyItemIds }) => captured.push([...legacyReadyItemIds]));
+    orchestrator = create(() => ({}));
     seed("unrelated-active", ["running"]);
     orchestrator.reconcileExecution();
     observe(
       "configured scheduling runs despite unrelated active work",
-      captured.at(-1)?.includes("handoff-1") === true,
-      captured,
+      db.query("SELECT 1 FROM scheduler_admission WHERE item_id='handoff-1'").get() !== null,
+      db.query("SELECT item_id FROM scheduler_admission").all(),
     );
     await orchestrator.shutdown();
     const guardDb = openDatabase(join(root, "admission.sqlite"));

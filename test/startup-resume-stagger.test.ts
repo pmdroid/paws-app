@@ -25,7 +25,6 @@ import {
   parseAgentEvent,
 } from "../src/linear";
 import { LinearTaskAccess, attachOrchestrator } from "../src/loop";
-import { dispatch } from "../src/scheduler";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -86,9 +85,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
       linearTaskModes: true,
       linearAccess: gate,
-      dispatchReady: ({ legacyReadyItemIds }) => {
-        dispatch(db, { now: clock.now(), legacyReadyItemIds });
-      },
+      scheduling: () => ({}),
       launch(input) {
         if (input.purpose === "implement") implementations.push(input.itemId);
         const steps: FakeScript["steps"] =

@@ -97,7 +97,7 @@ export async function probePublicationStop(
   let joined = 0;
   const pendingEpics = new Set<string>();
   let freshness: OrchestratorOptions["publicationReady"];
-  const create = (dispatchReady?: OrchestratorOptions["dispatchReady"]) => {
+  const create = (scheduling?: OrchestratorOptions["scheduling"]) => {
     const jobs = new JobLoop(db, clock);
     const orchestrator = new Orchestrator({
       db,
@@ -113,7 +113,7 @@ export async function probePublicationStop(
         authority: (delegationId) => !pendingEpics.has(delegationId),
       }),
       publicationReady: (...args) => freshness?.(...args) ?? true,
-      dispatchReady,
+      scheduling,
       remoteExecution: {
         agentForSession: () => {
           throw new Error("No helper may launch");
@@ -661,8 +661,7 @@ export async function probePublicationStop(
       },
     );
     await current.orchestrator.shutdown();
-    const readyIds: string[] = [];
-    current = create(({ legacyReadyItemIds }) => readyIds.push(...legacyReadyItemIds));
+    current = create(() => ({}));
     for (const [delegationId, retiredState] of [
       ["handoff-history", "merged"],
       ["cancelled-history", "cancelled"],
@@ -707,6 +706,10 @@ export async function probePublicationStop(
     }
     current.orchestrator.reconcileExecution();
     const handoff = current.orchestrator.dependencyHandoff("handoff-history-consumer");
+    const readyIds = db
+      .query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission")
+      .all()
+      .map((row) => row.id);
     observe(
       "active dependency handoffs and readiness ignore archived producers sharing the Linear issue",
       handoff?.includes("Current schema") === true &&

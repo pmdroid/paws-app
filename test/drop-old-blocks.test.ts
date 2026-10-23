@@ -22,16 +22,13 @@ import { tempDb, tempHome } from "./helpers";
 test("migration 059 drops the old block tables and task_block holds each dependent", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
-  const ready: string[] = [];
   const orchestrator = new Orchestrator({
     db,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot: tempHome(),
-    dispatchReady({ legacyReadyItemIds }) {
-      ready.push(...legacyReadyItemIds);
-    },
+    scheduling: () => ({}),
   });
   let closeReconciler: (() => Promise<void>) | undefined;
   try {
@@ -74,7 +71,9 @@ test("migration 059 drops the old block tables and task_block holds each depende
     expect(listWorkItemBlocks(db, "stale")).toEqual([]);
 
     orchestrator.reconcileExecution();
-    expect(ready).toEqual(["hold-0"]);
+    expect(
+      db.query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission").all(),
+    ).toEqual([{ id: "hold-0" }]);
     expect(orchestrator.dependencyHandoff("hold-1")).toBeUndefined();
     db.run("UPDATE work_item SET state = 'merged' WHERE id = 'hold-0'");
     const run = insertRun(db, {

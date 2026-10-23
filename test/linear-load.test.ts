@@ -117,12 +117,7 @@ test("100 tasks stay under 1,700 Linear requests and spend none while they wait 
     };
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
-  let legacyReadyItemIds: readonly string[] = [];
-  const dispatch = registerScheduler(
-    jobs,
-    () => ({ now: clock.now(), legacyReadyItemIds }),
-    () => orchestrator.reconcileExecution(),
-  );
+  registerScheduler(jobs, () => orchestrator.reconcileExecution(), clock.now());
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -132,10 +127,7 @@ test("100 tasks stay under 1,700 Linear requests and spend none while they wait 
     tracker,
     clock,
     linearTaskModes: true,
-    dispatchReady: (input) => {
-      legacyReadyItemIds = input.legacyReadyItemIds;
-      dispatch();
-    },
+    scheduling: () => ({}),
     launch: () => {
       throw new Error("Remote execution must not launch a local agent");
     },

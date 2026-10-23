@@ -185,7 +185,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     home: root,
     tracker,
     repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
-    dispatchReady() {},
+    scheduling: () => ({}),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },
@@ -276,7 +276,8 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    expect(dispatch(db, { now: Date.now() })).toHaveLength(5);
+    dispatch(db, { now: Date.now() });
+    expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
     const parked = () =>
