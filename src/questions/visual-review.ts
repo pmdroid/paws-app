@@ -6,10 +6,6 @@ export const VISUAL_REVIEW_QUESTION = "Visual review: accept, or describe the ch
 
 export const VISUAL_REVIEW_OPTIONS = ["Accept", "Request changes"] as const;
 
-/** What `publish_artifact` tells the agent once the review is asked. */
-export const VISUAL_REVIEW_WAIT =
-  "Waiting for a visual review in Linear. Stop here; the task resumes with the answer.";
-
 /** Paws reminds once after this long without an answer. There is no timeout. */
 export const VISUAL_REVIEW_REMINDER_MS = 24 * 60 * 60 * 1000;
 
@@ -67,10 +63,11 @@ export function openVisualReview(
   db: Database,
   input: {
     itemId: string;
-    runId: string;
+    runId: string | null;
     sessionId: string;
     checkId: string;
     evidenceIds: readonly string[];
+    headCommit: string;
     now: number;
   },
 ): { question: StoredQuestion; review: StoredVisualReview } {
@@ -83,8 +80,15 @@ export function openVisualReview(
     now: input.now,
   });
   db.run(
-    "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at) VALUES (?, ?, ?, ?, ?)",
-    [question.id, input.itemId, input.checkId, JSON.stringify(input.evidenceIds), input.now],
+    "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, head_commit) VALUES (?, ?, ?, ?, ?, ?)",
+    [
+      question.id,
+      input.itemId,
+      input.checkId,
+      JSON.stringify(input.evidenceIds),
+      input.now,
+      input.headCommit,
+    ],
   );
   return { question, review: getVisualReview(db, question.id)! };
 }
@@ -245,16 +249,6 @@ export function visualReviewStaleHandoff(checkId: string): string {
     `Files under the paths of check ${checkId} changed after its visual review was accepted, so that review no longer counts.`,
     `Publish new screenshots of the changed screens with publish_artifact and checkId "${checkId}". Paws asks for another visual review.`,
   ].join("\n");
-}
-
-/** Files of this check that an earlier visual review already showed. */
-export function reviewedEvidenceIds(db: Database, itemId: string, checkId: string): Set<string> {
-  const rows = db
-    .query<VisualReviewRow, [string, string]>(
-      "SELECT * FROM visual_review WHERE item_id = ? AND check_id = ?",
-    )
-    .all(itemId, checkId);
-  return new Set(rows.flatMap((row) => mapVisualReview(row).evidenceIds));
 }
 
 /** The question text, then each file inline when Linear has it, or its Paws link. */

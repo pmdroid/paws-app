@@ -12,7 +12,6 @@ import type {
   AgentIdentity,
   CloseoutProgressHook,
   PostUpdateHook,
-  PublishArtifactHook,
   PullRequestHook,
   UpdatePlanHook,
 } from "../acp";
@@ -58,6 +57,7 @@ import {
   writeSessionCloseout,
   type GateResult,
   type CloseoutVerdict,
+  type ResolvedEvidence,
   type CandidateIdentity,
 } from "../closeout";
 import {
@@ -255,13 +255,13 @@ import {
   visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
   VISUAL_REVIEW_DESCRIBE,
-  VISUAL_REVIEW_WAIT,
   type StoredQuestion,
   type StoredVisualReview,
 } from "../questions";
 import {
   answerVisualReview,
   askForVisualReview,
+  dueVisualReview,
   postNote,
   remindVisualReview,
   visualReviewApprovals,
@@ -2051,6 +2051,7 @@ export class Orchestrator {
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state !== "running") return;
     if (await this.visualReviewOutdated(current, worktree, head)) return;
+    if (await this.askVisualReview(current, worktree, base, head)) return;
     applyWorkItemEvent(this.db, item.id, "turn_ended");
     const verifying = getWorkItem(this.db, item.id);
     if (verifying === null) return;
@@ -5190,69 +5191,75 @@ export class Orchestrator {
         : undefined;
     const evidence = this.options.evidence;
     if (!evidence) return linear;
-    const publisher = createEvidenceArtifactPublisher({
+    return createEvidenceArtifactPublisher({
       db: this.db,
       evidence: evidence.store,
       publicUrl: evidence.publicUrl,
       itemId: item.id,
       sessionId,
       uploads: Boolean(this.options.files && evidence.root),
+      reviewed: (checkId) =>
+        this.visualReviewRequirements(
+          item,
+          worktreePath(this.options.pawsRoot, itemPathId(item)),
+        ).some((requirement) => requirement.id === checkId),
       ...(linear ? { linear } : {}),
       now: () => this.now(),
     });
-    return {
-      ...publisher,
-      publish: async (artifact, context) => {
-        const published = await publisher.publish(artifact, context);
-        if (!context.evidence) return published;
-        const asked = await this.requestVisualReview(
-          item,
-          sessionId,
-          context.runId,
-          context.evidence.checkId,
-          evidence.publicUrl,
-        );
-        return asked ? { ...published, note: VISUAL_REVIEW_WAIT } : published;
-      },
-    } satisfies PublishArtifactHook;
   }
 
-  /**
-   * Asks for a visual review once an `approval: human` check has its files. The run that
-   * published them ends like one that asked the team: it keeps its work and frees its slot.
-   */
-  private async requestVisualReview(
-    item: WorkItemRecord,
-    sessionId: string,
-    runId: string,
-    checkId: string,
-    publicUrl: string,
-  ): Promise<boolean> {
+  private visualReviewRequirements(item: WorkItemRecord, worktree: string): ResolvedEvidence[] {
     const repository = this.repositoryForItem(item);
-    if (repository === null) return false;
+    if (!repository) return [];
     const required = visualReviewRequirements(
-      worktreePath(this.options.pawsRoot, itemPathId(item)),
+      worktree,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
     );
-    const requirement = required.ok
-      ? required.items.find((entry) => entry.id === checkId)
-      : undefined;
-    if (requirement === undefined) return false;
-    const outcome = immediate(this.db, () =>
-      askForVisualReview(this.db, {
-        item,
-        runId,
-        sessionId,
-        requirement,
-        publicUrl,
-        now: this.now(),
-      }),
+    return required.ok ? required.items : [];
+  }
+
+  private async askVisualReview(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+  ): Promise<boolean> {
+    const evidence = this.options.evidence;
+    const sessionId = this.activitySession(item);
+    if (!evidence || sessionId === null) return false;
+    const requirements = this.visualReviewRequirements(item, worktree);
+    if (requirements.length === 0) return false;
+    const approvals = await approvalsAtHead(
+      worktree,
+      head,
+      visualReviewApprovals(this.db, item.id, itemPathId(item)),
+      requirements,
     );
-    if (outcome === null) return false;
-    this.askedRuns.add(runId);
-    await this.flush();
-    return true;
+    const asked = immediate(this.db, () => {
+      const due = dueVisualReview(this.db, item.id, requirements, approvals);
+      if (due === null) return false;
+      const current = getWorkItem(this.db, item.id);
+      const runId = current?.currentRunId ?? null;
+      if (
+        !askForVisualReview(this.db, {
+          item,
+          runId,
+          sessionId,
+          checkId: due.requirement.id,
+          evidenceIds: due.evidenceIds,
+          base,
+          head,
+          publicUrl: evidence.publicUrl,
+          now: this.now(),
+        })
+      )
+        return false;
+      if (runId) releaseRunCapacity(this.db, runId, this.now());
+      return true;
+    });
+    if (asked) await this.flush();
+    return asked;
   }
 
   async requestVisualReviewChanges(input: {

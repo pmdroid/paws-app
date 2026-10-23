@@ -80,6 +80,8 @@ The setting is optional. Without it, published files are enough, as above.
 
 With it, `get_closeout` adds "Publish the screenshots, then Paws asks for a visual review in Linear." to the hint. Once enough files are published, it lists the check as `pending` and leaves it out of the pending ids, so the agent can finish its turn.
 
+When the turn ends, Paws asks for the review in Linear with every file the check counts, and posts nothing else in the session until it is answered, so Linear keeps showing the Accept and Request changes buttons. The files are not posted on their own. If files were published after an accepted review, Paws asks a new round with all of them before it runs Closeout. An accepted review belongs to the candidate commit it was asked at.
+
 Paws Closeout judges the check from an approval record: the task, the check id, the ids of the files the reviewer saw, who approved, and when. The check passes when an approval for this task and check names every file the check counts at the candidate commit. A file published after the review, for example after the reviewer asked for changes, is not covered, so the old approval no longer counts. Without a matching approval the check is `missing`: the decision is blocked, not rejected, so no fix round starts. Too few files still fail as above.
 
 ## Paws Closeout

@@ -26,7 +26,7 @@ import {
   openVisualReviewContinue,
   parseVisualReviewAnswer,
   recordVisualReviewAnswer,
-  reviewedEvidenceIds,
+  rejectedEvidenceIds,
   visualReviewAcceptedHandoff,
   visualReviewChangesHandoff,
   visualReviewRounds,
@@ -34,63 +34,77 @@ import {
   VISUAL_REVIEW_ROUNDS,
   type StoredQuestion,
   type StoredVisualReview,
-  visualReviewBody,
   VISUAL_REVIEW_OPTIONS,
+  VISUAL_REVIEW_QUESTION,
   VISUAL_REVIEW_REMINDER,
   VISUAL_REVIEW_REMINDER_MS,
 } from "../questions";
 
-/**
- * After a file is published for an `approval: human` check, asks for a visual review once the
- * files not shown in an earlier review reach `minimum`. The question moves a running task to
- * `awaiting_input` and schedules one reminder. Returns `asked` when this call opened the review,
- * `waiting` when one is already open for the check, and null otherwise.
- */
+export function dueVisualReview(
+  db: Database,
+  itemId: string,
+  requirements: readonly ResolvedEvidence[],
+  approvals: readonly EvidenceApproval[],
+): { requirement: ResolvedEvidence; evidenceIds: string[] } | null {
+  const rejected = rejectedEvidenceIds(db, itemId);
+  const evidence = listEvidence(db, itemId);
+  for (const requirement of requirements) {
+    const evidenceIds = evidence
+      .filter(
+        (row) =>
+          row.checkId === requirement.id &&
+          !rejected.has(row.id) &&
+          requirement.media.includes(row.mediaType.startsWith("video/") ? "video" : "image"),
+      )
+      .map((row) => row.id);
+    if (evidenceIds.length < requirement.minimum) continue;
+    const covered = approvals.some(
+      (approval) =>
+        approval.checkId === requirement.id &&
+        evidenceIds.every((id) => approval.evidenceIds.includes(id)),
+    );
+    if (!covered) return { requirement, evidenceIds };
+  }
+  return null;
+}
+
 export function askForVisualReview(
   db: Database,
   input: {
     item: WorkItemRecord;
-    runId: string;
+    runId: string | null;
     sessionId: string;
-    requirement: ResolvedEvidence;
+    checkId: string;
+    evidenceIds: readonly string[];
+    base: string;
+    head: string;
     publicUrl: string;
     now: number;
   },
-): "asked" | "waiting" | null {
-  const { item, requirement, sessionId } = input;
-  const open = findOpenQuestion(db, sessionId);
-  if (open !== null)
-    return getVisualReview(db, open.id)?.checkId === requirement.id ? "waiting" : null;
-  const reviewed = reviewedEvidenceIds(db, item.id, requirement.id);
-  const files = listEvidence(db, item.id).filter(
-    (row) =>
-      row.checkId === requirement.id &&
-      !reviewed.has(row.id) &&
-      requirement.media.includes(row.mediaType.startsWith("video/") ? "video" : "image"),
-  );
-  if (files.length < requirement.minimum) return null;
+): boolean {
+  const { item, sessionId } = input;
+  const current = getWorkItem(db, item.id);
+  if (current?.state !== "running" || current.cancelRequested) return false;
+  if (findOpenQuestion(db, sessionId) !== null) return false;
   const { question } = openVisualReview(db, {
     itemId: item.id,
     runId: input.runId,
     sessionId,
-    checkId: requirement.id,
-    evidenceIds: files.map((row) => row.id),
+    checkId: input.checkId,
+    evidenceIds: input.evidenceIds,
+    headCommit: input.head,
     now: input.now,
   });
-  const current = getWorkItem(db, item.id);
-  if (current?.state === "running") {
-    applyWorkItemEvent(db, item.id, "blocking_question");
-    saveCheckpoint(db, item.id, {
-      phase: "awaiting_input",
-      ...(current.checkpoint?.wipCommit ? { wipCommit: current.checkpoint.wipCommit } : {}),
-      ...(current.checkpoint?.baseSha ? { baseSha: current.checkpoint.baseSha } : {}),
-    });
-  }
+  applyWorkItemEvent(db, item.id, "blocking_question");
+  saveCheckpoint(db, item.id, {
+    phase: "awaiting_input",
+    wipCommit: input.head,
+    baseSha: input.base,
+  });
   const base = input.publicUrl.replace(/\/+$/, "");
-  const evidence = files.map((row) => ({
-    id: row.id,
-    displayName: row.displayName,
-    link: `${base}/evidence/${encodeURIComponent(row.id)}`,
+  const evidence = input.evidenceIds.map((id) => ({
+    id,
+    link: `${base}/evidence/${encodeURIComponent(id)}`,
   }));
   enqueueOutboxOnce(db, {
     target: "linear",
@@ -101,9 +115,9 @@ export function askForVisualReview(
       id: question.id,
       sessionId,
       questionId: question.id,
-      body: visualReviewBody(evidence),
+      body: VISUAL_REVIEW_QUESTION,
       options: [...VISUAL_REVIEW_OPTIONS],
-      evidence: evidence.map(({ id, link }) => ({ id, link })),
+      evidence,
     },
     now: input.now,
   });
@@ -114,7 +128,7 @@ export function askForVisualReview(
     runAt: input.now + VISUAL_REVIEW_REMINDER_MS,
     now: input.now,
   });
-  return "asked";
+  return true;
 }
 
 /** Posts the one reminder while the review is still open and the task still waits on it. */
@@ -124,14 +138,20 @@ export function remindVisualReview(db: Database, questionId: string, now: number
     return false;
   const item = getWorkItem(db, question.itemId);
   if (item === null || item.state !== "awaiting_input" || item.cancelRequested) return false;
-  postNote(
-    db,
-    question.sessionId,
-    item,
-    VISUAL_REVIEW_REMINDER,
-    `visual-review-reminder:${questionId}`,
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "elicitation",
+    orderingKey: question.sessionId,
+    idempotencyKey: `visual-review-reminder:${questionId}`,
+    payload: {
+      id: randomUUID(),
+      sessionId: question.sessionId,
+      questionId,
+      body: VISUAL_REVIEW_REMINDER,
+      options: [...VISUAL_REVIEW_OPTIONS],
+    },
     now,
-  );
+  });
   return true;
 }
 
@@ -197,7 +217,7 @@ export function answerVisualReview(
     return "answered";
   }
   if (parsed.kind === "accept") {
-    const headCommit = item.checkpoint?.wipCommit ?? reviewedHead(db, item.id, review);
+    const headCommit = review.headCommit ?? reviewedHead(db, item.id, review);
     recordVisualReviewAnswer(db, question.id, {
       outcome: "accepted",
       answeredBy,

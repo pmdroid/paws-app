@@ -58,6 +58,7 @@ async function harness(role: "owner" | "observer" = "owner") {
     sessionId: "ses_1",
     checkId: "visual-proof",
     evidenceIds: [first.id, second.id],
+    headCommit: HEAD,
     now: 1,
   });
   const userId = putWorkspaceUser(db, {
