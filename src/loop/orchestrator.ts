@@ -728,7 +728,9 @@ export class Orchestrator {
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
     let result: IntakeResult;
     try {
-      result = await this.intakeLinearTask(event.issueId, event.sessionId, taskKey ?? undefined);
+      result = await this.intakeLinearTask(event.issueId, event.sessionId, taskKey ?? undefined, {
+        acknowledged: session !== null,
+      });
     } catch (error) {
       const current = session ? getLinearSession(this.db, session.sessionId) : null;
       if (session && (current?.stoppedAt !== null || current.generation !== session.generation))
@@ -799,7 +801,11 @@ export class Orchestrator {
     issueId: string,
     sessionId: string | null,
     taskKey?: string,
-    options: { followupBodies?: readonly string[]; conversation?: string } = {},
+    options: {
+      followupBodies?: readonly string[];
+      conversation?: string;
+      acknowledged?: boolean;
+    } = {},
   ) {
     const tracker = this.tracker;
     if (!tracker) throw new Error("Linear is not connected");
@@ -897,6 +903,7 @@ export class Orchestrator {
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
+      acknowledged: options.acknowledged,
       isCurrent: intakeCurrent,
       reconcileSessions:
         sessionId && this.options.channel !== "comments"
