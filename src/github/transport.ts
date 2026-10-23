@@ -1,19 +1,13 @@
+import { isTransientGitError } from "../core";
 import { GitCommandError, type GitExec } from "./types";
 
 export const GIT_TRANSPORT_RETRY_MS = [5_000, 20_000] as const;
-
-const TRANSIENT_GIT =
-  /timed? ?out|operation too slow|connection (?:reset|refused|closed)|could not resolve host|temporary failure in name resolution|failed to connect to|remote end hung up unexpectedly|early eof|rpc failed; curl|gnutls|ssl_(?:read|connect|error)|returned error: 5\d\d|\bhttp\/?[\d.]* 5\d\d\b|internal server error|bad gateway|service unavailable|gateway timeout/i;
 
 export class GitTransportError extends GitCommandError {
   constructor(args: string[], stderr: string) {
     super(args, stderr);
     this.name = "GitTransportError";
   }
-}
-
-export function isTransientGitError(stderr: string): boolean {
-  return TRANSIENT_GIT.test(stderr);
 }
 
 export function hasGitTransportCause(error: unknown): boolean {

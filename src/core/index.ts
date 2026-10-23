@@ -99,6 +99,7 @@ export {
   MAX_TRANSIENT_RETRIES,
   TRANSIENT_RETRY_BASE_MS,
   isTransientFailure,
+  isTransientGitError,
   retryNote,
   retryAfterMs,
   transientRetryDelayMs,

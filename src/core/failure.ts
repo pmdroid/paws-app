@@ -9,6 +9,7 @@ const TRANSIENT_ERROR_NAMES = new Set([
   "PawsShutdown",
   "TimeoutError",
   "GitTransportError",
+  "PolicyFetchError",
 ]);
 
 const TRANSIENT_CODES = new Set([
@@ -28,6 +29,13 @@ const TRANSIENT_CODES = new Set([
   "UND_ERR_HEADERS_TIMEOUT",
   "UND_ERR_BODY_TIMEOUT",
 ]);
+
+const TRANSIENT_GIT =
+  /timed? ?out|operation too slow|connection (?:reset|refused|closed)|could not resolve host|temporary failure in name resolution|failed to connect to|remote end hung up unexpectedly|early eof|rpc failed; curl|gnutls|ssl_(?:read|connect|error)|returned error: 5\d\d|\bhttp\/?[\d.]* 5\d\d\b|internal server error|bad gateway|service unavailable|gateway timeout/i;
+
+export function isTransientGitError(stderr: string): boolean {
+  return TRANSIENT_GIT.test(stderr);
+}
 
 export const MAX_TRANSIENT_RETRIES = 5;
 export const TRANSIENT_RETRY_BASE_MS = 30_000;
