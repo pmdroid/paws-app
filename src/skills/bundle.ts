@@ -10,6 +10,8 @@ export type SkillBundle = { path: string; sha256: string; sizeBytes: number };
 /** Bundles over this are refused, and so are sources whose files add up to more. */
 export const SKILL_BUNDLE_LIMIT = 50 * 1024 * 1024;
 
+export const SKILL_FILE_LIMIT = 1000;
+
 export const SKILL_BUNDLE_FILE = "skill.tar.gz";
 
 /** A refused source or request. The message is safe to show the person who added the skill. */
@@ -132,6 +134,8 @@ export async function writeSkillBundle(
   const limit = options.limit ?? SKILL_BUNDLE_LIMIT;
   if (!files.has("SKILL.md"))
     throw new SkillError("This source has no SKILL.md at the top of the skill folder.");
+  if (files.size > SKILL_FILE_LIMIT)
+    throw new SkillError(`A skill may hold at most ${SKILL_FILE_LIMIT} files.`, 413);
   let size = 0;
   for (const bytes of files.values()) size += bytes.byteLength;
   if (size > limit) throw tooLarge(limit);

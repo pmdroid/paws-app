@@ -137,6 +137,36 @@ function impeccableRepo(): string {
   return repo;
 }
 
+function largeRepo(): string {
+  const repo = join(root, "large");
+  const write = (path: string, text: string) => {
+    mkdirSync(join(repo, path, ".."), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  };
+  write("skills/lint/SKILL.md", manifest("lint"));
+  write("skills/review/SKILL.md", manifest("review"));
+  write("skills/review/notes.md", "Notes.\n");
+  write("site.bin", "site ".repeat(200_000));
+  write("docs/video.bin", "video ".repeat(200_000));
+  git(repo, "init", "--quiet", "--initial-branch=main");
+  git(repo, "add", ".");
+  git(repo, "commit", "--quiet", "-m", "Add skills next to a large site");
+  return repo;
+}
+
+function tracingGit(log: string, options: { refuseFilter?: boolean } = {}): string {
+  const path = join(root, options.refuseFilter ? "git-without-filter" : "git-tracing");
+  const refuse = options.refuseFilter
+    ? `case " $* " in *" --filter=blob:none "*) echo "fatal: filtering not supported" >&2; exit 128;; esac\n`
+    : "";
+  writeFileSync(
+    path,
+    `#!/bin/sh\n${refuse}git "$@" || exit $?\ncase " $* " in *" checkout "*) git cat-file --batch-all-objects --batch-check='%(objectname)' >> '${log}';; esac\n`,
+    { mode: 0o755 },
+  );
+  return path;
+}
+
 const paths = (found: { path: string }[]) => found.map((skill) => skill.path);
 
 describe("finding skills in a repository", () => {
@@ -480,6 +510,65 @@ describe("skill sources", () => {
       { agents: ["claude"] },
     );
     expect(refused).rejects.toThrow("bundle limit");
+  });
+
+  test("a git source fetches the tree and only the chosen skill folders, never a large blob outside them", async () => {
+    const repo = largeRepo();
+    git(repo, "config", "uploadpack.allowFilter", "true");
+    const log = join(root, "objects.log");
+    const pins = registry(createSkillResolver({ git: tracingGit(log) }));
+    const blob = (path: string) => git(repo, "rev-parse", `HEAD:${path}`);
+    const fetched = () => readFileSync(log, "utf8");
+
+    expect(paths(await findSkills(pins, { kind: "git", url: repo }))).toEqual([
+      "skills/lint",
+      "skills/review",
+    ]);
+    expect(fetched()).toContain(blob("skills/review/SKILL.md"));
+    expect(fetched()).not.toContain(blob("skills/review/notes.md"));
+
+    rmSync(log);
+    await addSkills(pins, { kind: "git", url: repo }, ["skills/lint"], { agents: ["claude"] });
+    expect(fetched()).toContain(blob("skills/lint/SKILL.md"));
+    expect(fetched()).not.toContain(blob("skills/review/SKILL.md"));
+
+    rmSync(log);
+    const review = await addSkill(
+      pins,
+      { kind: "git", url: repo, subfolder: "skills/review" },
+      { agents: ["claude"] },
+    );
+    expect(
+      await bundleFiles(join(root, "skills", "review", review.version, SKILL_BUNDLE_FILE)),
+    ).toEqual({ "SKILL.md": manifest("review"), "notes.md": "Notes.\n" });
+    expect(fetched()).not.toContain(blob("site.bin"));
+    expect(fetched()).not.toContain(blob("docs/video.bin"));
+  });
+
+  test("a host that refuses partial clone falls back to a full depth-1 fetch", async () => {
+    const repo = largeRepo();
+    const log = join(root, "objects.log");
+    const pins = registry(createSkillResolver({ git: tracingGit(log, { refuseFilter: true }) }));
+
+    const [lint] = await addSkills(pins, { kind: "git", url: repo }, ["skills/lint"], {
+      agents: ["claude"],
+    });
+
+    expect(
+      await bundleFiles(join(root, "skills", "lint", lint!.version, SKILL_BUNDLE_FILE)),
+    ).toEqual({ "SKILL.md": manifest("lint") });
+    expect(readFileSync(log, "utf8")).toContain(git(repo, "rev-parse", "HEAD:site.bin"));
+  });
+
+  test("a skill with more than 1000 files is refused", async () => {
+    const files = skillFiles({ "SKILL.md": SKILL });
+    for (let i = 0; i < 1000; i++) files.set(`refs/${i}.md`, new Uint8Array());
+    const refused = addSkill(registry(fakeSkillResolver(() => files)), {
+      kind: "git",
+      url: "https://example.test/skills.git",
+    });
+    expect(refused).rejects.toThrow("1000 files");
+    expect(getSkill(db, "impeccable")).toBeNull();
   });
 
   test("a source without SKILL.md is refused", async () => {

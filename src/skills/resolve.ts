@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SkillSource } from "../db";
@@ -30,9 +30,11 @@ export type ResolvedSkill = {
   suggestedName: string;
 };
 
+export type SkillPick = (tree: string[]) => readonly string[];
+
 /** Fetches a source once and pins it. Tests use `fakeSkillResolver`. */
 export type SkillResolver = {
-  resolve(request: SkillRequest, signal?: AbortSignal): Promise<ResolvedSkill>;
+  resolve(request: SkillRequest, signal?: AbortSignal, only?: SkillPick): Promise<ResolvedSkill>;
 };
 
 export type SkillResolverOptions = {
@@ -49,10 +51,10 @@ export function createSkillResolver(options: SkillResolverOptions = {}): SkillRe
   const registry = (options.registry ?? "https://registry.npmjs.org").replace(/\/+$/, "");
   const limit = options.limit ?? SKILL_BUNDLE_LIMIT;
   return {
-    async resolve(request, signal) {
+    async resolve(request, signal, only) {
       return request.kind === "npm"
         ? resolveNpm(request, { fetch: fetchImpl, registry, limit, signal })
-        : resolveTree(request, { git: options.git ?? "git", limit, signal });
+        : resolveTree(request, { git: options.git ?? "git", limit, signal, only });
     },
   };
 }
@@ -133,7 +135,12 @@ function integrityMatches(
   return false;
 }
 
-type GitContext = { git: string; limit: number; signal: AbortSignal | undefined };
+type GitContext = {
+  git: string;
+  limit: number;
+  signal: AbortSignal | undefined;
+  only?: SkillPick | undefined;
+};
 
 async function resolveTree(
   request: Extract<SkillRequest, { kind: "git" }>,
@@ -175,14 +182,32 @@ async function resolveGit(
   try {
     const run = (args: string[]) => git(context, dir, args);
     await run(["init", "--quiet"]);
+    await run(["remote", "add", "origin", url]);
     const commit =
       ref !== undefined && commitRef(ref)
         ? ref.toLowerCase()
         : await remoteCommit(context, dir, url, ref);
-    await run(["fetch", "--quiet", "--depth", "1", "--", url, commit]);
+    const fetch = ["fetch", "--quiet", "--depth", "1", "--no-tags"];
+    await run([...fetch, "--filter=blob:none", "--", "origin", commit]).catch(() =>
+      run([...fetch, "--", "origin", commit]),
+    );
+    const subfolder = request.subfolder === undefined ? "" : skillPath(request.subfolder)!;
+    const prefix = subfolder ? `${subfolder}/` : "";
+    const tree = (await run(["ls-tree", "-r", "-z", "--name-only", "FETCH_HEAD"]))
+      .split("\0")
+      .filter((path) => path && path.startsWith(prefix))
+      .map((path) => path.slice(prefix.length));
+    const picked = context.only?.(tree) ?? (subfolder ? [""] : undefined);
+    if (picked !== undefined) {
+      await run(["config", "core.sparseCheckout", "true"]);
+      mkdirSync(join(dir, ".git", "info"), { recursive: true });
+      writeFileSync(
+        join(dir, ".git", "info", "sparse-checkout"),
+        sparsePatterns(subfolder, picked),
+      );
+    }
     await run(["checkout", "--quiet", "--detach", "FETCH_HEAD"]);
     const head = (await run(["rev-parse", "HEAD"])).trim();
-    const subfolder = request.subfolder === undefined ? "" : skillPath(request.subfolder)!;
     const files = skillSubfolder(readSkillFolder(dir, context.limit, subfolder), request.subfolder);
     const repo = url.replace(/\.git$/, "").replace(/\/+$/, "");
     return {
@@ -199,6 +224,14 @@ async function resolveGit(
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function sparsePatterns(subfolder: string, picked: readonly string[]): string {
+  return picked
+    .map((path) => [subfolder, path].filter(Boolean).join("/"))
+    .filter((path) => !/[\r\n]/.test(path))
+    .map((path) => (path ? `/${path.replace(/[\\*?[\] !#]/g, "\\$&")}\n` : "/*\n"))
+    .join("");
 }
 
 export function commitRef(ref: string): boolean {
