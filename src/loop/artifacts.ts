@@ -18,6 +18,7 @@ import {
   getArtifact,
   getEvidence,
   immediate,
+  latestEvidence,
   listEvidence,
   markArtifact,
   saveArtifact,
@@ -51,7 +52,7 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
 
 export function publishedEvidence(db: Database, itemId: string): PublishedEvidence[] {
   const rejected = rejectedEvidenceIds(db, itemId);
-  return listEvidence(db, itemId)
+  return latestEvidence(listEvidence(db, itemId))
     .filter((row) => !rejected.has(row.id))
     .map((row) => ({
       id: row.id,

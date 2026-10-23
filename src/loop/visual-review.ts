@@ -9,6 +9,7 @@ import {
   enqueueOutboxOnce,
   getWorkItem,
   linearConversationUrl,
+  latestEvidence,
   listEvidence,
   listVisualReviewMarks,
   listVisualReviews,
@@ -47,7 +48,7 @@ export function dueVisualReview(
   approvals: readonly EvidenceApproval[],
 ): { requirement: ResolvedEvidence; evidenceIds: string[] } | null {
   const rejected = rejectedEvidenceIds(db, itemId);
-  const evidence = listEvidence(db, itemId);
+  const evidence = latestEvidence(listEvidence(db, itemId));
   for (const requirement of requirements) {
     const evidenceIds = evidence
       .filter(
@@ -322,23 +323,24 @@ export function visualReviewPullRequestNote(
 ): string {
   const accepted = listVisualReviews(db, item.id).filter((review) => review.outcome === "accepted");
   if (accepted.length === 0) return "";
-  const evidence = new Map(listEvidence(db, item.id).map((row) => [row.id, row]));
+  const evidence = listEvidence(db, item.id);
   const question = linearConversationUrl(db, item.sessionKey, item.linearIdentifier);
   const base = publicUrl?.replace(/\/+$/, "");
   return accepted
     .map((review) =>
       [
         `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in [Linear](<${question}>).`,
-        ...review.evidenceIds.flatMap((id) => {
-          const row = evidence.get(id);
-          if (!row) return [];
-          const label = row.displayName.replace(/[\\[\]]/g, "\\$&");
-          const url = row.assetUrl || (base ? `${base}/evidence/${encodeURIComponent(id)}` : null);
-          if (!url) return [];
-          return [
-            `${row.assetUrl && row.mediaType.startsWith("image/") ? "!" : ""}[${label}](<${url}>)`,
-          ];
-        }),
+        ...latestEvidence(evidence.filter((row) => review.evidenceIds.includes(row.id))).flatMap(
+          (row) => {
+            const label = row.displayName.replace(/[\\[\]]/g, "\\$&");
+            const url =
+              row.assetUrl || (base ? `${base}/evidence/${encodeURIComponent(row.id)}` : null);
+            if (!url) return [];
+            return [
+              `${row.assetUrl && row.mediaType.startsWith("image/") ? "!" : ""}[${label}](<${url}>)`,
+            ];
+          },
+        ),
       ].join("\n\n"),
     )
     .join("\n\n");
