@@ -3,6 +3,7 @@ import {
   capActivityText,
   capReason,
   countsAwakeTime,
+  isTerminalWorkItemState,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   transition,
@@ -15,6 +16,7 @@ import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
 import { getRun, markRun } from "./runs";
+import { getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
 
 export type WorkItemRecord = {
@@ -262,20 +264,82 @@ export function failWorkItem(
   reason: string,
   text: string,
   now: number,
-): void {
-  const version = moveToFailed(db, item);
-  journal(`item ${item.linearIdentifier} failed: ${reason}`);
-  db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
-  if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-  cancelOpenJobs(db, { itemId: item.id, reason, now });
-  enqueueOutboxOnce(db, {
-    target: OUTBOX_ACTIVITY.target,
-    op: OUTBOX_ACTIVITY.op,
-    orderingKey: item.sessionKey ?? item.id,
-    idempotencyKey: `fail:${item.id}:${version}:${reason}`,
-    payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
-    now,
+): boolean {
+  return immediate(db, () => {
+    const current = getWorkItem(db, item.id);
+    if (
+      current === null ||
+      current.version !== item.version ||
+      current.currentRunId !== item.currentRunId ||
+      current.state === "failed" ||
+      isTerminalWorkItemState(current.state)
+    )
+      return false;
+    commitFailure(
+      db,
+      current,
+      reason,
+      text,
+      now,
+      (version) => `fail:${item.id}:${version}:${reason}`,
+    );
+    return true;
   });
+}
+
+export function completeMergedItem(
+  db: Database,
+  input: {
+    itemId: string;
+    now: number;
+    announce?: (item: WorkItemRecord) => void;
+  },
+): WorkItemRecord | null {
+  return immediate(db, () => {
+    const current = getWorkItem(db, input.itemId);
+    if (
+      current === null ||
+      current.state !== "merge_queue" ||
+      current.cancelRequested ||
+      getConfirmedRemoteMerge(db, current.id) === null
+    )
+      return null;
+    input.announce?.(current);
+    const merged = applyWorkItemEvent(db, current.id, "merge_accepted");
+    endActiveRun(db, current.currentRunId, input.now);
+    cancelAdvancingJobs(db, current.id, "merged", input.now);
+    return merged;
+  });
+}
+
+function endActiveRun(db: Database, runId: string | null, now: number): void {
+  if (runId === null) return;
+  const run = getRun(db, runId);
+  if (run && (run.status === "active" || run.status === "provisioning"))
+    markRun(db, runId, "ended", now);
+}
+
+export function cancelAdvancingJobs(
+  db: Database,
+  itemId: string,
+  reason: string,
+  now: number,
+): void {
+  db.run(
+    `UPDATE job SET status = 'cancelled', last_error = ?, finished_at = ?
+     WHERE status = 'pending' AND json_extract(payload, '$.itemId') = ?
+       AND (queue IN (?, ?, ?) OR queue = ? OR queue LIKE ?)`,
+    [
+      reason,
+      now,
+      itemId,
+      JOB_KIND.start,
+      JOB_KIND.resume,
+      JOB_KIND.reverify,
+      JOB_KIND.merge,
+      `${JOB_KIND.merge}.%`,
+    ],
+  );
 }
 
 export function deferWorkItem(
@@ -323,21 +387,35 @@ function failForCap(
   reason: "turns" | "time",
   now: number,
 ): void {
+  commitFailure(
+    db,
+    item,
+    `cap:${reason}`,
+    capActivityText(reason, item.maxTurns, item.maxAwakeMs),
+    now,
+    (version) => `cap:${item.id}:${version}:${reason}`,
+  );
+}
+
+function commitFailure(
+  db: Database,
+  item: WorkItemRecord,
+  reason: string,
+  text: string,
+  now: number,
+  idempotencyKey: (version: number) => string,
+): void {
   const version = moveToFailed(db, item);
+  journal(`item ${item.linearIdentifier} failed: ${reason}`);
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-  journal(`item ${item.linearIdentifier} failed: cap:${reason}`);
-  cancelOpenJobs(db, { itemId: item.id, reason: `cap:${reason}`, now });
+  cancelOpenJobs(db, { itemId: item.id, reason, now });
   enqueueOutboxOnce(db, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.sessionKey ?? item.id,
-    idempotencyKey: `cap:${item.id}:${version}:${reason}`,
-    payload: {
-      sessionId: item.sessionKey ?? item.id,
-      kind: "error",
-      body: capActivityText(reason, item.maxTurns, item.maxAwakeMs),
-    },
+    idempotencyKey: idempotencyKey(version),
+    payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
     now,
   });
 }
