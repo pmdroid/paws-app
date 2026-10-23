@@ -31,7 +31,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         identifier: "ENG-1",
         title: "Explain this system",
         description: null,
-        subIssues: [],
+        subIssues: [{ linearIssueId: "child", identifier: "ENG-2", title: "Child" }],
       },
     ]);
     const jobs = new JobLoop(db, systemClock);
