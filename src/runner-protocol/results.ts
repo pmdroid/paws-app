@@ -18,6 +18,8 @@ export const RunnerResultSchema = z.strictObject({
   ]),
   timedOut: z.boolean(),
   cancelled: z.boolean(),
+  /** The runner stopped the agent for a handover Paws asked for. `candidateSha` is the WIP commit. */
+  handedOver: z.literal(true).optional(),
   authRequired: z.boolean(),
   agentExited: z.boolean(),
   sessionId: z.string().max(512).optional(),

@@ -28,6 +28,41 @@ export function runnerFollowUpRequestId(sequence: number): string {
   return `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, "0")}`;
 }
 
+/**
+ * The spool slot where the runner asks its worker to hand over the session. Each request has
+ * its own sequence, so a later request can follow one that ran out of time. The answer is
+ * `{"expiresAt":<ms>}`, the wall-clock time by which the handover must be finished.
+ */
+export function runnerHandoverRequestId(sequence: number): string {
+  if (!Number.isSafeInteger(sequence) || sequence < 1 || sequence > 0xffffffffffff)
+    throw new Error("Invalid handover sequence");
+  return `00000000-0000-4000-9000-${sequence.toString(16).padStart(12, "0")}`;
+}
+
+export function publishRunnerHandover(
+  spool: RunnerSpool,
+  executionId: string,
+  sequence: number,
+  expiresAt: number,
+): void {
+  publishRunnerAnswer(spool, executionId, {
+    requestId: runnerHandoverRequestId(sequence),
+    answer: JSON.stringify({ expiresAt }),
+  });
+}
+
+export function readRunnerHandover(
+  spool: RunnerSpool,
+  executionId: string,
+  sequence: number,
+): { expiresAt: number } | null {
+  const answer = readRunnerAnswer(spool, executionId, runnerHandoverRequestId(sequence));
+  if (!answer) return null;
+  return z
+    .strictObject({ expiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) })
+    .parse(JSON.parse(answer.answer));
+}
+
 export function removeRunnerAnswers(spool: RunnerSpool, executionId: string): void {
   if (process.getuid?.() !== spool.runnerUid) throw new Error("Only the runner may remove answers");
   try {

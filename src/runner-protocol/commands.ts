@@ -2,6 +2,8 @@ import { z } from "zod";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 
 export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
+/** A runner hands over a running session within this time, or the session stays on the runner. */
+export const RUNNER_HANDOVER_MS = 2 * 60_000;
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -170,6 +172,7 @@ export const RunnerCommandSchema = z
     z.strictObject({ ...common, type: z.literal("login_check"), agent }),
     z.strictObject({ ...common, type: z.literal("login"), agent }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
+    z.strictObject({ ...common, type: z.literal("handover"), runId: id, generation }),
     z.strictObject({
       ...common,
       type: z.literal("upgrade"),
@@ -203,6 +206,10 @@ export const RunnerCommandSchema = z
   )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
+  .refine(
+    (command) =>
+      command.type !== "handover" || command.expiresAt - command.issuedAt <= RUNNER_HANDOVER_MS,
+  )
   .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000);
 
 export const SignedRunnerCommandSchema = z.strictObject({
