@@ -84,7 +84,7 @@ const oneLine = (max: number) =>
     .min(1)
     .max(max)
     .refine((value) => !/[\0\r\n]/.test(value));
-const hookEvent = z.enum(["after_edit", "before_shell", "before_tool", "stop"]);
+const hookEvent = z.enum(["after_edit", "before_shell", "before_tool", "stop", "session_start"]);
 
 /** A workspace hook Paws signed into the run. The runner merges it after Closeout's Stop hook. */
 export const RunnerHookSchema = z

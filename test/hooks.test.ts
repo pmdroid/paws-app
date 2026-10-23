@@ -79,6 +79,22 @@ describe("hook settings", () => {
     expect(audits[1]?.[0]).toBe("settings.hook.remove");
   });
 
+  test("a hook can run when a session starts", async () => {
+    const added = await read(
+      await handleHookSettingsRequest(
+        post({ action: "add", event: "session_start", command: "setup-tools" }),
+        options("owner"),
+      ),
+    );
+    expect(added.status).toBe(200);
+    expect(added.body.events).toContainEqual({
+      id: "session_start",
+      label: "When a session starts",
+    });
+    expect(listHooks(db)[0]).toMatchObject({ event: "session_start", matcher: null });
+    expect(audits[0]?.[1]).toBe("Added hook when a session starts: setup-tools for Claude, Codex");
+  });
+
   test("members cannot list or change hooks", async () => {
     const listed = await handleHookSettingsRequest(
       new Request("http://127.0.0.1:8787/api/settings/hooks"),
@@ -107,6 +123,10 @@ describe("hook settings", () => {
       [{ action: "add", event: "stop", command: " " }, "Enter the hook's command."],
       [
         { action: "add", event: "after_edit", command: "true", matcher: "Bash" },
+        "Only a hook that runs before a tool call takes a tool matcher.",
+      ],
+      [
+        { action: "add", event: "session_start", command: "true", matcher: "Bash" },
         "Only a hook that runs before a tool call takes a tool matcher.",
       ],
       [{ action: "add", event: "stop", command: "true", timeoutSeconds: 0 }, "Set a timeout"],
@@ -198,6 +218,12 @@ describe("runner protocol", () => {
     expect(
       RunnerCommandSchema.safeParse({ ...run, hooks: [{ ...hook, event: "stop" }] }).success,
     ).toBe(false);
+    expect(
+      RunnerCommandSchema.safeParse({
+        ...run,
+        hooks: [{ ...hook, event: "session_start", matcher: null }],
+      }).success,
+    ).toBe(true);
     expect(
       RunnerCommandSchema.safeParse({ ...run, hooks: [{ ...hook, command: "a\nb" }] }).success,
     ).toBe(false);

@@ -1,5 +1,11 @@
 /** When a workspace hook runs. Paws maps each one onto every agent's own hook event. */
-export const HOOK_EVENTS = ["after_edit", "before_shell", "before_tool", "stop"] as const;
+export const HOOK_EVENTS = [
+  "after_edit",
+  "before_shell",
+  "before_tool",
+  "stop",
+  "session_start",
+] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
 export const HOOK_EVENT_LABELS: Record<HookEvent, string> = {
@@ -7,6 +13,7 @@ export const HOOK_EVENT_LABELS: Record<HookEvent, string> = {
   before_shell: "Before a shell command",
   before_tool: "Before a tool call",
   stop: "When the agent stops",
+  session_start: "When a session starts",
 };
 
 /** Agents with a hook system Paws can inject into. Grok has none, so it also runs without Closeout's hook. */

@@ -3,7 +3,7 @@ import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
 
 export type HookAgent = "claude" | "codex";
-export type HookEvent = "after_edit" | "before_shell" | "before_tool" | "stop";
+export type HookEvent = "after_edit" | "before_shell" | "before_tool" | "stop" | "session_start";
 
 export type WorkspaceHook = {
   id: string;

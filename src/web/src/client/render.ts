@@ -402,6 +402,7 @@ const HOOK_EVENTS: Record<string, string> = {
   before_shell: "Before a shell command",
   before_tool: "Before a tool call",
   stop: "When the agent stops",
+  session_start: "When a session starts",
 };
 
 export function runSetupSection(setup: StatusRunSetup): string {

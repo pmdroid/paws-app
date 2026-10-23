@@ -2249,4 +2249,22 @@ ALTER TABLE closeout_step ADD COLUMN duration_ms INTEGER CHECK (duration_ms IS N
 ALTER TABLE closeout_step ADD COLUMN tokens INTEGER CHECK (tokens IS NULL OR tokens >= 0);
 `,
   },
+  {
+    id: "108_agent_hook_session_start",
+    sql: `
+CREATE TABLE agent_hook_session_start (
+  id TEXT PRIMARY KEY,
+  event TEXT NOT NULL CHECK(event IN ('after_edit','before_shell','before_tool','stop','session_start')),
+  matcher TEXT CHECK(matcher IS NULL OR length(matcher) BETWEEN 1 AND 256),
+  command TEXT NOT NULL CHECK(length(command) BETWEEN 1 AND 4096),
+  timeout_seconds INTEGER NOT NULL CHECK(timeout_seconds BETWEEN 1 AND 600),
+  agents TEXT NOT NULL CHECK(json_valid(agents)),
+  skill TEXT,
+  created_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO agent_hook_session_start SELECT id,event,matcher,command,timeout_seconds,agents,skill,created_at FROM agent_hook;
+DROP TABLE agent_hook;
+ALTER TABLE agent_hook_session_start RENAME TO agent_hook;
+`,
+  },
 ];
