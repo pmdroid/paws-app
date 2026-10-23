@@ -294,6 +294,7 @@ import {
   type MergeWaitReason,
   type VerificationOwner,
 } from "./merge-jobs";
+import { MAX_REBASE_RETURNS, serialMergeStep } from "./merge-step";
 import {
   createAcpActivityReporter,
   FIRST_ACTIVITY_MS,
@@ -449,8 +450,6 @@ type MergeWait = {
   githubQueue?: GitHubQueueWatch;
 };
 
-/** Rebase conflicts keep a fixed limit. CI failures use the `[merge] ci_fix_attempts` setting. */
-const MAX_REBASE_RETURNS = 3;
 const LINEAR_ACCESS_CHANGED: IntakeDecision = {
   outcome: "refused",
   reason: "Access to this session changed while Paws waited to start it.",
@@ -2807,7 +2806,7 @@ export class Orchestrator {
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
     sessionProgress?.phase("merging");
     await this.flush(live.controller.signal);
-    let closeoutFailure: CloseoutVerdict | null = null;
+    let closeoutFailure = null as CloseoutVerdict | null;
     let verifying = item;
     const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
     const mergeSettings = await this.mergeSettingsFor(item, live.controller.signal);
@@ -2924,33 +2923,22 @@ export class Orchestrator {
         };
       },
     });
-    // The first task keeps its place while it waits for CI or runs Closeout again after main moved.
-    // Any other outcome takes it out of the queue; after a fix it rejoins at the end.
-    const unreadable =
-      merged.outcome === "blocked" && merged.message?.startsWith("could not read") === true;
-    if (
-      queued &&
-      !unreadable &&
-      merged.outcome !== "waiting" &&
-      !(
-        closeoutAfterUpdate &&
-        closeoutFailure === null &&
-        (merged.outcome === "sha_moved" || merged.outcome === "rejected")
-      )
-    ) {
+    const ciFixLimit = this.ciFixAttempts();
+    const { step, leaveQueue } = serialMergeStep({
+      result: merged,
+      queued,
+      closeoutAfterUpdate,
+      closeoutFailed: closeoutFailure !== null,
+      rebaseReturns: this.rebaseReturns(item.id),
+      ciFixes: this.ciFixes(item.id),
+      ciFixLimit,
+    });
+    if (leaveQueue) {
       leaveMergeQueue(this.db, item.id);
       wakeMergesBehind(this.db, this.now());
     }
-    if (merged.outcome === "waiting") {
-      if (this.stopped(item.id)) return;
-      return {
-        message: merged.message ?? "Waiting for CI on the candidate commit.",
-        reason: "ci",
-        ...(merged.base === undefined ? {} : { base: merged.base }),
-        ...(merged.head === undefined ? {} : { head: merged.head }),
-        ...(merged.summary === undefined ? {} : { summary: merged.summary }),
-      };
-    }
+    if (step.kind === "wait" && step.reason === "ci")
+      return this.stopped(item.id) ? undefined : step;
     if (merged.merged)
       recordConfirmedRemoteMerge(this.db, {
         itemId: item.id,
@@ -2974,14 +2962,14 @@ export class Orchestrator {
       );
     if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
     if (!merged.merged) {
-      if (unreadable) throw new Error(merged.message);
-      if (closeoutFailure !== null) {
-        const failure = closeoutFailure as CloseoutVerdict;
-        await this.askCloseoutHelp(item, failure.result, failure.summary);
+      if (step.kind === "unreadable") throw new Error(step.message);
+      if (step.kind === "ask_closeout" && closeoutFailure) {
+        await this.askCloseoutHelp(item, closeoutFailure.result, closeoutFailure.summary);
         return;
       }
       if (
-        merged.outcome === "conflict" &&
+        step.kind === "return" &&
+        step.reason === "rebase-conflict" &&
         this.returnToAgent(
           item,
           "rebase-conflict",
@@ -3000,22 +2988,21 @@ export class Orchestrator {
         return;
       if (merged.outcome === "ci_failed") {
         const checks = merged.failedChecks ?? [];
-        // Read on every round, so a changed setting applies to the next round of a running task.
-        const limit = this.ciFixAttempts();
         const round = (next: CiRound["next"], fix: number | null = null) =>
-          this.recordCiRound(item, merged.head ?? "", merged.checks, next, limit, fix);
+          this.recordCiRound(item, merged.head ?? "", merged.checks, next, ciFixLimit, fix);
         if (
+          step.kind === "return" &&
           this.returnToAgent(
             item,
             "ci-failed",
-            limit,
+            ciFixLimit,
             ciFixHandoff(checks),
-            (attempt) => ciFixRoundLine(checks, attempt, limit),
+            (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
             (_, attempt) => round("agent", attempt),
           )
         )
           return;
-        if (this.askCiHelp(item, ciFixQuestion(checks, limit, published.pull.url))) {
+        if (this.askCiHelp(item, ciFixQuestion(checks, ciFixLimit, published.pull.url))) {
           round("asked");
           await this.flush();
           return;
@@ -3028,19 +3015,8 @@ export class Orchestrator {
         merged.message ?? merged.outcome,
         `${item.id}:merge:${merged.outcome}`,
       );
-      if (
-        item.state === "merge_queue" &&
-        (merged.outcome === "sha_moved" || merged.outcome === "rejected")
-      ) {
-        if (!closeoutAfterUpdate) {
-          // Back to the CI wait: the next pass updates the branch onto main again.
-          return {
-            message: "Main moved again before the merge. Updating the branch and waiting for CI.",
-            reason: "branch_update",
-            ...(merged.base === undefined ? {} : { base: merged.base }),
-            ...(merged.head === undefined ? {} : { head: merged.head }),
-          };
-        }
+      if (step.kind === "wait") return step;
+      if (step.kind === "reverify") {
         applyWorkItemEvent(this.db, item.id, "main_moved");
         enqueueJobOnce(this.db, {
           queue: JOB_KIND.reverify,
@@ -3053,9 +3029,7 @@ export class Orchestrator {
       this.fail(
         item,
         "merge",
-        merged.outcome === "conflict" && this.rebaseReturns(item.id) >= MAX_REBASE_RETURNS
-          ? `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts to resolve the conflict.`
-          : (merged.message ?? merged.outcome),
+        step.kind === "failed" ? step.message : (merged.message ?? merged.outcome),
       );
       return;
     }
