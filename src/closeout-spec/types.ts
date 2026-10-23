@@ -246,6 +246,7 @@ export type EvidenceApproval = {
   approvedBy: string;
   /** ISO 8601 time of the approval. */
   approvedAt: string;
+  commit?: string;
 };
 
 /**

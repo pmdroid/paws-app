@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +12,7 @@ import {
   JobLoop,
   OutboxDispatcher,
   getRun,
+  getWorkItem,
   listEvidence,
   listJobs,
   listWorkItems,
@@ -21,6 +23,7 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
+import { createFakeGitHub } from "../src/github";
 import {
   createFakeTracker,
   createLinearFileTransfer,
@@ -30,19 +33,32 @@ import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import {
   findOpenQuestion,
   getQuestion,
+  getVisualReview,
+  rejectedEvidenceIds,
+  visualReviewContinueQuestion,
   VISUAL_REVIEW_ANSWERERS,
+  VISUAL_REVIEW_DESCRIBE,
+  VISUAL_REVIEW_ROUNDS,
   VISUAL_REVIEW_QUESTION,
   VISUAL_REVIEW_REMINDER,
   VISUAL_REVIEW_REMINDER_MS,
   VISUAL_REVIEW_WAIT,
 } from "../src/questions";
+import { githubClient } from "./e2e-harness";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const ASSET = "https://uploads.linear.app/workspace/evidence";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 
-const CLOSEOUT_POLICY = `specVersion: "0.1"
+const { privateKey } = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: "spki", format: "pem" },
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+});
+
+function closeoutPolicy(paths?: string[]): string {
+  return `specVersion: "0.1"
 items:
   - id: visual-proof
     kind: evidence
@@ -50,7 +66,17 @@ items:
     media: [image]
     minimum: 2
     approval: human
-`;
+${paths ? `    paths: ${JSON.stringify(paths)}\n` : ""}`;
+}
+
+type Step = Record<string, unknown>;
+
+function publishTwo(worktree: string, n: number): Step[] {
+  const names = [`shot-${2 * n - 1}.png`, `shot-${2 * n}.png`];
+  for (const name of names)
+    writeFileSync(path.join(worktree, name), Buffer.concat([PNG, Buffer.from(name)]));
+  return names.map((name) => ({ type: "publish_artifact", path: name, checkId: "visual-proof" }));
+}
 
 test("publishing the last required screenshot pauses the task and posts one question with the images", async () => {
   const f = await pausedForReview();
@@ -159,8 +185,145 @@ test("stopping the task ends the wait", async () => {
   }
 }, 90_000);
 
-async function pausedForReview() {
-  const layout = await repoLayout();
+test("Accept records the approval, passes the check and opens the pull request", async () => {
+  const f = await pausedForReview();
+  try {
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+    const wip = item.checkpoint?.wipCommit;
+    expect(wip).toMatch(/^[0-9a-f]{40}$/);
+
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(getVisualReview(f.db, open.id)).toMatchObject({
+      outcome: "accepted",
+      answeredBy: "delegator-1",
+      headCommit: wip,
+      evidenceIds: listEvidence(f.db, item.id).map((row) => row.id),
+    });
+    expect(getVisualReview(f.db, open.id)?.answeredAt).toBeNumber();
+
+    await f.driveUntil(() => f.github.opened.length > 0);
+    expect(f.github.opened).toHaveLength(1);
+    expect(f.prompts).toHaveLength(2);
+    expect(f.prompts[1]).toContain("The visual review of check visual-proof was accepted");
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)?.state).not.toBe("awaiting_input");
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+test("Request changes resumes the agent with the feedback, and new screenshots ask again", async () => {
+  const f = await pausedForReview();
+  try {
+    const first = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+
+    await f.orchestrator.onLinearEvent(prompted("Request changes", "delegator-1"));
+    expect(getQuestion(f.db, first.id)?.status).toBe("open");
+    expect(f.notes(VISUAL_REVIEW_DESCRIBE)).toBe(1);
+
+    await f.orchestrator.onLinearEvent(
+      prompted("Make the hint under Model shorter", "delegator-1", "activity:changes"),
+    );
+    expect(getVisualReview(f.db, first.id)).toMatchObject({
+      outcome: "changes_requested",
+      feedback: "Make the hint under Model shorter",
+    });
+    const before = listEvidence(f.db, item.id).map((row) => row.id);
+    expect([...rejectedEvidenceIds(f.db, item.id)].sort()).toEqual(before.sort());
+
+    await f.driveUntil(() => f.tracker.questions.length === 2);
+    expect(f.prompts[1]).toContain("Make the hint under Model shorter");
+    expect(f.prompts[1]).toContain('checkId "visual-proof"');
+    const second = f.tracker.questions[1]!;
+    expect(second.body).toContain("shot-3.png");
+    expect(second.body).toContain("shot-4.png");
+    expect(second.body).not.toContain("shot-1.png");
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    const rejected = rejectedEvidenceIds(f.db, item.id);
+    expect(
+      listEvidence(f.db, item.id)
+        .filter((row) => !rejected.has(row.id))
+        .map((row) => row.displayName),
+    ).toEqual(["shot-3.png", "shot-4.png"]);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+test("after three rounds of changes Paws asks whether to keep going instead of resuming", async () => {
+  const f = await pausedForReview();
+  try {
+    for (let round = 1; round <= VISUAL_REVIEW_ROUNDS; round++) {
+      await f.orchestrator.onLinearEvent(
+        prompted(`Change ${round}`, "delegator-1", `activity:change-${round}`),
+      );
+      if (round < VISUAL_REVIEW_ROUNDS)
+        await f.driveUntil(() => f.tracker.questions.length === round + 1);
+    }
+    await f.tickAll();
+    expect(f.prompts).toHaveLength(VISUAL_REVIEW_ROUNDS);
+    expect(f.tracker.questions).toHaveLength(VISUAL_REVIEW_ROUNDS + 1);
+    const asked = f.tracker.questions.at(-1)!;
+    expect(asked.body).toContain(visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS));
+    expect(asked.options).toEqual(["Keep going"]);
+    expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
+    expect(
+      listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume && job.finishedAt === null),
+    ).toEqual([]);
+
+    await f.orchestrator.onLinearEvent(
+      prompted("Keep going", "delegator-1", "activity:keep-going"),
+    );
+    await f.driveUntil(() => f.tracker.questions.length === VISUAL_REVIEW_ROUNDS + 2);
+    expect(f.prompts).toHaveLength(VISUAL_REVIEW_ROUNDS + 1);
+    expect(f.prompts.at(-1)).toContain(`Change ${VISUAL_REVIEW_ROUNDS}`);
+    expect(f.tracker.questions.at(-1)!.options).toEqual(["Accept", "Request changes"]);
+  } finally {
+    await f.close();
+  }
+}, 180_000);
+
+test("a change under the check's paths after acceptance asks again", async () => {
+  const f = await pausedForReview({
+    paths: ["web/**"],
+    implement(worktree, n) {
+      if (n <= 2) {
+        mkdirSync(path.join(worktree, "web"), { recursive: true });
+        writeFileSync(path.join(worktree, "web", "settings.html"), `<p>version ${n}</p>\n`);
+      }
+      if (n === 1) return publishTwo(worktree, 1);
+      return n === 3 ? publishTwo(worktree, 2) : [];
+    },
+  });
+  try {
+    const first = findOpenQuestion(f.db, "ses_1")!;
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    await f.driveUntil(() => f.tracker.questions.length === 2);
+
+    expect(getVisualReview(f.db, first.id)?.outcome).toBe("stale");
+    expect(f.github.opened).toHaveLength(0);
+    expect(f.prompts).toHaveLength(3);
+    expect(f.prompts[2]).toContain("changed after its visual review was accepted");
+    expect(f.tracker.questions[1]!.body).toContain("shot-3.png");
+    expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
+
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:accept-2"));
+    await f.driveUntil(() => f.github.opened.length > 0);
+    expect(f.github.opened).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+}, 180_000);
+
+async function pausedForReview(
+  options: {
+    paths?: string[];
+    implement?: (worktree: string, n: number, prompt: string) => Step[];
+  } = {},
+) {
+  const layout = await repoLayout(closeoutPolicy(options.paths));
   const tracker = Object.assign(
     createFakeTracker([
       {
@@ -215,25 +378,28 @@ async function pausedForReview() {
     },
     fetch: async () => new Response(null, { status: 200 }),
   });
+  const github = createFakeGitHub();
   const results: string[] = [];
+  const prompts: string[] = [];
   let implementResult = "";
+  const implement =
+    options.implement ??
+    ((worktree: string, n: number, prompt: string) =>
+      n === 1 || prompt.includes('publish_artifact and checkId "visual-proof"')
+        ? publishTwo(worktree, n)
+        : []);
   const launch: AgentLaunch = (input) => {
     const n = results.length + 1;
     const scriptPath = path.join(layout.root, `script-${n}.json`);
     const resultPath = path.join(layout.root, `result-${n}.json`);
     results.push(resultPath);
-    const steps =
-      input.purpose === "implement"
-        ? [
-            { type: "publish_artifact", path: "shot-1.png", checkId: "visual-proof" },
-            { type: "publish_artifact", path: "shot-2.png", checkId: "visual-proof" },
-            { type: "end", stopReason: "end_turn" },
-          ]
-        : [{ type: "end", stopReason: "end_turn" }];
-    if (input.purpose === "implement") implementResult = resultPath;
-    if (input.purpose === "implement")
-      for (const name of ["shot-1.png", "shot-2.png"])
-        writeFileSync(path.join(input.worktree, name), Buffer.concat([PNG, Buffer.from(name)]));
+    let steps: Step[] = [];
+    if (input.purpose === "implement") {
+      prompts.push(input.prompt);
+      if (prompts.length === 1) implementResult = resultPath;
+      steps = implement(input.worktree, prompts.length, input.prompt);
+    }
+    steps.push({ type: "end", stopReason: "end_turn" });
     writeFileSync(scriptPath, JSON.stringify({ model: "test-claude-model", steps }));
     return {
       command: process.execPath,
@@ -256,6 +422,12 @@ async function pausedForReview() {
       root: evidenceRoot,
     },
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: privateKey as string,
+      client: githubClient(layout.bare, github),
+    },
     launch,
   });
   await orchestrator.onLinearEvent(created());
@@ -268,6 +440,8 @@ async function pausedForReview() {
   return {
     db,
     tracker,
+    github,
+    prompts,
     uploads,
     orchestrator,
     runnerId: await runnerId,
@@ -277,6 +451,18 @@ async function pausedForReview() {
     async tickAll() {
       while ((await jobs.tick()) !== null);
       await outboxIdle(outbox);
+    },
+    async driveUntil(done: () => boolean) {
+      const deadline = Date.now() + 90_000;
+      while (!done()) {
+        if (Date.now() > deadline) throw new Error(JSON.stringify(listJobs(db)));
+        const state = listWorkItems(db)[0]!.state;
+        if (state === "failed" || state === "exhausted")
+          throw new Error(`task ${state}: ${JSON.stringify(listWorkItems(db)[0])}`);
+        const job = await jobs.tick();
+        await outboxIdle(outbox);
+        if (job === null) await Bun.sleep(20);
+      }
     },
     notes(body: string) {
       return tracker.progress.filter((update) => update.body === body).length;
@@ -344,7 +530,7 @@ function attachLease(db: Database, runId: string): string {
   return "runner-1";
 }
 
-async function repoLayout() {
+async function repoLayout(policy: string) {
   const root = await mkdtemp(path.join(tmpdir(), "paws-visual-review-"));
   const bare = path.join(root, "origin.git");
   const seed = path.join(root, "seed");
@@ -358,7 +544,7 @@ async function repoLayout() {
   await exec("git", ["-C", seed, "config", "user.name", "Paws Test"]);
   await exec("git", ["-C", seed, "config", "commit.gpgsign", "false"]);
   await mkdir(path.join(seed, ".agents"), { recursive: true });
-  await writeFile(path.join(seed, ".agents", "closeout.yaml"), CLOSEOUT_POLICY);
+  await writeFile(path.join(seed, ".agents", "closeout.yaml"), policy);
   await writeFile(path.join(seed, "README.md"), "paws demo\n");
   await exec("git", ["-C", seed, "add", "."]);
   await exec("git", ["-C", seed, "commit", "-m", "init"]);
