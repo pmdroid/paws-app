@@ -108,3 +108,38 @@ test("concurrent mirror refreshes fetch one at a time", async () => {
   );
   expect(overlapped).toBe(0);
 });
+
+test("a worktree waits for an in-flight mirror refresh before touching the mirror config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-wt-"));
+  roots.push(root);
+  const source = join(root, "checkout");
+  const pawsRoot = join(root, "home", ".paws");
+  await initRepo(source);
+  await ensureBareMirror({ remoteUrl: source, owner: "acme", repo: "demo", pawsRoot });
+  const fetching = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const refresh = ensureBareMirror({
+    remoteUrl: source,
+    owner: "acme",
+    repo: "demo",
+    pawsRoot,
+    networkGit: async (args) => {
+      fetching.resolve();
+      await release.promise;
+      return git(args);
+    },
+  });
+  await fetching.promise;
+  let added = false;
+  const worktree = createWorktree({ owner: "acme", repo: "demo", itemId: "ENG-8", pawsRoot }).then(
+    (created) => {
+      added = true;
+      return created;
+    },
+  );
+  await Promise.race([worktree, Bun.sleep(500)]);
+  expect(added).toBe(false);
+  release.resolve();
+  await refresh;
+  expect((await worktree).branch).toBe(branchName("ENG-8"));
+});
