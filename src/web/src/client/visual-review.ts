@@ -1,6 +1,6 @@
 import type { StatusItem, StatusSnapshot, StatusVisualReview } from "../contract";
 import { ago, esc, linkButtons } from "./format";
-import { evidenceFileUrl, evidencePageHref, thumbnailMedia } from "./evidence";
+import { evidenceFileUrl, evidencePageHref, evidenceVersions, thumbnailMedia } from "./evidence";
 
 const STATE_TAG: Record<StatusVisualReview["state"], [string, string]> = {
   waiting: ["warn", "Waiting"],
@@ -61,9 +61,10 @@ function roundEntry(
     review.state === "changes_requested"
       ? `<p class="muted">${next?.commit ? `Addressed in <span class="mono">${esc(next.commit.slice(0, 7))}</span>, sent as round ${next.round}.` : "The agent is addressing these changes."}</p>`
       : "";
-  const files = review.evidenceIds
-    .flatMap((id) => snapshot.evidence?.find((entry) => entry.id === id) ?? [])
-    .map((entry) => {
+  const files = evidenceVersions(
+    review.evidenceIds.flatMap((id) => snapshot.evidence?.find((entry) => entry.id === id) ?? []),
+  )
+    .map(({ latest: entry }) => {
       const mark = review.marks?.find((row) => row.evidenceId === entry.id);
       const marked = mark
         ? `<li><a class="evidence-thumb" href="${esc(evidenceFileUrl(mark.id, engineUrl))}" target="_blank" rel="noopener" aria-label="${esc(`Marked ${entry.displayName}`)}"><img src="${esc(evidenceFileUrl(mark.id, engineUrl))}" alt="${esc(`Marked ${entry.displayName}`)}" loading="lazy" decoding="async" class="block h-full w-full object-cover" /></a><span class="muted">${esc(entry.displayName)} · Marked by the reviewer</span></li>`

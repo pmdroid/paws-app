@@ -24,6 +24,21 @@ export function runEvidence(snapshot: StatusSnapshot, runId: string): StatusEvid
   return (snapshot.evidence ?? []).filter((entry) => attempts.includes(entry.runId));
 }
 
+export type EvidenceVersions = { latest: StatusEvidence; earlier: StatusEvidence[] };
+
+export function evidenceVersions(list: readonly StatusEvidence[]): EvidenceVersions[] {
+  const pieces = new Map<string, StatusEvidence[]>();
+  for (const entry of [...list].sort((a, b) => a.publishedAt.localeCompare(b.publishedAt))) {
+    const key = JSON.stringify([entry.checkId, entry.displayName]);
+    const copies = pieces.get(key) ?? [];
+    pieces.set(key, [...copies, entry]);
+  }
+  return [...pieces.values()].map((copies) => ({
+    latest: copies.at(-1)!,
+    earlier: copies.slice(0, -1).reverse(),
+  }));
+}
+
 export function filterEvidence(
   list: readonly StatusEvidence[],
   filter: EvidenceFilter,

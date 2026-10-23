@@ -57,6 +57,13 @@ export function listEvidence(db: Database, itemId: string): StoredEvidence[] {
     .all(itemId);
 }
 
+export function latestEvidence(rows: readonly StoredEvidence[]): StoredEvidence[] {
+  const latest = new Map<string, StoredEvidence>();
+  for (const row of rows)
+    latest.set(JSON.stringify([row.checkId, row.displayName, row.headCommit]), row);
+  return [...latest.values()];
+}
+
 export function setEvidenceAssetUrl(db: Database, id: string, assetUrl: string): void {
   db.query("UPDATE evidence SET asset_url = ? WHERE id = ?").run(assetUrl, id);
 }

@@ -208,6 +208,19 @@ describe("visual review on the run page", () => {
     );
   });
 
+  test("a round asked with republished copies shows only the latest copy of each screenshot", () => {
+    const { snapshot, runId } = fixture(
+      [round({ evidenceIds: ["shot-1", "copy-1", "shot-2"] })],
+      "awaiting_input",
+    );
+    const first = snapshot.evidence![0]!;
+    snapshot.evidence!.push({ ...first, id: "copy-1", publishedAt: "2026-10-23T09:30:00.000Z" });
+    const html = runPage(snapshot, runId);
+    expect(html.match(/shot-1\.png · Sent to Linear/g)).toHaveLength(1);
+    expect(html).toContain('href="/evidence/copy-1"');
+    expect(html).not.toContain('href="/evidence/shot-1"');
+  });
+
   test("a run without a visual review keeps its four steps", () => {
     const { snapshot, runId } = fixture([], "running");
     const html = runPage(snapshot, runId);

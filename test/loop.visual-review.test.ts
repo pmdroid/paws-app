@@ -511,6 +511,48 @@ test("an accepted review at an unchanged head stays accepted when the checkpoint
   }
 }, 120_000);
 
+const SCREENS = [
+  "Runner card with three sessions desktop.png",
+  "Runner card with three sessions 390.png",
+  "Idle runner card desktop.png",
+  "Idle runner card 390.png",
+];
+
+function publishScreensThreeTimes(worktree: string): Step[] {
+  return [1, 2, 3].flatMap((copy) =>
+    SCREENS.map((displayName, index) => {
+      const file = `screen-${index}-${copy}.png`;
+      writeFileSync(path.join(worktree, file), Buffer.concat([PNG, Buffer.from(file)]));
+      return { type: "publish_artifact", path: file, displayName, checkId: "visual-proof" };
+    }),
+  );
+}
+
+test("4 screens published 3 times ask one review of the 4 latest files, and Accept passes visual-proof", async () => {
+  const f = await pausedForReview({
+    implement: (worktree, n) => (n === 1 ? publishScreensThreeTimes(worktree) : []),
+  });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    const rows = listEvidence(f.db, item.id);
+    expect(rows).toHaveLength(12);
+    const latest = rows.slice(8).map((row) => row.id);
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    expect(getVisualReview(f.db, open.id)?.evidenceIds).toEqual(latest);
+    const [question] = f.tracker.questions;
+    expect(question!.body.match(/!\[/g)).toHaveLength(4);
+    for (const name of SCREENS) expect(question!.body).toContain(`![${name}](<${ASSET}>)`);
+
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    await f.driveUntil(() => f.github.opened.length > 0 || f.tracker.questions.length > 1);
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(f.github.opened).toHaveLength(1);
+    expect(f.github.opened[0]!.body.match(/!\[/g)).toHaveLength(4);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
 function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): void {
   const [shot] = listEvidence(db, itemId);
   db.run("UPDATE visual_review SET evidence_ids = ? WHERE question_id = ?", [
@@ -672,7 +714,7 @@ async function pausedForReview(
   const runnerId = leaseActiveRun(db);
   await running;
   await outboxIdle(outbox);
-  expect(listEvidence(db, listWorkItems(db)[0]!.id)).toHaveLength(2);
+  expect(listEvidence(db, listWorkItems(db)[0]!.id).length).toBeGreaterThanOrEqual(2);
   return {
     db,
     tracker,

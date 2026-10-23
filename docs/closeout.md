@@ -82,6 +82,8 @@ With it, `get_closeout` adds "Publish the screenshots, then Paws asks for a visu
 
 When the turn ends, Paws asks for the review in Linear with every file the check counts, and posts nothing else in the session until it is answered, so Linear keeps showing the Accept and Request changes buttons. The files are not posted on their own. If files were published after an accepted review, Paws asks a new round with all of them before it runs Closeout. An accepted review belongs to the candidate commit it was asked at.
 
+A file published again for the same check, with the same display name, at the same commit replaces the earlier copy. Paws counts, asks about and lists in the pull request only the latest copy, so a review never needs to cover a superseded one. The run page shows the latest copy of each file and folds the earlier ones, from this or an older commit, under Earlier versions. The stored files stay.
+
 Paws Closeout judges the check from an approval record: the task, the check id, the ids of the files the reviewer saw, who approved, and when. The check passes when an approval for this task and check names every file the check counts at the candidate commit. A file published after the review, for example after the reviewer asked for changes, is not covered, so the old approval no longer counts. Without a matching approval the check is `missing`: the decision is blocked, not rejected, so no fix round starts. Too few files still fail as above.
 
 ## Paws Closeout
