@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SerialMergeResult } from "../github";
-import { MAX_REBASE_RETURNS, serialMergeStep, type SerialMergeFacts } from "./merge-step";
+import { MAX_REBASE_RETURNS, serialMergeStep, type SerialMergeFacts } from "./step";
 
 function facts(result: Partial<SerialMergeResult>, rest: Partial<SerialMergeFacts> = {}) {
   return serialMergeStep({

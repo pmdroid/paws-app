@@ -324,6 +324,44 @@ export function extendJobLease(db: Database, job: Job, now: number, leaseMs: num
   return result.changes > 0;
 }
 
+export function parkLeasedJob(
+  db: Database,
+  job: Job,
+  input: { runAt: number; payload: unknown; attempts: number; now: number },
+): boolean {
+  const result = db.run(
+    `UPDATE job
+     SET status = 'pending',
+         run_at = CASE WHEN run_at > ? THEN MIN(run_at, ?) ELSE ? END,
+         attempts = ?,
+         locked_by = NULL,
+         locked_until = NULL,
+         payload = ?
+     WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
+    [
+      job.runAt,
+      input.runAt,
+      input.runAt,
+      Math.max(0, input.attempts),
+      JSON.stringify(input.payload),
+      job.id,
+      job.lockedBy,
+      input.now,
+    ],
+  );
+  return result.changes > 0;
+}
+
+export function retryLeasedJob(db: Database, job: Job, runAt: number, error: string): boolean {
+  const result = db.run(
+    `UPDATE job
+     SET status = 'pending', run_at = ?, locked_by = NULL, locked_until = NULL, last_error = ?
+     WHERE id = ? AND status = 'running' AND locked_by = ?`,
+    [runAt, error, job.id, job.lockedBy],
+  );
+  return result.changes > 0;
+}
+
 export function noteJobError(db: Database, id: number, message: string): void {
   db.run("UPDATE job SET last_error = ? WHERE id = ?", [message, id]);
 }
