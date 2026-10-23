@@ -93,7 +93,7 @@ test("a deferred remote run is lost, holds no runner slot, and its retry is a ne
   expect(result.heldSlots, result.detail).toBe(0);
 }, 60_000);
 
-test("a Linear 503 while the task is placed is retried and the task reaches Closeout", async () => {
+test("a Linear 503 while the task starts on its runner is retried and the task reaches Closeout", async () => {
   const result = await runRemoteFault("linear-503");
   expect(result.state, result.detail).toBe("merge_queue");
   expect(result.errors, result.detail).toEqual([]);
@@ -249,27 +249,7 @@ async function runRemoteFault(fault: Fault) {
     work,
     results,
     health,
-    placement: createRunnerPlacement({
-      db,
-      lifecycle: {
-        ...lifecycle,
-        async inspect(issueId, options) {
-          if (fault === "linear-503" && runner.faulty) {
-            runner.faultedAttempts++;
-            await createLinearClient({
-              auth: {
-                hasToken: () => true,
-                ensureFresh: async () => "synthetic-linear-token",
-                forceRefresh: async () => "synthetic-linear-token",
-              },
-              fetch: async () => new Response("", { status: 503 }),
-            }).query("query { viewer { id } }");
-          }
-          return lifecycle.inspect(issueId, options);
-        },
-      },
-      tracker: { listProjectMembers: async () => ["owner"] },
-    }),
+    placement: createRunnerPlacement({ db }),
     pollIntervalMs: 5,
     async fetchCandidate(candidate) {
       await git(["-C", candidate.worktree, "fetch", origin, candidate.candidateSha]);
@@ -282,6 +262,17 @@ async function runRemoteFault(fault: Fault) {
           "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES(?,?,?,'session',0,0,'{}',?)",
           [`helper-${runner.faultedAttempts}`, runnerId, workspace.id, Date.now() + 50],
         );
+      }
+      if (fault === "linear-503" && runner.faulty) {
+        runner.faultedAttempts++;
+        await createLinearClient({
+          auth: {
+            hasToken: () => true,
+            ensureFresh: async () => "synthetic-linear-token",
+            forceRefresh: async () => "synthetic-linear-token",
+          },
+          fetch: async () => new Response("", { status: 503 }),
+        }).query("query { viewer { id } }");
       }
       return { appId: "1", login: "paws[bot]", id: 1 };
     },

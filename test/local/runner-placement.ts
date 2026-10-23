@@ -16,7 +16,6 @@ import {
   syncWorkspaceMember,
   saveCheckpoint,
 } from "../../src/db";
-import { createFakeLinearIssueLifecycle } from "../../src/linear";
 import { createRunnerPlacement, type PlacementRequest } from "../../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import type { RunnerResult } from "../../src/runner-protocol";
@@ -74,6 +73,7 @@ export async function probeRunnerPlacement(
     owner,
     item.id,
   ]);
+  const users: Record<string, string> = { owner };
   for (const [id, user] of [
     ["own", "owner"],
     ["shared", "colleague"],
@@ -88,6 +88,7 @@ export async function probeRunnerPlacement(
             name: user!,
             email: `${user}@example.invalid`,
           });
+    users[user!] = userId;
     if (user !== "owner")
       syncWorkspaceMember(db, {
         workspaceId: workspace.id,
@@ -104,20 +105,10 @@ export async function probeRunnerPlacement(
     db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id!, id === "own" ? 0 : 1]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id!]);
   }
-  const issue = {
-    id: item.linearIssueId,
-    teamId: "team",
-    assigneeId: "owner",
-    delegateId: "app",
-    stateType: "started",
-    projectId: "project",
-  };
-  const lifecycle = createFakeLinearIssueLifecycle(issue);
-  let members = ["colleague"];
-  let membershipFailure = false;
+  const lead = (user: string) =>
+    db.run("UPDATE project_approval SET lead_user_id=? WHERE id='approval'", [users[user]!]);
+  lead("colleague");
   let installationObservation = now;
-  let observedTeam: string | undefined = "team";
-  let revokeDuringRead = false;
   const observeInstallation = (teamId: string) =>
     recordLinearInstallation(db, {
       organizationId: "org",
@@ -127,28 +118,7 @@ export async function probeRunnerPlacement(
       teamId,
       observedAtMs: ++installationObservation,
     });
-  const placement = createRunnerPlacement({
-    db,
-    lifecycle,
-    tracker: {
-      async listProjectMembers() {
-        if (revokeDuringRead)
-          revokeLinearInstallation(db, {
-            eventKey: "placement-revocation",
-            organizationId: "org",
-            oauthClientId: "app-client",
-            createdAtMs: ++installationObservation,
-          });
-        if (observedTeam !== undefined) {
-          observeInstallation(observedTeam);
-          observedTeam = undefined;
-        }
-        if (membershipFailure) throw new Error("Linear returned incomplete project membership");
-        return members;
-      },
-    },
-    now: () => now,
-  });
+  const placement = createRunnerPlacement({ db, now: () => now });
   const request: PlacementRequest = {
     itemId: item.id,
     profile: { agent: "codex", model: "implementation-model" },
@@ -165,7 +135,6 @@ export async function probeRunnerPlacement(
   ) => {
     const profile = { agent: "codex" as const, model };
     await placement.candidates({ ...request, purpose, role, profile });
-    observeInstallation("team");
     const commandId = workspaceId();
     placement.started({
       commandId,
@@ -202,16 +171,16 @@ export async function probeRunnerPlacement(
       sameAppUser: true,
       sameTeam: true,
     });
-    observedTeam = "other-team";
-    await assert.rejects(ids(), /Runner issue authority changed/);
+    observeInstallation("other-team");
+    await assert.rejects(ids(), /outside workspace access/);
     observeInstallation("team");
     assert.deepEqual(await ids(), ["own", "shared"]);
     observe("A changed installation team still fences selection", true, {
       teamChangeRejected: true,
     });
-    members = [];
+    lead("owner");
     assert.deepEqual(await ids(), ["own"]);
-    members = ["colleague"];
+    lead("colleague");
     db.run("UPDATE runner_policy SET sharing=0 WHERE runner_id='shared'");
     assert.deepEqual(await ids(), ["own"]);
     db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='shared'");
@@ -220,10 +189,10 @@ export async function probeRunnerPlacement(
       true,
       { first: "own", shared: "shared", outsidersExcluded: true },
     );
-    members = ["colleague", "pool"];
-    assert.deepEqual(await ids(), ["own", "api", "shared"]);
-    members = ["colleague"];
-    observe("Every shared host is offered to its project members after the owner's host", true, {
+    lead("pool");
+    assert.deepEqual(await ids(), ["own", "api"]);
+    lead("colleague");
+    observe("A shared host follows its project member after the owner's host", true, {
       shared: ["api", "shared"],
     });
     await placement.candidates(request);
@@ -274,14 +243,6 @@ export async function probeRunnerPlacement(
     observe("Selection grants are consumed once and cannot authorize another command", true, {
       duplicateDenied: true,
     });
-    membershipFailure = true;
-    assert.deepEqual(await ids(), ["own"]);
-    membershipFailure = false;
-    observe(
-      "Unverified project membership denies shared accounts without removing owner authority",
-      true,
-      { sharedDenied: true, ownAllowed: true },
-    );
     const quotaCommand = await start("own");
     assert.equal(
       placement.finished({
@@ -454,10 +415,15 @@ export async function probeRunnerPlacement(
       true,
       { persisted: true },
     );
-    revokeDuringRead = true;
+    revokeLinearInstallation(db, {
+      eventKey: "placement-revocation",
+      organizationId: "org",
+      oauthClientId: "app-client",
+      createdAtMs: ++installationObservation,
+    });
     await assert.rejects(ids(), /Runner (?:task|session authority) is unavailable/);
     assert.equal(getLinearSessionAccess(db, "session"), "revoked");
-    observe("App revocation during ownership reads still fences selection", true, {
+    observe("App revocation fences selection", true, {
       revoked: true,
     });
   } finally {

@@ -13,20 +13,31 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
-import { createFakeLinearIssueLifecycle, type LinearIssueOwnership } from "../src/linear";
 import {
   createRunnerPlacement,
   SESSION_GRACE_MS,
   type PlacementRequest,
 } from "../src/runner-placement";
+import { placementWaitMs } from "../src/runner-backend";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
-async function placeItem(
-  project: boolean,
-  bindTask = true,
-  duringSelection?: (issue: LinearIssueOwnership) => void,
-) {
+async function networkRequests(run: () => Promise<unknown>) {
+  const real = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = (async () => {
+    requests++;
+    throw new Error("Placement must not reach the network");
+  }) as unknown as typeof fetch;
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = real;
+  }
+  return requests;
+}
+
+async function placeItem(project: boolean, bindTask = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-placement-owner-"));
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -81,7 +92,7 @@ async function placeItem(
   db.run(
     `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at)
      VALUES('approval',?,'project',?,?,'placement','{}',?,?,?)`,
-    [workspace.id, owner, owner, now, now, now],
+    [workspace.id, owner, colleague, now, now, now],
   );
   db.run("UPDATE work_item SET owner_user_id=?, project_approval_id=? WHERE id=?", [
     owner,
@@ -101,23 +112,8 @@ async function placeItem(
     db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id, sharing]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id]);
   }
-  const lifecycle = createFakeLinearIssueLifecycle({
-    id: item.linearIssueId,
-    teamId: "team",
-    assigneeId: "colleague",
-    delegateId: "app",
-    stateType: "started",
-    projectId: "project",
-  });
   const placement = createRunnerPlacement({
     db,
-    lifecycle,
-    tracker: {
-      async listProjectMembers() {
-        duringSelection?.(lifecycle.issue);
-        return ["colleague", "pool"];
-      },
-    },
     now: () => clock,
   });
   return {
@@ -147,7 +143,7 @@ test("Runner placement uses actual ownership, explicit sharing, provider evidenc
   try {
     const observations: boolean[] = [];
     await probeRunnerPlacement(root, (_name, passed) => observations.push(passed));
-    expect(observations).toHaveLength(15);
+    expect(observations).toHaveLength(14);
     expect(observations.every(Boolean)).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -177,31 +173,7 @@ test("runner placement resolves its item through session_key alone", async () =>
 test("a project item runs on another project member's shared runner", async () => {
   const placed = await placeItem(true);
   try {
-    expect(await placed.ids()).toEqual(["own", "api", "shared"]);
-  } finally {
-    placed.db.close();
-    rmSync(placed.root, { recursive: true, force: true });
-  }
-});
-
-test("a state change during selection keeps the issue's runners", async () => {
-  const placed = await placeItem(true, true, (issue) => {
-    issue.stateType = "unstarted";
-  });
-  try {
-    expect(await placed.ids()).toEqual(["own", "api", "shared"]);
-  } finally {
-    placed.db.close();
-    rmSync(placed.root, { recursive: true, force: true });
-  }
-});
-
-test("a new delegate during selection still stops placement", async () => {
-  const placed = await placeItem(true, true, (issue) => {
-    issue.delegateId = "other-app";
-  });
-  try {
-    await expect(placed.ids()).rejects.toThrow("Runner issue ownership changed during selection");
+    expect(await placed.ids()).toEqual(["own", "shared"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -212,8 +184,8 @@ test("a continuing task lands on the runner of its last session, or elsewhere af
   const placed = await placeItem(true);
   try {
     const session = { session: { runnerId: "shared" } };
-    expect(await placed.ids()).toEqual(["own", "api", "shared"]);
-    expect(await placed.ids(session)).toEqual(["shared", "own", "api"]);
+    expect(await placed.ids()).toEqual(["own", "shared"]);
+    expect(await placed.ids(session)).toEqual(["shared", "own"]);
 
     const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
     placed.db.run(
@@ -225,10 +197,10 @@ test("a continuing task lands on the runner of its last session, or elsewhere af
       expect(await placed.ids(session)).toEqual(["shared"]);
       placed.tick(30_000);
     }
-    expect(await placed.ids(session)).toEqual(["own", "api", "shared"]);
+    expect(await placed.ids(session)).toEqual(["own", "shared"]);
 
     placed.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), run.id]);
-    expect(await placed.ids(session)).toEqual(["shared", "own", "api"]);
+    expect(await placed.ids(session)).toEqual(["shared", "own"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -239,10 +211,62 @@ test("a continuing task does not wait for an offline session runner", async () =
   const placed = await placeItem(true);
   try {
     placed.db.run("UPDATE runner SET last_seen_at=0 WHERE id='shared'");
-    expect(await placed.ids({ session: { runnerId: "shared" } })).toEqual(["own", "api"]);
-    expect(await placed.ids({ session: { runnerId: "api" } })).toEqual(["api", "own"]);
+    expect(await placed.ids({ session: { runnerId: "shared" } })).toEqual(["own"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
   }
+});
+
+test("a solo task lands only on its owner's runner without calling Linear", async () => {
+  const placed = await placeItem(false);
+  try {
+    expect(await networkRequests(async () => expect(await placed.ids()).toEqual(["own"]))).toBe(0);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a project task lands on a project member's shared runner without calling Linear", async () => {
+  const placed = await placeItem(true);
+  try {
+    expect(
+      await networkRequests(async () => expect(await placed.ids()).toEqual(["own", "shared"])),
+    ).toBe(0);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a task waiting ten minutes for its busy session runner never calls Linear", async () => {
+  const placed = await placeItem(true);
+  try {
+    const session = { session: { runnerId: "shared" } };
+    const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
+    placed.db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'shared',?,1,0,'busy',?,0)",
+      [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
+    );
+    const offers: string[][] = [];
+    const requests = await networkRequests(async () => {
+      for (let attempt = 0; attempt < 13; attempt++) {
+        offers.push(await placed.ids(session));
+        placed.tick(placementWaitMs(attempt));
+      }
+    });
+    expect(offers.slice(0, 5)).toEqual(Array(5).fill(["shared"]));
+    expect(offers.slice(5)).toEqual(Array(8).fill(["own", "shared"]));
+    expect(requests).toBe(0);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a task waiting for a runner retries after 5 s, 15 s, 30 s, then every minute", () => {
+  expect(Array.from({ length: 6 }, (_, attempt) => placementWaitMs(attempt))).toEqual([
+    5_000, 15_000, 30_000, 60_000, 60_000, 60_000,
+  ]);
 });

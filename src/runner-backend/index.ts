@@ -65,6 +65,8 @@ class RunnerUnavailableError extends Error {
 }
 
 const CAPACITY_WAIT_MS = 60 * 60_000;
+const DEFAULT_POLL_INTERVAL_MS = 250;
+const PLACEMENT_WAIT_POLLS = [20, 60, 120, 240];
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
 const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
@@ -167,6 +169,10 @@ function snapshotCommit(workspace: string, repository: { owner: string; repo: st
   }
 }
 
+export function placementWaitMs(attempt: number, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS) {
+  return pollIntervalMs * PLACEMENT_WAIT_POLLS[Math.min(attempt, PLACEMENT_WAIT_POLLS.length - 1)]!;
+}
+
 export function createRemoteAgentRunner(options: {
   db: Database;
   work: RunnerWork;
@@ -194,7 +200,7 @@ export function createRemoteAgentRunner(options: {
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
-  const interval = options.pollIntervalMs ?? 250;
+  const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const reservations = new Map<string, string>();
   function usageLimitReset(agent: string, sessionId: string | null): number | null {
     const runnerInScope = `r.status='active' AND r.revoked_at IS NULL AND r.workspace_id IN
@@ -222,7 +228,7 @@ export function createRemoteAgentRunner(options: {
     limit?: UsageLimit,
   ) {
     const capacityDeadline = performance.now() + CAPACITY_WAIT_MS;
-    for (;;) {
+    for (let attempt = 0; ; attempt++) {
       const rejected: string[] = [];
       const offered: string[] = [];
       const selected = await place(itemId, placement, rejected, offered);
@@ -245,7 +251,7 @@ export function createRemoteAgentRunner(options: {
               .get() !== null)) &&
         performance.now() < capacityDeadline
       ) {
-        await delay(interval, undefined, { signal: placement.signal });
+        await delay(placementWaitMs(attempt, interval), undefined, { signal: placement.signal });
         continue;
       }
       if (agent && limit && limit.resumeAt > now())
