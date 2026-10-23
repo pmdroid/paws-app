@@ -8,6 +8,7 @@ import {
   type LinearEventAction,
 } from "./events";
 import type { InboxStore } from "./inbox";
+import type { IntakeQueue } from "./intake-queue";
 import { isRecord, readNumber, readString } from "./read";
 
 export const TIMESTAMP_WINDOW_MS = 60_000;
@@ -35,6 +36,8 @@ export type SignatureInput = {
 export type LinearWebhookDeps = {
   store: InboxStore;
   onEvent?: (event: AcceptedLinearEvent) => void | boolean | Promise<void | boolean>;
+  /** Takes `created` and `prompted` events. The handler only records them and wakes it. */
+  intake?: IntakeQueue;
   now?: () => number;
 };
 
@@ -75,7 +78,8 @@ export function checkLinearSignature(input: SignatureInput): SignatureCheck {
 
 /**
  * Verify, dedupe, commit, then 200. The follow-up (first activity, intake) is not awaited,
- * so the ack stays inside Linear's 5 second budget.
+ * so the ack stays inside Linear's 5 second budget. With an intake queue, `created` and
+ * `prompted` events post their first activity at once and wait for the queue's worker.
  */
 export async function handleLinearWebhook(
   request: Request,
@@ -108,7 +112,10 @@ export async function handleLinearWebhook(
   }
   verifiedAt.set(deps.store, deps.now?.() ?? Date.now());
   const committed = deps.store.commit(event);
-  if (committed.inserted || !committed.handled) schedule(deps, event);
+  if (deps.intake?.accepts(event)) {
+    if (committed.inserted) deps.intake.arrive(event);
+    else if (!committed.handled) deps.intake.wake();
+  } else if (committed.inserted || !committed.handled) schedule(deps, event);
   return Response.json({ ok: true, duplicate: !committed.inserted });
 }
 

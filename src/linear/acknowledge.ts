@@ -1,5 +1,6 @@
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
+import { LinearRateLimitError } from "./budget";
 import type { AcceptedLinearEvent } from "./events";
 
 /** Posted before intake so a slow Linear read still meets the 10 second first-activity rule. */
@@ -18,7 +19,14 @@ export async function acknowledgeNewSession(
   event: AcceptedLinearEvent,
   followUp?: (event: AcceptedLinearEvent) => Promise<void | boolean>,
   initialRequest?: TrackerRequestOptions,
-  options: { acknowledged?: Set<string>; signal?: AbortSignal } = {},
+  options: {
+    acknowledged?: Set<string>;
+    signal?: AbortSignal;
+    /** The first activity for this event was posted when it arrived, before the queue ran it. */
+    acknowledgedOnArrival?: boolean;
+    /** False on a retry, so a failure is reported in Linear once, not on every attempt. */
+    reportFailure?: boolean;
+  } = {},
 ): Promise<void | boolean> {
   options.signal?.throwIfAborted();
   if (event.signal === "stop") {
@@ -46,7 +54,11 @@ export async function acknowledgeNewSession(
   try {
     const accepted = await followUp(event);
     options.signal?.throwIfAborted();
-    if (accepted === false && first && event.sessionId !== null)
+    if (
+      accepted === false &&
+      (first || (options.acknowledgedOnArrival === true && event.action === "created")) &&
+      event.sessionId !== null
+    )
       await tracker.postProgress(
         {
           sessionId: event.sessionId,
@@ -69,7 +81,12 @@ export async function acknowledgeNewSession(
     const waiting =
       error instanceof LinearIntakePendingError || error instanceof RunnerSlotsBusyError;
     console.error(`linear session follow-up failed: ${message}`);
-    if (event.sessionId !== null && !(error instanceof UserFacingError && error.reported)) {
+    if (
+      event.sessionId !== null &&
+      options.reportFailure !== false &&
+      !(error instanceof LinearRateLimitError) &&
+      !(error instanceof UserFacingError && error.reported)
+    ) {
       try {
         await tracker.postProgress(
           {

@@ -1,14 +1,14 @@
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { LinearCommand } from "../core";
-import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
 import { callerClient, createLinearClient, defaultCallerClient } from "./graphql";
-import { createLinearLedger, linearCaller, type LinearLedger, type LinearUsage } from "./budget";
+import { createLinearLedger, type LinearLedger, type LinearUsage } from "./budget";
 import { createInboxStore } from "./inbox";
+import { createLinearIntake, type IntakeQueue } from "./intake-queue";
 import {
   createLinearAuth,
   readLinearEnv,
@@ -111,20 +111,23 @@ export function openLinear(options: {
           // Closeout videos embed in Linear up to 50 MB.
           maxBytes: 50 * 1024 * 1024,
         });
-  const onEvent =
+  const intake =
     tracker === null && options.beforeEvent === undefined
       ? undefined
-      : shareEvents(
+      : createLinearIntake({
+          store,
           tracker,
-          options.followUp,
-          options.beforeEvent,
-          options.progressReporter,
+          followUp: options.followUp,
+          beforeEvent: options.beforeEvent,
+          progressReporter: options.progressReporter,
           signal,
-        );
+          ledger,
+        });
+  const onEvent = intake?.onEvent;
   let running: LinearRunning | null = null;
   return {
     memberships: client === null ? null : createLinearMembershipReads(callerClient(client, "auth")),
-    webhook: { store, onEvent },
+    webhook: { store, onEvent, intake: intake?.queue },
     tracker,
     startSession:
       client === null || onEvent === undefined
@@ -157,6 +160,7 @@ export function openLinear(options: {
         ? startPoller({
             auth,
             onEvent,
+            intake: intake?.queue,
             store,
             tunnel,
             fetchImpl: options.fetch,
@@ -168,82 +172,28 @@ export function openLinear(options: {
               options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
           })
         : null;
+      if (poller !== null) intake?.queue.wake();
       running = {
-        catchUp: () => poller?.pollNow() ?? Promise.resolve(),
+        async catchUp() {
+          await poller?.pollNow();
+          intake?.queue.wake();
+          await intake?.queue.idle();
+        },
         tunnelUp: () => tunnel.isUp(),
         tunnelRequested: tunnel.requested,
         tunnelUrl: tunnel.url,
         async stop() {
           stopping.abort();
           const polling = poller?.stop();
-          const events = onEvent?.close();
+          const queued = intake?.queue.stop();
           tunnel.stop();
-          await Promise.all([polling, events]);
+          await Promise.all([polling, queued]);
+          await onEvent?.close();
         },
       };
       return running;
     },
   };
-}
-
-function initialActivityRequest(event: AcceptedLinearEvent): TrackerRequestOptions | undefined {
-  return event.action === "created" && event.sessionId !== null && event.signal !== "stop"
-    ? { signal: AbortSignal.timeout(10_000) }
-    : undefined;
-}
-
-function shareEvents(
-  tracker: TrackerAdapter | null,
-  followUp:
-    | ((event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void | boolean>)
-    | undefined,
-  beforeEvent:
-    | ((event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>)
-    | undefined,
-  progressReporter: ((event: AcceptedLinearEvent) => TrackerAdapter["postProgress"]) | undefined,
-  signal: AbortSignal,
-): ((event: AcceptedLinearEvent) => Promise<void | boolean>) & { close(): Promise<void> } {
-  const inflight = new Map<string, Promise<void | boolean>>();
-  const acknowledged = new Set<string>();
-  let closed = false;
-  const deliver = (event: AcceptedLinearEvent) => {
-    if (closed) return Promise.reject(new Error("Linear event delivery is shutting down"));
-    const existing = inflight.get(event.dedupeKey);
-    if (existing !== undefined) return existing;
-    const request = initialActivityRequest(event);
-    const reportProgress = progressReporter?.(event);
-    const work = linearCaller("events", async () => {
-      signal.throwIfAborted();
-      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) return false;
-      signal.throwIfAborted();
-      request?.signal?.throwIfAborted();
-      if (tracker === null) {
-        if (event.signal === "stop") {
-          return followUp?.(event, null);
-        }
-        throw new Error("Linear is not connected.");
-      }
-      const acknowledger = reportProgress ? { ...tracker, postProgress: reportProgress } : tracker;
-      return acknowledgeNewSession(
-        acknowledger,
-        event,
-        (accepted) =>
-          linearCaller("intake", () => followUp?.(accepted, tracker) ?? Promise.resolve()),
-        request,
-        { acknowledged, signal },
-      );
-    }).finally(() => {
-      inflight.delete(event.dedupeKey);
-    });
-    inflight.set(event.dedupeKey, work);
-    return work;
-  };
-  return Object.assign(deliver, {
-    async close() {
-      closed = true;
-      await Promise.allSettled([...inflight.values()]);
-    },
-  });
 }
 
 function openTunnel(options: {
@@ -267,6 +217,7 @@ function openTunnel(options: {
 function startPoller(options: {
   auth: LinearAuth;
   onEvent: ((event: AcceptedLinearEvent) => Promise<void | boolean>) | undefined;
+  intake: IntakeQueue | undefined;
   store: ReturnType<typeof createInboxStore>;
   tunnel: Tunnel;
   fetchImpl: FetchLike | undefined;
@@ -289,6 +240,7 @@ function startPoller(options: {
     }),
     store: options.store,
     onEvent: options.onEvent,
+    intake: options.intake,
     db: options.db,
     hot: () => linearWorkIsHot(options.db),
     submitCommand: options.submitCommand,

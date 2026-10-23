@@ -58,7 +58,16 @@ export type {
 } from "./repositories";
 export { isMergeConflictRequest } from "./merge-conflict-request";
 export { createInboxStore } from "./inbox";
-export type { CommitResult, InboxStore } from "./inbox";
+export type { CommitResult, InboxStore, QueuedLinearEvent } from "./inbox";
+export {
+  INTAKE_CONCURRENCY,
+  INTAKE_RETRY_MS,
+  createIntakeQueue,
+  createLinearIntake,
+  intakeRetryMs,
+  isQueuedIntake,
+} from "./intake-queue";
+export type { IntakeQueue, LinearEventDelivery } from "./intake-queue";
 export {
   LINEAR_ACTOR,
   LINEAR_APP_SCOPES,
