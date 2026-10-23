@@ -2349,4 +2349,11 @@ CREATE INDEX inbox_event_issue ON inbox_event(json_extract(payload,'$.data.id'),
   WHERE json_extract(payload,'$.type')='Issue';
 `,
   },
+  {
+    id: "115_question_closeout_help_kind",
+    sql: `
+UPDATE question SET kind = 'closeout-help'
+WHERE id IN (SELECT question_id FROM closeout_recovery);
+`,
+  },
 ];

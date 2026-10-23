@@ -167,6 +167,7 @@ export {
   appendCloseoutOutput,
   ensureCloseoutProgress,
   finishCloseoutProgress,
+  latestCloseoutIdentity,
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,

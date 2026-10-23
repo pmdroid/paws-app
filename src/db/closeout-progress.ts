@@ -286,6 +286,18 @@ export function finishCloseoutProgress(
   );
 }
 
+export function latestCloseoutIdentity(
+  db: Database,
+  itemId: string,
+): { head: string; policyDigest: string } | null {
+  return db
+    .query<{ head: string; policyDigest: string }, [string]>(
+      `SELECT head, policy_digest AS policyDigest FROM closeout_progress
+       WHERE item_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
+    )
+    .get(itemId);
+}
+
 export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
   const runs = db
     .query<ProgressSql, []>("SELECT * FROM closeout_progress ORDER BY updated_at, id")

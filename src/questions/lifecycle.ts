@@ -1,5 +1,13 @@
 import type { Database } from "bun:sqlite";
-import { enqueueOutboxOnce, getWorkItem, immediate, journal } from "../db";
+import {
+  enqueueOutboxOnce,
+  getWorkItem,
+  immediate,
+  journal,
+  latestCloseoutIdentity,
+  listCloseoutRecoveries,
+  type WorkItemRecord,
+} from "../db";
 import type { QuestionOption } from "./channel";
 import { elicitationBody } from "./note";
 import {
@@ -31,11 +39,13 @@ export type AnswerOutcome =
 
 export type AnswerEffects = Partial<Record<QuestionKind, (question: StoredQuestion) => void>>;
 
-const SUPERSEDES: Record<QuestionKind, boolean> = {
-  agent: false,
-  clarification: false,
-  repository: false,
-  "runner-wait": true,
+const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
+  agent: null,
+  clarification: null,
+  repository: null,
+  "runner-wait": "session",
+  "closeout-help": "item",
+  "ci-help": "item",
 };
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);
@@ -55,11 +65,13 @@ export function ask(
   return immediate(db, () => {
     const now = input.now ?? Date.now();
     const waits = findOpenQuestion(db, asker.sessionId) !== null;
-    if (waits && SUPERSEDES[kind])
+    const scope = SUPERSEDES[kind];
+    if (waits && scope !== null)
       db.run(
         `UPDATE question SET cancelled_at = ?
-         WHERE session_id = ? AND kind = ? AND status = 'queued' AND cancelled_at IS NULL`,
-        [now, asker.sessionId, kind],
+         WHERE ${scope === "item" ? "item_id" : "session_id"} = ? AND kind = ?
+           AND status = 'queued' AND cancelled_at IS NULL`,
+        [now, scope === "item" ? asker.itemId : asker.sessionId, kind],
       );
     const inserted = insertQuestion(db, {
       ...asker,
@@ -183,6 +195,23 @@ function staleReason(db: Database, question: StoredQuestion): string | null {
     return "its run is no longer current";
   if (item.sessionKey !== question.sessionId && item.linearIssueId !== question.sessionId)
     return "its session moved";
+  if (question.kind === "closeout-help") return closeoutCandidateMoved(db, question, item);
+  return null;
+}
+
+function closeoutCandidateMoved(
+  db: Database,
+  question: StoredQuestion,
+  item: WorkItemRecord,
+): string | null {
+  const recovery = listCloseoutRecoveries(db, item.id).find(
+    (entry) => entry.questionId === question.id,
+  );
+  if (recovery === undefined || recovery.head === "") return null;
+  if (item.checkpoint?.wipCommit !== recovery.head) return "its candidate moved";
+  const latest = latestCloseoutIdentity(db, item.id);
+  if (latest?.head === recovery.head && latest.policyDigest !== recovery.policyDigest)
+    return "its Closeout policy changed";
   return null;
 }
 

@@ -3403,7 +3403,13 @@ export class Orchestrator {
       await this.flush();
       return accepted ? "answered" : "rejected";
     }
-    if (!canAnswer({ kind: recovery ? "closeout-bypass" : open.kind }, user)) return "rejected";
+    if (
+      !canAnswer(
+        { kind: recovery || open.kind === "closeout-help" ? "closeout-bypass" : open.kind },
+        user,
+      )
+    )
+      return "rejected";
     if (open.kind === "runner-wait") {
       const outcome = answerAsked(
         this.db,
