@@ -333,6 +333,46 @@ test("repeated task access checks within the cache window read Linear once", asy
   expect(f.stopped).toEqual([]);
 });
 
+test("a task that runs 50 git operations reads Linear task access once", async () => {
+  const f = await fixture(true);
+  const signal = new AbortController().signal;
+  await f.gate.assert(f.item, signal);
+  const once = linearReads(f);
+  await f.gate.prepare(f.item, signal);
+  for (let i = 0; i < 50; i++) {
+    f.clock.now += 60_000;
+    await f.gate.assert(f.item, signal);
+    await f.gate.assertDelivery("session", signal, { itemId: f.item.id, isCurrent: () => true });
+  }
+  expect(linearReads(f)).toBe(once);
+  expect(f.lifecycle.started.map((input) => input.issueId)).toEqual(["child", "parent"]);
+  expect(f.stopped).toEqual([]);
+});
+
+test("an undelegation webhook stops the task before its next git operation", async () => {
+  const f = await fixture(true);
+  const signal = new AbortController().signal;
+  await f.gate.prepare(f.item, signal);
+  f.clock.now += 60 * 60_000;
+  await f.gate.assert(f.item, signal);
+  f.lifecycle.issue.delegateId = null;
+  f.gate.invalidate({ issueId: "parent" });
+  await expect(f.gate.assert(f.item, signal)).rejects.toThrow("removed");
+  expect(f.stopped).toEqual(["session"]);
+});
+
+test("a session stop webhook stops the task before its next git operation without reading Linear", async () => {
+  const f = await fixture(true);
+  const signal = new AbortController().signal;
+  await f.gate.prepare(f.item, signal);
+  await f.gate.assert(f.item, signal);
+  const before = linearReads(f);
+  advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now });
+  f.gate.invalidate({ sessionId: "session" });
+  await expect(f.gate.assert(f.item, signal)).rejects.toThrow("stopped or superseded");
+  expect(linearReads(f)).toBe(before);
+});
+
 test("an undelegation invalidates the cached access and the re-read stops the task", async () => {
   const f = await fixture(true);
   await f.gate.prepare(f.item, new AbortController().signal);
