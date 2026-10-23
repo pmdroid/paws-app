@@ -190,6 +190,24 @@ export async function changedPaths(
   return { ok: true, paths: text.split("\0").filter((path) => path.length > 0) };
 }
 
+export async function changedLines(
+  cwd: string,
+  base: string,
+  head: string,
+  env: Record<string, string>,
+): Promise<number | undefined> {
+  const result = await git(cwd, ["diff", "--numstat", "--no-renames", base, head, "--"], env);
+  if (!result.ok) return undefined;
+  return result.stdout
+    .toString("utf8")
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .reduce((total, line) => {
+      const [added, removed] = line.split("\t");
+      return total + (Number(added) || 1) + (Number(removed) || 0);
+    }, 0);
+}
+
 export function pawsHome(explicit?: string): string {
   if (explicit !== undefined && explicit.length > 0) return explicit;
   const fromEnv = process.env.PAWS_HOME;

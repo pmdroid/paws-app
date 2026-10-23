@@ -5,6 +5,7 @@ import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import type {
   PolicyCommand,
   EvidenceApprovalMode,
+  ReviewScope,
   EvidenceMedia,
   PolicyDocument,
   PolicyEvidence,
@@ -202,6 +203,10 @@ function decodeItem(value: unknown): PolicyItem {
       independence: decodeIndependence(value.independence),
       failOn: expectSeverity(value.failOn),
     };
+    if (value.scope !== undefined) item.scope = expectReviewScope(value.scope);
+    if (value.parallel !== undefined) item.parallel = value.parallel === true;
+    if (value.minChangedLines !== undefined)
+      item.minChangedLines = expectInt(value.minChangedLines);
     if (paths !== undefined) item.paths = paths;
     return item;
   }
@@ -214,6 +219,11 @@ function decodeItem(value: unknown): PolicyItem {
     if (paths !== undefined) item.paths = paths;
     return item;
   }
+  throw new Error("document does not match the schema");
+}
+
+function expectReviewScope(value: unknown): ReviewScope {
+  if (value === "candidate" || value === "diff") return value;
   throw new Error("document does not match the schema");
 }
 

@@ -42,6 +42,7 @@ export type {
   PolicyLoadResult,
   PolicyPaths,
   PolicyReview,
+  ReviewScope,
   PolicySetupStep,
   PolicySource,
   ProducerIdentity,

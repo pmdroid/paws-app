@@ -82,6 +82,7 @@ export type EvaluateRequest = {
   task?: string;
   candidate: CandidateIdentity;
   changedPaths?: readonly string[] | null;
+  changedLines?: number;
   retryBaseline?: readonly string[];
   evidenceError?: string;
   policyLoadError?: string;
@@ -218,6 +219,18 @@ function judgeItem(
     if (!anyPathMatches(paths, request.changedPaths)) {
       return row(item, "skipped", "no changed path matches");
     }
+  }
+  if (
+    isReview(item) &&
+    item.minChangedLines !== undefined &&
+    request.changedLines !== undefined &&
+    request.changedLines < item.minChangedLines
+  ) {
+    return row(
+      item,
+      "skipped",
+      `${request.changedLines} changed lines, under minChangedLines ${item.minChangedLines}`,
+    );
   }
   if (isUnsupported(item)) {
     return row(item, "unsupported", `kind ${item.kind} is not supported`);
