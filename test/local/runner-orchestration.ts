@@ -526,6 +526,7 @@ export async function probeRunnerOrchestration(
                       exitCode: failing && id === "check" ? 1 : 0,
                       timedOut: false,
                       durationMs: 42,
+                      timeoutSeconds: 5,
                       stdout:
                         failing && id === "check"
                           ? `RUNNER_CHECK_FAILED on ${head}\n`
@@ -689,6 +690,7 @@ export async function probeRunnerOrchestration(
                           exitCode: 0,
                           timedOut: false,
                           durationMs: 42,
+                          timeoutSeconds: 5,
                           stdout: `remote ${id} output\n`,
                           stderr: "",
                           truncated: false,

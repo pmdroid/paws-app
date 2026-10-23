@@ -586,6 +586,7 @@ function passedReport(head: string): string {
           exitCode: 0,
           timedOut: false,
           durationMs: 1,
+          timeoutSeconds: 5,
           stdout: "",
           stderr: "",
           truncated: false,
