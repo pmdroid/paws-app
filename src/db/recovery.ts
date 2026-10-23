@@ -37,6 +37,7 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
     for (const item of items) {
       if (hasPendingAnswerResume(db, item.id)) continue;
+      if (hasPendingResume(db, item.id, "transient_failure")) continue;
       const decision = decideStartup({
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
@@ -44,9 +45,14 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
         runnerHoldsWork: runnerHoldsWork(db, item, now),
         ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
       });
-      applyDecision(db, item, decision, now, {
-        ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
-      });
+      const followed =
+        decision.type === "resume" &&
+        decision.reattach === true &&
+        hasPendingResume(db, item.id, "process_restart");
+      if (!followed)
+        applyDecision(db, item, decision, now, {
+          ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
+        });
       decisions.push(decision);
     }
     for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
@@ -65,6 +71,17 @@ function hasPendingAnswerResume(db: Database, itemId: string): boolean {
          AND json_extract(payload, '$.itemId') = ?`,
       )
       .get(itemId) !== null
+  );
+}
+
+function hasPendingResume(db: Database, itemId: string, reason: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM job WHERE queue = ? AND status = 'pending'
+         AND json_extract(payload, '$.itemId') = ? AND json_extract(payload, '$.reason') = ?`,
+      )
+      .get(JOB_KIND.resume, itemId, reason) !== null
   );
 }
 
