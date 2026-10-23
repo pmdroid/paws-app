@@ -266,6 +266,8 @@ function fixture() {
         "secret",
         {
           ...linear.webhook,
+          // Deliver end to end through `onEvent`, so the test can await its outcome.
+          intake: undefined,
           onEvent(event) {
             pending = Promise.resolve(linear.webhook.onEvent!(event));
             return pending;
