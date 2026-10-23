@@ -15,11 +15,13 @@ import {
   skillContentHash,
   skillManifestName,
   SkillError,
+  skillPath,
+  skillSubfolder,
   validSkillName,
   writeSkillBundle,
   type SkillFiles,
 } from "./bundle";
-import type { SkillFolder } from "./discover";
+import { skillFolders, type SkillFolder } from "./discover";
 import type { SkillRequest, SkillResolver } from "./resolve";
 
 export type SkillRegistry = {
@@ -61,19 +63,47 @@ export async function addSkill(
 export type FoundSkill = SkillFolder & { added: boolean };
 
 export async function findSkills(
-  _registry: SkillRegistry,
-  _request: SkillRequest,
+  registry: SkillRegistry,
+  request: SkillRequest,
 ): Promise<FoundSkill[]> {
-  return [];
+  const resolved = await registry.resolver.resolve(request, registry.signal);
+  return skillFolders(resolved.files, resolved.suggestedName).map((skill) => {
+    const name = skillName(skill.name);
+    const existing = getSkill(registry.db, name);
+    return { ...skill, name, added: existing !== null && existing.removedAt === null };
+  });
 }
 
 export async function addSkills(
-  _registry: SkillRegistry,
-  _request: SkillRequest,
-  _paths: readonly string[],
-  _options: { agents?: readonly string[] } = {},
+  registry: SkillRegistry,
+  request: SkillRequest,
+  paths: readonly string[],
+  options: { agents?: readonly string[] } = {},
 ): Promise<SkillPin[]> {
-  return [];
+  const agents = skillAgents(options.agents);
+  if (paths.length === 0) throw new SkillError("Choose at least one skill to add.");
+  if (paths.some((path) => path !== "" && skillPath(path) !== path))
+    throw new SkillError("The subfolder must be a relative path.");
+  const resolved = await registry.resolver.resolve(request, registry.signal);
+  const pins: SkillPin[] = [];
+  for (const path of paths) {
+    const subfolder = [resolved.source.subfolder, path].filter(Boolean).join("/");
+    const files = skillSubfolder(resolved.files, path || undefined);
+    const name = chooseName(undefined, files, path.split("/").at(-1) || resolved.suggestedName);
+    pins.push(
+      await pin(
+        registry,
+        {
+          name,
+          source: subfolder ? { ...resolved.source, subfolder } : resolved.source,
+          version: resolved.version,
+          agents,
+        },
+        files,
+      ),
+    );
+  }
+  return pins;
 }
 
 /** Pin an uploaded folder. Its version is the checksum of its contents. */
@@ -133,12 +163,16 @@ function activeSkill(db: Database, name: string): SkillPin {
   return skill;
 }
 
-function chooseName(requested: string | undefined, files: SkillFiles, fallback: string): string {
-  const name = (requested?.trim() || skillManifestName(files) || fallback)
+function skillName(text: string): string {
+  return text
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^[^a-z0-9]+/, "")
     .slice(0, 64);
+}
+
+function chooseName(requested: string | undefined, files: SkillFiles, fallback: string): string {
+  const name = skillName(requested?.trim() || skillManifestName(files) || fallback);
   if (!validSkillName(name)) throw new SkillError("Name the skill with letters, digits, - or _.");
   return name;
 }

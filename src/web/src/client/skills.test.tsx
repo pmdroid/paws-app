@@ -339,11 +339,11 @@ describe("skills found in a repository", () => {
   test("a skill that is already added says so and stays unchecked", () => {
     const html = found(several);
     expect(html).toMatch(/<b>polish<\/b><span[^>]*>Already added<\/span>/);
-    expect(html).toMatch(/name="skill-pick" disabled="" value=""/);
+    expect(html).toMatch(/<input[^>]*disabled=""[^>]*name="skill-pick" value=""/);
     expect(found([impeccable, several[2]!])).toMatch(
       /name="skill-pick" checked="" value="\.claude\/skills\/impeccable"/,
     );
-    expect(found([{ ...impeccable, added: true }])).not.toContain("checked");
+    expect(found([{ ...impeccable, added: true }])).not.toContain('name="skill-pick" checked');
   });
 
   test("no skill found asks for the folder and opens the subfolder field", () => {
@@ -365,7 +365,9 @@ describe("skills found in a repository", () => {
       expect(pick).toContain("[overflow-wrap:anywhere]");
     }
     for (const copy of classNames(html, "skill-pick-copy")) expect(copy).toContain("min-w-0");
-    expect(html).toMatch(/<b>polish<\/b><span class="[^"]*whitespace-normal[^"]*">Already added/);
+    expect(html).toMatch(
+      /<b>polish<\/b><span[^>]*class="[^"]*whitespace-normal[^"]*">Already added/,
+    );
     expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   });
 
