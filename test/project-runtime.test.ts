@@ -12,7 +12,12 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { createProjectFixture } from "./local/project-fixture";
-import { parseAgentEvent, type AcceptedLinearEvent } from "../src/linear";
+import {
+  acknowledgeNewSession,
+  LinearIntakePendingError,
+  parseAgentEvent,
+  type AcceptedLinearEvent,
+} from "../src/linear";
 
 test("approved project sessions use canonical single-issue intake, dependency holds and controls", async () => {
   const fixture = createProjectFixture();
@@ -265,6 +270,84 @@ test("re-delegating a failed project issue starts it again and a running one sta
     expect(claim.items).toHaveLength(1);
     expect(claim.items[0]!.id).not.toBe(failed);
     expect(f.projects.canDispatch(claim.epicId!)).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+function createdEvent(f: ReturnType<typeof createProjectFixture>, sessionId: string) {
+  const body = JSON.parse(
+    readFileSync(join(import.meta.dir, "fixtures/linear/agent-session-created.json"), "utf8"),
+  );
+  body.agentSession.id = sessionId;
+  return parseAgentEvent(JSON.stringify(body), `delivery-${sessionId}`, f.clock.now())!;
+}
+
+async function approvedProject(f: ReturnType<typeof createProjectFixture>) {
+  const preview = await f.projects.preview(f.actor, f.selection, AbortSignal.timeout(10_000));
+  await f.projects.approve(f.actor, preview.id, preview.generation, AbortSignal.timeout(10_000));
+  f.projects.register(f.jobs);
+  await f.jobs.tick();
+}
+
+test("a project task whose Linear read fails once is retried and accepted", async () => {
+  const f = createProjectFixture(":memory:", { authorizeEvents: true });
+  try {
+    await approvedProject(f);
+    f.failMemberRead();
+    const event = createdEvent(f, "session-one");
+    const acknowledged = new Set<string>(["session-one"]);
+    const deliver = (attempt: number) =>
+      acknowledgeNewSession(
+        f.tracker,
+        event,
+        (value) => f.orchestrator.onLinearEvent(value),
+        undefined,
+        { acknowledged, reportFailure: attempt === 0 },
+      );
+    await expect(deliver(0)).rejects.toBeInstanceOf(LinearIntakePendingError);
+    await deliver(1);
+    expect(f.tracker.progress.filter((update) => update.kind === "error")).toEqual([]);
+    expect(
+      f.db.query("SELECT 1 FROM workspace_access_audit WHERE action='access.denied'").all(),
+    ).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a refused project takeover posts one message", async () => {
+  const f = createProjectFixture(":memory:", { authorizeEvents: true });
+  try {
+    await approvedProject(f);
+    ensureLinearSession(f.db, { sessionId: "early", issueId: "one", creatorId: null });
+    recordLinearInstallation(f.db, {
+      sessionId: "early",
+      organizationId: "org",
+      teamId: "team",
+      oauthClientId: "client",
+      appUserId: "app",
+      observedAtMs: f.clock.now(),
+    });
+    expect(
+      await acknowledgeNewSession(f.tracker, createdEvent(f, "early"), (value) =>
+        f.orchestrator.onLinearEvent(value),
+      ),
+    ).toBe(false);
+    const posted = [
+      ...f.tracker.progress
+        .filter((update) => update.sessionId === "early" && update.kind !== "thought")
+        .map((update) => update.body),
+      ...f.db
+        .query<{ body: string }, []>(
+          "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE json_extract(payload,'$.sessionId')='early'",
+        )
+        .all()
+        .map((row) => row.body),
+    ];
+    expect(posted).toEqual([
+      "Paws did not start this work. one is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.",
+    ]);
   } finally {
     await f.close();
   }

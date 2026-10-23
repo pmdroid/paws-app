@@ -19,7 +19,7 @@ import {
 import { Orchestrator } from "../../src/loop";
 import { createApprovedProjects } from "../../src/project-execution";
 
-export function createProjectFixture(filename = ":memory:") {
+export function createProjectFixture(filename = ":memory:", { authorizeEvents = false } = {}) {
   const db = openDatabase(filename);
   migrate(db);
   const clock = new FakeClock(Date.now());
@@ -75,6 +75,7 @@ export function createProjectFixture(filename = ":memory:") {
   let orchestrator: Orchestrator;
   const started: string[] = [];
   const intake = { delayed: false };
+  let failedMemberReads = 0;
   const projects = createApprovedProjects({
     db,
     tracker,
@@ -95,14 +96,20 @@ export function createProjectFixture(filename = ":memory:") {
     },
     memberships: {
       installation: async () => ({ id: "org", name: "Workspace" }),
-      member: async (organizationId, userId) => ({
-        organizationId,
-        userId,
-        active: true,
-        guest: false,
-        admin: false,
-        teamIds: ["team"],
-      }),
+      member: async (organizationId, userId) => {
+        if (failedMemberReads > 0) {
+          failedMemberReads--;
+          throw new Error("Linear HTTP 503");
+        }
+        return {
+          organizationId,
+          userId,
+          active: true,
+          guest: false,
+          admin: false,
+          teamIds: ["team"],
+        };
+      },
     },
     async startSession(target, _url, _signal, accept) {
       const sessionId = `session-${target.id}`;
@@ -149,6 +156,14 @@ export function createProjectFixture(filename = ":memory:") {
     linearIntakeActor: projects.actor,
     onLinearIntake: projects.accepted,
     adoptLinearParent: projects.adoptParent,
+    ...(authorizeEvents
+      ? {
+          authorizeLinearEvent: async (event: AcceptedLinearEvent) =>
+            (await projects.authorizeEvent(event)) === false
+              ? { outcome: "refused" as const, reason: "Refused." }
+              : { outcome: "accepted" as const },
+        }
+      : {}),
   });
   const actor = { workspaceId: "workspace", userId: "actor" };
   const selection = {
@@ -170,6 +185,9 @@ export function createProjectFixture(filename = ":memory:") {
     started,
     intake,
     tracker,
+    failMemberRead() {
+      failedMemberReads++;
+    },
     async close() {
       await orchestrator.shutdown();
       db.close();

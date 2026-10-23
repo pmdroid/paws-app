@@ -137,6 +137,7 @@ function fixture({ installed = true } = {}) {
     });
   if (installed) install();
   let failedSessionReads = 0;
+  let sessionReads = 0;
   const continuations: string[] = [];
   const build = () =>
     createWorkspaceAssignments({
@@ -156,6 +157,7 @@ function fixture({ installed = true } = {}) {
       tracker: {
         ...tracker,
         async getSession() {
+          sessionReads++;
           if (failedSessionReads > 0) {
             failedSessionReads--;
             throw new Error("Linear HTTP 503");
@@ -320,6 +322,9 @@ function fixture({ installed = true } = {}) {
     },
     get calls() {
       return calls;
+    },
+    get sessionReads() {
+      return sessionReads;
     },
     setActive(value: boolean) {
       active = value;
@@ -610,6 +615,23 @@ test("a member's delegation whose first Linear read fails is retried and accepte
     expect(listWorkItems(f.db)).toHaveLength(1);
     expect(f.tracker.progress.filter((update) => update.kind === "error")).toEqual([]);
     expect(f.tracker.progress[1]!.body).toContain("Linear HTTP 503");
+  } finally {
+    await f.close();
+  }
+});
+
+test("one delegation event reads each Linear source once", async () => {
+  const f = fixture();
+  try {
+    linkMember(f);
+    let reads = 0;
+    f.onMemberRead(async () => {
+      reads++;
+    });
+    await f.orchestrator.onLinearEvent(f.event);
+    expect(reads).toBe(1);
+    expect(f.sessionReads).toBe(1);
+    expect(listWorkItems(f.db)).toHaveLength(1);
   } finally {
     await f.close();
   }
