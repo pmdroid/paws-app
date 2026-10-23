@@ -55,6 +55,12 @@ export const RunnerResultSchema = z.strictObject({
     .min(1)
     .max(4)
     .optional(),
+  pushFailure: z
+    .strictObject({
+      branch: z.string().min(1).max(256),
+      error: z.string().min(1).max(4096),
+    })
+    .optional(),
 });
 
 export type RunnerResult = z.infer<typeof RunnerResultSchema>;

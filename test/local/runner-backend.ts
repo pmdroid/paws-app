@@ -1546,6 +1546,51 @@ export async function probeRunnerBackend(
       true,
       { opened, answered, canonicalState: getWorkItem(db, asked.id)?.state },
     );
+    const unpushed = item();
+    const pushQuestions: string[] = [];
+    const pushing = backend.forItem(unpushed.id)(
+      input(unpushed, {
+        askTeam: {
+          async ask(request, context) {
+            assert.equal(context.runId, unpushed.run.id);
+            pushQuestions.push(request.question);
+            return { answer: "Question posted to the team." };
+          },
+        },
+      }),
+    );
+    const pushCommand = await next();
+    if (pushCommand.type !== "run") throw new Error("Unexpected push command");
+    const pushGrant = work.issueGrant({
+      runnerId,
+      runId: pushCommand.runId,
+      commandId: pushCommand.id,
+      generation: pushCommand.generation,
+    });
+    const pushError =
+      "GitHub git operation failed: fatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 502";
+    results.submit({
+      runnerId,
+      runId: pushCommand.runId,
+      generation: pushCommand.generation,
+      token: pushGrant.token,
+      result: {
+        ...result(pushCommand),
+        stopReason: "error",
+        errorMessage: `The runner stopped this run: the candidate push to paws/unpushed failed 6 times: ${pushError}.`,
+        pushFailure: { branch: "paws/unpushed", error: pushError },
+      },
+    });
+    const unpushedResult = await pushing;
+    assert.equal(unpushedResult.stopReason, "error");
+    assert.equal(pushQuestions.length, 1);
+    assert(pushQuestions[0]!.includes("`paws/unpushed`"));
+    assert(pushQuestions[0]!.includes("The requested URL returned error: 502"));
+    observe(
+      "a candidate push the runner gave up on asks the team once with the push error and branch",
+      true,
+      { questions: pushQuestions.length },
+    );
     await git(["-C", source, "reset", "--hard", base]);
     const mismatched = item();
     importWrongHead = true;
