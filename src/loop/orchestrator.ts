@@ -276,6 +276,7 @@ import {
   parkMergeForCi,
   retryMergeLater,
   waitForMergeTurn,
+  wakeMergesBehind,
   waitForRunnerSlot,
   type GitHubQueueWatch,
   type MergeWaitReason,
@@ -2985,8 +2986,10 @@ export class Orchestrator {
         closeoutFailure === null &&
         (merged.outcome === "sha_moved" || merged.outcome === "rejected")
       )
-    )
+    ) {
       leaveMergeQueue(this.db, item.id);
+      wakeMergesBehind(this.db, this.now());
+    }
     if (merged.outcome === "waiting") {
       if (this.stopped(item.id)) return;
       return {
@@ -3115,6 +3118,7 @@ export class Orchestrator {
       },
     });
     if (!merged) return;
+    wakeMergesBehind(this.db, this.now());
     await removeWorktree({
       owner: repository.owner,
       repo: repository.repo,
