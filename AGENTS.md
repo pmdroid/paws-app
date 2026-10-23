@@ -32,7 +32,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/acp`       | ACP executor, worktrees, fake agent                      | `core`                              |
 | `src/closeout`  | `CloseoutGate`, fake                                     | nothing in `src`                    |
 | `src/github`    | GitHub App token, pull requests, serial merge, fake      | nothing in `src`                    |
-| `src/questions` | Elicitation text, question rows, `QuestionChannel`       | `core`                              |
+| `src/questions` | Elicitation text, question rows, who may answer          | `core`, `db`                        |
 | `src/loop`      | Orchestrator: intake, ACP, Closeout, PR, merge           | the modules it composes             |
 | `src/doctor`    | `bun run paws doctor` prerequisite checks                | `config`                            |
 | `src/host`      | Sleep, wake, and `agentAlive`                            | `core`, `db`                        |
