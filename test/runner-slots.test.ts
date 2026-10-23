@@ -129,7 +129,6 @@ test("a run placed on a runner stays in its list through Closeout and leaves whe
   };
   expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([session]);
 
-  // Its command finished, and the run holds the slot for its Closeout checks.
   db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, runId]);
   db.run("UPDATE work_item SET state='verifying' WHERE id='item-0'");
   const [held] = listRunnerOverview(db, "ws-1", now + 120_000);

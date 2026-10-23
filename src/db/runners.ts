@@ -138,10 +138,6 @@ export type RunnerSession = {
   startedAt: number;
 };
 
-/**
- * Sessions per runner: live work leases, and runs that still hold the runner's slot between
- * commands or through Closeout, as placement counts them.
- */
 function listRunnerSessions(
   db: Database,
   workspaceId: string,
