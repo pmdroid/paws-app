@@ -31,6 +31,9 @@ export async function probeRunnerPairing(
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
+  const authorityRoot = join(root, "issuer");
+  const authority = await initializeRunnerAuthority(authorityRoot);
+  const client = await createRunnerKey(join(root, "client"));
   let now = Date.now();
   function owner(organizationId: string): WorkspacePrincipal {
     const userId = putWorkspaceUser(db, {
@@ -67,9 +70,6 @@ export async function probeRunnerPairing(
     now,
   });
   const member = { ...principal, userId: memberUserId };
-  const authorityRoot = join(root, "issuer");
-  const authority = await initializeRunnerAuthority(authorityRoot);
-  const client = await createRunnerKey(join(root, "client"));
   const disconnected: string[] = [];
   const control = createRunnerControl({
     db,
