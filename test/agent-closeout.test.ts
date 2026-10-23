@@ -7,8 +7,11 @@ import type { FakeScript } from "../src/acp/testing/script";
 import {
   beginImplementRun,
   insertQueuedItem,
+  insertRun,
   listAgentCloseout,
   recordAgentCloseout,
+  releaseRunCapacity,
+  setCurrentRun,
 } from "../src/db";
 import { createLiveStatusProvider } from "../src/web/src/live/provider";
 import { parseStatusSnapshot } from "../src/web/src/contract";
@@ -215,6 +218,67 @@ test("a running check reports how long it has run and a later stale report sends
   const stored = listAgentCloseout(db, [run.id])[1]!.progress;
   expect(stored.type === "finished" && stored.truncated).toBe(true);
   expect(stored.type === "finished" && Buffer.byteLength(stored.stdout)).toBe(64 * 1024);
+});
+
+test("a check still running when its run ended stops at the run's end and points to the task's newer run", () => {
+  const db = tempDb();
+  insertQueuedItem(db, { id: "ENG-10", title: "Restart", now: 1 });
+  const { run } = beginImplementRun(db, "ENG-10", 2);
+  recordAgentCloseout(
+    db,
+    run.id,
+    "ENG-10",
+    {
+      type: "started",
+      head: "a".repeat(40),
+      id: "test",
+      kind: "command",
+      command: "bun test",
+      attempt: 1,
+      maxAttempts: 3,
+    },
+    10_000,
+  );
+  releaseRunCapacity(db, run.id, 575_000);
+  const next = insertRun(db, { itemId: "ENG-10", now: 600_000 });
+  setCurrentRun(db, "ENG-10", next.id);
+  recordAgentCloseout(
+    db,
+    next.id,
+    "ENG-10",
+    {
+      type: "started",
+      head: "b".repeat(40),
+      id: "lint",
+      kind: "command",
+      command: "bun run lint",
+      attempt: 1,
+      maxAttempts: 3,
+    },
+    610_000,
+  );
+  const parsed = parseStatusSnapshot(
+    JSON.parse(
+      JSON.stringify(createLiveStatusProvider(db, { now: () => new Date(3_600_000) }).snapshot()),
+    ),
+  );
+  if (!parsed.ok) throw new Error(parsed.error);
+  const ended = parsed.snapshot.agentCloseout!.find((entry) => entry.runId === run.id)!;
+  expect(ended.endedAt).toBe(new Date(575_000).toISOString());
+  expect(ended.continuesIn).toBe(next.id);
+  expect(ended.attempts.at(-1)!.checks[0]).toMatchObject({
+    state: "stopped",
+    elapsedMs: 565_000,
+    active: false,
+    detail: "Stopped: the run ended before this check finished.",
+  });
+  const current = parsed.snapshot.agentCloseout!.find((entry) => entry.runId === next.id)!;
+  expect(current.endedAt).toBeUndefined();
+  expect(current.continuesIn).toBeUndefined();
+  expect(current.attempts.at(-1)!.checks[0]).toMatchObject({
+    state: "running",
+    elapsedMs: 2_990_000,
+  });
 });
 
 test("an evidence check takes its state from the report and lets the round finish", () => {
