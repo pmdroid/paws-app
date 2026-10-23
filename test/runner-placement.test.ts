@@ -18,6 +18,7 @@ import {
   SESSION_GRACE_MS,
   type PlacementRequest,
 } from "../src/runner-placement";
+import { placementWaitMs } from "../src/runner-backend";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
@@ -250,9 +251,9 @@ test("a task waiting ten minutes for its busy session runner never calls Linear"
     );
     const offers: string[][] = [];
     const requests = await networkRequests(async () => {
-      for (const wait of [5_000, 15_000, 30_000, ...Array<number>(10).fill(60_000)]) {
+      for (let attempt = 0; attempt < 13; attempt++) {
         offers.push(await placed.ids(session));
-        placed.tick(wait);
+        placed.tick(placementWaitMs(attempt));
       }
     });
     expect(offers.slice(0, 5)).toEqual(Array(5).fill(["shared"]));
@@ -262,4 +263,10 @@ test("a task waiting ten minutes for its busy session runner never calls Linear"
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
   }
+});
+
+test("a task waiting for a runner retries after 5 s, 15 s, 30 s, then every minute", () => {
+  expect(Array.from({ length: 6 }, (_, attempt) => placementWaitMs(attempt))).toEqual([
+    5_000, 15_000, 30_000, 60_000, 60_000, 60_000,
+  ]);
 });
