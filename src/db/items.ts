@@ -394,6 +394,7 @@ export type RunnerCapacityWaitState = {
   since: number;
   attempt: number;
   runnerIds: readonly string[];
+  holdMs?: number;
 };
 
 export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | null {
@@ -402,7 +403,12 @@ export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | 
   return typeof wait?.since === "number" &&
     typeof wait.attempt === "number" &&
     Array.isArray(wait.runnerIds)
-    ? { since: wait.since, attempt: wait.attempt, runnerIds: wait.runnerIds }
+    ? {
+        since: wait.since,
+        attempt: wait.attempt,
+        runnerIds: wait.runnerIds,
+        ...(typeof wait.holdMs === "number" ? { holdMs: wait.holdMs } : {}),
+      }
     : null;
 }
 

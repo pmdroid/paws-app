@@ -1379,6 +1379,7 @@ export class Orchestrator {
       since: waited?.since ?? this.now(),
       attempt: waited ? waited.attempt + 1 : 0,
       runnerIds: error.runnerIds,
+      ...(error.holdMs === undefined ? {} : { holdMs: error.holdMs }),
     };
   }
 
@@ -1397,6 +1398,7 @@ export class Orchestrator {
       !["recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
       this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS ||
+      this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
       runnerSlotFree(this.db, waited.runnerIds, this.now())
     )
       return false;

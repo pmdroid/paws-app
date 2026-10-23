@@ -265,7 +265,7 @@ export function createRunnerPlacement(options: {
         } else {
           const waiting = sessionWaits.get(input.itemId);
           const since =
-            waiting?.runnerId === holder.runner.id && at - waiting.seen < SESSION_GRACE_MS
+            waiting?.runnerId === holder.runner.id && at - waiting.seen < 2 * SESSION_GRACE_MS
               ? waiting.since
               : at;
           sessionWaits.set(input.itemId, { runnerId: holder.runner.id, since, seen: at });

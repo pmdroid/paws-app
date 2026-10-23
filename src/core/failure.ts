@@ -50,7 +50,10 @@ export function placementWaitMs(attempt: number, pollIntervalMs = 250) {
 
 export class RunnerCapacityWait extends Error {
   override readonly name = "RunnerCapacityWait";
-  constructor(readonly runnerIds: readonly string[]) {
+  constructor(
+    readonly runnerIds: readonly string[],
+    readonly holdMs?: number,
+  ) {
     super(
       runnerIds.length
         ? `Waiting for a free slot on runner ${runnerIds.join(", ")}`

@@ -63,7 +63,7 @@ import {
   WORKSPACE_HOOK_LIMIT,
   type WorkspaceHook,
 } from "../core";
-import { quotaSignal, type RunnerPlacement } from "../runner-placement";
+import { quotaSignal, SESSION_GRACE_MS, type RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {
   override readonly name = "RunnerUnavailableError";
@@ -250,7 +250,7 @@ export function createRemoteAgentRunner(options: {
             .query("SELECT 1 FROM runner WHERE status='active' AND revoked_at IS NULL LIMIT 1")
             .get() !== null))
     )
-      throw new RunnerCapacityWait(busy);
+      throw new RunnerCapacityWait(busy, heldForSession ? SESSION_GRACE_MS : undefined);
     if (agent && limit && limit.resumeAt > now())
       throw new UsageLimitPause(agent, limit.resumeAt, limit.resetsAt, limit.runnerId);
     if (!agent || resetsAt === null)
