@@ -125,6 +125,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   doctor: [
     "credentials",
     "config",
+    "db",
     "acp",
     "comments",
     "github",
