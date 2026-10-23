@@ -59,7 +59,6 @@ afterAll(() => {
 
 test.each([
   ["a fenced lease", "fenced", "The runner restarted or lost its lease during the run.", 3],
-  ["a slot taken before assignment", "busy", "Runner became busy before assignment", 3],
   [
     "no paired runner",
     "unpaired",
@@ -85,6 +84,17 @@ test.each([
   },
   60_000,
 );
+
+test("a slot taken before assignment waits for the runner without a retry and reaches Closeout", async () => {
+  const result = await runRemoteFault("busy");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.deferredState, result.detail).toBe("recovering");
+  expect(result.retries, result.detail).toEqual([0]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(result.thoughts, result.detail).toEqual([]);
+  expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
+}, 60_000);
 
 test("a deferred remote run is lost, holds no runner slot, and its retry is a new run", async () => {
   const result = await runRemoteFault("fenced");
@@ -299,6 +309,7 @@ async function runRemoteFault(fault: Fault) {
     tracker,
     repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
     retryBaseMs: 10,
+    placementPollMs: 5,
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },

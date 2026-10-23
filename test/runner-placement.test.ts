@@ -18,7 +18,7 @@ import {
   SESSION_GRACE_MS,
   type PlacementRequest,
 } from "../src/runner-placement";
-import { placementWaitMs } from "../src/runner-backend";
+import { placementWaitMs } from "../src/core";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
@@ -201,6 +201,24 @@ test("a continuing task lands on the runner of its last session, or elsewhere af
 
     placed.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), run.id]);
     expect(await placed.ids(session)).toEqual(["shared", "own"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a continuing task that checks back only after the grace period is offered other runners", async () => {
+  const placed = await placeItem(true);
+  try {
+    const session = { session: { runnerId: "shared" } };
+    const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
+    placed.db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'shared',?,1,0,'busy',?,0)",
+      [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
+    );
+    expect(await placed.ids(session)).toEqual(["shared"]);
+    placed.tick(SESSION_GRACE_MS + placementWaitMs(3));
+    expect(await placed.ids(session)).toEqual(["own", "shared"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });

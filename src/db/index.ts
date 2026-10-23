@@ -2,6 +2,7 @@ export { drainCommands, enqueueCommand, submitCommand, applyLinearCommand } from
 export {
   recordRunnerCapacity,
   runnerHasCapacity,
+  runnerSlotFree,
   RunnerConcurrencyError,
   setRunnerConcurrency,
 } from "./runner-capacity";
@@ -23,6 +24,8 @@ export {
   clearProgress,
   configureWorkItem,
   deferWorkItem,
+  runnerCapacityWait,
+  type RunnerCapacityWaitState,
   completeMergedItem,
   failWorkItem,
   getWorkItem,

@@ -345,7 +345,14 @@ export function cancelAdvancingJobs(
 export function deferWorkItem(
   db: Database,
   item: WorkItemRecord,
-  input: { retry: number; delayMs: number; handoff: string | null; message: string; now: number },
+  input: {
+    retry: number;
+    delayMs: number;
+    handoff: string | null;
+    message: string | null;
+    now: number;
+    capacityWait?: RunnerCapacityWaitState;
+  },
 ): void {
   immediate(db, () => {
     if (item.state === "running" || item.state === "verifying")
@@ -367,18 +374,42 @@ export function deferWorkItem(
         reason: "transient_failure",
         retry: input.retry,
         ...(input.handoff === null ? {} : { handoff: input.handoff }),
+        ...(input.capacityWait ? { capacityWait: input.capacityWait } : {}),
       },
       now: input.now,
     });
-    enqueueOutboxOnce(db, {
-      target: OUTBOX_ACTIVITY.target,
-      op: OUTBOX_ACTIVITY.op,
-      orderingKey: item.sessionKey ?? item.id,
-      idempotencyKey: `retry:${item.id}:${current.version}`,
-      payload: { sessionId: item.sessionKey ?? item.id, kind: "thought", body: input.message },
-      now: input.now,
-    });
+    if (input.message !== null)
+      enqueueOutboxOnce(db, {
+        target: OUTBOX_ACTIVITY.target,
+        op: OUTBOX_ACTIVITY.op,
+        orderingKey: item.sessionKey ?? item.id,
+        idempotencyKey: `retry:${item.id}:${current.version}`,
+        payload: { sessionId: item.sessionKey ?? item.id, kind: "thought", body: input.message },
+        now: input.now,
+      });
   });
+}
+
+export type RunnerCapacityWaitState = {
+  since: number;
+  attempt: number;
+  runnerIds: readonly string[];
+  holdMs?: number;
+};
+
+export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | null {
+  const wait = (payload as { capacityWait?: Partial<RunnerCapacityWaitState> } | null)
+    ?.capacityWait;
+  return typeof wait?.since === "number" &&
+    typeof wait.attempt === "number" &&
+    Array.isArray(wait.runnerIds)
+    ? {
+        since: wait.since,
+        attempt: wait.attempt,
+        runnerIds: wait.runnerIds,
+        ...(typeof wait.holdMs === "number" ? { holdMs: wait.holdMs } : {}),
+      }
+    : null;
 }
 
 function failForCap(

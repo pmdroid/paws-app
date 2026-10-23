@@ -83,6 +83,9 @@ import {
   parseLinearCommand,
   isTransientFailure,
   MAX_TRANSIENT_RETRIES,
+  RUNNER_CAPACITY_WAIT_MS,
+  RunnerCapacityWait,
+  placementWaitMs,
   retryNote,
   transientRetryDelayMs,
 } from "../core";
@@ -177,7 +180,10 @@ import {
   type OutboxDispatcher,
   type OutboxRow,
   type WorkItemRecord,
+  type RunnerCapacityWaitState,
   deferWorkItem,
+  runnerCapacityWait,
+  runnerSlotFree,
   getTaskMergeSettings,
   getTaskLinearRead,
   keepTaskLinearRead,
@@ -266,6 +272,7 @@ import {
   parkMergeForCi,
   retryMergeLater,
   waitForMergeTurn,
+  waitForRunnerSlot,
   type GitHubQueueWatch,
   type MergeWaitReason,
   type VerificationOwner,
@@ -404,6 +411,7 @@ export type OrchestratorOptions = {
   channel?: "comments" | "agent-session";
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
+  placementPollMs?: number;
 };
 
 export type ExecutionChanges = {
@@ -1127,16 +1135,24 @@ export class Orchestrator {
     jobs.register(JOB_KIND.start, (job, context) =>
       this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
     );
-    jobs.register(JOB_KIND.resume, (job, context) =>
-      this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
-    );
-    jobs.register(JOB_KIND.reverify, (job, context) =>
-      this.failOnLastAttempt(job, context, "reverify", () =>
-        this.runLeasedJob(job.payload, context, () =>
-          this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
-        ),
-      ),
-    );
+    jobs.register(JOB_KIND.resume, async (job, context) => {
+      if (this.waitingForRunnerSlot(job)) return;
+      await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+    });
+    jobs.register(JOB_KIND.reverify, async (job, context) => {
+      if (this.waitingForRunnerSlot(job)) return;
+      await this.failOnLastAttempt(job, context, "reverify", async () => {
+        try {
+          await this.runLeasedJob(job.payload, context, () =>
+            this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
+          );
+        } catch (error) {
+          const wait = this.nextRunnerWait(job, error);
+          if (!wait || !context.isCurrent()) throw error;
+          waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
+        }
+      });
+    });
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const ownerId = readString(job.payload, "itemId");
       if (ownerId !== null && this.jobContexts.has(ownerId)) {
@@ -1312,6 +1328,18 @@ export class Orchestrator {
         (item.state !== "running" && item.state !== "verifying" && item.state !== "recovering")
       )
         throw error;
+      const wait = this.nextRunnerWait(job, error);
+      if (wait) {
+        deferWorkItem(this.db, item, {
+          retry: retryCount(job.payload),
+          delayMs: this.runnerWaitMs(wait),
+          handoff: readString(job.payload, "handoff"),
+          message: null,
+          capacityWait: wait,
+          now: this.now(),
+        });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (isTransientFailure(error)) {
         const retry = retryCount(job.payload) + 1;
@@ -1342,6 +1370,42 @@ export class Orchestrator {
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
       throw error;
     }
+  }
+
+  private nextRunnerWait(job: Job, error: unknown): RunnerCapacityWaitState | null {
+    if (!(error instanceof RunnerCapacityWait)) return null;
+    const waited = runnerCapacityWait(job.payload);
+    if (waited && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) return null;
+    return {
+      since: waited?.since ?? this.now(),
+      attempt: waited ? waited.attempt + 1 : 0,
+      runnerIds: error.runnerIds,
+      ...(error.holdMs === undefined ? {} : { holdMs: error.holdMs }),
+    };
+  }
+
+  private runnerWaitMs(wait: RunnerCapacityWaitState): number {
+    return placementWaitMs(wait.attempt, this.options.placementPollMs);
+  }
+
+  private waitingForRunnerSlot(job: Job): boolean {
+    const waited = runnerCapacityWait(job.payload);
+    const itemId = readString(job.payload, "itemId");
+    const item = itemId === null ? null : getWorkItem(this.db, itemId);
+    if (
+      !waited ||
+      !item ||
+      item.cancelRequested ||
+      !["recovering", "verifying", "merge_queue"].includes(item.state) ||
+      this.shuttingDown ||
+      this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS ||
+      this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
+      runnerSlotFree(this.db, waited.runnerIds, this.now())
+    )
+      return false;
+    const next = { ...waited, attempt: waited.attempt + 1 };
+    waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(next), next);
+    return true;
   }
 
   private async failOnLastAttempt(
@@ -2364,7 +2428,7 @@ export class Orchestrator {
         }
       } catch (error) {
         assertCurrent();
-        if (deps.signal?.aborted) throw error;
+        if (deps.signal?.aborted || error instanceof RunnerCapacityWait) throw error;
         reason = error instanceof Error ? error.message : String(error);
         if (
           (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(reason)) &&
