@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { writeConfigFile, pawsPaths, ensureLayout } from "../src/config";
 import { startPaws } from "../src/index";
+import { EXECUTION_TAG_ENV } from "../src/process";
 import { tempHome } from "./helpers";
 
 describe("process", () => {
@@ -16,7 +17,13 @@ describe("process", () => {
     }
   });
 
-  test("bun src/index.ts prints ready", async () => {
+  test.each([
+    ["", {}],
+    [
+      " under a runner execution tag",
+      { [EXECUTION_TAG_ENV]: "0123456789abcdef/01M5K8188B83E8PASBBBTXAF2S" },
+    ],
+  ])("bun src/index.ts prints ready%s", async (_name, tag: Record<string, string>) => {
     const home = tempHome();
     const env: Record<string, string | undefined> = {
       ...process.env,
@@ -25,6 +32,7 @@ describe("process", () => {
       PAWS_HOST: "127.0.0.1",
     };
     for (const key of [
+      "PAWS_EXECUTION",
       "LINEAR_ACCESS_TOKEN",
       "LINEAR_REFRESH_TOKEN",
       "LINEAR_CLIENT_ID",
@@ -38,7 +46,7 @@ describe("process", () => {
     }
     const proc = Bun.spawn(["bun", "src/index.ts"], {
       cwd: new URL("..", import.meta.url).pathname,
-      env,
+      env: { ...env, ...tag },
       stdout: "pipe",
       stderr: "pipe",
     });
