@@ -139,8 +139,8 @@ test("a session flapping between phases sends one plan and summary every two min
     clock.advance(30_000);
   }
   await flush(dispatcher);
-  expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(10);
-  expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(10);
+  expect(tracker.sessionUpdates).toHaveLength(10);
+  expect(tracker.sessionUpdates.every((update) => update.plan && update.summary)).toBe(true);
   db.close();
 });
 
@@ -211,8 +211,9 @@ test("the final plan and summary go out right away and links are not held behind
   progress.phase("merging");
   progress.link("Pull request", "https://github.com/pmdroid/paws-app/pull/1");
   await flush(dispatcher);
+  expect(tracker.sessionUpdates).toHaveLength(2);
   expect(tracker.sessionUpdates.at(-1)?.addedExternalUrls).toHaveLength(1);
-  expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(1);
+  expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: merging");
   clock.advance(1_000);
   progress.phase("completed");
   await flush(dispatcher);

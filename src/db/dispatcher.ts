@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
 import {
   claimOutboxHeads,
+  coalesceOutbox,
   completeOutbox,
   isOutboxCurrent,
   retryOutbox,
@@ -32,6 +33,7 @@ export class OutboxDispatcher {
       pollMs?: number;
       batchSize?: number;
       backoffBaseMs?: number;
+      progressIntervalMs?: number;
     } = {},
   ) {}
 
@@ -56,6 +58,7 @@ export class OutboxDispatcher {
       workerId: this.options.workerId ?? "outbox",
       now: this.clock.now(),
       limit: this.options.batchSize ?? 32,
+      progressIntervalMs: this.options.progressIntervalMs,
     });
     for (const message of claimed) {
       const controller = new AbortController();
@@ -93,6 +96,10 @@ export class OutboxDispatcher {
     if (handler === null) return;
     try {
       if (!isOutboxCurrent(this.db, message)) return;
+      message = coalesceOutbox(this.db, message, {
+        now: this.clock.now(),
+        thoughts: Boolean(this.options.progressIntervalMs),
+      });
       await handler(message, {
         signal: controller.signal,
         isCurrent: () => isOutboxCurrent(this.db, message),
