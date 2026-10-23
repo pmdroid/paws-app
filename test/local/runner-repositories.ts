@@ -413,32 +413,54 @@ export async function probeRunnerRepositories(
       repository: { ...command.repository, baseSha: "f".repeat(40) },
     }),
   );
-  const interrupted = { ...command, id: randomUUID() };
-  const abort = new AbortController();
-  let interruptedSnapshot = "";
-  const watcher = watch(options.root, (_event, filename) => {
-    if (
-      filename?.startsWith("snapshot-") &&
-      filename.endsWith(".bundle") &&
-      existsSync(join(options.root, filename))
-    ) {
-      interruptedSnapshot = join(options.root, filename);
-      abort.abort();
+  const lock = join(prepared.mirror, "packed-refs.lock");
+  // Git takes packed-refs.lock to delete a snapshot ref but not to create one. Holding it
+  // with no retry limit parks prepare at cleanup, so the abort always lands before
+  // prepare can return, however late the probe sees the file.
+  async function holdPackedRefs() {
+    await invoke(["--git-dir", prepared.mirror, "config", "core.packedRefsTimeout", "-1"]);
+    writeFileSync(lock, "fixture lock", { flag: "wx", mode: 0o600 });
+  }
+  async function releasePackedRefs() {
+    rmSync(lock, { force: true });
+    await invoke(["--git-dir", prepared.mirror, "config", "--unset", "core.packedRefsTimeout"]);
+  }
+  async function abortOnceExists(
+    path: string,
+    preparing: Promise<unknown>,
+    abort: AbortController,
+  ) {
+    const settled = preparing.then(
+      () => true,
+      () => true,
+    );
+    while (!existsSync(path)) {
+      if (await Promise.race([settled, Bun.sleep(1).then(() => false)])) break;
     }
-  });
+    const seen = existsSync(path);
+    abort.abort();
+    rmSync(lock, { force: true });
+    return seen;
+  }
+
+  const interrupted = { ...command, id: randomUUID() };
+  const interruptedHash = createHash("sha256").update(interrupted.id).digest("hex");
+  const interruptedSnapshot = join(options.root, `snapshot-${interruptedHash}.bundle`);
+  const abort = new AbortController();
+  await holdPackedRefs();
   try {
-    await assert.rejects(repositories.prepare(interrupted, abort.signal));
+    const preparing = repositories.prepare(interrupted, abort.signal);
+    assert(await abortOnceExists(interruptedSnapshot, preparing, abort));
+    await assert.rejects(preparing, { name: "AbortError" });
     assert.equal(calls.at(-1)?.signal, abort.signal);
-    assert(interruptedSnapshot);
     assert.equal(existsSync(interruptedSnapshot), false);
   } finally {
-    watcher.close();
+    await releasePackedRefs();
   }
 
   const blocked = { ...command, id: randomUUID() };
   const blockedHash = createHash("sha256").update(blocked.id).digest("hex");
   const blockedRef = `paws-snapshot-${blockedHash}`;
-  const lock = join(prepared.mirror, "packed-refs.lock");
   const blockedSnapshot = join(options.root, `snapshot-${blockedHash}.bundle`);
   const snapshotWritten = Promise.withResolvers<void>();
   const snapshotWatcher = watch(options.root, (_event, filename) => {
@@ -458,22 +480,18 @@ export async function probeRunnerRepositories(
   const refAbortCommand = { ...command, id: randomUUID() };
   const refAbortHash = createHash("sha256").update(refAbortCommand.id).digest("hex");
   const refAbortName = `paws-snapshot-${refAbortHash}`;
+  const refAbortPath = join(prepared.mirror, "refs", "heads", refAbortName);
   const refAbort = new AbortController();
-  let refObserved = false;
-  const refWatcher = watch(join(prepared.mirror, "refs", "heads"), (_event, filename) => {
-    if (filename === refAbortName && existsSync(join(prepared.mirror, "refs", "heads", filename))) {
-      refObserved = true;
-      refAbort.abort();
-    }
-  });
+  await holdPackedRefs();
   try {
-    await assert.rejects(repositories.prepare(refAbortCommand, refAbort.signal));
+    const preparing = repositories.prepare(refAbortCommand, refAbort.signal);
+    assert(await abortOnceExists(refAbortPath, preparing, refAbort));
+    await assert.rejects(preparing, { name: "AbortError" });
     assert.equal(calls.at(-1)?.signal, refAbort.signal);
-    assert(refObserved);
-    assert.equal(existsSync(join(prepared.mirror, "refs", "heads", refAbortName)), false);
+    assert.equal(existsSync(refAbortPath), false);
     assert.equal(existsSync(join(options.root, `snapshot-${refAbortHash}.bundle`)), false);
   } finally {
-    refWatcher.close();
+    await releasePackedRefs();
   }
   observe(
     "snapshot cleanup failures and aborts during ref creation leave no disposable bundle",
