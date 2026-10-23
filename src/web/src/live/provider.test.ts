@@ -426,6 +426,29 @@ describe("live status provider", () => {
     expect(JSON.stringify(snapshot)).not.toContain("Audit log export");
   });
 
+  test("a waiting task without a question row shows its question:<id> elicitation", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", now });
+    beginImplementRun(db, item.id, now);
+    applyWorkItemEvent(db, item.id, "blocking_question");
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "elicitation",
+      orderingKey: "ses_1",
+      idempotencyKey: "question:q-help",
+      payload: { sessionId: "ses_1", body: "Closeout needs your help." },
+      now,
+    });
+    expect(createLiveStatusProvider(db).snapshot().questions).toEqual([
+      expect.objectContaining({
+        id: "q-help",
+        itemId: "ENG-2",
+        title: "Closeout needs your help.",
+      }),
+    ]);
+  });
+
   test("the merge queue lists each repository's tasks in order, with what each waits for", () => {
     const db = database();
     const now = 1_700_000_000_000;

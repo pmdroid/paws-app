@@ -30,6 +30,18 @@ test("elicitation keeps select options and a free-text reply", () => {
 
 const NOW = 1_700_000_000_000;
 
+test.each([
+  [[], "Which outcome?\n\nContext."],
+  [
+    ["Code"],
+    "Which outcome?\n\nContext.\n\nReply with one of the options, or answer in your own words.",
+  ],
+])("only a question with options asks to reply with one of them", (options, body) => {
+  const { db, asker } = parked();
+  ask(db, asker, "clarification", "Which outcome?", { options, context: "Context.", now: NOW });
+  expect(listOutbox(db)[0]?.payload).toMatchObject({ body });
+});
+
 function parked() {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
