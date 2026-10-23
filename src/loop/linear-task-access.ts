@@ -37,11 +37,15 @@ type AccessVerdict = {
   sessionId: string;
   access: LinearSessionInstallation;
   issues: LinearIssueOwnership[];
-  expiresAt: number;
 };
+
+function verdictKey(item: WorkItemRecord, sessionId: string, generation: number): string {
+  return JSON.stringify([item.id, sessionId, generation, item.linearIssueId]);
+}
 
 export class LinearTaskAccess {
   private readonly verdicts = new Map<string, AccessVerdict>();
+  private invalidations = 0;
 
   constructor(
     private readonly db: Database,
@@ -108,6 +112,7 @@ export class LinearTaskAccess {
   }
 
   invalidate(scope: { sessionId?: string; issueId?: string } = {}): void {
+    this.invalidations += 1;
     for (const [key, verdict] of this.verdicts)
       if (
         (scope.sessionId === undefined || verdict.sessionId === scope.sessionId) &&
@@ -194,7 +199,6 @@ export class LinearTaskAccess {
   }
 
   async prepare(item: WorkItemRecord, signal: AbortSignal): Promise<readonly string[]> {
-    if (item.sessionKey !== null) this.invalidate({ sessionId: item.sessionKey });
     return outlastRateLimits(signal, () => this.check(item, signal, true));
   }
 
@@ -227,14 +231,22 @@ export class LinearTaskAccess {
     };
     current();
     if (options.stop) return;
-    const access = await this.options.access.session(sessionId, { signal });
-    current();
-    this.record(access);
-    current();
     const itemId = options.itemId ?? workItemForSession(this.db, sessionId)?.id;
     const item = itemId ? getWorkItem(this.db, itemId) : null;
     if (item && item.sessionKey !== sessionId)
       throw new Error("Linear delivery belongs to another session.");
+    const verdict = item ? this.verdicts.get(verdictKey(item, sessionId, generation)) : undefined;
+    if (
+      item &&
+      verdict &&
+      (!options.issueId || verdict.issues.some((issue) => issue.id === options.issueId)) &&
+      verdict.issues.every((issue) => this.permits(item, verdict.access, issue, true))
+    )
+      return;
+    const access = await this.options.access.session(sessionId, { signal });
+    current();
+    this.record(access);
+    current();
     const issueIds = [access.issueId];
     if (options.issueId) issueIds.push(options.issueId);
     if (item) issueIds.push(item.linearIssueId);
@@ -287,46 +299,21 @@ export class LinearTaskAccess {
         throw new LinearAccessRemovedError("Linear installation access is unavailable.");
     };
     current(true);
-    const key = JSON.stringify([item.id, sessionId, generation, item.linearIssueId]);
-    const cached = this.verdicts.get(key);
-    const now = (this.options.now ?? Date.now)();
-    if (!prepare && !fresh && cached !== undefined && cached.expiresAt > now) {
-      current();
-      if (
-        cached.issues.every((issue) => this.permits(item, cached.access, issue, allowTerminalIssue))
-      )
-        return [];
-    }
-    this.verdicts.delete(key);
-    const access = await this.options.access.session(sessionId, { signal });
-    current(true);
-    this.record(access);
-    current();
-    const issues: LinearIssueOwnership[] = [];
-    for (const issueId of new Set([access.issueId, item.linearIssueId])) {
-      const issue = await this.options.lifecycle.inspect(issueId, { signal });
-      current();
-      if (issue.id !== issueId) throw new Error("Linear returned another task issue.");
-      this.ownership(item, sessionId, access, issue, allowTerminalIssue);
-      if (!(await this.options.access.team(issue.teamId, { signal }))) {
-        this.invalidate({ sessionId });
-        this.options.stopSession(sessionId);
-        throw new LinearAccessRemovedError("Linear task team access was removed.");
-      }
-      current();
-      issues.push(issue);
-    }
+    const key = verdictKey(item, sessionId, generation);
+    const cached = fresh ? undefined : this.verdicts.get(key);
+    if (cached !== undefined) current();
+    const invalidations = this.invalidations;
+    const verdict =
+      cached !== undefined &&
+      cached.issues.every((issue) => this.permits(item, cached.access, issue, allowTerminalIssue))
+        ? cached
+        : await this.read(item, sessionId, signal, allowTerminalIssue, current);
+    if (this.invalidations === invalidations) this.verdicts.set(key, verdict);
+    if (!prepare) return [];
+    const { access } = verdict;
+    const started = new Map<string, LinearIssueOwnership>();
     const eligible: string[] = [];
-    if (!prepare) {
-      this.verdicts.set(key, {
-        sessionId,
-        access,
-        issues,
-        expiresAt: (this.options.now ?? Date.now)() + TASK_ACCESS_TTL_MS,
-      });
-      return eligible;
-    }
-    for (const issue of issues.reverse()) {
+    for (const issue of [...verdict.issues].reverse()) {
       current();
       const actorId = delegatedLinearUserId(this.db, item.id);
       const result = await this.options.lifecycle.startCodeIssue(
@@ -348,9 +335,45 @@ export class LinearTaskAccess {
       );
       current();
       this.ownership(item, sessionId, access, result.issue);
+      started.set(issue.id, result.issue);
       if (result.eligible) eligible.push(issue.id);
     }
+    if (this.invalidations === invalidations)
+      this.verdicts.set(key, {
+        ...verdict,
+        issues: verdict.issues.map((issue) => started.get(issue.id) ?? issue),
+      });
     return eligible;
+  }
+
+  private async read(
+    item: WorkItemRecord,
+    sessionId: string,
+    signal: AbortSignal,
+    allowTerminalIssue: boolean,
+    current: (allowUnknown?: boolean) => void,
+  ): Promise<AccessVerdict> {
+    if (this.options.access === null || this.options.lifecycle === null)
+      throw new Error("Linear is not connected.");
+    const access = await this.options.access.session(sessionId, { signal });
+    current(true);
+    this.record(access);
+    current();
+    const issues: LinearIssueOwnership[] = [];
+    for (const issueId of new Set([access.issueId, item.linearIssueId])) {
+      const issue = await this.options.lifecycle.inspect(issueId, { signal });
+      current();
+      if (issue.id !== issueId) throw new Error("Linear returned another task issue.");
+      this.ownership(item, sessionId, access, issue, allowTerminalIssue);
+      if (!(await this.options.access.team(issue.teamId, { signal }))) {
+        this.invalidate({ sessionId });
+        this.options.stopSession(sessionId);
+        throw new LinearAccessRemovedError("Linear task team access was removed.");
+      }
+      current();
+      issues.push(issue);
+    }
+    return { sessionId, access, issues };
   }
 
   private ownership(
