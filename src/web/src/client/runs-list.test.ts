@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusSnapshot } from "../contract";
 import { demoStatus } from "../demo";
 import { render, type RenderModel } from "./render";
 import { parseRunFilters, runFilterSearch } from "./runs-list";
+import { themedMarkup } from "./theme";
 
 function runsPage(search = "", snapshot: StatusSnapshot = demoStatus()): string {
   const model: RenderModel = {
@@ -177,4 +180,54 @@ describe("runs list", () => {
     expect(shownRuns(runsPage("?phase=closeout", snapshot)).sort()).toEqual(["r-100", "r-101"]);
     expect(shownRuns(runsPage("?phase=merge", snapshot))).toEqual([]);
   });
+
+  test("desktop: a queued task says why it waits: blocked, its owner's cap, or no free runner", () => {
+    const html = runsPage("", waitingTasks());
+    expect(waitText(row(html, "r-100"))).toBe("Blocked by ENG-102");
+    expect(waitText(row(html, "r-102"))).toBe(
+      "Waiting: its owner already runs 3 tasks, the most at once",
+    );
+    expect(waitText(row(html, "r-103"))).toBe("Waiting for a free runner");
+    expect(waitText(row(html, "r-101"))).toBeNull();
+    const page = render({
+      route: { view: "runs", id: "r-102" },
+      phase: "ready",
+      snapshot: waitingTasks(),
+      via: "bundled",
+      error: null,
+      engineUrl: null,
+    }).content;
+    expect(page).toContain(
+      "Waiting: its owner already runs 3 tasks, the most at once. Paws starts ENG-102 when one of them finishes.",
+    );
+  });
+
+  test("390 px: the wait reason stays in the issue cell that phones show, and wraps", () => {
+    const html = renderToStaticMarkup(
+      createElement(Fragment, null, themedMarkup(runsPage("", waitingTasks()))),
+    );
+    const cell = /<tr [^>]*data-run-id="r-102"><td [^>]*class="([^"]*)">(.*?)<\/td>/.exec(html);
+    expect(cell?.[1]).not.toMatch(/\bhidden\b|whitespace-nowrap/);
+    expect(cell?.[2]).toContain("Waiting: its owner already runs 3 tasks, the most at once");
+    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
+  });
 });
+
+function waitingTasks(): StatusSnapshot {
+  const snapshot = demoStatus();
+  for (const item of snapshot.items) {
+    if (item.id === "ENG-100") Object.assign(item, { state: "queued", blockers: ["ENG-102"] });
+    if (item.id === "ENG-102")
+      Object.assign(item, {
+        state: "queued",
+        queue: { position: 2, busySlots: 4, totalSlots: 4, ownerCap: 3 },
+      });
+    if (item.id === "ENG-103")
+      Object.assign(item, { state: "queued", queue: { position: 1, busySlots: 4, totalSlots: 4 } });
+  }
+  return snapshot;
+}
+
+function waitText(html: string): string | null {
+  return /data-wait-reason>([^<]+)</.exec(html)?.[1] ?? null;
+}
