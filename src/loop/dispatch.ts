@@ -166,6 +166,7 @@ async function postEvidence(
       note = "Paws could not upload this file to Linear.";
     }
   }
+  if (payload["uploadOnly"] === true) return;
   await tracker.postProgress(
     {
       sessionId,

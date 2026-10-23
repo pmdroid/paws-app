@@ -10,6 +10,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND, type Clock } from "../src/core";
 import {
   JobLoop,
+  applyWorkItemEvent,
   OutboxDispatcher,
   getRun,
   getWorkItem,
@@ -21,6 +22,8 @@ import {
   openDatabase,
   putWorkspaceUser,
   runnerHasCapacity,
+  saveCheckpoint,
+  saveCloseoutRecovery,
   syncWorkspaceMember,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
@@ -35,6 +38,7 @@ import {
   findOpenQuestion,
   getQuestion,
   getVisualReview,
+  openQuestion,
   rejectedEvidenceIds,
   visualReviewContinueQuestion,
   VISUAL_REVIEW_ANSWERERS,
@@ -43,7 +47,6 @@ import {
   VISUAL_REVIEW_QUESTION,
   VISUAL_REVIEW_REMINDER,
   VISUAL_REVIEW_REMINDER_MS,
-  VISUAL_REVIEW_WAIT,
 } from "../src/questions";
 import { githubClient } from "./e2e-harness";
 
@@ -79,7 +82,7 @@ function publishTwo(worktree: string, n: number): Step[] {
   return names.map((name) => ({ type: "publish_artifact", path: name, checkId: "visual-proof" }));
 }
 
-test("publishing the last required screenshot pauses the task and posts one question with the images", async () => {
+test("two screenshots published 10 s apart end the turn with one question that shows both", async () => {
   const f = await pausedForReview();
   try {
     const item = listWorkItems(f.db)[0]!;
@@ -87,11 +90,10 @@ test("publishing the last required screenshot pauses the task and posts one ques
     expect(item.checkpoint?.phase).toBe("awaiting_input");
     expect(getRun(f.db, item.currentRunId!)?.status).toBe("ended");
     expect(runnerHasCapacity(f.db, f.runnerId, Date.now())).toBe(true);
-    // The fake agent keeps the reply to its last publish_artifact call: the second screenshot.
+    const [first, second] = listEvidence(f.db, item.id);
+    expect(second!.createdAt - first!.createdAt).toBeGreaterThanOrEqual(10_000);
     expect(f.lastPublication()).toMatch(
-      new RegExp(
-        `^\\[shot-2\\.png\\]\\(<https://paws\\.example/evidence/[^>]+>\\)\\n\\n${VISUAL_REVIEW_WAIT}$`,
-      ),
+      /^\[shot-2\.png\]\(<https:\/\/paws\.example\/evidence\/[^>]+>\)$/,
     );
 
     expect(f.tracker.questions).toHaveLength(1);
@@ -102,6 +104,26 @@ test("publishing the last required screenshot pauses the task and posts one ques
     expect(question!.body).toContain(`![shot-2.png](<${ASSET}>)`);
     expect(f.uploads.sort()).toEqual(["shot-1.png", "shot-2.png"]);
     expect(findOpenQuestion(f.db, "ses_1")?.body).toBe(VISUAL_REVIEW_QUESTION);
+    expect(f.log.filter((entry) => entry.body.includes("shot-"))).toEqual([
+      {
+        kind: "elicitation",
+        body: question!.body,
+        options: ["Accept", "Request changes"],
+      },
+    ]);
+    expect(f.log.at(-1)).toEqual({
+      kind: "elicitation",
+      body: question!.body,
+      options: ["Accept", "Request changes"],
+    });
+
+    const posted = f.log.length;
+    for (const step of [60_000, 60 * 60_000, VISUAL_REVIEW_REMINDER_MS - 62 * 60_000]) {
+      f.advance(step);
+      await f.tickAll();
+    }
+    expect(f.log).toHaveLength(posted);
+    expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
   } finally {
     await f.close();
   }
@@ -140,23 +162,28 @@ test("the project lead can answer the visual review", async () => {
   }
 }, 90_000);
 
-test("the reminder is posted once after 24 hours", async () => {
+test("the reminder is asked once after 24 hours with the buttons", async () => {
   const f = await pausedForReview();
   try {
     await f.tickAll();
-    expect(f.notes(VISUAL_REVIEW_REMINDER)).toBe(0);
+    expect(f.reminders()).toBe(0);
 
     f.advance(VISUAL_REVIEW_REMINDER_MS - 60_000);
     await f.tickAll();
-    expect(f.notes(VISUAL_REVIEW_REMINDER)).toBe(0);
+    expect(f.reminders()).toBe(0);
 
     f.advance(60_000);
     await f.tickAll();
-    expect(f.notes(VISUAL_REVIEW_REMINDER)).toBe(1);
+    expect(f.reminders()).toBe(1);
 
     f.advance(VISUAL_REVIEW_REMINDER_MS * 3);
     await f.tickAll();
-    expect(f.notes(VISUAL_REVIEW_REMINDER)).toBe(1);
+    expect(f.reminders()).toBe(1);
+    expect(f.log.at(-1)).toEqual({
+      kind: "elicitation",
+      body: VISUAL_REVIEW_REMINDER,
+      options: ["Accept", "Request changes"],
+    });
     expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
     expect(findOpenQuestion(f.db, "ses_1")).not.toBeNull();
   } finally {
@@ -178,7 +205,7 @@ test("stopping the task ends the wait", async () => {
 
     f.advance(VISUAL_REVIEW_REMINDER_MS);
     await f.tickAll();
-    expect(f.notes(VISUAL_REVIEW_REMINDER)).toBe(0);
+    expect(f.reminders()).toBe(0);
     await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:late"));
     expect(getQuestion(f.db, open.id)?.answer).toBeNull();
   } finally {
@@ -400,6 +427,105 @@ test("a change under the check's paths after acceptance asks again", async () =>
   }
 }, 180_000);
 
+test("a review accepted for some of the files asks again with all of them instead of blocking Closeout", async () => {
+  const f = await pausedForReview();
+  try {
+    const first = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+    coverOnlyFirstShot(f.db, item.id, first.id);
+
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    await f.driveUntil(() => f.tracker.questions.length === 2);
+
+    expectReviewOfBothShots(f.tracker.questions[1]!);
+    expect(f.log.at(-1)?.kind).toBe("elicitation");
+    expect(getVisualReview(f.db, first.id)?.outcome).toBe("accepted");
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(f.github.opened).toHaveLength(0);
+
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:accept-2"));
+    await f.driveUntil(() => f.github.opened.length > 0);
+    expect(f.tracker.questions).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+test("retry on a task Closeout blocked for an uncovered file asks a new review round", async () => {
+  const f = await pausedForReview();
+  try {
+    const first = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+    coverOnlyFirstShot(f.db, item.id, first.id);
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    f.db.run("DELETE FROM job WHERE queue = ? AND finished_at IS NULL", [JOB_KIND.resume]);
+    const blocked = openQuestion(f.db, {
+      itemId: item.id,
+      sessionId: "ses_1",
+      body: "Closeout needs your help.",
+      now: Date.now(),
+    });
+    saveCloseoutRecovery(f.db, {
+      questionId: blocked.id,
+      taskId: item.id,
+      itemId: item.id,
+      base: item.checkpoint!.baseSha!,
+      head: item.checkpoint!.wipCommit!,
+      policyDigest: "",
+      failedChecks: [],
+      retryBaseline: [],
+      summary: "Closeout: blocked\nvisual-proof: missing",
+    });
+    applyWorkItemEvent(f.db, item.id, "blocking_question");
+
+    await f.orchestrator.onLinearEvent(prompted("retry", "delegator-1", "activity:retry"));
+    await f.driveUntil(() => f.tracker.questions.length === 2);
+
+    expectReviewOfBothShots(f.tracker.questions[1]!);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(f.github.opened).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+test("an accepted review at an unchanged head stays accepted when the checkpoint names another commit", async () => {
+  const f = await pausedForReview();
+  try {
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+    const head = item.checkpoint!.wipCommit!;
+    const base = item.checkpoint!.baseSha!;
+    expect(head).not.toBe(base);
+    saveCheckpoint(f.db, item.id, { phase: "awaiting_input", baseSha: base, wipCommit: base });
+
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(getVisualReview(f.db, open.id)?.headCommit).toBe(head);
+
+    await f.driveUntil(() => f.github.opened.length > 0 || f.tracker.questions.length > 1);
+    expect(getVisualReview(f.db, open.id)?.outcome).toBe("accepted");
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(f.github.opened).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): void {
+  const [shot] = listEvidence(db, itemId);
+  db.run("UPDATE visual_review SET evidence_ids = ? WHERE question_id = ?", [
+    JSON.stringify([shot!.id]),
+    questionId,
+  ]);
+}
+
+function expectReviewOfBothShots(question: { body: string; options?: readonly unknown[] }): void {
+  expect(question.options).toEqual(["Accept", "Request changes"]);
+  expect(question.body.startsWith(VISUAL_REVIEW_QUESTION)).toBe(true);
+  expect(question.body).toContain(`![shot-1.png](<${ASSET}>)`);
+  expect(question.body).toContain(`![shot-2.png](<${ASSET}>)`);
+}
+
 async function pausedForReview(
   options: {
     paths?: string[];
@@ -429,6 +555,20 @@ async function pausedForReview(
       },
     },
   );
+  const log: { kind: string; body: string; options?: readonly unknown[] }[] = [];
+  const { postProgress, askQuestion } = tracker;
+  tracker.postProgress = async (update, requestOptions) => {
+    if (!update.ephemeral) log.push({ kind: update.kind, body: update.body });
+    await postProgress(update, requestOptions);
+  };
+  tracker.askQuestion = async (question, requestOptions) => {
+    log.push({
+      kind: "elicitation",
+      body: question.body,
+      ...(question.options ? { options: question.options } : {}),
+    });
+    await askQuestion(question, requestOptions);
+  };
   let offset = 0;
   const clock: Clock = { now: () => Date.now() + offset, mono: () => performance.now() + offset };
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
@@ -436,7 +576,12 @@ async function pausedForReview(
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
   const evidenceRoot = path.join(layout.pawsRoot, "evidence");
-  const store = createEvidenceStore({ db, root: evidenceRoot });
+  let spacing = 0;
+  const store = createEvidenceStore({
+    db,
+    root: evidenceRoot,
+    now: () => clock.now() + spacing,
+  });
   const uploads: string[] = [];
   const files = createLinearFileTransfer({
     client: {
@@ -502,7 +647,13 @@ async function pausedForReview(
     tracker,
     files,
     evidence: {
-      store: { save: (input) => store.save(input) },
+      store: {
+        async save(input) {
+          const saved = await store.save(input);
+          spacing += 10_000;
+          return saved;
+        },
+      },
       publicUrl: "https://paws.example",
       root: evidenceRoot,
     },
@@ -525,6 +676,7 @@ async function pausedForReview(
   return {
     db,
     tracker,
+    log,
     github,
     prompts,
     uploads,
@@ -555,6 +707,10 @@ async function pausedForReview(
         await outboxIdle(outbox);
         if (job === null) await Bun.sleep(20);
       }
+    },
+    reminders() {
+      return tracker.questions.filter((question) => question.body === VISUAL_REVIEW_REMINDER)
+        .length;
     },
     notes(body: string) {
       return tracker.progress.filter((update) => update.body === body).length;
