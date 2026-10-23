@@ -172,9 +172,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     const clock = new FakeClock(Date.now());
     recoverOnStartup(db, clock.now());
     second = attach(clock);
-    secondLoop = second.jobs.run(secondStop.signal, (_ms, signal) =>
-      Bun.sleep(5).then(() => signal?.throwIfAborted()),
-    );
+    secondLoop = second.jobs.run(secondStop.signal, () => Bun.sleep(5));
     const claimed = () =>
       listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status !== "pending")
         .length;

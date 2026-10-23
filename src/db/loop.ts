@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { DEFAULT_LEASE_MS, DEFAULT_POLL_MS, sleep, type Clock } from "../core";
+import {
+  DEFAULT_LEASE_MS,
+  DEFAULT_POLL_MS,
+  isMergeWork,
+  JOB_KIND,
+  sleep,
+  type Clock,
+} from "../core";
 import { claimNextJob, completeJob, extendJobLease, failJob, isJobCurrent, type Job } from "./jobs";
 
 export type JobContext = {
@@ -9,6 +16,12 @@ export type JobContext = {
 };
 
 export type JobHandler = (job: Job, context: JobContext) => Promise<void> | void;
+
+const EXECUTION_QUEUES: readonly string[] = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify];
+
+function isControlQueue(queue: string): boolean {
+  return !EXECUTION_QUEUES.includes(queue) && !isMergeWork(queue, "");
+}
 
 export class JobLoop {
   private readonly handlers = new Map<string, JobHandler>();
@@ -33,13 +46,13 @@ export class JobLoop {
     this.handlers.set(queue, handler);
   }
 
-  async tick(): Promise<Job | null> {
+  async tick(queues: readonly string[] = [...this.handlers.keys()]): Promise<Job | null> {
     const now = this.clock.now();
     const job = claimNextJob(this.db, {
       workerId: this.options.workerId ?? "job-loop",
       leaseMs: this.options.leaseMs ?? DEFAULT_LEASE_MS,
       now,
-      queues: [...this.handlers.keys()],
+      queues,
     });
     if (job === null) return null;
     const handler = this.handlers.get(job.queue);
@@ -91,13 +104,16 @@ export class JobLoop {
     const concurrency = this.options.concurrency ?? 1;
     if (!Number.isSafeInteger(concurrency) || concurrency < 1)
       throw new Error("Invalid job concurrency");
-    const worker = async () => {
+    const worker = async (queues?: () => string[]) => {
       while (!signal.aborted) {
-        const job = await this.tick();
+        const job = await this.tick(queues?.());
         if (signal.aborted) break;
         if (job === null) await sleeper(this.pollMs, signal);
       }
     };
-    await Promise.all(Array.from({ length: concurrency }, worker));
+    await Promise.all([
+      ...Array.from({ length: concurrency }, () => worker()),
+      worker(() => [...this.handlers.keys()].filter(isControlQueue)),
+    ]);
   }
 }
