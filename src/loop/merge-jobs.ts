@@ -153,6 +153,14 @@ export function retryMergeLater(
   return result.changes > 0;
 }
 
+export function acceptGitHubDelivery(
+  _db: Database,
+  _delivery: { deliveryId: string; event: string; payload: string },
+  _now: number,
+): boolean {
+  return false;
+}
+
 export function ciWaitVerification(payload: unknown): CiWaitVerification | undefined {
   const record = payloadRecord(payload);
   const base = record.ciWaitBase;
