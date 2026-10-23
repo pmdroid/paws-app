@@ -56,6 +56,7 @@ type Active = {
   deadline: number;
   grant?: RunnerGrant;
   task?: Promise<void>;
+  delivering?: Promise<void>;
   stopped?: Promise<void>;
   quiesced?: Promise<void>;
   publicationBranch?: string;
@@ -98,6 +99,7 @@ export async function openRunnerRuntime(options: {
   /** Read before admitting work, so a lowered value holds back new work without stopping any. */
   concurrency?: number | (() => number);
   stopWaitMs?: number;
+  deliveryWaitMs?: number;
 }) {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
@@ -117,10 +119,13 @@ export async function openRunnerRuntime(options: {
       error instanceof Error ? error : new Error("Runner runtime operation failed"),
     );
   const deniedReported = new Set<string>();
-  const settle = (work: readonly (Promise<unknown> | undefined)[]) =>
+  const settle = (
+    work: readonly (Promise<unknown> | undefined)[],
+    waitMs = options.stopWaitMs ?? 5_000,
+  ) =>
     Promise.race([
       Promise.allSettled(work),
-      new Promise<void>((resolve) => setTimeout(resolve, options.stopWaitMs ?? 5_000).unref?.()),
+      new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
     ]);
   try {
     for (const previous of journal.executions(true)) {
@@ -745,16 +750,24 @@ export async function openRunnerRuntime(options: {
     }
     for (const entry of active.values()) {
       if (entry.execution.phase !== "running" && entry.execution.phase !== "publishing") continue;
-      try {
-        await deliver(entry);
-        if (!(await resumeIfCrashed(entry))) await complete(entry);
-      } catch (error) {
-        if (error instanceof RemoteFailure) {
-          report(error);
-          continue;
-        }
-        await interrupt(entry, error instanceof Error ? error.message : "runner error", true);
-      }
+      entry.delivering ??= advance(entry).finally(() => {
+        entry.delivering = undefined;
+      });
+    }
+    await settle(
+      [...active.values()].map((entry) => entry.delivering),
+      options.deliveryWaitMs ?? 1_000,
+    );
+  }
+  async function advance(entry: Active) {
+    try {
+      await deliver(entry);
+      if (!(await resumeIfCrashed(entry))) await complete(entry);
+    } catch (error) {
+      if (error instanceof RemoteFailure) return report(error);
+      await interrupt(entry, error instanceof Error ? error.message : "runner error", true).catch(
+        report,
+      );
     }
   }
   const heartbeat = setInterval(() => {
@@ -796,7 +809,7 @@ export async function openRunnerRuntime(options: {
         await Promise.allSettled([
           ticking,
           pulsing,
-          ...[...active.values()].map((entry) => entry.task),
+          ...[...active.values()].flatMap((entry) => [entry.task, entry.delivering]),
         ]);
         journal.close();
       })();
