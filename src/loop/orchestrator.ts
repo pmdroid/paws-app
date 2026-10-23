@@ -78,7 +78,6 @@ import {
   PawsShutdown,
   RunnerSlotsBusyError,
   queueLine,
-  mergeQueueLine,
   systemClock,
   parseLinearCommand,
   isTransientFailure,
@@ -193,20 +192,14 @@ import {
   markLinearActivitiesListed,
   keepTaskMergeSettings,
   type TaskMergeSettings,
-  joinMergeQueue,
   leaveMergeQueue,
-  markMergeQueueNotified,
-  mergeQueuePosition,
   delegatedLinearUserId,
 } from "../db";
 import {
   publishAccepted,
   closeStoppedPull,
   fetchUpstreamMain,
-  githubQueueLine,
-  githubQueueMerge,
   mergedPullHeads,
-  readPullReview,
   serialMerge,
   UPSTREAM_MAIN_REF,
   type GitHubBinding,
@@ -284,11 +277,14 @@ import {
 } from "./merge-jobs";
 import {
   MAX_REBASE_RETURNS,
+  REBASE_CONFLICT_INSTRUCTION,
+  REBASE_CONFLICT_THOUGHT,
+  mergeQueueTurn,
+  mergeThroughGitHubQueue,
   ciFixHandoff,
   ciFixQuestion,
   ciFixRoundLine,
   ciWaitVerification,
-  githubQueueWatch,
   parkMerge,
   serialMergeStep,
   wakeMergesBehind,
@@ -296,9 +292,11 @@ import {
   ciFixes,
   rebaseReturns,
   returnToAgent,
+  type MergeContext,
   type MergeReturnReason,
   type MergeStep,
   type MergeWait,
+  type OrderCapabilities,
 } from "../merge";
 import {
   createAcpActivityReporter,
@@ -443,17 +441,6 @@ const LINEAR_ACCESS_CHANGED: IntakeDecision = {
   outcome: "refused",
   reason: "Access to this session changed while Paws waited to start it.",
 };
-/** The first line of a CI fix handoff under the GitHub merge queue order. */
-const CI_FIX_SOURCE = {
-  pull: "The pull request's own checks failed before Paws could add it to the GitHub merge queue.",
-  queue:
-    "GitHub's merge queue removed the pull request because a check failed on the combined commit it tested with the pull requests ahead of it. Main may have changed since this branch was made.",
-};
-export const REBASE_CONFLICT_INSTRUCTION =
-  "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
-const REBASE_CONFLICT_THOUGHT =
-  "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
-
 /**
  * One process loop: intake, one item at a time, ACP, Closeout, pull request, serial merge.
  * Linear effects go through the outbox. State changes go through `transition()`.
@@ -2782,10 +2769,9 @@ export class Orchestrator {
     let verifying = item;
     const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
     const mergeSettings = await this.mergeSettingsFor(item, live.controller.signal);
+    const context: MergeContext = { db: this.db, item, caps: this.orderCapabilities(item.id) };
     if (mergeSettings.order === "github-queue") {
-      const handed = await this.mergeThroughGitHubQueue({
-        item,
-        payload,
+      const handed = await mergeThroughGitHubQueue(context, payload, {
         repository,
         github,
         pull: published.pull,
@@ -2798,7 +2784,7 @@ export class Orchestrator {
     // Under "Add to the GitHub merge queue", a base branch without one merges each on its own.
     const queued = mergeSettings.order === "queue";
     if (queued) {
-      const wait = await this.mergeQueueTurn(item, repository, github, {
+      const wait = await mergeQueueTurn(context, repository, github, {
         number: published.pull.number,
         head: priorVerification?.head ?? acceptedHead ?? "",
       });
@@ -3047,271 +3033,20 @@ export class Orchestrator {
     await this.flush();
   }
 
-  /**
-   * Settings → Merging: Merge queue. A task joins its repository's queue once it is approved or
-   * needs no review, in the order tasks became ready. Only the first one moves. The others wait,
-   * and Linear hears once each time the position changes. A missing or dismissed approval takes
-   * the task out of the queue until it is approved again.
-   */
-  private async mergeQueueTurn(
-    item: WorkItemRecord,
-    repository: { owner: string; repo: string },
-    github: GitHubBinding,
-    pull: { number: number; head: string },
-  ): Promise<MergeWait | undefined> {
-    const prNumber = pull.number;
-    const name = `${repository.owner}/${repository.repo}`;
-    const review = await readPullReview({
-      client: github.client,
-      owner: repository.owner,
-      repo: repository.repo,
-      prNumber,
-      ...this.gitHubCredentials(github),
-    });
-    if (this.stopped(item.id)) return undefined;
-    if (review === "unreadable" && mergeQueuePosition(this.db, item.id) === null)
-      return {
-        message: "Could not read the pull request's reviews.",
-        queued: true,
-        reason: "review",
-      };
-    if (review === "required" || review === "changes_requested") {
-      leaveMergeQueue(this.db, item.id);
-      const body =
-        review === "required"
-          ? `Waiting for an approving review on pull request #${prNumber}. It joins the ${name} merge queue once approved.`
-          : `Changes were requested on pull request #${prNumber}. It joins the ${name} merge queue once approved.`;
-      this.postAfterPullRequest(item, body, `${item.id}:merge-review:${review}:${pull.head}`);
-      return { message: body, queued: true, reason: "review" };
-    }
-    joinMergeQueue(this.db, { itemId: item.id, repository: name, now: this.now() });
-    const place = mergeQueuePosition(this.db, item.id);
-    if (place === null) return undefined;
-    if (
-      place.notifiedPosition !== place.position &&
-      (place.position > 1 || place.notifiedPosition !== null)
-    ) {
-      const ahead = place.aheadItemId ? getWorkItem(this.db, place.aheadItemId) : null;
-      const line = mergeQueueLine(place);
-      const body =
-        place.position === 1
-          ? `${line}. Merging next.`
-          : `${line}. ${ahead?.linearIdentifier ?? "The task ahead"} merges first.`;
-      this.statusAfterPullRequest(
-        item,
-        body,
-        `${item.id}:merge-queue:${place.readyAt}:${place.position}`,
-      );
-      markMergeQueueNotified(this.db, item.id, place.position);
-    }
-    if (place.position === 1) return undefined;
-    const ahead = place.aheadItemId ? getWorkItem(this.db, place.aheadItemId) : null;
+  private orderCapabilities(itemId: string): OrderCapabilities {
     return {
-      message: `${mergeQueueLine(place)}. ${ahead?.linearIdentifier ?? "The task ahead"} merges first.`,
-      queued: true,
-      reason: "ahead",
+      now: () => this.now(),
+      stopped: () => this.stopped(itemId),
+      session: (item) => this.activitySession(item),
+      fetchMain: (item) => this.fetchUpstreamMain(item),
+      ciFixAttempts: () => this.ciFixAttempts(),
+      voice: {
+        thought: (item, body, key) => this.post(item, "thought", body, key),
+        status: (item, body, key) => this.statusAfterPullRequest(item, body, key),
+        afterPullRequest: (item, body, key) => this.postAfterPullRequest(item, body, key),
+        flush: () => this.flush(),
+      },
     };
-  }
-
-  /**
-   * Settings → Merging "Add to the GitHub merge queue". Paws neither rebases nor runs Closeout
-   * again: GitHub tests the combined result. Once the pull request's own checks pass, Paws
-   * queues it and reads the entry on each pass. A failing check or a conflict goes back to the
-   * agent like CI does today, and a fixed head is queued again after Closeout accepts it. Any
-   * other removal, such as a person dequeuing it, asks in Linear. `no_queue` means the base branch
-   * has no merge queue, and Paws merges the pull request itself.
-   */
-  private async mergeThroughGitHubQueue(input: {
-    item: WorkItemRecord;
-    payload: unknown;
-    repository: RepositoryBinding;
-    github: GitHubBinding;
-    pull: { number: number; url: string | null };
-    head: string;
-    signal: AbortSignal;
-  }): Promise<MergeStep | "no_queue"> {
-    const { item, repository, github, pull } = input;
-    const name = `${repository.owner}/${repository.repo}`;
-    const watch = githubQueueWatch(input.payload) ?? { queued: false };
-    const result = await githubQueueMerge({
-      owner: repository.owner,
-      repo: repository.repo,
-      prNumber: pull.number,
-      head: input.head,
-      client: github.client,
-      appId: github.appId,
-      installationId: github.installationId,
-      privateKeyPem: github.privateKeyPem,
-      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
-      queued: watch.queued,
-      isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
-      signal: input.signal,
-    });
-    if (this.stopped(item.id)) return { kind: "obsolete" };
-    switch (result.outcome) {
-      case "no_queue":
-        this.statusAfterPullRequest(
-          item,
-          `${result.message} Paws merges the pull request itself when its CI is green.`,
-          `${item.id}:github-queue:none:${input.head}`,
-        );
-        return "no_queue";
-      case "checks_pending":
-      case "unreadable":
-        return {
-          kind: "wait",
-          message: result.message,
-          head: input.head,
-          reason: "ci",
-          githubQueue: watch,
-        };
-      case "queued": {
-        const line = githubQueueLine(name, result.position, result.state);
-        if (!watch.queued)
-          this.statusAfterPullRequest(
-            item,
-            `Added ${pull.url ?? `pull request #${pull.number}`} to the GitHub merge queue. ${line}`,
-            `${item.id}:github-queue:added:${input.head}`,
-          );
-        else if (watch.position !== result.position || watch.state !== result.state)
-          this.statusAfterPullRequest(
-            item,
-            line,
-            `${item.id}:github-queue:${input.head}:${result.position}:${result.state}`,
-          );
-        await this.flush();
-        return {
-          kind: "wait",
-          message: line,
-          head: input.head,
-          reason: (result.position ?? 1) > 1 ? "ahead" : "ci",
-          githubQueue: { queued: true, position: result.position, state: result.state, line },
-        };
-      }
-      case "merged":
-        recordConfirmedRemoteMerge(this.db, {
-          itemId: item.id,
-          repositoryOwner: repository.owner,
-          repositoryName: repository.repo,
-          pullNumber: pull.number,
-          pullUrl: pull.url,
-          mergeSha: result.sha,
-          confirmedAt: this.now(),
-        });
-        return { kind: "merged" };
-      case "ci_failed":
-        return this.githubQueueCiFailed(
-          item,
-          input.head,
-          result.failedChecks,
-          pull.url,
-          CI_FIX_SOURCE.pull,
-        );
-      case "removed": {
-        const { removal } = result;
-        const why = removal.reason ? ` (${removal.reason})` : "";
-        if (removal.cause === "failed")
-          return this.githubQueueCiFailed(
-            item,
-            input.head,
-            [{ name: removal.reason || "merge queue checks", url: pull.url }],
-            pull.url,
-            CI_FIX_SOURCE.queue,
-          );
-        if (removal.cause === "conflict") {
-          if (
-            (await this.fetchUpstreamMain(item).catch(() => false)) &&
-            this.returnToAgent(
-              item,
-              "rebase-conflict",
-              MAX_REBASE_RETURNS,
-              REBASE_CONFLICT_INSTRUCTION,
-              () =>
-                `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
-              (jobId) =>
-                recordRebaseReturn(this.db, {
-                  itemId: item.id,
-                  jobId,
-                  candidate: input.head,
-                  reason: "github_queue",
-                }),
-            )
-          )
-            return { kind: "returned" };
-          return {
-            kind: "failed",
-            reason: "merge",
-            message: `GitHub's merge queue removed the pull request for a conflict${why}.`,
-          };
-        }
-        return this.askGitHubQueueRemoval(
-          item,
-          `${removal.actor ? `@${removal.actor}` : "Someone"} removed ${pull.url ?? `pull request #${pull.number}`} from the ${name} GitHub merge queue${why}.`,
-        );
-      }
-      case "closed":
-        return this.askGitHubQueueRemoval(
-          item,
-          `${pull.url ?? `Pull request #${pull.number}`} was closed on GitHub while it waited for the ${name} merge queue.`,
-        );
-      case "blocked":
-      case "sha_moved":
-        return { kind: "failed", reason: "merge", message: result.message };
-    }
-  }
-
-  /** A failing check sends the task back to the agent, at most `ci_fix_attempts` times, then asks. */
-  private async githubQueueCiFailed(
-    item: WorkItemRecord,
-    head: string,
-    checks: readonly { name: string; url: string | null; logTail?: string | null }[],
-    pullUrl: string | null,
-    source: string,
-  ): Promise<MergeStep> {
-    const limit = this.ciFixAttempts();
-    const failed = checks.map((check) => ({
-      name: check.name,
-      state: "failed" as const,
-      url: check.url,
-      startedAt: null,
-      completedAt: null,
-      logTail: check.logTail ?? null,
-      logSource: null,
-    }));
-    if (
-      this.returnToAgent(
-        item,
-        "ci-failed",
-        limit,
-        `${source}\n\n${ciFixHandoff(checks)}`,
-        (attempt) => ciFixRoundLine(checks, attempt, limit),
-        (_, attempt) => this.recordCiRound(item, head, failed, "agent", limit, attempt),
-      )
-    )
-      return { kind: "returned" };
-    if (this.askCiHelp(item, ciFixQuestion(checks, limit, pullUrl))) {
-      await this.flush();
-      return { kind: "asked" };
-    }
-    return {
-      kind: "failed",
-      reason: "merge",
-      message: `CI failed: ${checks.map((check) => check.name).join(", ")}`,
-    };
-  }
-
-  /** The pull request left GitHub's merge queue for a reason Paws should not decide alone. */
-  private async askGitHubQueueRemoval(item: WorkItemRecord, what: string): Promise<MergeStep> {
-    const body = [
-      what,
-      "",
-      "What should Paws do? Reply with what to change, and the agent works on it. Paws adds the pull request to the merge queue again after Closeout accepts the change. To leave it as it is, stop the task.",
-    ].join("\n");
-    if (this.askCiHelp(item, body)) {
-      await this.flush();
-      return { kind: "asked" };
-    }
-    return { kind: "failed", reason: "merge", message: what };
   }
 
   private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {
