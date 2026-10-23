@@ -34,7 +34,7 @@ export const LOW_BUDGET_FRACTION = 0.2;
 /** Wall clock ahead of monotonic time by more than this is a laptop wake. */
 export const WAKE_GAP_MS = 30_000;
 
-const CURSOR_NAME = "linear";
+export const CATCH_UP_CURSOR = "linear";
 const INITIAL_LOOKBACK_MS = 60 * 60 * 1000;
 const OVERLAP_MS = 5_000;
 const STOP_COMMENT = /^\/paws\s+stop\b/i;
@@ -190,7 +190,7 @@ export function startCatchUpPoller(options: {
       if (options.intake?.accepts(event)) continue;
       await deliverOrSkip(event);
     }
-    const saved = options.store.getCursor(CURSOR_NAME);
+    const saved = options.store.getCursor(CATCH_UP_CURSOR);
     const since = saved === null ? now() - INITIAL_LOOKBACK_MS : Math.max(0, saved - OVERLAP_MS);
     const sighting = await options.source.poll(since);
     if (sighting.budget !== null) latestBudget = sighting.budget;
@@ -232,7 +232,7 @@ export function startCatchUpPoller(options: {
       await deliverOrSkip(event);
     }
     options.intake?.wake();
-    if (sighting.caughtUp) options.store.setCursor(CURSOR_NAME, now());
+    if (sighting.caughtUp) options.store.setCursor(CATCH_UP_CURSOR, now());
     rateAttempts = 0;
   }
 
@@ -296,6 +296,9 @@ export function startCatchUpPoller(options: {
           latestBudget = error.budget;
           const backoff = retryBackoffMs(rateAttempts, POLL_INTERVAL_ACTIVE_MS, 60_000);
           delay = Math.max(backoff, error.retryAfterMs);
+          console.error(
+            `linear intake poll rate-limited; retrying in ${Math.ceil(delay / 1000)}s: ${error.message}`,
+          );
         } else {
           const message = error instanceof Error ? error.message : "intake poll failed";
           console.error(`linear intake poll failed: ${message}`);

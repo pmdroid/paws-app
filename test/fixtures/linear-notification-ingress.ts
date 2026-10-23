@@ -97,6 +97,7 @@ globalThis.fetch = Object.assign(
       throw new Error("Unexpected offline GitHub request");
     }
     const query = JSON.parse(String(init?.body)).query as string;
+    if (query.includes("IntakePoll")) return Response.json({ data: { viewer: { id: "app" } } });
     queries.push(query);
     if (query.includes("PawsIssueContext")) {
       contextReads++;

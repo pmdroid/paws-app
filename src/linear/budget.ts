@@ -59,6 +59,7 @@ export type LinearUsage = {
   windowMs: number;
   callers: Record<string, LinearCallerUsage>;
   items: LinearItemUsage[];
+  lastCatchUpMs?: number | null;
 };
 
 export type LinearItemUsage = { item: string; requests: number };

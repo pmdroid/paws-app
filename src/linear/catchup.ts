@@ -111,16 +111,6 @@ export type IntakePollSource = {
   poll(sinceMs: number): Promise<IntakeSighting>;
 };
 
-const EMPTY: IntakeSighting = {
-  sessions: [],
-  issues: [],
-  comments: [],
-  activities: [],
-  budget: null,
-  caughtUp: true,
-  queried: false,
-};
-
 /** Poll team issues, comments, and agent activities with one query per call. */
 export function createIntakePollSource(
   client: LinearClient,
@@ -137,13 +127,15 @@ export function createIntakePollSource(
 
   return {
     async poll(sinceMs) {
-      const teamId = options.teamId;
-      if (teamId === null || teamId.length === 0) return EMPTY;
+      const teamId = options.teamId === "" ? null : options.teamId;
       cycleSince ??= new Date(sinceMs).toISOString();
       const data = await client.query(INTAKE_QUERY, {
-        team: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(teamId)
-          ? { id: { eq: teamId } }
-          : { key: { eq: teamId } },
+        team:
+          teamId === null
+            ? {}
+            : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(teamId)
+              ? { id: { eq: teamId } }
+              : { key: { eq: teamId } },
         since: cycleSince,
         issueAfter,
         commentAfter,
@@ -251,7 +243,7 @@ export function createIntakePollSource(
 function readSessions(
   root: Record<string, unknown>,
   appUserId: string | null,
-  teamId: string,
+  teamId: string | null,
 ): PolledSession[] {
   const latest = new Map<string, PolledSession>();
   for (const node of readConnection(root, "agentSessions").nodes) {
@@ -260,7 +252,8 @@ function readSessions(
     const team = issue !== null && isRecord(issue["team"]) ? issue["team"] : null;
     if (user === null || readString(user, "id") !== appUserId || issue === null || team === null)
       continue;
-    if (readString(team, "id") !== teamId && readString(team, "key") !== teamId) continue;
+    if (teamId !== null && readString(team, "id") !== teamId && readString(team, "key") !== teamId)
+      continue;
     const id = readString(node, "id");
     const issueId = readString(issue, "id");
     const createdAtMs = readTime(node, "createdAt");

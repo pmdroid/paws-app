@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { intakeDelegatedIssue } from "../src/intake";
 import { configureWorkItem, insertQueuedItem } from "../src/db";
 import { RunnerSlotsBusyError } from "../src/core";
@@ -19,6 +19,7 @@ import {
   createLinearClient,
   createLinearTracker,
   LinearEntityNotFoundError,
+  LinearRateLimitError,
   linearBudget,
   createLinearLedger,
   type LinearLedger,
@@ -293,6 +294,82 @@ describe("linear intake poll", () => {
     const result = await source.poll(NOW);
     expect(result.queried).toBe(true);
     expect(result.caughtUp).toBe(true);
+  });
+
+  test("polls every team when none is configured and keeps sessions from any team", async () => {
+    const { client } = scripted(({ query, variables }) => {
+      expect(query).toContain("$team: TeamFilter!");
+      expect(variables["team"]).toEqual({});
+      return {
+        ...page([issue("iss_any", "OPS-1", [], "app_1")]),
+        agentSessions: {
+          nodes: [
+            {
+              ...session("session-ops", "iss_any", NOW),
+              issue: { id: "iss_any", team: { id: "team_ops", key: "OPS" } },
+            },
+          ],
+        },
+      };
+    });
+    const result = await createIntakePollSource(client, { teamId: null }).poll(NOW);
+    expect(result.queried).toBe(true);
+    expect(result.caughtUp).toBe(true);
+    expect(result.issues.map((polled) => polled.id)).toEqual(["iss_any"]);
+    expect(result.sessions.map((polled) => polled.id)).toEqual(["session-ops"]);
+  });
+
+  test("a runtime without a configured team catches up and reports when", async () => {
+    const home = tempHome();
+    const secrets = join(home, "secrets");
+    mkdirSync(secrets, { recursive: true });
+    const db = tempDb();
+    const queries: string[] = [];
+    const linear = openLinear({
+      db,
+      secretsDir: secrets,
+      env: { LINEAR_ACCESS_TOKEN: "token" },
+      publicUrl: null,
+      fetch: async (_url, init) => {
+        queries.push(String(init?.body));
+        return json(emptyData());
+      },
+    });
+    expect(linear.usage().lastCatchUpMs).toBeNull();
+    const running = linear.start(8787);
+    await waitFor(() => createInboxStore(db).getCursor("linear") !== null);
+    expect(queries.some((body) => body.includes("IntakePoll"))).toBe(true);
+    expect(linear.usage().lastCatchUpMs).toBe(createInboxStore(db).getCursor("linear"));
+    await running.stop();
+    db.close();
+  });
+
+  test("logs a rate-limited poll with its wait", async () => {
+    const db = tempDb();
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    const waits: number[] = [];
+    const poller = startCatchUpPoller({
+      source: {
+        async poll() {
+          throw new LinearRateLimitError(42_000, rateBudget({ requestsRemaining: 0 }));
+        },
+      },
+      store: createInboxStore(db),
+      onEvent: () => {},
+      hot: () => false,
+      sleeper: recordingSleeper(waits, hold()),
+      now: () => NOW,
+    });
+    try {
+      await waitFor(() => waits.length > 0);
+      expect(errors.mock.calls.map((call) => String(call[0]))).toContain(
+        "linear intake poll rate-limited; retrying in 42s: Linear GraphQL: RATELIMITED",
+      );
+    } finally {
+      errors.mockRestore();
+      await poller.stop();
+      db.close();
+    }
   });
 
   test("waits 5s while work is active and 15s while idle", async () => {
