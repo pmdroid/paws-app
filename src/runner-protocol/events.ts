@@ -70,6 +70,13 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     notice: z.literal(true).optional(),
   }),
   z.strictObject({ type: z.literal("activity"), update: RunnerActivitySchema }),
+  z.strictObject({
+    type: z.literal("hook_failed"),
+    hookId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/),
+    hookEvent: z.enum(["after_edit", "before_shell", "before_tool", "stop"]),
+    command: z.string().min(1).max(512),
+    reason: z.string().min(1).max(1024),
+  }),
   z.strictObject({ type: z.literal("permission"), permission: RunnerPermissionSchema }),
   z.strictObject({
     type: z.literal("plan"),

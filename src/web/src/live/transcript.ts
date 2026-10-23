@@ -99,6 +99,10 @@ function* readFile(
         } else if (event?.type === "ask_team") {
           kind = "elicitation";
           text = event.question;
+        } else if (event?.type === "hook_failed") {
+          kind = "err";
+          const when = HOOK_LABELS[event.hookEvent] ?? "a hook event";
+          text = `Workspace hook failed (${when}): ${event.command} · ${event.reason}`;
         } else if (event?.type === "error") {
           kind = "err";
           text = event.message;
@@ -127,6 +131,13 @@ function* readFile(
     if (fd !== undefined) closeSync(fd);
   }
 }
+
+const HOOK_LABELS: Record<string, string> = {
+  after_edit: "after a file edit",
+  before_shell: "before a shell command",
+  before_tool: "before a tool call",
+  stop: "when the agent stops",
+};
 
 function toolValue(value: unknown): string {
   if (typeof value === "string") return value;

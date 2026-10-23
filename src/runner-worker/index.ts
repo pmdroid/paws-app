@@ -149,7 +149,10 @@ export type RunnerWorkerEvent =
   | { type: "acp"; event: AcpEvent }
   | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
-  | Extract<RunnerEvent, { type: "plan" | "pull_request" | "progress" | "closeout" }>;
+  | Extract<
+      RunnerEvent,
+      { type: "plan" | "pull_request" | "progress" | "closeout" | "hook_failed" }
+    >;
 
 export interface RunnerWorkerResult {
   executionId: string;
@@ -486,6 +489,7 @@ export async function executeRunnerCommand(
       ...options.launch,
       hostAccess: true,
       skillsRoot,
+      ...(command.type === "run" && command.hooks?.length ? { workspaceHooks: command.hooks } : {}),
       env: agentEnv,
       checkpointEnv: env,
       commitPolicy: command.type === "run" ? command.commitPolicy : undefined,
@@ -556,6 +560,10 @@ export async function executeRunnerCommand(
             if (limits.length) agentLimits = limits;
           }
           emit({ type: "acp", event: compactAcpEvent(event) });
+          if (event.type === "hook_failed") {
+            const parsed = RunnerEventSchema.safeParse(event);
+            if (parsed.success && parsed.data.type === "hook_failed") emit(parsed.data);
+          }
           if (event.type === "progress" && !event.messageChunk) {
             const parsed = RunnerEventSchema.safeParse({ type: "progress", text: event.text });
             if (

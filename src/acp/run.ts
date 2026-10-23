@@ -42,6 +42,7 @@ import {
 } from "./adapters";
 import { startHostToolBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
 import { installCloseoutStopHook } from "./closeout-hook";
+import { watchHookFailures } from "./workspace-hooks";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
 import { sessionModel, selectSessionProfile, providerFor, standardWindowNotice } from "./model";
 import { minimalAgentEnv } from "./env";
@@ -207,6 +208,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           runDirectory: directory,
           socketPath,
           sourceEnv,
+          ...(options.workspaceHooks ? { workspaceHooks: options.workspaceHooks } : {}),
         })
       : undefined;
   const child = spawnAgent(
@@ -266,6 +268,19 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     });
     return emitQueue;
   };
+  const stopWatchingHooks = stopHook
+    ? watchHookFailures(directory, (failure) => {
+        void Promise.resolve(
+          emit({
+            type: "hook_failed",
+            hookId: failure.id,
+            hookEvent: failure.event,
+            command: failure.command,
+            reason: failure.reason,
+          }),
+        ).catch(() => undefined);
+      })
+    : undefined;
 
   const terminals = new TerminalRegistry(guard, options.env ?? process.env, attributionEnv);
   runAbort.signal.addEventListener("abort", () => void terminals.close(graceMs), { once: true });
@@ -580,6 +595,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   } finally {
     runAbort.abort();
     result.agentExited = await stopChild(child, graceMs);
+    stopWatchingHooks?.();
     result.pid = child.pid;
     result.transcriptPath = transcript;
     result.agentExited = (await terminals.close(graceMs)) && result.agentExited;
