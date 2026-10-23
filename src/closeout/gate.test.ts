@@ -1096,6 +1096,165 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
+  test("a diff-scoped review tells the reviewer to stay inside the diff and its files", async () => {
+    const prompts: string[] = [];
+    for (const extra of [[], ["scope: diff"]]) {
+      const repo = await originRepo({
+        ".agents/closeout.yaml": policy([{ ...reviewItem("review"), extra }]),
+        ".agents/skills/adversarial-review/SKILL.md": SKILL,
+      });
+      try {
+        const evaluation = await evaluateCandidate({
+          worktree: repo.dir,
+          taskId: TASK,
+          base: repo.head,
+          head: repo.head,
+          candidate: candidate(),
+          home: repo.home,
+          pawsHome: repo.pawsHome,
+          reviewer: {
+            async review(request) {
+              prompts.push(request.prompt ?? "");
+              return { session: "codex-session", model: "codex", provider: "openai", findings: [] };
+            },
+          },
+        });
+        expect(evaluation.outcome).toBe("accepted");
+      } finally {
+        await repo.cleanup();
+      }
+    }
+    expect(prompts[0]).not.toContain("Review only the diff");
+    expect(prompts[1]).toContain(
+      "Review only the diff below and the changed files it lists. Open a changed file only for context the diff lacks. Do not read unchanged files, search the repository, or run commands or tests.",
+    );
+  });
+
+  test("a review setting the policy schema does not know blocks the policy", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([{ ...reviewItem("review"), extra: ["scope: everything"] }]),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    try {
+      const evaluation = await evaluateCandidate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: throwingReviewer(),
+      });
+      expect(evaluation.outcome).toBe("blocked");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a change under minChangedLines skips the review and a larger one runs it", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([{ ...reviewItem("review"), extra: ["minChangedLines: 5"] }]),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    const commit = async (lines: number) => {
+      await writeFile(
+        path.join(repo.dir, "change.txt"),
+        `${Array.from({ length: lines }, (_, line) => `line ${line}`).join("\n")}\n`,
+      );
+      await exec("git", ["-C", repo.dir, "add", "change.txt"]);
+      await exec("git", ["-C", repo.dir, "commit", "-m", `${lines} lines`]);
+      return (await exec("git", ["-C", repo.dir, "rev-parse", "HEAD"])).stdout.trim();
+    };
+    let reviews = 0;
+    const evaluate = (head: string) =>
+      evaluateCandidate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: {
+          async review() {
+            reviews += 1;
+            return { session: "codex-session", model: "codex", provider: "openai", findings: [] };
+          },
+        },
+      });
+    try {
+      const small = await evaluate(await commit(4));
+      expect(small.outcome).toBe("accepted");
+      expect(small.decision?.items).toEqual([
+        {
+          id: "review",
+          kind: "review",
+          state: "skipped",
+          message: "4 changed lines, under minChangedLines 5",
+        },
+      ]);
+      expect(reviews).toBe(0);
+      const large = await evaluate(await commit(9));
+      expect(large.outcome).toBe("accepted");
+      expect(large.decision?.items[0]?.state).toBe("passed");
+      expect(reviews).toBe(1);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  for (const parallel of [false, true]) {
+    test(`a ${parallel ? "parallel" : "sequential"} review ${parallel ? "runs while" : "waits for"} the command checks`, async () => {
+      const flags = await mkdtemp(path.join(tmpdir(), "paws-review-flag-"));
+      const flag = path.join(flags, "review-started");
+      const wait = `const fs = require('node:fs'); for (let i = 0; i < 60 && !fs.existsSync('${flag}'); i++) Bun.sleepSync(50); if (!fs.existsSync('${flag}')) process.exit(1)`;
+      const repo = await originRepo({
+        ".agents/closeout.yaml": policy([
+          { id: "test", kind: "command", exec: ["bun", "-e", wait], timeoutSeconds: 30 },
+          { ...reviewItem("review"), extra: parallel ? ["parallel: true"] : [] },
+        ]),
+        ".agents/skills/adversarial-review/SKILL.md": SKILL,
+      });
+      const head = repo.head;
+      const states: string[] = [];
+      try {
+        const evaluation = await evaluateCandidate({
+          worktree: repo.dir,
+          taskId: TASK,
+          base: head,
+          head,
+          candidate: candidate(),
+          home: repo.home,
+          pawsHome: repo.pawsHome,
+          progress: {
+            begin() {},
+            step(_identity, step) {
+              if (step.kind === "review") states.push(step.state);
+            },
+            output() {},
+            finish() {},
+          },
+          reviewer: {
+            async review() {
+              await writeFile(flag, "started\n");
+              return { session: "codex-session", model: "codex", provider: "openai", findings: [] };
+            },
+          },
+        });
+        expect(evaluation.outcome).toBe(parallel ? "accepted" : "rejected");
+        if (parallel) {
+          expect(states[0]).toBe("running");
+          expect(states).not.toContain("pending");
+          expect(states.at(-1)).toBe("passed");
+        }
+      } finally {
+        await repo.cleanup();
+        await rm(flags, { recursive: true, force: true });
+      }
+    }, 20_000);
+  }
+
   test("createCloseoutGate maps an accepted run onto the foundation verdict", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([alwaysPass("test")]),
@@ -1242,6 +1401,7 @@ function yamlItem(item: Record<string, unknown>): string[] {
       "      differentSession: true",
       "      differentModel: true",
       "    failOn: P1",
+      ...((item.extra as string[] | undefined) ?? []).map((line) => `    ${line}`),
     );
   }
   return lines;
