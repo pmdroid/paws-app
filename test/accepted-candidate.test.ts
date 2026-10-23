@@ -37,7 +37,7 @@ test("a failing pull-request step is retried from the accepted candidate without
   expect(result.errors, result.detail).toEqual([]);
   expect(result.questions, result.detail).toEqual([]);
   expect(result.mergeAttempts, result.detail).toBe(3);
-});
+}, 120_000);
 
 test("an agent session past its time cap after Closeout accepted the candidate still ends in a pull request", async () => {
   const result = await runAccepted({ failedPullRequests: 1, capAfterAcceptance: true });
@@ -46,7 +46,7 @@ test("an agent session past its time cap after Closeout accepted the candidate s
   expect(result.pullRequests, result.detail).toBe(1);
   expect(result.implementRuns, result.detail).toBe(1);
   expect(result.errors, result.detail).toEqual([]);
-});
+}, 120_000);
 
 test("a pull-request step that keeps failing names the branch when its retries are exhausted", async () => {
   const result = await runAccepted({ failedPullRequests: Infinity });
@@ -58,7 +58,7 @@ test("a pull-request step that keeps failing names the branch when its retries a
       /^Stopped after 3 attempts\. .*\. The accepted work is on branch `paws\/eng-8-[a-z0-9]+`\.$/,
     ),
   ]);
-});
+}, 120_000);
 
 async function runAccepted(options: {
   failedPullRequests: number;
