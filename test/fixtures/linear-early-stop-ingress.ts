@@ -21,6 +21,7 @@ globalThis.fetch = Object.assign(
   async (_url: unknown, init?: RequestInit) => {
     const payload = JSON.parse(String(init?.body));
     const query = payload.query as string;
+    if (query.includes("IntakePoll")) return Response.json({ data: { viewer: { id: "app" } } });
     if (typeof payload.variables?.input?.content?.body === "string")
       bodies.push(payload.variables.input.content.body);
     queries.push(query);

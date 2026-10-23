@@ -65,6 +65,7 @@ export async function probeExecutionRuntime(input: {
   const page = { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } };
   runtimeLinear.graph = async (query, variables) => {
     const id = variables["id"];
+    if (query.includes("IntakePoll")) return Response.json({ data: { viewer: { id: "app" } } });
     if (query.includes("PawsSessionInstallation"))
       return Response.json({
         data: {

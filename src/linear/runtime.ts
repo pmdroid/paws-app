@@ -17,6 +17,7 @@ import {
   type LinearAuth,
 } from "./oauth";
 import {
+  CATCH_UP_CURSOR,
   linearWorkIsHot,
   persistStopCommand,
   startCatchUpPoller,
@@ -144,7 +145,7 @@ export function openLinear(options: {
         ? null
         : createLinearAccessReads(callerClient(client, "task-access"), settings.clientId),
     issueLifecycle: client === null ? null : createLinearIssueLifecycle(client),
-    usage: () => ledger.usage(),
+    usage: () => ({ ...ledger.usage(), lastCatchUpMs: store.getCursor(CATCH_UP_CURSOR) }),
     start(port) {
       if (running !== null) return running;
       const webhooks = options.webhooks ?? settings.webhooks;
