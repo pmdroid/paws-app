@@ -154,6 +154,8 @@ import {
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
+  saveVisualReviewMarks,
+  type VisualReviewMark,
   saveRunResult,
   saveRunCommitPolicy,
   getItemRunCommitPolicy,
@@ -244,6 +246,7 @@ import {
   findOpenQuestion,
   handoffNote,
   acceptedVisualReviews,
+  getQuestion,
   getVisualReview,
   markVisualReviewStale,
   openQuestion,
@@ -306,7 +309,7 @@ import {
   publishedEvidence,
   type EvidenceSink,
 } from "./artifacts";
-import { createLinearInputLoader } from "./input-files";
+import { createLinearInputLoader, createReviewMarkLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
 import type { LinearTaskAccess } from "./linear-task-access";
@@ -5219,12 +5222,35 @@ export class Orchestrator {
     return true;
   }
 
+  async requestVisualReviewChanges(input: {
+    questionId: string;
+    answeredBy: string;
+    note: string;
+    marks: readonly VisualReviewMark[];
+  }): Promise<"answered" | "forbidden" | "rejected"> {
+    const open = getQuestion(this.db, input.questionId);
+    const review = open ? getVisualReview(this.db, open.id) : null;
+    if (open?.status !== "open" || review?.kind !== "review") return "rejected";
+    const item = getWorkItem(this.db, open.itemId);
+    if (item === null) return "rejected";
+    if (!(await this.canAnswerVisualReview(item, input.answeredBy))) return "forbidden";
+    return this.answerVisualReview(
+      open,
+      review,
+      `dashboard:${crypto.randomUUID()}`,
+      `Request changes: ${input.note}`,
+      input.answeredBy,
+      input.marks,
+    );
+  }
+
   private async answerVisualReview(
     open: StoredQuestion,
     review: StoredVisualReview,
     eventKey: string,
     answer: string,
     answeredBy: string,
+    marks?: readonly VisualReviewMark[],
   ): Promise<"answered" | "rejected"> {
     const sessionId = open.sessionId;
     const outcome = immediate(this.db, () => {
@@ -5238,6 +5264,7 @@ export class Orchestrator {
       });
       const item = getWorkItem(this.db, open.itemId);
       if (item === null || result === "rejected") return "rejected" as const;
+      if (marks) saveVisualReviewMarks(this.db, marks);
       if (result === "describe") {
         postNote(
           this.db,
@@ -5249,7 +5276,8 @@ export class Orchestrator {
         );
         return "rejected" as const;
       }
-      if (item.sessionKey === sessionId) applyLinearTurns(this.db, sessionId, [eventKey], item.id);
+      if (!marks && item.sessionKey === sessionId)
+        applyLinearTurns(this.db, sessionId, [eventKey], item.id);
       if (result === "asked" || (open.runId !== null && this.askedRuns.has(open.runId)))
         return "answered" as const;
       enqueueJobOnce(this.db, {
@@ -5332,9 +5360,20 @@ export class Orchestrator {
   private prepareInputFiles(item: WorkItemRecord, turnId: string) {
     const loader = this.inputLoader;
     const sessionId = this.activitySession(item);
-    if (!loader || !sessionId) return undefined;
-    return (input: { workspace: string; prompt: string; signal: AbortSignal }) =>
-      loader({ ...input, sessionId, turnId });
+    const linear =
+      loader && sessionId
+        ? (input: { workspace: string; prompt: string; signal: AbortSignal }) =>
+            loader({ ...input, sessionId, turnId })
+        : undefined;
+    const root = this.options.evidence?.root;
+    if (!root) return linear;
+    const marks = createReviewMarkLoader({ db: this.db, root, itemId: item.id, turnId });
+    return async (input: { workspace: string; prompt: string; signal: AbortSignal }) => {
+      const marked = await marks(input);
+      if (!linear) return marked;
+      const loaded = await linear({ ...input, prompt: marked.prompt });
+      return { prompt: loaded.prompt, inputFiles: [...marked.inputFiles, ...loaded.inputFiles] };
+    };
   }
 
   private blockConversation(itemId: string): void {

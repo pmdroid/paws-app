@@ -248,8 +248,13 @@ export {
   type StoredEvidence,
 } from "./evidence";
 export {
+  getVisualReviewMark,
   linearConversationUrl,
+  listVisualReviewMarks,
   listVisualReviews,
+  openVisualReviewFiles,
+  saveVisualReviewMarks,
+  type VisualReviewMark,
   type VisualReviewRecord,
 } from "./visual-reviews";
 export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";

@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, open, readFile, realpath, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { git, requestText, type AgentInputFile } from "../acp";
 import type { LinearFileTransfer } from "../linear";
-import { recordLinearInput } from "../db";
+import { getVisualReviewMark, recordLinearInput } from "../db";
 
 const MAX_BYTES = 20 * 1024 * 1024;
 const INPUT_DIRECTORY = ".paws-linear-inputs";
@@ -33,7 +33,7 @@ export function createLinearInputLoader(options: {
     if (sources.size > 20) throw new Error("Linear input files exceed the file limit");
     const workspace = await realpath(request.workspace);
     await guardDirectory(options.cacheDir);
-    await excludeInputs(workspace);
+    await excludeInputs(workspace, INPUT_DIRECTORY);
     const directory = join(workspace, INPUT_DIRECTORY);
     await guardDirectory(directory);
     const turnDirectory = join(directory, digest(request.turnId));
@@ -125,6 +125,50 @@ export function createLinearInputLoader(options: {
   }
 }
 
+const REVIEW_MARK_DIRECTORY = ".paws-visual-review";
+
+export function reviewMarkPath(markId: string): string {
+  return `./${REVIEW_MARK_DIRECTORY}/${markId}.png`;
+}
+
+const REVIEW_MARK = /\.\/\.paws-visual-review\/([0-9A-HJKMNP-TV-Z]{26})\.png/g;
+
+export function createReviewMarkLoader(options: {
+  db: Database;
+  root: string;
+  itemId: string;
+  turnId: string;
+}) {
+  return async (request: {
+    workspace: string;
+    prompt: string;
+    signal: AbortSignal;
+  }): Promise<{ prompt: string; inputFiles: AgentInputFile[] }> => {
+    const ids = new Set([...request.prompt.matchAll(REVIEW_MARK)].map((match) => match[1]!));
+    if (ids.size === 0) return { prompt: request.prompt, inputFiles: [] };
+    const workspace = await realpath(request.workspace);
+    await excludeInputs(workspace, REVIEW_MARK_DIRECTORY);
+    await guardDirectory(join(workspace, REVIEW_MARK_DIRECTORY));
+    const turn = digest(options.turnId);
+    await guardDirectory(join(workspace, REVIEW_MARK_DIRECTORY, turn));
+    const inputs: AgentInputFile[] = [];
+    const local = new Map<string, string>();
+    for (const id of ids) {
+      request.signal.throwIfAborted();
+      const mark = getVisualReviewMark(options.db, id);
+      if (mark?.itemId !== options.itemId) continue;
+      const bytes = await readFile(join(options.root, id));
+      if (digest(bytes) !== mark.sha256) continue;
+      const path = join(workspace, REVIEW_MARK_DIRECTORY, turn, `${id}.png`);
+      await writeAtomic(path, bytes);
+      inputs.push({ path, mimeType: "image/png", bytes: new Uint8Array(bytes) });
+      local.set(id, `./${REVIEW_MARK_DIRECTORY}/${turn}/${id}.png`);
+    }
+    const prompt = request.prompt.replace(REVIEW_MARK, (path, id: string) => local.get(id) ?? path);
+    return { prompt, inputFiles: inputs };
+  };
+}
+
 export function inputSources(prompt: string): Map<string, string[]> {
   const sources = new Map<string, string[]>();
   for (const match of requestText(prompt).matchAll(
@@ -172,7 +216,7 @@ function validateCache(value: unknown): CachedInput {
   return file as CachedInput;
 }
 
-async function excludeInputs(workspace: string): Promise<void> {
+async function excludeInputs(workspace: string, name: string): Promise<void> {
   let info;
   try {
     info = await lstat(join(workspace, ".git"));
@@ -201,7 +245,7 @@ async function excludeInputs(workspace: string): Promise<void> {
   try {
     if (!(await file.stat()).isFile()) throw new Error("Linear input Git exclusion is invalid");
     const current = await file.readFile("utf8");
-    const rule = `/${INPUT_DIRECTORY}/`;
+    const rule = `/${name}/`;
     if (!current.split("\n").includes(rule))
       await file.writeFile(`${current.endsWith("\n") ? "" : "\n"}${rule}\n`);
   } finally {

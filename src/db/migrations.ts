@@ -2209,4 +2209,18 @@ CREATE TABLE project_approval_member (
 ) STRICT;
 `,
   },
+  {
+    id: "104_visual_review_mark",
+    sql: `
+CREATE TABLE visual_review_mark (
+  id TEXT PRIMARY KEY,
+  question_id TEXT NOT NULL REFERENCES visual_review(question_id),
+  evidence_id TEXT NOT NULL REFERENCES evidence(id),
+  size_bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX visual_review_mark_question ON visual_review_mark (question_id);
+`,
+  },
 ];

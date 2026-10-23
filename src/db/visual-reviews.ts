@@ -40,3 +40,60 @@ export function linearConversationUrl(
   }
   return `https://linear.app/issue/${encodeURIComponent(identifier)}`;
 }
+
+export type VisualReviewMark = {
+  id: string;
+  questionId: string;
+  evidenceId: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: number;
+};
+
+const MARK_COLUMNS = `m.id, m.question_id AS questionId, m.evidence_id AS evidenceId,
+  m.size_bytes AS sizeBytes, m.sha256, m.created_at AS createdAt`;
+
+export function saveVisualReviewMarks(db: Database, marks: readonly VisualReviewMark[]): void {
+  for (const mark of marks)
+    db.run(
+      "INSERT INTO visual_review_mark (id, question_id, evidence_id, size_bytes, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [mark.id, mark.questionId, mark.evidenceId, mark.sizeBytes, mark.sha256, mark.createdAt],
+    );
+}
+
+export function listVisualReviewMarks(db: Database, questionId: string): VisualReviewMark[] {
+  return db
+    .query<VisualReviewMark, [string]>(
+      `SELECT ${MARK_COLUMNS} FROM visual_review_mark m WHERE m.question_id = ? ORDER BY m.created_at, m.rowid`,
+    )
+    .all(questionId);
+}
+
+export function getVisualReviewMark(
+  db: Database,
+  id: string,
+): (VisualReviewMark & { itemId: string }) | null {
+  return db
+    .query<VisualReviewMark & { itemId: string }, [string]>(
+      `SELECT ${MARK_COLUMNS}, v.item_id AS itemId
+       FROM visual_review_mark m JOIN visual_review v ON v.question_id = m.question_id
+       WHERE m.id = ?`,
+    )
+    .get(id);
+}
+
+export function openVisualReviewFiles(
+  db: Database,
+  questionId: string,
+): { itemId: string; evidenceIds: string[] } | null {
+  const row = db
+    .query<{ itemId: string; evidenceIds: string }, [string]>(
+      `SELECT v.item_id AS itemId, v.evidence_ids AS evidenceIds
+       FROM visual_review v JOIN question q ON q.id = v.question_id
+       WHERE v.question_id = ? AND v.kind = 'review' AND q.status = 'open' AND q.cancelled_at IS NULL`,
+    )
+    .get(questionId);
+  return row === null
+    ? null
+    : { itemId: row.itemId, evidenceIds: JSON.parse(row.evidenceIds) as string[] };
+}
