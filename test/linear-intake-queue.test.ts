@@ -294,6 +294,50 @@ test("the queue starts nothing during a Linear rate-limit hold and resumes after
   }
 });
 
+test("a rate limit that asks for no wait still does not restart the intake at once", async () => {
+  const db = tempDb();
+  const store = createInboxStore(db);
+  const clock = 1_000_000;
+  let attempts = 0;
+  const queue = createIntakeQueue({
+    store,
+    now: () => clock,
+    log: () => {},
+    arrive: async () => true,
+    deliver: async () => {
+      attempts += 1;
+      if (attempts > 3) throw new Error("restarted in a loop");
+      throw new LinearRateLimitError(0, {
+        requestsRemaining: 0,
+        requestsLimit: 5000,
+        requestsResetMs: clock,
+        complexityRemaining: null,
+        complexityLimit: null,
+        complexityResetMs: null,
+        complexity: null,
+      });
+    },
+  });
+  try {
+    store.commit(created(0));
+    queue.wake();
+    await queue.idle();
+    const row = db
+      .query<{ attempts: number; next_attempt_at: number }, []>(
+        "SELECT attempts, next_attempt_at FROM inbox_event WHERE session_id = 's0'",
+      )
+      .get()!;
+    expect({ attempts, counted: row.attempts, wait: row.next_attempt_at - clock }).toEqual({
+      attempts: 1,
+      counted: 0,
+      wait: INTAKE_RETRY_MS[0],
+    });
+  } finally {
+    await queue.stop();
+    db.close();
+  }
+});
+
 test("every arrival posts its first activity at once while both intake slots are busy", async () => {
   const db = tempDb();
   const store = createInboxStore(db);
