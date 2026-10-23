@@ -161,7 +161,8 @@ async function fixture(rejection: string) {
     },
   });
   const tick = () => runtime.tick().catch(() => {});
-  for (let index = 0; index < 400 && execution === ""; index++) {
+  const started = () => execution !== "";
+  for (let index = 0; index < 400 && !started(); index++) {
     await tick();
     await Bun.sleep(1);
   }
