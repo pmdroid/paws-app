@@ -127,6 +127,7 @@ async function fixture() {
     transcripts,
     pollIntervalMs: 2,
     handoverMs: 400,
+    handoverGraceMs: 100,
     async fetchCandidate(candidate) {
       await git(["-C", candidate.worktree, "fetch", "-q", runner, candidate.candidateSha]);
       await git(["-C", candidate.worktree, "reset", "-q", "--hard", candidate.candidateSha]);

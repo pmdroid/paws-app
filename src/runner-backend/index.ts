@@ -200,6 +200,7 @@ export function createRemoteAgentRunner(options: {
   pollIntervalMs?: number;
   /** How long a runner has to hand over a session. Tests shorten it. */
   handoverMs?: number;
+  handoverGraceMs?: number;
   placement?: RunnerPlacement;
 }) {
   const { db, work, results, health } = options;

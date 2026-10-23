@@ -21,6 +21,8 @@ import {
 } from "../src/runner-execution";
 import {
   executeRunnerCommand,
+  HANDOVER_RESULT,
+  HANDOVER_RESUME_PROMPT,
   HANDOVER_TIMEOUT_NOTICE,
   type RunnerWorkerOptions,
 } from "../src/runner-worker";
@@ -121,6 +123,27 @@ async function handoverFixture(
     checkout,
     outputDirectory,
     events,
+    /** Restarts the worker on its session, as the runner does after a missed handover. */
+    async resume(resumeSteps: unknown[]) {
+      const resumeScript = join(root, "resume.json");
+      writeFileSync(resumeScript, JSON.stringify({ model: "fixture-model", steps: resumeSteps }));
+      return executeRunnerCommand({
+        job,
+        repositoryBundle,
+        inputs: readRunnerJobInputs(spool, job.executionId),
+        outputDirectory,
+        workRoot,
+        home: join(root, "home"),
+        resultsGid: process.getgid!(),
+        resume: true,
+        launch: {
+          command: process.execPath,
+          args: [fake, join(root, "resume-trace.json"), resumeScript],
+        },
+      });
+    },
+    trace: (file: string) =>
+      JSON.parse(readFileSync(join(root, file), "utf8")) as { prompts?: unknown[] },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -182,6 +205,11 @@ test("a handover waits for the current tool call, then publishes the worktree as
         .split("\n"),
     ).toEqual(["wip: handover checkpoint", "", "partial.txt"]);
     expect(existsSync(join(f.outputDirectory, "candidate.bundle"))).toBe(true);
+    // The result waits as a handover result, with the deadline the runner must publish by.
+    expect(existsSync(join(f.outputDirectory, "result.json"))).toBe(false);
+    const waiting = JSON.parse(readFileSync(join(f.outputDirectory, HANDOVER_RESULT), "utf8"));
+    expect(waiting.handoverExpiresAt).toBe(result.handoverExpiresAt);
+    expect(waiting.handoverExpiresAt).toBeGreaterThan(Date.now());
     const transcript = readFileSync(result.run.transcriptPath!, "utf8")
       .split("\n")
       .filter(Boolean)
@@ -204,6 +232,15 @@ test("a session waiting on ask_team hands over and keeps its question with Paws"
     "ask",
     (checkout) => [
       { type: "fs_write", path: join(checkout, "partial.txt"), content: "before the question\n" },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "question",
+          title: "mcp__paws__ask_team",
+          status: "in_progress",
+        },
+      },
       { type: "ask_team", question: "Include archived rows?" },
       { type: "hang" },
     ],
@@ -288,3 +325,121 @@ test("a handover that cannot reach a safe point in time is reported and the sess
     f.cleanup();
   }
 }, 20_000);
+
+test("a question asked while another tool call runs does not let the handover interrupt that call", async () => {
+  const question = { asked: false, release: () => {} };
+  const released = new Promise<void>((resolve) => (question.release = resolve));
+  let requests = 0;
+  const f = await handoverFixture(
+    "parallel",
+    () => [
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "edit",
+          title: "Edit",
+          status: "in_progress",
+        },
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "question",
+          title: "mcp__paws__ask_team",
+          status: "in_progress",
+        },
+      },
+      { type: "ask_team", question: "Keep the old column?" },
+      {
+        type: "update",
+        update: { sessionUpdate: "tool_call_update", toolCallId: "question", status: "completed" },
+      },
+      {
+        type: "update",
+        update: { sessionUpdate: "tool_call_update", toolCallId: "edit", status: "completed" },
+      },
+      { type: "end" },
+    ],
+    {
+      // The clock runs past the safe point at once, so the busy edit makes the handover give up.
+      now: () => Date.now() + 100_000,
+      async answer(_requestId, signal) {
+        if (question.asked) return { answer: "{}" };
+        question.asked = true;
+        await released;
+        signal.throwIfAborted();
+        return { answer: "Yes" };
+      },
+      async handover(sequence, signal) {
+        if (sequence > 1) {
+          question.release();
+          await new Promise((resolve) => signal.addEventListener("abort", resolve));
+          signal.throwIfAborted();
+        }
+        while (!question.asked) await delay(10, undefined, { signal });
+        requests++;
+        return { expiresAt: Date.now() + 120_000 };
+      },
+    },
+  );
+  try {
+    expect(requests).toBe(1);
+    expect(f.result.run.handedOver).toBeUndefined();
+    expect(f.result.run.stopReason).toBe("end_turn");
+    expect(
+      f.events.some((event) => event.type === "progress" && event.text === HANDOVER_TIMEOUT_NOTICE),
+    ).toBe(true);
+  } finally {
+    f.cleanup();
+  }
+}, 20_000);
+
+test("a worker restarted after a missed handover continues the session on the runner", async () => {
+  const f = await handoverFixture(
+    "resume",
+    (checkout) => [
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "edit",
+          title: "Edit",
+          status: "in_progress",
+        },
+      },
+      { type: "fs_write", path: join(checkout, "partial.txt"), content: "half done\n" },
+      {
+        type: "update",
+        update: { sessionUpdate: "tool_call_update", toolCallId: "edit", status: "completed" },
+      },
+      { type: "hang" },
+    ],
+    { handover: (_sequence, signal) => inFlight("resume", "partial.txt", signal) },
+  );
+  try {
+    expect(f.result.run.handedOver).toBe(true);
+    const resumed = await f.resume([
+      { type: "fs_write", path: join(f.checkout, "rest.txt"), content: "rest\n" },
+      { type: "end" },
+    ]);
+    expect(resumed.run.handedOver).toBeUndefined();
+    expect(resumed.run.stopReason).toBe("end_turn");
+    expect(existsSync(join(f.outputDirectory, HANDOVER_RESULT))).toBe(false);
+    expect(existsSync(join(f.outputDirectory, "result.json"))).toBe(true);
+    expect(JSON.stringify(f.trace("resume-trace.json").prompts)).toContain(
+      HANDOVER_RESUME_PROMPT.slice(0, 60),
+    );
+    // The resumed candidate builds on the WIP commit.
+    expect(
+      (await git(["-C", f.checkout, "log", "--format=%s", "-2", resumed.candidateSha!]))
+        .trim()
+        .split("\n")[1],
+    ).toBe("wip: handover checkpoint");
+    const events = readFileSync(join(f.outputDirectory, "events.jsonl"), "utf8");
+    expect(events).toContain(HANDOVER_TIMEOUT_NOTICE);
+  } finally {
+    f.cleanup();
+  }
+}, 30_000);

@@ -23,7 +23,7 @@ function git(args: string[], cwd: string) {
   return child.stdout.toString().trim();
 }
 
-async function fixture(rejection: string) {
+async function fixture(rejection: string | null, handover?: { expiresIn: number }) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-push-"));
   const now = Date.now();
   let clock = 0;
@@ -83,6 +83,9 @@ async function fixture(rejection: string) {
   let execution = "";
   const posted: RunnerResult[] = [];
   const pushes: number[] = [];
+  const resumes: string[] = [];
+  // A worker that wrote a handover result has exited; a resumed worker runs again.
+  let alive = !handover;
   const runtime = await openRunnerRuntime({
     root,
     spool,
@@ -97,7 +100,7 @@ async function fixture(rejection: string) {
         git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
       else if (input.operation === "push") {
         pushes.push(clock);
-        throw new Error(rejection);
+        if (rejection !== null) throw new Error(rejection);
       }
     },
     broker: {
@@ -111,7 +114,11 @@ async function fixture(rejection: string) {
         return { alreadyAdmitted: false };
       },
       async stop() {},
-      alive: () => true,
+      alive: () => alive,
+      async resume(id) {
+        resumes.push(id);
+        alive = true;
+      },
     },
     daemon: {
       status: () => paired,
@@ -169,26 +176,30 @@ async function fixture(rejection: string) {
   const directory = join(results.root, execution);
   copyFileSync(join(root, "candidate.bundle"), join(directory, "candidate.bundle"));
   chmodSync(join(directory, "candidate.bundle"), 0o640);
+  const resultName = handover ? "handover.json" : "result.json";
   writeFileSync(
-    join(directory, "result.json"),
+    join(directory, resultName),
     JSON.stringify({
       executionId: execution,
       commandId: command.id,
       run: {
         role: "implementer",
-        stopReason: "end_turn",
+        stopReason: handover ? "cancelled" : "end_turn",
         timedOut: false,
-        cancelled: false,
+        cancelled: Boolean(handover),
+        ...(handover ? { handedOver: true } : {}),
         authRequired: false,
         agentExited: true,
       },
       candidateSha,
+      ...(handover ? { handoverExpiresAt: now + handover.expiresIn } : {}),
     }),
   );
-  chmodSync(join(directory, "result.json"), 0o640);
+  chmodSync(join(directory, resultName), 0o640);
   return {
     posted,
     pushes,
+    resumes,
     async run(minutes: number) {
       for (let step = 0; step <= minutes * 2; step++) {
         for (let index = 0; index < 5; index++) {
@@ -242,6 +253,62 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
         branch: "paws/fixture",
         error: expect.stringContaining("Permission to fixture/repository.git denied"),
       });
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+const linuxUser =
+  process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0;
+
+test.skipIf(linuxUser)(
+  "a handed-over WIP commit published before its deadline ends the run with a handedOver result",
+  async () => {
+    const f = await fixture(null, { expiresIn: 60_000 });
+    try {
+      await f.run(1);
+      expect(f.pushes).toEqual([0]);
+      expect(f.resumes).toEqual([]);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]).toMatchObject({ handedOver: true, cancelled: true });
+      expect(f.posted[0]!.candidateSha).toMatch(/^[a-f0-9]{40}$/);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(linuxUser)(
+  "a handover too late to publish is not published and its worker continues the session",
+  async () => {
+    const f = await fixture(null, { expiresIn: 5_000 });
+    try {
+      await f.run(1);
+      expect(f.pushes).toEqual([]);
+      expect(f.posted).toEqual([]);
+      expect(f.resumes).toHaveLength(1);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(linuxUser)(
+  "a handover whose push fails is not retried and its worker continues the session",
+  async () => {
+    const f = await fixture(
+      "fatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 502",
+      { expiresIn: 60_000 },
+    );
+    try {
+      await f.run(2);
+      expect(f.pushes).toEqual([0]);
+      expect(f.posted).toEqual([]);
+      expect(f.resumes).toHaveLength(1);
     } finally {
       await f.cleanup();
     }

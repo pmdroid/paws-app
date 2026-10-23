@@ -31,6 +31,9 @@ class GitHubFailure extends RemoteFailure {}
 const GITHUB_UNAVAILABLE = "GitHub git operation failed";
 
 const CANDIDATE_PUSH_RETRY_MS = [0, 60_000, 120_000, 240_000, 480_000];
+/** A handover is published only if this much of its time is left for the transcript and result. */
+const HANDOVER_SEAL_RESERVE_MS = 10_000;
+const HANDOVER_RESULT = "handover.json";
 const PERMANENT_PUSH_REJECTION =
   /\[remote rejected\]|protected branch|\bGH0\d\d\b|Permission to \S+ denied|Repository not found|pre-receive hook declined/i;
 
@@ -66,6 +69,7 @@ const workerResult = z.object({
   }).strip(),
   candidateSha: RunnerResultSchema.shape.candidateSha,
   reviewText: RunnerResultSchema.shape.reviewText,
+  handoverExpiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 });
 type PushFailure = NonNullable<RunnerResult["pushFailure"]>;
 type Active = {
@@ -631,7 +635,7 @@ export async function openRunnerRuntime(options: {
     )
       return false;
     try {
-      readRunnerResultFile(options.results, id, "result.json");
+      workerResultFile(id);
       return false;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -641,21 +645,49 @@ export async function openRunnerRuntime(options: {
     await broker.resume(id);
     return true;
   }
-  async function complete(entry: Active) {
-    let raw: Buffer;
+  /** The worker's final result, or a handed-over result that waits for publication. */
+  function workerResultFile(id: string): { name: "result.json" | "handover.json"; raw: Buffer } {
     try {
-      raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
+      return { name: "result.json", raw: readRunnerResultFile(options.results, id, "result.json") };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return {
+        name: HANDOVER_RESULT,
+        raw: readRunnerResultFile(options.results, id, HANDOVER_RESULT),
+      };
+    }
+  }
+  /**
+   * A handover that cannot be published before its deadline is not published: the worker
+   * restarts on its own session, so the session stays on this runner, as Paws reports.
+   */
+  async function continueSession(entry: Active) {
+    if (!broker.resume) throw new Error("the runner could not hand over the session in time");
+    check(entry);
+    journal.phase(entry.execution.id, "running");
+    entry.execution.phase = "running";
+    entry.quiesced = undefined;
+    entry.pushAt = undefined;
+    entry.pushTries = undefined;
+    await broker.resume(entry.execution.id);
+  }
+  async function complete(entry: Active) {
+    let file: ReturnType<typeof workerResultFile>;
+    try {
+      file = workerResultFile(entry.execution.id);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       if (broker.alive?.(entry.execution.id) !== false) return;
       try {
-        raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
+        file = workerResultFile(entry.execution.id);
       } catch {
         throw new Error("worker exited without a result");
       }
     }
+    // A worker that restarted after a missed handover removes the file itself.
+    if (file.name === HANDOVER_RESULT && broker.alive?.(entry.execution.id) === true) return;
     try {
-      JSON.parse(raw.toString("utf8"));
+      JSON.parse(file.raw.toString("utf8"));
     } catch {
       return;
     }
@@ -664,7 +696,7 @@ export async function openRunnerRuntime(options: {
     await deliver(entry);
     const worker = workerResult.parse(
       JSON.parse(
-        readRunnerResultFile(options.results, entry.execution.id, "result.json").toString("utf8"),
+        readRunnerResultFile(options.results, entry.execution.id, file.name).toString("utf8"),
       ),
     );
     if (
@@ -683,6 +715,15 @@ export async function openRunnerRuntime(options: {
       ...(worker.candidateSha ? { candidateSha: worker.candidateSha } : {}),
       ...(worker.reviewText !== undefined ? { reviewText: worker.reviewText } : {}),
     });
+    const handoverBy = file.name === HANDOVER_RESULT ? worker.handoverExpiresAt : undefined;
+    if (file.name === HANDOVER_RESULT && (!result.handedOver || handoverBy === undefined))
+      throw new Error("Invalid runner handover result");
+    // Once the transcript is sealed the handover is committed, and the result is posted.
+    const handoverLate = () =>
+      handoverBy !== undefined &&
+      !entry.transcriptSealed &&
+      now() >= handoverBy - HANDOVER_SEAL_RESERVE_MS;
+    if (handoverLate()) return continueSession(entry);
     journal.phase(entry.execution.id, "publishing");
     entry.execution.phase = "publishing";
     if (
@@ -697,50 +738,88 @@ export async function openRunnerRuntime(options: {
       )
         throw new Error("Unsafe runner candidate result");
       if ((entry.pushAt ?? 0) > monotonic()) return;
-      const token = await grant(entry);
-      const credential = await remote(() =>
-        options.daemon.repositoryCredential(
-          entry.execution.command.runId,
-          entry.execution.command.generation,
-          "write",
-          token,
-        ),
-      );
-      check(entry);
-      if (!credential.branch) throw new Error("Runner publication branch is missing");
-      entry.publicationBranch = credential.branch;
-      try {
-        await repositories.publish(
-          entry.execution.command,
-          {
-            bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
-            sha: result.candidateSha,
-            branch: credential.branch,
-          },
+      if (handoverBy !== undefined) {
+        // A handover gets one push, bounded by its deadline.
+        const signal = AbortSignal.any([
           entry.abort.signal,
-        );
-      } catch (error) {
-        if (!(error instanceof GitHubFailure)) throw error;
-        const tries = (entry.pushTries ?? 0) + 1;
-        entry.pushTries = tries;
-        const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
-        if (!permanent && tries <= CANDIDATE_PUSH_RETRY_MS.length) {
-          entry.pushAt = monotonic() + CANDIDATE_PUSH_RETRY_MS[tries - 1]!;
-          throw error;
+          AbortSignal.timeout(Math.max(1, handoverBy - HANDOVER_SEAL_RESERVE_MS - now())),
+        ]);
+        try {
+          const token = await grant(entry);
+          const credential = await remote(() =>
+            options.daemon.repositoryCredential(
+              entry.execution.command.runId,
+              entry.execution.command.generation,
+              "write",
+              token,
+            ),
+          );
+          if (!credential.branch) throw new Error("Runner publication branch is missing");
+          signal.throwIfAborted();
+          entry.publicationBranch = credential.branch;
+          await repositories.publish(
+            entry.execution.command,
+            {
+              bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
+              sha: result.candidateSha,
+              branch: credential.branch,
+            },
+            signal,
+          );
+        } catch (error) {
+          entry.abort.signal.throwIfAborted();
+          report(error instanceof Error ? error : new Error(String(error)));
+          return continueSession(entry);
         }
-        const failure = { branch: credential.branch, error: error.message.slice(0, 4096) };
-        await interrupt(
-          entry,
-          permanent
-            ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
-            : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
-          true,
-          failure,
+        check(entry);
+        if (handoverLate()) return continueSession(entry);
+      } else {
+        const token = await grant(entry);
+        const credential = await remote(() =>
+          options.daemon.repositoryCredential(
+            entry.execution.command.runId,
+            entry.execution.command.generation,
+            "write",
+            token,
+          ),
         );
-        return;
+        check(entry);
+        if (!credential.branch) throw new Error("Runner publication branch is missing");
+        entry.publicationBranch = credential.branch;
+        try {
+          await repositories.publish(
+            entry.execution.command,
+            {
+              bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
+              sha: result.candidateSha,
+              branch: credential.branch,
+            },
+            entry.abort.signal,
+          );
+        } catch (error) {
+          if (!(error instanceof GitHubFailure)) throw error;
+          const tries = (entry.pushTries ?? 0) + 1;
+          entry.pushTries = tries;
+          const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
+          if (!permanent && tries <= CANDIDATE_PUSH_RETRY_MS.length) {
+            entry.pushAt = monotonic() + CANDIDATE_PUSH_RETRY_MS[tries - 1]!;
+            throw error;
+          }
+          const failure = { branch: credential.branch, error: error.message.slice(0, 4096) };
+          await interrupt(
+            entry,
+            permanent
+              ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
+              : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
+            true,
+            failure,
+          );
+          return;
+        }
+        check(entry);
       }
-      check(entry);
     }
+    if (handoverLate()) return continueSession(entry);
     await drainTranscript(entry, true);
     const token = await grant(entry);
     await remote(() =>

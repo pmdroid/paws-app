@@ -18,12 +18,14 @@ import {
   writeFileSync,
   renameSync,
   rmSync,
+  existsSync,
 } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   appBotCommitIdentity,
+  ASK_TEAM_TOOL_NAME,
   commitCheckpoint,
   commitPolicyMessage,
   createUpdateLimiter,
@@ -106,6 +108,11 @@ export const HANDOVER_COMMIT_MESSAGE = "wip: handover checkpoint";
 export const HANDOVER_TIMEOUT_NOTICE =
   "Paws asked this runner to hand over the session, but the agent's current tool call did not finish in time. The session stays on this runner.";
 
+export const HANDOVER_RESUME_PROMPT =
+  "Paws tried to move this session to another runner, but the handover did not finish in time. The session stays on this runner. Your work so far is in a WIP commit. Check git status and the workspace, then continue where you left off.";
+/** A handed-over result waits here until the runner publishes it before its deadline. */
+export const HANDOVER_RESULT = "handover.json";
+
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
 
@@ -170,6 +177,8 @@ export interface RunnerWorkerResult {
   commandId: string;
   run: RunAgentResult & { agentLimits?: AgentLimit[] };
   candidateSha?: string;
+  /** When a handed-over result must be published by, or the session continues on the runner. */
+  handoverExpiresAt?: number;
   reviewText?: string;
   text?: string;
   login?: {
@@ -264,7 +273,9 @@ export async function executeRunnerCommand(
   }
   options.signal?.throwIfAborted();
   for (const [name, kind] of [
-    ...(options.resume ? [] : [["events.jsonl", "journal"] as const]),
+    ...(options.resume
+      ? []
+      : [["events.jsonl", "journal"] as const, [HANDOVER_RESULT, "handover"] as const]),
     ["result.json", "result"] as const,
   ]) {
     try {
@@ -276,6 +287,10 @@ export async function executeRunnerCommand(
   }
   const resumed = options.resume === true;
   const resumedId = resumed ? resumedSession(options.outputDirectory) : undefined;
+  // The runner restarts a worker whose handover it could not publish in time.
+  const handoverResumed = resumed && existsSync(join(options.outputDirectory, HANDOVER_RESULT));
+  if (handoverResumed) rmSync(join(options.outputDirectory, HANDOVER_RESULT), { force: true });
+  const resumePrompt = handoverResumed ? HANDOVER_RESUME_PROMPT : RESUME_PROMPT;
   if (!resumed) {
     const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
     try {
@@ -495,7 +510,8 @@ export async function executeRunnerCommand(
       repository || task || command.type === "helper"
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
-    if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
+    if (handoverResumed) emit({ type: "progress", text: HANDOVER_TIMEOUT_NOTICE, notice: true });
+    else if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
     const earlierSession = command.type === "run" ? command.resumeSessionId : undefined;
     // A handover stops the agent between tool calls, or while it waits on ask_team, and
     // publishes the worktree as a WIP commit. A handover that cannot reach that point in time
@@ -506,8 +522,10 @@ export async function executeRunnerCommand(
             requested: options.handover,
             interrupt: new AbortController(),
             watching: new AbortController(),
-            tools: new Set<string>(),
+            /** Active tool calls, and whether each is the agent's ask_team call. */
+            tools: new Map<string, boolean>(),
             asking: 0,
+            expiresAt: 0,
           }
         : undefined;
     const clock = options.now ?? Date.now;
@@ -517,12 +535,17 @@ export async function executeRunnerCommand(
         // A request from before a worker restart may already be over.
         if (request.expiresAt <= clock()) continue;
         const safeBy = request.expiresAt - HANDOVER_PUBLISH_RESERVE_MS;
-        while (state.tools.size > 0 && state.asking === 0 && clock() < safeBy)
+        // A pending question is a safe point only when no other tool call is active, such as
+        // an edit that runs next to the question.
+        const busy = () =>
+          [...state.tools.values()].some((askTeam) => !askTeam || state.asking === 0);
+        while (busy() && clock() < safeBy)
           await delay(25, undefined, { signal: state.watching.signal });
-        if (state.tools.size > 0 && state.asking === 0) {
+        if (busy()) {
           emit({ type: "progress", text: HANDOVER_TIMEOUT_NOTICE, notice: true });
           continue;
         }
+        state.expiresAt = request.expiresAt;
         state.interrupt.abort();
         return;
       }
@@ -566,7 +589,7 @@ export async function executeRunnerCommand(
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,
       prompt: resumed
-        ? RESUME_PROMPT
+        ? resumePrompt
         : earlierSession
           ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
           : prompt,
@@ -577,7 +600,7 @@ export async function executeRunnerCommand(
         ? {
             resume: {
               sessionId: resumedId ?? "",
-              replayPrompt: reconstructAcpPrompt(RESUME_PROMPT, [
+              replayPrompt: reconstructAcpPrompt(resumePrompt, [
                 { kind: "request", body: prompt },
                 ...(await recoverAcpConversation(join(options.outputDirectory, "events.jsonl"))),
               ]),
@@ -599,7 +622,17 @@ export async function executeRunnerCommand(
             ) {
               if (update.status === "completed" || update.status === "failed")
                 handover.tools.delete(update.toolCallId);
-              else if (update.sessionUpdate === "tool_call") handover.tools.add(update.toolCallId);
+              else if (
+                update.sessionUpdate === "tool_call" ||
+                handover.tools.has(update.toolCallId)
+              )
+                handover.tools.set(
+                  update.toolCallId,
+                  (handover.tools.get(update.toolCallId) ?? false) ||
+                    `${update.title ?? ""} ${JSON.stringify(update.rawInput ?? null)}`.includes(
+                      ASK_TEAM_TOOL_NAME,
+                    ),
+                );
             }
           }
           if (
@@ -904,6 +937,7 @@ export async function executeRunnerCommand(
       );
       await recordCandidate();
       if (result.candidateSha === command.repository.baseSha) delete result.candidateSha;
+      result.handoverExpiresAt = handover!.expiresAt;
     } else if (repository && run.agentExited && clean) await recordCandidate();
     else if (repository && run.agentExited && wip) {
       await recordCandidate().catch(() => {
@@ -938,7 +972,10 @@ export async function executeRunnerCommand(
       } finally {
         closeSync(final);
       }
-      renameSync(stagingPath, join(options.outputDirectory, "result.json"));
+      renameSync(
+        stagingPath,
+        join(options.outputDirectory, handedOver ? HANDOVER_RESULT : "result.json"),
+      );
     } finally {
       rmSync(stagingPath, { force: true });
     }
