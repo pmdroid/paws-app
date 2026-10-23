@@ -160,7 +160,20 @@ export async function probeRunnerWork(
       ],
       now,
     );
-    const assigned = work.assign(command);
+    const assigned = work.assign({
+      ...command,
+      hooks: [
+        {
+          id: workspaceId(),
+          event: "after_edit",
+          matcher: null,
+          command: "bun run fmt",
+          timeoutSeconds: 60,
+          agents: ["codex"],
+          skill: null,
+        },
+      ],
+    });
     assert.equal(assigned.leaseUntil, now + 60_000);
     assert.deepEqual(runAgentSetup(db, run.id), {
       runnerId: firstRunner,
@@ -168,7 +181,10 @@ export async function probeRunnerWork(
         { name: "impeccable", version: "2.4.1", status: "installed" },
         { name: "updating", version: "3.0.0", status: "pending" },
       ],
-      hooks: [{ name: "Paws Closeout", event: "stop" }],
+      hooks: [
+        { name: "Paws Closeout", event: "stop" },
+        { name: "bun run fmt", event: "after_edit" },
+      ],
       recordedAt: now,
     });
     const verified = verifyRunnerCommand(assigned.envelope, {
