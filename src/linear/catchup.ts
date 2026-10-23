@@ -8,7 +8,7 @@ import { isRecord, readString } from "./read";
  */
 const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDuration!, $issueAfter: String, $commentAfter: String, $activityAfter: String, $sessionAfter: String, $includeIssues: Boolean!, $includeComments: Boolean!, $includeActivities: Boolean!, $includeSessions: Boolean!) {
   viewer { id }
-  agentSessions(first: 50, after: $sessionAfter, orderBy: createdAt, includeArchived: true) @include(if: $includeSessions) {
+  agentSessions(first: 50, after: $sessionAfter, orderBy: updatedAt, includeArchived: true) @include(if: $includeSessions) {
     nodes { id status createdAt updatedAt endedAt dismissedAt archivedAt appUser { id } issue { id team { id key } } }
     pageInfo { hasNextPage endCursor }
   }
@@ -203,8 +203,12 @@ export function createIntakePollSource(
             activityAfter = cursor;
           },
         );
+      const cycleSinceMs = Date.parse(cycleSince);
       const sessionsCaughtUp =
         finished.has("sessions") ||
+        sessions.nodes.some(
+          (node) => (readTime(node, "updatedAt") ?? cycleSinceMs) < cycleSinceMs,
+        ) ||
         advance(
           sessions,
           () => sessionAfter,
