@@ -72,6 +72,7 @@ import {
   OUTBOX_ACTIVITY,
   delegationHasOpenWork,
   delegationIssueIdSql,
+  isTerminalWorkItemState,
   parentTaskKeySql,
   type Clock,
   type LinearCommand,
@@ -1043,7 +1044,7 @@ export class Orchestrator {
         for (const { session_id: sessionId } of candidates(issueId)) {
           const previous = getLinearSession(this.db, sessionId)!;
           const unfinished = this.itemsForSession(sessionId).some(
-            (item) => !["completed", "merged", "cancelled"].includes(item.state),
+            (item) => !isTerminalWorkItemState(item.state),
           );
           if (previous.stoppedAt === null && unfinished) {
             const snapshot = await this.tracker.getSession(sessionId, {
@@ -3984,8 +3985,7 @@ export class Orchestrator {
           now: requestedAt,
         });
       for (const item of items) {
-        if (item.state === "completed" || item.state === "merged" || item.state === "cancelled")
-          continue;
+        if (isTerminalWorkItemState(item.state)) continue;
         const command: LinearCommand = {
           type: "stop",
           itemId: item.id,
@@ -4061,7 +4061,7 @@ export class Orchestrator {
           item.sessionKey !== changes.sessionId
         )
           throw new Error("Changed task ownership does not match the delegation");
-        if (["merged", "completed", "cancelled"].includes(item.state)) continue;
+        if (isTerminalWorkItemState(item.state)) continue;
         if (canceled.has(itemId)) {
           applyLinearCommand(this.db, {
             type: "cancel",

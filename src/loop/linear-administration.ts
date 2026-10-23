@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { LinearCommand } from "../core";
+import { isTerminalWorkItemState, type LinearCommand } from "../core";
 import {
   applyLinearCommand,
   changeLinearTeamAccess,
@@ -156,11 +156,7 @@ function cancelSessions(
   const commands: LinearCommand[] = [];
   for (const item of listWorkItems(db)) {
     const sessionId = item.sessionKey;
-    if (
-      sessionId === null ||
-      !affected.has(sessionId) ||
-      ["cancelled", "completed", "merged"].includes(item.state)
-    )
+    if (sessionId === null || !affected.has(sessionId) || isTerminalWorkItemState(item.state))
       continue;
     const command: LinearCommand = {
       type: "cancel",

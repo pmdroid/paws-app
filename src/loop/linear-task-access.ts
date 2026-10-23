@@ -16,7 +16,7 @@ import {
   requireLinearTaskDelegation,
   type WorkItemRecord,
 } from "../db";
-import { sleep } from "../core";
+import { isTerminalWorkItemState, sleep } from "../core";
 import {
   LinearIssueClosedError,
   LinearRateLimitError,
@@ -287,7 +287,7 @@ export class LinearTaskAccess {
       if (
         stored === null ||
         stored.cancelRequested ||
-        ["cancelled", "completed", "merged"].includes(stored.state) ||
+        isTerminalWorkItemState(stored.state) ||
         session?.stoppedAt != null ||
         getLinearSessionGeneration(this.db, sessionId) !== generation
       )

@@ -1,3 +1,4 @@
+import { isBlockerSatisfied, type TaskMode, type WorkItemState } from "../core";
 import { teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -136,7 +137,12 @@ export function managedBlockerSatisfied(
 ): boolean | null {
   const items = db
     .query<
-      { state: string; mode: string | null; cancelRequested: number; mergeSha: string | null },
+      {
+        state: WorkItemState;
+        mode: TaskMode | null;
+        cancelRequested: number;
+        mergeSha: string | null;
+      },
       [string, string, string]
     >(
       `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested,f.merge_sha AS mergeSha
@@ -154,8 +160,8 @@ export function managedBlockerSatisfied(
   const item = (active.length > 0 ? active : items).at(-1)!;
   return (
     !item.cancelRequested &&
-    ((item.state === "merged" && !!item.mergeSha) ||
-      (item.state === "completed" && (item.mode === "answer" || item.mode === "artifact")))
+    isBlockerSatisfied(item) &&
+    (item.state !== "merged" || !!item.mergeSha)
   );
 }
 
