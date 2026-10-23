@@ -4,11 +4,14 @@ import {
   applyWorkItemEvent,
   auditWorkspaceAccess,
   bindWorkItemRepository,
+  deliveredLinearIssueState,
   enqueueJobOnce,
   enqueueOutboxOnce,
   getLinearSession,
   getWorkItem,
   immediate,
+  listTaskBlockers,
+  saveTaskBlocks,
   submitCommand,
   syncWorkspaceMember,
   workspaceForOrganization,
@@ -336,6 +339,79 @@ export function createApprovedProjects(input: {
       });
     }).immediate();
   }
+  function identifierFor(approval: ProjectApproval, issueId: string): string {
+    return (
+      approval.preview.project.issues.find((issue) => issue.linearIssueId === issueId)
+        ?.identifier ??
+      db
+        .query<{ identifier: string }, [string]>(
+          "SELECT linear_identifier AS identifier FROM work_item WHERE linear_issue_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+        )
+        .get(issueId)?.identifier ??
+      deliveredLinearIssueState(db, approval.preview.project.organizationId, issueId)?.identifier ??
+      issueId
+    );
+  }
+  /**
+   * Whether a blocker lets its dependent's session open, from stored state only. A blocker with
+   * live Paws tasks follows its latest task. Otherwise (PAS-514) it follows its last delivered
+   * Linear state, and with none delivered it holds only while a project still claims it; the
+   * task's own dependency check reads Linear once its session is open.
+   */
+  function blockerSatisfied(approval: ProjectApproval, blockerId: string): boolean {
+    const items = db
+      .query<{ state: string; mode: string | null; cancelRequested: number }, [string, string]>(
+        `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested FROM work_item i
+         JOIN linear_session s ON s.session_id=i.session_key
+         JOIN workspace w ON w.linear_organization_id=s.organization_id
+         LEFT JOIN work_item_task t ON t.item_id=i.id
+         WHERE w.id=? AND i.linear_issue_id=? AND i.state<>'cancelled'
+         AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
+         ORDER BY i.created_at,i.id`,
+      )
+      .all(approval.workspaceId, blockerId);
+    if (items.length > 0) {
+      const active = items.filter((item) => !item.cancelRequested);
+      const item = (active.length > 0 ? active : items).at(-1)!;
+      return (
+        !item.cancelRequested &&
+        (item.state === "merged" ||
+          (item.state === "completed" && (item.mode === "answer" || item.mode === "artifact")))
+      );
+    }
+    if (
+      approval.preview.selection.blockers?.some(
+        (policy) => policy.blockerLinearIssueId === blockerId && policy.outcome === "merge",
+      )
+    )
+      return true;
+    const delivered = deliveredLinearIssueState(
+      db,
+      approval.preview.project.organizationId,
+      blockerId,
+    );
+    if (delivered?.stateType) return delivered.stateType === "completed";
+    return (
+      db
+        .query(
+          "SELECT 1 FROM project_approval_issue WHERE workspace_id=? AND issue_id=? AND released_at IS NULL",
+        )
+        .get(approval.workspaceId, blockerId) === null
+    );
+  }
+  /** Identifiers of the blockers that still hold a claim's session. */
+  function waitingFor(approval: ProjectApproval, issueId: string): string[] {
+    const blockers = new Set([
+      ...approval.preview.edges
+        .filter((edge) => edge.blockedLinearIssueId === issueId)
+        .map((edge) => edge.blockerLinearIssueId),
+      ...listTaskBlockers(db, issueId),
+    ]);
+    return [...blockers]
+      .filter((blockerId) => !blockerSatisfied(approval, blockerId))
+      .map((blockerId) => identifierFor(approval, blockerId))
+      .sort();
+  }
   function adoptParent(
     sessionId: string,
     snapshot: EpicSnapshot,
@@ -445,6 +521,11 @@ export function createApprovedProjects(input: {
         "INSERT INTO project_approval_issue(workspace_id,issue_id,approval_id) VALUES(?,?,?)",
         [workspace.id, issueId, id],
       );
+    saveTaskBlocks(
+      db,
+      issueIds,
+      edges.filter((edge) => subIds.has(edge.blockedLinearIssueId)),
+    );
     auditWorkspaceAccess(db, {
       workspaceId: workspace.id,
       userId: owner.userId,
@@ -462,6 +543,7 @@ export function createApprovedProjects(input: {
       const approval = readProjectApproval(db, id);
       return claims(id).map((claim) => ({
         ...claim,
+        waitingFor: approval && !claim.sessionId ? waitingFor(approval, claim.issueId) : [],
         blockedReasons:
           claim.epicId && approval
             ? [
@@ -754,19 +836,29 @@ export function createApprovedProjects(input: {
           context.signal.throwIfAborted();
           try {
             const approval = readProjectApproval(db, row.id)!;
-            if (
-              [approval.actorId, approval.leadUserId].some((userId) => {
+            const current = claims(row.id);
+            const ready = new Set(
+              current
+                .filter(
+                  (claim) => !claim.sessionId && waitingFor(approval, claim.issueId).length === 0,
+                )
+                .map((claim) => claim.issueId),
+            );
+            const idle = ready.size === 0 && current.every((claim) => !claim.sessionId);
+            if (!idle) {
+              const stale = [approval.actorId, approval.leadUserId].some((userId) => {
                 const member = workspaceMember(db, approval.workspaceId, userId);
                 return member === null || !membershipFresh(member, now());
-              })
-            )
-              await refreshAuthority(approval, context.signal);
-            else authority(approval);
-            for (const claim of claims(row.id)) {
+              });
+              if (stale) await refreshAuthority(approval, context.signal);
+              else authority(approval);
+            }
+            for (const claim of idle ? [] : current) {
               if (claim.sessionId) {
                 if (!claim.epicId) await input.resumeSession(claim.sessionId);
                 continue;
               }
+              if (!ready.has(claim.issueId)) continue;
               await input.startSession(
                 { kind: "issue", id: claim.issueId },
                 new URL("/status/", input.origin).href,

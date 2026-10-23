@@ -205,6 +205,13 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
 
     projects.register(jobs);
     await jobs.tick();
+    expect(started).toEqual(["child-a"]);
+    expect(
+      projects.progress(approval.id).find((claim) => claim.issueId === "child-b"),
+    ).toMatchObject({ sessionId: null, waitingFor: ["PAR-2"] });
+    db.run("UPDATE work_item SET state='merged' WHERE linear_issue_id='child-a'");
+    fixture.clock.advance(30_000);
+    await jobs.tick();
     expect(started).toEqual(["child-a", "child-b"]);
     const items = db
       .query<
@@ -237,7 +244,6 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
     const blocked = claims.find((claim) => claim.issue_id === "child-b")!;
     const blocker = claims.find((claim) => claim.issue_id === "child-a")!;
     expect(projects.canDispatch(blocker.delegation_id)).toBe(true);
-    expect(projects.canDispatch(blocked.delegation_id)).toBe(false);
     const live = await tracker.loadEpic("child-a");
     expect(
       projects.scope("session-child-a", {
@@ -251,7 +257,6 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
       { blockerLinearIssueId: "later", blockedLinearIssueId: "child-a" },
     ]);
     expect((await projects.scopeSnapshot("session-child-a", live)).subIssues).toEqual([]);
-    db.run("UPDATE work_item SET state='merged' WHERE linear_issue_id='child-a'");
     expect(projects.canDispatch(blocked.delegation_id)).toBe(true);
   } finally {
     await fixture.close();
@@ -663,7 +668,8 @@ test("a delegated parent with a chain of sub-issues ends its session with one su
 
     projects.register(jobs);
     await jobs.tick();
-    expect([...started].sort()).toEqual(["list", "move-all", "move-one"]);
+    // Only the unblocked sub-issue gets a session; the summary still lists all three.
+    expect(started).toEqual(["list"]);
     const summary = [
       "Started the work in 3 sub-issues. Each runs in its own session, so reply there to steer it.",
       `* [PAS-545](${url("PAS-545")}) List each runner's running sessions: started`,

@@ -30,23 +30,23 @@ test("approved project sessions use canonical single-issue intake, dependency ho
     await projects.approve(actor, preview.id, preview.generation, AbortSignal.timeout(10_000));
     projects.register(jobs);
     await jobs.tick();
-    expect(started).toEqual(["one", "two"]);
+    expect(started).toEqual(["one"]);
     const progress = projects.progress(preview.id);
     const first = progress.find((claim) => claim.issueId === "one")!;
     const second = progress.find((claim) => claim.issueId === "two")!;
-    expect(db.query("SELECT * FROM work_item").all()).toHaveLength(2);
+    expect(db.query("SELECT * FROM work_item").all()).toHaveLength(1);
     expect(delegatedLinearUserId(db, first.items[0]!.id)).toBe("actor");
     expect(projects.actor("session-one")).toBe("lead");
-    expect(projects.canDispatch(second.epicId!)).toBe(false);
+    expect(second).toMatchObject({ sessionId: null, epicId: null, waitingFor: ["one"] });
     expect(projects.canDispatch(first.epicId!)).toBe(true);
     clock.advance(30_000);
     await jobs.tick();
-    expect(started).toHaveLength(2);
+    expect(started).toEqual(["one"]);
     ensureLinearSession(db, { sessionId: "duplicate", issueId: "one", organizationId: "org" });
     await expect(
       orchestrator.intakeLinearTask("one", "duplicate", "duplicate-task"),
     ).rejects.toThrow("assignment changed");
-    expect(db.query("SELECT * FROM work_item").all()).toHaveLength(2);
+    expect(db.query("SELECT * FROM work_item").all()).toHaveLength(1);
     await projects.control(actor, preview.id, "pause");
     expect(projects.canDispatch(first.epicId!)).toBe(false);
     await projects.control(actor, preview.id, "resume");
@@ -102,7 +102,7 @@ test("a plain project member can answer or stop and an observer cannot", async (
     const owners = f.db
       .query<{ owner_user_id: string }, []>("SELECT owner_user_id FROM work_item")
       .all();
-    expect(owners).toHaveLength(2);
+    expect(owners).toHaveLength(1);
     expect(owners.every((row) => row.owner_user_id === "actor")).toBe(true);
     await f.orchestrator.intakeLinearTask("one", "session-one", "task-one");
     expect(
@@ -152,6 +152,7 @@ test("a plain project member can answer or stop and an observer cannot", async (
 test("accepted sessions retry interrupted admission without creating new Linear sessions", async () => {
   const f = createProjectFixture();
   try {
+    f.tracker.deps.delete("two");
     const approval = await f.projects.preview(f.actor, f.selection, AbortSignal.timeout(10_000));
     await f.projects.approve(
       f.actor,
@@ -181,6 +182,7 @@ test("a fresh process keeps approved claims paused without starting duplicate se
   const fixture = createProjectFixture(filename);
   let closed = false;
   try {
+    fixture.tracker.deps.delete("two");
     const approval = await fixture.projects.preview(
       fixture.actor,
       fixture.selection,

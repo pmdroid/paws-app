@@ -47,6 +47,7 @@ type Approval = {
   progress: {
     issueId: string;
     epicId: string | null;
+    waitingFor?: string[];
     blockedReasons: string[];
     items: { id: string; state: string; title: string }[];
   }[];
@@ -289,7 +290,7 @@ export function createProjects() {
         const identifier =
           entry.preview.project.issues.find((issue) => issue.linearIssueId === claim.issueId)
             ?.identifier ?? claim.issueId;
-        return `<li>${esc(identifier)}: ${claim.items.length ? claim.items.map((item) => `<a href="${routeHref({ view: "issues", id: identifier })}">${esc(stateLabel(item.state))}</a>`).join(", ") : "Waiting for intake"}${claim.blockedReasons.map((reason) => `<p class="muted">${esc(reason)}</p>`).join("")}</li>`;
+        return `<li>${esc(identifier)}: ${claim.items.length ? claim.items.map((item) => `<a href="${routeHref({ view: "issues", id: identifier })}">${esc(stateLabel(item.state))}</a>`).join(", ") : claim.waitingFor?.length ? esc(`Waiting for ${claim.waitingFor.join(", ")}`) : "Waiting for intake"}${claim.blockedReasons.map((reason) => `<p class="muted">${esc(reason)}</p>`).join("")}</li>`;
       })
       .join(
         "",
