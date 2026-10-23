@@ -312,7 +312,7 @@ export function completeMergedItem(
   });
 }
 
-export function endActiveRun(db: Database, runId: string | null, now: number): void {
+function endActiveRun(db: Database, runId: string | null, now: number): void {
   if (runId === null) return;
   const run = getRun(db, runId);
   if (run && (run.status === "active" || run.status === "provisioning"))
