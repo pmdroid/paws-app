@@ -1,14 +1,19 @@
 import type { TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
+import type { ProjectOverview } from "./project-scope";
 import { isRecord, readString } from "./read";
 
 /** What Merging settings match on: the issue's Linear project and label names. */
-export type LinearMergeContext = { projectId: string | null; labels: string[] };
+export type LinearMergeContext = {
+  projectId: string | null;
+  labels: string[];
+  overview?: ProjectOverview | null;
+};
 export type LinearMergeChoices = { projects: { id: string; name: string }[]; labels: string[] };
 
 const ISSUE_QUERY = `query PawsMergeContext($id: String!) {
   issue(id: $id) {
-    project { id }
+    project { id name content }
     labels(first: 100) { nodes { name } }
   }
 }`;
@@ -35,10 +40,13 @@ export function createLinearMergeReads(client: LinearClient) {
       options?.signal?.throwIfAborted();
       const issue = isRecord(data) ? data["issue"] : null;
       if (!isRecord(issue)) throw new Error("Linear returned no issue for merge settings");
-      const project = issue["project"];
+      const project = isRecord(issue["project"]) ? issue["project"] : null;
+      const name = project ? readString(project, "name") : null;
+      const content = project ? readString(project, "content") : null;
       return {
-        projectId: isRecord(project) ? readString(project, "id") : null,
+        projectId: project ? readString(project, "id") : null,
         labels: nodes(issue["labels"]).flatMap((label) => readString(label, "name") ?? []),
+        overview: name && content?.trim() ? { name, content } : null,
       };
     },
     async mergeChoices(options?: TrackerRequestOptions): Promise<LinearMergeChoices> {

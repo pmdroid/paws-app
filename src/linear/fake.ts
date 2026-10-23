@@ -121,7 +121,12 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     mergeContexts,
     async issueMergeContext(issueId, options) {
       options?.signal?.throwIfAborted();
-      return structuredClone(mergeContexts.get(issueId) ?? { projectId: null, labels: [] });
+      return structuredClone({
+        projectId: null,
+        labels: [],
+        overview: projectOverviews.get(issueId) ?? null,
+        ...mergeContexts.get(issueId),
+      });
     },
     projectOverviews,
     async projectOverview(issueId, options) {

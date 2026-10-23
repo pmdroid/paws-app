@@ -777,39 +777,13 @@ test("Stop during dependency loading cannot commit or queue the classified task"
   }
 });
 
-test("Stop during the intake announcement cancels the already associated task", async () => {
+test("a lone issue's intake adds no announcement to the first activity", async () => {
   const f = setup("answer");
-  const ready = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const post = f.tracker.postProgress.bind(f.tracker);
-  f.tracker.postProgress = async (update, options) => {
-    if (update.kind === "thought" && update.body === "Picked up ENG-1.") {
-      ready.resolve();
-      await release.promise;
-    }
-    return post(update, options);
-  };
   try {
-    const intake = f.orchestrator.onLinearEvent(event());
-    await ready.promise;
-    const itemId = getLinearSession(f.db, "session")?.activeItemId;
-    expect(itemId).toBeString();
-    const stopping = f.orchestrator.onLinearEvent({
-      ...event(),
-      dedupeKey: "stop-during-announcement",
-      action: "prompted",
-      signal: "stop",
-    });
-    for (let i = 0; i < 100 && getWorkItem(f.db, itemId!)?.state !== "cancelled"; i++)
-      await Bun.sleep(1);
-    expect(getWorkItem(f.db, itemId!)?.state).toBe("cancelled");
-    release.resolve();
-    await stopping;
-    await intake;
-    expect(f.launches).toEqual(["classify"]);
-    expect(f.tracker.progress.some((update) => update.kind === "error")).toBe(false);
+    await f.orchestrator.onLinearEvent(event());
+    expect(getLinearSession(f.db, "session")?.activeItemId).toBeString();
+    expect(f.tracker.progress).toEqual([]);
   } finally {
-    release.resolve();
     f.db.close();
   }
 });

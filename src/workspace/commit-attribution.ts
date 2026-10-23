@@ -24,10 +24,7 @@ type IssueAttributionReads = {
 };
 
 export class IssueAttributionCache {
-  private readonly entries = new Map<
-    string,
-    { runId: string; context: LinearAttributionContext }
-  >();
+  private readonly entries = new Map<string, LinearAttributionContext>();
 
   constructor(private readonly reads: IssueAttributionReads) {}
 
@@ -35,10 +32,10 @@ export class IssueAttributionCache {
     const runId = item.currentRunId;
     return {
       getIssueAttribution: async (issueId, options) => {
-        const cached = this.entries.get(issueId);
-        if (runId !== null && cached?.runId === runId) return cached.context;
+        const cached = runId === null ? undefined : this.entries.get(issueId);
+        if (cached) return cached;
         const context = await this.reads.getIssueAttribution(issueId, options);
-        if (runId !== null) this.entries.set(issueId, { runId, context });
+        if (runId !== null) this.entries.set(issueId, context);
         return context;
       },
     };

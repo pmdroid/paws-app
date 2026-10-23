@@ -229,8 +229,9 @@ test("a resume after a restart repeats no Linear read the first run already made
   let orchestrator = fixture.orchestrator;
   try {
     expect(fixture.reads).toEqual(
-      expect.arrayContaining(["project overview issue", "merge context issue", "activities ses_1"]),
+      expect.arrayContaining(["merge context issue", "activities ses_1"]),
     );
+    expect(fixture.reads).not.toContain("project overview issue");
     const firstRun = [...fixture.reads];
     const restarted = await fixture.restart();
     orchestrator = restarted.orchestrator;

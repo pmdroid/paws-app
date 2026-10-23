@@ -58,6 +58,7 @@ export async function intakeDelegatedIssue(
     now?: number;
     taskKey?: string;
     singleIssue?: boolean;
+    acknowledged?: boolean;
     isCurrent?: () => boolean;
     onAccepted?: (result: IntakeResult) => void;
     beforeAdmit?: () => void;
@@ -181,6 +182,7 @@ export async function intakeDelegatedIssue(
     }
     throw error;
   }
+  if (delegatedAlone && !adopted && input.acknowledged) return result;
   await announce(
     tracker,
     input.sessionId,
