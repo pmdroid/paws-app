@@ -24,7 +24,7 @@ import {
   type TrackerKind,
 } from "../config";
 import { validate } from "../closeout-spec";
-import { linearWebhookWarning, type LinearWebhookWarning } from "../db";
+import { latestGitHubDelivery, linearWebhookWarning, type LinearWebhookWarning } from "../db";
 import { checkGhAuthStatus, ghDoctorChecks } from "../github";
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
 import { doctorAgentProfiles } from "./agents";
@@ -55,6 +55,7 @@ export type ProbeFacts = {
   githubDoctor: GitHubDoctorFacts;
   webhooks: boolean;
   linearWebhook?: LinearWebhookWarning | null;
+  githubDelivery?: { event: string; receivedAt: number } | null;
   publicUrl: string | null;
   repo: string | null;
   team: string | null;
@@ -113,7 +114,8 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     oauthClientId: runtime.oauthClientId,
     githubDoctor: applyGhFallback(runtime, githubDoctor, gh),
     webhooks: runtime.webhooks,
-    linearWebhook: linearWebhookFact(pawsPaths(runtime.env.home).db),
+    linearWebhook: readPawsDb(runtime.env.home, (db) => linearWebhookWarning(db, Date.now())),
+    githubDelivery: readPawsDb(runtime.env.home, latestGitHubDelivery),
     publicUrl: runtime.publicUrl,
     repo: runtime.repo,
     team: runtime.linearTeam,
@@ -133,12 +135,13 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
   };
 }
 
-function linearWebhookFact(path: string): LinearWebhookWarning | null {
-  if (!existsSync(path)) return null;
+function readPawsDb<T>(home: string, read: (db: Database) => T): T | null {
+  const file = pawsPaths(home).db;
+  if (!existsSync(file)) return null;
   try {
-    const db = new Database(path, { readonly: true });
+    const db = new Database(file, { readonly: true });
     try {
-      return linearWebhookWarning(db, Date.now());
+      return read(db);
     } finally {
       db.close();
     }

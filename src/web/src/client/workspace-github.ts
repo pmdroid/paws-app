@@ -4,6 +4,7 @@ import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { initializeGitHubRepositorySetup } from "./github-repository-setup";
 import { githubUrl } from "./github-url";
+import { githubDeliveryLine, type GitHubDelivery } from "./github-delivery";
 
 type GitHubStatus = {
   status:
@@ -17,6 +18,7 @@ type GitHubStatus = {
   requiresSignIn: boolean;
   installationUrl?: string;
   repositoryCount?: number;
+  lastDelivery?: GitHubDelivery;
 };
 
 export function initializeWorkspaceGitHub(
@@ -61,7 +63,7 @@ export function initializeWorkspaceGitHub(
     );
     description.textContent =
       data.status === "connected"
-        ? `Available for ${data.repositoryCount ?? 0} ${(data.repositoryCount ?? 0) === 1 ? "repository" : "repositories"}.`
+        ? `Available for ${data.repositoryCount ?? 0} ${(data.repositoryCount ?? 0) === 1 ? "repository" : "repositories"}.${githubDeliveryLine(data.lastDelivery)}`
         : data.status === "setup_required"
           ? "Ask your Paws operator to finish GitHub setup."
           : data.status === "needs_repositories"

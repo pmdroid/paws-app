@@ -2279,4 +2279,8 @@ ALTER TABLE runner_execution_usage ADD COLUMN resets_at INTEGER CHECK (resets_at
 CREATE INDEX runner_usage_runner_ended ON runner_execution_usage(runner_id, ended_at);
 `,
   },
+  {
+    id: "111_github_delivery_received",
+    sql: `CREATE INDEX github_delivery_received ON github_delivery (received_at);`,
+  },
 ];

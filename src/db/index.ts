@@ -187,6 +187,7 @@ export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./cl
 export { listCiRounds, recordCiRound, type CiRound, type CiRoundCheck } from "./ci-rounds";
 export {
   recordGitHubDelivery,
+  latestGitHubDelivery,
   listGitHubDeliveries,
   type IntegrationEvent,
 } from "./integration-events";

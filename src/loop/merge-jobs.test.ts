@@ -13,6 +13,7 @@ import {
   openDatabase,
 } from "../db";
 import {
+  MERGE_BACKSTOP_POLL_MS,
   MERGE_CI_POLL_MS,
   acceptGitHubDelivery,
   MERGE_CI_WAIT_MS,
@@ -20,6 +21,7 @@ import {
   parkMergeForCi,
   retryMergeLater,
   waitForMergeTurn,
+  wakeMergesBehind,
 } from "./merge-jobs";
 import { worktreeBranch } from "./sources";
 
@@ -282,6 +284,18 @@ describe("GitHub deliveries", () => {
     expect(getJob(db, id)?.runAt).toBe(clock.now());
   });
 
+  test("a check that only started, or a pending status, does not wake the merge job", () => {
+    const { db, clock, id } = parked();
+    const runAt = getJob(db, id)?.runAt;
+    deliver(db, clock.now(), "check_run", { action: "created", check_run: { head_sha: head } });
+    deliver(db, clock.now(), "check_suite", {
+      action: "requested",
+      check_suite: { head_sha: head },
+    });
+    deliver(db, clock.now(), "status", { state: "pending", sha: head });
+    expect(getJob(db, id)?.runAt).toBe(runAt);
+  });
+
   test("a redelivered delivery id is recorded once and wakes nothing again", () => {
     const { db, clock, id } = parked();
     const payload = { state: "success", sha: head, branches: [] };
@@ -293,10 +307,17 @@ describe("GitHub deliveries", () => {
 
   test("check_run, status, pull_request and review deliveries match by head or branch", () => {
     const cases: [string, (branch: string) => unknown][] = [
-      ["check_run", () => ({ check_run: { head_sha: head, check_suite: { head_branch: null } } })],
+      [
+        "check_run",
+        () => ({
+          action: "completed",
+          check_run: { head_sha: head, check_suite: { head_branch: null } },
+        }),
+      ],
       [
         "check_run",
         (branch) => ({
+          action: "completed",
           check_run: { head_sha: "c".repeat(40), check_suite: { head_branch: branch } },
         }),
       ],
@@ -345,8 +366,98 @@ describe("GitHub deliveries", () => {
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     expect(job?.id).toBe(id);
     clock.advance(1_000);
-    deliver(db, clock.now(), "check_suite", { check_suite: { head_sha: head } });
+    deliver(db, clock.now(), "check_suite", {
+      action: "completed",
+      check_suite: { head_sha: head },
+    });
     expect(parkMergeForCi(db, job!, clock.now(), { head })).toBe("parked");
     expect(getJob(db, id)).toMatchObject({ status: "pending", runAt: clock.now() });
+  });
+});
+
+describe("merge poll backstop", () => {
+  function ciWait() {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      lane: MERGE_LANE,
+      payload: { itemId: "eng-1" },
+      now: clock.now(),
+    });
+    let reads = 0;
+    const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
+    loop.register(JOB_KIND.merge, (job) => {
+      reads += 1;
+      parkMergeForCi(db, job, clock.now(), { base: "b", head: "h", summary: "s" });
+    });
+    return { db, clock, id, loop, reads: () => reads };
+  }
+
+  function ping(db: ReturnType<typeof queue>["db"], now: number, deliveryId = "ping") {
+    acceptGitHubDelivery(db, { deliveryId, event: "ping", payload: "{}" }, now);
+  }
+
+  test("with deliveries flowing, a 20-minute CI wait makes at most 5 GitHub status reads", async () => {
+    const { db, clock, loop, reads } = ciWait();
+    ping(db, clock.now());
+    for (let elapsed = 0; elapsed <= 20 * 60_000; elapsed += MERGE_CI_POLL_MS) {
+      await loop.tick();
+      clock.advance(MERGE_CI_POLL_MS);
+    }
+    expect(reads()).toBeLessThanOrEqual(5);
+    expect(reads()).toBeGreaterThan(1);
+  });
+
+  test("a CI wait polls every 10 seconds when no delivery arrived in the last hour", async () => {
+    const { db, clock, id, loop } = ciWait();
+    ping(db, clock.now());
+    clock.advance(60 * 60_000);
+    await loop.tick();
+    expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_CI_POLL_MS);
+    ping(db, clock.now(), "ping-2");
+    clock.advance(MERGE_CI_POLL_MS);
+    await loop.tick();
+    expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
+  });
+
+  test("a wait for a review or the queue polls every 5 minutes while deliveries flow", async () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      lane: MERGE_LANE,
+      payload: { itemId: "eng-1" },
+      now: clock.now(),
+    });
+    ping(db, clock.now());
+    const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    parkMergeForCi(db, job!, clock.now(), undefined, { queued: true, reason: "review" });
+    expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
+  });
+
+  test("a merge leaving the queue wakes the merges waiting behind it", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    const ids = ["eng-1", "eng-2"].map((itemId) =>
+      enqueueJob(db, {
+        queue: JOB_KIND.merge,
+        lane: MERGE_LANE,
+        payload: { itemId },
+        now: clock.now(),
+      }),
+    );
+    ping(db, clock.now());
+    for (const reason of ["ahead", "review"] as const) {
+      const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+      parkMergeForCi(db, job!, clock.now(), undefined, { queued: true, reason });
+    }
+    clock.advance(1_000);
+    wakeMergesBehind(db, clock.now());
+    expect(ids.map((id) => getJob(db, id)?.runAt)).toEqual([
+      clock.now(),
+      clock.now() - 1_000 + MERGE_BACKSTOP_POLL_MS,
+    ]);
   });
 });
