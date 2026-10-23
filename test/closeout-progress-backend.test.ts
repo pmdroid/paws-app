@@ -12,6 +12,7 @@ import type {
 import { evaluateCandidate, runCloseoutGate } from "../src/closeout";
 import type { FixRunner } from "../src/closeout/fixer";
 import { credentialSecrets } from "../src/closeout-spec";
+import { isTransientFailure } from "../src/core";
 import { createStreamScrubber } from "../src/closeout-spec/run/scrub";
 import {
   applyWorkItemEvent,
@@ -376,6 +377,42 @@ describe("closeout progress backend", () => {
     } finally {
       if (previous === undefined) delete process.env.DEMO_API_KEY;
       else process.env.DEMO_API_KEY = previous;
+      await repo.cleanup();
+    }
+  });
+
+  test("a policy fetch that fails on the network is retried, not blocked", async () => {
+    const repo = await originRepo({ ".agents/closeout.yaml": policy([]) });
+    const db = openDatabase(":memory:");
+    migrate(db);
+    try {
+      await exec("git", [
+        "-C",
+        repo.dir,
+        "remote",
+        "set-url",
+        "origin",
+        "http://127.0.0.1:1/x.git",
+      ]);
+      const thrown = await evaluateCandidate(
+        evalInput(repo, createDbCloseoutProgress(db, "item-1")),
+      ).catch((error: unknown) => error);
+      expect(isTransientFailure(thrown)).toBe(true);
+      expect(String(thrown)).toContain("origin/main is unavailable");
+      await exec("git", [
+        "-C",
+        repo.dir,
+        "remote",
+        "set-url",
+        "origin",
+        path.join(repo.root, "gone"),
+      ]);
+      const missing = await evaluateCandidate(
+        evalInput(repo, createDbCloseoutProgress(db, "item-1")),
+      );
+      expect(missing.outcome).toBe("blocked");
+    } finally {
+      db.close();
       await repo.cleanup();
     }
   });
