@@ -4,6 +4,7 @@ import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./bud
 import { LinearEntityNotFoundError } from "./graphql";
 import type {
   IntakePollSource,
+  IntakeSighting,
   PolledActivity,
   PolledComment,
   PolledIssue,
@@ -21,7 +22,7 @@ export const POLL_INTERVAL_ACTIVE_MS = 5_000;
 export const POLL_INTERVAL_IDLE_MS = 15_000;
 
 /** Poll as a backstop while verified webhooks keep arriving. */
-export const POLL_INTERVAL_WEBHOOK_MS = 60_000;
+export const POLL_INTERVAL_WEBHOOK_MS = 12 * 60_000;
 
 /** Poll while less than `LOW_BUDGET_FRACTION` of the Linear request budget is left. */
 export const POLL_INTERVAL_LOW_BUDGET_MS = 5 * 60_000;
@@ -192,9 +193,19 @@ export function startCatchUpPoller(options: {
     }
     const saved = options.store.getCursor(CATCH_UP_CURSOR);
     const since = saved === null ? now() - INITIAL_LOOKBACK_MS : Math.max(0, saved - OVERLAP_MS);
-    const sighting = await options.source.poll(since);
-    if (sighting.budget !== null) latestBudget = sighting.budget;
-    if (!sighting.queried) return;
+    let sighting: IntakeSighting;
+    do {
+      sighting = await options.source.poll(since);
+      if (sighting.budget !== null) latestBudget = sighting.budget;
+      if (!sighting.queried) return;
+      await record(sighting, since);
+    } while (!sighting.caughtUp && !control.stopped);
+    options.intake?.wake();
+    if (sighting.caughtUp) options.store.setCursor(CATCH_UP_CURSOR, now());
+    rateAttempts = 0;
+  }
+
+  async function record(sighting: IntakeSighting, since: number): Promise<void> {
     const sessionByIssue = new Map<string, string>();
     for (const activity of sighting.activities) {
       if (activity.issueId !== null && activity.sessionId !== null) {
@@ -231,9 +242,6 @@ export function startCatchUpPoller(options: {
       }
       await deliverOrSkip(event);
     }
-    options.intake?.wake();
-    if (sighting.caughtUp) options.store.setCursor(CATCH_UP_CURSOR, now());
-    rateAttempts = 0;
   }
 
   async function deliverOrSkip(event: AcceptedLinearEvent): Promise<void> {

@@ -412,10 +412,13 @@ describe("linear intake poll", () => {
     db.close();
   });
 
-  test("backs off to 60s while verified webhooks arrive and 5 minutes on a low budget", () => {
+  test("backs off to a 10 to 15 minute backstop while verified webhooks arrive and 5 minutes on a low budget", () => {
+    expect(POLL_INTERVAL_WEBHOOK_MS).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(POLL_INTERVAL_WEBHOOK_MS).toBeLessThanOrEqual(15 * 60_000);
+    expect(3_600_000 / POLL_INTERVAL_WEBHOOK_MS).toBeLessThanOrEqual(10);
     const fresh = { now: NOW, lastWebhookMs: NOW - WEBHOOK_HEALTHY_MS + 1 };
     expect(pollIntervalMs(true, fresh)).toBe(POLL_INTERVAL_WEBHOOK_MS);
-    expect(pollIntervalMs(false, fresh)).toBe(60_000);
+    expect(pollIntervalMs(false, fresh)).toBe(POLL_INTERVAL_WEBHOOK_MS);
 
     const stale = { now: NOW, lastWebhookMs: NOW - WEBHOOK_HEALTHY_MS };
     expect(pollIntervalMs(true, stale)).toBe(POLL_INTERVAL_ACTIVE_MS);
@@ -428,14 +431,16 @@ describe("linear intake poll", () => {
       requestsResetMs: NOW + 1,
     });
     expect(pollIntervalMs(true, { now: NOW, budget: low })).toBe(POLL_INTERVAL_LOW_BUDGET_MS);
-    expect(pollIntervalMs(false, { now: NOW, budget: low, lastWebhookMs: NOW })).toBe(300_000);
+    expect(pollIntervalMs(false, { now: NOW, budget: low, lastWebhookMs: NOW })).toBe(
+      POLL_INTERVAL_WEBHOOK_MS,
+    );
     expect(pollIntervalMs(true, { now: NOW + 1, budget: low })).toBe(POLL_INTERVAL_ACTIVE_MS);
     const enough = rateBudget({ requestsRemaining: 200, requestsLimit: 1_000 });
     expect(pollIntervalMs(false, { now: NOW, budget: enough })).toBe(POLL_INTERVAL_IDLE_MS);
     expect(pollIntervalMs(false, { now: NOW, budget: rateBudget({}) })).toBe(POLL_INTERVAL_IDLE_MS);
   });
 
-  test("waits 60s after a verified webhook and keeps today's intervals without one", async () => {
+  test("waits out the backstop interval after a verified webhook and keeps today's intervals without one", async () => {
     const db = tempDb();
     const store = createInboxStore(db);
     const waits: number[] = [];

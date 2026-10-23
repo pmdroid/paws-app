@@ -6,7 +6,7 @@ import { tempDb } from "./helpers";
 const NOW = 1_700_000_000_000;
 
 describe("Linear session pagination", () => {
-  test("discovers a session beyond the first 50 and advances the cursor only after the last page", async () => {
+  test("discovers a session beyond the first 50 within one pass and then advances the cursor", async () => {
     const db = tempDb();
     const store = createInboxStore(db);
     const seen: string[] = [];
@@ -46,16 +46,41 @@ describe("Linear session pagination", () => {
       now: () => NOW,
     });
     try {
-      await until(() => calls === 1);
-      expect(store.getCursor("linear")).toBeNull();
-      expect(seen).toEqual([]);
-      await poller.pollNow();
+      await until(() => store.getCursor("linear") !== null);
+      expect(calls).toBe(2);
       expect(seen).toEqual(["ours"]);
       expect(store.getCursor("linear")).toBe(NOW);
     } finally {
       await poller.stop();
       db.close();
     }
+  });
+
+  test("pages sessions newest first and stops at the first one older than the cursor", async () => {
+    const variables: Record<string, unknown>[] = [];
+    const client: LinearClient = {
+      async query(query, input = {}) {
+        expect(query).toContain("orderBy: updatedAt, includeArchived: true");
+        variables.push(input);
+        return {
+          ...page(),
+          agentSessions: connection(
+            [
+              {
+                ...session("fresh", "issue", NOW - 120_000),
+                updatedAt: new Date(NOW + 1_000).toISOString(),
+              },
+              session("stale", "issue", NOW - 60_000),
+            ],
+            "older-sessions",
+          ),
+        };
+      },
+    };
+    const result = await createIntakePollSource(client, { teamId: "ENG" }).poll(NOW);
+    expect(result.caughtUp).toBe(true);
+    expect(variables).toHaveLength(1);
+    expect(result.sessions.map(({ id }) => id)).toEqual(["fresh", "stale"]);
   });
 
   test("keeps every eligible session across pages with different connection lengths", async () => {
