@@ -36,6 +36,7 @@ import { PAGES } from "./navigation";
 import { renderRunsList } from "./runs-list";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
+import { visualReviewSection, waitingVisualReview } from "./visual-review";
 
 export interface RenderModel {
   conversations?: ConversationModel;
@@ -370,12 +371,17 @@ function viewRuns(
     ${item ? githubQueueNotice(item) : ""}
     ${selected.usagePause ? usagePauseSection(selected, selected.usagePause) : executionControls(selected)}
     ${snapshot.questions
-      .filter((question) => question.itemId === selected.itemId)
+      .filter(
+        (question) =>
+          question.itemId === selected.itemId &&
+          !item?.visualReviews?.some((review) => review.questionId === question.id),
+      )
       .map(
         (question) =>
           `<section class="closeout-result blocked"><div><h2>${esc(question.title)}</h2><p>${esc(question.body)}</p><div class="row">${linkList(question.links)}</div></div></section>`,
       )
       .join("")}
+    ${item ? visualReviewSection(snapshot, item, engineUrl) : ""}
     ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
     ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item?.state ?? "running")) : ""}
     ${evidenceSlot(snapshot, selected.id)}
@@ -495,21 +501,35 @@ function phaseStrip(
             ? `${name} · #${item.mergeQueue.position} in queue`
             : name,
   );
-  const marks = names
-    .map((name, index) => {
-      const failed =
-        index === 1 && verdict && ["exhausted", "rejected", "blocked"].includes(verdict.decision);
-      const cls = failed
-        ? "failed"
-        : index < phase.current || (index === 1 && verdict?.decision === "accepted")
-          ? "done"
-          : index === phase.current
-            ? "now"
-            : "wait";
-      return `<li class="run-step ${cls}"${index === phase.current ? ' aria-current="step"' : ""}>${cls === "done" ? "✓ " : failed ? "✕ " : ""}${esc(name)}</li>`;
-    })
+  const steps = names.map((name, index) => {
+    const failed =
+      index === 1 && verdict && ["exhausted", "rejected", "blocked"].includes(verdict.decision);
+    const cls = failed
+      ? "failed"
+      : index < phase.current || (index === 1 && verdict?.decision === "accepted")
+        ? "done"
+        : index === phase.current
+          ? "now"
+          : "wait";
+    return { name, cls, current: index === phase.current };
+  });
+  const review = item?.visualReviews?.at(-1);
+  const waiting = waitingVisualReview(item);
+  if (review) {
+    if (waiting) steps[0] = { ...steps[0]!, cls: "done", current: false };
+    steps.splice(1, 0, {
+      name: waiting ? `Visual review · round ${waiting.round}` : "Visual review",
+      cls: waiting ? "now" : review.state === "accepted" || phase.current > 0 ? "done" : "wait",
+      current: waiting !== undefined,
+    });
+  }
+  const marks = steps
+    .map(
+      ({ name, cls, current }) =>
+        `<li class="run-step ${cls}"${current ? ' aria-current="step"' : ""}>${cls === "done" ? "✓ " : cls === "failed" ? "✕ " : ""}${esc(name)}</li>`,
+    )
     .join("");
-  return `<ol class="run-stepper" aria-label="Run progress" title="${esc(phase.detail)}">${marks}</ol>`;
+  return `<ol class="run-stepper${review ? " with-review" : ""}" aria-label="Run progress" title="${esc(waiting ? "Waiting for a visual review in Linear. The task is not complete." : phase.detail)}">${marks}</ol>`;
 }
 
 function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: StatusVerdict): string {
@@ -523,6 +543,7 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   if (item?.state === "merged") return statePill("merged", "Complete");
   if (run.usagePause) return statePill("running usage-limit", "Paused · usage limit");
   if (item?.state === "queued") return statePill("queued", "Queued");
+  if (waitingVisualReview(item)) return statePill("awaiting_input", "Waiting for visual review");
   if (recheck) return statePill("verifying", "Closeout");
   if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");
   if (verdict?.decision === "exhausted" || item?.state === "exhausted")

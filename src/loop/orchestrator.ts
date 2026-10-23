@@ -255,6 +255,7 @@ import {
   postNote,
   remindVisualReview,
   visualReviewApprovals,
+  visualReviewPullRequestNote,
   visualReviewHandoff,
 } from "./visual-review";
 import {
@@ -2742,7 +2743,13 @@ export class Orchestrator {
     const draft = getPullRequestDraft(this.db, item.id);
     const published = await publishAccepted({
       accepted: true,
-      evidence: summary + (policy ? `\n\n${policyPullRequestCredit(policy)}` : ""),
+      evidence: [
+        summary,
+        visualReviewPullRequestNote(this.db, item, this.options.evidence?.publicUrl ?? null),
+        policy ? policyPullRequestCredit(policy) : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       worktree,
       issue: item.linearIdentifier,
       branchKey: taskBranchKey(item),

@@ -40,7 +40,8 @@ import type {
 } from "../../../db";
 import {
   getConfirmedRemoteMerge,
-  getLinearConversationSource,
+  linearConversationUrl,
+  listVisualReviews,
   getTaskMergeSettings,
   getRun,
   listAgentCloseout,
@@ -95,6 +96,7 @@ import {
   type StatusRun,
   type StatusSnapshot,
   type StatusVerdict,
+  type StatusVisualReview,
   type VerdictDecision,
 } from "../contract";
 
@@ -440,6 +442,38 @@ function toItem(
       : {}),
     ...(mergeQueue ? { mergeQueue } : {}),
     ...(githubQueue ? { githubQueue } : {}),
+    ...visualReviewsOf(db, record),
+  };
+}
+
+function visualReviewsOf(
+  db: Database,
+  record: WorkItemRecord,
+): { visualReviews?: StatusVisualReview[] } {
+  const reviews = listVisualReviews(db, record.id);
+  if (reviews.length === 0) return {};
+  const commits = new Map(listEvidence(db, record.id).map((row) => [row.id, row.headCommit]));
+  const rounds = new Map<string, number>();
+  return {
+    visualReviews: reviews.map((review) => {
+      const round = (rounds.get(review.checkId) ?? 0) + 1;
+      rounds.set(review.checkId, round);
+      return {
+        questionId: review.questionId,
+        checkId: review.checkId,
+        round,
+        state: review.outcome ?? "waiting",
+        evidenceIds: review.evidenceIds,
+        commit:
+          review.headCommit ||
+          review.evidenceIds.map((id) => commits.get(id)).findLast(Boolean) ||
+          null,
+        askedAt: iso(review.createdAt),
+        answeredBy: review.answeredBy || null,
+        answeredAt: review.answeredAt === null ? null : iso(review.answeredAt),
+        feedback: review.feedback?.trim() || null,
+      };
+    }),
   };
 }
 
@@ -661,20 +695,7 @@ function questionLinks(
   sessionId: string,
   identifier: string,
 ): StatusQuestion["links"] {
-  const source = getLinearConversationSource(db, sessionId);
-  if (source !== null) {
-    try {
-      const url = new URL(source);
-      if (url.origin === "https://linear.app" && !url.username && !url.password)
-        return [{ label: "Answer in Linear", href: url.href }];
-    } catch {}
-  }
-  return [
-    {
-      label: "Answer in Linear",
-      href: `https://linear.app/issue/${encodeURIComponent(identifier)}`,
-    },
-  ];
+  return [{ label: "Answer in Linear", href: linearConversationUrl(db, sessionId, identifier) }];
 }
 
 function verdictFor(
