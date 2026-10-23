@@ -31,7 +31,12 @@ export type AnswerOutcome =
 
 export type AnswerEffects = Partial<Record<QuestionKind, (question: StoredQuestion) => void>>;
 
-const SUPERSEDES: Record<QuestionKind, boolean> = { agent: false, "runner-wait": true };
+const SUPERSEDES: Record<QuestionKind, boolean> = {
+  agent: false,
+  clarification: false,
+  repository: false,
+  "runner-wait": true,
+};
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);
 
