@@ -543,6 +543,7 @@ async function finish(
           input.published,
           policy.items,
           scrubCommandEnv(input.env),
+          base,
         );
   const approvals =
     input.approvals === undefined
@@ -553,6 +554,7 @@ async function finish(
           input.approvals,
           policy.items,
           scrubCommandEnv(input.env),
+          base,
         );
   return evaluate(
     policy,

@@ -1998,7 +1998,7 @@ export class Orchestrator {
   ): Promise<void> {
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state !== "running") return;
-    if (await this.visualReviewOutdated(current, worktree, head)) return;
+    if (await this.visualReviewOutdated(current, worktree, base, head)) return;
     if (await this.askVisualReview(current, worktree, base, head)) return;
     applyWorkItemEvent(this.db, item.id, "turn_ended");
     const verifying = getWorkItem(this.db, item.id);
@@ -4710,6 +4710,8 @@ export class Orchestrator {
       head,
       visualReviewApprovals(this.db, item.id, itemPathId(item)),
       requirements,
+      undefined,
+      base,
     );
     const asked = immediate(this.db, () => {
       const due = dueVisualReview(this.db, item.id, requirements, approvals);
@@ -4815,6 +4817,7 @@ export class Orchestrator {
   private async visualReviewOutdated(
     item: WorkItemRecord,
     worktree: string,
+    base: string,
     head: string,
   ): Promise<boolean> {
     const reviews = acceptedVisualReviews(this.db, item.id);
@@ -4823,7 +4826,9 @@ export class Orchestrator {
     if (requirements.length === 0) return false;
     const checks = new Set(requirements.map((entry) => entry.id));
     const approvals = visualReviewApprovals(this.db, item.id, itemPathId(item));
-    const valid = new Set(await approvalsAtHead(worktree, head, approvals, requirements));
+    const valid = new Set(
+      await approvalsAtHead(worktree, head, approvals, requirements, undefined, base),
+    );
     const outdated = reviews.filter(
       (review, index) => checks.has(review.checkId) && !valid.has(approvals[index]!),
     );
