@@ -2,6 +2,8 @@ export {
   acknowledgeNewSession,
   FIRST_ACTIVITY_BODY,
   LinearIntakePendingError,
+  LinearIntakeRefusedError,
+  type IntakeDecision,
   LinearIssueClosedError,
 } from "./acknowledge";
 export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
