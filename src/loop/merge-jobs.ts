@@ -6,6 +6,20 @@ export const MERGE_CI_POLL_MS = 10_000;
 export const MERGE_CI_WAIT_MS = 269 * MERGE_CI_POLL_MS;
 /** A task waiting in its repository's merge queue, or for a review, checks again this often. */
 export const MERGE_QUEUE_POLL_MS = 30_000;
+/** GitHub's merge queue batches and tests everyone's pull requests, so a place in it can last hours. */
+export const GITHUB_QUEUE_WAIT_MS = 24 * 60 * 60 * 1000;
+/** How often a pull request in GitHub's merge queue is read again. */
+export const GITHUB_QUEUE_POLL_MS = 30_000;
+
+/** What the last pass saw of the pull request in GitHub's merge queue. Kept in the merge job. */
+export type GitHubQueueWatch = {
+  /** Paws queued the pull request, or saw it queued, during this merge job. */
+  queued: boolean;
+  position?: number | null;
+  state?: string;
+  /** For example "Second in the acme/platform GitHub merge queue, waiting for checks." */
+  line?: string;
+};
 
 export type CiWaitVerification = {
   base: string;
@@ -21,7 +35,12 @@ export function parkMergeForCi(
   job: Job,
   now: number,
   verified?: Partial<CiWaitVerification>,
-  options: { queued?: boolean; reason?: MergeWaitReason; message?: string } = {},
+  options: {
+    queued?: boolean;
+    reason?: MergeWaitReason;
+    message?: string;
+    githubQueue?: GitHubQueueWatch;
+  } = {},
 ): "parked" | "expired" | "lost" {
   const payload = payloadRecord(job.payload);
   if (options.reason)
@@ -41,18 +60,19 @@ export function parkMergeForCi(
   const deadline =
     sameHead && typeof saved === "number" && Number.isFinite(saved)
       ? saved
-      : now + MERGE_CI_WAIT_MS;
+      : now + (options.githubQueue ? GITHUB_QUEUE_WAIT_MS : MERGE_CI_WAIT_MS);
   if (sameHead && now >= deadline) return "expired";
   return requeue(
     db,
     job,
-    now + MERGE_CI_POLL_MS,
+    now + (options.githubQueue ? GITHUB_QUEUE_POLL_MS : MERGE_CI_POLL_MS),
     {
       ...payload,
       ciWaitDeadline: deadline,
       ...(verified?.base === undefined ? {} : { ciWaitBase: verified.base }),
       ...(verified?.head === undefined ? {} : { ciWaitHead: verified.head }),
       ...(verified?.summary === undefined ? {} : { ciWaitSummary: verified.summary }),
+      ...(options.githubQueue === undefined ? {} : { githubQueue: options.githubQueue }),
     },
     now,
   );
@@ -88,6 +108,20 @@ export function ciWaitVerification(payload: unknown): CiWaitVerification | undef
   if (typeof head !== "string" || head.length === 0) return undefined;
   if (typeof summary !== "string") return undefined;
   return { base, head, summary };
+}
+
+export function githubQueueWatch(payload: unknown): GitHubQueueWatch | undefined {
+  const value = payloadRecord(payload).githubQueue;
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    queued: record.queued === true,
+    ...(typeof record.position === "number" || record.position === null
+      ? { position: record.position as number | null }
+      : {}),
+    ...(typeof record.state === "string" ? { state: record.state } : {}),
+    ...(typeof record.line === "string" ? { line: record.line } : {}),
+  };
 }
 
 function payloadRecord(payload: unknown): Record<string, unknown> {

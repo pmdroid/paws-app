@@ -100,6 +100,8 @@ test("a refresh discards its rotation when its claim expires during the latest r
   }
 });
 
+// Two connections migrate and fsync with synchronous=FULL. Under CI's four parallel test files this
+// can pass Bun's 5 s default, so it gets the same budget as `bun run test`.
 test("credential publication holds the SQLite writer lock through read and write", async () => {
   const home = tempHome();
   const db = openDatabase(join(home, "paws.db"));
@@ -136,7 +138,7 @@ test("credential publication holds the SQLite writer lock through read and write
     db.close();
     rmSync(home, { recursive: true, force: true });
   }
-});
+}, 20_000);
 
 test("separate Linear clients share one durable refresh job and rotate the encrypted token", async () => {
   const home = tempHome();
