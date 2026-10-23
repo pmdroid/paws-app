@@ -14,16 +14,51 @@ import {
   syncWorkspaceMember,
   type JobLoop,
 } from "../db";
-import type {
-  AcceptedLinearEvent,
-  EpicSnapshot,
-  LinearIssueLifecycle,
-  LinearMembershipReads,
-  TrackerAdapter,
+import {
+  LinearEntityNotFoundError,
+  LinearRateLimitError,
+  type AcceptedLinearEvent,
+  type EpicSnapshot,
+  type IntakeDecision,
+  type LinearIssueLifecycle,
+  type LinearMembershipReads,
+  type TrackerAdapter,
 } from "../linear";
 import { workspaceSecret, workspaceTokenHash } from "./session";
 
 const QUEUE = "workspace.assignment";
+
+type Refusal = Exclude<IntakeDecision, { outcome: "accepted" }>;
+
+type Verified = {
+  workspaceId: string;
+  actorId: string;
+  generation: number;
+  teamId: string;
+  organizationId: string;
+  fingerprint: string;
+};
+
+const ACCEPTED: IntakeDecision = { outcome: "accepted" };
+const refused = (reason: string): Refusal => ({ outcome: "refused", reason });
+const retry = (reason: string): Refusal => ({ outcome: "retry", reason });
+
+const SIGN_IN = "It waits until you sign in to Paws with your Linear account.";
+const STOPPED = "This session was stopped or replaced by a newer delegation.";
+const ELSEWHERE = "This session belongs to a different Paws installation.";
+const TEAM = "You are not a member of this issue's Linear team.";
+const UNRECORDED = retry(
+  "Paws has not recorded this session's Linear installation yet. It will try again automatically.",
+);
+
+function unread(error: unknown): Refusal {
+  if (error instanceof LinearRateLimitError || error instanceof LinearEntityNotFoundError)
+    throw error;
+  const message = error instanceof Error ? error.message : "read failed";
+  return retry(
+    `Paws could not read this issue from Linear (${message}). It will try again automatically.`,
+  );
+}
 
 type Hold = {
   sessionId: string;
@@ -68,15 +103,23 @@ export function createWorkspaceAssignments(options: {
       [hold.tokenHash],
     );
   }
-  async function snapshot(event: AcceptedLinearEvent, signal: AbortSignal) {
-    if (!event.sessionId || !event.issueId || !options.tracker.getSession) return null;
+  async function snapshot(
+    event: AcceptedLinearEvent,
+    signal: AbortSignal,
+  ): Promise<Verified | Refusal> {
+    if (!event.sessionId || !event.issueId || !options.tracker.getSession)
+      return refused("Paws could not match this session to an issue.");
     const generation = getLinearSession(db, event.sessionId)?.generation ?? 0;
-    if (!(await options.accept(event, signal))) return null;
+    if (!(await options.accept(event, signal)))
+      return getLinearSessionInstallation(db, event.sessionId)
+        ? refused("Paws cannot access this session or its team in Linear.")
+        : UNRECORDED;
     const installation = getLinearSessionInstallation(db, event.sessionId);
-    if (!installation || installation.oauthClientId !== options.clientId || !installation.teamId)
-      return null;
+    if (!installation) return UNRECORDED;
+    if (installation.oauthClientId !== options.clientId || !installation.teamId)
+      return refused(ELSEWHERE);
     const workspace = workspaceForOrganization(db, installation.organizationId);
-    if (!workspace) return null;
+    if (!workspace) return refused("This Linear workspace is not connected to Paws.");
     const session = await options.tracker.getSession(event.sessionId, { signal });
     const issue = await options.lifecycle.inspect(event.issueId, { signal });
     const spec = await options.tracker.loadEpic(event.issueId);
@@ -84,18 +127,21 @@ export function createWorkspaceAssignments(options: {
     if (
       session.id !== event.sessionId ||
       session.issue?.id !== event.issueId ||
-      session.appUserId !== installation.appUserId ||
-      !session.creatorId ||
-      session.creatorId === session.appUserId ||
-      session.endedAt !== null ||
-      session.dismissedAt !== null ||
       issue.id !== event.issueId ||
-      issue.teamId !== installation.teamId ||
-      !["triage", "backlog", "unstarted", "started"].includes(issue.stateType) ||
-      (issue.delegateId !== null && issue.delegateId !== installation.appUserId) ||
       spec.linearIssueId !== event.issueId
     )
-      return null;
+      return refused("Linear returned a different issue for this session.");
+    if (session.appUserId !== installation.appUserId) return refused(ELSEWHERE);
+    if (!session.creatorId || session.creatorId === session.appUserId)
+      return refused("Paws could not tell who started this session.");
+    if (session.endedAt !== null || session.dismissedAt !== null)
+      return refused("This session already ended in Linear.");
+    if (issue.teamId !== installation.teamId)
+      return refused("This issue is not in the Linear team Paws is installed for.");
+    if (!["triage", "backlog", "unstarted", "started"].includes(issue.stateType))
+      return refused("This issue is completed or canceled.");
+    if (issue.delegateId !== null && issue.delegateId !== installation.appUserId)
+      return refused("This issue is delegated to another agent.");
     ensureLinearSession(db, { sessionId: event.sessionId, creatorId: session.creatorId });
     const latest = getLinearSession(db, event.sessionId)!;
     if (
@@ -103,7 +149,7 @@ export function createWorkspaceAssignments(options: {
       latest.stoppedAt !== null ||
       getLinearSessionAccess(db, event.sessionId) !== "allowed"
     )
-      return null;
+      return refused(STOPPED);
     const repositories = listWorkspaceRepositories(db, workspace.id);
     return {
       workspaceId: workspace.id,
@@ -165,10 +211,7 @@ export function createWorkspaceAssignments(options: {
       now: now(),
     });
   }
-  async function eligible(
-    verified: NonNullable<Awaited<ReturnType<typeof snapshot>>>,
-    signal: AbortSignal,
-  ) {
+  async function ineligible(verified: Verified, signal: AbortSignal): Promise<Refusal | null> {
     const before = now();
     const identity = await options.memberships.member(
       verified.organizationId,
@@ -177,7 +220,7 @@ export function createWorkspaceAssignments(options: {
     );
     signal.throwIfAborted();
     if (identity.organizationId !== verified.organizationId || identity.userId !== verified.actorId)
-      return false;
+      return refused("Linear returned a different person for this session.");
     const linked = workspaceLinearMember(db, verified.workspaceId, verified.actorId);
     if (linked)
       syncWorkspaceMember(db, {
@@ -189,15 +232,14 @@ export function createWorkspaceAssignments(options: {
         now: before,
       });
     const member = workspaceLinearMember(db, verified.workspaceId, verified.actorId);
-    return (
-      identity.organizationId === verified.organizationId &&
-      identity.userId === verified.actorId &&
-      identity.active &&
-      !identity.guest &&
-      identity.teamIds.includes(verified.teamId) &&
-      (member === null ||
-        (member.active && member.role !== "observer" && member.teamIds.includes(verified.teamId)))
-    );
+    if (!identity.active) return refused("Your Linear account is not active.");
+    if (identity.guest) return refused("Linear guests cannot delegate issues to Paws.");
+    if (!identity.teamIds.includes(verified.teamId)) return refused(TEAM);
+    if (member === null) return null;
+    if (!member.active) return refused("Your Paws workspace membership is not active.");
+    if (member.role === "observer")
+      return refused("Observers in the Paws workspace cannot delegate issues to Paws.");
+    return member.teamIds.includes(verified.teamId) ? null : refused(TEAM);
   }
   return {
     authorizeIntake(sessionId: string, spec: EpicSnapshot): boolean {
@@ -221,8 +263,8 @@ export function createWorkspaceAssignments(options: {
       }
       return true;
     },
-    async authorize(event: AcceptedLinearEvent): Promise<boolean> {
-      if (!event.sessionId) return false;
+    async authorize(event: AcceptedLinearEvent): Promise<IntakeDecision> {
+      if (!event.sessionId) return refused("Paws could not match this event to a session.");
       let hold = holds(event.sessionId);
       if (hold && !current(hold)) {
         invalidate(hold);
@@ -230,43 +272,49 @@ export function createWorkspaceAssignments(options: {
       }
       if (event.signal === "stop") {
         if (hold) invalidate(hold);
-        return true;
+        return ACCEPTED;
       }
-      if (event.action !== "created") return !hold || hold.status === "continued";
+      if (event.action !== "created")
+        return !hold || hold.status === "continued" ? ACCEPTED : refused(SIGN_IN);
       if (hold) {
-        if (!continuations.has(event) || hold.status !== "accepted" || !current(hold)) return false;
+        if (!continuations.has(event) || hold.status !== "accepted" || !current(hold))
+          return refused(SIGN_IN);
         const signal = AbortSignal.timeout(30_000);
-        const verified = await snapshot(event, signal);
-        return (
-          verified !== null &&
-          verified.fingerprint === hold.fingerprint &&
-          (await eligible(verified, signal)) &&
-          current(hold) &&
-          holds(hold.sessionId)?.status === "accepted"
-        );
+        const verified = await snapshot(event, signal).catch(unread);
+        if ("outcome" in verified) return verified;
+        if (verified.fingerprint !== hold.fingerprint)
+          return refused("This issue changed while Paws waited for you to sign in.");
+        const refusal = await ineligible(verified, signal).catch(unread);
+        if (refusal) return refusal;
+        return current(hold) && holds(hold.sessionId)?.status === "accepted"
+          ? ACCEPTED
+          : refused(STOPPED);
       }
       const signal = AbortSignal.timeout(30_000);
-      const verified = await snapshot(event, signal);
-      if (!verified || !(await eligible(verified, signal))) return false;
+      const verified = await snapshot(event, signal).catch(unread);
+      if ("outcome" in verified) return verified;
+      const refusal = await ineligible(verified, signal).catch(unread);
+      if (refusal) return refusal;
       const currentSession = getLinearSession(db, event.sessionId);
       if (
         currentSession?.generation !== verified.generation ||
         currentSession.stoppedAt !== null ||
         getLinearSessionAccess(db, event.sessionId) !== "allowed"
       )
-        return false;
-      if (workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null) return true;
+        return refused(STOPPED);
+      if (workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null)
+        return ACCEPTED;
       return immediate(db, () => {
-        if (holds(event.sessionId!)?.generation === verified.generation) return false;
+        if (holds(event.sessionId!)?.generation === verified.generation) return refused(SIGN_IN);
         const session = getLinearSession(db, event.sessionId!)!;
         if (
           session.generation !== verified.generation ||
           session.stoppedAt !== null ||
           getLinearSessionAccess(db, event.sessionId!) !== "allowed"
         )
-          return false;
+          return refused(STOPPED);
         issueAction({ sessionId: event.sessionId!, ...verified, event: JSON.stringify(event) });
-        return false;
+        return refused(SIGN_IN);
       });
     },
     begin(token: string): string | null {
@@ -343,12 +391,13 @@ export function createWorkspaceAssignments(options: {
           return;
         const event: AcceptedLinearEvent = JSON.parse(hold.event);
         const verified = await snapshot(event, context.signal);
+        if ("outcome" in verified && verified.outcome === "retry") throw new Error(verified.reason);
         if (
-          !verified ||
+          "outcome" in verified ||
           verified.fingerprint !== hold.fingerprint ||
           verified.actorId !== hold.actorId ||
           verified.workspaceId !== hold.workspaceId ||
-          !(await eligible(verified, context.signal))
+          (await ineligible(verified, context.signal)) !== null
         ) {
           invalidate(hold);
           return;
