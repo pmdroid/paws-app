@@ -279,6 +279,40 @@ test("Managed blockers in another delegation require canonical delivery", async 
   }
 });
 
+test("A blocker whose Paws tasks were all cancelled follows its Linear state", async () => {
+  const f = await fixture();
+  try {
+    f.tracker.epics.set("a", {
+      linearIssueId: "a",
+      identifier: "DEP-3",
+      title: "Code blocker",
+      description: null,
+      subIssues: [],
+    });
+    const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
+    if (!intake.ok) throw new Error("Intake failed");
+    recordLinearInstallation(f.db, {
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      sessionId: "other-session",
+      teamId: "team",
+      observedAtMs: 2000,
+    });
+    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+      actorId: "linear-person",
+    });
+    f.db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [intake.items[0]!.id]);
+    await f.refresh();
+    expect(f.ready()).toBe(true);
+    f.lifecycle.issue.stateType = "started";
+    await f.refresh();
+    expect(f.ready()).toBe(false);
+  } finally {
+    f.db.close();
+  }
+});
+
 test("Re-delegated managed blockers follow the latest active item", async () => {
   const f = await fixture();
   try {
