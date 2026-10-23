@@ -113,6 +113,7 @@ export function createEvidenceArtifactPublisher(options: {
   sessionId: string;
   /** Upload evidence to Linear. The outbox handler needs the Linear file transfer. */
   uploads?: boolean;
+  reviewed?: (checkId: string) => boolean;
   linear?: PublishArtifactHook;
   now?: () => number;
 }): PublishArtifactHook {
@@ -169,18 +170,26 @@ export function createEvidenceArtifactPublisher(options: {
           sessionId: options.sessionId,
           kind: "thought",
         };
-        enqueueOutboxOnce(options.db, {
-          target: "linear",
-          op: inline && options.uploads ? "linear.evidence" : "activity",
-          delivery: "ordered",
-          priority: 0,
-          orderingKey: options.sessionId,
-          idempotencyKey: `evidence:${options.sessionId}:${generation}:${stored.id}`,
-          generation,
-          now: now(),
-          payload:
-            inline && options.uploads
-              ? { ...activity, evidenceId: stored.id, checkId: evidence.checkId, link: url }
+        const upload = inline && options.uploads;
+        const reviewed = options.reviewed?.(evidence.checkId) ?? false;
+        if (upload || !reviewed)
+          enqueueOutboxOnce(options.db, {
+            target: "linear",
+            op: upload ? "linear.evidence" : "activity",
+            delivery: "ordered",
+            priority: 0,
+            orderingKey: options.sessionId,
+            idempotencyKey: `evidence:${options.sessionId}:${generation}:${stored.id}`,
+            generation,
+            now: now(),
+            payload: upload
+              ? {
+                  ...activity,
+                  evidenceId: stored.id,
+                  checkId: evidence.checkId,
+                  link: url,
+                  ...(reviewed ? { uploadOnly: true } : {}),
+                }
               : {
                   ...activity,
                   body: evidenceActivityBody({
@@ -194,7 +203,7 @@ export function createEvidenceArtifactPublisher(options: {
                       : {}),
                   }),
                 },
-        });
+          });
         return { url, displayName: artifact.displayName };
       })().finally(() => inflight.delete(key));
       inflight.set(key, pending);
