@@ -242,6 +242,12 @@ export async function probeRunnerCoordinatorData(
       daemon.repositoryCredential(run.id, 1, "read", grant.token),
       statusError(403),
     );
+    await assert.rejects(
+      daemon.repositoryCredential(run.id, 1, "read", grant.token),
+      new RegExp(
+        `POST /v1/runs/${run.id}/repository-credential failed with HTTP 403 after \\d+ ms`,
+      ),
+    );
     installation = "2";
     assert.equal(mints, 2);
     observe(

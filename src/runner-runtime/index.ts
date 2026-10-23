@@ -18,12 +18,15 @@ import {
 } from "../runner-execution";
 import { publishRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
-import { RunnerResultSchema, type RunnerResult } from "../runner-protocol";
+import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
 
 class RemoteFailure extends Error {}
 
-async function remote<T>(operation: () => Promise<T>): Promise<T> {
+async function remote<T>(
+  operation: () => Promise<T>,
+  unavailable = "Runner control plane is unavailable",
+): Promise<T> {
   try {
     return await operation();
   } catch (error) {
@@ -34,7 +37,9 @@ async function remote<T>(operation: () => Promise<T>): Promise<T> {
       ![408, 429].includes(error.status)
     )
       throw error;
-    throw new RemoteFailure("Runner control plane is unavailable");
+    throw new RemoteFailure(
+      `${unavailable}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -276,7 +281,7 @@ export async function openRunnerRuntime(options: {
     return entry.quiesced;
   }
   function check(entry: Active) {
-    if (closed || monotonic() >= entry.deadline) {
+    if (closed || monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS) {
       void interrupt(entry, closed ? "runner stopping" : "lease deadline passed", !closed).catch(
         report,
       );
@@ -287,7 +292,8 @@ export async function openRunnerRuntime(options: {
   const repositories = createRunnerRepositories({
     root: options.repositoryRoot,
     home: options.home,
-    networkGit: (input) => remote(() => (options.networkGit ?? runGitHubGit)(input)),
+    networkGit: (input) =>
+      remote(() => (options.networkGit ?? runGitHubGit)(input), "GitHub git operation failed"),
     async credential(command, access) {
       const entry = active.get(key(command));
       if (!entry || entry.execution.command.id !== command.id)
@@ -379,16 +385,18 @@ export async function openRunnerRuntime(options: {
             signal: entry.abort.signal,
             env,
             async networkGit(args) {
-              await remote(() =>
-                (options.networkGit ?? runGitHubGit)({
-                  operation: "clone",
-                  remoteUrl: repository.remoteUrl,
-                  token: credential.token,
-                  cwd: options.repositoryRoot,
-                  dest: args.at(-1)!,
-                  env,
-                  signal: entry.abort.signal,
-                }),
+              await remote(
+                () =>
+                  (options.networkGit ?? runGitHubGit)({
+                    operation: "clone",
+                    remoteUrl: repository.remoteUrl,
+                    token: credential.token,
+                    cwd: options.repositoryRoot,
+                    dest: args.at(-1)!,
+                    env,
+                    signal: entry.abort.signal,
+                  }),
+                "GitHub git operation failed",
               );
               return "";
             },
@@ -775,7 +783,7 @@ export async function openRunnerRuntime(options: {
   }, 15_000);
   const watchdog = setInterval(() => {
     for (const entry of active.values())
-      if (monotonic() >= entry.deadline)
+      if (monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS)
         void interrupt(entry, "lease deadline passed", true).catch(report);
       else if (entry.execution.phase === "preparing" && entry.execution.command.expiresAt <= now())
         void interrupt(entry, "command expired before the worker started", true).catch(report);
