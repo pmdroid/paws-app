@@ -12,6 +12,7 @@ import {
   recordLinearInstallation,
   replaceWorkspaceRepositories,
   saveArtifact,
+  MEMBERSHIP_BACKSTOP_MS,
   syncWorkspaceMember,
   workspaceMember,
 } from "../../src/db";
@@ -492,7 +493,7 @@ export async function probeWorkspaceAuthorization(
       now,
     });
     db.run("UPDATE workspace_member SET checked_at=? WHERE workspace_id=? AND user_id=?", [
-      now - 6 * 60_000,
+      now - MEMBERSHIP_BACKSTOP_MS - 60_000,
       workspace.id,
       ownerId,
     ]);

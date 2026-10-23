@@ -52,6 +52,7 @@ import {
   getItemRunCommitPolicy,
   workspaceLinearMember,
   workspaceForOrganization,
+  applyLinearUserChange,
   listWorkspaceMembers,
   listWorkspaceRepositories,
   listRepositoryCandidates,
@@ -120,6 +121,7 @@ import {
   startCatchUpPoller,
   parseLinearAdministration,
   parseLinearUndelegation,
+  parseLinearUserChange,
   sessionCreatedKey,
   type AcceptedLinearEvent,
   type IntakeDecision,
@@ -422,6 +424,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               appUserId: runtime.linearViewerId,
             }),
           beforeEvent: async (event, request) => {
+            const userChange = parseLinearUserChange(event);
+            if (userChange) {
+              if (applyLinearUserChange(db, { ...userChange, now: Date.now() }))
+                invalidateAuthorization();
+              return false;
+            }
             const issueEvent = acceptedIssueChange(event);
             if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
             const undelegation = parseLinearUndelegation(event, runtime.linearViewerId);
