@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import type { CommandBus, RepositoryBinding } from "../core";
+import {
+  isBlockerSatisfied,
+  type CommandBus,
+  type RepositoryBinding,
+  type TaskMode,
+  type WorkItemState,
+} from "../core";
 import {
   applyWorkItemEvent,
   auditWorkspaceAccess,
@@ -352,15 +358,12 @@ export function createApprovedProjects(input: {
       issueId
     );
   }
-  /**
-   * Whether a blocker lets its dependent's session open, from stored state only. A blocker with
-   * live Paws tasks follows its latest task. Otherwise (PAS-514) it follows its last delivered
-   * Linear state, and with none delivered it holds only while a project still claims it; the
-   * task's own dependency check reads Linear once its session is open.
-   */
   function blockerSatisfied(approval: ProjectApproval, blockerId: string): boolean {
     const items = db
-      .query<{ state: string; mode: string | null; cancelRequested: number }, [string, string]>(
+      .query<
+        { state: WorkItemState; mode: TaskMode | null; cancelRequested: number },
+        [string, string]
+      >(
         `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested FROM work_item i
          JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
@@ -373,11 +376,7 @@ export function createApprovedProjects(input: {
     if (items.length > 0) {
       const active = items.filter((item) => !item.cancelRequested);
       const item = (active.length > 0 ? active : items).at(-1)!;
-      return (
-        !item.cancelRequested &&
-        (item.state === "merged" ||
-          (item.state === "completed" && (item.mode === "answer" || item.mode === "artifact")))
-      );
+      return !item.cancelRequested && isBlockerSatisfied(item);
     }
     if (
       approval.preview.selection.blockers?.some(
@@ -399,7 +398,6 @@ export function createApprovedProjects(input: {
         .get(approval.workspaceId, blockerId) === null
     );
   }
-  /** Identifiers of the blockers that still hold a claim's session. */
   function waitingFor(approval: ProjectApproval, issueId: string): string[] {
     const blockers = new Set([
       ...approval.preview.edges

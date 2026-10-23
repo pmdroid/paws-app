@@ -133,14 +133,12 @@ test("the recurring job makes no Linear call for a claim that is still blocked",
     deliverIssue(f, "outside", "OUT-1", "started");
     await delegate(f, [child("a", "CH-1")]);
     const before = f.memberReads;
-    // Past the membership backstop, an unblocked project would read Linear again.
     f.clock.advance(MEMBERSHIP_BACKSTOP_MS);
     for (let i = 0; i < 3; i++) await pass(f);
     expect(f.started).toEqual([]);
     expect(f.memberReads).toBe(before);
     const approval = f.projects.list("workspace")[0]!;
     expect(approval.lastError).toBeNull();
-    // With every sub-issue blocked, the parent still gets its one summary.
     expect(
       f.db
         .query<{ body: string }, []>(

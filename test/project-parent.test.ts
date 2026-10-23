@@ -668,7 +668,6 @@ test("a delegated parent with a chain of sub-issues ends its session with one su
 
     projects.register(jobs);
     await jobs.tick();
-    // Only the unblocked sub-issue gets a session; the summary still lists all three.
     expect(started).toEqual(["list"]);
     const summary = [
       "Started the work in 3 sub-issues. Each runs in its own session, so reply there to steer it.",
