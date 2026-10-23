@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, parentIssueIdSql, retryBackoffMs, type LinearCommand } from "../core";
+import { JOB_KIND, parentIssueIdSql, type LinearCommand } from "../core";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
 import { LinearEntityNotFoundError } from "./graphql";
 import type {
@@ -10,25 +10,22 @@ import type {
   PolledIssue,
   PolledSession,
 } from "./catchup";
-import { activityKey, promptMetadata, type AcceptedLinearEvent } from "./events";
+import { activityKey, promptMetadata, sessionCreatedKey, type AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 import type { IntakeQueue } from "./intake-queue";
-import { lastVerifiedWebhookMs } from "./webhook";
+import { lastVerifiedWebhookMs, webhookVerificationFailures } from "./webhook";
 
-/** Poll while a work item is open or a question is unanswered. */
-export const POLL_INTERVAL_ACTIVE_MS = 5_000;
-
-/** Poll while nothing is in flight and no question is open. */
-export const POLL_INTERVAL_IDLE_MS = 15_000;
-
-/** Poll as a backstop while verified webhooks keep arriving. */
+/** Poll as a backstop while nothing says webhooks are failing. */
 export const POLL_INTERVAL_WEBHOOK_MS = 12 * 60_000;
+
+/** Poll while webhooks look broken. Never faster. */
+export const POLL_INTERVAL_FAILING_MS = 60_000;
 
 /** Poll while less than `LOW_BUDGET_FRACTION` of the Linear request budget is left. */
 export const POLL_INTERVAL_LOW_BUDGET_MS = 5 * 60_000;
 
-/** A verified webhook this recent means webhooks are healthy. */
-export const WEBHOOK_HEALTHY_MS = 60 * 60_000;
+/** This many signed deliveries rejected in a row means webhooks are failing. */
+export const WEBHOOK_FAILURES_FAILING = 3;
 
 export const LOW_BUDGET_FRACTION = 0.2;
 
@@ -38,29 +35,35 @@ export const WAKE_GAP_MS = 30_000;
 export const CATCH_UP_CURSOR = "linear";
 const INITIAL_LOOKBACK_MS = 60 * 60 * 1000;
 const OVERLAP_MS = 5_000;
+const MISSED_DELIVERY_GRACE_MS = 60_000;
 const STOP_COMMENT = /^\/paws\s+stop\b/i;
 
 export type PollSignals = {
   now: number;
-  lastWebhookMs?: number | null;
+  lastWebhookMs: number | null;
+  webhookFailures?: number;
+  missedDeliveryMs?: number | null;
   budget?: LinearRateBudget | null;
 };
 
 /**
- * 5s active, 15s idle. A verified webhook in the last 10 minutes stretches that to 60s,
- * and a request budget under 20% stretches it to 5 minutes until the budget resets.
+ * 12 minutes as a backstop, once a minute when webhooks look broken: none verified yet,
+ * repeated verification failures, or a delivery the poll found that no webhook brought.
+ * A request budget under 20% stretches it to 5 minutes until the budget resets.
  */
-export function pollIntervalMs(workActive: boolean, signals?: PollSignals): number {
-  let interval = workActive ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
-  if (signals === undefined) return interval;
-  const webhook = signals.lastWebhookMs ?? null;
-  if (webhook !== null && signals.now - webhook < WEBHOOK_HEALTHY_MS) {
-    interval = Math.max(interval, POLL_INTERVAL_WEBHOOK_MS);
-  }
+export function pollIntervalMs(signals: PollSignals): number {
+  const interval = webhooksFailing(signals) ? POLL_INTERVAL_FAILING_MS : POLL_INTERVAL_WEBHOOK_MS;
   if (budgetIsLow(signals.budget ?? null, signals.now)) {
-    interval = Math.max(interval, POLL_INTERVAL_LOW_BUDGET_MS);
+    return Math.max(interval, POLL_INTERVAL_LOW_BUDGET_MS);
   }
   return interval;
+}
+
+function webhooksFailing(signals: PollSignals): boolean {
+  if (signals.lastWebhookMs === null) return true;
+  if ((signals.webhookFailures ?? 0) >= WEBHOOK_FAILURES_FAILING) return true;
+  const missed = signals.missedDeliveryMs ?? null;
+  return missed !== null && missed > signals.lastWebhookMs;
 }
 
 function budgetIsLow(budget: LinearRateBudget | null, now: number): boolean {
@@ -69,22 +72,6 @@ function budgetIsLow(budget: LinearRateBudget | null, now: number): boolean {
   if (requestsRemaining === null || requestsLimit === null || requestsLimit <= 0) return false;
   if (requestsResetMs !== null && now >= requestsResetMs) return false;
   return requestsRemaining / requestsLimit < LOW_BUDGET_FRACTION;
-}
-
-/** True when a non-terminal work item exists or a question is still open. */
-export function linearWorkIsHot(db: Database): boolean {
-  if (
-    count(
-      db,
-      "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('completed', 'merged', 'cancelled')",
-    ) > 0
-  ) {
-    return true;
-  }
-  return (
-    count(db, "SELECT COUNT(*) AS n FROM question WHERE status = 'open' AND cancelled_at IS NULL") >
-    0
-  );
 }
 
 export function sleepGapMs(input: {
@@ -137,8 +124,7 @@ export function createTimerSleeper(): Sleeper {
 /**
  * Intake poll. One tick asks Linear once, dedupes by id, and feeds the inbox. With an
  * intake queue, `created` and `prompted` events are only recorded and handed to its worker.
- * Active work or an open question waits 5s; idle waits 15s. Healthy webhooks or a
- * low request budget stretch that (see `pollIntervalMs`). `RATELIMITED` waits
+ * The first tick runs at start; later ticks wait `pollIntervalMs`. `RATELIMITED` waits
  * out the reset, then the next tick resumes. The cursor is the SQLite sync row.
  */
 export function startCatchUpPoller(options: {
@@ -147,7 +133,6 @@ export function startCatchUpPoller(options: {
   onEvent: (event: AcceptedLinearEvent) => Promise<void | boolean> | void | boolean;
   /** Takes `created` and `prompted` events. The poller records them and wakes it. */
   intake?: IntakeQueue;
-  hot?: () => boolean;
   submitCommand?: (command: LinearCommand) => void;
   db?: Database;
   beforeDelay?: () => Promise<void>;
@@ -158,14 +143,12 @@ export function startCatchUpPoller(options: {
   const sleeper = options.sleeper ?? createTimerSleeper();
   const now = options.now ?? Date.now;
   const mono = options.mono ?? (() => performance.now());
-  const hot =
-    options.hot ?? (() => (options.db === undefined ? false : linearWorkIsHot(options.db)));
   const control = { stopped: false };
   let wakeRequested = false;
   let active: Promise<void> | null = null;
   let pending = false;
-  let rateAttempts = 0;
   let latestBudget: LinearRateBudget | null = null;
+  let missedDeliveryMs: number | null = null;
 
   function pollOnce(): Promise<void> {
     if (control.stopped) return Promise.resolve();
@@ -202,7 +185,6 @@ export function startCatchUpPoller(options: {
     } while (!sighting.caughtUp && !control.stopped);
     options.intake?.wake();
     if (sighting.caughtUp) options.store.setCursor(CATCH_UP_CURSOR, now());
-    rateAttempts = 0;
   }
 
   async function record(sighting: IntakeSighting, since: number): Promise<void> {
@@ -235,6 +217,7 @@ export function startCatchUpPoller(options: {
     events.sort((left, right) => left.updatedAtMs - right.updatedAtMs || rank(left) - rank(right));
     for (const event of events) {
       const committed = options.store.commit(event);
+      if (committed.inserted && webhookMissed(event)) missedDeliveryMs = now();
       if (!committed.inserted && committed.handled) continue;
       if (options.intake?.accepts(event)) {
         if (committed.inserted) options.intake.arrive(event);
@@ -242,6 +225,24 @@ export function startCatchUpPoller(options: {
       }
       await deliverOrSkip(event);
     }
+  }
+
+  function webhookMissed(event: AcceptedLinearEvent): boolean {
+    const lastWebhookMs = lastVerifiedWebhookMs(options.store);
+    if (lastWebhookMs === null || event.updatedAtMs <= lastWebhookMs) return false;
+    if (event.updatedAtMs > now() - MISSED_DELIVERY_GRACE_MS || event.signal === "stop") {
+      return false;
+    }
+    if (event.action === "created") {
+      return event.sessionId !== null && event.dedupeKey === sessionCreatedKey(event.sessionId);
+    }
+    return (
+      event.action === "prompted" &&
+      event.sessionId !== null &&
+      event.activityId !== null &&
+      event.dedupeKey === activityKey(event.activityId) &&
+      options.store.get(sessionCreatedKey(event.sessionId)) !== null
+    );
   }
 
   async function deliverOrSkip(event: AcceptedLinearEvent): Promise<void> {
@@ -285,14 +286,15 @@ export function startCatchUpPoller(options: {
 
   const settled = (async () => {
     while (!control.stopped) {
-      const workActive = hot();
-      let delay = pollIntervalMs(workActive);
+      let delay = POLL_INTERVAL_FAILING_MS;
       try {
         await pollOnce();
         delay = Math.max(
-          pollIntervalMs(workActive, {
+          pollIntervalMs({
             now: now(),
             lastWebhookMs: lastVerifiedWebhookMs(options.store),
+            webhookFailures: webhookVerificationFailures(options.store),
+            missedDeliveryMs,
             budget: latestBudget,
           }),
           budgetHoldMs(latestBudget, now()),
@@ -300,10 +302,8 @@ export function startCatchUpPoller(options: {
       } catch (error) {
         if (control.stopped) return;
         if (error instanceof LinearRateLimitError) {
-          rateAttempts += 1;
           latestBudget = error.budget;
-          const backoff = retryBackoffMs(rateAttempts, POLL_INTERVAL_ACTIVE_MS, 60_000);
-          delay = Math.max(backoff, error.retryAfterMs);
+          delay = Math.max(POLL_INTERVAL_FAILING_MS, error.retryAfterMs);
           console.error(
             `linear intake poll rate-limited; retrying in ${Math.ceil(delay / 1000)}s: ${error.message}`,
           );
@@ -602,15 +602,6 @@ function stopTargets(
   }
   if (ids.length === 0 && linearIssueId !== null && sessionId === null) ids.push(linearIssueId);
   return ids;
-}
-
-function count(db: Database, sql: string): number {
-  try {
-    const row = db.query<{ n: number }, []>(sql).get();
-    return row?.n ?? 0;
-  } catch {
-    return 0;
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

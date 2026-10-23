@@ -18,7 +18,6 @@ import {
 } from "./oauth";
 import {
   CATCH_UP_CURSOR,
-  linearWorkIsHot,
   persistStopCommand,
   startCatchUpPoller,
   type CatchUpPoller,
@@ -243,7 +242,6 @@ function startPoller(options: {
     onEvent: options.onEvent,
     intake: options.intake,
     db: options.db,
-    hot: () => linearWorkIsHot(options.db),
     submitCommand: options.submitCommand,
     beforeDelay: () => options.tunnel.refresh(),
   });

@@ -42,11 +42,18 @@ export type LinearWebhookDeps = {
 };
 
 const flights = new WeakMap<InboxStore, Set<string>>();
-const verifiedAt = new WeakMap<InboxStore, number>();
+const failures = new WeakMap<InboxStore, number>();
+
+export const WEBHOOK_CURSOR = "linear:webhook";
 
 /** When the last signed, well-formed delivery reached this inbox. Null before the first one. */
 export function lastVerifiedWebhookMs(store: InboxStore): number | null {
-  return verifiedAt.get(store) ?? null;
+  return store.getCursor(WEBHOOK_CURSOR);
+}
+
+/** Signed deliveries rejected since the last verified one. */
+export function webhookVerificationFailures(store: InboxStore): number {
+  return failures.get(store) ?? 0;
 }
 
 /**
@@ -91,6 +98,7 @@ export async function handleLinearWebhook(
     return reject("missing_signature");
   }
   if (secret === null || secret.length === 0) {
+    noteFailure(deps?.store);
     return reject("missing_secret");
   }
   const deliveryId = request.headers.get("linear-delivery");
@@ -103,14 +111,18 @@ export async function handleLinearWebhook(
     timestampMs,
     nowMs: deps?.now?.(),
   });
-  if (!check.ok) return reject(check.reason);
+  if (!check.ok) {
+    noteFailure(deps?.store);
+    return reject(check.reason);
+  }
   if (deliveryId === null || deliveryId.length === 0) return reject("missing_delivery");
   const event = parseAgentEvent(rawBody, deliveryId, timestampMs ?? Date.now());
   if (event === null) return reject("bad_payload");
   if (deps?.store === undefined) {
     return Response.json({ ok: false, reason: "not_persisted" }, { status: 500 });
   }
-  verifiedAt.set(deps.store, deps.now?.() ?? Date.now());
+  deps.store.setCursor(WEBHOOK_CURSOR, deps.now?.() ?? Date.now());
+  failures.delete(deps.store);
   const committed = deps.store.commit(event);
   if (deps.intake?.accepts(event)) {
     if (committed.inserted) deps.intake.arrive(event);
@@ -135,6 +147,10 @@ function schedule(deps: LinearWebhookDeps, event: AcceptedLinearEvent): void {
     .finally(() => {
       pending.delete(event.dedupeKey);
     });
+}
+
+function noteFailure(store: InboxStore | undefined): void {
+  if (store !== undefined) failures.set(store, webhookVerificationFailures(store) + 1);
 }
 
 function flightsFor(store: InboxStore): Set<string> {
