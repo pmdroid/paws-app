@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
   decideStartup,
-  handoffNote,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   type StartupDecision,
@@ -57,7 +56,6 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     }
     for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
       if (item.currentRunId !== null) releaseRunCapacity(db, item.currentRunId, now);
-      resumeAnsweredQuestion(db, item, now, nextResumeAt);
     }
     return decisions;
   });
@@ -83,53 +81,6 @@ function hasPendingResume(db: Database, itemId: string, reason: string): boolean
       )
       .get(JOB_KIND.resume, itemId, reason) !== null
   );
-}
-
-function resumeAnsweredQuestion(
-  db: Database,
-  item: WorkItemRecord,
-  now: number,
-  nextResumeAt: () => number,
-): void {
-  const row = db
-    .query<
-      { id: string; body: string; options: string | null; status: string; answer: string | null },
-      [string]
-    >(
-      `SELECT id, body, options, status, answer FROM question
-       WHERE item_id = ? AND cancelled_at IS NULL
-       ORDER BY created_at DESC, id DESC
-       LIMIT 1`,
-    )
-    .get(item.id);
-  if (row?.status !== "answered" || row.answer === null) return;
-  const held = db
-    .query<{ n: number }, [string, string, string]>(
-      `SELECT (
-         EXISTS(SELECT 1 FROM closeout_recovery WHERE question_id = ?) +
-         EXISTS(SELECT 1 FROM linear_github_auth WHERE question_id = ?) +
-         EXISTS(SELECT 1 FROM github_integration_hold WHERE question_id = ?)
-       ) AS n`,
-    )
-    .get(row.id, row.id, row.id);
-  if ((held?.n ?? 0) > 0) return;
-  applyWorkItemEvent(db, item.id, "answer_received");
-  enqueueJobOnce(db, {
-    queue: JOB_KIND.resume,
-    jobKey: `resume:answer:${row.id}`,
-    payload: {
-      itemId: item.id,
-      freshSession: true,
-      handoff: handoffNote({
-        question: row.body,
-        answer: row.answer,
-        ...(row.options === null ? {} : { options: JSON.parse(row.options) }),
-      }),
-      reason: "answer",
-    },
-    runAt: nextResumeAt(),
-    now,
-  });
 }
 
 /**

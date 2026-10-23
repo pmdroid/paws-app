@@ -112,6 +112,7 @@ export function decisionAnswers(db: Database, actor: Actor) {
     .query<{ id: string; body: string; answer: string; author: string; sessionId: string }, []>(
       `SELECT q.id,q.body,q.answer,q.answered_by AS author,q.session_id AS sessionId FROM question q
     WHERE q.status='answered' AND q.cancelled_at IS NULL AND q.answer IS NOT NULL
+      AND q.kind IN ('agent','clarification')
       AND NOT EXISTS(SELECT 1 FROM decision_memory d WHERE d.question_id=q.id)
     ORDER BY q.answered_at DESC`,
     )

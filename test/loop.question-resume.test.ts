@@ -21,7 +21,7 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import type { Database } from "bun:sqlite";
-import { answerQuestion, findOpenQuestion, handoffNote } from "../src/questions";
+import { findOpenQuestion, handoffNote } from "../src/questions";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { worktreePath } from "../src/acp";
 import { attachOrchestrator, itemPathId, type AgentLaunch } from "../src/loop";
@@ -152,7 +152,7 @@ test("asking ends the run and an answer resumes through verification", async () 
   }
 }, 90_000);
 
-test("startup resumes an answered question and leaves an open one parked", async () => {
+test("startup leaves an open question parked and its answer resumes the run", async () => {
   const fixture = await askOnce();
   try {
     const item = listWorkItems(fixture.db)[0]!;
@@ -164,13 +164,7 @@ test("startup resumes an answered question and leaves an open one parked", async
     expect(listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual(jobsBefore);
     expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
 
-    answerQuestion(fixture.db, open!.id, {
-      answer: "parquet",
-      answeredBy: "human-1",
-      now: Date.now(),
-    });
-    expect(getWorkItem(fixture.db, item.id)?.state).toBe("awaiting_input");
-    recoverOnStartup(fixture.db);
+    await fixture.orchestrator.onLinearEvent(prompted("parquet"));
     expect(getWorkItem(fixture.db, item.id)).toMatchObject({
       state: "running",
       recoveryAttempts: 0,
@@ -235,13 +229,8 @@ test("a resume after a restart repeats no Linear read the first run already made
     const firstRun = [...fixture.reads];
     const restarted = await fixture.restart();
     orchestrator = restarted.orchestrator;
-    const open = findOpenQuestion(fixture.db, "ses_1")!;
-    answerQuestion(fixture.db, open.id, {
-      answer: "parquet",
-      answeredBy: "human-1",
-      now: Date.now(),
-    });
     recoverOnStartup(fixture.db);
+    await restarted.orchestrator.onLinearEvent(prompted("parquet"));
     await drive({ db: fixture.db, jobs: restarted.jobs }, ["verifying", "merge_queue", "merged"]);
     const resumed = fixture.prompts.find((prompt) => prompt.includes("Answer: parquet"));
     expect(resumed).toContain("Project overview: Exports");

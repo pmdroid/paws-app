@@ -306,6 +306,7 @@ test("ambiguous configured repositories ask before any worktree or issue-state m
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
+    expect(question.kind).toBe("repository");
     expect(question.options).toEqual([
       "https://github.com/acme/two",
       "https://github.com/acme/one",

@@ -31,7 +31,12 @@ export type AnswerOutcome =
 
 export type AnswerEffects = Partial<Record<QuestionKind, (question: StoredQuestion) => void>>;
 
-const SUPERSEDES: Record<QuestionKind, boolean> = { agent: false, "runner-wait": true };
+const SUPERSEDES: Record<QuestionKind, boolean> = {
+  agent: false,
+  clarification: false,
+  repository: false,
+  "runner-wait": true,
+};
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);
 
@@ -40,7 +45,12 @@ export function ask(
   asker: QuestionAsker,
   kind: QuestionKind,
   body: string,
-  input: { options?: readonly QuestionOption[]; context?: string; now?: number } = {},
+  input: {
+    options?: readonly QuestionOption[];
+    context?: string;
+    now?: number;
+    amend?: (question: StoredQuestion) => { context: string; options: QuestionOption[] } | null;
+  } = {},
 ): Asked {
   return immediate(db, () => {
     const now = input.now ?? Date.now();
@@ -51,7 +61,7 @@ export function ask(
          WHERE session_id = ? AND kind = ? AND status = 'queued' AND cancelled_at IS NULL`,
         [now, asker.sessionId, kind],
       );
-    const question = insertQuestion(db, {
+    const inserted = insertQuestion(db, {
       ...asker,
       kind,
       body,
@@ -60,6 +70,14 @@ export function ask(
       status: waits ? "queued" : "open",
       now,
     });
+    const amended = input.amend?.(inserted) ?? null;
+    if (amended !== null)
+      db.run("UPDATE question SET context = ?, options = ? WHERE id = ?", [
+        amended.context,
+        JSON.stringify(amended.options),
+        inserted.id,
+      ]);
+    const question = amended === null ? inserted : getQuestion(db, inserted.id)!;
     if (waits) return { status: "queued", question };
     deliver(db, question, now);
     return { status: "asked", question };
