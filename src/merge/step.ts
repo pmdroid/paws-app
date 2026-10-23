@@ -1,14 +1,14 @@
 import type { SerialMergeResult } from "../github";
+import type { RebaseBudget } from "./budget";
 import type { MergeWait } from "./wait";
-
-export const MAX_REBASE_RETURNS = 3;
 
 export type SerialMergeFacts = {
   result: SerialMergeResult;
   queued: boolean;
   closeoutAfterUpdate: boolean;
   closeoutFailed: boolean;
-  rebaseReturns: number;
+  /** The budget for a conflict on this pass's main and files. */
+  rebaseBudget: RebaseBudget;
   ciFixes: number;
   ciFixLimit: number;
 };
@@ -63,12 +63,9 @@ function step(facts: SerialMergeFacts, unreadable: boolean, mainMoved: boolean):
   if (unreadable) return { kind: "unreadable", message: result.message ?? result.outcome };
   if (facts.closeoutFailed) return { kind: "ask_closeout" };
   if (result.outcome === "conflict")
-    return facts.rebaseReturns < MAX_REBASE_RETURNS
+    return facts.rebaseBudget.allowed
       ? { kind: "return", reason: "rebase-conflict" }
-      : {
-          kind: "failed",
-          message: `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts to resolve the conflict.`,
-        };
+      : { kind: "failed", message: facts.rebaseBudget.message };
   if (result.outcome === "ci_failed")
     return facts.ciFixes < facts.ciFixLimit
       ? { kind: "return", reason: "ci-failed" }

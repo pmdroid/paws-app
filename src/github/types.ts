@@ -126,6 +126,8 @@ export type SerialMergeResult = {
   cycle?: number;
   message?: string;
   failedChecks?: { name: string; url: string | null; logTail?: string | null }[];
+  /** The files a rebase conflict stopped on. */
+  conflictFiles?: string[];
   /** Every check on the head when CI failed, with the failing checks' log tails. */
   checks?: CiCheck[];
 };

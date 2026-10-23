@@ -7,6 +7,7 @@ import {
   countRebaseReturns,
   enqueueJob,
   listJobs,
+  listRebaseReturns,
   mergeLaneSql,
   migrate,
   migrations,
@@ -94,6 +95,32 @@ test("rebase returns are counted from rebase_return rows after the latest user t
     });
     expect(countRebaseReturns(db, "item", turn)).toBe(2);
     expect(countRebaseReturns(db, "item", 0)).toBe(3);
+  } finally {
+    db.close();
+  }
+});
+
+test("a rebase return keeps the main commit, files and time it conflicted on", () => {
+  const db = tempDb();
+  try {
+    insertItem(db, "item");
+    const first = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 1 });
+    recordRebaseReturn(db, {
+      itemId: "item",
+      jobId: first,
+      candidate: null,
+      reason: "merge",
+      base: "abc1234",
+      files: ["src/index.ts"],
+      recordedAt: 10,
+    });
+    const second = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 2 });
+    recordRebaseReturn(db, { itemId: "item", jobId: second, candidate: null, reason: "linear" });
+    expect(listRebaseReturns(db, "item", 0)).toEqual([
+      { jobId: first, reason: "merge", base: "abc1234", files: ["src/index.ts"], recordedAt: 10 },
+      { jobId: second, reason: "linear", base: null, files: null, recordedAt: null },
+    ]);
+    expect(listRebaseReturns(db, "item", second)).toHaveLength(1);
   } finally {
     db.close();
   }

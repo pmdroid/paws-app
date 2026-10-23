@@ -4116,7 +4116,7 @@ test("after 3 rebase conflict returns the item fails", async () => {
     result.detail,
   ).toHaveLength(3);
   expect(result.thoughts, result.detail).toContain(
-    "The branch still conflicts with main after 3 attempts to resolve the conflict.",
+    `The branch still conflicts with main after 3 attempts to resolve the conflict. Main commits: ${result.movedMain.slice(0, 7)}. Conflicting files: ok.txt.`,
   );
 }, 120_000);
 
