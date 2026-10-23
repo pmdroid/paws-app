@@ -256,7 +256,6 @@ import {
   cancelItemQuestions,
   cancelQuestion,
   findAskedQuestion,
-  elicitationBody,
   findOpenQuestion,
   handoffNote,
   acceptedVisualReviews,
@@ -268,7 +267,6 @@ import {
   visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
   VISUAL_REVIEW_DESCRIBE,
-  type AnswerEffects,
   type StoredQuestion,
   type StoredVisualReview,
 } from "../questions";
@@ -339,6 +337,7 @@ import {
 } from "./runner-wait";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import { createRepositoryGit } from "./repository-git";
+import { questionEffects } from "./question-effects";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
   interpretRepositoryAnswer,
@@ -475,15 +474,6 @@ export class Orchestrator {
   readonly bus = new CommandBus();
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
-  private readonly answerEffects: AnswerEffects = {
-    "runner-wait": (question) => {
-      if (
-        question.answerEventKey !== null &&
-        getWorkItem(this.db, question.itemId)?.sessionKey === question.sessionId
-      )
-        applyLinearTurns(this.db, question.sessionId, [question.answerEventKey], question.itemId);
-    },
-  };
   private readonly askedRuns = new Set<string>();
   private readonly live = new Map<
     string,
@@ -1648,24 +1638,11 @@ export class Orchestrator {
       const current = getWorkItem(this.db, item.id);
       if (current?.state !== "running" || current.cancelRequested)
         throw new Error("The task changed before clarification");
-      const question = openQuestion(this.db, {
-        itemId: item.id,
-        runId,
-        sessionId,
-        body,
-        options: [],
+      ask(this.db, { itemId: item.id, runId, sessionId }, "clarification", body, {
         now: this.now(),
       });
       applyWorkItemEvent(this.db, item.id, "blocking_question");
       closeActiveRun(this.db, runId, this.now());
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "elicitation",
-        orderingKey: sessionId,
-        idempotencyKey: `task-clarification:${question.id}`,
-        payload: { sessionId, questionId: question.id, body: question.body, options: [] },
-        now: this.now(),
-      });
     });
     await this.flush();
     return false;
@@ -3588,23 +3565,36 @@ export class Orchestrator {
           throw new Error("ask_team has no Linear session");
         }
         if (context.signal.aborted) throw new Error("cancelled");
-        const options = request.options ?? [];
         immediate(this.db, () => {
-          const opened = openQuestion(this.db, {
-            itemId: item.id,
-            runId,
-            sessionId,
-            body: [request.question.trim(), request.context?.trim()].filter(Boolean).join("\n\n"),
-            options,
-            now: this.now(),
-          });
-          const suggestions = suggestDecisions(this.db, opened.id, opened.body);
-          const decisionContext = suggestions
-            .map(
-              (decision) =>
-                `Saved decision: ${decision.statement}\nSource: ${decision.sourceUrl}\nConfirm: ${decision.value}`,
-            )
-            .join("\n\n");
+          ask(
+            this.db,
+            { itemId: item.id, runId, sessionId },
+            "agent",
+            [request.question.trim(), request.context?.trim()].filter(Boolean).join("\n\n"),
+            {
+              options: request.options ?? [],
+              now: this.now(),
+              amend: (question) => {
+                const suggestions = suggestDecisions(this.db, question.id, question.body);
+                if (suggestions.length === 0) return null;
+                return {
+                  context: suggestions
+                    .map(
+                      (decision) =>
+                        `Saved decision: ${decision.statement}\nSource: ${decision.sourceUrl}\nConfirm: ${decision.value}`,
+                    )
+                    .join("\n\n"),
+                  options: [
+                    ...question.options,
+                    ...suggestions.map((decision) => ({
+                      label: `Use saved decision: ${decision.statement.slice(0, 80)}`,
+                      value: decision.value,
+                    })),
+                  ],
+                };
+              },
+            },
+          );
           const current = getWorkItem(this.db, item.id);
           if (current?.state === "running") {
             applyWorkItemEvent(this.db, item.id, "blocking_question");
@@ -3614,29 +3604,6 @@ export class Orchestrator {
               ...(current.checkpoint?.baseSha ? { baseSha: current.checkpoint.baseSha } : {}),
             });
           }
-          enqueueOutboxOnce(this.db, {
-            target: "linear",
-            op: "elicitation",
-            orderingKey: sessionId,
-            idempotencyKey: `ask:${opened.id}`,
-            payload: {
-              id: opened.id,
-              sessionId,
-              questionId: opened.id,
-              body: elicitationBody(
-                request.question,
-                [request.context, decisionContext].filter(Boolean).join("\n\n"),
-              ),
-              options: [
-                ...options,
-                ...suggestions.map((decision) => ({
-                  label: `Use saved decision: ${decision.statement.slice(0, 80)}`,
-                  value: decision.value,
-                })),
-              ],
-            },
-            now: this.now(),
-          });
         });
         this.askedRuns.add(runId);
         await this.flush();
@@ -3792,7 +3759,7 @@ export class Orchestrator {
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        this.answerEffects,
+        questionEffects(this.db, { now: this.now() }),
       );
       await this.flush();
       return outcome.status === "answered" ? "answered" : "rejected";
@@ -3877,38 +3844,21 @@ export class Orchestrator {
           return "rejected" as const;
         }
       }
-      if (
-        answerQuestion(this.db, open.id, {
-          answer,
-          answeredBy,
-          eventKey: event.dedupeKey,
+      const answered = answerAsked(
+        this.db,
+        { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
+        questionEffects(this.db, {
           now: this.now(),
-        }) === null
-      )
-        return "rejected" as const;
-      applyWorkItemEvent(this.db, item.id, "answer_received");
-      if (redirect) {
-        announceLinearTurn(this.db, sessionId, event.dedupeKey, this.now());
-        for (const live of this.live.values())
-          if (live.itemId === open.itemId) live.controller.abort(FOLLOW_UP_INTERRUPTION);
-        return "redirect" as const;
-      }
-      if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
-        applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
-      if (open.runId !== null && this.askedRuns.has(open.runId)) return "answered" as const;
-      enqueueJobOnce(this.db, {
-        queue: JOB_KIND.resume,
-        jobKey: `resume:answer:${open.id}`,
-        payload: {
-          itemId: open.itemId,
-          freshSession: true,
-          handoff: handoffNote({ question: open.body, options: open.options, answer }),
-          reason: "answer",
-        },
-        now: this.now(),
-      });
-      return "answered" as const;
+          asking: (runId) => this.askedRuns.has(runId),
+          redirect,
+        }),
+      );
+      if (answered.status !== "answered") return "rejected" as const;
+      return redirect ? ("redirect" as const) : ("answered" as const);
     });
+    if (outcome === "redirect")
+      for (const live of this.live.values())
+        if (live.itemId === open.itemId) live.controller.abort(FOLLOW_UP_INTERRUPTION);
     await this.flush();
     return outcome;
   }
@@ -5968,31 +5918,20 @@ export class Orchestrator {
       const sessionId = this.activitySession(item);
       if (sessionId === null) throw new Error("Repository selection has no tracker session");
       immediate(this.db, () => {
-        const question = openQuestion(this.db, {
-          itemId: item.id,
-          sessionId,
-          body: "Which repository should I use? Choose one of the configured repositories or describe your choice.",
-          options: ranked.map(
-            (candidate) => `https://github.com/${candidate.owner}/${candidate.repo}`,
-          ),
-          now: this.now(),
-        });
+        const { question } = ask(
+          this.db,
+          { itemId: item.id, runId: null, sessionId },
+          "repository",
+          "Which repository should I use? Choose one of the configured repositories or describe your choice.",
+          {
+            options: ranked.map(
+              (candidate) => `https://github.com/${candidate.owner}/${candidate.repo}`,
+            ),
+            now: this.now(),
+          },
+        );
         saveWorkItemRepositoryQuestion(this.db, item.id, question.id, ranked);
         applyWorkItemEvent(this.db, item.id, "blocking_question");
-        enqueueOutboxOnce(this.db, {
-          target: "linear",
-          op: "elicitation",
-          orderingKey: sessionId,
-          idempotencyKey: `repository:${question.id}`,
-          payload: {
-            sessionId,
-            questionId: question.id,
-            id: question.id,
-            body: question.body,
-            options: question.options,
-          },
-          now: this.now(),
-        });
       });
       await this.flush();
       return false;

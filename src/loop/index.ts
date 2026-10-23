@@ -34,6 +34,7 @@ export {
   type RepositoryBinding,
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
+export { questionEffects } from "./question-effects";
 
 export { handleLinearAdministration, stopUndelegatedIssue } from "./linear-administration";
 export { LinearTaskAccess } from "./linear-task-access";

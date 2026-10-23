@@ -27,7 +27,12 @@ import {
   type PolledActivity,
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
-import { answer as answerAsked, findOpenQuestion, getQuestion } from "../src/questions";
+import {
+  answer as answerAsked,
+  elicitationBody,
+  findOpenQuestion,
+  getQuestion,
+} from "../src/questions";
 import { handleStatusRequest } from "../src/web";
 import { tempDb, tempHome } from "./helpers";
 
@@ -295,7 +300,9 @@ test("ambiguous outcomes ask for clarification before repository access", async 
     await f.jobs.tick();
     const session = getLinearSession(f.db, "session")!;
     expect(getWorkItem(f.db, session.activeItemId!)?.state).toBe("awaiting_input");
-    expect(f.tracker.questions[0]?.body).toBe("Explain it, create a file, or change the code?");
+    expect(f.tracker.questions[0]?.body).toBe(
+      elicitationBody("Explain it, create a file, or change the code?"),
+    );
     expect(f.tracker.statuses).toEqual([]);
     expect(f.launches).toEqual(["classify"]);
     expect(existsSync(join(f.root, "worktrees"))).toBe(false);
