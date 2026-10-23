@@ -199,7 +199,7 @@ test("a handover waits for the current tool call, then publishes the worktree as
 }, 20_000);
 
 test("a session waiting on ask_team hands over and keeps its question with Paws", async () => {
-  let asked = false;
+  const question = { asked: false };
   const f = await handoverFixture(
     "ask",
     (checkout) => [
@@ -210,15 +210,15 @@ test("a session waiting on ask_team hands over and keeps its question with Paws"
     {
       async answer(_requestId, signal) {
         // Only the question waits; later requests, like the Closeout policy, get an answer.
-        if (asked) return { answer: "{}" };
-        asked = true;
+        if (question.asked) return { answer: "{}" };
+        question.asked = true;
         await new Promise((_, reject) =>
           signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
         );
         throw new Error("unreachable");
       },
       async handover(_sequence, signal) {
-        while (!asked) await delay(10, undefined, { signal });
+        while (!question.asked) await delay(10, undefined, { signal });
         return { expiresAt: Date.now() + 120_000 };
       },
     },
