@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
  */
 export const EXECUTION_TAG_ENV = "PAWS_RUNNER_EXECUTION_TAG";
 
+const KILL_CONFIRMATION_MS = 5_000;
+
 export class OwnedProcess extends EventEmitter {
   readonly pid: number | undefined;
   readonly stdin: Writable | null;
@@ -140,7 +142,14 @@ export class OwnedProcess extends EventEmitter {
         new Promise((resolve) => setTimeout(resolve, graceMs)),
       ]);
       this.killGroup("SIGKILL");
-      await Promise.race([this.closed, new Promise((resolve) => setTimeout(resolve, graceMs))]);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        this.closed,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, Math.max(graceMs, KILL_CONFIRMATION_MS));
+        }),
+      ]);
+      clearTimeout(timer);
     }
     this.stdin?.destroy();
     this.stdout?.destroy();
