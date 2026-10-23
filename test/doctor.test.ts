@@ -109,6 +109,23 @@ test("doctor warns when Linear may have disabled the webhook and says how to re-
   expect(formatDoctor(doctorChecks(ready))).not.toContain("linear-webhook-delivery");
 });
 
+test("doctor shows whether GitHub webhook deliveries arrive", () => {
+  const waiting = probe(true);
+  waiting.env.GITHUB_WEBHOOK_SECRET = "github-secret";
+  const missing = doctorChecks(waiting).find((item) => item.name === "github-webhook");
+  expect(missing).toMatchObject({
+    ok: false,
+    detail: "no signed GitHub webhook delivery has arrived",
+  });
+  expect(missing?.fix).toContain("Merge groups");
+  waiting.facts.githubDelivery = { event: "check_suite", receivedAt: Date.UTC(2026, 9, 23, 9) };
+  expect(doctorChecks(waiting).find((item) => item.name === "github-webhook")).toMatchObject({
+    ok: true,
+    detail: "last check_suite delivery at 2026-10-23T09:00:00.000Z",
+  });
+  expect(doctorChecks(probe(true)).map((item) => item.name)).not.toContain("github-webhook");
+});
+
 test("doctor loads the closeout policy from origin/main", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-doctor-policy-"));
   const bare = join(root, "origin.git");

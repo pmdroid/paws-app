@@ -54,6 +54,8 @@ const FIX = {
   githubLogin: "Run bun run paws login github.",
   githubPush: "Grant this login push access to the repository.",
   githubRate: "Wait for the GitHub rate limit to recover.",
+  githubWebhook:
+    "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews and Merge groups events (docs/github-login.md).",
 } as const;
 
 /** Prerequisite checks for a real local run. Missing tools are reported, not thrown. */
@@ -124,6 +126,19 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
         probe.which("ngrok") !== null,
         probe.which("ngrok") ?? "ngrok is not on PATH",
         FIX.ngrok,
+      ),
+    );
+  }
+  if (facts.webhooks || env.githubWebhookSecret !== null || facts.githubDelivery) {
+    const delivery = facts.githubDelivery ?? null;
+    checks.push(
+      check(
+        "github-webhook",
+        delivery !== null,
+        delivery === null
+          ? "no signed GitHub webhook delivery has arrived"
+          : `last ${delivery.event} delivery at ${new Date(delivery.receivedAt).toISOString()}`,
+        FIX.githubWebhook,
       ),
     );
   }
