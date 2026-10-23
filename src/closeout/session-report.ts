@@ -79,6 +79,7 @@ export function sessionCloseoutResult(
         entry.status !== "stale" &&
         entry.result?.head === request.expectedHead &&
         JSON.stringify(entry.result.argv) === JSON.stringify(request.argv) &&
+        entry.result.timeoutSeconds === request.timeoutSeconds &&
         Number.isSafeInteger(entry.result.exitCode) &&
         Number.isFinite(entry.result.durationMs) &&
         entry.result.durationMs >= 0 &&

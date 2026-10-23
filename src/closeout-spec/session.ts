@@ -24,6 +24,7 @@ export type SessionCommandResult = {
   exitCode: number;
   timedOut: boolean;
   durationMs: number;
+  timeoutSeconds: number;
   stdout: string;
   stderr: string;
   truncated: boolean;
@@ -404,7 +405,8 @@ async function execute(
   };
   notify(options, { type: "started", ...progress });
   const started = Date.now();
-  const result = await runCommand(workspace, argv, item.timeoutSeconds ?? 30, options.signal);
+  const timeoutSeconds = item.timeoutSeconds ?? 30;
+  const result = await runCommand(workspace, argv, timeoutSeconds, options.signal);
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   if (result.cancelled) {
     notify(options, {
@@ -435,6 +437,7 @@ async function execute(
     exitCode: result.code,
     timedOut: result.timedOut,
     durationMs: Math.max(1, Date.now() - started),
+    timeoutSeconds,
     stdout: scrubText(result.stdout, credentialSecrets()),
     stderr: scrubText(result.stderr, credentialSecrets()),
     truncated: result.truncated,

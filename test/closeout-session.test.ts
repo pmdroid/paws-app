@@ -439,7 +439,7 @@ function git(cwd: string, args: string[]): void {
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
 
-test("session report transports real command streams and duration for the checked commit", async () => {
+test("session report transports real command streams, duration and timeout for the checked commit", async () => {
   const root = initRepo();
   writePolicy(root, [
     'specVersion: "0.1"',
@@ -461,6 +461,7 @@ test("session report transports real command streams and duration for the checke
     ],
     head: spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim(),
     exitCode: 0,
+    timeoutSeconds: 30,
     stdout: "real stdout\n",
     stderr: "real stderr\n",
     timedOut: false,

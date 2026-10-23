@@ -30,6 +30,7 @@ test("a clear closeout session report accepts command checks for that commit", (
           exitCode: 0,
           timedOut: false,
           durationMs: 2345,
+          timeoutSeconds: 30,
           stdout: "real test output\n",
           stderr: "diagnostic\n",
           truncated: false,
@@ -84,13 +85,15 @@ test("a clear closeout session report accepts command checks for that commit", (
   expect(existsSync(missing)).toBe(false);
 });
 
-test("remote command results without a match for the head, command or check never become failures", () => {
+test("remote command results without a match for the head, command, timeout or check never become failures", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-session-reject-"));
   roots.push(root);
   for (const patch of [
     { head: "b".repeat(40) },
     { argv: ["true"] },
     { durationMs: -1 },
+    { timeoutSeconds: 5 },
+    { timeoutSeconds: undefined },
     { id: "lint" },
     { status: "stale" },
   ]) {
@@ -106,6 +109,7 @@ test("remote command results without a match for the head, command or check neve
             exitCode: 0,
             timedOut: false,
             durationMs: 20,
+            timeoutSeconds: 30,
             stdout: "real",
             stderr: "",
             truncated: false,
