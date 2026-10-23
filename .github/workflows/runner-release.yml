@@ -23,7 +23,7 @@ jobs:
             runner: ubuntu-24.04
           - architecture: arm64
             platform: linux-arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, Linux, ARM64]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +82,7 @@ jobs:
   publish:
     name: Attach Debian packages to release
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, ARM64]
     permissions:
       contents: write
     steps:
