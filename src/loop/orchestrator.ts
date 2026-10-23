@@ -43,6 +43,7 @@ import {
   type AgentProfile,
 } from "../config";
 import {
+  approvalsAtHead,
   createCloseoutGate,
   reviewRequirements,
   trustedPolicyFiles,
@@ -236,13 +237,26 @@ import {
   elicitationBody,
   findOpenQuestion,
   handoffNote,
+  acceptedVisualReviews,
   getVisualReview,
+  markVisualReviewStale,
   openQuestion,
   questionReplyConsumed,
+  visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
+  VISUAL_REVIEW_DESCRIBE,
   VISUAL_REVIEW_WAIT,
+  type StoredQuestion,
+  type StoredVisualReview,
 } from "../questions";
-import { askForVisualReview, postNote, remindVisualReview } from "./visual-review";
+import {
+  answerVisualReview,
+  askForVisualReview,
+  postNote,
+  remindVisualReview,
+  visualReviewApprovals,
+  visualReviewHandoff,
+} from "./visual-review";
 import {
   ciWaitVerification,
   acceptCloseout,
@@ -1967,6 +1981,7 @@ export class Orchestrator {
   ): Promise<void> {
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state !== "running") return;
+    if (await this.visualReviewOutdated(current, worktree, head)) return;
     applyWorkItemEvent(this.db, item.id, "turn_ended");
     const verifying = getWorkItem(this.db, item.id);
     if (verifying === null) return;
@@ -2205,6 +2220,7 @@ export class Orchestrator {
       checkoutExclusions,
       candidate,
       published: () => publishedEvidence(this.db, item.id),
+      approvals: () => visualReviewApprovals(this.db, item.id, itemPathId(item)),
       ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
         async review(request) {
@@ -3534,14 +3550,16 @@ export class Orchestrator {
       payload: {
         itemId: answered.itemId,
         freshSession: true,
-        handoff: handoffNote({
-          question: answered.body,
-          options:
-            answered.options === null
-              ? []
-              : (JSON.parse(answered.options) as (string | { label?: string; value: string })[]),
-          answer: answered.answer,
-        }),
+        handoff:
+          visualReviewHandoff(this.db, answered.id) ??
+          handoffNote({
+            question: answered.body,
+            options:
+              answered.options === null
+                ? []
+                : (JSON.parse(answered.options) as (string | { label?: string; value: string })[]),
+            answer: answered.answer,
+          }),
         reason: "answer",
       },
       now: this.now(),
@@ -3623,7 +3641,8 @@ export class Orchestrator {
     } catch {}
     if (answeredBy === "unknown" || answeredBy === "linear" || !answeredBy.trim())
       return "rejected";
-    if (getVisualReview(this.db, open.id)) {
+    const review = getVisualReview(this.db, open.id);
+    if (review) {
       const item = getWorkItem(this.db, open.itemId);
       if (item === null) return "rejected";
       if (!(await this.canAnswerVisualReview(item, answeredBy))) {
@@ -3638,6 +3657,7 @@ export class Orchestrator {
         await this.flush();
         return "rejected";
       }
+      return this.answerVisualReview(open, review, event.dedupeKey, answer, answeredBy);
     }
     if (this.githubAuth?.owns(open.id)) {
       const accepted = await this.githubAuth.retry(open.id, answeredBy, () => {
@@ -5126,6 +5146,117 @@ export class Orchestrator {
     this.askedRuns.add(runId);
     await this.flush();
     return true;
+  }
+
+  /**
+   * Accept passes the check and resumes the task to finish Closeout. Request changes resumes it
+   * with the feedback, or asks whether to keep going after the last allowed round.
+   */
+  private async answerVisualReview(
+    open: StoredQuestion,
+    review: StoredVisualReview,
+    eventKey: string,
+    answer: string,
+    answeredBy: string,
+  ): Promise<"answered" | "rejected"> {
+    const sessionId = open.sessionId;
+    const outcome = immediate(this.db, () => {
+      const result = answerVisualReview(this.db, {
+        question: open,
+        review,
+        answer,
+        answeredBy,
+        eventKey,
+        now: this.now(),
+      });
+      const item = getWorkItem(this.db, open.itemId);
+      if (item === null || result === "rejected") return "rejected" as const;
+      if (result === "describe") {
+        postNote(
+          this.db,
+          sessionId,
+          item,
+          VISUAL_REVIEW_DESCRIBE,
+          `visual-review-describe:${eventKey}`,
+          this.now(),
+        );
+        return "rejected" as const;
+      }
+      if (item.sessionKey === sessionId) applyLinearTurns(this.db, sessionId, [eventKey], item.id);
+      // A run still ending after it asked resumes the task itself once it releases its slot.
+      if (result === "asked" || (open.runId !== null && this.askedRuns.has(open.runId)))
+        return "answered" as const;
+      enqueueJobOnce(this.db, {
+        queue: JOB_KIND.resume,
+        jobKey: `resume:answer:${open.id}`,
+        payload: {
+          itemId: item.id,
+          freshSession: true,
+          handoff: visualReviewHandoff(this.db, open.id),
+          reason: "visual-review",
+        },
+        now: this.now(),
+      });
+      return "answered" as const;
+    });
+    await this.flush();
+    return outcome;
+  }
+
+  /**
+   * An accepted visual review covers the screens it showed. When the agent then changed files
+   * under the check's paths, the review stops counting, and the agent publishes new screenshots
+   * so Paws asks again. Returns true when the task went back to the agent.
+   */
+  private async visualReviewOutdated(
+    item: WorkItemRecord,
+    worktree: string,
+    head: string,
+  ): Promise<boolean> {
+    const reviews = acceptedVisualReviews(this.db, item.id);
+    if (reviews.length === 0) return false;
+    const repository = this.repositoryForItem(item);
+    if (!repository) return false;
+    const required = visualReviewRequirements(
+      worktree,
+      this.options.home,
+      this.options.closeoutPolicyRoot?.(repository),
+    );
+    if (!required.ok) return false;
+    const checks = new Set(required.items.map((entry) => entry.id));
+    const approvals = visualReviewApprovals(this.db, item.id, itemPathId(item));
+    const valid = new Set(await approvalsAtHead(worktree, head, approvals, required.items));
+    const outdated = reviews.filter(
+      (review, index) => checks.has(review.checkId) && !valid.has(approvals[index]!),
+    );
+    if (outdated.length === 0) return false;
+    const checkIds = [...new Set(outdated.map((review) => review.checkId))];
+    const resumed = immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (current?.state !== "running" || current.cancelRequested) return false;
+      for (const review of outdated) markVisualReviewStale(this.db, review.questionId);
+      if (current.currentRunId) releaseRunCapacity(this.db, current.currentRunId, this.now());
+      enqueueJobOnce(this.db, {
+        queue: JOB_KIND.resume,
+        jobKey: `visual-review-outdated:${outdated[0]!.questionId}`,
+        payload: {
+          itemId: item.id,
+          freshSession: true,
+          handoff: checkIds.map(visualReviewStaleHandoff).join("\n\n"),
+          reason: "visual-review",
+        },
+        now: this.now(),
+      });
+      this.post(
+        current,
+        "thought",
+        `Files under the paths of ${checkIds.join(", ")} changed after the visual review was accepted. The agent publishes new screenshots, then Paws asks again.`,
+        `visual-review-outdated:${outdated[0]!.questionId}`,
+      );
+      return true;
+    });
+    if (resumed) await this.flush();
+    return resumed;
   }
 
   /** The delegator and the project lead answer a visual review. */

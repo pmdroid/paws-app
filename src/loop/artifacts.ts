@@ -24,6 +24,7 @@ import {
 } from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
 import type { PublishedEvidence } from "../closeout";
+import { rejectedEvidenceIds } from "../questions";
 
 export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
   return async (
@@ -48,14 +49,20 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
   };
 }
 
-/** The item's Closeout videos and screenshots, for `evidence` checks. */
+/**
+ * The item's Closeout videos and screenshots, for `evidence` checks. Files a reviewer asked to
+ * change, or whose screens changed after an accepted review, no longer count.
+ */
 export function publishedEvidence(db: Database, itemId: string): PublishedEvidence[] {
-  return listEvidence(db, itemId).map((row) => ({
-    id: row.id,
-    checkId: row.checkId,
-    media: row.mediaType.startsWith("video/") ? "video" : "image",
-    commit: row.headCommit,
-  }));
+  const rejected = rejectedEvidenceIds(db, itemId);
+  return listEvidence(db, itemId)
+    .filter((row) => !rejected.has(row.id))
+    .map((row) => ({
+      id: row.id,
+      checkId: row.checkId,
+      media: row.mediaType.startsWith("video/") ? "video" : "image",
+      commit: row.headCommit,
+    }));
 }
 
 /** Where Closeout videos and screenshots go. `src/index.ts` passes the evidence store. */
