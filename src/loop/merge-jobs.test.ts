@@ -15,14 +15,12 @@ import {
 import {
   MERGE_BACKSTOP_POLL_MS,
   MERGE_CI_POLL_MS,
-  acceptGitHubDelivery,
   MERGE_CI_WAIT_MS,
   ciWaitVerification,
-  parkMergeForCi,
-  retryMergeLater,
-  waitForMergeTurn,
+  parkMerge,
   wakeMergesBehind,
-} from "./merge-jobs";
+} from "../merge";
+import { acceptGitHubDelivery, retryMergeLater, waitForMergeTurn } from "./merge-jobs";
 import { worktreeBranch } from "./sources";
 
 function queue() {
@@ -45,7 +43,7 @@ describe("merge CI wait", () => {
     const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
     let reason: "review" | "ci" = "review";
     loop.register(JOB_KIND.merge, (job) => {
-      parkMergeForCi(db, job, clock.now(), undefined, {
+      parkMerge(db, job, clock.now(), {
         queued: reason === "review",
         reason,
         message: reason === "review" ? "Waiting for an approving review." : "CI 4 of 6 done.",
@@ -91,7 +89,7 @@ describe("merge CI wait", () => {
     });
     const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
     loop.register(JOB_KIND.merge, (job) => {
-      expect(parkMergeForCi(db, job, clock.now())).toBe("parked");
+      expect(parkMerge(db, job, clock.now())).toBe("parked");
     });
     const ran = await loop.tick();
     const parked = ran === null ? null : getJob(db, ran.id);
@@ -143,12 +141,12 @@ describe("merge CI wait", () => {
     });
     const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     if (first === null) throw new Error("missing claim");
-    expect(parkMergeForCi(db, first, clock.now())).toBe("parked");
+    expect(parkMerge(db, first, clock.now())).toBe("parked");
     clock.advance(MERGE_CI_WAIT_MS);
     const again = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     if (again === null) throw new Error("missing claim");
     expect(again.id).toBe(first.id);
-    expect(parkMergeForCi(db, again, clock.now())).toBe("expired");
+    expect(parkMerge(db, again, clock.now())).toBe("expired");
     expect(getJob(db, first.id)?.status).toBe("running");
   });
 
@@ -169,7 +167,7 @@ describe("merge CI wait", () => {
     const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     if (first === null) throw new Error("missing claim");
     expect(
-      parkMergeForCi(db, first, clock.now(), {
+      parkMerge(db, first, clock.now(), {
         base: "base-sha",
         head: "head-sha",
         summary: "accepted once",
@@ -251,13 +249,12 @@ describe("GitHub deliveries", () => {
     });
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     if (job === null) throw new Error("missing claim");
-    parkMergeForCi(
-      db,
-      job,
-      clock.now(),
-      { base: "b".repeat(40), head, summary: "accepted" },
-      githubQueue ? { githubQueue } : {},
-    );
+    parkMerge(db, job, clock.now(), {
+      base: "b".repeat(40),
+      head,
+      summary: "accepted",
+      ...(githubQueue ? { githubQueue } : {}),
+    });
     const branch = worktreeBranch(getWorkItem(db, "eng-1")!);
     return { db, clock, id, branch };
   }
@@ -370,7 +367,7 @@ describe("GitHub deliveries", () => {
       action: "completed",
       check_suite: { head_sha: head },
     });
-    expect(parkMergeForCi(db, job!, clock.now(), { head })).toBe("parked");
+    expect(parkMerge(db, job!, clock.now(), { head })).toBe("parked");
     expect(getJob(db, id)).toMatchObject({ status: "pending", runAt: clock.now() });
   });
 });
@@ -389,7 +386,7 @@ describe("merge poll backstop", () => {
     const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
     loop.register(JOB_KIND.merge, (job) => {
       reads += 1;
-      parkMergeForCi(db, job, clock.now(), { base: "b", head: "h", summary: "s" });
+      parkMerge(db, job, clock.now(), { base: "b", head: "h", summary: "s" });
     });
     return { db, clock, id, loop, reads: () => reads };
   }
@@ -432,7 +429,7 @@ describe("merge poll backstop", () => {
     });
     ping(db, clock.now());
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
-    parkMergeForCi(db, job!, clock.now(), undefined, { queued: true, reason: "review" });
+    parkMerge(db, job!, clock.now(), { queued: true, reason: "review" });
     expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
   });
 
@@ -451,7 +448,7 @@ describe("merge poll backstop", () => {
     ping(db, clock.now());
     for (const reason of ["ahead", "review"] as const) {
       const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
-      parkMergeForCi(db, job!, clock.now(), undefined, { queued: true, reason });
+      parkMerge(db, job!, clock.now(), { queued: true, reason });
     }
     clock.advance(1_000);
     wakeMergesBehind(db, clock.now());

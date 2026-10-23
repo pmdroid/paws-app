@@ -277,20 +277,23 @@ import {
   visualReviewHandoff,
 } from "./visual-review";
 import {
-  ciWaitVerification,
   acceptCloseout,
   applyCloseoutAcceptance,
-  githubQueueWatch,
-  parkMergeForCi,
   retryMergeLater,
   waitForMergeTurn,
-  wakeMergesBehind,
   waitForRunnerSlot,
-  type GitHubQueueWatch,
-  type MergeWaitReason,
   type VerificationOwner,
 } from "./merge-jobs";
-import { MAX_REBASE_RETURNS, serialMergeStep } from "./merge-step";
+import {
+  MAX_REBASE_RETURNS,
+  ciWaitVerification,
+  githubQueueWatch,
+  parkMerge,
+  serialMergeStep,
+  wakeMergesBehind,
+  type MergeStep,
+  type MergeWait,
+} from "../merge";
 import {
   createAcpActivityReporter,
   FIRST_ACTIVITY_MS,
@@ -430,21 +433,6 @@ export type ExecutionChanges = {
 };
 
 class LinearReconciliationPendingError extends Error {}
-
-/**
- * A merge pass that waits. `queued` waits in the merge queue or for a review, with no deadline.
- * `githubQueue` is set while the task waits on GitHub's merge queue.
- */
-type MergeWait = {
-  message: string;
-  base?: string;
-  head?: string;
-  summary?: string;
-  queued?: boolean;
-  reason: MergeWaitReason;
-  /** Set while the task uses GitHub's merge queue. */
-  githubQueue?: GitHubQueueWatch;
-};
 
 const LINEAR_ACCESS_CHANGED: IntakeDecision = {
   outcome: "refused",
@@ -1178,21 +1166,7 @@ export class Orchestrator {
         return;
       }
       if (waiting === undefined) return;
-      if (
-        parkMergeForCi(
-          this.db,
-          job,
-          this.now(),
-          { base: waiting.base, head: waiting.head, summary: waiting.summary },
-          {
-            queued: waiting.queued === true,
-            reason: waiting.reason,
-            message: waiting.message,
-            ...(waiting.githubQueue ? { githubQueue: waiting.githubQueue } : {}),
-          },
-        ) !== "expired"
-      )
-        return;
+      if (parkMerge(this.db, job, this.now(), waiting) !== "expired") return;
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
       if (item)
@@ -1243,7 +1217,9 @@ export class Orchestrator {
       this.runLeasedJob(job.payload, context, async () => {
         try {
           await this.runOwnedJob(job.payload, async () => {
-            onWait(await this.merge(job.payload, job.id));
+            const step = await this.merge(job.payload, job.id);
+            if (step.kind === "wait") onWait(step);
+            else await this.settleMerge(job.payload, step);
           });
         } catch (error) {
           if (!(error instanceof LinearReconciliationPendingError)) throw error;
@@ -2659,9 +2635,9 @@ export class Orchestrator {
     });
   }
 
-  private async merge(payload: unknown, jobId: number): Promise<MergeWait | undefined> {
+  private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
     const itemId = readString(payload, "itemId");
-    if (itemId === null) return;
+    if (itemId === null) return { kind: "obsolete" };
     const item = getWorkItem(this.db, itemId);
     if (
       item === null ||
@@ -2669,10 +2645,10 @@ export class Orchestrator {
       item.state === "merged" ||
       item.state === "completed"
     )
-      return;
+      return { kind: "obsolete" };
     if (getConfirmedRemoteMerge(this.db, item.id)) {
       if (completeMergedItem(this.db, { itemId: item.id, now: this.now() })) this.dispatch();
-      return;
+      return { kind: "obsolete" };
     }
     this.assertReconciled(item);
     const repository = this.repositoryForItem(item);
@@ -2683,10 +2659,9 @@ export class Orchestrator {
       configuredGitHub === null ||
       configuredGitHub === undefined
     ) {
-      this.fail(item, "no_github", "GitHub App is not configured.");
-      return;
+      return { kind: "failed", reason: "no_github", message: "GitHub App is not configured." };
     }
-    if (item.state !== "merge_queue") return;
+    if (item.state !== "merge_queue") return { kind: "obsolete" };
     immediate(this.db, () => {
       if (!this.admission.canMerge(item.id).ok)
         throw new LinearReconciliationPendingError("Linear dependencies are still running");
@@ -2742,19 +2717,17 @@ export class Orchestrator {
       },
     });
     const candidate = await this.candidateForItem(item);
-    if (!candidate) return;
+    if (!candidate) return { kind: "obsolete" };
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
     const summary = readString(payload, "summary") ?? "Closeout accepted.";
     const policy = await this.commitPolicy(item);
-    if (this.stopped(item.id)) return;
-    if (!artifactPublicationReady(this.db, item.id)) {
-      this.fail(
-        item,
-        "artifact_upload",
-        "A requested artifact has not been uploaded successfully.",
-      );
-      return;
-    }
+    if (this.stopped(item.id)) return { kind: "obsolete" };
+    if (!artifactPublicationReady(this.db, item.id))
+      return {
+        kind: "failed",
+        reason: "artifact_upload",
+        message: "A requested artifact has not been uploaded successfully.",
+      };
     this.sessionProgress(item)?.phase("publishing");
     const draft = getPullRequestDraft(this.db, item.id);
     const published = await publishAccepted({
@@ -2784,12 +2757,10 @@ export class Orchestrator {
       live.controller.signal,
       publicationCandidate,
     );
-    if (this.stopped(item.id)) return;
-    if (getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
-    if (!published.published) {
-      this.fail(item, "publish", published.reason);
-      return;
-    }
+    if (this.stopped(item.id)) return { kind: "obsolete" };
+    if (getWorkItem(this.db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
+    if (!published.published)
+      return { kind: "failed", reason: "publish", message: published.reason };
     this.post(
       item,
       this.options.channel === "comments" ? "thought" : "response",
@@ -2826,8 +2797,8 @@ export class Orchestrator {
         number: published.pull.number,
         head: priorVerification?.head ?? acceptedHead ?? "",
       });
-      if (wait) return wait;
-      if (this.stopped(item.id)) return;
+      if (wait) return { kind: "wait", ...wait };
+      if (this.stopped(item.id)) return { kind: "obsolete" };
     }
     const repositoryName = `${repository.owner}/${repository.repo}`;
     const merged = await serialMerge({
@@ -2934,7 +2905,7 @@ export class Orchestrator {
       wakeMergesBehind(this.db, this.now());
     }
     if (step.kind === "wait" && step.reason === "ci")
-      return this.stopped(item.id) ? undefined : step;
+      return this.stopped(item.id) ? { kind: "obsolete" } : step;
     if (merged.merged)
       recordConfirmedRemoteMerge(this.db, {
         itemId: item.id,
@@ -2947,7 +2918,7 @@ export class Orchestrator {
       });
     if (this.stopped(item.id)) {
       if (merged.merged) completeMergedItem(this.db, { itemId: item.id, now: this.now() });
-      return;
+      return { kind: "obsolete" };
     }
     if (!merged.merged)
       await this.assertPublicationReady(
@@ -2956,12 +2927,13 @@ export class Orchestrator {
         live.controller.signal,
         publicationCandidate,
       );
-    if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
+    if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input")
+      return { kind: "obsolete" };
     if (!merged.merged) {
       if (step.kind === "unreadable") throw new Error(step.message);
       if (step.kind === "ask_closeout" && closeoutFailure) {
         await this.askCloseoutHelp(item, closeoutFailure.result, closeoutFailure.summary);
-        return;
+        return { kind: "asked" };
       }
       if (
         step.kind === "return" &&
@@ -2981,7 +2953,7 @@ export class Orchestrator {
             }),
         )
       )
-        return;
+        return { kind: "returned" };
       if (merged.outcome === "ci_failed") {
         const checks = merged.failedChecks ?? [];
         const round = (next: CiRound["next"], fix: number | null = null) =>
@@ -2997,11 +2969,11 @@ export class Orchestrator {
             (_, attempt) => round("agent", attempt),
           )
         )
-          return;
+          return { kind: "returned" };
         if (this.askCiHelp(item, ciFixQuestion(checks, ciFixLimit, published.pull.url))) {
           round("asked");
           await this.flush();
-          return;
+          return { kind: "asked" };
         }
         round("failed");
       }
@@ -3020,16 +2992,27 @@ export class Orchestrator {
           payload: { itemId: item.id },
           now: this.now(),
         });
-        return;
+        return { kind: "returned" };
       }
-      this.fail(
-        item,
-        "merge",
-        step.kind === "failed" ? step.message : (merged.message ?? merged.outcome),
-      );
+      return {
+        kind: "failed",
+        reason: "merge",
+        message: step.kind === "failed" ? step.message : (merged.message ?? merged.outcome),
+      };
+    }
+    return { kind: "merged" };
+  }
+
+  private async settleMerge(payload: unknown, step: MergeStep): Promise<void> {
+    if (step.kind !== "failed" && step.kind !== "merged") return;
+    const item = getWorkItem(this.db, readString(payload, "itemId") ?? "");
+    if (!item) return;
+    if (step.kind === "failed") {
+      this.fail(item, step.reason, step.message);
       return;
     }
-    await this.completeMerge(item, repository);
+    const repository = this.repositoryForItem(item);
+    if (repository) await this.completeMerge(item, repository);
   }
 
   private async completeMerge(item: WorkItemRecord, repository: RepositoryBinding): Promise<void> {
@@ -3141,7 +3124,7 @@ export class Orchestrator {
     pull: { number: number; url: string | null };
     head: string;
     signal: AbortSignal;
-  }): Promise<MergeWait | undefined | "no_queue"> {
+  }): Promise<MergeStep | "no_queue"> {
     const { item, repository, github, pull } = input;
     const name = `${repository.owner}/${repository.repo}`;
     const watch = githubQueueWatch(input.payload) ?? { queued: false };
@@ -3159,7 +3142,7 @@ export class Orchestrator {
       isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
       signal: input.signal,
     });
-    if (this.stopped(item.id)) return;
+    if (this.stopped(item.id)) return { kind: "obsolete" };
     switch (result.outcome) {
       case "no_queue":
         this.statusAfterPullRequest(
@@ -3170,7 +3153,13 @@ export class Orchestrator {
         return "no_queue";
       case "checks_pending":
       case "unreadable":
-        return { message: result.message, head: input.head, reason: "ci", githubQueue: watch };
+        return {
+          kind: "wait",
+          message: result.message,
+          head: input.head,
+          reason: "ci",
+          githubQueue: watch,
+        };
       case "queued": {
         const line = githubQueueLine(name, result.position, result.state);
         if (!watch.queued)
@@ -3187,6 +3176,7 @@ export class Orchestrator {
           );
         await this.flush();
         return {
+          kind: "wait",
           message: line,
           head: input.head,
           reason: (result.position ?? 1) > 1 ? "ahead" : "ci",
@@ -3203,8 +3193,7 @@ export class Orchestrator {
           mergeSha: result.sha,
           confirmedAt: this.now(),
         });
-        await this.completeMerge(item, repository);
-        return;
+        return { kind: "merged" };
       case "ci_failed":
         return this.githubQueueCiFailed(
           item,
@@ -3243,30 +3232,26 @@ export class Orchestrator {
                 }),
             )
           )
-            return;
-          this.fail(
-            item,
-            "merge",
-            `GitHub's merge queue removed the pull request for a conflict${why}.`,
-          );
-          return;
+            return { kind: "returned" };
+          return {
+            kind: "failed",
+            reason: "merge",
+            message: `GitHub's merge queue removed the pull request for a conflict${why}.`,
+          };
         }
-        await this.askGitHubQueueRemoval(
+        return this.askGitHubQueueRemoval(
           item,
           `${removal.actor ? `@${removal.actor}` : "Someone"} removed ${pull.url ?? `pull request #${pull.number}`} from the ${name} GitHub merge queue${why}.`,
         );
-        return;
       }
       case "closed":
-        await this.askGitHubQueueRemoval(
+        return this.askGitHubQueueRemoval(
           item,
           `${pull.url ?? `Pull request #${pull.number}`} was closed on GitHub while it waited for the ${name} merge queue.`,
         );
-        return;
       case "blocked":
       case "sha_moved":
-        this.fail(item, "merge", result.message);
-        return;
+        return { kind: "failed", reason: "merge", message: result.message };
     }
   }
 
@@ -3277,7 +3262,7 @@ export class Orchestrator {
     checks: readonly { name: string; url: string | null; logTail?: string | null }[],
     pullUrl: string | null,
     source: string,
-  ): Promise<undefined> {
+  ): Promise<MergeStep> {
     const limit = this.ciFixAttempts();
     const failed = checks.map((check) => ({
       name: check.name,
@@ -3298,17 +3283,20 @@ export class Orchestrator {
         (_, attempt) => this.recordCiRound(item, head, failed, "agent", limit, attempt),
       )
     )
-      return;
+      return { kind: "returned" };
     if (this.askCiHelp(item, ciFixQuestion(checks, limit, pullUrl))) {
       await this.flush();
-      return;
+      return { kind: "asked" };
     }
-    this.fail(item, "merge", `CI failed: ${checks.map((check) => check.name).join(", ")}`);
-    return;
+    return {
+      kind: "failed",
+      reason: "merge",
+      message: `CI failed: ${checks.map((check) => check.name).join(", ")}`,
+    };
   }
 
   /** The pull request left GitHub's merge queue for a reason Paws should not decide alone. */
-  private async askGitHubQueueRemoval(item: WorkItemRecord, what: string): Promise<void> {
+  private async askGitHubQueueRemoval(item: WorkItemRecord, what: string): Promise<MergeStep> {
     const body = [
       what,
       "",
@@ -3316,9 +3304,9 @@ export class Orchestrator {
     ].join("\n");
     if (this.askCiHelp(item, body)) {
       await this.flush();
-      return;
+      return { kind: "asked" };
     }
-    this.fail(item, "merge", what);
+    return { kind: "failed", reason: "merge", message: what };
   }
 
   private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {
