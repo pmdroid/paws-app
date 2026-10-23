@@ -384,6 +384,7 @@ export {
   usagePause,
 } from "./usage-pause";
 export type { UsagePause } from "./usage-pause";
+export { countLinearRequest, linearRequestsByItem } from "./linear-requests";
 export {
   SKILL_AGENTS,
   getSkill,

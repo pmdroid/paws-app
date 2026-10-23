@@ -2179,4 +2179,13 @@ ALTER TABLE inbox_event ADD COLUMN next_attempt_at INTEGER;
 ALTER TABLE inbox_event ADD COLUMN last_error TEXT;
 `,
   },
+  {
+    id: "101_linear_item_request",
+    sql: `
+CREATE TABLE linear_item_request (
+  item_id TEXT PRIMARY KEY,
+  requests INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

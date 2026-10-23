@@ -12,8 +12,18 @@ const UNKNOWN_RESET_WAIT_MS = 60_000;
 
 export type LinearPriority = "critical" | "normal" | "background";
 
-type LinearCallerContext = { caller: string; priority: LinearPriority; item?: string };
-type LinearCallerStore = { caller?: string; priority?: LinearPriority; item?: string };
+type LinearCallerContext = {
+  caller: string;
+  priority: LinearPriority;
+  item?: string;
+  itemId?: string;
+};
+type LinearCallerStore = {
+  caller?: string;
+  priority?: LinearPriority;
+  item?: string;
+  itemId?: string;
+};
 
 const CALLER_PRIORITY: Record<string, LinearPriority> = {
   poller: "background",
@@ -66,7 +76,7 @@ export type LinearItemUsage = { item: string; requests: number };
 
 export type LinearLedger = {
   admit(caller: string, priority?: LinearPriority): LinearRateLimitError | null;
-  observe(caller: string, budget: LinearRateBudget, item?: string): void;
+  observe(caller: string, budget: LinearRateBudget, item?: string, itemId?: string): void;
   limited(caller: string, error: LinearRateLimitError): LinearRateLimitError;
   usage(): LinearUsage;
   now(): number;
@@ -89,8 +99,8 @@ export function linearDefaultCaller<T>(caller: string, run: () => T): T {
   return callers.getStore()?.caller === undefined ? linearCaller(caller, run) : run();
 }
 
-export function linearItem<T>(item: string, run: () => T): T {
-  return callers.run({ ...callers.getStore(), item }, run);
+export function linearItem<T>(item: string, run: () => T, itemId?: string): T {
+  return callers.run({ ...callers.getStore(), item, itemId }, run);
 }
 
 export function linearDefaultCallers<T extends object>(
@@ -129,11 +139,17 @@ export function currentLinearCaller(): LinearCallerContext {
     caller: store?.caller ?? DEFAULT_LINEAR_CALLER,
     priority: store?.priority ?? "normal",
     ...(store?.item === undefined ? {} : { item: store.item }),
+    ...(store?.itemId === undefined ? {} : { itemId: store.itemId }),
   };
 }
 
 export function createLinearLedger(
-  options: { now?: () => number; random?: () => number; log?: (line: string) => void } = {},
+  options: {
+    now?: () => number;
+    random?: () => number;
+    log?: (line: string) => void;
+    countItem?: (itemId: string) => void;
+  } = {},
 ): LinearLedger {
   const now = options.now ?? Date.now;
   const random = options.random ?? Math.random;
@@ -207,8 +223,9 @@ export function createLinearLedger(
       record(caller, { held: 1 });
       return new LinearRateLimitError(left + jitter(left), budget ?? emptyBudget());
     },
-    observe(caller, seen, item) {
+    observe(caller, seen, item, itemId) {
       record(caller, { requests: 1, complexity: seen.complexity ?? 0 }, item);
+      if (itemId !== undefined) options.countItem?.(itemId);
       if (Object.values(seen).some((value) => value !== null)) budget = seen;
     },
     limited(caller, error) {

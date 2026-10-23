@@ -358,7 +358,7 @@ function viewRuns(
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "runs", id: null })}">Runs</a><span>/</span>${itemLink(item)}<span>/</span><span class="mono">${esc(selected.id)}</span></nav>
     <header class="run-heading"><div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}<span class="mono muted">${esc(snapshot.project.repo)}${item?.branch ? ` · ${esc(item.branch)}` : ""}</span></div>
       <h1>${esc(title)}</h1>
-      <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}</p>
+      <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}${item?.linearRequests === undefined ? "" : ` · ${item.linearRequests} Linear request${item.linearRequests === 1 ? "" : "s"}`}</p>
     </header>
     ${phaseStrip(item, selected, verdict, agent)}
     ${item ? queueNotice(item) : ""}

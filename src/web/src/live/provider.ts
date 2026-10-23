@@ -48,6 +48,7 @@ import {
   listCiRounds,
   listCloseoutRounds,
   listEvidence,
+  linearRequestsByItem,
   listIntakeQueue,
   listJobs,
   listLinearTurnsForItem,
@@ -255,8 +256,9 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
       ];
     }),
   );
-  const items = records.map((record) =>
-    toItem(
+  const linearRequests = linearRequestsByItem(db);
+  const items = records.map((record) => ({
+    ...toItem(
       db,
       record,
       rows,
@@ -268,7 +270,8 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
       merging,
       jobs,
     ),
-  );
+    linearRequests: linearRequests.get(record.id) ?? 0,
+  }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
   return {

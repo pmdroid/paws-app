@@ -76,6 +76,7 @@ export function openLinear(options: {
   progressReporter?: (event: AcceptedLinearEvent) => TrackerAdapter["postProgress"];
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
   submitCommand?: (command: LinearCommand) => void;
+  countItemRequest?: (itemId: string) => void;
   fetch?: FetchLike;
   spawn?: SpawnFn;
 }): OpenLinear {
@@ -96,7 +97,7 @@ export function openLinear(options: {
     isAuthorized: accessAllowed,
     fetch: options.fetch,
   });
-  const ledger = createLinearLedger();
+  const ledger = createLinearLedger({ countItem: options.countItemRequest });
   const client = auth.hasToken()
     ? createLinearClient({ auth, fetch: options.fetch, ledger })
     : null;
