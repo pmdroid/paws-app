@@ -3776,6 +3776,7 @@ test("an unreadable CI read retries the merge job and fails the task with the re
     home: layout.home,
     tracker,
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    retryBaseMs: 10,
     github: {
       appId: "1",
       installationId: "2",
@@ -3822,7 +3823,9 @@ test("an unreadable CI read retries the merge job and fails the task with the re
     expect(reads, debug(layout, db)).toBe(6);
     expect(
       tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
-    ).toEqual(["Stopped after 2 attempts. could not read GitHub CI and review threads"]);
+    ).toEqual([
+      `Stopped after 2 attempts. could not read GitHub CI and review threads. The accepted work is on branch \`${branchOf(db, "ENG-93")}\`.`,
+    ]);
     expect(
       listJobs(db)
         .filter((job) => job.queue === JOB_KIND.merge)
@@ -3921,7 +3924,13 @@ test.each([
       );
       expect(
         tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
-      ).toEqual(outcome === "merges" ? [] : ["Stopped after 2 attempts. The operation timed out."]);
+      ).toEqual(
+        outcome === "merges"
+          ? []
+          : [
+              `Stopped after 2 attempts. The operation timed out. The accepted work is on branch \`${branchOf(db, "ENG-94")}\`.`,
+            ],
+      );
       expect(
         listJobs(db)
           .filter((job) => job.queue === JOB_KIND.reverify)
@@ -4527,6 +4536,10 @@ function queuedSummaries(db: Database): () => string[] {
       .query<{ summary: string }, []>("SELECT summary FROM queued_summary ORDER BY rowid")
       .all()
       .map((row) => row.summary);
+}
+
+function branchOf(db: Database, identifier: string): string {
+  return listWorkItems(db).find((entry) => entry.linearIdentifier === identifier)?.branchName ?? "";
 }
 
 function debug(layout: { pawsRoot: string }, db: Database): string {
