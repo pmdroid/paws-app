@@ -217,6 +217,8 @@ export type CapOutcome = {
   capped: boolean;
   /** Closeout had accepted the work, so the cap asked in Linear instead of failing. */
   asked?: boolean;
+  /** The agent's run ended at the time limit: the caller must stop the live agent. */
+  stopAgent?: boolean;
   item: WorkItemRecord;
 };
 
@@ -282,9 +284,10 @@ function enforceCaps(db: Database, id: string, now: number): CapOutcome {
   if (reason === null) return { capped: false, item: updated };
   if (reason === "time" && updated.acceptedHead !== null) {
     if (updated.state !== "running") return { capped: false, item: updated };
-    if (askTimeLimit(db, updated, now)) return { capped: false, asked: true, item: refetch() };
+    if (askTimeLimit(db, updated, now))
+      return { capped: false, asked: true, stopAgent: true, item: refetch() };
     pauseAtTimeLimit(db, updated, now);
-    return { capped: false, item: refetch() };
+    return { capped: false, stopAgent: true, item: refetch() };
   }
   failForCap(db, updated, reason, now);
   return { capped: true, item: refetch() };
@@ -370,6 +373,7 @@ function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean 
         "SELECT 1 FROM question WHERE session_id = ? AND status = 'open' AND cancelled_at IS NULL",
       )
       .get(sessionId) !== null;
+  cancelOpenJobs(db, { itemId: item.id, reason: "time_limit", now });
   applyWorkItemEvent(db, item.id, "blocking_question");
   if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "awaiting_input" });
   if (item.currentRunId !== null) {
