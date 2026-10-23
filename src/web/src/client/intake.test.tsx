@@ -144,6 +144,29 @@ describe("intake queue and Linear budget on the overview", () => {
     expect(classNames(html, "overview-section").length).toBeGreaterThan(0);
   });
 
+  test("a webhook Linear may have disabled is a warning with the fix, on desktop and at 390 px", () => {
+    const snapshot = demoStatus();
+    snapshot.generatedAt = NOW;
+    snapshot.linearWebhook = {
+      warning:
+        "Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered.",
+      fix: "In Linear, open Settings > API > Applications > Paws, re-enable its webhook.",
+      lastVerifiedAt: at(40 * 60),
+    };
+    const html = overview(snapshot);
+    expect(html).toContain('<h2 id="intake-heading">Intake</h2>');
+    expect(html).toContain(
+      '<p class="settings-message" role="alert">Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered. Last verified delivery 40 min ago. In Linear, open Settings &gt; API &gt; Applications &gt; Paws, re-enable its webhook.</p>',
+    );
+    const narrow = renderToStaticMarkup(<>{themedMarkup(html)}</>);
+    const [warning] = classNames(narrow, "settings-message");
+    expect(warning).toContain("break-words");
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.snapshot.linearWebhook).toEqual(snapshot.linearWebhook);
+    expect(overview(demoStatus())).not.toContain('role="alert"');
+  });
+
   test("the status contract carries the queue and budget and rejects a bad timestamp", () => {
     const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(burst())));
     if (!parsed.ok) throw new Error(parsed.error);

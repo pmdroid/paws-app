@@ -2,6 +2,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import { MISSING_GITHUB_CLIENT_ID_MESSAGE, missingGitHubClientId } from "../auth";
 import { loadEnv, pawsPaths, type EnvSource } from "../config";
+import { describeLinearWebhookWarning, LINEAR_WEBHOOK_FIX, type LinearWebhookWarning } from "../db";
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
 import type { GrokLoginStatus } from "../install";
 import { realProbeFacts, type GitHubDoctorFacts, type ProbeFacts } from "./probe";
@@ -111,6 +112,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
         env.linearWebhookSecret !== null ? "secret configured" : "LINEAR_WEBHOOK_SECRET is empty",
         FIX.webhook,
       ),
+      ...(facts.linearWebhook === undefined ? [] : [webhookDeliveryCheck(facts.linearWebhook)]),
       check(
         "public-url",
         facts.publicUrl !== null && facts.publicUrl.startsWith("https://"),
@@ -335,6 +337,17 @@ function grokCheck(status: GrokLoginStatus | null | undefined): DoctorCheck {
 
 function note(name: string, detail: string): DoctorCheck {
   return { name, ok: true, detail, note: true };
+}
+
+function webhookDeliveryCheck(warning: LinearWebhookWarning | null): DoctorCheck {
+  return warning === null
+    ? check("linear-webhook-delivery", true, "no sign Linear disabled the webhook")
+    : check(
+        "linear-webhook-delivery",
+        false,
+        describeLinearWebhookWarning(warning),
+        LINEAR_WEBHOOK_FIX,
+      );
 }
 
 function check(name: string, ok: boolean, detail: string, fix?: string): DoctorCheck {

@@ -427,3 +427,10 @@ export type {
 } from "./skills";
 export { deleteHook, listHooks, saveHook } from "./hooks";
 export { listIntakeQueue, type IntakeQueueEntry } from "./intake-queue";
+export {
+  LINEAR_WEBHOOK_FIX,
+  LINEAR_WEBHOOK_SILENCE_MS,
+  describeLinearWebhookWarning,
+  linearWebhookWarning,
+  type LinearWebhookWarning,
+} from "./linear-webhook";

@@ -412,6 +412,7 @@ export interface StatusSnapshot {
   ciRounds?: StatusCiRound[];
   intake?: StatusIntakeEntry[];
   linearBudget?: StatusLinearBudget;
+  linearWebhook?: StatusLinearWebhook;
 }
 
 export interface StatusIntakeEntry {
@@ -421,6 +422,12 @@ export interface StatusIntakeEntry {
   attempts: number;
   nextAttemptAt: string | null;
   lastError: string | null;
+}
+
+export interface StatusLinearWebhook {
+  warning: string;
+  fix: string;
+  lastVerifiedAt: string;
 }
 
 export interface StatusLinearBudget {
@@ -591,6 +598,18 @@ function readSnapshot(input: unknown): StatusSnapshot {
     ...(body.linearBudget === undefined || body.linearBudget === null
       ? {}
       : { linearBudget: readLinearBudget(body.linearBudget, "linearBudget") }),
+    ...(body.linearWebhook === undefined || body.linearWebhook === null
+      ? {}
+      : { linearWebhook: readLinearWebhook(body.linearWebhook, "linearWebhook") }),
+  };
+}
+
+function readLinearWebhook(input: unknown, path: string): StatusLinearWebhook {
+  const body = object(input, path);
+  return {
+    warning: text(body, "warning", path),
+    fix: text(body, "fix", path),
+    lastVerifiedAt: dateString(body, "lastVerifiedAt", path),
   };
 }
 
