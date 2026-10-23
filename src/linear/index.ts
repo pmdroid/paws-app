@@ -85,14 +85,12 @@ export {
 export type { FetchLike, LinearAuth, LinearEnv, StoredLinearToken } from "./oauth";
 export {
   LOW_BUDGET_FRACTION,
-  POLL_INTERVAL_ACTIVE_MS,
-  POLL_INTERVAL_IDLE_MS,
+  POLL_INTERVAL_FAILING_MS,
   POLL_INTERVAL_LOW_BUDGET_MS,
   POLL_INTERVAL_WEBHOOK_MS,
   WAKE_GAP_MS,
-  WEBHOOK_HEALTHY_MS,
+  WEBHOOK_FAILURES_FAILING,
   createTimerSleeper,
-  linearWorkIsHot,
   persistStopCommand,
   pollIntervalMs,
   sleepGapMs,
@@ -134,6 +132,7 @@ export {
   handleLinearWebhook,
   lastVerifiedWebhookMs,
   parseAgentEvent,
+  webhookVerificationFailures,
 } from "./webhook";
 export type { LinearWebhookDeps, SignatureCheck, SignatureInput } from "./webhook";
 export { createSessionStarter } from "./start-session";

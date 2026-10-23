@@ -6,12 +6,11 @@ import { intakeDelegatedIssue } from "../src/intake";
 import { configureWorkItem, insertQueuedItem } from "../src/db";
 import { RunnerSlotsBusyError } from "../src/core";
 import {
-  POLL_INTERVAL_ACTIVE_MS,
-  POLL_INTERVAL_IDLE_MS,
+  POLL_INTERVAL_FAILING_MS,
   POLL_INTERVAL_LOW_BUDGET_MS,
   POLL_INTERVAL_WEBHOOK_MS,
   WAKE_GAP_MS,
-  WEBHOOK_HEALTHY_MS,
+  WEBHOOK_FAILURES_FAILING,
   createInboxStore,
   handleLinearWebhook,
   lastVerifiedWebhookMs,
@@ -23,7 +22,6 @@ import {
   linearBudget,
   createLinearLedger,
   type LinearLedger,
-  linearWorkIsHot,
   openLinear,
   pollIntervalMs,
   sleepGapMs,
@@ -356,14 +354,13 @@ describe("linear intake poll", () => {
       },
       store: createInboxStore(db),
       onEvent: () => {},
-      hot: () => false,
       sleeper: recordingSleeper(waits, hold()),
       now: () => NOW,
     });
     try {
       await waitFor(() => waits.length > 0);
       expect(errors.mock.calls.map((call) => String(call[0]))).toContain(
-        "linear intake poll rate-limited; retrying in 42s: Linear GraphQL: RATELIMITED",
+        "linear intake poll rate-limited; retrying in 60s: Linear GraphQL: RATELIMITED",
       );
     } finally {
       errors.mockRestore();
@@ -372,75 +369,49 @@ describe("linear intake poll", () => {
     }
   });
 
-  test("waits 5s while work is active and 15s while idle", async () => {
-    expect(pollIntervalMs(true)).toBe(POLL_INTERVAL_ACTIVE_MS);
-    expect(pollIntervalMs(false)).toBe(POLL_INTERVAL_IDLE_MS);
-    expect(pollIntervalMs(true)).toBe(5_000);
-    expect(pollIntervalMs(true, { now: NOW, lastWebhookMs: NOW - 30 * 60_000 })).toBe(
-      POLL_INTERVAL_WEBHOOK_MS,
-    );
-    expect(pollIntervalMs(false)).toBe(15_000);
+  test("polls once a minute without a verified webhook, never faster", () => {
+    expect(pollIntervalMs({ now: NOW, lastWebhookMs: null })).toBe(POLL_INTERVAL_FAILING_MS);
+    expect(POLL_INTERVAL_FAILING_MS).toBe(60_000);
     expect(
       sleepGapMs({ previousWallMs: 0, previousMonoMs: 0, wallMs: 120_000, monoMs: 1_000 }),
     ).toBeGreaterThan(WAKE_GAP_MS);
     expect(webhookChecksNeeded({})).toBe(false);
     expect(webhookChecksNeeded({ LINEAR_WEBHOOKS: "true" })).toBe(true);
     expect(webhookChecksNeeded({ LINEAR_WEBHOOKS: "1" })).toBe(true);
-
-    const db = tempDb();
-    const store = createInboxStore(db);
-    let hot = false;
-    const waits: number[] = [];
-    const gate = hold();
-    const poller = startCatchUpPoller({
-      source: sourceFrom(async () => emptyPage()),
-      store,
-      onEvent: () => {},
-      hot: () => hot,
-      sleeper: recordingSleeper(waits, gate),
-      now: () => NOW,
-      mono: () => 0,
-    });
-    await waitFor(() => waits.length > 0);
-    expect(waits).toEqual([POLL_INTERVAL_IDLE_MS]);
-    hot = true;
-    gate.release?.();
-    await waitFor(() => waits.length > 1);
-    expect(waits[1]).toBe(POLL_INTERVAL_ACTIVE_MS);
-    await poller.stop();
-    await poller.settled;
-    db.close();
   });
 
-  test("backs off to a 10 to 15 minute backstop while verified webhooks arrive and 5 minutes on a low budget", () => {
+  test("keeps a 10 to 15 minute backstop unless webhooks look broken, and 5 minutes on a low budget", () => {
     expect(POLL_INTERVAL_WEBHOOK_MS).toBeGreaterThanOrEqual(10 * 60_000);
     expect(POLL_INTERVAL_WEBHOOK_MS).toBeLessThanOrEqual(15 * 60_000);
     expect(3_600_000 / POLL_INTERVAL_WEBHOOK_MS).toBeLessThanOrEqual(10);
-    const fresh = { now: NOW, lastWebhookMs: NOW - WEBHOOK_HEALTHY_MS + 1 };
-    expect(pollIntervalMs(true, fresh)).toBe(POLL_INTERVAL_WEBHOOK_MS);
-    expect(pollIntervalMs(false, fresh)).toBe(POLL_INTERVAL_WEBHOOK_MS);
-
-    const stale = { now: NOW, lastWebhookMs: NOW - WEBHOOK_HEALTHY_MS };
-    expect(pollIntervalMs(true, stale)).toBe(POLL_INTERVAL_ACTIVE_MS);
-    expect(pollIntervalMs(false, stale)).toBe(POLL_INTERVAL_IDLE_MS);
-    expect(pollIntervalMs(true, { now: NOW, lastWebhookMs: null, budget: null })).toBe(5_000);
+    const quiet = { now: NOW, lastWebhookMs: NOW - 24 * 3_600_000 };
+    expect(pollIntervalMs(quiet)).toBe(POLL_INTERVAL_WEBHOOK_MS);
+    expect(pollIntervalMs({ ...quiet, webhookFailures: WEBHOOK_FAILURES_FAILING - 1 })).toBe(
+      POLL_INTERVAL_WEBHOOK_MS,
+    );
+    expect(pollIntervalMs({ ...quiet, webhookFailures: WEBHOOK_FAILURES_FAILING })).toBe(
+      POLL_INTERVAL_FAILING_MS,
+    );
+    expect(pollIntervalMs({ ...quiet, missedDeliveryMs: NOW })).toBe(POLL_INTERVAL_FAILING_MS);
+    expect(pollIntervalMs({ ...quiet, missedDeliveryMs: quiet.lastWebhookMs - 1 })).toBe(
+      POLL_INTERVAL_WEBHOOK_MS,
+    );
 
     const low = rateBudget({
       requestsRemaining: 199,
       requestsLimit: 1_000,
       requestsResetMs: NOW + 1,
     });
-    expect(pollIntervalMs(true, { now: NOW, budget: low })).toBe(POLL_INTERVAL_LOW_BUDGET_MS);
-    expect(pollIntervalMs(false, { now: NOW, budget: low, lastWebhookMs: NOW })).toBe(
-      POLL_INTERVAL_WEBHOOK_MS,
-    );
-    expect(pollIntervalMs(true, { now: NOW + 1, budget: low })).toBe(POLL_INTERVAL_ACTIVE_MS);
+    const broken = { now: NOW, lastWebhookMs: null };
+    expect(pollIntervalMs({ ...broken, budget: low })).toBe(POLL_INTERVAL_LOW_BUDGET_MS);
+    expect(pollIntervalMs({ ...quiet, budget: low })).toBe(POLL_INTERVAL_WEBHOOK_MS);
+    expect(pollIntervalMs({ ...broken, now: NOW + 1, budget: low })).toBe(POLL_INTERVAL_FAILING_MS);
     const enough = rateBudget({ requestsRemaining: 200, requestsLimit: 1_000 });
-    expect(pollIntervalMs(false, { now: NOW, budget: enough })).toBe(POLL_INTERVAL_IDLE_MS);
-    expect(pollIntervalMs(false, { now: NOW, budget: rateBudget({}) })).toBe(POLL_INTERVAL_IDLE_MS);
+    expect(pollIntervalMs({ ...broken, budget: enough })).toBe(POLL_INTERVAL_FAILING_MS);
+    expect(pollIntervalMs({ ...broken, budget: rateBudget({}) })).toBe(POLL_INTERVAL_FAILING_MS);
   });
 
-  test("waits out the backstop interval after a verified webhook and keeps today's intervals without one", async () => {
+  test("waits out the backstop interval after a verified webhook and keeps it through a quiet hour", async () => {
     const db = tempDb();
     const store = createInboxStore(db);
     const waits: number[] = [];
@@ -450,13 +421,12 @@ describe("linear intake poll", () => {
       source: sourceFrom(async () => emptyPage()),
       store,
       onEvent: () => {},
-      hot: () => true,
       sleeper: recordingSleeper(waits, gate),
       now: () => clock,
       mono: () => clock - NOW,
     });
     await waitFor(() => waits.length > 0);
-    expect(waits[0]).toBe(POLL_INTERVAL_ACTIVE_MS);
+    expect(waits[0]).toBe(POLL_INTERVAL_FAILING_MS);
 
     const body = JSON.stringify({
       type: "AgentSessionEvent",
@@ -483,10 +453,10 @@ describe("linear intake poll", () => {
     await waitFor(() => waits.length > 1);
     expect(waits[1]).toBe(POLL_INTERVAL_WEBHOOK_MS);
 
-    clock = NOW + WEBHOOK_HEALTHY_MS;
+    clock = NOW + 2 * 3_600_000;
     gate.release?.();
     await waitFor(() => waits.length > 2);
-    expect(waits[2]).toBe(POLL_INTERVAL_ACTIVE_MS);
+    expect(waits[2]).toBe(POLL_INTERVAL_WEBHOOK_MS);
     await poller.stop();
     await poller.settled;
     db.close();
@@ -519,7 +489,6 @@ describe("linear intake poll", () => {
       },
       store,
       onEvent: () => {},
-      hot: () => false,
       sleeper: recordingSleeper(waits, gate),
       now: () => clock,
       mono: () => clock - NOW,
@@ -531,7 +500,7 @@ describe("linear intake poll", () => {
     clock = NOW + 600_000;
     gate.release?.();
     await waitFor(() => waits.length > 1);
-    expect(waits[1]).toBe(POLL_INTERVAL_IDLE_MS);
+    expect(waits[1]).toBe(POLL_INTERVAL_FAILING_MS);
     await poller.stop();
     await poller.settled;
     db.close();
@@ -557,7 +526,6 @@ describe("linear intake poll", () => {
       onEvent: (event) => {
         seen.push(event.issueId ?? "");
       },
-      hot: () => false,
       sleeper: blockedSleeper(),
       now: () => NOW,
     });
@@ -594,7 +562,6 @@ describe("linear intake poll", () => {
         });
         if (result.ok) identifiers = result.items.map((item) => item.linearIdentifier);
       },
-      hot: () => false,
       sleeper: blockedSleeper(),
       now: () => NOW,
     });
@@ -622,7 +589,6 @@ describe("linear intake poll", () => {
       onEvent: (event) => {
         seen.push(event.dedupeKey);
       },
-      hot: () => false,
       sleeper: blockedSleeper(),
       now: () => NOW,
     });
@@ -638,7 +604,6 @@ describe("linear intake poll", () => {
       onEvent: (event) => {
         seen.push(event.dedupeKey);
       },
-      hot: () => false,
       sleeper: blockedSleeper(),
       now: () => NOW,
     });
@@ -703,7 +668,6 @@ describe("linear intake poll", () => {
       onEvent: (event) => {
         seen.push(event.issueId ?? "");
       },
-      hot: () => false,
       sleeper: recordingSleeper(waits, gate),
       now: () => NOW,
     });
@@ -778,7 +742,6 @@ describe("linear intake poll", () => {
       submitCommand: (command) => {
         commands.push({ type: command.type, itemId: command.itemId });
       },
-      hot: () => false,
       sleeper: recordingSleeper(waits, gate),
       now: () => NOW,
     });
@@ -828,7 +791,6 @@ describe("linear intake poll", () => {
       submitCommand: (command) => {
         commands.push({ type: command.type, itemId: command.itemId });
       },
-      hot: () => false,
       sleeper: recordingSleeper(waits, gate),
       now: () => NOW,
     });
@@ -842,20 +804,6 @@ describe("linear intake poll", () => {
     expect(commands).toEqual([{ type: "stop", itemId: item!.id }]);
     await poller.stop();
     await poller.settled;
-    db.close();
-  });
-
-  test("an open question counts as active work", () => {
-    const db = tempDb();
-    expect(linearWorkIsHot(db)).toBe(false);
-    db.run(
-      `INSERT INTO question (
-         id, item_id, session_id, body, status, created_at
-       ) VALUES ('q1', 'item-1', 'ses', 'which?', 'open', 1)`,
-    );
-    expect(linearWorkIsHot(db)).toBe(true);
-    db.run("UPDATE question SET status = 'answered' WHERE id = 'q1'");
-    expect(linearWorkIsHot(db)).toBe(false);
     db.close();
   });
 
