@@ -19,6 +19,8 @@ export type {
   SkillResolverOptions,
 } from "./resolve";
 export { skillFolders } from "./discover";
+export { skillHooks } from "./hooks";
+export type { SkillHook } from "./hooks";
 export type { SkillFolder } from "./discover";
 export {
   addSkill,
