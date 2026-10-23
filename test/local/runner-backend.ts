@@ -652,6 +652,50 @@ export async function probeRunnerBackend(
         afterEvents,
       },
     );
+    await git(["-C", source, "reset", "--hard", base]);
+    const accepted = item();
+    const acceptedShutdown = new AbortController();
+    const beforeExpiry = backend.forItem(accepted.id)(
+      input(accepted, { signal: acceptedShutdown.signal }),
+    );
+    void beforeExpiry.catch(() => undefined);
+    const acceptedCommand = await next();
+    if (acceptedCommand.type !== "run") throw new Error("Expected an implementation run");
+    results.submit({
+      runnerId,
+      runId: acceptedCommand.runId,
+      generation: acceptedCommand.generation,
+      token: work.issueGrant({
+        runnerId,
+        runId: acceptedCommand.runId,
+        commandId: acceptedCommand.id,
+        generation: acceptedCommand.generation,
+      }).token,
+      result: { ...result(acceptedCommand), candidateSha: head },
+    });
+    acceptedShutdown.abort(new PawsShutdown());
+    await beforeExpiry.catch(() => undefined);
+    now += 60_001;
+    const fetchedBeforeExpiry = fetched;
+    const recovered = await backend
+      .forItem(accepted.id)(input(accepted))
+      .catch((error: unknown) => error);
+    const recoveredFetches = fetched - fetchedBeforeExpiry;
+    fetched = fetchedBeforeExpiry;
+    const placedAgain = work.commands(runnerId).length > 0;
+    work.heartbeat(runnerId);
+    observe(
+      "a result accepted before the lease expired is consumed after a restart without another execution",
+      !placedAgain &&
+        recoveredFetches === 1 &&
+        !(recovered instanceof Error) &&
+        (recovered as { stopReason?: string }).stopReason === "end_turn",
+      {
+        placedAgain,
+        recoveredFetches,
+        recovered: recovered instanceof Error ? recovered.message : recovered,
+      },
+    );
     const reviewer = item();
     let text = "";
     const reviewed = backend.forItem(reviewer.id)(
