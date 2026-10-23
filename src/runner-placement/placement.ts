@@ -10,7 +10,6 @@ import {
   delegatedLinearUserId,
   workspaceMember,
 } from "../db";
-import type { LinearIssueLifecycle, LinearIssueOwnership, TrackerAdapter } from "../linear";
 import type { PlacementRequest, RunnerPlacement } from "./index";
 import { quotaSignal } from "./quota";
 
@@ -18,7 +17,6 @@ type Candidate = {
   id: string;
   workspaceId: string;
   ownerId: string;
-  linearUserId: string;
   sharing: number;
   ready: number;
   authExpired: number;
@@ -34,8 +32,6 @@ export const SESSION_GRACE_MS = 2 * 60_000;
 
 export function createRunnerPlacement(options: {
   db: Database;
-  lifecycle: LinearIssueLifecycle;
-  tracker: Pick<TrackerAdapter, "listProjectMembers">;
   sessionActor?: (sessionId: string) => string | undefined;
   now?: () => number;
 }): RunnerPlacement {
@@ -155,42 +151,21 @@ export function createRunnerPlacement(options: {
     async candidates(input) {
       input.signal?.throwIfAborted();
       if (!input.profile) throw new Error("Runner agent profile is required");
-      const before = scope(input);
-      const binding = authority(before);
-      const issue = await options.lifecycle.inspect(before.issueId, { signal: input.signal });
-      const projectMembers =
-        issue.projectId && options.tracker.listProjectMembers
-          ? await options.tracker
-              .listProjectMembers(issue.projectId, { signal: input.signal })
-              .catch(() => {
-                input.signal?.throwIfAborted();
-                return [];
-              })
-          : [];
-      const verified = await options.lifecycle.inspect(before.issueId, { signal: input.signal });
-      input.signal?.throwIfAborted();
-      if (JSON.stringify(owners(verified)) !== JSON.stringify(owners(issue)))
-        throw new Error("Runner issue ownership changed during selection");
       const current = scope(input);
-      if (
-        authority(current) !== binding ||
-        issue.id !== current.issueId ||
-        ["canceled", "completed"].includes(verified.stateType)
-      )
-        throw new Error("Runner issue authority changed");
-      const sessionTeam = db
+      const binding = authority(current);
+      const teamId = db
         .query<{ teamId: string | null }, [string]>(
           "SELECT team_id AS teamId FROM linear_session WHERE session_id=?",
         )
         .get(current.session.sessionId)?.teamId;
-      if (sessionTeam !== issue.teamId) throw new Error("Runner issue team changed");
+      if (!teamId) throw new Error("Runner issue team is unavailable");
       if (
         current.repository &&
         !db
           .query(`SELECT 1 WHERE ${teamRepositoryAllowedSql("?1", "?2", "lower(?3)")}`)
           .get(
             current.workspace.id,
-            issue.teamId,
+            teamId,
             `${current.repository.owner}/${current.repository.repo}`.toLowerCase(),
           )
       )
@@ -209,19 +184,27 @@ export function createRunnerPlacement(options: {
       const at = now();
       const rows = db
         .query<Candidate, [string, string, number]>(
-          `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerId,u.linear_user_id AS linearUserId,
+          `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerId,
          COALESCE(p.sharing,0) AS sharing,
          COALESCE(a.ready,0) AS ready,COALESCE(a.auth_expired,0) AS authExpired,
          COALESCE(a.quota_state,'ok') AS quotaState,COALESCE(a.cooldown_until,0) AS cooldownUntil,
          COALESCE(a.virtual_finish,0) AS virtualFinish,COALESCE(a.last_used_at,0) AS lastUsedAt,a.resolved_model AS resolvedModel
          FROM runner r JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-         JOIN workspace_user u ON u.id=m.user_id LEFT JOIN runner_policy p ON p.runner_id=r.id
+         LEFT JOIN runner_policy p ON p.runner_id=r.id
          LEFT JOIN runner_agent_policy a ON a.runner_id=r.id AND a.agent=?
          WHERE r.workspace_id=? AND r.status='active' AND r.revoked_at IS NULL AND m.active=1
          AND m.role<>'observer' AND r.last_seen_at>?
          AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL))`,
         )
         .all(input.profile?.agent ?? "", current.workspace.id, at - 60_000);
+      const projectMembers = current.placement?.projectApprovalId
+        ? db
+            .query<{ id: string }, [string]>(
+              "SELECT actor_id AS id FROM project_approval WHERE id=?1 UNION SELECT lead_user_id FROM project_approval WHERE id=?1",
+            )
+            .all(current.placement.projectApprovalId)
+            .map((row) => row.id)
+        : [];
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(
@@ -246,19 +229,11 @@ export function createRunnerPlacement(options: {
         const member = workspaceMember(db, current.workspace.id, runner.ownerId);
         if (
           !member ||
-          (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(issue.teamId))
+          (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(teamId))
         )
           return [];
-        const legacyOwn =
-          issue.assigneeId === runner.linearUserId ||
-          (input.purpose === "helper" && runner.ownerId === requester);
-        const legacyShared = runner.sharing === 1 && projectMembers.includes(runner.linearUserId);
-        const projectItem = current.placement?.projectApprovalId != null;
-        const own =
-          current.placement && (projectItem || current.placement.ownerUserId)
-            ? runner.ownerId === current.placement.ownerUserId
-            : legacyOwn;
-        const shared = current.placement?.ownerUserId && !projectItem ? false : legacyShared;
+        const own = runner.ownerId === (current.placement?.ownerUserId ?? requester);
+        const shared = runner.sharing === 1 && projectMembers.includes(runner.ownerId);
         if (!own && !shared) return [];
         if (
           input.profile &&
@@ -289,7 +264,7 @@ export function createRunnerPlacement(options: {
         } else {
           const waiting = sessionWaits.get(input.itemId);
           const since =
-            waiting?.runnerId === holder.runner.id && at - waiting.seen < 60_000
+            waiting?.runnerId === holder.runner.id && at - waiting.seen < SESSION_GRACE_MS
               ? waiting.since
               : at;
           sessionWaits.set(input.itemId, { runnerId: holder.runner.id, since, seen: at });
@@ -472,8 +447,4 @@ export function createRunnerPlacement(options: {
       });
     },
   };
-}
-
-function owners({ stateType: _, ...rest }: LinearIssueOwnership) {
-  return rest;
 }

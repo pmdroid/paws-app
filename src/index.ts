@@ -610,15 +610,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
-  const placement =
-    linear?.tracker && linear.issueLifecycle
-      ? createRunnerPlacement({
-          db,
-          tracker: linear.tracker,
-          lifecycle: linear.issueLifecycle,
-          sessionActor: projectExecution.actor,
-        })
-      : undefined;
+  const placement = linear
+    ? createRunnerPlacement({ db, sessionActor: projectExecution.actor })
+    : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
