@@ -2199,4 +2199,14 @@ ALTER TABLE visual_review ADD COLUMN feedback TEXT;
 ALTER TABLE visual_review ADD COLUMN head_commit TEXT;
 `,
   },
+  {
+    id: "103_project_approval_member",
+    sql: `
+CREATE TABLE project_approval_member (
+  approval_id TEXT NOT NULL REFERENCES project_approval(id),
+  linear_user_id TEXT NOT NULL,
+  PRIMARY KEY(approval_id, linear_user_id)
+) STRICT;
+`,
+  },
 ];

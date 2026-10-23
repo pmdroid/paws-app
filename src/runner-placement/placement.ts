@@ -200,7 +200,8 @@ export function createRunnerPlacement(options: {
       const projectMembers = current.placement?.projectApprovalId
         ? db
             .query<{ id: string }, [string]>(
-              "SELECT actor_id AS id FROM project_approval WHERE id=?1 UNION SELECT lead_user_id FROM project_approval WHERE id=?1",
+              `SELECT actor_id AS id FROM project_approval WHERE id=?1 UNION SELECT lead_user_id FROM project_approval WHERE id=?1
+               UNION SELECT u.id FROM project_approval_member m JOIN workspace_user u ON u.linear_user_id=m.linear_user_id WHERE m.approval_id=?1`,
             )
             .all(current.placement.projectApprovalId)
             .map((row) => row.id)
