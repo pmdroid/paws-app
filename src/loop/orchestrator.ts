@@ -248,9 +248,14 @@ import {
   renderLinearSessionContext,
 } from "../linear";
 import {
+  answer as answerAsked,
   answerer,
   answerQuestion,
+  ask,
   canAnswer,
+  cancelItemQuestions,
+  cancelQuestion,
+  findAskedQuestion,
   elicitationBody,
   findOpenQuestion,
   handoffNote,
@@ -263,6 +268,7 @@ import {
   visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
   VISUAL_REVIEW_DESCRIBE,
+  type AnswerEffects,
   type StoredQuestion,
   type StoredVisualReview,
 } from "../questions";
@@ -462,8 +468,6 @@ export const REBASE_CONFLICT_INSTRUCTION =
 const REBASE_CONFLICT_THOUGHT =
   "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
 
-type AnswerWaiter = (answer: string) => void;
-
 /**
  * One process loop: intake, one item at a time, ACP, Closeout, pull request, serial merge.
  * Linear effects go through the outbox. State changes go through `transition()`.
@@ -472,7 +476,15 @@ export class Orchestrator {
   readonly bus = new CommandBus();
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
-  private readonly waiters = new Map<string, AnswerWaiter>();
+  private readonly answerEffects: AnswerEffects = {
+    "runner-wait": (question) => {
+      if (
+        question.answerEventKey !== null &&
+        getWorkItem(this.db, question.itemId)?.sessionKey === question.sessionId
+      )
+        applyLinearTurns(this.db, question.sessionId, [question.answerEventKey], question.itemId);
+    },
+  };
   private readonly askedRuns = new Set<string>();
   private readonly live = new Map<
     string,
@@ -2490,6 +2502,10 @@ export class Orchestrator {
         void this.flush().catch(() => {});
       },
       ask: (runner, reason) => this.askRunnerWait(item, runId, runner.name, reason),
+      asked: () => {
+        const asked = findAskedQuestion(this.db, runId, "runner-wait");
+        return asked === null ? null : this.runnerWaitQuestion(asked.id);
+      },
       ...(pollMs === undefined ? {} : { pollMs }),
       ...(askAfterMs === undefined ? {} : { askAfterMs }),
     });
@@ -2505,59 +2521,26 @@ export class Orchestrator {
     runnerName: string,
     reason: string,
   ): RunnerWaitQuestion {
-    const pending: RunnerWaitQuestion = { answer: new Promise<string>(() => {}), cancel() {} };
     const sessionId = this.activitySession(item);
-    if (sessionId === null) return pending;
+    if (sessionId === null) return { answer: () => null, cancel() {} };
     const minutes = Math.round((this.options.runnerWait?.askAfterMs ?? 30 * 60_000) / 60_000);
     const body = `Runner ${runnerName} has been unavailable for ${minutes} minutes, so Closeout for ${item.linearIdentifier} has not started. Move the task to another runner, or keep waiting?`;
-    const options = [MOVE_TO_ANOTHER_RUNNER, KEEP_WAITING];
-    const opened = immediate(this.db, () => {
-      const open = findOpenQuestion(this.db, sessionId);
-      // A wait question from before a restart has nobody waiting for its answer.
-      if (
-        open !== null &&
-        open.itemId === item.id &&
-        !this.waiters.has(open.id) &&
-        JSON.stringify(open.options) === JSON.stringify(options)
-      )
-        this.db.run("UPDATE question SET cancelled_at=? WHERE id=?", [this.now(), open.id]);
-      else if (open !== null) return null;
-      const stored = openQuestion(this.db, {
-        itemId: item.id,
-        runId,
-        sessionId,
-        body,
-        options,
-        now: this.now(),
-      });
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "elicitation",
-        orderingKey: sessionId,
-        idempotencyKey: `runner-wait:${stored.id}`,
-        payload: {
-          id: stored.id,
-          sessionId,
-          questionId: stored.id,
-          body: elicitationBody(body, reason),
-          options,
-        },
-        now: this.now(),
-      });
-      return stored;
+    const { question } = ask(this.db, { itemId: item.id, runId, sessionId }, "runner-wait", body, {
+      options: [MOVE_TO_ANOTHER_RUNNER, KEEP_WAITING],
+      context: reason,
+      now: this.now(),
     });
-    if (opened === null) return pending;
-    const answer = new Promise<string>((resolve) => this.waiters.set(opened.id, resolve));
     void this.flush().catch(() => {});
+    return this.runnerWaitQuestion(question.id);
+  }
+
+  private runnerWaitQuestion(id: string): RunnerWaitQuestion {
     return {
-      answer,
-      cancel: () => {
-        this.waiters.delete(opened.id);
-        this.db.run(
-          "UPDATE question SET cancelled_at=? WHERE id=? AND status='open' AND cancelled_at IS NULL",
-          [this.now(), opened.id],
-        );
+      answer: () => {
+        const question = getQuestion(this.db, id);
+        return question?.status === "answered" ? question.answer : null;
       },
+      cancel: () => cancelQuestion(this.db, id, this.now()),
     };
   }
 
@@ -3812,28 +3795,15 @@ export class Orchestrator {
       await this.flush();
       return accepted ? "answered" : "rejected";
     }
-    if (!canAnswer({ kind: recovery ? "closeout-bypass" : "agent" }, user)) return "rejected";
-    const runnerWaiter = recovery ? undefined : this.waiters.get(open.id);
-    if (runnerWaiter) {
-      const accepted = immediate(this.db, () => {
-        if (
-          answerQuestion(this.db, open.id, {
-            answer,
-            answeredBy,
-            eventKey: event.dedupeKey,
-            now: this.now(),
-          }) === null
-        )
-          return false;
-        if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
-          applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
-        return true;
-      });
-      if (!accepted) return "rejected";
-      this.waiters.delete(open.id);
-      runnerWaiter(answer);
+    if (!canAnswer({ kind: recovery ? "closeout-bypass" : open.kind }, user)) return "rejected";
+    if (open.kind === "runner-wait") {
+      const outcome = answerAsked(
+        this.db,
+        { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
+        this.answerEffects,
+      );
       await this.flush();
-      return "answered";
+      return outcome.status === "answered" ? "answered" : "rejected";
     }
     if (recovery) {
       const parsed = parseRecoveryAnswer(answer, recovery.failedChecks);
@@ -3933,8 +3903,7 @@ export class Orchestrator {
       }
       if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
         applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
-      if (this.waiters.has(open.id) || (open.runId !== null && this.askedRuns.has(open.runId)))
-        return "answered" as const;
+      if (open.runId !== null && this.askedRuns.has(open.runId)) return "answered" as const;
       enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
         jobKey: `resume:answer:${open.id}`,
@@ -3948,11 +3917,6 @@ export class Orchestrator {
       });
       return "answered" as const;
     });
-    if (outcome === "answered") {
-      const waiter = this.waiters.get(open.id);
-      this.waiters.delete(open.id);
-      waiter?.(answer);
-    }
     await this.flush();
     return outcome;
   }
@@ -4095,10 +4059,7 @@ export class Orchestrator {
           "UPDATE run SET status='lost',updated_at=? WHERE item_id=? AND status IN ('active','provisioning')",
           [this.now(), itemId],
         );
-        this.db.run(
-          "UPDATE question SET cancelled_at=? WHERE item_id=? AND status='open' AND cancelled_at IS NULL",
-          [this.now(), itemId],
-        );
+        cancelItemQuestions(this.db, itemId, this.now());
 
         saveCheckpoint(
           this.db,

@@ -22,7 +22,7 @@ export function movesToAnotherRunner(answer: string): boolean {
   return /\b(move|another runner)\b/i.test(answer);
 }
 
-export type RunnerWaitQuestion = { answer: Promise<string>; cancel(): void };
+export type RunnerWaitQuestion = { answer(): string | null; cancel(): void };
 
 /**
  * Holds Closeout before it sends work to a paused, revoked or offline runner.
@@ -37,6 +37,7 @@ export async function waitForRunner(input: {
   waiting(reason: string | null): void;
   notify(reason: string): void;
   ask(runner: RunnerAvailability, reason: string): RunnerWaitQuestion;
+  asked?(): RunnerWaitQuestion | null;
   askAfterMs?: number;
   pollMs?: number;
 }): Promise<"available" | "move"> {
@@ -44,8 +45,7 @@ export async function waitForRunner(input: {
   const pollMs = input.pollMs ?? RUNNER_WAIT_POLL_MS;
   let shown: string | null = null;
   let since = 0;
-  let question: RunnerWaitQuestion | undefined;
-  let answer: string | undefined;
+  let question = input.asked?.() ?? undefined;
   try {
     for (;;) {
       const runner = input.runner();
@@ -57,26 +57,18 @@ export async function waitForRunner(input: {
         input.waiting(reason);
         input.notify(reason);
       }
-      if (answer !== undefined) {
+      const answer = question?.answer() ?? null;
+      if (answer !== null) {
         if (movesToAnotherRunner(answer)) return "move";
-        answer = undefined;
         question = undefined;
         since = input.now();
       }
-      if (question === undefined && input.now() - since >= askAfterMs) {
-        const asked = input.ask(runner, reason);
-        question = asked;
-        asked.answer.then(
-          (value) => {
-            if (question === asked) answer = value;
-          },
-          () => {},
-        );
-      }
+      if (question === undefined && input.now() - since >= askAfterMs)
+        question = input.ask(runner, reason);
       await input.sleep(pollMs);
     }
   } finally {
     if (shown !== null) input.waiting(null);
-    if (question !== undefined && answer === undefined) question.cancel();
+    if (question !== undefined && question.answer() === null) question.cancel();
   }
 }

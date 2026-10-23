@@ -25,16 +25,20 @@ test("a paused, revoked or offline runner has a waiting reason", () => {
   );
 });
 
-function harness(states: RunnerAvailability[], answers: string[] = []) {
+function harness(
+  states: RunnerAvailability[],
+  answers: string[] = [],
+  asked?: () => { answer(): string | null; cancel(): void },
+) {
   let now = 0;
   const shown: (string | null)[] = [];
   const notified: string[] = [];
-  const asked: number[] = [];
+  const asks: number[] = [];
   const cancelled: number[] = [];
   return {
     shown,
     notified,
-    asked,
+    asked: asks,
     cancelled,
     run: () =>
       waitForRunner({
@@ -46,13 +50,13 @@ function harness(states: RunnerAvailability[], answers: string[] = []) {
         waiting: (reason) => shown.push(reason),
         notify: (reason) => notified.push(reason),
         ask: () => {
-          const index = asked.push(now) - 1;
-          const answer = answers[index];
+          const index = asks.push(now) - 1;
           return {
-            answer: answer === undefined ? new Promise<string>(() => {}) : Promise.resolve(answer),
+            answer: () => answers[index] ?? null,
             cancel: () => cancelled.push(index),
           };
         },
+        ...(asked === undefined ? {} : { asked }),
         askAfterMs: 30,
         pollMs: 10,
       }),
@@ -87,4 +91,18 @@ test("keep waiting asks again after another wait; move ends the wait", async () 
   expect(wait.asked).toEqual([30, 70]);
   expect(wait.cancelled).toEqual([]);
   expect(wait.shown.at(-1)).toBeNull();
+});
+
+test("a question asked before a restart is adopted instead of asked again", async () => {
+  let answer: string | null = null;
+  const states = Array.from({ length: 10 }, () => paused);
+  const wait = harness(states, [], () => ({
+    answer: () => {
+      if (states.length < 5) answer = "Move to another runner";
+      return answer;
+    },
+    cancel: () => {},
+  }));
+  expect(await wait.run()).toBe("move");
+  expect(wait.asked).toEqual([]);
 });
