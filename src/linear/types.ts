@@ -12,6 +12,8 @@ export type LinearSubIssue = LinearSchedulingMetadata & {
   description?: string | null;
   acceptanceCriteria?: string | null;
   stateType?: string | null;
+  /** The issue's page in Linear, when the read included it. */
+  url?: string | null;
 };
 
 export type EpicSnapshot = LinearSchedulingMetadata & {
