@@ -43,6 +43,7 @@ export const RunnerResultSchema = z.strictObject({
     )
     .optional(),
   closeoutReport: z.string().max(65_536).optional(),
+  tokens: z.number().int().nonnegative().optional(),
   agentLimits: z
     .array(
       z.strictObject({

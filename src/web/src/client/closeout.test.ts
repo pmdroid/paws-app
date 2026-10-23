@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusSnapshot } from "../contract";
 import { demoStatus } from "../demo";
 import {
@@ -10,6 +13,9 @@ import {
   type CloseoutView,
 } from "./closeout";
 import { render, type RenderModel } from "./render";
+import { themedMarkup } from "./theme";
+
+const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
 
 function verdict(id: string) {
   const found = demoStatus().verdicts.find((entry) => entry.itemId === id);
@@ -189,4 +195,43 @@ test("accepted output describes the actual delivery state instead of assuming a 
   const signoff = renderCloseoutChecks(entry, emptyCloseoutView(), null, pr, "signoff");
   expect(signoff).toContain("Waiting for human sign-off");
   expect(signoff).not.toContain("is waiting to merge");
+});
+
+describe("independent review measurements", () => {
+  function measured() {
+    const entry = verdict("ENG-101");
+    const review = entry.checks.find((check) => check.kind === "review")!;
+    review.elapsedMs = 192_000;
+    review.tokens = 52_300;
+    return entry;
+  }
+
+  test("desktop: the review row shows how long it took and the tokens it used", () => {
+    const html = renderCloseoutChecks(measured(), emptyCloseoutView(), null);
+    expect(html).toContain('<span class="check-meta">3m 12s · 52.3k tokens</span>');
+  });
+
+  test("390 px: the review measurements wrap under the check name", () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        Fragment,
+        null,
+        themedMarkup(renderCloseoutChecks(measured(), emptyCloseoutView(), null)),
+      ),
+    );
+    expect(html).toContain("3m 12s · 52.3k tokens");
+    expect(css).toMatch(
+      /@media \(max-width: 900px\) \{[^@]*\.check-row \.check-meta \{[^}]*white-space: normal;/,
+    );
+    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
+  });
+
+  test("a measured review survives the status contract", () => {
+    const snapshot = demoStatus();
+    snapshot.verdicts = [measured()];
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    if (!parsed.ok) throw new Error(parsed.error);
+    const review = parsed.snapshot.verdicts[0]!.checks.find((check) => check.kind === "review");
+    expect(review?.tokens).toBe(52_300);
+  });
 });

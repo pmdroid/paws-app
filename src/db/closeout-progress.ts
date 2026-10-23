@@ -29,6 +29,8 @@ export type CloseoutStepWrite = {
   evidencePath: string | null;
   findings: string | null;
   ordinal: number;
+  durationMs?: number | null;
+  tokens?: number | null;
 };
 
 export type CloseoutStepRecord = CloseoutStepWrite & {

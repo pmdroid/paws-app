@@ -10,7 +10,7 @@ import { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run
 import type { CodexReviewer } from "./reviewer";
 import { MAX_FIX_ATTEMPTS } from "./types";
 import { reviewRequirements } from "./index";
-import { addReview, type PublishedEvidence } from "../closeout-spec";
+import { addReview, type CloseoutProgressStep, type PublishedEvidence } from "../closeout-spec";
 
 const exec = promisify(execFile);
 const TASK = "ENG-123";
@@ -495,6 +495,53 @@ describe("closeout gate", () => {
     expect(result.summary).toContain("test");
     expect(result.decision?.candidate.task).toBe(TASK);
     await repo.cleanup();
+  });
+
+  test("the review step records how long the reviewer took and the tokens it reported", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("adversarial-review")]),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    const steps: CloseoutProgressStep[] = [];
+    try {
+      const evaluation = await evaluateCandidate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        progress: {
+          begin() {},
+          step(_identity, step) {
+            if (step.kind === "review") steps.push(step);
+          },
+          output() {},
+          finish() {},
+        },
+        reviewer: {
+          async review() {
+            await Bun.sleep(40);
+            return {
+              session: "codex-session",
+              model: "codex",
+              provider: "openai",
+              findings: [],
+              tokens: 48_000,
+            };
+          },
+        },
+      });
+      expect(evaluation.outcome).toBe("accepted");
+      const passed = steps.at(-1)!;
+      expect(passed.state).toBe("passed");
+      expect(passed.tokens).toBe(48_000);
+      expect(passed.durationMs).toBeGreaterThanOrEqual(35);
+      expect(steps[0]!.durationMs ?? null).toBeNull();
+    } finally {
+      await repo.cleanup();
+    }
   });
 
   for (const [failures, message, outcome, calls] of [

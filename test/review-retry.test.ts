@@ -96,7 +96,7 @@ test("a refused tool call does not fail a review that finishes", async () => {
   expect(runs).toHaveLength(1);
 });
 
-function answering(replies: string[]) {
+function answering(replies: string[], tokens?: number) {
   const runs: RunAgentOptions[] = [];
   const review = createAcpCodexReviewer({
     pawsRoot: "/tmp/unused",
@@ -111,7 +111,11 @@ function answering(replies: string[]) {
           content: { type: "text", text: replies[runs.length - 1]! },
         },
       });
-      return { ...finished, sessionId: "review-session" };
+      return {
+        ...finished,
+        sessionId: "review-session",
+        ...(tokens === undefined ? {} : { tokens }),
+      };
     },
   });
   return { review, runs };
@@ -154,4 +158,10 @@ test("a reviewer whose first findings parse is not asked again", async () => {
   const { review, runs } = answering(["[]"]);
   expect((await review.review(request)).findings).toEqual([]);
   expect(runs).toHaveLength(1);
+});
+
+test("a review reports the tokens of every turn it took", async () => {
+  expect((await answering(["[]"], 1_200).review.review(request)).tokens).toBe(1_200);
+  expect((await answering([prose, "[]"], 1_200).review.review(request)).tokens).toBe(2_400);
+  expect((await answering(["[]"]).review.review(request)).tokens).toBeUndefined();
 });

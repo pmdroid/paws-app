@@ -149,6 +149,7 @@ export interface RunAgentResult {
   authRequired: boolean;
   errorMessage?: string;
   closeoutReport?: string;
+  tokens?: number;
   pid?: number;
   agentExited: boolean;
 }

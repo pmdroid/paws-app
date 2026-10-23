@@ -229,6 +229,7 @@ export interface StatusCheck {
   logPath?: string | null;
   evidencePath?: string | null;
   active?: boolean;
+  tokens?: number | null;
 }
 
 export interface StatusVerdict {
