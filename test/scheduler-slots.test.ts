@@ -80,6 +80,7 @@ test("work running without a runner placement leaves its slot free for the next 
     ]);
     expect(dispatchReadyItems(db, { now: NOW + 1, legacyReadyItemIds: READY })).toEqual([]);
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [NOW + 2, second]);
+    db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
     expect(dispatchReadyItems(db, { now: NOW + 2, legacyReadyItemIds: READY })).toEqual(["next-4"]);
   } finally {
     db.close();

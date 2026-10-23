@@ -26,6 +26,21 @@ export function runnerHasCapacity(
   return row.occupied + additionalReservations < row.capacity;
 }
 
+export function runnerSlotsHeldBetweenCommands(
+  db: Database,
+  runnerId: string,
+  now: number,
+  excludeRunId = "",
+): number {
+  return db
+    .query<{ held: number }, [string, string, number]>(
+      `SELECT count(*) AS held FROM runner_work w JOIN run r ON r.id=w.run_id
+       WHERE w.runner_id=? AND w.run_id<>? AND (w.ended_at IS NOT NULL OR w.lease_until<=?)
+       AND r.status IN ('active','provisioning')`,
+    )
+    .get(runnerId, excludeRunId, now)!.held;
+}
+
 export function runnerSlotFree(db: Database, runnerIds: readonly string[], now: number): boolean {
   const ids = runnerIds.length
     ? runnerIds
@@ -35,7 +50,9 @@ export function runnerSlotFree(db: Database, runnerIds: readonly string[], now: 
         )
         .all(now - 60_000)
         .map((runner) => runner.id);
-  return ids.some((id) => runnerHasCapacity(db, id, now));
+  return ids.some((id) =>
+    runnerHasCapacity(db, id, now, "", runnerSlotsHeldBetweenCommands(db, id, now)),
+  );
 }
 
 /**

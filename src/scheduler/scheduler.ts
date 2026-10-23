@@ -129,7 +129,7 @@ function allItems(db: Database, now: number): Item[] {
       AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
         OR held.queue LIKE 'github.merge.%' OR held.lane='merge')) AS liveJob,
     EXISTS(SELECT 1 FROM run p JOIN runner_work w ON w.run_id=p.id WHERE p.item_id=i.id
-      AND w.ended_at IS NULL AND w.lease_until>?) AS placed,
+      AND ((w.ended_at IS NULL AND w.lease_until>?) OR p.status IN ('active','provisioning'))) AS placed,
     EXISTS(SELECT 1 FROM job start WHERE json_extract(start.payload,'$.itemId')=i.id
       AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>?)
       AND start.queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')) AS placing,
@@ -156,7 +156,7 @@ function taskSlots(db: Database, now: number): { total: number; busy: number } |
   const runners = db
     .query<{ capacity: number; used: number }, [number, number, number]>(
       `SELECT COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity,
-       (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) +
+       (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND ((w.ended_at IS NULL AND w.lease_until>?) OR EXISTS(SELECT 1 FROM run held WHERE held.id=w.run_id AND held.status IN ('active','provisioning')))) +
        (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used
        FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
     )
