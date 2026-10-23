@@ -74,18 +74,23 @@ function orderHelp(order: MergeOrder, queues: readonly string[]): string {
   return `GitHub's merge queue on ${queues.join(", ")}. A repository without one merges each pull request when its CI is green.`;
 }
 
+function mainMovedHelp(choice: MainMoved, upToDate: readonly string[]): string {
+  if (choice !== "overlap" || upToDate.length === 0) return MAIN_MOVED_HELP[choice];
+  return `GitHub requires branches to be up to date in ${upToDate.join(", ")}, so merges there always update the branch and wait for CI. Turn that rule off to merge without an update.`;
+}
+
 /** Both selects for one level. `inherited` shows the choice it inherits, disabled. */
 function choiceFields(
   scope: string,
   choice: MergeChoice,
   inherited: boolean | null,
-  queues: readonly string[],
+  repos: { queues: readonly string[]; upToDate: readonly string[] },
   inheritLabel = "Use workspace default",
 ): string {
   const disabled = inherited ? "disabled" : "";
   return `${inherited === null ? "" : `<label class="settings-inherit"><input type="checkbox" name="${scope}-inherit" ${inherited ? "checked" : ""}>${inheritLabel}</label>`}
-    <div class="settings-controls"><div class="settings-field"><label for="${scope}-order">Merge order</label><select id="${scope}-order" name="${scope}-order" aria-describedby="${scope}-order-help" ${disabled}>${options(orderNames(queues, choice.order), choice.order)}</select><small class="sub" id="${scope}-order-help">${esc(orderHelp(choice.order, queues))}</small></div>
-    <div class="settings-field"><label for="${scope}-main">When main moved before the merge</label><select id="${scope}-main" name="${scope}-main" aria-describedby="${scope}-main-help" ${disabled}>${options(MAIN_MOVED, choice.mainMoved)}</select><small class="sub" id="${scope}-main-help">${esc(MAIN_MOVED_HELP[choice.mainMoved])}</small></div></div>`;
+    <div class="settings-controls"><div class="settings-field"><label for="${scope}-order">Merge order</label><select id="${scope}-order" name="${scope}-order" aria-describedby="${scope}-order-help" ${disabled}>${options(orderNames(repos.queues, choice.order), choice.order)}</select><small class="sub" id="${scope}-order-help">${esc(orderHelp(choice.order, repos.queues))}</small></div>
+    <div class="settings-field"><label for="${scope}-main">When main moved before the merge</label><select id="${scope}-main" name="${scope}-main" aria-describedby="${scope}-main-help" ${disabled}>${options(MAIN_MOVED, choice.mainMoved)}</select><small class="sub" id="${scope}-main-help">${esc(mainMovedHelp(choice.mainMoved, repos.upToDate))}</small></div></div>`;
 }
 
 function effective(override: Partial<MergeChoice> | undefined, fallback: MergeChoice): MergeChoice {
@@ -106,7 +111,7 @@ export function renderMergeSettings(view: View): string {
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading merging settings…")}</div>${view.error ? '<button class="btn" type="button" data-merge="reload">Try again</button>' : ""}`;
   const data = view.data;
-  const queues = data.githubQueue?.repositories ?? [];
+  const repos = { queues: data.githubQueue?.repositories ?? [], upToDate: data.upToDateRule ?? [] };
   const feedback = view.error
     ? `<p class="settings-message err" role="alert">${esc(view.error)}</p>`
     : view.saved
@@ -124,14 +129,14 @@ export function renderMergeSettings(view: View): string {
     : `<input id="merge-rule-label" name="rule-label" aria-label="Label" value="${esc(view.ruleLabelDraft ?? "")}" placeholder="Linear label">`;
   return `${intro}${data.githubQueueError ? `<p class="settings-message" role="status">${esc(data.githubQueueError)}</p>` : ""}${data.choicesError ? `<p class="settings-message err" role="status">${esc(data.choicesError)} Enter a project id or label by hand, or <button class="btn" type="button" data-merge="reload">reload</button>.</p>` : ""}<form id="merge-settings-form"><div id="merge-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
-      <section class="settings-section"><div class="settings-label"><h2>Workspace default</h2><p class="sub">Used by every project unless a project or an issue rule says otherwise.</p></div><div class="col">${choiceFields("default", data.default, null, queues)}</div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Workspace default</h2><p class="sub">Used by every project unless a project or an issue rule says otherwise.</p></div><div class="col">${choiceFields("default", data.default, null, repos)}</div></section>
       <section class="settings-section"><div class="settings-label"><h2>Projects</h2><p class="sub">Override the default for one Linear project.</p></div><div class="col">
       ${
         data.projects.length
           ? data.projects
               .map(
                 (project, index) =>
-                  `<section class="settings-project"><div class="between"><h3>${esc(projectName(data, project.id))}</h3><button class="btn" type="button" data-merge="remove-project" data-index="${index}" aria-label="Remove ${esc(projectName(data, project.id))}">Remove</button></div>${choiceFields(`project-${index}`, effective(project, data.default), !overrides(project), queues)}</section>`,
+                  `<section class="settings-project"><div class="between"><h3>${esc(projectName(data, project.id))}</h3><button class="btn" type="button" data-merge="remove-project" data-index="${index}" aria-label="Remove ${esc(projectName(data, project.id))}">Remove</button></div>${choiceFields(`project-${index}`, effective(project, data.default), !overrides(project), repos)}</section>`,
               )
               .join("")
           : '<p class="sub">No project overrides.</p>'
@@ -144,7 +149,7 @@ export function renderMergeSettings(view: View): string {
               .map((rule, index) => {
                 const project = data.projects.find((entry) => entry.id === rule.project);
                 const title = `${rule.project === undefined ? "Any project" : projectName(data, rule.project)} · label ${rule.label}`;
-                return `<section class="settings-project"><div class="between"><h3>${esc(title)}</h3><button class="btn" type="button" data-merge="remove-rule" data-index="${index}" aria-label="Remove ${esc(title)}">Remove</button></div>${choiceFields(`rule-${index}`, effective(rule, effective(project, data.default)), !overrides(rule), queues, "Use the project or workspace setting")}</section>`;
+                return `<section class="settings-project"><div class="between"><h3>${esc(title)}</h3><button class="btn" type="button" data-merge="remove-rule" data-index="${index}" aria-label="Remove ${esc(title)}">Remove</button></div>${choiceFields(`rule-${index}`, effective(rule, effective(project, data.default)), !overrides(rule), repos, "Use the project or workspace setting")}</section>`;
               })
               .join("")
           : '<p class="sub">No issue rules.</p>'
@@ -320,7 +325,7 @@ export function createMergeSettings(invalidate: () => void): {
     const started = generation;
     const choices = view.data.choices;
     const choicesError = view.data.choicesError;
-    const { githubQueue, githubQueueError } = view.data;
+    const { githubQueue, githubQueueError, upToDateRule } = view.data;
     void request("Saving merging settings…", async () => {
       const data = await mergeSettingsRequest(
         engine!,
@@ -335,6 +340,7 @@ export function createMergeSettings(invalidate: () => void): {
         ...(choicesError ? { choicesError } : {}),
         ...(githubQueue === undefined ? {} : { githubQueue }),
         ...(githubQueueError ? { githubQueueError } : {}),
+        ...(upToDateRule ? { upToDateRule } : {}),
       };
       view.saved = true;
     });

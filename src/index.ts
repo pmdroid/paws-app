@@ -96,6 +96,7 @@ import {
   checkRepositoryReadAccess,
   createFetchGitHubClient,
   repositoriesWithMergeQueue,
+  repositoriesRequiringUpToDate,
   listAppRepositories,
   listUserRepositories,
   readGhUserToken,
@@ -767,6 +768,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           : {}),
         githubQueues: (signal: AbortSignal) =>
           repositoriesWithMergeQueue({
+            repositories,
+            client: createFetchGitHubClient(),
+            signal,
+            token: async (candidate) =>
+              (await authProvider(runtime, candidate, "read", resolveApp)?.token()) ?? null,
+          }),
+        upToDateRules: (signal: AbortSignal) =>
+          repositoriesRequiringUpToDate({
             repositories,
             client: createFetchGitHubClient(),
             signal,

@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -682,6 +682,184 @@ describe("pull requests and serial merge", () => {
     expect(result.outcome).toBe("rejected");
     expect(merges).toBe(0);
     await repo.cleanup();
+  });
+});
+
+describe("update only when main changed the same files or package", () => {
+  async function movedApart(changed: string) {
+    const repo = await twoClones();
+    await mkdir(path.join(repo.wtA, "apps/web"), { recursive: true });
+    await commitFile(repo.wtA, "apps/web/a.ts", "export const a = 1;\n");
+    const client = mergingClient(repo.bare, []);
+    await pushBranch({
+      ...creds(client),
+      worktree: repo.wtA,
+      issue: "ENG-5",
+      remoteUrl: repo.bare,
+    });
+    const head = (await exec("git", ["-C", repo.wtA, "rev-parse", "HEAD"])).stdout.trim();
+    await mkdir(path.dirname(path.join(repo.wtB, changed)), { recursive: true });
+    await commitFile(repo.wtB, changed, "from main\n");
+    await exec("git", ["-C", repo.wtB, "push", "origin", "HEAD:main"]);
+    return { repo, head, client };
+  }
+
+  async function merge(
+    repo: { bare: string; wtA: string },
+    client: GitHubClient,
+    packages: string[] = [],
+  ) {
+    const reverified: { head: string; kept?: true; overlap?: string[] }[] = [];
+    let rules = 0;
+    const merges: string[] = [];
+    const result = await serialMerge({
+      ...creds({
+        async request(req) {
+          if (req.path.endsWith("/merge")) merges.push((req.body as { sha: string }).sha);
+          return client.request(req);
+        },
+      }),
+      worktree: repo.wtA,
+      issue: "ENG-5",
+      prNumber: 5,
+      remoteUrl: repo.bare,
+      updateOnOverlap: {
+        packages,
+        onUpToDateRule: async () => {
+          rules += 1;
+        },
+      },
+      reverify: async ({ head, kept, overlap }) => {
+        reverified.push({ head, ...(kept ? { kept } : {}), ...(overlap ? { overlap } : {}) });
+        return { accepted: true, outcome: "merged", summary: "accepted" };
+      },
+    });
+    return { result, reverified, rules, merges };
+  }
+
+  test("main moved on unrelated files: merges the pull request's head without an update", async () => {
+    const { repo, head, client } = await movedApart("docs/guide.md");
+    try {
+      const run = await merge(repo, client, ["apps/*"]);
+      expect(run.result.merged).toBe(true);
+      expect(run.reverified).toEqual([{ head, kept: true }]);
+      expect(run.merges).toEqual([head]);
+      expect(run.rules).toBe(0);
+      expect((await exec("git", ["-C", repo.wtA, "rev-parse", "HEAD"])).stdout.trim()).toBe(head);
+      expect(await showMain(repo.bare, "docs/guide.md")).toBe("from main\n");
+      expect(await showMain(repo.bare, "apps/web/a.ts")).toBe("export const a = 1;\n");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("main changed a file the pull request changes: updates the branch and waits for CI", async () => {
+    const repo = await twoClones();
+    try {
+      const client = mergingClient(repo.bare, []);
+      const edited = Array.from({ length: 20 }, (_, index) => `line-${index + 1}`);
+      edited[0] = "line-1-from-a";
+      await commitFile(repo.wtA, "file.txt", `${edited.join("\n")}\n`);
+      await pushBranch({
+        ...creds(client),
+        worktree: repo.wtA,
+        issue: "ENG-5",
+        remoteUrl: repo.bare,
+      });
+      const pushed = (await exec("git", ["-C", repo.wtA, "rev-parse", "HEAD"])).stdout.trim();
+      const lines = Array.from({ length: 20 }, (_, index) => `line-${index + 1}`);
+      lines[19] = "line-20-from-main";
+      await commitFile(repo.wtB, "file.txt", `${lines.join("\n")}\n`);
+      await commitFile(repo.wtB, "other.txt", "from main\n");
+      await exec("git", ["-C", repo.wtB, "push", "origin", "HEAD:main"]);
+      const run = await merge(repo, client);
+      expect(run.result.merged).toBe(true);
+      expect(run.reverified).toHaveLength(1);
+      expect(run.reverified[0]!.kept).toBeUndefined();
+      expect(run.reverified[0]!.overlap).toEqual(["file.txt"]);
+      expect(run.reverified[0]!.head).not.toBe(pushed);
+      expect(run.merges).toEqual([run.reverified[0]!.head]);
+      expect(run.rules).toBe(0);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("main changed another file in the same package: updates the branch and waits for CI", async () => {
+    const { repo, head, client } = await movedApart("apps/web/b.ts");
+    try {
+      const run = await merge(repo, client, ["apps/*", "packages/*"]);
+      expect(run.result.merged).toBe(true);
+      expect(run.reverified).toHaveLength(1);
+      expect(run.reverified[0]!.overlap).toEqual(["apps/web"]);
+      expect(run.reverified[0]!.head).not.toBe(head);
+      expect(run.merges).toEqual([run.reverified[0]!.head]);
+    } finally {
+      await repo.cleanup();
+    }
+    const apart = await movedApart("apps/web/b.ts");
+    try {
+      const run = await merge(apart.repo, apart.client);
+      expect(run.reverified).toEqual([{ head: apart.head, kept: true }]);
+    } finally {
+      await apart.repo.cleanup();
+    }
+  });
+
+  test("GitHub's up-to-date rule on: falls back to updating the branch and says so", async () => {
+    const { repo, head, client } = await movedApart("docs/guide.md");
+    try {
+      const strict: GitHubClient = {
+        async request(req) {
+          if (req.method === "GET" && req.path.includes("/rules/branches/"))
+            return {
+              status: 200,
+              body: [
+                {
+                  type: "required_status_checks",
+                  parameters: {
+                    strict_required_status_checks_policy: true,
+                    required_status_checks: [],
+                  },
+                },
+              ],
+            };
+          return client.request(req);
+        },
+      };
+      const run = await merge(repo, strict);
+      expect(run.result.merged).toBe(true);
+      expect(run.rules).toBe(1);
+      expect(run.reverified).toHaveLength(1);
+      expect(run.reverified[0]!.kept).toBeUndefined();
+      expect(run.reverified[0]!.head).not.toBe(head);
+      expect(run.merges).toEqual([run.reverified[0]!.head]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a head GitHub refuses to merge without an update is updated instead", async () => {
+    const { repo, head, client } = await movedApart("docs/guide.md");
+    try {
+      let refused = 0;
+      const refusing: GitHubClient = {
+        async request(req) {
+          if (req.path.endsWith("/merge") && (req.body as { sha: string }).sha === head) {
+            refused += 1;
+            return { status: 405, body: { message: "Head branch is out of date" } };
+          }
+          return client.request(req);
+        },
+      };
+      const run = await merge(repo, refusing);
+      expect(refused).toBe(1);
+      expect(run.result.merged).toBe(true);
+      expect(run.reverified.map((entry) => entry.kept)).toEqual([true, undefined]);
+      expect(run.reverified[1]!.head).not.toBe(head);
+    } finally {
+      await repo.cleanup();
+    }
   });
 });
 

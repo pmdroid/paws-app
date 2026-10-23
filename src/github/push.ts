@@ -34,7 +34,7 @@ export async function pushWithLease(input: PushInput): Promise<void> {
   }
 }
 
-async function remoteBranchSha(input: PushInput): Promise<string | null> {
+export async function remoteBranchSha(input: PushInput): Promise<string | null> {
   return withCredential(
     input.token,
     input.gitExec,
