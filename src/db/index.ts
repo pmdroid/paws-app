@@ -2,6 +2,7 @@ export { drainCommands, enqueueCommand, submitCommand, applyLinearCommand } from
 export {
   recordRunnerCapacity,
   runnerHasCapacity,
+  runnerOccupancy,
   runnerSlotFree,
   runnerSlotsHeldBetweenCommands,
   RunnerConcurrencyError,
