@@ -18,6 +18,18 @@ export const OUTBOX_ACTIVITY = {
   op: "activity",
 } as const;
 
+export const MERGE_WORK = {
+  queue: JOB_KIND.merge,
+  queuePrefix: `${JOB_KIND.merge}.`,
+  lane: MERGE_LANE,
+  lanePrefix: `${MERGE_LANE}:`,
+} as const;
+
 export function isMergeWork(queue: string, lane: string): boolean {
-  return queue === JOB_KIND.merge || lane === MERGE_LANE || queue.startsWith(`${JOB_KIND.merge}.`);
+  return (
+    queue === MERGE_WORK.queue ||
+    queue.startsWith(MERGE_WORK.queuePrefix) ||
+    lane === MERGE_WORK.lane ||
+    lane.startsWith(MERGE_WORK.lanePrefix)
+  );
 }

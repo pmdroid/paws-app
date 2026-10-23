@@ -7,7 +7,7 @@ import {
   IN_FLIGHT_ITEM_STATES,
   isMergeWork,
   JOB_KIND,
-  MERGE_LANE,
+  MERGE_WORK,
   retryAfterMs,
   retryBackoffMs,
 } from "../core";
@@ -84,8 +84,8 @@ function sqlLiteral(value: string): string {
   return `'${value}'`;
 }
 
-function mergeLaneSql(alias: string): string {
-  return `(${alias}.queue = ${sqlLiteral(JOB_KIND.merge)} OR ${alias}.queue LIKE ${sqlLiteral(`${JOB_KIND.merge}.%`)} OR ${alias}.lane = ${sqlLiteral(MERGE_LANE)} OR ${alias}.lane LIKE ${sqlLiteral(`${MERGE_LANE}:%`)})`;
+export function mergeLaneSql(alias: string): string {
+  return `(${alias}.queue = ${sqlLiteral(MERGE_WORK.queue)} OR ${alias}.queue LIKE ${sqlLiteral(`${MERGE_WORK.queuePrefix}%`)} OR ${alias}.lane = ${sqlLiteral(MERGE_WORK.lane)} OR ${alias}.lane LIKE ${sqlLiteral(`${MERGE_WORK.lanePrefix}%`)})`;
 }
 
 /** Item execution. A second one stays pending until the first item is finished. */
@@ -360,7 +360,7 @@ export function cancelOpenJobs(
        AND (? IS NULL OR id != ?)
        AND (
          (? IS NOT NULL AND json_extract(payload, '$.itemId') = ?)
-         OR (? = 1 AND (queue = 'github.merge' OR lane = 'merge' OR queue LIKE 'github.merge.%'))
+         OR (? = 1 AND ${mergeLaneSql("job")})
        )
      RETURNING *`,
     )

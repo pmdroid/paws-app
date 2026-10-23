@@ -104,6 +104,7 @@ import {
   createGitHubApp,
   inspectPullRequestMerge,
   githubHttpsUrl,
+  type GitHubBinding,
   type GitHubTokenProvider,
 } from "./github";
 import { startHost } from "./host";
@@ -135,7 +136,6 @@ import {
   itemPathId,
   repositoryAnswer,
   worktreeBranch,
-  type GitHubBinding,
   LinearTaskAccess,
   authorizeLinearTask,
   handleLinearAdministration,

@@ -117,6 +117,10 @@ import {
   configureWorkItem,
   enqueueJobOnce,
   enqueueJob,
+  mergeLaneSql,
+  countCiFixes,
+  countRebaseReturns,
+  recordRebaseReturn,
   enqueueOutboxOnce,
   failWorkItem,
   getQueuePosition,
@@ -210,7 +214,7 @@ import {
   readPullReview,
   serialMerge,
   UPSTREAM_MAIN_REF,
-  type GitHubClient,
+  type GitHubBinding,
   type GitHubTokenProvider,
 } from "../github";
 import { intakeDelegatedIssue, readyItems, stopAdoptedParent, type IntakeResult } from "../intake";
@@ -332,15 +336,6 @@ import {
   hintedRepository,
   repositoryAnswer,
 } from "./repository-selection";
-
-export type GitHubBinding = {
-  appId: string;
-  installationId: string;
-  privateKeyPem: string;
-  client: GitHubClient;
-  /** `github.auth = "gh"`. When set, push and merge do not mint a GitHub App token. */
-  tokenProvider?: GitHubTokenProvider;
-};
 
 export type { RepositoryBinding } from "../core";
 
@@ -3037,6 +3032,13 @@ export class Orchestrator {
           MAX_REBASE_RETURNS,
           REBASE_CONFLICT_INSTRUCTION,
           () => REBASE_CONFLICT_THOUGHT,
+          (returnJobId) =>
+            recordRebaseReturn(this.db, {
+              itemId: item.id,
+              jobId: returnJobId,
+              candidate: merged.head ?? null,
+              reason: "merge",
+            }),
         )
       )
         return;
@@ -3044,16 +3046,19 @@ export class Orchestrator {
         const checks = merged.failedChecks ?? [];
         // Read on every round, so a changed setting applies to the next round of a running task.
         const limit = this.ciFixAttempts();
-        const round = (next: CiRound["next"]) =>
-          this.recordCiRound(item, merged.head, merged.checks, next, limit);
+        const round = (next: CiRound["next"], fix: number | null = null) =>
+          this.recordCiRound(item, merged.head ?? "", merged.checks, next, limit, fix);
         if (
-          this.returnToAgent(item, "ci-failed", limit, ciFixHandoff(checks), (attempt) =>
-            ciFixRoundLine(checks, attempt, limit),
+          this.returnToAgent(
+            item,
+            "ci-failed",
+            limit,
+            ciFixHandoff(checks),
+            (attempt) => ciFixRoundLine(checks, attempt, limit),
+            (_, attempt) => round("agent", attempt),
           )
-        ) {
-          round("agent");
+        )
           return;
-        }
         if (this.askCiHelp(item, ciFixQuestion(checks, limit, published.pull.url))) {
           round("asked");
           await this.flush();
@@ -3092,8 +3097,7 @@ export class Orchestrator {
       this.fail(
         item,
         "merge",
-        merged.outcome === "conflict" &&
-          this.agentReturns(item.id, "rebase-conflict") >= MAX_REBASE_RETURNS
+        merged.outcome === "conflict" && this.rebaseReturns(item.id) >= MAX_REBASE_RETURNS
           ? `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts to resolve the conflict.`
           : (merged.message ?? merged.outcome),
       );
@@ -3276,13 +3280,20 @@ export class Orchestrator {
         await this.completeMerge(item, repository);
         return;
       case "ci_failed":
-        return this.githubQueueCiFailed(item, result.failedChecks, pull.url, CI_FIX_SOURCE.pull);
+        return this.githubQueueCiFailed(
+          item,
+          input.head,
+          result.failedChecks,
+          pull.url,
+          CI_FIX_SOURCE.pull,
+        );
       case "removed": {
         const { removal } = result;
         const why = removal.reason ? ` (${removal.reason})` : "";
         if (removal.cause === "failed")
           return this.githubQueueCiFailed(
             item,
+            input.head,
             [{ name: removal.reason || "merge queue checks", url: pull.url }],
             pull.url,
             CI_FIX_SOURCE.queue,
@@ -3297,6 +3308,13 @@ export class Orchestrator {
               REBASE_CONFLICT_INSTRUCTION,
               () =>
                 `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
+              (jobId) =>
+                recordRebaseReturn(this.db, {
+                  itemId: item.id,
+                  jobId,
+                  candidate: input.head,
+                  reason: "github_queue",
+                }),
             )
           )
             return;
@@ -3329,11 +3347,21 @@ export class Orchestrator {
   /** A failing check sends the task back to the agent, at most `ci_fix_attempts` times, then asks. */
   private async githubQueueCiFailed(
     item: WorkItemRecord,
-    checks: readonly { name: string; url: string | null }[],
+    head: string,
+    checks: readonly { name: string; url: string | null; logTail?: string | null }[],
     pullUrl: string | null,
     source: string,
   ): Promise<undefined> {
     const limit = this.ciFixAttempts();
+    const failed = checks.map((check) => ({
+      name: check.name,
+      state: "failed" as const,
+      url: check.url,
+      startedAt: null,
+      completedAt: null,
+      logTail: check.logTail ?? null,
+      logSource: null,
+    }));
     if (
       this.returnToAgent(
         item,
@@ -3341,6 +3369,7 @@ export class Orchestrator {
         limit,
         `${source}\n\n${ciFixHandoff(checks)}`,
         (attempt) => ciFixRoundLine(checks, attempt, limit),
+        (_, attempt) => this.recordCiRound(item, head, failed, "agent", limit, attempt),
       )
     )
       return;
@@ -3506,22 +3535,25 @@ export class Orchestrator {
     limit: number,
     handoff: string,
     thought: (attempt: number) => string,
+    record: (jobId: number, attempt: number) => void,
   ): boolean {
     return immediate(this.db, () => {
       const current = getWorkItem(this.db, item.id);
       if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
-      const returns = this.agentReturns(current.id, reason);
+      const returns =
+        reason === "rebase-conflict" ? this.rebaseReturns(current.id) : this.ciFixes(current.id);
       if (returns >= limit) return false;
       const round = `${this.latestUserTurn(current.id)}:${returns}`;
       const running = applyWorkItemEvent(this.db, current.id, "ejected");
       if (current.checkpoint)
         saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "running" });
-      enqueueJobOnce(this.db, {
+      const jobId = enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
         jobKey: `${reason}:${current.id}:${round}`,
         payload: { itemId: current.id, handoff, reason },
         now: this.now(),
       });
+      record(jobId, returns + 1);
       const key = `${current.id}:${reason}:${round}`;
       if (reason === "ci-failed") this.statusAfterPullRequest(running, thought(returns + 1), key);
       else this.post(running, "thought", thought(returns + 1), key);
@@ -3532,33 +3564,30 @@ export class Orchestrator {
   /** The checks of a failed CI read and what Paws did next, for the run page. */
   private recordCiRound(
     item: WorkItemRecord,
-    head: string | undefined,
+    head: string,
     checks: readonly CiRoundCheck[] | undefined,
     next: CiRound["next"],
     limit: number,
+    fix: number | null,
   ): void {
-    if (!head) return;
     recordCiRound(this.db, {
       itemId: item.id,
       head,
       runId: getWorkItem(this.db, item.id)?.currentRunId ?? item.currentRunId,
       next,
-      fix: next === "agent" ? this.agentReturns(item.id, "ci-failed") : null,
+      fix,
       fixLimit: limit,
       checks: [...(checks ?? [])],
       recordedAt: this.now(),
     });
   }
 
-  private agentReturns(itemId: string, reason: string): number {
-    const row = this.db
-      .query<{ n: number }, [string, string, string, number]>(
-        `SELECT COUNT(*) AS n FROM job
-         WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-           AND json_extract(payload, '$.reason') = ? AND id >= ?`,
-      )
-      .get(JOB_KIND.resume, itemId, reason, this.latestUserTurn(itemId));
-    return Number(row?.n ?? 0);
+  private rebaseReturns(itemId: string): number {
+    return countRebaseReturns(this.db, itemId, this.latestUserTurn(itemId));
+  }
+
+  private ciFixes(itemId: string): number {
+    return countCiFixes(this.db, itemId, this.latestUserTurn(itemId));
   }
 
   private latestUserTurn(itemId: string): number {
@@ -4375,8 +4404,7 @@ export class Orchestrator {
            AND NOT EXISTS(SELECT 1 FROM run WHERE item_id=? AND status IN ('active','provisioning'))
            AND NOT EXISTS(SELECT 1 FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until>?)
              AND json_extract(payload,'$.itemId')=?
-             AND (queue IN ('item.start','run.resume','run.reverify','github.merge')
-               OR queue LIKE 'github.merge.%' OR lane='merge'))`,
+             AND (queue IN ('item.start','run.resume','run.reverify') OR ${mergeLaneSql("job")}))`,
           [item.id, item.id, this.now(), item.id],
         );
       }
@@ -4889,7 +4917,7 @@ export class Orchestrator {
       item.id === routed?.id &&
       this.hasOpenedPullRequest(item.id) &&
       turns.some((turn) => isMergeConflictRequest(turn.body)) &&
-      this.agentReturns(item.id, "rebase-conflict") < MAX_REBASE_RETURNS &&
+      this.rebaseReturns(item.id) < MAX_REBASE_RETURNS &&
       (await this.fetchUpstreamMain(item));
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
@@ -4909,7 +4937,7 @@ export class Orchestrator {
         "UPDATE job SET status = 'cancelled', finished_at = ?, last_error = 'Superseded by Linear user update' WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ? AND (job_key IS NULL OR job_key != ?)",
         [this.now(), item!.id, jobKey],
       );
-      enqueueJobOnce(this.db, {
+      const jobId = enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
         jobKey,
         payload: rebase
@@ -4921,6 +4949,13 @@ export class Orchestrator {
           : { itemId: item!.id, handoff },
         now: this.now(),
       });
+      if (rebase)
+        recordRebaseReturn(this.db, {
+          itemId: item!.id,
+          jobId,
+          candidate: null,
+          reason: "linear",
+        });
     });
     await this.flush();
   }

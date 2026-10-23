@@ -29,7 +29,6 @@ export {
   Orchestrator,
   REBASE_CONFLICT_INSTRUCTION,
   attachOrchestrator,
-  type GitHubBinding,
   type OrchestratorOptions,
   type ExecutionChanges,
   type RepositoryBinding,

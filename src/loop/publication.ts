@@ -3,10 +3,11 @@ import {
   createAppTokenProvider,
   GitCommandError,
   type GitExec,
+  type GitHubBinding,
   type GitHubClient,
   type TokenPurpose,
 } from "../github";
-import type { GitHubBinding, RepositoryBinding } from "./orchestrator";
+import type { RepositoryBinding } from "../core";
 
 export function guardGitHubPublication(input: {
   github: GitHubBinding;
