@@ -19,6 +19,7 @@ export async function startRunnerListener(options: {
   authorize(peer: RunnerPeer): boolean | Promise<boolean>;
   fetch(request: Request, peer: RunnerPeer): Promise<Response>;
   now?: () => number;
+  log?: (line: string) => void;
 }): Promise<RunnerListener> {
   const now = options.now ?? Date.now;
   const connections = new Map<TLSSocket, string | null>();

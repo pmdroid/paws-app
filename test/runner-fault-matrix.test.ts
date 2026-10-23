@@ -38,6 +38,7 @@ import { migratedDatabase } from "./helpers";
 
 type Fault =
   | "fenced"
+  | "outage"
   | "busy"
   | "unpaired"
   | "usage-limit"
@@ -84,6 +85,15 @@ test.each([
   },
   60_000,
 );
+
+test("a runner that is unreachable for longer than its lease keeps its run and reaches Closeout", async () => {
+  const result = await runRemoteFault("outage");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+}, 60_000);
 
 test("a slot taken before assignment waits for the runner without a retry and reaches Closeout", async () => {
   const result = await runRemoteFault("busy");
@@ -372,9 +382,41 @@ async function runRemoteFault(fault: Fault) {
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   }
   const handled = new Set<string>();
+  let unreachable: { command: RunnerCommand; since: number } | undefined;
+  function deliver(command: Extract<RunnerCommand, { type: "run" }>) {
+    const grant = work.issueGrant({
+      runnerId,
+      runId: command.runId,
+      commandId: command.id,
+      generation: command.generation,
+    });
+    const limited = fault === "usage-limit" && runner.faulty;
+    if (limited) runner.faultedAttempts++;
+    results.submit({
+      runnerId,
+      runId: command.runId,
+      generation: command.generation,
+      token: grant.token,
+      result: limited
+        ? {
+            ...receipt(command),
+            stopReason: "error",
+            errorMessage: "You've hit your session limit. Retry-After: 120",
+          }
+        : { ...receipt(command), candidateSha, closeoutReport: passedReport(candidateSha) },
+    });
+  }
   const loop = (async () => {
     while (!runner.stopped) {
       recover();
+      if (unreachable && Date.now() - unreachable.since > 250) {
+        const { command } = unreachable;
+        unreachable = undefined;
+        runner.stale = false;
+        runner.faulty = false;
+        work.heartbeat(runnerId);
+        if (command.type === "run") deliver(command);
+      }
       if (!runner.stale) work.heartbeat(runnerId);
       for (const envelope of work.commands(runnerId)) {
         const command = JSON.parse(
@@ -415,27 +457,18 @@ async function runRemoteFault(fault: Fault) {
           ]);
           continue;
         }
-        const grant = work.issueGrant({
-          runnerId,
-          runId: command.runId,
-          commandId: command.id,
-          generation: command.generation,
-        });
-        const limited = fault === "usage-limit" && runner.faulty;
-        if (limited) runner.faultedAttempts++;
-        results.submit({
-          runnerId,
-          runId: command.runId,
-          generation: command.generation,
-          token: grant.token,
-          result: limited
-            ? {
-                ...receipt(command),
-                stopReason: "error",
-                errorMessage: "You've hit your session limit. Retry-After: 120",
-              }
-            : { ...receipt(command), candidateSha, closeoutReport: passedReport(candidateSha) },
-        });
+        if (fault === "outage" && runner.faulty) {
+          runner.faultedAttempts++;
+          runner.stale = true;
+          db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now() - 120_000, runnerId]);
+          db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
+            Date.now() - 60_000,
+            command.runId,
+          ]);
+          unreachable = { command, since: Date.now() };
+          continue;
+        }
+        deliver(command);
       }
       await Bun.sleep(5);
     }

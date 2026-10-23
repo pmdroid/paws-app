@@ -360,6 +360,28 @@ export async function probeRunnerWork(
       true,
       { matchingQuestionAllowed: true, unrelatedWaitDenied: true, answeredTaskResumed: true },
     );
+    now += 90_000;
+    const reattached = work.heartbeat(firstRunner);
+    assert.deepEqual(reattached.fenced, []);
+    assert.equal(reattached.leases[0]!.expiresAt, now + 60_000);
+    now += 90_000;
+    const renewedGrant = work.issueGrant(grantInput);
+    assert.equal(renewedGrant.expiresAt, now + 60_000);
+    assert.equal(work.authorize({ ...event, token: renewedGrant.token }).command.id, command.id);
+    assert.equal(
+      work.event({
+        ...event,
+        token: renewedGrant.token,
+        sequence: 2,
+        event: { type: "progress", text: "Back online" },
+      }).duplicate,
+      false,
+    );
+    observe(
+      "a lease that lapsed during a control-plane outage is renewed while its run is still current",
+      true,
+      { heartbeatReattached: true, grantRenewedLease: true, eventAccepted: true },
+    );
     now += 15_000;
     const heartbeat = work.heartbeat(firstRunner);
     assert.equal(heartbeat.leases[0]!.expiresAt, now + 60_000);
