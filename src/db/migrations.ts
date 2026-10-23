@@ -2283,4 +2283,22 @@ CREATE INDEX runner_usage_runner_ended ON runner_execution_usage(runner_id, ende
     id: "111_github_delivery_received",
     sql: `CREATE INDEX github_delivery_received ON github_delivery (received_at);`,
   },
+  {
+    id: "112_rebase_return",
+    sql: `
+CREATE TABLE rebase_return (
+  job_id INTEGER PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  candidate TEXT,
+  reason TEXT NOT NULL CHECK(reason IN ('merge','github_queue','linear'))
+) STRICT;
+CREATE INDEX rebase_return_item ON rebase_return (item_id, job_id);
+INSERT INTO rebase_return (job_id, item_id, candidate, reason)
+SELECT job.id, json_extract(job.payload, '$.itemId'), NULL,
+  CASE WHEN job.job_key LIKE 'linear-turn:%' THEN 'linear' ELSE 'merge' END
+FROM job
+WHERE job.queue = 'run.resume' AND json_extract(job.payload, '$.reason') = 'rebase-conflict'
+  AND EXISTS (SELECT 1 FROM work_item WHERE work_item.id = json_extract(job.payload, '$.itemId'));
+`,
+  },
 ];

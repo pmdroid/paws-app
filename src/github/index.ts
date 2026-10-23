@@ -103,6 +103,7 @@ export type {
   CiCheckState,
 } from "./types";
 export type { GitHubWebhook } from "./webhook";
+export type { GitHubBinding } from "./binding";
 export { defaultGitExec } from "./git";
 
 export { closeStoppedPull } from "./stopped";

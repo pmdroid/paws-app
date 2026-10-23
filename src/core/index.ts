@@ -54,7 +54,7 @@ export {
   type LinearCommand,
 } from "./commands";
 export { LONG_SLEEP_MS, WAKE_GAP_MS } from "./limits";
-export { JOB_KIND, MERGE_LANE, OUTBOX_ACTIVITY, isMergeWork } from "./kinds";
+export { JOB_KIND, MERGE_LANE, MERGE_WORK, OUTBOX_ACTIVITY, isMergeWork } from "./kinds";
 export {
   AWAKE_ITEM_STATES,
   IN_FLIGHT_ITEM_STATES,

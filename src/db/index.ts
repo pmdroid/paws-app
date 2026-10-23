@@ -52,6 +52,7 @@ export {
   failJob,
   getJob,
   listJobs,
+  mergeLaneSql,
   JOB_STATUSES,
   type ClaimOptions,
   type Job,
@@ -184,7 +185,14 @@ export {
   type CloseoutRecovery,
 } from "./closeout-recovery";
 export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./closeout-rounds";
-export { listCiRounds, recordCiRound, type CiRound, type CiRoundCheck } from "./ci-rounds";
+export {
+  countCiFixes,
+  listCiRounds,
+  recordCiRound,
+  type CiRound,
+  type CiRoundCheck,
+} from "./ci-rounds";
+export { countRebaseReturns, recordRebaseReturn, type RebaseReturn } from "./rebase-returns";
 export {
   recordGitHubDelivery,
   latestGitHubDelivery,

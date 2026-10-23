@@ -79,3 +79,14 @@ export function listCiRounds(db: Database, itemId?: string): CiRound[] {
     recordedAt: row.recorded_at,
   }));
 }
+
+export function countCiFixes(db: Database, itemId: string, sinceJobId: number): number {
+  const row = db
+    .query<{ n: number | null }, [string, number]>(
+      `SELECT MAX(fix) AS n FROM ci_round
+       WHERE item_id = ? AND next = 'agent'
+         AND recorded_at >= COALESCE((SELECT created_at FROM job WHERE id = ?), 0)`,
+    )
+    .get(itemId, sinceJobId);
+  return Number(row?.n ?? 0);
+}
