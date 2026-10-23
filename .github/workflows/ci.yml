@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     name: lint, format, types, test, dashboard build
@@ -26,6 +30,7 @@ jobs:
 
   coverage:
     name: coverage report
+    if: github.event_name == 'push'
     runs-on: [self-hosted, Linux, ARM64]
     continue-on-error: true
     timeout-minutes: 30
