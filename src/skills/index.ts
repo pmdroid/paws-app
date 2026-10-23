@@ -18,13 +18,17 @@ export type {
   SkillResolver,
   SkillResolverOptions,
 } from "./resolve";
+export { skillFolders } from "./discover";
+export type { SkillFolder } from "./discover";
 export {
   addSkill,
+  addSkills,
   addUploadedSkill,
   changeSkillAgents,
+  findSkills,
   removeSkill,
   skillAgents,
   updateSkill,
 } from "./registry";
-export type { SkillRegistry } from "./registry";
+export type { FoundSkill, SkillRegistry } from "./registry";
 export { fakeSkillResolver } from "./fake";

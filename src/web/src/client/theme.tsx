@@ -502,6 +502,12 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("skill-name")) return styled("flex min-w-0 flex-wrap items-baseline gap-x-2");
   if (has("skill-runners")) return styled("mb-3 flex flex-col items-start gap-2");
   if (has("skill-actions")) return styled("flex flex-col items-stretch gap-2 sm:flex-row");
+  if (has("skill-found")) return styled("flex min-w-0 flex-col gap-3");
+  if (has("skill-pick"))
+    return styled(
+      "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 text-sm [overflow-wrap:anywhere] [&>input]:mt-1",
+    );
+  if (has("skill-pick-copy")) return styled("flex min-w-0 flex-col gap-1");
   if (has("settings-account")) return styled("flex min-w-0 flex-col items-start gap-4");
   if (has("settings-section")) return styled(SETTINGS_SECTION_LAYOUT);
   if (has("overview-section"))

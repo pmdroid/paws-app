@@ -26,7 +26,10 @@ export type SkillRollout = {
   failed: string[];
 };
 
+export type FoundSkill = { path: string; name: string; description: string; added: boolean };
+
 export type SkillListing = {
+  found?: FoundSkill[];
   skills: SkillPin[];
   rollouts?: SkillRollout[];
   updates?: Record<string, string>;
@@ -44,7 +47,13 @@ export type SkillView = {
   notice: string | null;
   denied?: boolean;
   draft?: SkillDraft;
+  found?: { key: string; skills: FoundSkill[] };
 };
+
+export function discoversSkills(draft: SkillDraft): boolean {
+  const guess = skillSourceGuess(draft.source);
+  return guess !== null && !guess.subfolder && !draft.subfolder.trim();
+}
 
 const AGENT_NAMES: Record<SkillAgent, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 const ALL_AGENTS: SkillAgent[] = ["claude", "codex", "grok"];
@@ -142,6 +151,19 @@ function skillRow(skill: SkillPin, busy: boolean, rollout?: SkillRollout, update
   return `<tr><td class="skill-cell"><div class="skill-name"><b>${name}</b><span>${esc(shortVersion(skill))}</span>${removed ? "" : available}${removed ? '<span class="tag warn">Removing from runners</span>' : ""}</div><p class="sub">${esc(skillSourceLabel(skill))} · ${skill.agents.map((agent) => AGENT_NAMES[agent]).join(", ")}</p><p class="mono" title="SHA-256 ${esc(skill.sha256)}">sha256 ${esc(skill.sha256.slice(0, 12))}</p></td><td class="skill-state">${removed ? "" : skillRolloutMarkup(rollout)}${actions}</td></tr>`;
 }
 
+function foundMarkup(skills: FoundSkill[]): string {
+  if (skills.length === 0)
+    return '<p class="settings-message" role="status">This repository has no SKILL.md in the usual places. Enter its folder.</p>';
+  const single = skills.filter((skill) => !skill.added).length === 1;
+  const rows = skills
+    .map(
+      (skill) =>
+        `<label class="skill-pick"><input type="checkbox" name="skill-pick" value="${esc(skill.path)}" ${skill.added ? "disabled" : single ? "checked" : ""}><span class="skill-pick-copy"><span class="skill-name"><b>${esc(skill.name)}</b>${skill.added ? '<span class="tag wrap">Already added</span>' : ""}</span>${skill.description ? `<span class="sub">${esc(skill.description)}</span>` : ""}<span class="mono">${esc(skill.path || "Repository root")}</span></span></label>`,
+    )
+    .join("");
+  return `<div class="settings-field"><span class="sub">Skills in this repository</span><div class="skill-found">${rows}</div></div>`;
+}
+
 export function renderSkillSettings(view: SkillView): string {
   if (view.denied)
     return `<section class="settings-section">${intro}<p class="sub">Only workspace owners and admins can change skills.</p></section>`;
@@ -172,9 +194,10 @@ export function renderSkillSettings(view: SkillView): string {
   return `<section class="settings-section">${intro}<div class="col">${table}${feedback}
     <form id="skill-add-form" class="col"><fieldset class="settings-fields" ${busy ? "disabled" : ""}>
       <div class="settings-field"><label for="skill-source">Add a skill</label><input id="skill-source" name="skill-source" value="${esc(draft.source)}" placeholder="npm package, git URL, or upload a folder" autocapitalize="none" spellcheck="false" aria-describedby="skill-source-help"><small class="sub" id="skill-source-help">Paws pins the exact package version or commit. Each skill needs a SKILL.md and stays under ${megabytes} MB.</small></div>
-      <details class="skill-options" ${draft.ref || draft.subfolder ? "open" : ""}><summary>Git ref and subfolder</summary><small class="sub">A GitHub tree or blob URL fills these in. Change either to pin something else.</small><div class="settings-controls"><div class="settings-field"><label for="skill-ref">Git ref</label><input id="skill-ref" name="skill-ref" value="${esc(draft.ref)}" placeholder="main, v1.2.0, or a commit" autocapitalize="none" spellcheck="false"></div><div class="settings-field"><label for="skill-subfolder">Subfolder</label><input id="skill-subfolder" name="skill-subfolder" value="${esc(draft.subfolder)}" placeholder="skills/review" autocapitalize="none" spellcheck="false"></div></div></details>
+      ${view.found ? foundMarkup(view.found.skills) : ""}
+      <details class="skill-options" ${draft.ref || draft.subfolder || view.found?.skills.length === 0 ? "open" : ""}><summary>Git ref and subfolder</summary><small class="sub">A GitHub tree or blob URL fills these in. Change either to pin something else.</small><div class="settings-controls"><div class="settings-field"><label for="skill-ref">Git ref</label><input id="skill-ref" name="skill-ref" value="${esc(draft.ref)}" placeholder="main, v1.2.0, or a commit" autocapitalize="none" spellcheck="false"></div><div class="settings-field"><label for="skill-subfolder">Subfolder</label><input id="skill-subfolder" name="skill-subfolder" value="${esc(draft.subfolder)}" placeholder="skills/review" autocapitalize="none" spellcheck="false"></div></div></details>
       <div class="settings-field"><span class="sub">Agents</span><div class="row">${view.data.agents.map((agent) => `<label class="settings-inherit"><input type="checkbox" name="skill-agent" value="${agent}" ${draft.agents.includes(agent) ? "checked" : ""}>${AGENT_NAMES[agent]}</label>`).join("")}</div></div>
-      <div class="row"><button class="btn primary" type="submit">Add skill</button></div>
+      <div class="row"><button class="btn primary" type="submit">${view.found?.skills.length ? "Add selected skills" : "Add skill"}</button></div>
       <div class="settings-field"><label for="skill-upload">Or upload a folder</label><input id="skill-upload" name="skill-upload" type="file" webkitdirectory="" multiple></div>
     </fieldset></form></div></section>`;
 }
@@ -229,7 +252,7 @@ export function createSkillSettings(): {
       ),
     };
   };
-  const run = async (busy: string, body: unknown, reset = false) => {
+  const run = async (busy: string, body: unknown, reset = false, found?: string) => {
     if (!engine) return;
     const started = generation;
     view.draft = readDraft();
@@ -246,7 +269,11 @@ export function createSkillSettings(): {
       view.data = data;
       view.denied = false;
       view.notice = data.notice ?? null;
-      if (reset) view.draft = undefined;
+      if (found !== undefined) view.found = { key: found, skills: data.found ?? [] };
+      if (reset) {
+        view.draft = undefined;
+        view.found = undefined;
+      }
     } catch (error) {
       if (started !== generation) return;
       if (error instanceof Error && error.cause === 403 && body === undefined) view.denied = true;
@@ -278,9 +305,30 @@ export function createSkillSettings(): {
       paint();
       return;
     }
+    const key = JSON.stringify(source);
+    if (discoversSkills(draft) && view.found?.key !== key) {
+      void run(
+        `Looking for skills in ${draft.source.trim()}…`,
+        { action: "find", source },
+        false,
+        key,
+      );
+      return;
+    }
+    const paths = view.found?.skills.length
+      ? [...root!.querySelectorAll<HTMLInputElement>('[name="skill-pick"]:checked')].map(
+          (input) => input.value,
+        )
+      : undefined;
+    if (paths?.length === 0) {
+      view.draft = draft;
+      view.error = "Choose at least one skill to add.";
+      paint();
+      return;
+    }
     void run(
       `Fetching ${draft.source.trim()}…`,
-      { action: "add", source, agents: draft.agents },
+      { action: "add", source, agents: draft.agents, ...(paths ? { paths } : {}) },
       true,
     );
   };

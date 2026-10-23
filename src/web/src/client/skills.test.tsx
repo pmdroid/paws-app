@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { themedMarkup } from "./theme";
 import {
+  discoversSkills,
   parseSkillSource,
   renderSkillSettings,
   skillSourceGuess,
+  type FoundSkill,
   type SkillListing,
 } from "./skills";
 
@@ -284,5 +286,103 @@ describe("filled-in ref and subfolder", () => {
   test("a plain source keeps the section closed", () => {
     const closed = renderSkillSettings({ data: listing, busy: null, error: null, notice: null });
     expect(closed).not.toMatch(/<details[^>]*open/);
+  });
+});
+
+describe("skills found in a repository", () => {
+  const found = (skills: FoundSkill[]) =>
+    markup(
+      renderSkillSettings({
+        data: listing,
+        busy: null,
+        error: null,
+        notice: null,
+        draft: { source: "pbakaus/impeccable", ref: "", subfolder: "", agents: ["claude"] },
+        found: { key: "pbakaus/impeccable", skills },
+      }),
+    );
+  const impeccable: FoundSkill = {
+    path: ".claude/skills/impeccable",
+    name: "impeccable",
+    description: "Use when the user wants to design, redesign, shape, critique, audit, or polish.",
+    added: false,
+  };
+  const several: FoundSkill[] = [
+    { path: "skills/lint", name: "lint", description: "Lints", added: false },
+    {
+      path: "skills/a-review-skill-with-a-rather-long-name-for-a-phone/and/deeper",
+      name: "a-review-skill-with-a-rather-long-name-for-a-phone",
+      description: "",
+      added: false,
+    },
+    { path: "", name: "polish", description: "Polishes", added: true },
+  ];
+
+  test("one skill is listed with its description and path, and preselected", () => {
+    const html = found([impeccable]);
+    expect(html).toContain("Skills in this repository");
+    expect(html).toMatch(/name="skill-pick" checked="" value="\.claude\/skills\/impeccable"/);
+    expect(html).toContain("<b>impeccable</b>");
+    expect(html).toContain("Use when the user wants to design");
+    expect(html).toContain(">.claude/skills/impeccable<");
+    expect(html).toContain("Add selected skills");
+  });
+
+  test("several skills each get a checkbox and none is preselected", () => {
+    const html = found(several);
+    expect(html.match(/name="skill-pick"/g)).toHaveLength(3);
+    expect(html).not.toMatch(/name="skill-pick" checked/);
+    expect(html).toContain('value="skills/lint"');
+    expect(html).toContain(">Repository root<");
+  });
+
+  test("a skill that is already added says so and stays unchecked", () => {
+    const html = found(several);
+    expect(html).toMatch(/<b>polish<\/b><span[^>]*>Already added<\/span>/);
+    expect(html).toMatch(/<input[^>]*disabled=""[^>]*name="skill-pick" value=""/);
+    expect(found([impeccable, several[2]!])).toMatch(
+      /name="skill-pick" checked="" value="\.claude\/skills\/impeccable"/,
+    );
+    expect(found([{ ...impeccable, added: true }])).not.toContain('name="skill-pick" checked');
+  });
+
+  test("no skill found asks for the folder and opens the subfolder field", () => {
+    const html = found([]);
+    expect(html).toContain(
+      "This repository has no SKILL.md in the usual places. Enter its folder.",
+    );
+    expect(html).toMatch(/<details[^>]*open=""/);
+    expect(html).not.toContain('name="skill-pick"');
+    expect(html).toContain(">Add skill<");
+  });
+
+  test("the list fits a 390 px phone without horizontal scroll", () => {
+    const html = found([impeccable, ...several]);
+    expect(classNames(html, "skill-pick")).toHaveLength(4);
+    for (const pick of classNames(html, "skill-pick")) {
+      expect(pick).toContain("grid-cols-[auto_minmax(0,1fr)]");
+      expect(pick).toContain("min-w-0");
+      expect(pick).toContain("[overflow-wrap:anywhere]");
+    }
+    for (const copy of classNames(html, "skill-pick-copy")) expect(copy).toContain("min-w-0");
+    expect(html).toMatch(
+      /<b>polish<\/b><span[^>]*class="[^"]*whitespace-normal[^"]*">Already added/,
+    );
+    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
+  });
+
+  test("a git source without a subfolder looks for skills first", () => {
+    const draft = (source: string, subfolder = "") => ({
+      source,
+      ref: "",
+      subfolder,
+      agents: ["claude" as const],
+    });
+    expect(discoversSkills(draft("pbakaus/impeccable"))).toBe(true);
+    expect(discoversSkills(draft("https://github.com/pbakaus/impeccable/tree/main"))).toBe(true);
+    expect(discoversSkills(draft(TREE))).toBe(false);
+    expect(discoversSkills(draft("pbakaus/impeccable", "skills/x"))).toBe(false);
+    expect(discoversSkills(draft("impeccable"))).toBe(false);
+    expect(discoversSkills(draft(""))).toBe(false);
   });
 });

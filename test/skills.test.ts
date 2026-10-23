@@ -15,12 +15,15 @@ import {
 import { handleSkillSettingsRequest, type SkillSettingsOptions } from "../src/settings";
 import {
   addSkill,
+  addSkills,
   createSkillResolver,
   createSkillUpdates,
   fakeSkillResolver,
+  findSkills,
   readSkillSource,
   removeSkill,
   SKILL_BUNDLE_FILE,
+  skillFolders,
   updateSkill,
   type SkillRegistry,
 } from "../src/skills";
@@ -101,6 +104,189 @@ function git(cwd: string, ...args: string[]) {
   if (result.exitCode !== 0) throw new Error(result.stderr.toString());
   return result.stdout.toString().trim();
 }
+
+function skillFiles(paths: Record<string, string>) {
+  return new Map(
+    Object.entries(paths).map(([path, text]) => [path, new TextEncoder().encode(text)]),
+  );
+}
+
+function manifest(name: string) {
+  return `---\nname: ${name}\ndescription: About ${name}\n---\nBody.\n`;
+}
+
+function impeccableRepo(): string {
+  const repo = join(root, "impeccable");
+  const write = (path: string, text: string) => {
+    mkdirSync(join(repo, path, ".."), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  };
+  for (const folder of [".claude", ".agents", ".agent", ".cursor", "plugin"])
+    write(`${folder}/skills/impeccable/SKILL.md`, SKILL);
+  write(".claude/skills/impeccable/scripts/impeccable", "echo hook\n");
+  write("tests/oracle/workspaces/ctx-pin/.claude/skills/audit/SKILL.md", manifest("audit"));
+  write(".claude-plugin/plugin.json", JSON.stringify({ skills: "./.claude/skills/" }));
+  write(
+    ".claude-plugin/marketplace.json",
+    JSON.stringify({ plugins: [{ name: "impeccable", source: "./plugin" }] }),
+  );
+  write(".claude/settings.json", "{}");
+  git(repo, "init", "--quiet", "--initial-branch=main");
+  git(repo, "add", ".");
+  git(repo, "commit", "--quiet", "-m", "Add impeccable");
+  return repo;
+}
+
+const paths = (found: { path: string }[]) => found.map((skill) => skill.path);
+
+describe("finding skills in a repository", () => {
+  test("finds a SKILL.md at the root and under each usual skills folder", () => {
+    expect(skillFolders(skillFiles({ "SKILL.md": manifest("solo") }), "repo")).toEqual([
+      { path: "", name: "solo", description: "About solo" },
+    ]);
+    const found = skillFolders(
+      skillFiles({
+        "skills/a/SKILL.md": manifest("a"),
+        ".claude/skills/b/SKILL.md": manifest("b"),
+        ".agents/skills/c/SKILL.md": manifest("c"),
+        ".codex/skills/d/SKILL.md": manifest("d"),
+        "docs/e/SKILL.md": manifest("e"),
+        "README.md": "Not a skill.",
+      }),
+      "repo",
+    );
+    expect(found).toEqual([
+      { path: "skills/a", name: "a", description: "About a" },
+      { path: ".claude/skills/b", name: "b", description: "About b" },
+      { path: ".agents/skills/c", name: "c", description: "About c" },
+      { path: ".codex/skills/d", name: "d", description: "About d" },
+    ]);
+  });
+
+  test("reads the skill paths declared in the plugin manifests", () => {
+    const found = skillFolders(
+      skillFiles({
+        ".claude-plugin/plugin.json": JSON.stringify({ skills: ["./custom/"] }),
+        ".claude-plugin/marketplace.json": JSON.stringify({
+          plugins: [
+            { name: "tools", source: "./plugins/tools", skills: "./extra" },
+            { name: "docs", source: "./", skills: ["./documents/pdf"] },
+            { name: "remote", source: { source: "github", repo: "o/r" } },
+          ],
+        }),
+        "custom/x/SKILL.md": manifest("x"),
+        "plugins/tools/extra/y/SKILL.md": manifest("y"),
+        "documents/pdf/SKILL.md": manifest("pdf"),
+      }),
+      "repo",
+    );
+    expect(paths(found)).toEqual(["custom/x", "plugins/tools/extra/y", "documents/pdf"]);
+    expect(skillFolders(skillFiles({ ".claude-plugin/plugin.json": "{not json" }), "repo")).toEqual(
+      [],
+    );
+  });
+
+  test("a SKILL.md higher up hides the ones nested below it", () => {
+    const nested = skillFiles({
+      "skills/a/SKILL.md": manifest("a"),
+      "skills/a/examples/inner/SKILL.md": manifest("inner"),
+    });
+    expect(paths(skillFolders(nested, "repo"))).toEqual(["skills/a"]);
+    const top = skillFiles({ "SKILL.md": manifest("top"), "skills/a/SKILL.md": manifest("a") });
+    expect(paths(skillFolders(top, "repo"))).toEqual([""]);
+  });
+
+  test("looks at most three folder levels below each location", () => {
+    const deep = skillFiles({
+      "skills/one/two/three/SKILL.md": manifest("deep"),
+      ".claude/skills/one/two/three/four/SKILL.md": manifest("deeper"),
+    });
+    expect(paths(skillFolders(deep, "repo"))).toEqual(["skills/one/two/three"]);
+  });
+
+  test("the first location wins when two folders hold a skill of the same name", () => {
+    const twice = skillFiles({
+      ".agents/skills/x/SKILL.md": manifest("same"),
+      ".claude/skills/y/SKILL.md": manifest("same"),
+    });
+    expect(paths(skillFolders(twice, "repo"))).toEqual([".claude/skills/y"]);
+  });
+
+  test("names a skill after its folder when SKILL.md does not, and reads quoted and folded descriptions", () => {
+    expect(
+      skillFolders(
+        skillFiles({
+          "skills/review/SKILL.md": '---\ndescription: "Reviews: carefully"\n---\n',
+          "skills/notes/SKILL.md": "---\nname: notes\ndescription: >\n  Takes\n  notes\n---\n",
+        }),
+        "repo",
+      ),
+    ).toEqual([
+      { path: "skills/notes", name: "notes", description: "Takes notes" },
+      { path: "skills/review", name: "review", description: "Reviews: carefully" },
+    ]);
+    expect(skillFolders(skillFiles({ "SKILL.md": "No front matter." }), "repo")).toEqual([
+      { path: "", name: "repo", description: "" },
+    ]);
+  });
+
+  test("the impeccable repository lists impeccable from .claude/skills/impeccable", async () => {
+    const found = await findSkills(registry(createSkillResolver()), {
+      kind: "git",
+      url: impeccableRepo(),
+    });
+    expect(found).toEqual([
+      {
+        path: ".claude/skills/impeccable",
+        name: "impeccable",
+        description: "Design polish",
+        added: false,
+      },
+    ]);
+  });
+
+  test("one repository adds several skills in one step, each pinned to its folder", async () => {
+    const repo = join(root, "many");
+    for (const name of ["lint", "review"]) {
+      mkdirSync(join(repo, "skills", name), { recursive: true });
+      writeFileSync(join(repo, "skills", name, "SKILL.md"), manifest(name));
+    }
+    git(repo, "init", "--quiet", "--initial-branch=main");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "Add skills");
+    const commit = git(repo, "rev-parse", "HEAD");
+    const pins = registry(createSkillResolver());
+
+    const added = await addSkills(
+      pins,
+      { kind: "git", url: repo },
+      ["skills/lint", "skills/review"],
+      { agents: ["claude"] },
+    );
+
+    expect(added).toMatchObject([
+      {
+        name: "lint",
+        version: commit,
+        source: { kind: "git", url: repo, subfolder: "skills/lint" },
+      },
+      {
+        name: "review",
+        version: commit,
+        source: { kind: "git", url: repo, subfolder: "skills/review" },
+      },
+    ]);
+    const bundle = join(root, "skills", "review", commit, SKILL_BUNDLE_FILE);
+    expect(await bundleFiles(bundle)).toEqual({ "SKILL.md": manifest("review") });
+    expect(await findSkills(pins, { kind: "git", url: repo })).toMatchObject([
+      { name: "lint", added: true },
+      { name: "review", added: true },
+    ]);
+    expect(addSkills(pins, { kind: "git", url: repo }, ["../outside"])).rejects.toThrow(
+      "relative path",
+    );
+  });
+});
 
 describe("skill source text", () => {
   test("reads every common git form and fills the ref and subfolder from the URL", () => {
@@ -388,6 +574,7 @@ describe("skill pins", () => {
 });
 
 type Listing = {
+  found?: { path: string; name: string; description: string; added: boolean }[];
   skills: { name: string; version: string; agents: string[]; removedAt: number | null }[];
   updates?: Record<string, string>;
   notice?: string;
@@ -538,6 +725,46 @@ describe("skill settings API", () => {
         subfolder: "skills/impeccable",
       },
     ]);
+  });
+
+  test("the API finds the skills in a repository and adds the chosen ones", async () => {
+    const resolver = fakeSkillResolver(() =>
+      skillFiles({
+        "skills/lint/SKILL.md": manifest("lint"),
+        "skills/review/SKILL.md": manifest("review"),
+      }),
+    );
+    const source = { kind: "git", url: "pbakaus/impeccable" };
+    const found = await read(
+      await handleSkillSettingsRequest(post({ action: "find", source }), options({ resolver })),
+    );
+    expect(found.found).toEqual([
+      { path: "skills/lint", name: "lint", description: "About lint", added: false },
+      { path: "skills/review", name: "review", description: "About review", added: false },
+    ]);
+    expect(getSkill(db, "lint")).toBeNull();
+
+    const added = await read(
+      await handleSkillSettingsRequest(
+        post({ action: "add", source, paths: ["skills/lint", "skills/review"], agents: ["codex"] }),
+        options({ resolver }),
+      ),
+    );
+    expect(added.notice).toBe(`Added lint ${"2".repeat(7)}, review ${"2".repeat(7)}.`);
+    expect(getSkill(db, "review")!.source).toEqual({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable",
+      subfolder: "skills/review",
+    });
+    expect(audit.map(([action]) => action)).toEqual(["settings.skill.add", "settings.skill.add"]);
+
+    const none = await read(
+      await handleSkillSettingsRequest(
+        post({ action: "add", source, paths: [] }),
+        options({ resolver }),
+      ),
+    );
+    expect(none.error).toBe("Choose at least one skill to add.");
   });
 
   test("a change without the CSRF token is refused and not audited", async () => {

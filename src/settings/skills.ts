@@ -2,8 +2,10 @@ import type { Database } from "bun:sqlite";
 import { listSkills, SKILL_AGENTS, skillRollouts, type SkillPin, type SkillSource } from "../db";
 import {
   addSkill,
+  addSkills,
   addUploadedSkill,
   changeSkillAgents,
+  findSkills,
   gitSource,
   readSkillSource,
   removeSkill,
@@ -11,6 +13,7 @@ import {
   SkillError,
   skillPath,
   updateSkill,
+  type FoundSkill,
   type SkillFiles,
   type SkillRequest,
   type SkillResolver,
@@ -49,7 +52,7 @@ export async function handleSkillSettingsRequest(
     return json({ error: "Skill settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !["owner", "admin"].includes(options.role))
     return json({ error: "Only workspace owners and admins can change skills." }, 403);
-  const listing = (notice?: string) => {
+  const listing = (notice?: string, found?: FoundSkill[]) => {
     const skills = listSkills(options.db);
     return json({
       skills,
@@ -58,6 +61,7 @@ export async function handleSkillSettingsRequest(
       agents: SKILL_AGENTS,
       limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
       ...(notice ? { notice } : {}),
+      ...(found ? { found } : {}),
     });
   };
   if (request.method === "GET") {
@@ -93,7 +97,18 @@ export async function handleSkillSettingsRequest(
     const name = typeof body.name === "string" ? body.name.trim() : "";
     const agents = stringList(body.agents);
     switch (body.action) {
+      case "find":
+        return listing(undefined, await findSkills(registry, parseSource(body.source)));
       case "add": {
+        const paths = stringList(body.paths);
+        if (paths) {
+          const source = parseSource(body.source);
+          const skills = await addSkills(registry, source, paths, agents ? { agents } : {});
+          for (const skill of skills) options.audit("settings.skill.add", added(skill));
+          return listing(
+            `Added ${skills.map((skill) => `${skill.name} ${shortVersion(skill)}`).join(", ")}.`,
+          );
+        }
         const skill = await addSkill(registry, parseSource(body.source), {
           ...(name ? { name } : {}),
           ...(agents ? { agents } : {}),
