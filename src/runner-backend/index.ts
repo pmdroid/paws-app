@@ -1072,6 +1072,13 @@ export function createRemoteAgentRunner(options: {
               rmSync(pending, { force: true });
             }
           }
+          if (complete.pushFailure && assigned.type === "run" && input.askTeam)
+            await input.askTeam.ask(
+              {
+                question: `Paws could not push the candidate to \`${complete.pushFailure.branch}\` on GitHub:\n\n\`\`\`\n${complete.pushFailure.error}\n\`\`\`\n\nFix the cause if it needs one, then reply to run the task again.`,
+              },
+              { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
+            );
           if (
             disposition?.retryable &&
             complete.agentExited &&

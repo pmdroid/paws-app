@@ -179,6 +179,7 @@ import {
   type RunnerCoordinator,
   type RunnerRepositoryAccessOptions,
 } from "./runner-coordinator";
+import { cacheRepositoryCredentials } from "./runner-repository-access";
 import type { RunnerTranscriptObjects } from "./runner-transcripts";
 import {
   loadRunnerTranscriptObjects,
@@ -1563,7 +1564,7 @@ export function runnerRepositoryAccess(
   resolveApp?: (repository: string) => ActiveGitHubApp,
 ): RunnerRepositoryAccessOptions | undefined {
   if (runtime.githubAuth !== "app") return undefined;
-  return {
+  return cacheRepositoryCredentials({
     github: {
       async mintInstallationToken(input) {
         const before = resolveApp?.(input.repository);
@@ -1597,7 +1598,7 @@ export function runnerRepositoryAccess(
       if (!provider?.botIdentity) throw new Error("GitHub App bot authority is unavailable.");
       return provider.botIdentity();
     },
-  };
+  });
 }
 
 export function authProvider(
