@@ -9,6 +9,7 @@ const listing: HookListing = {
     { id: "before_shell", label: "Before a shell command" },
     { id: "before_tool", label: "Before a tool call" },
     { id: "stop", label: "When the agent stops" },
+    { id: "session_start", label: "When a session starts" },
   ],
   agents: ["claude", "codex"],
   skills: [{ name: "guard", agents: ["claude"] }],
@@ -76,8 +77,10 @@ describe("hooks section", () => {
       "Before a shell command",
       "Before a tool call",
       "When the agent stops",
+      "When a session starts",
     ])
       expect(html).toContain(`>${label}</option>`);
+    expect(html).toContain('value="session_start"');
     expect(html).toContain('placeholder="Command"');
     expect(html).toContain('name="hook-matcher"');
     expect(html).toContain('name="hook-timeout"');
