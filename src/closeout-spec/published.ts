@@ -26,10 +26,6 @@ export async function publishedAtHead(
   return kept;
 }
 
-/**
- * Keep the approvals still valid at `head`: nothing under the check's paths changed since the
- * commit the reviewer accepted. A check without paths keeps an approval only while nothing changed.
- */
 export async function approvalsAtHead(
   repo: string,
   head: string,

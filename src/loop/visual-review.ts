@@ -158,16 +158,6 @@ export function postNote(
   });
 }
 
-/**
- * Applies a reply to an open visual review. Call inside a transaction.
- *
- * - `answered`: Accept or Request changes was recorded, or the reviewer said to keep going. The
- *   task is running again; resume it with `visualReviewHandoff`.
- * - `asked`: this was the last allowed round of changes, so Paws asked whether to keep going and
- *   the task keeps waiting.
- * - `describe`: Request changes without saying which. Nothing is recorded.
- * - `rejected`: the task no longer waits on this question.
- */
 export function answerVisualReview(
   db: Database,
   input: {
@@ -247,7 +237,6 @@ export function answerVisualReview(
   return "asked";
 }
 
-/** What the resumed agent reads after an answered visual review, or null for other questions. */
 export function visualReviewHandoff(db: Database, questionId: string): string | null {
   const review = getVisualReview(db, questionId);
   if (review === null) return null;
@@ -264,7 +253,6 @@ export function visualReviewHandoff(db: Database, questionId: string): string | 
   return null;
 }
 
-/** The task's accepted visual reviews, as Closeout approvals. `task` is Closeout's task id. */
 export function visualReviewApprovals(
   db: Database,
   itemId: string,
@@ -280,7 +268,6 @@ export function visualReviewApprovals(
   }));
 }
 
-/** The latest commit among the files a review showed. */
 function reviewedHead(db: Database, itemId: string, review: StoredVisualReview): string | null {
   const shown = new Set(review.evidenceIds);
   const rows = listEvidence(db, itemId).filter((row) => shown.has(row.id));

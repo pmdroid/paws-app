@@ -71,7 +71,6 @@ ${paths ? `    paths: ${JSON.stringify(paths)}\n` : ""}`;
 
 type Step = Record<string, unknown>;
 
-/** The nth implement run publishes two new screenshots for the check. */
 function publishTwo(worktree: string, n: number): Step[] {
   const names = [`shot-${2 * n - 1}.png`, `shot-${2 * n}.png`];
   for (const name of names)
@@ -290,7 +289,6 @@ test("a change under the check's paths after acceptance asks again", async () =>
   const f = await pausedForReview({
     paths: ["web/**"],
     implement(worktree, n) {
-      // The run after the accepted review edits the screen without new screenshots.
       if (n <= 2) {
         mkdirSync(path.join(worktree, "web"), { recursive: true });
         writeFileSync(path.join(worktree, "web", "settings.html"), `<p>version ${n}</p>\n`);
@@ -322,7 +320,6 @@ test("a change under the check's paths after acceptance asks again", async () =>
 async function pausedForReview(
   options: {
     paths?: string[];
-    /** Steps of the nth implement run before it ends. */
     implement?: (worktree: string, n: number, prompt: string) => Step[];
   } = {},
 ) {
@@ -385,7 +382,6 @@ async function pausedForReview(
   const results: string[] = [];
   const prompts: string[] = [];
   let implementResult = "";
-  // By default the first run publishes, and so does a run told to publish new screenshots.
   const implement =
     options.implement ??
     ((worktree: string, n: number, prompt: string) =>
@@ -456,7 +452,6 @@ async function pausedForReview(
       while ((await jobs.tick()) !== null);
       await outboxIdle(outbox);
     },
-    /** Runs jobs and delivers Linear rows until `done`. */
     async driveUntil(done: () => boolean) {
       const deadline = Date.now() + 90_000;
       while (!done()) {

@@ -246,10 +246,6 @@ export type EvidenceApproval = {
   approvedBy: string;
   /** ISO 8601 time of the approval. */
   approvedAt: string;
-  /**
-   * Lowercase hex commit the reviewer accepted. A later change under the check's
-   * `paths` (any change when it has none) needs a new review. Omitted means no limit.
-   */
   commit?: string;
 };
 

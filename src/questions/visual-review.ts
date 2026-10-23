@@ -19,7 +19,6 @@ export const VISUAL_REVIEW_REMINDER =
 export const VISUAL_REVIEW_ANSWERERS =
   "Only the person who delegated this issue or the Linear project's lead can answer this visual review. The task keeps waiting.";
 
-/** After this many rounds of requested changes, Paws asks whether to keep going. */
 export const VISUAL_REVIEW_ROUNDS = 3;
 
 export const VISUAL_REVIEW_CONTINUE_OPTIONS = ["Keep going"] as const;
@@ -41,13 +40,11 @@ export type StoredVisualReview = {
   checkId: string;
   evidenceIds: string[];
   createdAt: number;
-  /** `continue` asks whether to keep going after `VISUAL_REVIEW_ROUNDS` rounds of changes. */
   kind: VisualReviewKind;
   outcome: VisualReviewOutcome | null;
   answeredBy: string | null;
   answeredAt: number | null;
   feedback: string | null;
-  /** Workspace head the reviewer accepted. Later changes under the check's paths need a review. */
   headCommit: string | null;
 };
 
@@ -99,10 +96,6 @@ export function getVisualReview(db: Database, questionId: string): StoredVisualR
   return row === null ? null : mapVisualReview(row);
 }
 
-/**
- * Asks whether to keep going after the rounds of requested changes. The answer resumes the agent
- * with the last feedback. Call inside a transaction.
- */
 export function openVisualReviewContinue(
   db: Database,
   input: { itemId: string; runId: string | null; sessionId: string; checkId: string; now: number },
@@ -122,7 +115,6 @@ export function openVisualReviewContinue(
   return question;
 }
 
-/** Records how the reviewer answered. Call inside the transaction that answers the question. */
 export function recordVisualReviewAnswer(
   db: Database,
   questionId: string,
@@ -147,7 +139,6 @@ export function recordVisualReviewAnswer(
   );
 }
 
-/** Marks an accepted review stale: files under the check's paths changed after it. */
 export function markVisualReviewStale(db: Database, questionId: string): void {
   db.run(
     "UPDATE visual_review SET outcome = 'stale' WHERE question_id = ? AND outcome = 'accepted'",
@@ -155,7 +146,6 @@ export function markVisualReviewStale(db: Database, questionId: string): void {
   );
 }
 
-/** Reviews of this task that a reviewer accepted, oldest first. */
 export function acceptedVisualReviews(db: Database, itemId: string): StoredVisualReview[] {
   return db
     .query<VisualReviewRow, [string]>(
@@ -165,7 +155,6 @@ export function acceptedVisualReviews(db: Database, itemId: string): StoredVisua
     .map(mapVisualReview);
 }
 
-/** Files that no longer count: the reviewer asked for changes, or the screens changed after. */
 export function rejectedEvidenceIds(db: Database, itemId: string): Set<string> {
   const rows = db
     .query<VisualReviewRow, [string]>(
@@ -175,7 +164,6 @@ export function rejectedEvidenceIds(db: Database, itemId: string): Set<string> {
   return new Set(rows.flatMap((row) => mapVisualReview(row).evidenceIds));
 }
 
-/** Rounds of requested changes for the check since the reviewer last said to keep going. */
 export function visualReviewRounds(db: Database, itemId: string, checkId: string): number {
   const row = db
     .query<{ changes: number; continued: number }, [string, string]>(
@@ -188,7 +176,6 @@ export function visualReviewRounds(db: Database, itemId: string, checkId: string
   return (row?.changes ?? 0) - VISUAL_REVIEW_ROUNDS * (row?.continued ?? 0);
 }
 
-/** The feedback of the last round of requested changes for the check. */
 export function lastVisualReviewFeedback(
   db: Database,
   itemId: string,
@@ -208,10 +195,8 @@ export function lastVisualReviewFeedback(
 export type VisualReviewAnswer =
   | { kind: "accept" }
   | { kind: "changes"; feedback: string }
-  /** "Request changes" without saying which. */
   | { kind: "describe" };
 
-/** Accept, or the changes the reviewer wants. Any other reply is the feedback. */
 export function parseVisualReviewAnswer(answer: string): VisualReviewAnswer {
   const text = answer.trim();
   if (/^(accept|accepted|approve|approved)[.!]?$/i.test(text)) return { kind: "accept" };
@@ -219,7 +204,6 @@ export function parseVisualReviewAnswer(answer: string): VisualReviewAnswer {
   return feedback === "" ? { kind: "describe" } : { kind: "changes", feedback };
 }
 
-/** What the resumed agent reads after the reviewer accepted. */
 export function visualReviewAcceptedHandoff(checkId: string): string {
   return [
     "Handoff from the previous session.",
@@ -228,7 +212,6 @@ export function visualReviewAcceptedHandoff(checkId: string): string {
   ].join("\n");
 }
 
-/** What the resumed agent reads after the reviewer asked for changes. */
 export function visualReviewChangesHandoff(checkId: string, feedback: string): string {
   return [
     "Handoff from the previous session.",
@@ -238,7 +221,6 @@ export function visualReviewChangesHandoff(checkId: string, feedback: string): s
   ].join("\n");
 }
 
-/** What the resumed agent reads after it changed the screens following an accepted review. */
 export function visualReviewStaleHandoff(checkId: string): string {
   return [
     "Handoff from the previous session.",

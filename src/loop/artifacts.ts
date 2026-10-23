@@ -49,10 +49,6 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
   };
 }
 
-/**
- * The item's Closeout videos and screenshots, for `evidence` checks. Files a reviewer asked to
- * change, or whose screens changed after an accepted review, no longer count.
- */
 export function publishedEvidence(db: Database, itemId: string): PublishedEvidence[] {
   const rejected = rejectedEvidenceIds(db, itemId);
   return listEvidence(db, itemId)

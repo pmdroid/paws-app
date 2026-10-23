@@ -5148,10 +5148,6 @@ export class Orchestrator {
     return true;
   }
 
-  /**
-   * Accept passes the check and resumes the task to finish Closeout. Request changes resumes it
-   * with the feedback, or asks whether to keep going after the last allowed round.
-   */
   private async answerVisualReview(
     open: StoredQuestion,
     review: StoredVisualReview,
@@ -5183,7 +5179,6 @@ export class Orchestrator {
         return "rejected" as const;
       }
       if (item.sessionKey === sessionId) applyLinearTurns(this.db, sessionId, [eventKey], item.id);
-      // A run still ending after it asked resumes the task itself once it releases its slot.
       if (result === "asked" || (open.runId !== null && this.askedRuns.has(open.runId)))
         return "answered" as const;
       enqueueJobOnce(this.db, {
@@ -5203,11 +5198,6 @@ export class Orchestrator {
     return outcome;
   }
 
-  /**
-   * An accepted visual review covers the screens it showed. When the agent then changed files
-   * under the check's paths, the review stops counting, and the agent publishes new screenshots
-   * so Paws asks again. Returns true when the task went back to the agent.
-   */
   private async visualReviewOutdated(
     item: WorkItemRecord,
     worktree: string,
