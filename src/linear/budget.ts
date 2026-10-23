@@ -42,17 +42,27 @@ export type LinearRateBudget = {
   complexityLimit: number | null;
   complexityResetMs: number | null;
   complexity: number | null;
+  endpoint?: LinearEndpointLimit;
+};
+
+export type LinearEndpointLimit = {
+  name: string;
+  requestsRemaining: number | null;
+  requestsLimit: number | null;
+  requestsResetMs: number | null;
 };
 
 export class LinearRateLimitError extends Error {
   readonly retryAfterMs: number;
   readonly budget: LinearRateBudget;
+  readonly endpoint: string | null;
 
-  constructor(delayMs: number, budget: LinearRateBudget) {
+  constructor(delayMs: number, budget: LinearRateBudget, endpoint: string | null = null) {
     super("Linear GraphQL: RATELIMITED");
     this.name = "LinearRateLimitError";
     this.retryAfterMs = Math.max(0, delayMs);
     this.budget = budget;
+    this.endpoint = endpoint;
   }
 }
 
@@ -69,14 +79,21 @@ export type LinearUsage = {
   windowMs: number;
   callers: Record<string, LinearCallerUsage>;
   items: LinearItemUsage[];
+  endpoints: LinearEndpointLimit[];
   lastCatchUpMs?: number | null;
 };
 
 export type LinearItemUsage = { item: string; requests: number };
 
 export type LinearLedger = {
-  admit(caller: string, priority?: LinearPriority): LinearRateLimitError | null;
-  observe(caller: string, budget: LinearRateBudget, item?: string, itemId?: string): void;
+  admit(caller: string, priority?: LinearPriority, operation?: string): LinearRateLimitError | null;
+  observe(
+    caller: string,
+    budget: LinearRateBudget,
+    item?: string,
+    itemId?: string,
+    operation?: string,
+  ): void;
   limited(caller: string, error: LinearRateLimitError): LinearRateLimitError;
   usage(): LinearUsage;
   now(): number;
@@ -157,6 +174,8 @@ export function createLinearLedger(
   const entries: LedgerEntry[] = [];
   let budget: LinearRateBudget | null = null;
   let holdUntilMs: number | null = null;
+  const endpoints = new Map<string, LinearEndpointLimit>();
+  const operations = new Map<string, string>();
   const prune = () => {
     const since = now() - LINEAR_USAGE_WINDOW_MS;
     let stale = 0;
@@ -214,27 +233,40 @@ export function createLinearLedger(
           (left, right) => right.requests - left.requests || left.item.localeCompare(right.item),
         )
         .slice(0, LINEAR_TOP_ITEMS),
+      endpoints: [...endpoints.values()]
+        .filter((limit) => endpointIsLow(limit, now()))
+        .sort((left, right) => left.name.localeCompare(right.name)),
     };
   };
   return {
-    admit(caller, priority = "normal") {
-      const left = Math.max(holdMs(), reserveMs(budget, priority, now()));
+    admit(caller, priority = "normal", operation) {
+      const endpoint = operation === undefined ? undefined : operations.get(operation);
+      const left = Math.max(
+        holdMs(),
+        reserveMs(budget, priority, now()),
+        endpointHoldMs(endpoint === undefined ? undefined : endpoints.get(endpoint), now()),
+      );
       if (left === 0) return null;
       record(caller, { held: 1 });
       return new LinearRateLimitError(left + jitter(left), budget ?? emptyBudget());
     },
-    observe(caller, seen, item, itemId) {
+    observe(caller, seen, item, itemId, operation) {
       record(caller, { requests: 1, complexity: seen.complexity ?? 0 }, item);
       if (itemId !== undefined) options.countItem?.(itemId);
-      if (Object.values(seen).some((value) => value !== null)) budget = seen;
+      const { endpoint, ...limits } = seen;
+      if (endpoint !== undefined) {
+        endpoints.set(endpoint.name, endpoint);
+        if (operation !== undefined) operations.set(operation, endpoint.name);
+      }
+      if (Object.values(limits).some((value) => value !== null)) budget = limits;
     },
     limited(caller, error) {
-      const until = now() + error.retryAfterMs;
-      holdUntilMs = Math.max(holdUntilMs ?? 0, until);
+      if (error.endpoint === null)
+        holdUntilMs = Math.max(holdUntilMs ?? 0, now() + error.retryAfterMs);
       record(caller, { rateLimited: 1 });
-      log(rateLimitLine(caller, error.budget, error.retryAfterMs, usage()));
-      const left = holdUntilMs - now();
-      return new LinearRateLimitError(left + jitter(left), error.budget);
+      log(rateLimitLine(caller, error, usage()));
+      const left = error.endpoint === null ? holdUntilMs! - now() : error.retryAfterMs;
+      return new LinearRateLimitError(left + jitter(left), error.budget, error.endpoint);
     },
     usage,
     now,
@@ -268,12 +300,20 @@ function reserveMs(budget: LinearRateBudget | null, priority: LinearPriority, no
   return wait;
 }
 
-function rateLimitLine(
-  caller: string,
-  budget: LinearRateBudget,
-  holdMs: number,
-  usage: LinearUsage,
-): string {
+function endpointHoldMs(limit: LinearEndpointLimit | undefined, now: number): number {
+  if (limit?.requestsRemaining !== 0 || limit.requestsResetMs === null) return 0;
+  return Math.max(0, limit.requestsResetMs - now);
+}
+
+function endpointIsLow(limit: LinearEndpointLimit, now: number): boolean {
+  const { requestsRemaining: remaining, requestsLimit: max, requestsResetMs: reset } = limit;
+  if (remaining === null || max === null || max <= 0) return false;
+  if (reset !== null && reset <= now) return false;
+  return remaining / max < BACKGROUND_BUDGET_FRACTION;
+}
+
+function rateLimitLine(caller: string, error: LinearRateLimitError, usage: LinearUsage): string {
+  const { budget, retryAfterMs: holdMs, endpoint } = error;
   const reset = budget.requestsResetMs ?? budget.complexityResetMs;
   const top = Object.entries(usage.callers)
     .sort(
@@ -283,7 +323,7 @@ function rateLimitLine(
     .map(([name, spent]) => `${name} ${spent.requests} req/${spent.complexity} cx`)
     .join(", ");
   return [
-    `linear RATELIMITED caller=${caller} hold ${Math.ceil(holdMs / 1000)}s`,
+    `linear RATELIMITED caller=${caller}${endpoint === null ? "" : ` endpoint=${endpoint}`} hold ${Math.ceil(holdMs / 1000)}s`,
     `requests ${count(budget.requestsRemaining)}/${count(budget.requestsLimit)}`,
     `complexity ${count(budget.complexityRemaining)}/${count(budget.complexityLimit)}`,
     `reset ${reset === null ? "unknown" : new Date(reset).toISOString()}`,
@@ -316,7 +356,27 @@ export function budgetFromHeaders(headers: Headers): LinearRateBudget {
     complexityLimit: headerNumber(headers, "x-ratelimit-complexity-limit"),
     complexityResetMs: headerTimestamp(headers, "x-ratelimit-complexity-reset"),
     complexity: headerNumber(headers, "x-complexity"),
+    ...endpointFromHeaders(headers),
   };
+}
+
+function endpointFromHeaders(headers: Headers): { endpoint?: LinearEndpointLimit } {
+  const name = headers.get("x-ratelimit-endpoint-name")?.trim();
+  if (!name) return {};
+  return {
+    endpoint: {
+      name,
+      requestsRemaining: headerNumber(headers, "x-ratelimit-endpoint-requests-remaining"),
+      requestsLimit: headerNumber(headers, "x-ratelimit-endpoint-requests-limit"),
+      requestsResetMs: headerTimestamp(headers, "x-ratelimit-endpoint-requests-reset"),
+    },
+  };
+}
+
+export function resetRetryMs(headers: Headers, now = Date.now()): number | null {
+  return (
+    exhaustedLimit(budgetFromHeaders(headers), now)?.waitMs ?? retryAfterHeaderMs(headers, now)
+  );
 }
 
 /** Null when the response is not a Linear `RATELIMITED` result. */
@@ -327,7 +387,10 @@ export function rateLimitFrom(
   now = Date.now(),
 ): LinearRateLimitError | null {
   if (response.status !== 429 && !bodyIsRateLimited(json)) return null;
-  return new LinearRateLimitError(retryAfterMs(response, json, budget, now), budget);
+  const ran = exhaustedLimit(budget, now);
+  const delayMs =
+    ran?.waitMs ?? retryAfterHeaderMs(response.headers, now) ?? metaRetryMs(json, now) ?? 15_000;
+  return new LinearRateLimitError(delayMs, budget, ran?.endpoint ?? null);
 }
 
 /** How long to wait when the remaining request or complexity budget is already zero. */
@@ -355,22 +418,35 @@ function bodyIsRateLimited(json: unknown): boolean {
   });
 }
 
-function retryAfterMs(
-  response: Response,
-  json: unknown,
+function exhaustedLimit(
   budget: LinearRateBudget,
   now: number,
-): number {
-  const header = response.headers.get("retry-after");
-  if (header !== null && header.length > 0) {
-    const seconds = Number(header);
-    if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
-    const when = Date.parse(header);
-    if (Number.isFinite(when)) return Math.max(0, when - now);
+): { waitMs: number; endpoint: string | null } | null {
+  let wait = 0;
+  for (const [remaining, reset] of [
+    [budget.requestsRemaining, budget.requestsResetMs],
+    [budget.complexityRemaining, budget.complexityResetMs],
+  ] as const) {
+    if (remaining !== null && remaining <= 0 && reset !== null) wait = Math.max(wait, reset - now);
   }
-  const reset = readReset(json) ?? budget.requestsResetMs ?? budget.complexityResetMs;
-  if (reset !== null) return Math.max(0, reset - now);
-  return 15_000;
+  if (wait > 0) return { waitMs: wait, endpoint: null };
+  const endpoint = budget.endpoint;
+  const waitMs = endpointHoldMs(endpoint, now);
+  return endpoint !== undefined && waitMs > 0 ? { waitMs, endpoint: endpoint.name } : null;
+}
+
+function retryAfterHeaderMs(headers: Headers, now: number): number | null {
+  const header = headers.get("retry-after")?.trim();
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+  const when = Date.parse(header);
+  return Number.isFinite(when) ? Math.max(0, when - now) : null;
+}
+
+function metaRetryMs(json: unknown, now: number): number | null {
+  const reset = readReset(json);
+  return reset === null ? null : Math.max(0, reset - now);
 }
 
 function readReset(json: unknown): number | null {
