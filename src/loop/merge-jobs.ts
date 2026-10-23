@@ -14,6 +14,7 @@ import {
 import { worktreeBranch } from "./sources";
 
 export const MERGE_CI_POLL_MS = 10_000;
+export const MERGE_BACKSTOP_POLL_MS = 5 * 60_000;
 export const MERGE_CI_WAIT_MS = 269 * MERGE_CI_POLL_MS;
 /** A task waiting in its repository's merge queue, or for a review, checks again this often. */
 export const MERGE_QUEUE_POLL_MS = 30_000;
@@ -220,6 +221,8 @@ function deliveryFacts(event: string, body: unknown): { shas: Set<string>; branc
     new Set(values.filter((value): value is string => typeof value === "string"));
   return { shas: strings(shas), branches: strings(branches) };
 }
+
+export function wakeMergesBehind(_db: Database, _now: number): void {}
 
 export function ciWaitVerification(payload: unknown): CiWaitVerification | undefined {
   const record = payloadRecord(payload);
