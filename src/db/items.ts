@@ -4,6 +4,7 @@ import {
   capActivityText,
   capReason,
   countsAwakeTime,
+  formatAwakeBreakdown,
   timeLimitQuestion,
   TIME_LIMIT_EXTENSION_MS,
   TIME_LIMIT_OPTIONS,
@@ -282,6 +283,8 @@ function enforceCaps(db: Database, id: string, now: number): CapOutcome {
   if (reason === "time" && updated.acceptedHead !== null) {
     if (updated.state !== "running") return { capped: false, item: updated };
     if (askTimeLimit(db, updated, now)) return { capped: false, asked: true, item: refetch() };
+    pauseAtTimeLimit(db, updated, now);
+    return { capped: false, item: refetch() };
   }
   failForCap(db, updated, reason, now);
   return { capped: true, item: refetch() };
@@ -324,6 +327,34 @@ export function resetAwakeTime(db: Database, id: string): void {
      WHERE id = ?`,
     [id],
   );
+}
+
+/**
+ * Without a Linear session to ask in, accepted work pauses at the time limit
+ * instead of failing. The cap already allows another hour, so resuming it from
+ * the run page keeps going.
+ */
+function pauseAtTimeLimit(db: Database, item: WorkItemRecord, now: number): void {
+  applyWorkItemEvent(db, item.id, "pause");
+  cancelOpenJobs(db, { itemId: item.id, reason: "time_limit", now });
+  if (item.currentRunId !== null) {
+    const run = getRun(db, item.currentRunId);
+    if (run?.status === "active") markRun(db, run.id, "ended", now);
+  }
+  extendAwakeCap(db, item.id);
+  journal(`item ${item.linearIdentifier} reached its time cap after acceptance; paused`);
+  enqueueOutboxOnce(db, {
+    target: OUTBOX_ACTIVITY.target,
+    op: OUTBOX_ACTIVITY.op,
+    orderingKey: item.id,
+    idempotencyKey: `time-limit-pause:${item.id}:${item.version}`,
+    payload: { sessionId: item.id, kind: "thought", body: timeLimitPausedNote(item) },
+    now,
+  });
+}
+
+function timeLimitPausedNote(item: WorkItemRecord): string {
+  return `Paused at the time limit. Closeout already accepted this task's work, so Paws did not fail it. ${formatAwakeBreakdown(awakeBreakdown(item))} Resume it from the run page to give the agent another hour.`;
 }
 
 /**
