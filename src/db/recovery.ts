@@ -157,8 +157,12 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
     mode !== "artifact" &&
     item.currentRunId !== null &&
     db
-      .query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?")
-      .get(item.currentRunId, now) !== null
+      .query(
+        `SELECT 1 FROM runner_work w WHERE w.run_id=?1 AND w.ended_at IS NULL AND (w.lease_until>?2 OR
+         (?3=0 AND EXISTS(SELECT 1 FROM runner_result r
+           WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)))`,
+      )
+      .get(item.currentRunId, now, item.cancelRequested ? 1 : 0) !== null
   );
 }
 

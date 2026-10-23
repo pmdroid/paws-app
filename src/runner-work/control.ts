@@ -190,6 +190,7 @@ export function createRunnerWork(options: {
     generation: number,
     at: number,
     allowPendingQuestion = false,
+    settled = false,
   ): Assignment {
     const identity = runner(runnerId);
     const work = assignment(runId);
@@ -200,11 +201,12 @@ export function createRunnerWork(options: {
       work.generation !== generation ||
       work.runnerFence !== identity.fence ||
       work.endedAt !== null ||
-      work.leaseUntil <= at
+      (work.leaseUntil <= at && !settled)
     )
       throw new RunnerWorkFencedError("Runner work is fenced or its lease expired.");
     const command = workCommand(work);
-    if (command.expiresAt <= at) throw new RunnerWorkFencedError("Runner command expired.");
+    if (command.expiresAt <= at && !settled)
+      throw new RunnerWorkFencedError("Runner command expired.");
     if (command.type === "task") {
       bindTask(
         command,
@@ -221,6 +223,13 @@ export function createRunnerWork(options: {
     )
       throw new Error("Run repository binding changed.");
     return work;
+  }
+  function accepted(work: Assignment) {
+    return (
+      db
+        .query("SELECT 1 FROM runner_result WHERE run_id=? AND generation=? AND command_id=?")
+        .get(work.runId, work.generation, work.commandId) !== null
+    );
   }
   function workCommand(work: Assignment): WorkCommand {
     const row = db
@@ -293,7 +302,7 @@ export function createRunnerWork(options: {
     current(runId: string, generation: number) {
       const assigned = assignment(runId);
       if (!assigned) throw new RunnerWorkFencedError("Runner work is unavailable.");
-      const current = live(assigned.runnerId, runId, generation, now());
+      const current = live(assigned.runnerId, runId, generation, now(), false, accepted(assigned));
       return { assignment: current, command: workCommand(current) };
     },
     assign(input: WorkCommand) {
@@ -466,7 +475,8 @@ export function createRunnerWork(options: {
         const fenced: { runId: string; generation: number }[] = [];
         for (const row of rows) {
           try {
-            live(runnerId, row.runId, row.generation, at, true);
+            live(runnerId, row.runId, row.generation, at, true, accepted(row));
+            if (row.leaseUntil <= at) continue;
             const expiresAt = Math.min(workCommand(row).expiresAt, at + 60_000);
             db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [expiresAt, row.runId]);
             leases.push({ runId: row.runId, generation: row.generation, expiresAt });
