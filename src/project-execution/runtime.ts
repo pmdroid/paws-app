@@ -1,14 +1,23 @@
 import type { Database } from "bun:sqlite";
-import type { CommandBus, RepositoryBinding } from "../core";
+import {
+  isBlockerSatisfied,
+  type CommandBus,
+  type RepositoryBinding,
+  type TaskMode,
+  type WorkItemState,
+} from "../core";
 import {
   applyWorkItemEvent,
   auditWorkspaceAccess,
   bindWorkItemRepository,
+  deliveredLinearIssueState,
   enqueueJobOnce,
   enqueueOutboxOnce,
   getLinearSession,
   getWorkItem,
   immediate,
+  listTaskBlockers,
+  saveTaskBlocks,
   submitCommand,
   syncWorkspaceMember,
   workspaceForOrganization,
@@ -269,24 +278,15 @@ export function createApprovedProjects(input: {
     if (db.query("SELECT 1 FROM outbox WHERE idempotency_key=?").get(key)) return;
     const { preview } = approval;
     const issues = new Map(preview.project.issues.map((issue) => [issue.linearIssueId, issue]));
-    const finished = new Set(
-      db
-        .query<{ issueId: string }, [string]>(
-          `SELECT c.issue_id AS issueId FROM project_approval_issue c JOIN work_item i
-           ON i.delegation_id=c.delegation_id AND i.linear_issue_id=c.issue_id
-           WHERE c.approval_id=? AND i.state IN ('merged','completed')`,
-        )
-        .all(approval.id)
-        .map((row) => row.issueId),
-    );
     const outside = new Map<string, SummaryIssue | null>();
     const subIssues: SummarySubIssue[] = [];
     for (const issueId of preview.order) {
       const issue = issues.get(issueId);
       if (!issue) continue;
+      const pending = pendingBlockers(approval, issueId);
       const blockers: SummaryIssue[] = [];
       for (const edge of preview.edges) {
-        if (edge.blockedLinearIssueId !== issueId || finished.has(edge.blockerLinearIssueId))
+        if (edge.blockedLinearIssueId !== issueId || !pending.includes(edge.blockerLinearIssueId))
           continue;
         const blocker = issues.get(edge.blockerLinearIssueId);
         if (blocker) blockers.push({ identifier: blocker.identifier, url: blocker.url ?? null });
@@ -309,6 +309,9 @@ export function createApprovedProjects(input: {
           external.push(blocker);
       }
       signal.throwIfAborted();
+      for (const blockerId of pending)
+        if (!issues.has(blockerId) && !outside.get(blockerId))
+          external.push({ identifier: identifierFor(approval, blockerId), url: null });
       external.sort((left, right) => left.identifier.localeCompare(right.identifier));
       subIssues.push({
         identifier: issue.identifier,
@@ -335,6 +338,73 @@ export function createApprovedProjects(input: {
         now: now(),
       });
     }).immediate();
+  }
+  function identifierFor(approval: ProjectApproval, issueId: string): string {
+    return (
+      approval.preview.project.issues.find((issue) => issue.linearIssueId === issueId)
+        ?.identifier ??
+      db
+        .query<{ identifier: string }, [string]>(
+          "SELECT linear_identifier AS identifier FROM work_item WHERE linear_issue_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+        )
+        .get(issueId)?.identifier ??
+      deliveredLinearIssueState(db, approval.preview.project.organizationId, issueId)?.identifier ??
+      issueId
+    );
+  }
+  function blockerSatisfied(approval: ProjectApproval, blockerId: string): boolean {
+    const items = db
+      .query<
+        { state: WorkItemState; mode: TaskMode | null; cancelRequested: number },
+        [string, string]
+      >(
+        `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested FROM work_item i
+         JOIN linear_session s ON s.session_id=i.session_key
+         JOIN workspace w ON w.linear_organization_id=s.organization_id
+         LEFT JOIN work_item_task t ON t.item_id=i.id
+         WHERE w.id=? AND i.linear_issue_id=? AND i.state<>'cancelled'
+         AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
+         ORDER BY i.created_at,i.id`,
+      )
+      .all(approval.workspaceId, blockerId);
+    if (items.length > 0) {
+      const active = items.filter((item) => !item.cancelRequested);
+      const item = (active.length > 0 ? active : items).at(-1)!;
+      return !item.cancelRequested && isBlockerSatisfied(item);
+    }
+    if (
+      approval.preview.selection.blockers?.some(
+        (policy) => policy.blockerLinearIssueId === blockerId && policy.outcome === "merge",
+      )
+    )
+      return true;
+    const delivered = deliveredLinearIssueState(
+      db,
+      approval.preview.project.organizationId,
+      blockerId,
+    );
+    if (delivered?.stateType) return delivered.stateType === "completed";
+    return (
+      db
+        .query(
+          "SELECT 1 FROM project_approval_issue WHERE workspace_id=? AND issue_id=? AND released_at IS NULL",
+        )
+        .get(approval.workspaceId, blockerId) === null
+    );
+  }
+  function pendingBlockers(approval: ProjectApproval, issueId: string): string[] {
+    const blockers = new Set([
+      ...approval.preview.edges
+        .filter((edge) => edge.blockedLinearIssueId === issueId)
+        .map((edge) => edge.blockerLinearIssueId),
+      ...listTaskBlockers(db, issueId),
+    ]);
+    return [...blockers].filter((blockerId) => !blockerSatisfied(approval, blockerId));
+  }
+  function waitingFor(approval: ProjectApproval, issueId: string): string[] {
+    return pendingBlockers(approval, issueId)
+      .map((blockerId) => identifierFor(approval, blockerId))
+      .sort();
   }
   function adoptParent(
     sessionId: string,
@@ -445,6 +515,11 @@ export function createApprovedProjects(input: {
         "INSERT INTO project_approval_issue(workspace_id,issue_id,approval_id) VALUES(?,?,?)",
         [workspace.id, issueId, id],
       );
+    saveTaskBlocks(
+      db,
+      issueIds,
+      edges.filter((edge) => subIds.has(edge.blockedLinearIssueId)),
+    );
     auditWorkspaceAccess(db, {
       workspaceId: workspace.id,
       userId: owner.userId,
@@ -462,6 +537,7 @@ export function createApprovedProjects(input: {
       const approval = readProjectApproval(db, id);
       return claims(id).map((claim) => ({
         ...claim,
+        waitingFor: approval && !claim.sessionId ? waitingFor(approval, claim.issueId) : [],
         blockedReasons:
           claim.epicId && approval
             ? [
@@ -754,19 +830,29 @@ export function createApprovedProjects(input: {
           context.signal.throwIfAborted();
           try {
             const approval = readProjectApproval(db, row.id)!;
-            if (
-              [approval.actorId, approval.leadUserId].some((userId) => {
+            const current = claims(row.id);
+            const ready = new Set(
+              current
+                .filter(
+                  (claim) => !claim.sessionId && waitingFor(approval, claim.issueId).length === 0,
+                )
+                .map((claim) => claim.issueId),
+            );
+            const idle = ready.size === 0 && current.every((claim) => !claim.sessionId);
+            if (!idle) {
+              const stale = [approval.actorId, approval.leadUserId].some((userId) => {
                 const member = workspaceMember(db, approval.workspaceId, userId);
                 return member === null || !membershipFresh(member, now());
-              })
-            )
-              await refreshAuthority(approval, context.signal);
-            else authority(approval);
-            for (const claim of claims(row.id)) {
+              });
+              if (stale) await refreshAuthority(approval, context.signal);
+              else authority(approval);
+            }
+            for (const claim of idle ? [] : current) {
               if (claim.sessionId) {
                 if (!claim.epicId) await input.resumeSession(claim.sessionId);
                 continue;
               }
+              if (!ready.has(claim.issueId)) continue;
               await input.startSession(
                 { kind: "issue", id: claim.issueId },
                 new URL("/status/", input.origin).href,

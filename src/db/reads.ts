@@ -120,6 +120,30 @@ export function listOpenQuestions(db: Database): OpenQuestionRecord[] {
     }));
 }
 
+export type DeliveredLinearIssueState = {
+  stateType: string | null;
+  identifier: string | null;
+};
+
+export function deliveredLinearIssueState(
+  db: Database,
+  organizationId: string,
+  issueId: string,
+): DeliveredLinearIssueState | null {
+  return (
+    db
+      .query<DeliveredLinearIssueState, [string, string]>(
+        `SELECT json_extract(payload,'$.data.state.type') AS stateType,
+         json_extract(payload,'$.data.identifier') AS identifier
+         FROM inbox_event
+         WHERE json_extract(payload,'$.type')='Issue' AND json_extract(payload,'$.data.id')=?
+         AND json_extract(payload,'$.organizationId')=?
+         ORDER BY updated_at_ms DESC, received_at DESC LIMIT 1`,
+      )
+      .get(issueId, organizationId) ?? null
+  );
+}
+
 function stringList(value: string): string[] {
   try {
     const parsed: unknown = JSON.parse(value);

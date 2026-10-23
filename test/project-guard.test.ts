@@ -10,6 +10,7 @@ test("restart without project configuration refuses persisted approvals and keep
   const f = createProjectFixture(filename);
   let closed = false;
   try {
+    f.tracker.deps.delete("two");
     const approval = await f.projects.preview(f.actor, f.selection, AbortSignal.timeout(10_000));
     await f.projects.approve(
       f.actor,
