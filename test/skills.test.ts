@@ -165,6 +165,36 @@ describe("skill sources", () => {
     expect(await bundleFiles(bundle)).toEqual({ "SKILL.md": "---\nname: review-paws\n---\n" });
   });
 
+  test("only the subfolder of a git source counts toward the limit", async () => {
+    const repo = join(root, "large-repo");
+    mkdirSync(join(repo, "skills", "review-paws"), { recursive: true });
+    git(repo, "init", "--quiet", "--initial-branch=main");
+    writeFileSync(join(repo, "skills", "review-paws", "SKILL.md"), "---\nname: review-paws\n---\n");
+    writeFileSync(join(repo, "site.bin"), "x".repeat(4096));
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "Add review-paws next to a large site");
+
+    const pins = registry(createSkillResolver({ limit: 2048 }), { limit: 2048 });
+    const skill = await addSkill(
+      pins,
+      { kind: "git", url: repo, subfolder: "skills/review-paws" },
+      { agents: ["claude"] },
+    );
+    expect(skill.name).toBe("review-paws");
+
+    mkdirSync(join(repo, "skills", "large-paws"));
+    writeFileSync(join(repo, "skills", "large-paws", "SKILL.md"), "---\nname: large-paws\n---\n");
+    writeFileSync(join(repo, "skills", "large-paws", "big.txt"), "x".repeat(4096));
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "Add large-paws");
+    const refused = addSkill(
+      pins,
+      { kind: "git", url: repo, subfolder: "skills/large-paws" },
+      { agents: ["claude"] },
+    );
+    expect(refused).rejects.toThrow("bundle limit");
+  });
+
   test("a source without SKILL.md is refused", async () => {
     const npm = npmRegistry({ "1.0.0": await tarball({ "README.md": "No skill here." }) });
     const resolver = createSkillResolver({ fetch: npm.fetch, registry: "https://registry.test" });

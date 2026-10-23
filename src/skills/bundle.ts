@@ -52,19 +52,27 @@ export function skillSubfolder(files: SkillFiles, subfolder: string | undefined)
 }
 
 /** Read a checked-out folder, skipping `.git` and anything that is not a regular file. */
-export function readSkillFolder(root: string, limit = SKILL_BUNDLE_LIMIT): SkillFiles {
+export function readSkillFolder(
+  root: string,
+  limit = SKILL_BUNDLE_LIMIT,
+  subfolder = "",
+): SkillFiles {
   const files: SkillFiles = new Map();
   let size = 0;
+  const under = (path: string) => subfolder === "" || path.startsWith(`${subfolder}/`);
   const walk = (dir: string, prefix: string) => {
     for (const entry of readdirSync(dir).sort()) {
       if (entry === ".git") continue;
       const full = join(dir, entry);
+      const path = `${prefix}${entry}`;
       const stat = lstatSync(full);
-      if (stat.isDirectory()) walk(full, `${prefix}${entry}/`);
-      else if (stat.isFile()) {
+      if (stat.isDirectory()) {
+        if (under(path) || subfolder.startsWith(`${path}/`) || subfolder === path)
+          walk(full, `${path}/`);
+      } else if (stat.isFile() && under(path)) {
         size += stat.size;
         if (size > limit) throw tooLarge(limit);
-        files.set(`${prefix}${entry}`, readFileSync(full));
+        files.set(path, readFileSync(full));
       }
     }
   };
