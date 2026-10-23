@@ -54,6 +54,8 @@ test("approval binds exact project scope, rejects authorization races and persis
   };
   let afterRead = () => {};
   let edges = [{ blockerLinearIssueId: "one", blockedLinearIssueId: "two" }];
+  let members = ["actor", "teammate"];
+  let memberReads = 0;
   const service = createProjectApprovals({
     db,
     now: () => ++now,
@@ -63,6 +65,11 @@ test("approval binds exact project scope, rejects authorization races and persis
         return structuredClone(project);
       },
       listDeps: async () => edges,
+      listProjectMembers: async (id) => {
+        memberReads++;
+        expect(id).toBe("project");
+        return members;
+      },
     },
     memberships: {
       installation: async () => ({ id: "organization", name: "Workspace" }),
@@ -126,9 +133,21 @@ test("approval binds exact project scope, rejects authorization races and persis
     db.run("UPDATE work_item SET state='cancelled' WHERE id='existing'");
     const approved = await service.approve(actor, refreshed.id, refreshed.generation, signal);
     expect(approved.approvedAt).not.toBeNull();
+    const storedMembers = () =>
+      db
+        .query<{ id: string }, [string]>(
+          "SELECT linear_user_id AS id FROM project_approval_member WHERE approval_id=? ORDER BY linear_user_id",
+        )
+        .all(approved.id)
+        .map((row) => row.id);
+    expect(storedMembers()).toEqual(["actor", "teammate"]);
+    const reads = memberReads;
+    members = ["actor", "newcomer"];
     expect((await service.approve(actor, refreshed.id, refreshed.generation, signal)).id).toBe(
       approved.id,
     );
+    expect(memberReads).toBe(reads + 1);
+    expect(storedMembers()).toEqual(["actor", "newcomer"]);
     expect(db.query("SELECT issue_id FROM project_approval_issue ORDER BY issue_id").all()).toEqual(
       [{ issue_id: "one" }, { issue_id: "two" }],
     );

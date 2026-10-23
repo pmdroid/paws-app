@@ -114,7 +114,7 @@ export function assertProjectAuthority(
 
 export function createProjectApprovals(input: {
   db: Database;
-  tracker: Pick<TrackerAdapter, "loadProject" | "listDeps">;
+  tracker: Pick<TrackerAdapter, "loadProject" | "listDeps" | "listProjectMembers">;
   memberships: LinearMembershipReads;
   repository?: (name: string) => unknown;
   now?: () => number;

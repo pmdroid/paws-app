@@ -240,6 +240,23 @@ test("a project task lands on a project member's shared runner without calling L
   }
 });
 
+test("a project task lands on the shared runner of a stored member who is neither actor nor lead without calling Linear", async () => {
+  const placed = await placeItem(true);
+  try {
+    placed.db.run("UPDATE project_approval SET lead_user_id=actor_id WHERE id='approval'");
+    expect(await placed.ids()).toEqual(["own"]);
+    placed.db.run(
+      "INSERT INTO project_approval_member(approval_id,linear_user_id) VALUES('approval','colleague')",
+    );
+    expect(
+      await networkRequests(async () => expect(await placed.ids()).toEqual(["own", "shared"])),
+    ).toBe(0);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
 test("a task waiting ten minutes for its busy session runner never calls Linear", async () => {
   const placed = await placeItem(true);
   try {
