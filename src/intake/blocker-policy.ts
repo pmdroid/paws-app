@@ -149,7 +149,7 @@ export function managedBlockerSatisfied(
      ORDER BY i.created_at, i.id`,
     )
     .all(target.workspaceId, issue, target.itemId);
-  if (!items.length) return null;
+  if (items.every((item) => item.state === "cancelled")) return null;
   const active = items.filter((item) => item.state !== "cancelled" && !item.cancelRequested);
   const item = (active.length > 0 ? active : items).at(-1)!;
   return (
