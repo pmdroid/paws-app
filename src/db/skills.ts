@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { HookEvent } from "../core";
 
 /** Agents that load skills from their home directory. Every one of them supports skills today. */
 export const SKILL_AGENTS = ["claude", "codex", "grok"] as const;
@@ -235,7 +236,7 @@ export function skillRollouts(
   return [...rollouts.values()];
 }
 
-export type RunHook = { name: string; event: "stop" };
+export type RunHook = { name: string; event: HookEvent };
 
 export type RunAgentSetup = {
   runnerId: string;

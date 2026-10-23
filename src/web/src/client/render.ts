@@ -397,7 +397,12 @@ function continuesNotice(runId: string): string {
   return `<section class="closeout-result run-continues" aria-label="Current run"><span class="result-icon" aria-hidden="true">→</span><p>This task continues in run <a class="mono" href="${routeHref({ view: "runs", id: runId })}">${esc(runId.slice(0, 8))}</a>.</p></section>`;
 }
 
-const HOOK_EVENTS: Record<string, string> = { stop: "When the agent stops" };
+const HOOK_EVENTS: Record<string, string> = {
+  after_edit: "After a file edit",
+  before_shell: "Before a shell command",
+  before_tool: "Before a tool call",
+  stop: "When the agent stops",
+};
 
 export function runSetupSection(setup: StatusRunSetup): string {
   const skills = setup.skills.length

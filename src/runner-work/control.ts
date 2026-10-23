@@ -373,7 +373,16 @@ export function createRunnerWork(options: {
           runId: command.runId,
           runnerId: command.runnerId,
           agent: command.profile.agent,
-          hooks: command.type === "run" ? [{ name: "Paws Closeout", event: "stop" }] : [],
+          hooks:
+            command.type === "run" && command.profile.agent !== "grok"
+              ? [
+                  { name: "Paws Closeout", event: "stop" },
+                  ...(command.hooks ?? []).map((hook) => ({
+                    name: hook.command,
+                    event: hook.event,
+                  })),
+                ]
+              : [],
           at,
         });
         return { envelope, leaseUntil };
