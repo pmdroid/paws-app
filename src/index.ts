@@ -115,6 +115,7 @@ import {
   readStoredToken,
   startCatchUpPoller,
   parseLinearAdministration,
+  parseLinearUndelegation,
   sessionCreatedKey,
   type AcceptedLinearEvent,
   type LinearRunning,
@@ -130,6 +131,7 @@ import {
   LinearTaskAccess,
   authorizeLinearTask,
   handleLinearAdministration,
+  stopUndelegatedIssue,
   refreshLinearNotificationContext,
   type Orchestrator,
   type OrchestratorOptions,
@@ -402,6 +404,18 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           beforeEvent: async (event, request) => {
             const issueEvent = acceptedIssueChange(event);
             if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
+            const undelegation = parseLinearUndelegation(event, runtime.linearViewerId);
+            if (undelegation)
+              await stopUndelegatedIssue(db, undelegation, {
+                notify: (command) => {
+                  if (orchestrator === null) throw new Error("The loop is not attached.");
+                  orchestrator.bus.emit(command);
+                },
+                interrupt: async (sessionId) => {
+                  if (orchestrator === null) throw new Error("The loop is not attached.");
+                  await orchestrator.interruptLinearSession(sessionId);
+                },
+              });
             if (issueEvent && reconciler) {
               const targets = await reconciler.issueChanged(issueEvent);
               if (targets.length > 0) orchestrator?.reconcileExecution();

@@ -122,6 +122,31 @@ export function parseLinearSessionInstallation(
   return { sessionId, organizationId, oauthClientId, appUserId, teamId };
 }
 
+export function parseLinearUndelegation(
+  event: AcceptedLinearEvent,
+  appUserId: string | null,
+): { organizationId: string; appUserId: string; issueId: string; createdAtMs: number } | null {
+  const payload = verifiedPayload(event);
+  if (payload === null || appUserId === null || readString(payload, "type") !== "Issue")
+    return null;
+  const data = child(payload, "data");
+  const previous = child(payload, "updatedFrom");
+  const organizationId = id(payload, "organizationId");
+  const issueId = data === null ? null : id(data, "id");
+  const createdAtMs = Date.parse(readString(payload, "createdAt") ?? "");
+  if (
+    data === null ||
+    previous === null ||
+    organizationId === null ||
+    issueId === null ||
+    !Number.isFinite(createdAtMs) ||
+    readString(previous, "delegateId") !== appUserId ||
+    readString(data, "delegateId") === appUserId
+  )
+    return null;
+  return { organizationId, appUserId, issueId, createdAtMs };
+}
+
 export function matchesLinearInstallation(
   event: LinearAdministration,
   installation: LinearInstallation,

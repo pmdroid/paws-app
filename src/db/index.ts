@@ -286,6 +286,7 @@ export {
 export {
   getLinearTaskDelegation,
   linearSessionsForDelegatedTeams,
+  linearSessionsForUndelegatedIssue,
   requireLinearTaskDelegation,
   type LinearTaskDelegation,
 } from "./linear-delegation";
