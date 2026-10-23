@@ -193,7 +193,7 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       expect(f.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
       expect(f.errors.join("\n")).not.toContain("lease deadline passed");
       expect(f.errors.join("\n")).toContain(
-        "Runner control plane is unavailable: Runner request POST /v1/heartbeat failed with HTTP 503 after 7 ms.",
+        "Runner request POST /v1/heartbeat failed with HTTP 503 after 7 ms.",
       );
     } finally {
       await f.cleanup();

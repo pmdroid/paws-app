@@ -7,7 +7,11 @@ export class RunnerRequestError extends Error {
     readonly path?: string,
     readonly durationMs?: number,
   ) {
-    super(`Runner request failed with HTTP ${status}.`);
+    super(
+      method === undefined
+        ? `Runner request failed with HTTP ${status}.`
+        : `Runner request ${method} ${path} failed with HTTP ${status} after ${durationMs} ms.`,
+    );
     this.name = "RunnerRequestError";
   }
 }
@@ -52,6 +56,8 @@ export function requestBytes(
   limit: number,
   timeoutMs = 30_000,
 ): Promise<Buffer> {
+  const started = performance.now();
+  const elapsed = () => Math.round(performance.now() - started);
   return new Promise((resolve, reject) => {
     const body = input.body === undefined ? undefined : Buffer.from(JSON.stringify(input.body));
     const req = request(
@@ -83,7 +89,9 @@ export function requestBytes(
         response.on("error", reject);
         response.on("end", () => {
           if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new RunnerRequestError(response.statusCode ?? 0));
+            reject(
+              new RunnerRequestError(response.statusCode ?? 0, input.method, input.path, elapsed()),
+            );
             return;
           }
           resolve(Buffer.concat(chunks));
@@ -92,7 +100,13 @@ export function requestBytes(
     );
     const timer = setTimeout(() => req.destroy(new Error("Runner request timed out.")), timeoutMs);
     req.on("close", () => clearTimeout(timer));
-    req.on("error", () => reject(new Error("Runner HTTPS request failed.")));
+    req.on("error", (error) =>
+      reject(
+        new Error(
+          `Runner request ${input.method} ${input.path} failed after ${elapsed()} ms: ${error.message}`,
+        ),
+      ),
+    );
     req.end(body);
   });
 }

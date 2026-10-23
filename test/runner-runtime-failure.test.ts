@@ -3,7 +3,11 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openRunnerRuntime } from "../src/runner-runtime";
-import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
+import {
+  RUNNER_LEASE_GRACE_MS,
+  type RunnerCommand,
+  type RunnerResult,
+} from "../src/runner-protocol";
 
 async function fixture(options: { alive?: boolean; cancel?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-failure-"));
@@ -145,7 +149,7 @@ test("a worker that exits without a result reports a failure with its log tail",
 test("a lease watchdog interrupt reports a failure with its reason", async () => {
   const f = await fixture();
   try {
-    f.advance(120_000);
+    f.advance(60_000 + RUNNER_LEASE_GRACE_MS);
     await until(() => f.results.length > 0);
     expect(f.results).toHaveLength(1);
     expect(f.results[0]!.errorMessage).toContain("lease deadline passed");
