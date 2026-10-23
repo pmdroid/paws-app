@@ -52,6 +52,7 @@ export {
   failJob,
   getJob,
   listJobs,
+  mergeLaneSql,
   JOB_STATUSES,
   type ClaimOptions,
   type Job,

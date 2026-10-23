@@ -117,6 +117,7 @@ import {
   configureWorkItem,
   enqueueJobOnce,
   enqueueJob,
+  mergeLaneSql,
   enqueueOutboxOnce,
   failWorkItem,
   getQueuePosition,
@@ -4375,8 +4376,7 @@ export class Orchestrator {
            AND NOT EXISTS(SELECT 1 FROM run WHERE item_id=? AND status IN ('active','provisioning'))
            AND NOT EXISTS(SELECT 1 FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until>?)
              AND json_extract(payload,'$.itemId')=?
-             AND (queue IN ('item.start','run.resume','run.reverify','github.merge')
-               OR queue LIKE 'github.merge.%' OR lane='merge'))`,
+             AND (queue IN ('item.start','run.resume','run.reverify') OR ${mergeLaneSql("job")}))`,
           [item.id, item.id, this.now(), item.id],
         );
       }
