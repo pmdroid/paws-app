@@ -1,3 +1,12 @@
+export { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
+export {
+  askMergeHelp,
+  ciFixes,
+  latestUserTurn,
+  rebaseReturns,
+  returnToAgent,
+  type MergeReturnReason,
+} from "./returns";
 export {
   MAX_REBASE_RETURNS,
   serialMergeStep,

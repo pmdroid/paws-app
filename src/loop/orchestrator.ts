@@ -115,8 +115,6 @@ import {
   applyWorkItemEvent,
   configureWorkItem,
   enqueueJobOnce,
-  countCiFixes,
-  countRebaseReturns,
   recordRebaseReturn,
   enqueueOutboxOnce,
   failWorkItem,
@@ -286,11 +284,19 @@ import {
 } from "./merge-jobs";
 import {
   MAX_REBASE_RETURNS,
+  ciFixHandoff,
+  ciFixQuestion,
+  ciFixRoundLine,
   ciWaitVerification,
   githubQueueWatch,
   parkMerge,
   serialMergeStep,
   wakeMergesBehind,
+  askMergeHelp,
+  ciFixes,
+  rebaseReturns,
+  returnToAgent,
+  type MergeReturnReason,
   type MergeStep,
   type MergeWait,
 } from "../merge";
@@ -335,7 +341,6 @@ import {
   waitForRunner,
   type RunnerWaitQuestion,
 } from "./runner-wait";
-import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import { createRepositoryGit } from "./repository-git";
 import { questionEffects } from "./question-effects";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
@@ -2896,8 +2901,8 @@ export class Orchestrator {
       queued,
       closeoutAfterUpdate,
       closeoutFailed: closeoutFailure !== null,
-      rebaseReturns: this.rebaseReturns(item.id),
-      ciFixes: this.ciFixes(item.id),
+      rebaseReturns: rebaseReturns(this.db, item.id),
+      ciFixes: ciFixes(this.db, item.id),
       ciFixLimit,
     });
     if (leaveQueue) {
@@ -3363,32 +3368,12 @@ export class Orchestrator {
       .ciFixAttempts;
   }
 
-  /** CI fix attempts are spent: ask in the Linear session. A reply resumes the agent once more. */
   private askCiHelp(item: WorkItemRecord, body: string): boolean {
-    return immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
-      if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
-      const sessionId = this.activitySession(current);
-      if (sessionId === null || findOpenQuestion(this.db, sessionId) !== null) return false;
-      const question = openQuestion(this.db, {
-        itemId: current.id,
-        runId: current.currentRunId,
-        sessionId,
-        body,
-        now: this.now(),
-      });
-      applyWorkItemEvent(this.db, current.id, "blocking_question");
-      if (current.checkpoint)
-        saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "awaiting_input" });
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "elicitation",
-        orderingKey: sessionId,
-        idempotencyKey: `ci-help:${question.id}`,
-        payload: { sessionId, questionId: question.id, body },
-        now: this.now(),
-      });
-      return true;
+    return askMergeHelp(this.db, {
+      itemId: item.id,
+      body,
+      now: this.now(),
+      session: (current) => this.activitySession(current),
     });
   }
 
@@ -3445,33 +3430,23 @@ export class Orchestrator {
 
   private returnToAgent(
     item: WorkItemRecord,
-    reason: "rebase-conflict" | "ci-failed",
+    reason: MergeReturnReason,
     limit: number,
     handoff: string,
     thought: (attempt: number) => string,
     record: (jobId: number, attempt: number) => void,
   ): boolean {
-    return immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
-      if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
-      const returns =
-        reason === "rebase-conflict" ? this.rebaseReturns(current.id) : this.ciFixes(current.id);
-      if (returns >= limit) return false;
-      const round = `${this.latestUserTurn(current.id)}:${returns}`;
-      const running = applyWorkItemEvent(this.db, current.id, "ejected");
-      if (current.checkpoint)
-        saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "running" });
-      const jobId = enqueueJobOnce(this.db, {
-        queue: JOB_KIND.resume,
-        jobKey: `${reason}:${current.id}:${round}`,
-        payload: { itemId: current.id, handoff, reason },
-        now: this.now(),
-      });
-      record(jobId, returns + 1);
-      const key = `${current.id}:${reason}:${round}`;
-      if (reason === "ci-failed") this.statusAfterPullRequest(running, thought(returns + 1), key);
-      else this.post(running, "thought", thought(returns + 1), key);
-      return true;
+    return returnToAgent(this.db, {
+      itemId: item.id,
+      reason,
+      limit,
+      handoff,
+      now: this.now(),
+      record,
+      announce: (running, attempt, key) => {
+        if (reason === "ci-failed") this.statusAfterPullRequest(running, thought(attempt), key);
+        else this.post(running, "thought", thought(attempt), key);
+      },
     });
   }
 
@@ -3494,25 +3469,6 @@ export class Orchestrator {
       checks: [...(checks ?? [])],
       recordedAt: this.now(),
     });
-  }
-
-  private rebaseReturns(itemId: string): number {
-    return countRebaseReturns(this.db, itemId, this.latestUserTurn(itemId));
-  }
-
-  private ciFixes(itemId: string): number {
-    return countCiFixes(this.db, itemId, this.latestUserTurn(itemId));
-  }
-
-  private latestUserTurn(itemId: string): number {
-    const row = this.db
-      .query<{ id: number | null }, [string, string]>(
-        `SELECT MAX(id) AS id FROM job
-         WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-           AND job_key LIKE 'linear-turn:%'`,
-      )
-      .get(JOB_KIND.resume, itemId);
-    return Number(row?.id ?? 0);
   }
 
   private askHook(item: WorkItemRecord, runId: string): AskTeamHook {
@@ -4649,7 +4605,7 @@ export class Orchestrator {
       item.id === routed?.id &&
       this.hasOpenedPullRequest(item.id) &&
       turns.some((turn) => isMergeConflictRequest(turn.body)) &&
-      this.rebaseReturns(item.id) < MAX_REBASE_RETURNS &&
+      rebaseReturns(this.db, item.id) < MAX_REBASE_RETURNS &&
       (await this.fetchUpstreamMain(item));
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
