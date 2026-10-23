@@ -6,6 +6,7 @@ import {
   linearDefaultCaller,
   linearLedger,
   rateLimitFrom,
+  resetRetryMs,
   useLinearLedger,
   type LinearLedger,
   type LinearPriority,
@@ -37,7 +38,7 @@ export function createLinearClient(options: {
       };
       current();
       const { caller, priority, item, itemId } = currentLinearCaller();
-      const held = ledger.admit(caller, priority);
+      const held = ledger.admit(caller, priority, query);
       if (held !== null) throw held;
       const run = async (token: string) => {
         current();
@@ -59,7 +60,7 @@ export function createLinearClient(options: {
         response = await run(token);
       }
       const budget = budgetFromHeaders(response.headers);
-      ledger.observe(caller, budget, item, itemId);
+      ledger.observe(caller, budget, item, itemId, query);
       const json: unknown = await abortable(response.json(), signal).catch((error: unknown) => {
         signal?.throwIfAborted();
         if (error instanceof Error && error.name === "AbortError") throw error;
@@ -81,7 +82,7 @@ export function createLinearClient(options: {
         throw new LinearEntityNotFoundError(message);
       if (!response.ok) {
         const detail = message !== null ? `: ${message}` : "";
-        throw new LinearHttpError(response.status, detail, response.headers.get("retry-after"));
+        throw new LinearHttpError(response.status, detail, response.headers, ledger.now());
       }
       if (message !== null) throw new Error(`Linear GraphQL: ${message}`);
       if (!isRecord(json)) throw new Error("Linear GraphQL returned no data");
@@ -146,12 +147,10 @@ export class LinearEntityNotFoundError extends Error {
 export class LinearHttpError extends Error {
   readonly status: number;
   readonly retryAfterMs: number | undefined;
-  constructor(status: number, detail: string, retryAfter: string | null) {
+  constructor(status: number, detail: string, headers: Headers, now = Date.now()) {
     super(`Linear GraphQL HTTP ${status}${detail}`);
     this.name = "LinearHttpError";
     this.status = status;
-    const seconds = Number(retryAfter?.trim() || Number.NaN);
-    this.retryAfterMs =
-      Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined;
+    this.retryAfterMs = resetRetryMs(headers, now) ?? undefined;
   }
 }

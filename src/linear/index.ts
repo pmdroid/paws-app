@@ -10,6 +10,7 @@ export {
 export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
 export {
+  budgetFromHeaders,
   createLinearLedger,
   currentLinearCaller,
   linearBudget,
@@ -18,9 +19,11 @@ export {
   linearDefaultCallers,
   linearItem,
   LinearRateLimitError,
+  rateLimitFrom,
 } from "./budget";
 export type {
   LinearCallerUsage,
+  LinearEndpointLimit,
   LinearItemUsage,
   LinearLedger,
   LinearPriority,

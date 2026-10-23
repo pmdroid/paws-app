@@ -8,6 +8,8 @@ import {
   linearItem,
   LinearRateLimitError,
 } from "../src/linear";
+import { createPersonalLinearClient } from "../src/comments";
+import { isTransientFailure, transientRetryDelayMs } from "../src/core";
 import { migrate, openDatabase } from "../src/db";
 import { startServer } from "../src/server";
 
@@ -129,6 +131,84 @@ describe("shared Linear budget", () => {
     await linearCaller("outbox", () => other.query("query { viewer { id } }"));
     expect(otherCalls).toBe(1);
     expect(ledger.usage().holdUntilMs).toBeNull();
+  });
+
+  test("a RATELIMITED response retries at the reset of the limit that ran out", async () => {
+    const ledger = createLinearLedger({ now: () => START, random: () => 0, log: () => {} });
+    const client = createLinearClient({
+      auth: AUTH,
+      fetch: async () =>
+        linearResponse(
+          {
+            ...budgetHeaders(4000, 10, START + 3_600_000),
+            "x-ratelimit-complexity-remaining": "0",
+            "x-ratelimit-complexity-reset": String(START + 90_000),
+          },
+          true,
+        ),
+      ledger,
+    });
+    const error = await client.query("query { viewer { id } }").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(LinearRateLimitError);
+    expect((error as LinearRateLimitError).retryAfterMs).toBe(90_000);
+    expect(transientRetryDelayMs(0, error)).toBe(90_000);
+  });
+
+  test("a personal-key RATELIMITED response retries at its requests reset", async () => {
+    const reset = Date.now() + 90_000;
+    const client = createPersonalLinearClient({
+      apiKey: "key",
+      fetch: async () => linearResponse(budgetHeaders(0, 10, reset), true),
+    });
+    const error = await client.query("query { viewer { id } }").catch((caught: unknown) => caught);
+    expect(isTransientFailure(error)).toBe(true);
+    expect(transientRetryDelayMs(0, error)).toBeGreaterThan(85_000);
+    expect(transientRetryDelayMs(0, error)).toBeLessThanOrEqual(90_000);
+  });
+
+  test("an exhausted endpoint limit holds that endpoint only", async () => {
+    let now = START;
+    const ledger = createLinearLedger({ now: () => now, random: () => 0, log: () => {} });
+    const reset = START + 60_000;
+    const sent: string[] = [];
+    const client = createLinearClient({
+      auth: AUTH,
+      fetch: async (_url, init) => {
+        const query = String(JSON.parse(String(init?.body)).query);
+        sent.push(query);
+        if (!query.includes("issueCreate")) return linearResponse(budgetHeaders(4000, 10, reset));
+        return linearResponse(
+          {
+            ...budgetHeaders(4000, 10, reset),
+            "x-ratelimit-endpoint-name": "issueCreate",
+            "x-ratelimit-endpoint-requests-limit": "100",
+            "x-ratelimit-endpoint-requests-remaining": "0",
+            "x-ratelimit-endpoint-requests-reset": String(reset),
+          },
+          true,
+        );
+      },
+      ledger,
+    });
+    const create = "mutation { issueCreate }";
+    const first = await client.query(create).catch((caught: unknown) => caught);
+    expect((first as LinearRateLimitError).retryAfterMs).toBe(60_000);
+    expect(ledger.usage().holdUntilMs).toBeNull();
+
+    now += 20_000;
+    const held = await linearCaller("outbox", () => client.query(create)).catch(
+      (caught: unknown) => caught,
+    );
+    expect((held as LinearRateLimitError).retryAfterMs).toBe(40_000);
+    await linearCaller("outbox", () => client.query("query { viewer { id } }"));
+    expect(sent).toEqual([create, "query { viewer { id } }"]);
+    expect(ledger.usage().endpoints).toEqual([
+      { name: "issueCreate", requestsRemaining: 0, requestsLimit: 100, requestsResetMs: reset },
+    ]);
+
+    now = reset + 1;
+    await client.query(create).catch(() => {});
+    expect(sent).toHaveLength(3);
   });
 
   test("a low budget holds background calls, then normal calls, while critical calls go", async () => {
@@ -279,6 +359,7 @@ describe("shared Linear budget", () => {
           windowMs: 3_600_000,
           callers: {},
           items: [],
+          endpoints: [],
         },
       });
     } finally {
