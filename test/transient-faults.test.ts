@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
-import { JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
+import { FakeClock, JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -81,7 +81,24 @@ test("a failure that keeps coming back stops the task after its retries instead 
   ).toEqual([]);
 }, 90_000);
 
-async function runWithFault(fault: { error: () => unknown; times: number }): Promise<{
+test("a 10-minute retry delay holds no job worker and the task resumes after it", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: () => Object.assign(timeout(), { retryAfterMs: 10 * 60_000 }),
+    times: 1,
+    clock,
+  });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.retries, result.detail).toEqual([1]);
+  expect(result.waits, result.detail).toEqual([{ delayMs: 10 * 60_000, runningJobs: 0 }]);
+  expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
+}, 90_000);
+
+async function runWithFault(fault: {
+  error: () => unknown;
+  times: number;
+  clock?: FakeClock;
+}): Promise<{
   state: string | null;
   thoughts: string[];
   errors: string[];
@@ -89,6 +106,7 @@ async function runWithFault(fault: { error: () => unknown; times: number }): Pro
   runs: string[];
   jobs: string[];
   implementations: number;
+  waits: { delayMs: number; runningJobs: number }[];
   detail: string;
 }> {
   const layout = await repoLayout("paws-faults-");
@@ -116,8 +134,10 @@ async function runWithFault(fault: { error: () => unknown; times: number }): Pro
     delegateId: null,
     stateType: "unstarted",
   });
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
+  const clock = fault.clock ?? systemClock;
+  const jobs = new JobLoop(db, clock);
+  const outbox = new OutboxDispatcher(db, clock);
+  const waits: { delayMs: number; runningJobs: number }[] = [];
   let implementations = 0;
   let sequence = 0;
   let orchestrator: ReturnType<typeof attachOrchestrator>;
@@ -140,6 +160,7 @@ async function runWithFault(fault: { error: () => unknown; times: number }): Pro
     linearTaskModes: true,
     linearAccess: gate,
     retryBaseMs: 10,
+    clock,
     launch(input) {
       sequence += 1;
       if (input.purpose === "implement") implementations += 1;
@@ -203,6 +224,16 @@ async function runWithFault(fault: { error: () => unknown; times: number }): Pro
       if ((await jobs.tick()) === null) {
         outbox.tick();
         await Bun.sleep(25);
+        const delayed = listJobs(db).find(
+          (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+        );
+        if (fault.clock && delayed && delayed.runAt > clock.now()) {
+          waits.push({
+            delayMs: delayed.runAt - clock.now(),
+            runningJobs: listJobs(db).filter((job) => job.status === "running").length,
+          });
+          fault.clock.advance(delayed.runAt - clock.now());
+        }
       }
     }
     const drainBy = Date.now() + 10_000;
@@ -223,6 +254,7 @@ async function runWithFault(fault: { error: () => unknown; times: number }): Pro
       runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
       jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
       implementations,
+      waits,
       detail: JSON.stringify({
         items: db.query("SELECT linear_identifier, state FROM work_item").all(),
         jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),

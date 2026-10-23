@@ -26,6 +26,18 @@ export function runnerHasCapacity(
   return row.occupied + additionalReservations < row.capacity;
 }
 
+export function runnerSlotFree(db: Database, runnerIds: readonly string[], now: number): boolean {
+  const ids = runnerIds.length
+    ? runnerIds
+    : db
+        .query<{ id: string }, [number]>(
+          "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL AND last_seen_at>?",
+        )
+        .all(now - 60_000)
+        .map((runner) => runner.id);
+  return ids.some((id) => runnerHasCapacity(db, id, now));
+}
+
 /**
  * Records the capacity a runner applied and, from runners that report it, the host ceiling.
  * Returns the concurrency the runner should apply, or undefined for runners that do not report a

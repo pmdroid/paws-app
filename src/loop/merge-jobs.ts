@@ -8,6 +8,7 @@ import {
   leaveMergeQueue,
   saveCheckpoint,
   type Job,
+  type RunnerCapacityWaitState,
 } from "../db";
 
 export const MERGE_CI_POLL_MS = 10_000;
@@ -117,6 +118,23 @@ export function waitForMergeTurn(
   delayMs = MERGE_OWNER_POLL_MS,
 ): "parked" | "lost" {
   return requeue(db, job, now + delayMs, payloadRecord(job.payload), now, job.attempts - 1);
+}
+
+export function waitForRunnerSlot(
+  db: Database,
+  job: Job,
+  now: number,
+  delayMs: number,
+  capacityWait: RunnerCapacityWaitState,
+): "parked" | "lost" {
+  return requeue(
+    db,
+    job,
+    now + delayMs,
+    { ...payloadRecord(job.payload), capacityWait },
+    now,
+    job.attempts - 1,
+  );
 }
 
 export function retryMergeLater(
