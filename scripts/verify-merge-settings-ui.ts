@@ -41,6 +41,7 @@ const server = Bun.serve({
         configPath,
         csrfToken: "ui-fixture",
         audit: (_action, subject) => audits.push(subject),
+        upToDateRules: async () => ["acme/platform"],
         choices: async () => ({
           projects: [
             { id: MONOREPO, name: "Monorepo" },
@@ -72,7 +73,7 @@ try {
     githubQueues = ["acme/platform"];
     writeFileSync(
       configPath,
-      `[merge]\norder = "queue"\nmain_moved = "overlap"\n\n[merge.projects."${PAWS}"]\n\n[merge.projects."${MONOREPO}"]\norder = "github-queue"\nmain_moved = "overlap"\n`,
+      `[merge]\norder = "queue"\nmain_moved = "overlap"\n\n[merge.projects."${PAWS}"]\n\n[merge.projects."${MONOREPO}"]\norder = "github-queue"\nmain_moved = "overlap"\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*", "packages/*"]\n`,
     );
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
@@ -85,6 +86,9 @@ try {
       "GitHub's merge queue on acme/platform. A repository without one merges each pull request when its CI is green.",
     );
     await expect(page.locator('#default-order option[value="github-queue"]')).toHaveCount(1);
+    await expect(page.locator("#default-main-help")).toHaveText(
+      "GitHub requires branches to be up to date in acme/platform, so merges there always update the branch and wait for CI. Turn that rule off to merge without an update.",
+    );
 
     // Payments: run Closeout again after a branch update.
     await page.locator("#merge-new-project").selectOption(PAYMENTS);
@@ -108,6 +112,10 @@ try {
       { project: PAWS, label: "Bug", order: "queue", mainMoved: "closeout" },
     ]);
     expect(readFileSync(configPath, "utf8")).toContain("[[merge.rules]]");
+    expect(saved.repositories).toEqual({
+      "acme/platform": { packages: ["apps/*", "packages/*"] },
+    });
+    await expect(page.locator("#default-main-help")).toContainText("acme/platform");
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
       .toBe(true);

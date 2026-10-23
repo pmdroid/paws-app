@@ -23,12 +23,17 @@ export type MergePolicy = {
   projects: Record<string, MergeOverride>;
   rules: MergeRule[];
 };
-export type MergeSettings = MergePolicy & { ciFixAttempts: number };
+export type MergeRepositories = Record<string, { packages: string[] }>;
+export type MergeSettings = MergePolicy & {
+  ciFixAttempts: number;
+  repositories: MergeRepositories;
+};
 /** The `[merge]` tables as written. Missing keys are not rendered. */
 export type StoredMerge = Partial<MergeChoice> & {
   ciFixAttempts?: number;
   projects: Record<string, MergeOverride>;
   rules: MergeRule[];
+  repositories?: MergeRepositories;
 };
 export type MergeLevel = "rule" | "project" | "default";
 export type ResolvedMergeSettings = MergeChoice & {
@@ -39,6 +44,8 @@ export type ResolvedMergeSettings = MergeChoice & {
 export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "ci" };
 
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
+const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+const PACKAGE_ROOT = /^(?:[^/*\s\\]+|\*)(?:\/(?:[^/*\s\\]+|\*))*\/?$/;
 const LABEL_MAX = 200;
 
 const override = {
@@ -82,6 +89,21 @@ const tomlSchema = z.object({
           z.strictObject({ order: override.order, main_moved: override.mainMoved }),
         )
         .optional(),
+      repositories: z
+        .record(
+          z.string().regex(REPOSITORY, "must be owner/repo"),
+          z.strictObject({
+            packages: z
+              .array(
+                z
+                  .string()
+                  .regex(PACKAGE_ROOT, "must be a package root such as apps/*")
+                  .refine((root) => !root.split("/").includes(".."), "must stay in the repository"),
+              )
+              .max(100),
+          }),
+        )
+        .optional(),
       rules: z
         .array(
           z.strictObject({
@@ -110,6 +132,7 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
     ...(config.ciFixAttempts === undefined ? {} : { ciFixAttempts: config.ciFixAttempts }),
     projects: config.mergeProjects ?? {},
     rules: config.mergeRules ?? [],
+    ...(config.mergeRepositories ? { repositories: config.mergeRepositories } : {}),
   };
 }
 
@@ -122,6 +145,7 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
     },
     projects: stored.projects,
     rules: stored.rules,
+    repositories: stored.repositories ?? {},
     ciFixAttempts: Math.min(stored.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS),
   };
 }
@@ -166,14 +190,24 @@ export function resolveMergeSettings(
   };
 }
 
+export function repositoryPackages(settings: MergeSettings, repository: string): string[] {
+  const wanted = repository.toLowerCase();
+  return (
+    Object.entries(settings.repositories).find(([name]) => name.toLowerCase() === wanted)?.[1]
+      .packages ?? []
+  );
+}
+
 /** `[merge.projects."…"]` and `[[merge.rules]]`. The flat `[merge]` keys are read in `file.ts`. */
 export function parseMergeTables(
   text: string,
-): Pick<PawsConfigFile, "mergeProjects" | "mergeRules"> {
-  if (!/^\s*\[\[?\s*merge\.(projects|rules)/m.test(text)) return {};
+): Pick<PawsConfigFile, "mergeProjects" | "mergeRules" | "mergeRepositories"> {
+  if (!/^\s*\[\[?\s*merge\.(projects|rules|repositories)/m.test(text)) return {};
   const merge = tomlSchema.parse(Bun.TOML.parse(text)).merge;
   const projects = Object.entries(merge?.projects ?? {});
+  const repositories = Object.entries(merge?.repositories ?? {});
   return {
+    ...(repositories.length ? { mergeRepositories: Object.fromEntries(repositories) } : {}),
     ...(projects.length
       ? {
           mergeProjects: Object.fromEntries(projects.map(([id, value]) => [id, fromToml(value)])),
@@ -262,6 +296,12 @@ export function renderMergeSettings(settings: StoredMerge): string {
           ...choiceLines(rule),
         ].join("\n")}\n`,
     ),
+    ...Object.entries(settings.repositories ?? {}).map(
+      ([repository, value]) =>
+        `\n[merge.repositories.${JSON.stringify(repository)}]\npackages = [${value.packages
+          .map((root) => JSON.stringify(root))
+          .join(", ")}]\n`,
+    ),
   ].join("");
 }
 
@@ -291,6 +331,7 @@ export function writeMergePolicy(path: string, policy: MergePolicy, current: Sto
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
       projects: policy.projects,
       rules: policy.rules,
+      ...(current.repositories ? { repositories: current.repositories } : {}),
     }),
   );
 }

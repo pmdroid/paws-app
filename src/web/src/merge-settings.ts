@@ -18,4 +18,5 @@ export type MergeSettingsView = MergeSettings & {
    */
   githubQueue?: { repositories: string[] } | null;
   githubQueueError?: string;
+  upToDateRule?: string[];
 };
