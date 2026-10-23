@@ -39,6 +39,7 @@ import {
   readMergeSettings,
   readQueueSettings,
   resolveAgentProfiles,
+  repositoryPackages,
   resolveMergeSettings,
   type AgentProfile,
 } from "../config";
@@ -2869,7 +2870,6 @@ export class Orchestrator {
       });
       if (handed !== "no_queue") return handed;
     }
-    // Overlap-only updates (PAS-394) wait for CI like `ci` until they land.
     const closeoutAfterUpdate = mergeSettings.mainMoved === "closeout";
     // Under "Add to the GitHub merge queue", a base branch without one merges each on its own.
     const queued = mergeSettings.order === "queue";
@@ -2881,6 +2881,7 @@ export class Orchestrator {
       if (wait) return wait;
       if (this.stopped(item.id)) return;
     }
+    const repositoryName = `${repository.owner}/${repository.repo}`;
     const merged = await serialMerge({
       worktree,
       issue: item.linearIdentifier,
@@ -2901,16 +2902,37 @@ export class Orchestrator {
       isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
       releaseWhilePending: true,
       ...(priorVerification === undefined ? {} : { priorVerification }),
+      ...(mergeSettings.mainMoved === "overlap"
+        ? {
+            updateOnOverlap: {
+              packages: this.repositoryPackages(repositoryName),
+              onUpToDateRule: async () => {
+                this.postAfterPullRequest(
+                  item,
+                  upToDateRuleMessage(repositoryName),
+                  `${item.id}:up-to-date-rule`,
+                );
+                await this.flush();
+              },
+            },
+          }
+        : {}),
       onWait: async (message) => {
         this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
         await this.flush();
       },
       reverify: async (input) => {
         const updated = acceptedHead !== null && input.head !== acceptedHead;
-        if (updated && !closeoutAfterUpdate) {
+        if (input.kept || (updated && !closeoutAfterUpdate)) {
           publicationCandidate = { sha: input.head, baseSha: input.base };
-          this.postBranchUpdate(item, input.head, branchUpdatedMessage(input.base));
-          await this.flush();
+          if (!input.kept) {
+            this.postBranchUpdate(
+              item,
+              input.head,
+              branchUpdatedMessage(input.base, mergeSettings.mainMoved, input.overlap),
+            );
+            await this.flush();
+          }
           const filesReady = artifactPublicationReady(this.db, item.id);
           return {
             accepted: filesReady,
@@ -3373,6 +3395,17 @@ export class Orchestrator {
         .startTimeoutHours;
     } catch {
       return DEFAULT_QUEUE_START_TIMEOUT_HOURS;
+    }
+  }
+
+  private repositoryPackages(repository: string): string[] {
+    try {
+      return repositoryPackages(
+        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        repository,
+      );
+    } catch {
+      return [];
     }
   }
 
@@ -6083,8 +6116,17 @@ function withAcceptedBranch(text: string, item: WorkItemRecord): string {
   return `${sentence} The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`;
 }
 
-function branchUpdatedMessage(base: string): string {
-  return `Branch updated onto main ${base.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
+function branchUpdatedMessage(base: string, mainMoved: string, overlap?: string[]): string {
+  const updated = `Branch updated onto main ${base.slice(0, 7)}, waiting for CI.`;
+  if (mainMoved !== "overlap")
+    return `${updated} Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
+  if (!overlap?.length) return updated;
+  const listed = overlap.slice(0, 5).join(", ") + (overlap.length > 5 ? ", …" : "");
+  return `Main changed ${listed}, which this pull request changes too. ${updated}`;
+}
+
+function upToDateRuleMessage(repository: string): string {
+  return `GitHub requires branches to be up to date before merging in ${repository}, so Paws updates the branch and waits for CI even when main changed other files. Turn off "Require branches to be up to date before merging" for the base branch to merge without an update.`;
 }
 
 function retryCount(payload: unknown): number {
