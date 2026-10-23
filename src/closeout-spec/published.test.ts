@@ -125,4 +125,35 @@ describe("an accepted visual review across a rebase", () => {
       await approvalsAtHead(repo, head, [approval(approved)], ITEMS, scrubCommandEnv(), base),
     ).toEqual([]);
   });
+
+  test("main editing two lines from the task's edit keeps the accepted review", async () => {
+    const { approved } = taskApproved();
+    git("checkout", "-q", "main");
+    write("web/page.tsx", edit(PAGE, 4, "main line 5"));
+    commit("main: nearby line");
+    git("checkout", "-q", "task");
+    git("rebase", "-q", "main");
+    const head = git("rev-parse", "HEAD");
+    const base = git("merge-base", "HEAD", "main");
+    const approvals = [approval(approved)];
+    expect(await approvalsAtHead(repo, head, approvals, ITEMS, scrubCommandEnv(), base)).toEqual(
+      approvals,
+    );
+  });
+
+  test("a different image after the rebase asks again, the same image does not", async () => {
+    taskApproved();
+    writeFileSync(path.join(repo, "web/shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2]));
+    const approved = commit("task: add an image");
+    const { head, base } = mainMovesAndTaskRebases();
+    const approvals = [approval(approved)];
+    expect(await approvalsAtHead(repo, head, approvals, ITEMS, scrubCommandEnv(), base)).toEqual(
+      approvals,
+    );
+    writeFileSync(path.join(repo, "web/shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 9, 9]));
+    const changed = commit("task: change the image");
+    expect(await approvalsAtHead(repo, changed, approvals, ITEMS, scrubCommandEnv(), base)).toEqual(
+      [],
+    );
+  });
 });

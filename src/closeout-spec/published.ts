@@ -88,8 +88,8 @@ async function sameOwnChanges(
 
 /**
  * The task's diff from where `tip` forked from `base`, under the patterns,
- * without blob ids or hunk headers, whose line numbers and context move when
- * main changes elsewhere in the same file.
+ * with no context lines, blob ids or hunk headers, which move when main
+ * changes nearby in the same file. Binary files carry their content.
  */
 async function ownChanges(
   repo: string,
@@ -114,6 +114,10 @@ async function ownChanges(
       "--no-renames",
       "--no-color",
       "--no-ext-diff",
+      // Only the task's own lines: context moves when main edits nearby.
+      "--unified=0",
+      // Binary content, so two different images never compare equal by name alone.
+      "--binary",
       from,
       tip,
       "--",
