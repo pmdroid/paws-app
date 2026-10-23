@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SerialMergeResult } from "../github";
-import { MAX_REBASE_RETURNS, serialMergeStep, type SerialMergeFacts } from "./step";
+import { serialMergeStep, type SerialMergeFacts } from "./step";
 
 function facts(result: Partial<SerialMergeResult>, rest: Partial<SerialMergeFacts> = {}) {
   return serialMergeStep({
@@ -8,7 +8,7 @@ function facts(result: Partial<SerialMergeResult>, rest: Partial<SerialMergeFact
     queued: false,
     closeoutAfterUpdate: false,
     closeoutFailed: false,
-    rebaseReturns: 0,
+    rebaseBudget: { allowed: true, spent: 0 },
     ciFixes: 0,
     ciFixLimit: 3,
     ...rest,
@@ -58,10 +58,12 @@ describe("serial merge step", () => {
       kind: "return",
       reason: "rebase-conflict",
     });
-    expect(facts({ outcome: "conflict" }, { rebaseReturns: MAX_REBASE_RETURNS }).step).toEqual({
-      kind: "failed",
-      message: `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts to resolve the conflict.`,
-    });
+    expect(
+      facts(
+        { outcome: "conflict" },
+        { rebaseBudget: { allowed: false, message: "The branch still conflicts." } },
+      ).step,
+    ).toEqual({ kind: "failed", message: "The branch still conflicts." });
   });
 
   test("failed CI returns to the agent, then asks once the fixes are spent", () => {

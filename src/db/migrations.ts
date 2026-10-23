@@ -2349,4 +2349,13 @@ CREATE INDEX inbox_event_issue ON inbox_event(json_extract(payload,'$.data.id'),
   WHERE json_extract(payload,'$.type')='Issue';
 `,
   },
+  {
+    id: "115_rebase_return_conflict",
+    sql: `
+ALTER TABLE rebase_return ADD COLUMN base TEXT;
+ALTER TABLE rebase_return ADD COLUMN files TEXT CHECK(files IS NULL OR json_valid(files));
+ALTER TABLE rebase_return ADD COLUMN recorded_at INTEGER;
+UPDATE rebase_return SET recorded_at = (SELECT created_at FROM job WHERE job.id = rebase_return.job_id);
+`,
+  },
 ];
