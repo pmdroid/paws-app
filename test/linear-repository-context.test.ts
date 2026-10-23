@@ -251,8 +251,7 @@ test.each(
       };
       await f.orchestrator.onLinearEvent(event);
       const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
-      expect(taskRequiresRepository(db, itemId)).toBe(scenario !== "clarify");
-      expect(purposes).toEqual(["classify"]);
+      expect(purposes).toEqual([]);
       if (scenario === "clarify") {
         await f.jobs.tick();
         expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");

@@ -821,22 +821,25 @@ export class Orchestrator {
       loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
     };
     const deferred = !savedRequest && this.options.remoteExecution?.slotFree?.() === false;
-    const classification =
+    const snapshot =
       this.options.linearTaskModes &&
       sessionId &&
       taskKey &&
       this.options.channel !== "comments" &&
       !deferred
+        ? authorizeSnapshot(await tracker.loadEpic(issueId))
+        : null;
+    if (snapshot) intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
+    const openSubIssues = snapshot?.subIssues.some(
+      (issue) => !["completed", "canceled"].includes(issue.stateType ?? ""),
+    );
+    const classification =
+      sessionId && taskKey && snapshot && (savedRequest || openSubIssues)
         ? await this.taskPlanner
             .plan({
               taskKey,
               sessionId,
-              request: async (signal) => {
-                const snapshot = authorizeSnapshot(await tracker.loadEpic(issueId));
-                signal.throwIfAborted();
-                intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
-                return this.classificationRequest(sessionId, snapshot, signal, options);
-              },
+              request: (signal) => this.classificationRequest(sessionId, snapshot, signal, options),
             })
             .catch((error: unknown) => {
               if (error instanceof RunnerSlotsBusyError && !savedRequest) return null;
@@ -1344,14 +1347,7 @@ export class Orchestrator {
     let classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
     const sessionKey = item.sessionKey;
     const delegatedIssueId = this.delegationIssueId(item);
-    if (
-      !saved &&
-      !classification &&
-      taskKey &&
-      sessionKey &&
-      delegatedIssueId &&
-      this.options.remoteExecution
-    )
+    if (!saved && !classification && taskKey && sessionKey && delegatedIssueId)
       classification = await this.taskPlanner.plan({
         taskKey,
         sessionId: sessionKey,

@@ -265,7 +265,10 @@ for (const operation of ["shutdown", "interrupt"] as const)
             identifier: id === "blocked" ? "ENG-1" : "ENG-2",
             title: id,
             description: id,
-            subIssues: [],
+            subIssues:
+              id === "blocked"
+                ? [{ linearIssueId: "blocked-child", identifier: "ENG-3", title: "child" }]
+                : [],
           })),
         ),
         launch: (input) => ({
