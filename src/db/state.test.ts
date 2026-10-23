@@ -474,6 +474,35 @@ describe("hard caps", () => {
     expect(result.item.awakeMs).toBe(0);
     expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
   });
+
+  test("re-checking a candidate Closeout accepted is not awake time", () => {
+    const { clock, db } = harness();
+    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    beginImplementRun(db, item.id, clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
+    applyWorkItemEvent(db, item.id, "reverify_requested");
+    clock.advance(4 * 60 * 60_000);
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    expect(result.capped).toBe(false);
+    expect(result.item.awakeMs).toBe(0);
+    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+  });
+
+  test("an accepted task sent back to the agent counts awake time again", () => {
+    const { clock, db } = harness();
+    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    beginImplementRun(db, item.id, clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
+    applyWorkItemEvent(db, item.id, "ejected");
+    clock.advance(2_000);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(true);
+  });
 });
 
 describe("linear commands", () => {

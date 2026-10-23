@@ -33,6 +33,11 @@ export function isAwakeItemState(state: WorkItemState): boolean {
   return (AWAKE_ITEM_STATES as readonly string[]).includes(state);
 }
 
+export function countsAwakeTime(state: WorkItemState, checkpoint: Checkpoint | null): boolean {
+  if (!isAwakeItemState(state)) return false;
+  return state === "running" || checkpoint?.phase !== "merge_queue";
+}
+
 export type StartupDecision =
   | { type: "none" }
   | { type: "resume"; freshSession: true; checkpoint: Checkpoint | null; reattach?: true }

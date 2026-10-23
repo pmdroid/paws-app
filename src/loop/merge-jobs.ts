@@ -84,19 +84,47 @@ function requeue(
   runAt: number,
   payload: Record<string, unknown>,
   now: number,
+  attempts = 0,
 ): "parked" | "lost" {
   const result = db.run(
     `UPDATE job
      SET status = 'pending',
          run_at = ?,
-         attempts = 0,
+         attempts = ?,
          locked_by = NULL,
          locked_until = NULL,
          payload = ?
      WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-    [runAt, JSON.stringify(payload), job.id, job.lockedBy, now],
+    [runAt, Math.max(0, attempts), JSON.stringify(payload), job.id, job.lockedBy, now],
   );
   return result.changes > 0 ? "parked" : "lost";
+}
+
+export const MERGE_OWNER_POLL_MS = 5_000;
+
+export function waitForMergeTurn(
+  db: Database,
+  job: Job,
+  now: number,
+  delayMs = MERGE_OWNER_POLL_MS,
+): "parked" | "lost" {
+  return requeue(db, job, now + delayMs, payloadRecord(job.payload), now, job.attempts - 1);
+}
+
+export function retryMergeLater(
+  db: Database,
+  job: Job,
+  now: number,
+  delayMs: number,
+  error: unknown,
+): boolean {
+  const result = db.run(
+    `UPDATE job
+     SET status = 'pending', run_at = ?, locked_by = NULL, locked_until = NULL, last_error = ?
+     WHERE id = ? AND status = 'running' AND locked_by = ?`,
+    [now + delayMs, error instanceof Error ? error.message : String(error), job.id, job.lockedBy],
+  );
+  return result.changes > 0;
 }
 
 export function ciWaitVerification(payload: unknown): CiWaitVerification | undefined {
