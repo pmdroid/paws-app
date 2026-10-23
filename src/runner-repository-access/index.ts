@@ -18,6 +18,10 @@ async function github<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+export function cacheRepositoryCredentials<T>(options: T, _now: () => number = Date.now): T {
+  return options;
+}
+
 export function createRunnerRepositoryAccess(options: {
   work: RunnerWork;
   github: GitHubApp;
