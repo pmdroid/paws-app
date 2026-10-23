@@ -138,6 +138,40 @@ describe("runner page skills", () => {
   });
 });
 
+describe("skills waiting on running tasks", () => {
+  const waiting = { ...skills[1]!, installedVersion: "1.0.0", reportedAt: now, waiting: 2 };
+  const detail = (entry: typeof waiting) =>
+    runnerDetailMarkup(
+      { ...runner, skills: [entry] },
+      { now, serverVersion: "1.2.0", policy: null, userId: null, role: null, busy: false },
+    );
+
+  test("the runner card says how many running tasks hold the earlier version", () => {
+    expect(detail(waiting)).toContain(
+      '<span class="tag running">Waiting for 2 running tasks on goldbox</span>',
+    );
+    expect(detail(waiting)).not.toContain(">Installing</span>");
+    expect(detail({ ...waiting, waiting: 1 })).toContain("Waiting for 1 running task on goldbox");
+  });
+
+  test("the skill settings name the runner and the count instead of installing", () => {
+    const rollout = {
+      name: "review-paws",
+      total: 2,
+      upToDate: 1,
+      installing: [],
+      waiting: [{ runner: "goldbox", tasks: 3 }],
+      outOfDate: [],
+      failed: [],
+    };
+    const html = skillRolloutMarkup(rollout);
+    expect(html).toContain(
+      '<span class="tag running wrap">Waiting for 3 running tasks on goldbox</span>',
+    );
+    expect(html).not.toContain("installing");
+  });
+});
+
 describe("skill settings rollout", () => {
   const listing: SkillListing = {
     agents: ["claude", "codex", "grok"],
