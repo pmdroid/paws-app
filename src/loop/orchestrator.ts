@@ -214,7 +214,7 @@ import {
   readPullReview,
   serialMerge,
   UPSTREAM_MAIN_REF,
-  type GitHubClient,
+  type GitHubBinding,
   type GitHubTokenProvider,
 } from "../github";
 import { intakeDelegatedIssue, readyItems, stopAdoptedParent, type IntakeResult } from "../intake";
@@ -336,15 +336,6 @@ import {
   hintedRepository,
   repositoryAnswer,
 } from "./repository-selection";
-
-export type GitHubBinding = {
-  appId: string;
-  installationId: string;
-  privateKeyPem: string;
-  client: GitHubClient;
-  /** `github.auth = "gh"`. When set, push and merge do not mint a GitHub App token. */
-  tokenProvider?: GitHubTokenProvider;
-};
 
 export type { RepositoryBinding } from "../core";
 
