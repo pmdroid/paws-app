@@ -13,14 +13,23 @@ export type CiWaitVerification = {
   summary: string;
 };
 
+/** What a parked merge waits for. The Merge queue page reads it from the job payload. */
+export type MergeWaitReason = "ahead" | "ci" | "review" | "branch_update";
+
 export function parkMergeForCi(
   db: Database,
   job: Job,
   now: number,
   verified?: Partial<CiWaitVerification>,
-  options: { queued?: boolean } = {},
+  options: { queued?: boolean; reason?: MergeWaitReason; message?: string } = {},
 ): "parked" | "expired" | "lost" {
   const payload = payloadRecord(job.payload);
+  if (options.reason)
+    payload.mergeWait = {
+      reason: options.reason,
+      ...(options.message ? { message: options.message } : {}),
+      at: now,
+    };
   if (options.queued) {
     // Waiting in the queue or for a review has no deadline. The CI wait starts when it moves.
     delete payload.ciWaitDeadline;

@@ -237,7 +237,12 @@ import {
   VISUAL_REVIEW_WAIT,
 } from "../questions";
 import { askForVisualReview, postNote, remindVisualReview } from "./visual-review";
-import { ciWaitVerification, enqueueVerifiedMerge, parkMergeForCi } from "./merge-jobs";
+import {
+  ciWaitVerification,
+  enqueueVerifiedMerge,
+  parkMergeForCi,
+  type MergeWaitReason,
+} from "./merge-jobs";
 import {
   createAcpActivityReporter,
   FIRST_ACTIVITY_MS,
@@ -391,6 +396,7 @@ type MergeWait = {
   head?: string;
   summary?: string;
   queued?: boolean;
+  reason: MergeWaitReason;
 };
 
 /** Rebase conflicts keep a fixed limit. CI failures use the `[merge] ci_fix_attempts` setting. */
@@ -1092,7 +1098,7 @@ export class Orchestrator {
           job,
           this.now(),
           { base: waiting.base, head: waiting.head, summary: waiting.summary },
-          { queued: waiting.queued === true },
+          { queued: waiting.queued === true, reason: waiting.reason, message: waiting.message },
         ) !== "expired"
       )
         return;
@@ -2768,6 +2774,7 @@ export class Orchestrator {
       if (this.stopped(item.id)) return;
       return {
         message: merged.message ?? "Waiting for CI on the candidate commit.",
+        reason: "ci",
         ...(merged.base === undefined ? {} : { base: merged.base }),
         ...(merged.head === undefined ? {} : { head: merged.head }),
         ...(merged.summary === undefined ? {} : { summary: merged.summary }),
@@ -2849,6 +2856,7 @@ export class Orchestrator {
           // Back to the CI wait: the next pass updates the branch onto main again.
           return {
             message: "Main moved again before the merge. Updating the branch and waiting for CI.",
+            reason: "branch_update",
             ...(merged.base === undefined ? {} : { base: merged.base }),
             ...(merged.head === undefined ? {} : { head: merged.head }),
           };
@@ -2909,7 +2917,11 @@ export class Orchestrator {
     });
     if (this.stopped(item.id)) return undefined;
     if (review === "unreadable" && mergeQueuePosition(this.db, item.id) === null)
-      return { message: "Could not read the pull request's reviews.", queued: true };
+      return {
+        message: "Could not read the pull request's reviews.",
+        queued: true,
+        reason: "review",
+      };
     if (review === "required" || review === "changes_requested") {
       leaveMergeQueue(this.db, item.id);
       const body =
@@ -2917,7 +2929,7 @@ export class Orchestrator {
           ? `Waiting for an approving review on pull request #${prNumber}. It joins the ${name} merge queue once approved.`
           : `Changes were requested on pull request #${prNumber}. It joins the ${name} merge queue once approved.`;
       this.postAfterPullRequest(item, body, `${item.id}:merge-review:${review}:${pull.head}`);
-      return { message: body, queued: true };
+      return { message: body, queued: true, reason: "review" };
     }
     joinMergeQueue(this.db, { itemId: item.id, repository: name, now: this.now() });
     const place = mergeQueuePosition(this.db, item.id);
@@ -2940,7 +2952,12 @@ export class Orchestrator {
       markMergeQueueNotified(this.db, item.id, place.position);
     }
     if (place.position === 1) return undefined;
-    return { message: `${mergeQueueLine(place)}.`, queued: true };
+    const ahead = place.aheadItemId ? getWorkItem(this.db, place.aheadItemId) : null;
+    return {
+      message: `${mergeQueueLine(place)}. ${ahead?.linearIdentifier ?? "The task ahead"} merges first.`,
+      queued: true,
+      reason: "ahead",
+    };
   }
 
   private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {

@@ -327,7 +327,10 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (name === "table")
     return (
-      <Table {...props} className={has("runner-history") ? "[overflow-wrap:normal]" : undefined}>
+      <Table
+        {...props}
+        className={has("runner-history", "merge-table") ? "[overflow-wrap:normal]" : undefined}
+      >
         {children()}
       </Table>
     );

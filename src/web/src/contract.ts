@@ -295,11 +295,46 @@ export interface StatusMergeStep {
   detail: string | null;
 }
 
+/** What a task in the merge queue waits for. */
+export const MERGE_WAIT_REASONS = ["ahead", "ci", "review", "branch_update", "closeout"] as const;
+export type MergeWaitReason = (typeof MERGE_WAIT_REASONS)[number];
+/** Settings → Merging. `queue` merges one at a time per repository. */
+export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
+export type MergeOrderSetting = (typeof MERGE_ORDERS)[number];
+export const MAIN_MOVED_CHOICES = ["overlap", "ci", "closeout"] as const;
+export type MainMovedSetting = (typeof MAIN_MOVED_CHOICES)[number];
+
+/** The merge settings a task resolved, and the issue rule's label when a rule chose them. */
+export interface StatusMergeSettings {
+  order: MergeOrderSetting;
+  mainMoved: MainMovedSetting;
+  rule: string | null;
+}
+
 export interface StatusMergeEntry {
-  position: number;
+  /** Place in its repository's queue, 1 moves. Null when the task holds no place. */
+  position: number | null;
   itemId: string;
+  /** `owner/repo`. */
+  repository: string;
   enqueuedAt: string;
+  /** When Closeout accepted the current change. */
+  acceptedAt: string;
+  waitingFor: MergeWaitReason;
+  detail: string | null;
+  settings: StatusMergeSettings;
   steps: StatusMergeStep[];
+}
+
+/** A pull request that merged, or a task that left the queue for the agent, in the last 24 hours. */
+export interface StatusMergeOutcome {
+  itemId: string;
+  repository: string;
+  outcome: "merged" | "back_with_agent";
+  /** For `back_with_agent`: CI failed or the branch update conflicted. */
+  reason: "ci_failed" | "conflict" | null;
+  at: string;
+  settings: StatusMergeSettings;
 }
 
 export interface StatusEvent {
@@ -325,6 +360,8 @@ export interface StatusSnapshot {
   questions: StatusQuestion[];
   verdicts: StatusVerdict[];
   mergeQueue: StatusMergeEntry[];
+  /** Merged in the last 24 hours, and tasks back with the agent after CI or a conflict. */
+  mergeHistory?: StatusMergeOutcome[];
   events: StatusEvent[];
   /** Closeout videos and screenshots of the visible items, oldest first. */
   evidence?: StatusEvidence[];
@@ -413,12 +450,17 @@ export function statusIntegrity(snapshot: StatusSnapshot): string[] {
     if (seenVerdicts.has(verdict.itemId)) problems.push(`duplicate verdict for ${verdict.itemId}`);
     seenVerdicts.add(verdict.itemId);
   }
-  const positions = new Set<number>();
+  const positions = new Set<string>();
   for (const entry of snapshot.mergeQueue) {
     if (!items.has(entry.itemId)) problems.push(`queue item ${entry.itemId} is missing`);
-    if (positions.has(entry.position)) problems.push(`duplicate queue position ${entry.position}`);
-    positions.add(entry.position);
+    if (entry.position === null) continue;
+    const place = `${entry.repository}#${entry.position}`;
+    if (positions.has(place))
+      problems.push(`duplicate queue position ${entry.position} in ${entry.repository}`);
+    positions.add(place);
   }
+  for (const entry of snapshot.mergeHistory ?? [])
+    if (!items.has(entry.itemId)) problems.push(`merge history item ${entry.itemId} is missing`);
   return problems;
 }
 
@@ -437,16 +479,26 @@ function readSnapshot(input: unknown): StatusSnapshot {
   if (version !== STATUS_API_VERSION) {
     throw new StatusContractError(`status.version must be ${STATUS_API_VERSION}`);
   }
+  const project = readProject(body.project);
   return {
     version: STATUS_API_VERSION,
     source: oneOf(string(body, "source", "status"), SOURCES, "status.source"),
     generatedAt: dateString(body, "generatedAt", "status"),
-    project: readProject(body.project),
+    project,
     items: array(body, "items", "status").map((entry, index) => readItem(entry, index)),
     runs: array(body, "runs", "status").map((entry, index) => readRun(entry, index)),
     questions: array(body, "questions", "status").map((entry, index) => readQuestion(entry, index)),
     verdicts: array(body, "verdicts", "status").map((entry, index) => readVerdict(entry, index)),
-    mergeQueue: array(body, "mergeQueue", "status").map((entry, index) => readMerge(entry, index)),
+    mergeQueue: array(body, "mergeQueue", "status").map((entry, index) =>
+      readMerge(entry, index, project.repo),
+    ),
+    ...(body.mergeHistory === undefined
+      ? {}
+      : {
+          mergeHistory: array(body, "mergeHistory", "status").map((entry, index) =>
+            readMergeOutcome(entry, `mergeHistory[${index}]`, project.repo),
+          ),
+        }),
     events: array(body, "events", "status").map((entry, index) => readEvent(entry, index)),
     ...(body.evidence === undefined
       ? {}
@@ -775,20 +827,64 @@ function readCheck(input: unknown, path: string): StatusCheck {
   };
 }
 
-function readMerge(input: unknown, index: number): StatusMergeEntry {
+/** An engine older than the Merge queue page sends no repository, reason or settings. */
+function readMerge(input: unknown, index: number, repo: string): StatusMergeEntry {
   const path = `mergeQueue[${index}]`;
   const body = object(input, path);
   const position = body.position;
-  if (typeof position !== "number" || !Number.isInteger(position) || position < 1) {
-    throw new StatusContractError(`${path}.position must be an integer >= 1`);
+  if (
+    position !== null &&
+    (typeof position !== "number" || !Number.isInteger(position) || position < 1)
+  ) {
+    throw new StatusContractError(`${path}.position must be an integer >= 1 or null`);
   }
+  const enqueuedAt = dateString(body, "enqueuedAt", path);
   return {
     position,
     itemId: text(body, "itemId", path),
-    enqueuedAt: dateString(body, "enqueuedAt", path),
+    repository: body.repository === undefined ? repo : text(body, "repository", path),
+    enqueuedAt,
+    acceptedAt: body.acceptedAt === undefined ? enqueuedAt : dateString(body, "acceptedAt", path),
+    waitingFor:
+      body.waitingFor === undefined
+        ? position !== null && position > 1
+          ? "ahead"
+          : "ci"
+        : oneOf(string(body, "waitingFor", path), MERGE_WAIT_REASONS, `${path}.waitingFor`),
+    detail: body.detail === undefined ? null : nullableText(body, "detail", path),
+    settings: readMergeSettings(body.settings, `${path}.settings`),
     steps: array(body, "steps", path).map((entry, step) =>
       readStep(entry, `${path}.steps[${step}]`),
     ),
+  };
+}
+
+function readMergeSettings(input: unknown, path: string): StatusMergeSettings {
+  if (input === undefined) return { order: "queue", mainMoved: "ci", rule: null };
+  const body = object(input, path);
+  return {
+    order: oneOf(string(body, "order", path), MERGE_ORDERS, `${path}.order`),
+    mainMoved: oneOf(string(body, "mainMoved", path), MAIN_MOVED_CHOICES, `${path}.mainMoved`),
+    rule: body.rule === undefined ? null : nullableText(body, "rule", path),
+  };
+}
+
+function readMergeOutcome(input: unknown, path: string, repo: string): StatusMergeOutcome {
+  const body = object(input, path);
+  const reason = body.reason;
+  if (reason !== undefined && reason !== null && reason !== "ci_failed" && reason !== "conflict")
+    throw new StatusContractError(`${path}.reason must be ci_failed, conflict or null`);
+  return {
+    itemId: text(body, "itemId", path),
+    repository: body.repository === undefined ? repo : text(body, "repository", path),
+    outcome: oneOf(
+      string(body, "outcome", path),
+      ["merged", "back_with_agent"] as const,
+      `${path}.outcome`,
+    ),
+    reason: reason ?? null,
+    at: dateString(body, "at", path),
+    settings: readMergeSettings(body.settings, `${path}.settings`),
   };
 }
 

@@ -92,5 +92,5 @@ test("path routes keep the engine base and only claim dashboard pages", () => {
 
 test("only work pages read the status snapshot", () => {
   const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
-  expect(pages).toEqual(["overview", "issues", "runs", "evidence", "questions"]);
+  expect(pages).toEqual(["overview", "issues", "runs", "mergeQueue", "evidence", "questions"]);
 });

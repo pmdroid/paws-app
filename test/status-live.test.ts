@@ -6,6 +6,7 @@ import {
   enqueueJob,
   enqueueOutbox,
   enterMergeQueue,
+  joinMergeQueue,
   getWorkItem,
   insertQueuedItem,
   migrate,
@@ -76,6 +77,7 @@ test("fake e2e rows show up on /api/status as live work", async () => {
     applyWorkItemEvent(db, waiting.id, "blocking_question");
     beginImplementRun(db, merging.id, NOW);
     enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
+    joinMergeQueue(db, { itemId: merging.id, repository: "pmdroid/paws-demo", now: 1 });
     const open = getWorkItem(db, waiting.id);
     expect(open?.state).toBe("awaiting_input");
     const question = openQuestion(db, {
@@ -214,9 +216,9 @@ test("fake e2e rows show up on /api/status as live work", async () => {
     expect(verdict?.baseSha).toBe(BASE);
     expect(verdict?.headSha).toBe(HEAD);
 
-    expect(parsed.snapshot.mergeQueue.map((entry) => [entry.position, entry.itemId])).toEqual([
-      [1, "ENG-3"],
-    ]);
+    expect(
+      parsed.snapshot.mergeQueue.map((entry) => [entry.position, entry.itemId, entry.repository]),
+    ).toEqual([[1, "ENG-3", "pmdroid/paws-demo"]]);
     expect(parsed.snapshot.items.find((item) => item.id === "ENG-3")?.pr?.number).toBe(4);
 
     const hidden = await handleStatusRequest(
