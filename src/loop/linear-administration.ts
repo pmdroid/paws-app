@@ -156,7 +156,7 @@ export const ISSUE_CLOSED_RESPONSE = {
 
 export type ClosedIssueTask = {
   itemId: string;
-  outcome: "merged" | "cancelled" | "kept";
+  outcome: "merged" | "cancelled";
 };
 
 /**
@@ -164,9 +164,9 @@ export type ClosedIssueTask = {
  * failed tasks included, closes too, using only what the event delivered. A task whose own
  * branch has a confirmed merge completes as merged. Any other task is cancelled, its session
  * gets one response that completes it, and the journal says why. Tasks created after the issue
- * closed belong to a later delegation and stay. On Done, a task in the merge queue without a
- * confirmed merge stays too: Linear may have closed the issue because that very merge landed,
- * and the merge step records it.
+ * closed belong to a later delegation and stay. A task in the merge queue without a confirmed
+ * merge is cancelled too: the cancel stops its merge job, and the stopped-pull job closes its
+ * pull request unless a merge was recorded for it by then.
  */
 export async function closeClosedIssueTasks(
   db: Database,
@@ -192,11 +192,6 @@ export async function closeClosedIssueTasks(
           outcomes.push({ itemId: row.id, outcome: "merged" });
           continue;
         }
-      }
-      if (closed.stateType === "completed" && row.state === "merge_queue") {
-        journal(`${label} stays in the merge queue: its Linear issue moved to ${status}`);
-        outcomes.push({ itemId: row.id, outcome: "kept" });
-        continue;
       }
       const command: LinearCommand = {
         type: "cancel",

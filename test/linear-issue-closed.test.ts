@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
-import { CommandBus, FakeClock } from "../src/core";
+import { CommandBus, FakeClock, JOB_KIND } from "../src/core";
 import {
   applyWorkItemEvent,
   bindLinearSessionTask,
   getWorkItem,
+  listJobs,
   listOutbox,
   migrate,
   openDatabase,
@@ -220,7 +221,7 @@ test("a confirmed merge from the task's own branch completes the task as merged"
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("merged");
 });
 
-test("Done leaves a merge-queue task without a confirmed merge to its merge step", async () => {
+test("Done cancels a merge-queue task without a confirmed merge and completes its session", async () => {
   const f = await fixture();
   for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
     applyWorkItemEvent(f.db, f.item.id, step);
@@ -228,9 +229,22 @@ test("Done leaves a merge-queue task without a confirmed merge to its merge step
     parseAgentEvent(JSON.stringify(issueUpdate("completed")), "issue-queued", Date.now())!,
   )!;
   expect(await closeClosedIssueTasks(f.db, closed, { notify: () => {} })).toEqual([
-    { itemId: f.item.id, outcome: "kept" },
+    { itemId: f.item.id, outcome: "cancelled" },
   ]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("merge_queue");
+  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  const responses = listOutbox(f.db).filter(
+    (row) => (row.payload as { kind?: string }).kind === "response",
+  );
+  expect(responses.map((row) => (row.payload as { body: string }).body)).toEqual([
+    ISSUE_CLOSED_RESPONSE.completed,
+  ]);
+  expect(
+    listJobs(f.db).some(
+      (job) =>
+        job.queue === JOB_KIND.closeStoppedPull &&
+        (job.payload as { itemId?: string }).itemId === f.item.id,
+    ),
+  ).toBe(true);
 });
 
 test("a task created after the issue closed is a later delegation and stays", async () => {
