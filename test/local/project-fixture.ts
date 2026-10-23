@@ -79,6 +79,7 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
   const started: string[] = [];
   const intake = { delayed: false };
   let failedMemberReads = 0;
+  let memberReads = 0;
   const projects = createApprovedProjects({
     db,
     tracker,
@@ -111,6 +112,7 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
     memberships: {
       installation: async () => ({ id: "org", name: "Workspace" }),
       member: async (organizationId, userId) => {
+        memberReads++;
         if (failedMemberReads > 0) {
           failedMemberReads--;
           throw new Error("Linear HTTP 503");
@@ -202,6 +204,9 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
     outbox,
     failMemberRead() {
       failedMemberReads++;
+    },
+    get memberReads() {
+      return memberReads;
     },
     async close() {
       await orchestrator.shutdown();
