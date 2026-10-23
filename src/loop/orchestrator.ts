@@ -353,6 +353,10 @@ import {
 
 export type { RepositoryBinding } from "../core";
 
+export type HandoverOutcome =
+  | { handedOver: true; runnerId: string; wipCommit?: string }
+  | { handedOver: false; runnerId?: string; reason: string };
+
 export type OrchestratorOptions = {
   db: Database;
   jobs: JobLoop;
@@ -404,6 +408,8 @@ export type OrchestratorOptions = {
   launch?: AgentLaunch;
   remoteExecution?: {
     cancelItem?(itemId: string): Promise<void>;
+    /** Asks the item's runner to checkpoint its running session so it can move elsewhere. */
+    handoverItem?(itemId: string, signal?: AbortSignal): Promise<HandoverOutcome>;
     slotFree?(): boolean;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
@@ -3762,6 +3768,29 @@ export class Orchestrator {
     });
     if (resumed) this.reconcileExecution();
     return resumed;
+  }
+
+  /**
+   * Asks the runner to hand over the item's running session: it stops the agent at a safe
+   * point and Paws keeps the WIP commit as the checkpoint. A handover that does not finish is
+   * reported on the task, and the session stays on its runner.
+   */
+  async handoverItem(itemId: string, signal?: AbortSignal): Promise<HandoverOutcome> {
+    const handover = this.options.remoteExecution?.handoverItem;
+    const outcome: HandoverOutcome = handover
+      ? await handover(itemId, signal)
+      : { handedOver: false, reason: "Paws does not run this task on a runner." };
+    const item = getWorkItem(this.db, itemId);
+    if (!outcome.handedOver && item) {
+      this.post(
+        item,
+        "thought",
+        `Handover failed: ${outcome.reason}`,
+        `${itemId}:handover:${this.now()}`,
+      );
+      await this.flush();
+    }
+    return outcome;
   }
 
   async interruptItem(itemId: string): Promise<void> {
