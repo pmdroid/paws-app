@@ -74,6 +74,7 @@ export async function probeRunnerHealth(
   });
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
+  now = Date.now();
   let listener: Awaited<ReturnType<typeof startRunnerListener>> | undefined;
   const control = createRunnerControl({
     db,
