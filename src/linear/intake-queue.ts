@@ -117,7 +117,7 @@ export function createIntakeQueue(options: {
           pausedUntil = Math.max(pausedUntil, at + error.retryAfterMs);
           store.markFailed(event.dedupeKey, {
             error: message,
-            nextAttemptAt: at + error.retryAfterMs,
+            nextAttemptAt: at + Math.max(error.retryAfterMs, INTAKE_RETRY_MS[0]),
             counted: false,
           });
           return;
