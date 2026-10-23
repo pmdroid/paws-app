@@ -7,6 +7,7 @@ import {
   immediate,
   leaveMergeQueue,
   saveCheckpoint,
+  latestGitHubDelivery,
   recordGitHubDelivery,
   type Job,
   type RunnerCapacityWaitState,
@@ -15,6 +16,7 @@ import { worktreeBranch } from "./sources";
 
 export const MERGE_CI_POLL_MS = 10_000;
 export const MERGE_BACKSTOP_POLL_MS = 5 * 60_000;
+export const GITHUB_DELIVERY_QUIET_MS = 60 * 60_000;
 export const MERGE_CI_WAIT_MS = 269 * MERGE_CI_POLL_MS;
 /** A task waiting in its repository's merge queue, or for a review, checks again this often. */
 export const MERGE_QUEUE_POLL_MS = 30_000;
@@ -64,7 +66,7 @@ export function parkMergeForCi(
   if (options.queued) {
     // Waiting in the queue or for a review has no deadline. The CI wait starts when it moves.
     delete payload.ciWaitDeadline;
-    return requeue(db, job, now + MERGE_QUEUE_POLL_MS, payload, now);
+    return requeue(db, job, now + pollMs(db, now, MERGE_QUEUE_POLL_MS), payload, now);
   }
   const head = verified?.head;
   const saved = payload.ciWaitDeadline;
@@ -77,7 +79,7 @@ export function parkMergeForCi(
   return requeue(
     db,
     job,
-    now + (options.githubQueue ? GITHUB_QUEUE_POLL_MS : MERGE_CI_POLL_MS),
+    now + pollMs(db, now, options.githubQueue ? GITHUB_QUEUE_POLL_MS : MERGE_CI_POLL_MS),
     {
       ...payload,
       ciWaitDeadline: deadline,
@@ -88,6 +90,13 @@ export function parkMergeForCi(
     },
     now,
   );
+}
+
+function pollMs(db: Database, now: number, fastMs: number): number {
+  const last = latestGitHubDelivery(db);
+  return last !== null && now - last.receivedAt < GITHUB_DELIVERY_QUIET_MS
+    ? Math.max(fastMs, MERGE_BACKSTOP_POLL_MS)
+    : fastMs;
 }
 
 function requeue(
@@ -203,6 +212,11 @@ function deliveryFacts(event: string, body: unknown): { shas: Set<string>; branc
     keys.reduce((current, key) => payloadRecord(current)[key], value);
   const shas: unknown[] = [];
   const branches: unknown[] = [];
+  if (
+    ((event === "check_suite" || event === "check_run") && record.action !== "completed") ||
+    (event === "status" && record.state === "pending")
+  )
+    return { shas: new Set(), branches: new Set() };
   if (event === "check_suite") {
     shas.push(field(record, "check_suite", "head_sha"));
     branches.push(field(record, "check_suite", "head_branch"));
@@ -222,7 +236,13 @@ function deliveryFacts(event: string, body: unknown): { shas: Set<string>; branc
   return { shas: strings(shas), branches: strings(branches) };
 }
 
-export function wakeMergesBehind(_db: Database, _now: number): void {}
+export function wakeMergesBehind(db: Database, now: number): void {
+  db.run(
+    `UPDATE job SET run_at = MIN(run_at, ?)
+     WHERE queue = ? AND status = 'pending' AND json_extract(payload, '$.mergeWait.reason') = 'ahead'`,
+    [now, JOB_KIND.merge],
+  );
+}
 
 export function ciWaitVerification(payload: unknown): CiWaitVerification | undefined {
   const record = payloadRecord(payload);
