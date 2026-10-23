@@ -160,7 +160,14 @@ export function createCloseoutSession(
     fingerprint = next;
     checkedHead = head;
     const published = source.published
-      ? await publishedAtHead(workspace, head, source.published, policy.items, commandEnv())
+      ? await publishedAtHead(
+          workspace,
+          head,
+          source.published,
+          policy.items,
+          commandEnv(),
+          await comparisonBase(workspace),
+        )
       : [];
     return { kind: "ready", policy, required: select(policy, changes.paths), published };
   };

@@ -1,11 +1,13 @@
-import { anyPathMatches } from "./evaluate/paths";
+import { anyPathMatches, pathMatches } from "./evaluate/paths";
 import { scrubCommandEnv } from "./run/env";
 import { git } from "./run/exec";
 import type { EvidenceApproval, PublishedEvidence } from "./types";
 
 /**
  * Keep the files published at `head` or at an earlier commit it contains.
- * Screenshots are usually taken before the last commit of a task.
+ * Screenshots are usually taken before the last commit of a task. Given
+ * main's `base`, files published before a rebase that left the task's own
+ * changes under the check's paths alone are kept too.
  */
 export async function publishedAtHead(
   repo: string,
@@ -13,25 +15,38 @@ export async function publishedAtHead(
   published: readonly PublishedEvidence[],
   items: readonly { id: string; paths?: readonly string[] }[],
   env: Record<string, string>,
+  base?: string,
 ): Promise<PublishedEvidence[]> {
   const kept: PublishedEvidence[] = [];
   for (const entry of published) {
+    const paths = pathsOf(items, entry.checkId);
     if (entry.commit === head) kept.push(entry);
     else if (!COMMIT.test(entry.commit)) continue;
     else if ((await git(repo, ["merge-base", "--is-ancestor", entry.commit, head], env)).ok)
       kept.push(entry);
-    else if (await unchangedSince(repo, entry.commit, head, pathsOf(items, entry.checkId), env))
+    else if (await unchangedSince(repo, entry.commit, head, paths, env)) kept.push(entry);
+    else if (
+      base !== undefined &&
+      (await sameOwnChanges(repo, entry.commit, head, base, paths, env))
+    )
       kept.push(entry);
   }
   return kept;
 }
 
+/**
+ * Keep the approvals that still hold at `head`: nothing under the check's
+ * paths changed since the approved commit, or, given main's `base`, the
+ * task's own changes under those paths are the same as when they were
+ * approved. A rebase that only brings in main's changes keeps the approval.
+ */
 export async function approvalsAtHead(
   repo: string,
   head: string,
   approvals: readonly EvidenceApproval[],
   items: readonly { id: string; paths?: readonly string[] }[],
   env: Record<string, string> = scrubCommandEnv(),
+  base?: string,
 ): Promise<EvidenceApproval[]> {
   const kept: EvidenceApproval[] = [];
   for (const approval of approvals) {
@@ -41,8 +56,78 @@ export async function approvalsAtHead(
       await untouchedSince(repo, approval.commit, head, pathsOf(items, approval.checkId), env)
     )
       kept.push(approval);
+    else if (
+      base !== undefined &&
+      (await sameOwnChanges(
+        repo,
+        approval.commit,
+        head,
+        base,
+        pathsOf(items, approval.checkId),
+        env,
+      ))
+    )
+      kept.push(approval);
   }
   return kept;
+}
+
+async function sameOwnChanges(
+  repo: string,
+  approved: string,
+  head: string,
+  base: string,
+  patterns: readonly string[] | undefined,
+  env: Record<string, string>,
+): Promise<boolean> {
+  const before = await ownChanges(repo, approved, base, patterns, env);
+  if (before === null) return false;
+  const after = await ownChanges(repo, head, base, patterns, env);
+  return after !== null && before === after;
+}
+
+/**
+ * The task's diff from where `tip` forked from `base`, under the patterns,
+ * without blob ids or hunk headers, whose line numbers and context move when
+ * main changes elsewhere in the same file.
+ */
+async function ownChanges(
+  repo: string,
+  tip: string,
+  base: string,
+  patterns: readonly string[] | undefined,
+  env: Record<string, string>,
+): Promise<string | null> {
+  const fork = await git(repo, ["merge-base", tip, base], env);
+  if (!fork.ok) return null;
+  const from = fork.stdout.toString("utf8").trim();
+  const changed = await changedPaths(repo, from, tip, env);
+  if (changed === null) return null;
+  const paths = patterns?.length
+    ? changed.filter((path) => patterns.some((pattern) => pathMatches(pattern, path)))
+    : changed;
+  if (paths.length === 0) return "";
+  const diff = await git(
+    repo,
+    [
+      "diff",
+      "--no-renames",
+      "--no-color",
+      "--no-ext-diff",
+      from,
+      tip,
+      "--",
+      ...paths.map((path) => `:(literal)${path}`),
+    ],
+    env,
+  );
+  if (!diff.ok) return null;
+  return diff.stdout
+    .toString("utf8")
+    .split("\n")
+    .filter((line) => !line.startsWith("index "))
+    .map((line) => (line.startsWith("@@") ? "@@" : line))
+    .join("\n");
 }
 
 async function untouchedSince(
