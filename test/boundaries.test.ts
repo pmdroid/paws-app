@@ -87,7 +87,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   closeout: ["core", "closeout-spec"],
   "closeout-spec": ["core", "worktree-checkout"],
   github: ["core", "process"],
-  questions: ["core"],
+  questions: ["core", "db"],
   decisions: ["db", "scheduler"],
   web: ["db"],
   evidence: ["db"],
