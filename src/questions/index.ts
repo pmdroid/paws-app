@@ -11,11 +11,24 @@ export { createFakeQuestionChannel } from "./fake";
 export type { FakeQuestionChannel } from "./fake";
 export { elicitationBody, handoffNote } from "./note";
 export {
+  answer,
   answerQuestion,
+  ask,
+  cancelItemQuestions,
+  cancelQuestion,
+  type AnswerEffects,
+  type AnswerOutcome,
+  type Asked,
+  type QuestionAsker,
+  type QuestionReply,
+} from "./lifecycle";
+export {
+  findAskedQuestion,
   findOpenQuestion,
   getQuestion,
   openQuestion,
   questionReplyConsumed,
+  type QuestionKind,
   type StoredQuestion,
 } from "./store";
 export {
