@@ -3,6 +3,7 @@ export {
   recordRunnerCapacity,
   runnerHasCapacity,
   runnerSlotFree,
+  runnerSlotsHeldBetweenCommands,
   RunnerConcurrencyError,
   setRunnerConcurrency,
 } from "./runner-capacity";

@@ -23,6 +23,7 @@ import {
   immediate,
   listHooks,
   runnerHasCapacity,
+  runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
   startUsagePause,
   usagePause,
@@ -286,16 +287,17 @@ export function createRemoteAgentRunner(options: {
         ([runId, hostId]) =>
           hostId === runner.id &&
           !db
-            .query<{ active: number }, [string, number]>(
-              "SELECT 1 AS active FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?",
+            .query<{ held: number }, [string, string]>(
+              "SELECT 1 AS held FROM runner_work WHERE run_id=? AND runner_id=?",
             )
-            .get(runId, now()),
+            .get(runId, hostId),
       ).length;
       if (reservations.has(item.currentRunId)) {
         rejected.push(`${runner.id}: the run is already being placed`);
         continue;
       }
-      if (!runnerHasCapacity(db, runner.id, now(), "", reserved)) {
+      const held = runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId);
+      if (!runnerHasCapacity(db, runner.id, now(), "", reserved + held)) {
         rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
         continue;
       }
