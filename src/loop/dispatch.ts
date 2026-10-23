@@ -16,6 +16,7 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { visualReviewBody } from "../questions";
 import { evidenceActivityBody } from "./artifacts";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
@@ -73,7 +74,7 @@ export async function deliverLinearOutbox(
     return postSession(payload, tracker, options);
   }
   if (message.op === "elicitation") {
-    return postElicitation(payload, tracker, options);
+    return postElicitation(payload, tracker, options, db);
   }
   if (message.op === "status") {
     return postStatus(payload, tracker, options);
@@ -186,9 +187,13 @@ async function postElicitation(
   payload: Record<string, unknown>,
   tracker: TrackerAdapter,
   requestOptions?: TrackerRequestOptions,
+  db?: Database,
 ): Promise<void> {
   const sessionId = readString(payload, "sessionId");
-  const body = readString(payload, "body");
+  const body =
+    payload["evidence"] !== undefined && db
+      ? reviewBody(payload["evidence"], db)
+      : readString(payload, "body");
   if (sessionId === null || body === null)
     throw new Error("elicitation is missing session or body");
   const options = readOptions(payload["options"]);
@@ -205,6 +210,28 @@ async function postElicitation(
       ...(options.length > 0 ? { options } : {}),
     },
     requestOptions,
+  );
+}
+
+/**
+ * A visual review runs after the session's `linear.evidence` rows, so the files it shows have
+ * their Linear uploads by now. A file without one is shown as its Paws link.
+ */
+function reviewBody(value: unknown, db: Database): string {
+  if (!Array.isArray(value)) throw new Error("visual review evidence must be an array");
+  return visualReviewBody(
+    value.map((entry) => {
+      const id = isRecord(entry) ? readString(entry, "id") : null;
+      const link = isRecord(entry) ? readString(entry, "link") : null;
+      if (id === null || link === null) throw new Error("visual review evidence needs id and link");
+      const row = getEvidence(db, id);
+      if (row === null) throw new Error("Visual review has no evidence row");
+      return {
+        displayName: row.displayName,
+        link,
+        ...(row.assetUrl ? { assetUrl: row.assetUrl } : {}),
+      };
+    }),
   );
 }
 

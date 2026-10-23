@@ -87,6 +87,7 @@ export {
   run,
   trustedPolicyFiles,
   validate,
+  visualReviewRequirements,
   workspacePolicyFiles,
 } from "./facade";
 export { decodePolicyFiles, encodePolicyFiles } from "./policy/transfer";
