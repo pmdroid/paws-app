@@ -1,3 +1,13 @@
+export {
+  REBASE_CONFLICT_INSTRUCTION,
+  REBASE_CONFLICT_THOUGHT,
+  mergeQueueTurn,
+  mergeThroughGitHubQueue,
+  type MergeContext,
+  type MergePull,
+  type MergeVoice,
+  type OrderCapabilities,
+} from "./orders";
 export { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
 export {
   askMergeHelp,
