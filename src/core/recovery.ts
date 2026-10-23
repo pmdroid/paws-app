@@ -1,15 +1,6 @@
 import { LONG_SLEEP_MS, RESUME_AGAIN_AFTER_MS } from "./limits";
-import type { WorkItemState } from "./states";
+import { IN_FLIGHT_ITEM_STATES, type WorkItemState } from "./states";
 import type { Checkpoint } from "./types";
-
-export const IN_FLIGHT_ITEM_STATES = [
-  "running",
-  "verifying",
-  "recovering",
-  "awaiting_input",
-  "paused",
-  "merge_queue",
-] as const satisfies readonly WorkItemState[];
 
 /** Awake time counts while a resume or a merge is actually in progress. */
 export const AWAKE_ITEM_STATES = [
