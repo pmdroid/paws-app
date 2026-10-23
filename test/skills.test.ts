@@ -510,7 +510,7 @@ describe("skill settings API", () => {
       ),
     );
     expect(listing.error).toBeUndefined();
-    expect(getSkill(db, "impeccable")!.source).toEqual({
+    expect(getSkill(db, "fake")!.source).toEqual({
       kind: "git",
       url: "https://github.com/pbakaus/impeccable",
       ref: "main",

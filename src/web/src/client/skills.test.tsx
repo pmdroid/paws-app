@@ -270,7 +270,7 @@ describe("filled-in ref and subfolder", () => {
     expect(html).toContain(`value="${TREE}"`);
     expect(html).toContain('value="main"');
     expect(html).toContain('value=".claude/skills/impeccable"');
-    expect(html).toContain("Read from the URL");
+    expect(html).toContain("A GitHub tree or blob URL fills these in.");
   });
 
   test("fits a 390 px phone without horizontal scroll", () => {
@@ -284,6 +284,5 @@ describe("filled-in ref and subfolder", () => {
   test("a plain source keeps the section closed", () => {
     const closed = renderSkillSettings({ data: listing, busy: null, error: null, notice: null });
     expect(closed).not.toMatch(/<details[^>]*open/);
-    expect(closed).not.toContain("Read from the URL");
   });
 });

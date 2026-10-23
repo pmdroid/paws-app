@@ -10,7 +10,7 @@ export type { SkillBundle, SkillFiles } from "./bundle";
 export { createSkillResolver, gitRemoteCommit, gitUrl } from "./resolve";
 export { createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./updates";
 export type { SkillUpdates } from "./updates";
-export { readSkillSource } from "./source";
+export { gitSource, readSkillSource } from "./source";
 export type {
   RemoteSkillSource,
   ResolvedSkill,

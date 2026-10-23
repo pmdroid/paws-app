@@ -52,7 +52,7 @@ export function createSkillResolver(options: SkillResolverOptions = {}): SkillRe
     async resolve(request, signal) {
       return request.kind === "npm"
         ? resolveNpm(request, { fetch: fetchImpl, registry, limit, signal })
-        : resolveGit(request, { git: options.git ?? "git", limit, signal });
+        : resolveTree(request, { git: options.git ?? "git", limit, signal });
     },
   };
 }
@@ -134,6 +134,30 @@ function integrityMatches(
 }
 
 type GitContext = { git: string; limit: number; signal: AbortSignal | undefined };
+
+async function resolveTree(
+  request: Extract<SkillRequest, { kind: "git" }>,
+  context: GitContext,
+): Promise<ResolvedSkill> {
+  const { path, ...source } = request;
+  if (path === undefined || source.ref?.trim() || !gitUrl(source.url.trim()))
+    return resolveGit(source, context);
+  const listed = await git(context, tmpdir(), [
+    "ls-remote",
+    "--heads",
+    "--tags",
+    "--",
+    source.url.trim(),
+  ]);
+  const ref =
+    listed
+      .split("\n")
+      .map((line) => (line.split("\t")[1] ?? "").replace(/^refs\/(?:heads|tags)\/|\^\{\}$/g, ""))
+      .filter((name) => name && (path === name || path.startsWith(`${name}/`)))
+      .sort((a, b) => b.length - a.length)[0] ?? path.split("/")[0]!;
+  const subfolder = source.subfolder ?? path.slice(ref.length + 1);
+  return resolveGit({ ...source, ref, ...(subfolder ? { subfolder } : {}) }, context);
+}
 
 async function resolveGit(
   request: Extract<SkillRequest, { kind: "git" }>,
