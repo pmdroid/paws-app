@@ -137,7 +137,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       },
       async continue(incoming) {
         expect(await access.authorizeLinearEvent(incoming)).toBe(true);
-        expect(await assignments.authorize(incoming)).toBe(true);
+        expect(await assignments.authorize(incoming)).toEqual({ outcome: "accepted" });
         await orchestrator.onLinearEvent(incoming);
         continuations++;
       },
@@ -175,7 +175,9 @@ test("onboarded authoritative creator resumes once with current App and no perso
       tracker,
       clock,
       authorizeLinearEvent: async (incoming) =>
-        (await access.authorizeLinearEvent(incoming)) && (await assignments.authorize(incoming)),
+        (await access.authorizeLinearEvent(incoming))
+          ? await assignments.authorize(incoming)
+          : { outcome: "refused", reason: "denied" },
       authorizeLinearIntake: (id, spec) => assignments.authorizeIntake(id, spec),
       launch: () => {
         throw new Error("Unexpected agent launch");
@@ -186,8 +188,10 @@ test("onboarded authoritative creator resumes once with current App and no perso
   let runtime = build();
   let auth: GitHubAuthQuestions | undefined;
   try {
-    expect(await runtime.assignments.authorize(event)).toBe(false);
-    expect(await runtime.assignments.authorize({ ...event, deliveryId: "duplicate" })).toBe(false);
+    expect(await runtime.assignments.authorize(event)).toMatchObject({ outcome: "refused" });
+    expect(
+      await runtime.assignments.authorize({ ...event, deliveryId: "duplicate" }),
+    ).toMatchObject({ outcome: "refused" });
     expect(dbApi.workspaceLinearMember(db, "workspace", "creator")).toBeNull();
     expect(dbApi.listWorkItems(db)).toHaveLength(0);
     expect(dbApi.listOutbox(db)).toHaveLength(1);
@@ -230,7 +234,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(
       db.query("SELECT 1 FROM workspace_access_audit WHERE action='assignment.resumed'").all(),
     ).toHaveLength(1);
-    expect(await runtime.assignments.authorize(event)).toBe(false);
+    expect(await runtime.assignments.authorize(event)).toMatchObject({ outcome: "refused" });
     dbApi.beginImplementRun(db, itemId, now());
     const current = () => dbApi.getWorkItem(db, itemId)!;
     const privateKeyPem = generateKeyPairSync("rsa", {

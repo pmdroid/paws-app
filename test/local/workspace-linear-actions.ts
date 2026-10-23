@@ -27,7 +27,13 @@ import {
   issueWorkspaceBootstrap,
   workspaceTokenHash,
 } from "../../src/workspace";
-import { createFakeTracker, parseAgentEvent, type LinearMemberIdentity } from "../../src/linear";
+import {
+  createFakeTracker,
+  parseAgentEvent,
+  type AcceptedLinearEvent,
+  type IntakeDecision,
+  type LinearMemberIdentity,
+} from "../../src/linear";
 import { attachOrchestrator } from "../../src/loop";
 import { answerQuestion, openQuestion, getQuestion } from "../../src/questions";
 
@@ -168,7 +174,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     pawsRoot: root,
     tracker: createFakeTracker(),
     clock,
-    authorizeLinearEvent: access.authorizeLinearEvent,
+    authorizeLinearEvent: decide(access.authorizeLinearEvent),
   });
   const resumes = () => listJobs(db).filter((j) => j.queue === JOB_KIND.resume).length;
   const audits = () =>
@@ -294,7 +300,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
           queuedEntered.resolve();
           await queuedRelease.promise;
         }
-        return access.authorizeLinearEvent(event);
+        return decide(access.authorizeLinearEvent)(event);
       },
     });
     const queuedPending = queueLoop.onLinearEvent(queued.event);
@@ -329,7 +335,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       clock,
       authorizeLinearEvent: async (event) => {
         if (++followupCalls === 2) identities.get("new-member")!.teamIds = [];
-        return access.authorizeLinearEvent(event);
+        return decide(access.authorizeLinearEvent)(event);
       },
     });
     await followupLoop.onLinearEvent(followup.event);
@@ -717,4 +723,9 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     globalThis.fetch = nativeFetch;
     writeFileSync(join(root, "requests.json"), JSON.stringify(reads, null, 2));
   }
+}
+
+function decide(authorize: (event: AcceptedLinearEvent) => Promise<boolean>) {
+  return async (event: AcceptedLinearEvent): Promise<IntakeDecision> =>
+    (await authorize(event)) ? { outcome: "accepted" } : { outcome: "refused", reason: "denied" };
 }
