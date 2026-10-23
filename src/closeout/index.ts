@@ -1,5 +1,10 @@
 export { FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
-export { reviewRequirements, trustedPolicyFiles, visualReviewRequirements } from "../closeout-spec";
+export {
+  approvalsAtHead,
+  reviewRequirements,
+  trustedPolicyFiles,
+  visualReviewRequirements,
+} from "../closeout-spec";
 export { createFakeCloseoutGate } from "./fake";
 export type { FakeCloseoutGate } from "./fake";
 export { createCloseoutGate } from "./gate";
