@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { isTransientFailure, retryAfterMs } from "../core";
 import {
   createLinearCommentBoard,
   createPersonalLinearClient,
@@ -29,6 +30,20 @@ describe("linear comment board", () => {
     await expect(client.query("query Viewer { viewer { id } }")).rejects.toThrow(
       "Linear GraphQL HTTP 401",
     );
+  });
+
+  test("a Linear 503 is transient and a 400 is not", async () => {
+    const failWith = (status: number) =>
+      createPersonalLinearClient({
+        apiKey: "lin_api_secret",
+        fetch: async () => new Response("no", { status, headers: { "retry-after": "7" } }),
+      })
+        .query("query Viewer { viewer { id } }")
+        .catch((error: unknown) => error);
+    const unavailable = await failWith(503);
+    expect(isTransientFailure(unavailable)).toBe(true);
+    expect(retryAfterMs(unavailable)).toBe(7000);
+    expect(isTransientFailure(await failWith(400))).toBe(false);
   });
 
   test("create, edit, and thread replies stay on comments", async () => {
