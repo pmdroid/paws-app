@@ -40,11 +40,6 @@ export function cycleMessage(identifiers: readonly string[]): string {
   return `Cycle in blocks relations (${identifiers.join(" → ")}). Nothing will run.`;
 }
 
-function parentAdoptionMessage(count: number): string {
-  const noun = count === 1 ? "sub-issue" : "sub-issues";
-  return `Picked up ${count} ${noun}. Each one runs in its own session.`;
-}
-
 /**
  * Load a delegated issue. A parent with sub-issues becomes an ordered queue;
  * a lone issue is a queue of one. A blocks cycle is reported and nothing is queued.
@@ -182,17 +177,16 @@ export async function intakeDelegatedIssue(
     }
     throw error;
   }
-  if (delegatedAlone && !adopted && input.acknowledged) return result;
+  // An adopted parent answers once, with a summary, after its sub-issue sessions open.
+  if (adopted || (delegatedAlone && input.acknowledged)) return result;
   await announce(
     tracker,
     input.sessionId,
     "thought",
-    adopted
-      ? parentAdoptionMessage(snapshot.subIssues.length)
-      : queueMessage(
-          result.items.map((item) => item.linearIdentifier),
-          delegatedAlone,
-        ),
+    queueMessage(
+      result.items.map((item) => item.linearIdentifier),
+      delegatedAlone,
+    ),
   );
   return result;
 }

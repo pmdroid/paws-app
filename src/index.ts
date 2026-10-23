@@ -1109,6 +1109,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           projects = createApprovedProjects({
             db,
             tracker: linear.tracker,
+            lifecycle: linear.issueLifecycle,
             memberships: linear.memberships,
             startSession: linear.startSession,
             resumeSession: async (sessionId) => {

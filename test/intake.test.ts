@@ -90,7 +90,7 @@ describe("intake", () => {
     db.close();
   });
 
-  test("adopting a parent finishes the delegation without items and announces separate sessions", async () => {
+  test("adopting a parent finishes the delegation without items and leaves the parent session to its summary", async () => {
     const db = tempDb();
     const tracker = createFakeTracker([
       {
@@ -131,9 +131,7 @@ describe("intake", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
-    expect(tracker.progress.map((update) => update.body)).toEqual([
-      "Picked up 1 sub-issue. Each one runs in its own session.",
-    ]);
+    expect(tracker.progress.map((update) => update.body)).toEqual([]);
     const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
@@ -145,7 +143,7 @@ describe("intake", () => {
     if (!again.ok) return;
     expect(again.items).toEqual([]);
     expect(again.delegation.id).toBe(result.delegation.id);
-    expect(tracker.progress).toHaveLength(1);
+    expect(tracker.progress).toHaveLength(0);
     db.close();
   });
 
@@ -467,7 +465,7 @@ describe("intake", () => {
     if (!again.ok) return;
     expect(again.delegation.id).toBe("approval");
     expect(again.items).toEqual([]);
-    expect(tracker.progress).toHaveLength(1);
+    expect(tracker.progress).toHaveLength(0);
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
