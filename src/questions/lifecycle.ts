@@ -225,7 +225,7 @@ function deliver(db: Database, question: StoredQuestion, now: number): void {
       id: question.id,
       sessionId: question.sessionId,
       questionId: question.id,
-      body: elicitationBody(question.body, question.context ?? undefined),
+      body: elicitationBody(question.body, question.context ?? undefined, question.options),
       options: question.options,
     },
     now,

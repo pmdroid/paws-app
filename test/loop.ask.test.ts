@@ -22,7 +22,7 @@ import {
 import { tempDb } from "./helpers";
 
 test("elicitation keeps select options and a free-text reply", () => {
-  const body = elicitationBody("Include archived rows?", "The export is empty today.");
+  const body = elicitationBody("Include archived rows?", "The export is empty today.", ["yes"]);
   expect(body).toContain("Include archived rows?");
   expect(body).toContain("answer in your own words");
   expect(body).not.toContain("- yes");
@@ -163,7 +163,9 @@ test("an amended question delivers and keeps the added context and options", () 
     options: ["yes", { label: "Use saved decision", value: "/paws decision 1" }],
   });
   expect(listOutbox(db)[0]?.payload).toMatchObject({
-    body: elicitationBody("Include archived rows?", "Saved decision: archive rows stay out"),
+    body: elicitationBody("Include archived rows?", "Saved decision: archive rows stay out", [
+      "yes",
+    ]),
     options: ["yes", { label: "Use saved decision", value: "/paws decision 1" }],
   });
 });
