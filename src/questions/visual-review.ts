@@ -180,16 +180,14 @@ export function lastVisualReviewFeedback(
   db: Database,
   itemId: string,
   checkId: string,
-): string | null {
-  return (
-    db
-      .query<{ feedback: string | null }, [string, string]>(
-        `SELECT feedback FROM visual_review
-         WHERE item_id = ? AND check_id = ? AND kind = 'review' AND outcome = 'changes_requested'
-         ORDER BY answered_at DESC, rowid DESC LIMIT 1`,
-      )
-      .get(itemId, checkId)?.feedback ?? null
-  );
+): { questionId: string; feedback: string | null } | null {
+  return db
+    .query<{ questionId: string; feedback: string | null }, [string, string]>(
+      `SELECT question_id AS questionId, feedback FROM visual_review
+       WHERE item_id = ? AND check_id = ? AND kind = 'review' AND outcome = 'changes_requested'
+       ORDER BY answered_at DESC, rowid DESC LIMIT 1`,
+    )
+    .get(itemId, checkId);
 }
 
 export type VisualReviewAnswer =
@@ -212,11 +210,31 @@ export function visualReviewAcceptedHandoff(checkId: string): string {
   ].join("\n");
 }
 
-export function visualReviewChangesHandoff(checkId: string, feedback: string): string {
+export type VisualReviewMarkedFile = {
+  path: string;
+  displayName: string;
+  evidenceId: string;
+  headCommit: string;
+};
+
+export function visualReviewChangesHandoff(
+  checkId: string,
+  feedback: string,
+  marked: readonly VisualReviewMarkedFile[] = [],
+): string {
   return [
     "Handoff from the previous session.",
     `The reviewer requested changes in the visual review of check ${checkId}:`,
     feedback,
+    ...(marked.length
+      ? [
+          "The reviewer drew on these screenshots to show what to change. Open each image and look at the marks:",
+          ...marked.map(
+            (file) =>
+              `- ${file.path}: ${file.displayName} (evidence ${file.evidenceId}, published at commit ${file.headCommit.slice(0, 7)})`,
+          ),
+        ]
+      : []),
     `The screenshots you published for ${checkId} no longer count. Fix the screens, then publish new screenshots with publish_artifact and checkId "${checkId}". Paws asks for another visual review.`,
   ].join("\n");
 }

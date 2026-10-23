@@ -10,9 +10,11 @@ import {
   getWorkItem,
   linearConversationUrl,
   listEvidence,
+  listVisualReviewMarks,
   listVisualReviews,
   saveCheckpoint,
 } from "../db";
+import { reviewMarkPath } from "./input-files";
 import {
   acceptedVisualReviews,
   answerQuestion,
@@ -244,15 +246,38 @@ export function visualReviewHandoff(db: Database, questionId: string): string | 
   if (review === null) return null;
   if (review.outcome === "accepted") return visualReviewAcceptedHandoff(review.checkId);
   if (review.outcome === "changes_requested")
-    return visualReviewChangesHandoff(review.checkId, review.feedback ?? "");
+    return visualReviewChangesHandoff(
+      review.checkId,
+      review.feedback ?? "",
+      markedFiles(db, review.itemId, questionId),
+    );
   if (review.outcome === "continued") {
-    const feedback = lastVisualReviewFeedback(db, review.itemId, review.checkId) ?? "";
+    const last = lastVisualReviewFeedback(db, review.itemId, review.checkId);
+    const feedback = last?.feedback ?? "";
     return visualReviewChangesHandoff(
       review.checkId,
       review.feedback ? `${feedback}\n\n${review.feedback}` : feedback,
+      last ? markedFiles(db, review.itemId, last.questionId) : [],
     );
   }
   return null;
+}
+
+function markedFiles(db: Database, itemId: string, questionId: string) {
+  const evidence = new Map(listEvidence(db, itemId).map((row) => [row.id, row]));
+  return listVisualReviewMarks(db, questionId).flatMap((mark) => {
+    const row = evidence.get(mark.evidenceId);
+    return row
+      ? [
+          {
+            path: reviewMarkPath(mark.id),
+            displayName: row.displayName,
+            evidenceId: row.id,
+            headCommit: row.headCommit,
+          },
+        ]
+      : [];
+  });
 }
 
 export function visualReviewApprovals(
