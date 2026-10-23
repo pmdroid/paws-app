@@ -268,7 +268,12 @@ describe("Linear issue undelegation", () => {
     });
 
   test("a delegate moving away from Paws undelegates the issue", () => {
-    const undelegated = { organizationId: "organization", issueId: "issue", createdAtMs: at };
+    const undelegated = {
+      organizationId: "organization",
+      appUserId: "paws-app",
+      issueId: "issue",
+      createdAtMs: at,
+    };
     expect(
       parseLinearUndelegation(issue({ delegateId: null }, { delegateId: "paws-app" }), "paws-app"),
     ).toEqual(undelegated);

@@ -12,6 +12,7 @@ import {
   immediate,
   hasLinearNotification,
   linearSessionsForDelegatedTeams,
+  linearSessionsForUndelegatedIssue,
   listWorkItems,
   recordLinearNotification,
   revokeLinearInstallation,
@@ -66,6 +67,10 @@ export async function handleLinearAdministration(
     let work = pending.get(key);
     if (work === undefined) {
       work = Promise.resolve()
+        .then(async () => {
+          if (administration.action === "issueUnassignedFromYou")
+            await stopUndelegatedIssue(db, administration, options);
+        })
         .then(() => options.reconcile?.(administration))
         .then(() => {
           recordLinearNotification(db, administration);
@@ -78,9 +83,8 @@ export async function handleLinearAdministration(
     await work;
     return true;
   }
-  const interrupted = new Set<string>();
-  const commands: LinearCommand[] = [];
-  immediate(db, () => {
+  let commands: LinearCommand[] = [];
+  const stopped = immediate(db, () => {
     const sessions =
       administration.kind === "revoked"
         ? revokeLinearInstallation(db, { ...administration, eventKey: event.dedupeKey })
@@ -98,43 +102,12 @@ export async function handleLinearAdministration(
         teamIds: administration.removedTeamIds,
       }))
         affected.add(id);
-    for (const id of affected) {
-      if (getLinearSession(db, id)?.stoppedAt == null)
-        advanceLinearSessionGeneration(db, id, { stop: true, now: administration.createdAtMs });
-      interrupted.add(id);
-    }
-    for (const item of listWorkItems(db)) {
-      const sessionId = item.sessionKey;
-      if (
-        sessionId === null ||
-        !affected.has(sessionId) ||
-        ["cancelled", "completed", "merged"].includes(item.state)
-      )
-        continue;
-      const command: LinearCommand = {
-        type: "cancel",
-        itemId: item.id,
-        source: "linear",
-        requestedAt: administration.createdAtMs,
-      };
-      if (!applyLinearCommand(db, command).applied)
-        throw new Error(`Could not cancel Linear task ${item.id}`);
-      commands.push(command);
-    }
+    commands = cancelSessions(db, affected, administration.createdAtMs);
     if (administration.kind === "revoked")
       for (const id of affected) dropLinearSessionDeliveries(db, id);
+    return affected;
   });
-  const failures: unknown[] = [];
-  try {
-    for (const command of commands) options.notify(command);
-  } catch (error) {
-    failures.push(error);
-  }
-  const results = await Promise.allSettled(
-    [...interrupted].map(async (id) => options.interrupt?.(id)),
-  );
-  for (const result of results) if (result.status === "rejected") failures.push(result.reason);
-  if (failures.length > 0) throw failures[0];
+  await deliver(commands, stopped, options);
   if (
     administration.kind === "teams" &&
     !administration.canAccessAllPublicTeams &&
@@ -151,15 +124,74 @@ export async function handleLinearAdministration(
 }
 
 export async function stopUndelegatedIssue(
-  _db: Database,
-  _undelegation: {
+  db: Database,
+  undelegation: {
     organizationId: string;
     appUserId: string;
     issueId: string;
     createdAtMs: number;
   },
-  _options: {
+  options: {
     notify: (command: LinearCommand) => void;
     interrupt?: (sessionId: string) => Promise<void>;
   },
-): Promise<void> {}
+): Promise<void> {
+  let commands: LinearCommand[] = [];
+  const stopped = immediate(db, () => {
+    const affected = new Set(linearSessionsForUndelegatedIssue(db, undelegation));
+    commands = cancelSessions(db, affected, undelegation.createdAtMs);
+    return affected;
+  });
+  await deliver(commands, stopped, options);
+}
+
+function cancelSessions(
+  db: Database,
+  affected: ReadonlySet<string>,
+  requestedAt: number,
+): LinearCommand[] {
+  for (const id of affected)
+    if (getLinearSession(db, id)?.stoppedAt == null)
+      advanceLinearSessionGeneration(db, id, { stop: true, now: requestedAt });
+  const commands: LinearCommand[] = [];
+  for (const item of listWorkItems(db)) {
+    const sessionId = item.sessionKey;
+    if (
+      sessionId === null ||
+      !affected.has(sessionId) ||
+      ["cancelled", "completed", "merged"].includes(item.state)
+    )
+      continue;
+    const command: LinearCommand = {
+      type: "cancel",
+      itemId: item.id,
+      source: "linear",
+      requestedAt,
+    };
+    if (!applyLinearCommand(db, command).applied)
+      throw new Error(`Could not cancel Linear task ${item.id}`);
+    commands.push(command);
+  }
+  return commands;
+}
+
+async function deliver(
+  commands: readonly LinearCommand[],
+  sessions: ReadonlySet<string>,
+  options: {
+    notify: (command: LinearCommand) => void;
+    interrupt?: (sessionId: string) => Promise<void>;
+  },
+): Promise<void> {
+  const failures: unknown[] = [];
+  try {
+    for (const command of commands) options.notify(command);
+  } catch (error) {
+    failures.push(error);
+  }
+  const results = await Promise.allSettled(
+    [...sessions].map(async (id) => options.interrupt?.(id)),
+  );
+  for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+  if (failures.length > 0) throw failures[0];
+}

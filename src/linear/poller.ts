@@ -437,16 +437,18 @@ function issueEvent(
     });
   }
   const prior = store.get(`issue:${issue.id}:intake`);
-  if (prior === null || !intakeWasLabeled(prior.payload)) return null;
+  const mode = prior === null ? null : intakeMode(prior.payload);
+  if (mode === null) return null;
+  const reason = mode === "delegate" ? "delegate" : "label";
   return inboxEvent({
-    dedupeKey: `issue:${issue.id}:unlabel:${issue.updatedAtMs}`,
+    dedupeKey: `issue:${issue.id}:un${reason}:${issue.updatedAtMs}`,
     action: "other",
     sessionId,
     issueId: issue.id,
     body: null,
     signal: "stop",
     updatedAtMs: issue.updatedAtMs,
-    payload: { kind: "stop", reason: "label" },
+    payload: { kind: "stop", reason },
   });
 }
 
@@ -531,13 +533,14 @@ function inboxEvent(input: {
   };
 }
 
-function intakeWasLabeled(payload: string): boolean {
+function intakeMode(payload: string): "label" | "delegate" | "both" | null {
   try {
     const parsed: unknown = JSON.parse(payload);
-    if (!isRecord(parsed)) return false;
-    return parsed["mode"] === "label" || parsed["mode"] === "both";
+    if (!isRecord(parsed)) return null;
+    const mode = parsed["mode"];
+    return mode === "label" || mode === "delegate" || mode === "both" ? mode : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

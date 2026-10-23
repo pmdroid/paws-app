@@ -352,11 +352,11 @@ test("notification dedupe follows successful reconciliation and serializes overl
   const payload = {
     ...scope,
     type: "AppUserNotification",
-    action: "issueUnassignedFromYou",
+    action: "issueNewComment",
     createdAt: new Date().toISOString(),
     notification: {
       id: "notification",
-      type: "issueUnassignedFromYou",
+      type: "issueNewComment",
       userId: "app",
       issueId: "issue",
       issue: { id: "issue", teamId: "team" },
@@ -446,7 +446,7 @@ test("production notification ingress reconciles delegation once without workflo
     statuses: [200, 200],
     state: "cancelled",
     pending: 0,
-    sessionReads: 1,
+    sessionReads: 0,
     workflowMutations: 0,
   });
 });
