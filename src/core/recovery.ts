@@ -33,6 +33,17 @@ export function isAwakeItemState(state: WorkItemState): boolean {
   return (AWAKE_ITEM_STATES as readonly string[]).includes(state);
 }
 
+/**
+ * Whether time in this state counts toward the awake time cap. Once Closeout has accepted a
+ * candidate (checkpoint `merge_queue`), the steps up to merge are Paws's own: re-checking the
+ * accepted candidate after a restart or a moved main is not the agent's time. A task sent back
+ * to the agent (`running`) counts again.
+ */
+export function countsAwakeTime(state: WorkItemState, checkpoint: Checkpoint | null): boolean {
+  if (!isAwakeItemState(state)) return false;
+  return state === "running" || checkpoint?.phase !== "merge_queue";
+}
+
 export type StartupDecision =
   | { type: "none" }
   | { type: "resume"; freshSession: true; checkpoint: Checkpoint | null; reattach?: true }
