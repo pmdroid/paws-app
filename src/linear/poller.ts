@@ -11,6 +11,7 @@ import type {
 } from "./catchup";
 import { activityKey, promptMetadata, type AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
+import type { IntakeQueue } from "./intake-queue";
 import { lastVerifiedWebhookMs } from "./webhook";
 
 /** Poll while a work item is open or a question is unanswered. */
@@ -133,7 +134,8 @@ export function createTimerSleeper(): Sleeper {
 }
 
 /**
- * Intake poll. One tick asks Linear once, dedupes by id, and feeds the inbox.
+ * Intake poll. One tick asks Linear once, dedupes by id, and feeds the inbox. With an
+ * intake queue, `created` and `prompted` events are only recorded and handed to its worker.
  * Active work or an open question waits 5s; idle waits 15s. Healthy webhooks or a
  * low request budget stretch that (see `pollIntervalMs`). `RATELIMITED` waits
  * out the reset, then the next tick resumes. The cursor is the SQLite sync row.
@@ -142,6 +144,8 @@ export function startCatchUpPoller(options: {
   source: IntakePollSource;
   store: InboxStore;
   onEvent: (event: AcceptedLinearEvent) => Promise<void | boolean> | void | boolean;
+  /** Takes `created` and `prompted` events. The poller records them and wakes it. */
+  intake?: IntakeQueue;
   hot?: () => boolean;
   submitCommand?: (command: LinearCommand) => void;
   db?: Database;
@@ -183,6 +187,7 @@ export function startCatchUpPoller(options: {
 
   async function pollBody(): Promise<void> {
     for (const event of options.store.listUnhandled()) {
+      if (options.intake?.accepts(event)) continue;
       await deliverOrSkip(event);
     }
     const saved = options.store.getCursor(CURSOR_NAME);
@@ -220,8 +225,13 @@ export function startCatchUpPoller(options: {
     for (const event of events) {
       const committed = options.store.commit(event);
       if (!committed.inserted && committed.handled) continue;
+      if (options.intake?.accepts(event)) {
+        if (committed.inserted) options.intake.arrive(event);
+        continue;
+      }
       await deliverOrSkip(event);
     }
+    options.intake?.wake();
     if (sighting.caughtUp) options.store.setCursor(CURSOR_NAME, now());
     rateAttempts = 0;
   }

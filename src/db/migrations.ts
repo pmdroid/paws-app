@@ -2171,4 +2171,12 @@ CREATE TABLE agent_hook (
 ) STRICT;
 `,
   },
+  {
+    id: "100_inbox_event_retry",
+    sql: `
+ALTER TABLE inbox_event ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE inbox_event ADD COLUMN next_attempt_at INTEGER;
+ALTER TABLE inbox_event ADD COLUMN last_error TEXT;
+`,
+  },
 ];
