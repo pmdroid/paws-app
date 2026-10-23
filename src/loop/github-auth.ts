@@ -10,7 +10,13 @@ import {
   immediate,
   type WorkItemRecord,
 } from "../db";
-import { answerQuestion, findOpenQuestion, getQuestion, openQuestion } from "../questions";
+import {
+  answerQuestion,
+  canAnswer,
+  findOpenQuestion,
+  getQuestion,
+  openQuestion,
+} from "../questions";
 
 export type GitHubAuthPhase = "initial" | "publication";
 export type VerifiedGitHubAccount = { id: number; login: string };
@@ -209,7 +215,8 @@ export class GitHubAuthQuestions {
     const request = this.read(questionId);
     if (
       request === null ||
-      actorId !== request.actor_id ||
+      actorId === null ||
+      !canAnswer({ kind: "github-auth", actorId: request.actor_id }, { id: actorId }) ||
       this.checks.has(questionId) ||
       this.active.has(questionId) ||
       !this.current(request)

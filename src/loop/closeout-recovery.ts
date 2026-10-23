@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { listCloseoutRecoveries, listCloseoutRounds, type CloseoutRecovery } from "../db";
 import type { CloseoutBypass } from "../closeout";
+import { canAnswer } from "../questions";
 
 export type RecoveryAnswer =
   | { kind: "guidance"; body: string }
@@ -36,8 +37,7 @@ export function recoveryOptions(
       for (const key of recovery.retryBaseline) retryBaseline.add(key);
     if (
       answer?.kind === "bypass" &&
-      recovery.answeredBy !== "linear" &&
-      recovery.answeredBy !== "unknown"
+      canAnswer({ kind: "closeout-bypass" }, { id: recovery.answeredBy })
     )
       bypasses.push({
         questionId: recovery.questionId,

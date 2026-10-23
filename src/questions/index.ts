@@ -1,3 +1,10 @@
+export {
+  ANSWER_POLICY,
+  answerer,
+  canAnswer,
+  type AnswerableQuestion,
+  type Answerer,
+} from "./answerers";
 export type { AskTeamInput, QuestionChannel, QuestionOption, TeamAnswer } from "./channel";
 export const pawsQuestionMarker = (questionId: string): string => `<!-- paws:q:${questionId} -->`;
 export { createFakeQuestionChannel } from "./fake";
