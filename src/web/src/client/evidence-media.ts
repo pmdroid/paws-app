@@ -111,27 +111,7 @@ export function createEvidenceMedia(changed: () => void): EvidenceMedia {
     root.className = "flex min-w-0 flex-col gap-4";
     root.setAttribute("aria-label", "Evidence");
     const built: Gallery = { key, root, list, filter: gallery?.filter ?? "all" };
-    const filters = EVIDENCE_FILTERS.map(
-      (entry) =>
-        `<button type="button" class="${BUTTON}" data-evidence-filter="${entry.id}" aria-pressed="false">${entry.label} <span class="font-mono text-xs">${filterEvidence(list, entry.id).length}</span></button>`,
-    ).join("");
-    const tiles = list
-      .map(
-        (entry) =>
-          `<li class="flex min-w-0 flex-col gap-2 rounded-base border-2 border-border bg-secondary-background p-2 shadow-shadow" data-evidence-tile="${esc(entry.id)}" data-evidence-kind="${entry.kind}">
-            <button type="button" class="evidence-thumb relative block aspect-video w-full overflow-hidden rounded-base border-2 border-border bg-background focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring" data-evidence-open="${esc(entry.id)}" aria-label="${esc(`Open ${kindLabel(entry.kind).toLowerCase()} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}${entry.kind === "video" ? '<span class="absolute inset-0 m-auto flex size-10 items-center justify-center rounded-base border-2 border-border bg-main text-main-foreground" aria-hidden="true">▶</span>' : ""}</button>
-            <div class="flex min-w-0 items-start justify-between gap-2">
-              <div class="flex min-w-0 flex-col text-sm">
-                <span class="font-semibold leading-snug" title="${esc(entry.displayName)}">${esc(entry.displayName)}</span>
-                <span data-evidence-measure="${esc(entry.id)}" data-evidence-kind="${entry.kind}">${esc(mediaSummary(entry.kind, info.get(entry.id)))}</span>
-                <span class="truncate font-mono text-xs">${esc(entry.checkId)} · attempt ${entry.attempt}</span>
-              </div>
-              <button type="button" class="${BUTTON}" data-evidence-copy="${esc(entry.id)}">Copy link</button>
-            </div>
-          </li>`,
-      )
-      .join("");
-    root.innerHTML = `<div class="flex min-w-0 flex-wrap items-center justify-between gap-3"><h2 class="text-xl font-bold">Evidence</h2><div class="flex flex-wrap gap-2" role="group" aria-label="Filter evidence">${filters}</div></div><p class="text-sm">Videos and screenshots the agent published with Closeout. Visible to signed-in members with repository access.</p><ul class="m-0 grid list-none grid-cols-1 gap-4 p-0 sm:grid-cols-2 xl:grid-cols-4">${tiles}</ul>`;
+    root.innerHTML = galleryHtml(list, info, engineUrl);
     root.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : null;
       const filter = target
@@ -156,6 +136,34 @@ export function createEvidenceMedia(changed: () => void): EvidenceMedia {
     applyFilter(built);
     return built;
   }
+}
+
+export function galleryHtml(
+  list: readonly StatusEvidence[],
+  info: ReadonlyMap<string, MediaInfo>,
+  engineUrl: string | null,
+): string {
+  const filters = EVIDENCE_FILTERS.map(
+    (entry) =>
+      `<button type="button" class="${BUTTON}" data-evidence-filter="${entry.id}" aria-pressed="false">${entry.label} <span class="font-mono text-xs">${filterEvidence(list, entry.id).length}</span></button>`,
+  ).join("");
+  const tiles = list
+    .map(
+      (entry) =>
+        `<li class="flex min-w-0 flex-col gap-2 rounded-base border-2 border-border bg-secondary-background p-2 shadow-shadow" data-evidence-tile="${esc(entry.id)}" data-evidence-kind="${entry.kind}">
+          <button type="button" class="evidence-thumb relative block aspect-video w-full overflow-hidden rounded-base border-2 border-border bg-background focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring" data-evidence-open="${esc(entry.id)}" aria-label="${esc(`Open ${kindLabel(entry.kind).toLowerCase()} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}${entry.kind === "video" ? '<span class="absolute inset-0 m-auto flex size-10 items-center justify-center rounded-base border-2 border-border bg-main text-main-foreground" aria-hidden="true">▶</span>' : ""}</button>
+          <div class="flex min-w-0 items-start justify-between gap-2">
+            <div class="flex min-w-0 flex-col text-sm">
+              <span class="font-semibold leading-snug" title="${esc(entry.displayName)}">${esc(entry.displayName)}</span>
+              <span data-evidence-measure="${esc(entry.id)}" data-evidence-kind="${entry.kind}">${esc(mediaSummary(entry.kind, info.get(entry.id)))}</span>
+              <span class="truncate font-mono text-xs">${esc(entry.checkId)} · attempt ${entry.attempt}</span>
+            </div>
+            <button type="button" class="${BUTTON}" data-evidence-copy="${esc(entry.id)}">Copy link</button>
+          </div>
+        </li>`,
+    )
+    .join("");
+  return `<div class="flex min-w-0 flex-wrap items-center justify-between gap-3"><h2 class="text-xl font-bold">Evidence</h2><div class="flex flex-wrap gap-2" role="group" aria-label="Filter evidence">${filters}</div></div><p class="text-sm">Videos and screenshots the agent published with Closeout. Visible to signed-in members with repository access.</p><ul class="m-0 grid list-none grid-cols-1 gap-4 p-0 sm:grid-cols-2 xl:grid-cols-4">${tiles}</ul>`;
 }
 
 function applyFilter(gallery: Gallery): void {
