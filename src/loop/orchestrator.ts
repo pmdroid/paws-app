@@ -12,6 +12,7 @@ import type {
   AgentIdentity,
   CloseoutProgressHook,
   PostUpdateHook,
+  PublishArtifactHook,
   PullRequestHook,
   UpdatePlanHook,
 } from "../acp";
@@ -45,6 +46,7 @@ import {
   createCloseoutGate,
   reviewRequirements,
   trustedPolicyFiles,
+  visualReviewRequirements,
   bypassable,
   snapshotRetryBaseline,
   loggedSessionCloseout,
@@ -185,6 +187,7 @@ import {
   leaveMergeQueue,
   markMergeQueueNotified,
   mergeQueuePosition,
+  delegatedLinearUserId,
 } from "../db";
 import {
   publishAccepted,
@@ -227,9 +230,13 @@ import {
   elicitationBody,
   findOpenQuestion,
   handoffNote,
+  getVisualReview,
   openQuestion,
   questionReplyConsumed,
+  VISUAL_REVIEW_ANSWERERS,
+  VISUAL_REVIEW_WAIT,
 } from "../questions";
+import { askForVisualReview, postNote, remindVisualReview } from "./visual-review";
 import { ciWaitVerification, enqueueVerifiedMerge, parkMergeForCi } from "./merge-jobs";
 import {
   createAcpActivityReporter,
@@ -1031,6 +1038,11 @@ export class Orchestrator {
         payload: job.payload,
         now: this.now(),
       });
+    });
+    jobs.register(JOB_KIND.visualReviewReminder, async (job, context) => {
+      const questionId = readString(job.payload, "questionId");
+      if (!context.isCurrent() || questionId === null) return;
+      if (remindVisualReview(this.db, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.start, (job, context) =>
       this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
@@ -3297,6 +3309,22 @@ export class Orchestrator {
     } catch {}
     if (answeredBy === "unknown" || answeredBy === "linear" || !answeredBy.trim())
       return "rejected";
+    if (getVisualReview(this.db, open.id)) {
+      const item = getWorkItem(this.db, open.itemId);
+      if (item === null) return "rejected";
+      if (!(await this.canAnswerVisualReview(item, answeredBy))) {
+        postNote(
+          this.db,
+          sessionId,
+          item,
+          VISUAL_REVIEW_ANSWERERS,
+          `visual-review-refused:${event.dedupeKey}`,
+          this.now(),
+        );
+        await this.flush();
+        return "rejected";
+      }
+    }
     if (this.githubAuth?.owns(open.id)) {
       const accepted = await this.githubAuth.retry(open.id, answeredBy, () => {
         if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
@@ -4713,7 +4741,7 @@ export class Orchestrator {
         : undefined;
     const evidence = this.options.evidence;
     if (!evidence) return linear;
-    return createEvidenceArtifactPublisher({
+    const publisher = createEvidenceArtifactPublisher({
       db: this.db,
       evidence: evidence.store,
       publicUrl: evidence.publicUrl,
@@ -4723,6 +4751,68 @@ export class Orchestrator {
       ...(linear ? { linear } : {}),
       now: () => this.now(),
     });
+    return {
+      ...publisher,
+      publish: async (artifact, context) => {
+        const published = await publisher.publish(artifact, context);
+        if (!context.evidence) return published;
+        const asked = await this.requestVisualReview(
+          item,
+          sessionId,
+          context.runId,
+          context.evidence.checkId,
+          evidence.publicUrl,
+        );
+        return asked ? { ...published, note: VISUAL_REVIEW_WAIT } : published;
+      },
+    } satisfies PublishArtifactHook;
+  }
+
+  /**
+   * Asks for a visual review once an `approval: human` check has its files. The run that
+   * published them ends like one that asked the team: it keeps its work and frees its slot.
+   */
+  private async requestVisualReview(
+    item: WorkItemRecord,
+    sessionId: string,
+    runId: string,
+    checkId: string,
+    publicUrl: string,
+  ): Promise<boolean> {
+    const repository = this.repositoryForItem(item);
+    if (repository === null) return false;
+    const required = visualReviewRequirements(
+      worktreePath(this.options.pawsRoot, itemPathId(item)),
+      this.options.home,
+      this.options.closeoutPolicyRoot?.(repository),
+    );
+    const requirement = required.ok
+      ? required.items.find((entry) => entry.id === checkId)
+      : undefined;
+    if (requirement === undefined) return false;
+    const outcome = immediate(this.db, () =>
+      askForVisualReview(this.db, {
+        item,
+        runId,
+        sessionId,
+        requirement,
+        publicUrl,
+        now: this.now(),
+      }),
+    );
+    if (outcome === null) return false;
+    this.askedRuns.add(runId);
+    await this.flush();
+    return true;
+  }
+
+  /** The delegator and the project lead answer a visual review. */
+  private async canAnswerVisualReview(item: WorkItemRecord, actorId: string): Promise<boolean> {
+    if (delegatedLinearUserId(this.db, item.id) === actorId) return true;
+    const attribution = await this.tracker
+      ?.getIssueAttribution?.(item.linearIssueId)
+      .catch(() => null);
+    return attribution?.leadId === actorId;
   }
 
   private prepareInputFiles(item: WorkItemRecord, turnId: string) {

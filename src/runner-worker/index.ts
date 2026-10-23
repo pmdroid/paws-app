@@ -605,12 +605,19 @@ export async function executeRunnerCommand(
               emit({ type: "artifact", requestId: artifact.id, artifact });
               const reply = await options.answer(artifact.id, context.signal);
               context.signal.throwIfAborted();
-              const publication = JSON.parse(reply.answer) as { url?: unknown; error?: unknown };
+              const publication = JSON.parse(reply.answer) as {
+                url?: unknown;
+                error?: unknown;
+                note?: unknown;
+              };
               if (typeof publication.error === "string")
                 throw new ArtifactRejectedError(publication.error);
               if (typeof publication.url !== "string")
                 throw new Error("Runner artifact publication response is invalid");
-              return { url: publication.url };
+              return {
+                url: publication.url,
+                ...(typeof publication.note === "string" ? { note: publication.note } : {}),
+              };
             },
           }
         : undefined,

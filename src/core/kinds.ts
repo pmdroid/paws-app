@@ -7,6 +7,7 @@ export const JOB_KIND = {
   merge: "github.merge",
   closeStoppedPull: "github.close_stopped",
   catchup: "linear.catchup",
+  visualReviewReminder: "linear.visual_review_reminder",
 } as const;
 
 export const MERGE_LANE = "merge";

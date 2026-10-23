@@ -68,6 +68,8 @@ export interface PublishArtifactContext {
 export interface PublishedArtifact {
   url: string;
   displayName?: string;
+  /** Told to the agent after the link, such as to stop for a visual review. */
+  note?: string;
 }
 
 export interface PublishArtifactHook {
