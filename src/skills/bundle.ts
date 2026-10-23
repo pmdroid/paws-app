@@ -82,15 +82,32 @@ export function readSkillFolder(
 
 /** The `name:` in SKILL.md front matter, when it is a usable skill name. */
 export function skillManifestName(files: SkillFiles): string | null {
-  const manifest = files.get("SKILL.md");
-  if (manifest === undefined) return null;
-  const text = new TextDecoder().decode(manifest.subarray(0, 64 * 1024));
-  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
-  const name = front
-    ?.split(/\r?\n/)
+  const name = frontMatter(files)
     .map((line) => /^name:\s*["']?([^"'#]+?)["']?\s*$/.exec(line)?.[1])
     .find((value) => value !== undefined);
   return name !== undefined && validSkillName(name) ? name : null;
+}
+
+export function skillDescription(files: SkillFiles): string {
+  const lines = frontMatter(files);
+  const at = lines.findIndex((line) => line.startsWith("description:"));
+  if (at === -1) return "";
+  const value = lines[at]!.slice("description:".length).trim();
+  if (!/^[>|][-+]?$/.test(value)) return value.replace(/^(["'])(.*)\1$/, "$2");
+  const block = lines.slice(at + 1);
+  const end = block.findIndex((line) => !/^\s/.test(line));
+  return block
+    .slice(0, end === -1 ? undefined : end)
+    .map((line) => line.trim())
+    .join(" ")
+    .trim();
+}
+
+function frontMatter(files: SkillFiles): string[] {
+  const manifest = files.get("SKILL.md");
+  if (manifest === undefined) return [];
+  const text = new TextDecoder().decode(manifest.subarray(0, 64 * 1024));
+  return /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1]?.split(/\r?\n/) ?? [];
 }
 
 /** A content checksum that does not depend on file order or tar metadata. Uploads pin to it. */
