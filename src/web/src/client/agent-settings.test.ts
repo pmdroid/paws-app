@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { AgentModelCatalog, AgentSettings } from "../agent-settings";
 import { renderAgentSettings, settingsProblems, settingsRequest } from "./agent-settings";
 import { render } from "./render";
 import { parseRoute, routeHref } from "./route";
+import { themedMarkup } from "./theme";
 
 function settings(): AgentSettings {
   return {
@@ -92,6 +95,32 @@ describe("agent settings", () => {
       expect(settingsProblems({ ...settings(), queue: { startTimeoutHours } })).toEqual([
         "Queue start timeout: enter a whole number of hours from 1 to 720.",
       ]);
+  });
+
+  test("desktop: the Queue section offers an optional cap on running tasks per owner, empty by default", () => {
+    const html = renderAgentSettings(view());
+    expect(html).toContain(
+      '<label for="queue-owner-cap">Most tasks one person or project runs at once</label>',
+    );
+    expect(html).toMatch(/name="queue-owner-cap" type="number"[^>]*min="1"[^>]*value=""/);
+    expect(html).not.toMatch(/name="queue-owner-cap"[^>]*required/);
+    const three = { ...settings(), queue: { startTimeoutHours: 24, maxRunningPerOwner: 3 } };
+    expect(renderAgentSettings(view(three))).toMatch(/name="queue-owner-cap"[^>]*value="3"/);
+    expect(settingsProblems(three)).toEqual([]);
+    for (const maxRunningPerOwner of [0, 2.5, NaN])
+      expect(
+        settingsProblems({ ...settings(), queue: { startTimeoutHours: 24, maxRunningPerOwner } }),
+      ).toEqual([
+        "Running tasks per owner: leave empty for no cap, or enter a whole number from 1 to 1000.",
+      ]);
+  });
+
+  test("390 px: the owner cap field stacks in the Queue section without a fixed width", () => {
+    const html = renderToStaticMarkup(
+      createElement(Fragment, null, themedMarkup(renderAgentSettings(view()))),
+    );
+    expect(html).toContain('id="queue-owner-cap"');
+    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   });
 
   test("settings remain reachable before any status items exist", () => {
