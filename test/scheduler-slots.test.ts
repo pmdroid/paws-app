@@ -7,6 +7,7 @@ import {
   insertQueuedItem,
   insertRun,
   putWorkspaceUser,
+  runnerSlotFree,
   syncWorkspaceMember,
 } from "../src/db";
 import { dispatchReadyItems } from "../src/scheduler";
@@ -79,7 +80,23 @@ test("work running without a runner placement leaves its slot free for the next 
     ]);
     expect(dispatchReadyItems(db, { now: NOW + 1, legacyReadyItemIds: READY })).toEqual([]);
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [NOW + 2, second]);
+    db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
     expect(dispatchReadyItems(db, { now: NOW + 2, legacyReadyItemIds: READY })).toEqual(["next-4"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a task between its run and Closeout keeps its runner slot until the run ends", () => {
+  const { db, second } = fixture();
+  try {
+    expect(dispatchReadyItems(db, { now: NOW, legacyReadyItemIds: READY })).toHaveLength(3);
+    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [NOW + 2, second]);
+    expect(dispatchReadyItems(db, { now: NOW + 2, legacyReadyItemIds: READY })).toEqual([]);
+    expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(false);
+    db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
+    expect(runnerSlotFree(db, ["goldbox"], NOW + 3)).toBe(true);
+    expect(dispatchReadyItems(db, { now: NOW + 3, legacyReadyItemIds: READY })).toEqual(["next-4"]);
   } finally {
     db.close();
   }

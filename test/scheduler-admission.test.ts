@@ -257,6 +257,7 @@ function leaveRunner(db: ReturnType<typeof tempDb>, itemId: string): void {
   db.run("UPDATE runner_work SET ended_at=0 WHERE run_id IN (SELECT id FROM run WHERE item_id=?)", [
     itemId,
   ]);
+  db.run("UPDATE run SET status='ended' WHERE item_id=?", [itemId]);
 }
 
 test("a waiting item's place in line moves up as items ahead start or leave", () => {

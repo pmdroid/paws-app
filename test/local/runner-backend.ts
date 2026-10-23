@@ -197,9 +197,14 @@ export async function probeRunnerBackend(
     throw new Error("No dispatched runner command");
   }
   let sequence = 0;
+  const finishRuns = () =>
+    db.run(
+      "UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)",
+    );
   function item() {
     const id = `item-${++sequence}`,
       sessionId = `session-${sequence}`;
+    finishRuns();
     const record = insertQueuedItem(db, { id, now, sessionKey: sessionId });
     const { run } = beginImplementRun(db, id, now);
     recordLinearInstallation(db, {
@@ -550,6 +555,8 @@ export async function probeRunnerBackend(
       ["tooLong", tooLong],
     ] as const) {
       const stop = new AbortController();
+      finishRuns();
+      db.run("UPDATE run SET status='active' WHERE id=?", [record.run.id]);
       const again = backend.forItem(record.id)(input(record, { signal: stop.signal }));
       void again.catch(() => undefined);
       let command = await next();
@@ -2399,6 +2406,7 @@ export async function probeRunnerBackend(
         `UPDATE runner_work SET ended_at=? WHERE command_id IN (${filled.map(() => "?").join(",")})`,
         [Date.now(), ...filled],
       );
+      finishRuns();
       const retriedRun = placedBackend.forItem(raced.id)(
         input(raced, { signal: racedAbort.signal }),
       );
