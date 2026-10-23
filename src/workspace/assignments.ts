@@ -196,10 +196,7 @@ export function createWorkspaceAssignments(options: {
       !identity.guest &&
       identity.teamIds.includes(verified.teamId) &&
       (member === null ||
-        (member.active &&
-          member.role !== "observer" &&
-          member.teamIds.includes(verified.teamId) &&
-          member.checkedAt <= before))
+        (member.active && member.role !== "observer" && member.teamIds.includes(verified.teamId)))
     );
   }
   return {
