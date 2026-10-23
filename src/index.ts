@@ -306,8 +306,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let orchestrator: Orchestrator | null = null;
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
-  let dispatch: (() => readonly string[]) | null = null;
-  let legacyReadyItemIds: readonly string[] = [];
   let executionControls: ReturnType<typeof createExecutionControls> | null = null;
   let projects: ReturnType<typeof createApprovedProjects> | null = null;
   let projectHttp: ReturnType<typeof createProjectHttp> | null = null;
@@ -814,6 +812,32 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       : (linear?.tracker ?? null);
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   const admission = createAdmission({ db, authority: projectExecution.canDispatch, managed });
+  const enqueueMissingSnapshots = () => {
+    const targets = db
+      .query<{ itemId: string; workspaceId: string }, []>(
+        `SELECT picked.id AS itemId,w.id AS workspaceId FROM work_item picked
+      JOIN linear_session s ON s.session_id=picked.session_key
+      JOIN workspace w ON w.linear_organization_id=s.organization_id
+      WHERE picked.id=(
+        SELECT i.id FROM work_item i
+        JOIN linear_session open_session ON open_session.session_id=i.session_key AND open_session.stopped_at IS NULL
+        WHERE i.delegation_id=picked.delegation_id AND i.state NOT IN ('completed','merged','cancelled')
+        AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
+        ORDER BY i.position,i.id LIMIT 1)
+      AND ${delegationHasOpenWork("picked.delegation_id")} AND s.stopped_at IS NULL
+      AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.delegation_id=picked.delegation_id AND gap.state NOT IN ('completed','merged','cancelled')
+        AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=gap.id AND f.present=0)
+        AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=gap.id))`,
+      )
+      .all();
+    for (const target of targets)
+      enqueueJobOnce(db, {
+        queue: "linear.item.reconcile",
+        jobKey: `linear.item.reconcile:${target.itemId}`,
+        payload: target,
+        now: Date.now(),
+      });
+  };
   const loops = startLoops({
     db,
     signal: abort.signal,
@@ -862,9 +886,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             : (projectExecution.recheckEvent(event) ?? true),
         ...(managed
           ? {
-              dispatchReady: (input: { legacyReadyItemIds: readonly string[] }) => {
-                legacyReadyItemIds = input.legacyReadyItemIds;
-                dispatch?.();
+              scheduling: () => {
+                enqueueMissingSnapshots();
+                return { defaultRepository: repository, ownerCap: ownerCap(paths.configFile) };
               },
               publicationReady: (
                 ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
@@ -1124,32 +1148,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           reconciler,
           canMerge: (itemId) => admission.canMerge(itemId).ok,
         });
-        const enqueueMissingSnapshots = () => {
-          const targets = db
-            .query<{ itemId: string; workspaceId: string }, []>(
-              `SELECT picked.id AS itemId,w.id AS workspaceId FROM work_item picked
-            JOIN linear_session s ON s.session_id=picked.session_key
-            JOIN workspace w ON w.linear_organization_id=s.organization_id
-            WHERE picked.id=(
-              SELECT i.id FROM work_item i
-              JOIN linear_session open_session ON open_session.session_id=i.session_key AND open_session.stopped_at IS NULL
-              WHERE i.delegation_id=picked.delegation_id AND i.state NOT IN ('completed','merged','cancelled')
-              AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
-              ORDER BY i.position,i.id LIMIT 1)
-            AND ${delegationHasOpenWork("picked.delegation_id")} AND s.stopped_at IS NULL
-            AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.delegation_id=picked.delegation_id AND gap.state NOT IN ('completed','merged','cancelled')
-              AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=gap.id AND f.present=0)
-              AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=gap.id))`,
-            )
-            .all();
-          for (const target of targets)
-            enqueueJobOnce(db, {
-              queue: "linear.item.reconcile",
-              jobKey: `linear.item.reconcile:${target.itemId}`,
-              payload: target,
-              now: Date.now(),
-            });
-        };
         created.jobs.register("linear.redelegation", async (job) => {
           const lifecycle = linear?.issueLifecycle;
           const onEvent = linear?.webhook.onEvent;
@@ -1201,21 +1199,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             );
           attached.reconcileExecution();
         });
-        dispatch = registerScheduler(
-          created.jobs,
-          () => {
-            enqueueMissingSnapshots();
-            return {
-              now: Date.now(),
-              defaultRepository: repository,
-              legacyReadyItemIds,
-              canDispatchDelegation: admission.canDispatchDelegation,
-              handoffForItem: (itemId) => attached.dependencyHandoff(itemId),
-              ownerCap: ownerCap(paths.configFile),
-            };
-          },
-          () => attached.reconcileExecution(),
-        );
+        registerScheduler(created.jobs, () => attached.reconcileExecution());
         created.jobs.register("execution.reconcile", () => {
           attached.reconcileExecution();
         });

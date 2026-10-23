@@ -64,7 +64,6 @@ import {
 import { createEvidenceStore } from "../src/evidence";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import { handleStatusRequest, parseStatusSnapshot } from "../src/web";
-import { dispatchReadyItems } from "../src/scheduler";
 import {
   attachOrchestrator,
   itemPathId,
@@ -2781,8 +2780,7 @@ async function runMergeQueue(options: {
     tracker,
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
     // The runner scheduler with free slots: every ready task starts, so they all reach the queue.
-    dispatchReady: ({ legacyReadyItemIds }) =>
-      void dispatchReadyItems(db, { legacyReadyItemIds, now: Date.now() }),
+    scheduling: () => ({}),
     github: {
       appId: "1",
       installationId: "2",

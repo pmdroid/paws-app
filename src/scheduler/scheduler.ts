@@ -1,8 +1,10 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import {
   JOB_KIND,
   delegationHasOpenWork,
   holdsExecution as itemHoldsExecution,
+  isInFlightItemState,
   isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
@@ -11,12 +13,15 @@ import {
 import {
   enqueueJob,
   enqueueJobOnce,
+  enqueueOutboxOnce,
   immediate,
+  mergeLaneSql,
   requeueOrphanedWork,
   saveQueuePositions,
   type JobLoop,
 } from "../db";
 import { readyItems } from "../intake";
+import { createAdmission, type ItemAdmission } from "./admission";
 
 const TICK = "scheduler.tick";
 const RUNNER_SEEN_MS = 60_000;
@@ -24,6 +29,9 @@ type Item = {
   id: string;
   delegationId: string;
   issueId: string;
+  identifier: string | null;
+  position: number;
+  absent: number;
   state: WorkItemState;
   version: number;
   createdAt: number;
@@ -46,11 +54,13 @@ type Admission = {
 };
 export type SchedulerOptions = {
   now?: number;
-  legacyReadyItemIds?: readonly string[];
+  admission?: ItemAdmission;
   defaultRepository?: RepositoryBinding | null;
-  canDispatchDelegation?: (delegationId: string) => boolean;
   handoffForItem?: (itemId: string) => string | undefined;
+  sessionFor?: (itemId: string) => string | null;
+  onWaiting?: (itemIds: readonly string[]) => void;
   ownerCap?: number | null;
+  maxInFlight?: number;
 };
 
 export function schedulerPaths(paths: readonly string[]): string[] {
@@ -125,6 +135,8 @@ function allItems(db: Database, now: number): Item[] {
       Item,
       [number, number, number]
     >(`SELECT i.id,i.delegation_id AS delegationId,i.linear_issue_id AS issueId,
+    i.linear_identifier AS identifier,i.position,
+    EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0) AS absent,
     i.state,i.version,i.created_at AS createdAt,i.cancel_requested AS cancelRequested,
     EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning')) AS liveRun,
     EXISTS(SELECT 1 FROM job held WHERE json_extract(held.payload,'$.itemId')=i.id
@@ -248,30 +260,102 @@ function depths(db: Database, items: Item[]): Map<string, number> {
   return result;
 }
 
-export function dispatchReadyItems(db: Database, options: SchedulerOptions = {}): string[] {
+function yieldIdleMergeSessions(
+  db: Database,
+  items: readonly Item[],
+  ready: ReadonlySet<string>,
+  admission: ItemAdmission,
+  now: number,
+): void {
+  for (const item of items) {
+    if (
+      item.state !== "merge_queue" ||
+      item.absent ||
+      !admission.canDispatchDelegation(item.delegationId) ||
+      !items.some(
+        (other) =>
+          other.id !== item.id && other.delegationId === item.delegationId && ready.has(other.id),
+      )
+    )
+      continue;
+    db.run(
+      `UPDATE linear_session SET active_item_id=NULL WHERE active_item_id=?
+       AND NOT EXISTS(SELECT 1 FROM run WHERE item_id=? AND status IN ('active','provisioning'))
+       AND NOT EXISTS(SELECT 1 FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until>?)
+         AND json_extract(payload,'$.itemId')=?
+         AND (queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}') OR ${mergeLaneSql("job")}))`,
+      [item.id, item.id, now, item.id],
+    );
+  }
+}
+
+function reportDependencyCycles(
+  db: Database,
+  items: readonly Item[],
+  admission: ItemAdmission,
+  sessionFor: (itemId: string) => string | null,
+  now: number,
+): void {
+  const delegations = new Map<string, Item[]>();
+  for (const item of items)
+    if (!item.absent)
+      delegations.set(item.delegationId, [...(delegations.get(item.delegationId) ?? []), item]);
+  for (const [delegationId, members] of delegations) {
+    const workspaceId = members.find((member) => member.workspaceId)?.workspaceId;
+    if (!workspaceId || !admission.canDispatchDelegation(delegationId)) continue;
+    let held: Item[];
+    try {
+      held = members
+        .sort((left, right) => left.position - right.position)
+        .filter(
+          (member) =>
+            readyItems(db, { itemId: member.id, workspaceId }).cycleHeldItemIds.length > 0,
+        );
+    } catch {
+      continue;
+    }
+    if (!held.length) continue;
+    const session = held.map((member) => sessionFor(member.id)).find((id) => id !== null);
+    if (!session) continue;
+    const digest = createHash("sha256")
+      .update(JSON.stringify(held.map((member) => member.id).sort()))
+      .digest("hex");
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: session,
+      idempotencyKey: `dependency-cycle:${delegationId}:${digest}`,
+      payload: {
+        sessionId: session,
+        kind: "thought",
+        body: `Linear dependencies contain a cycle. Update the dependencies in Linear to release this work: ${held.map((member) => member.identifier).join(", ")}. Unaffected work can continue.`,
+      },
+      now,
+    });
+  }
+}
+
+export function dispatch(db: Database, options: SchedulerOptions = {}): string[] {
+  if (db.inTransaction) throw new Error("Dispatch runs after the transition commits");
   const now = options.now ?? Date.now();
-  return immediate(db, () => {
+  const admission = options.admission ?? createAdmission({ db });
+  const result = immediate(db, () => {
     requeueOrphanedWork(db, now);
     const items = allItems(db, now);
     const byId = new Map(items.map((item) => [item.id, item]));
-    const ready = new Set<string>();
-    for (const item of items) {
-      if (
-        item.state !== "queued" ||
-        item.cancelRequested ||
-        options.canDispatchDelegation?.(item.delegationId) === false
-      )
-        continue;
-      if (item.workspaceId) {
-        try {
-          for (const id of readyItems(db, { itemId: item.id, workspaceId: item.workspaceId })
-            .readyItemIds)
-            ready.add(id);
-        } catch {
-          continue;
-        }
-      } else if (options.legacyReadyItemIds?.includes(item.id)) ready.add(item.id);
-    }
+    const ready = new Set(
+      items
+        .filter(
+          (item) =>
+            item.state === "queued" &&
+            !item.cancelRequested &&
+            !item.absent &&
+            admission.canStart(item.id).ok,
+        )
+        .map((item) => item.id),
+    );
+    yieldIdleMergeSessions(db, items, ready, admission, now);
+    if (options.sessionFor) reportDependencyCycles(db, items, admission, options.sessionFor, now);
     const saved = db
       .query<Admission & { jobId: number; status: string; lockedUntil: number | null }, []>(
         `SELECT a.item_id AS itemId,a.job_id AS jobId,a.repository_key AS repositoryKey,
@@ -342,6 +426,16 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id))),
     ).length;
     let free = slots === null ? Infinity : slots.total - slots.busy - reserved;
+    if (options.maxInFlight !== undefined)
+      free = Math.min(
+        free,
+        options.maxInFlight -
+          items.filter(
+            (item) =>
+              isInFlightItemState(item.state) ||
+              (item.state === "queued" && held.some((entry) => entry.itemId === item.id)),
+          ).length,
+      );
     const running = new Map<string, number>();
     for (const item of items)
       if (
@@ -391,25 +485,13 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       now,
       new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
     );
-    return admitted;
+    return { admitted, waiting: waiting.map(({ item }) => item.id) };
   });
+  options.onWaiting?.(result.waiting);
+  return result.admitted;
 }
 
-export function registerScheduler(
-  jobs: JobLoop,
-  options: () => SchedulerOptions,
-  onTick?: () => void,
-): () => string[] {
-  const dispatch = () => dispatchReadyItems(jobs.db, options());
-  jobs.register(TICK, () => {
-    if (onTick) onTick();
-    else dispatch();
-  });
-  enqueueJobOnce(jobs.db, {
-    queue: TICK,
-    jobKey: TICK,
-    recurringEveryMs: 30_000,
-    now: options().now,
-  });
-  return dispatch;
+export function registerScheduler(jobs: JobLoop, tick: () => void, now = Date.now()): void {
+  jobs.register(TICK, tick);
+  enqueueJobOnce(jobs.db, { queue: TICK, jobKey: TICK, recurringEveryMs: 30_000, now });
 }

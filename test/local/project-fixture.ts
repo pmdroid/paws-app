@@ -167,7 +167,7 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
     outbox,
     pawsRoot: "/nonexistent-project-proof",
     tracker,
-    dispatchReady() {},
+    scheduling: () => ({}),
     authorizeLinearIntake: projects.authorizeIntake,
     linearIntakeScope: projects.scope,
     linearIntakeActor: projects.actor,

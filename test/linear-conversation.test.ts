@@ -533,9 +533,8 @@ test("shutdown retains a queued start without allowing a new writer", async () =
     expect(f.starts).toEqual([]);
     expect(f.item().state).toBe("queued");
     expect(
-      f.db
-        .query<{ status: string }, []>("SELECT status FROM job WHERE job_key LIKE 'start:%'")
-        .get()?.status,
+      f.db.query<{ status: string }, []>("SELECT status FROM job WHERE queue='item.start'").get()
+        ?.status,
     ).toBe("pending");
   } finally {
     await f.close();

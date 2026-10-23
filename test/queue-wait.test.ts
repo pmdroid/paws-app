@@ -11,7 +11,9 @@ import {
   getWorkItem,
   insertQueuedItem,
   listOutbox,
+  putWorkspaceUser,
   saveQueuePositions,
+  syncWorkspaceMember,
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import { createLiveStatusProvider } from "../src/web";
@@ -19,6 +21,30 @@ import { tempDb, tempHome } from "./helpers";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
+
+function oneBusyRunnerSlot(db: ReturnType<typeof tempDb>): void {
+  const userId = putWorkspaceUser(db, {
+    id: "runner-owner",
+    linearUserId: "runner-owner",
+    name: "Owner",
+    email: "owner@example.invalid",
+  });
+  db.run("INSERT INTO workspace VALUES('runner-ws','runner-org','Runners',0)");
+  syncWorkspaceMember(db, {
+    workspaceId: "runner-ws",
+    userId,
+    role: "owner",
+    active: true,
+    teamIds: [],
+    now: 0,
+  });
+  db.run(
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','runner-ws',?,'runner','active',0,?)",
+    [userId, 100 * DAY],
+  );
+  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',1)");
+  insertQueuedItem(db, { id: "busy", now: -1, sessionKey: "busy-session" });
+}
 
 test("a ready item waiting for a runner slot is queued once in Linear and fails after a day", async () => {
   const db = tempDb();
@@ -29,9 +55,10 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot: tempHome(),
-    dispatchReady() {},
+    scheduling: () => ({}),
   });
   try {
+    oneBusyRunnerSlot(db);
     const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId, now: 1_000 });
     bindLinearSessionTask(db, "session", item.delegationId);
@@ -43,7 +70,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
 
     orchestrator.reconcileExecution();
     orchestrator.reconcileExecution();
-    expect(bodies("thought").filter((body) => body.startsWith("Queued:"))).toHaveLength(1);
+    expect(bodies("thought").filter((body) => body.startsWith("Queued"))).toHaveLength(1);
 
     clock.advance(DAY - 1_000);
     orchestrator.reconcileExecution();
@@ -70,11 +97,10 @@ test("the queued thought shows the place in line, and the start timeout comes fr
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot,
-    dispatchReady() {
-      saveQueuePositions(db, ["ahead", "waiting"], { busy: 4, total: 4 }, clock.now());
-    },
+    scheduling: () => ({}),
   });
   try {
+    oneBusyRunnerSlot(db);
     insertQueuedItem(db, { id: "ahead", now: 0 });
     const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-1' WHERE id='waiting'");
@@ -88,7 +114,7 @@ test("the queued thought shows the place in line, and the start timeout comes fr
 
     orchestrator.reconcileExecution();
     expect(bodies("thought")).toContain(
-      "Queued, 2nd in line. 4 of 4 runner slots are busy. Paws starts PAS-1 when a slot frees.",
+      "Queued, 2nd in line. 1 of 1 runner slot is busy. Paws starts PAS-1 when a slot frees.",
     );
 
     clock.advance(2 * HOUR - 1_000);

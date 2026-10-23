@@ -1,5 +1,5 @@
 export {
-  dispatchReadyItems,
+  dispatch,
   hintedPaths,
   registerScheduler,
   saveSchedulingContext,

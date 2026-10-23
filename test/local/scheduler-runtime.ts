@@ -18,7 +18,7 @@ import {
   openDatabase,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
-import { dispatchReadyItems, registerScheduler, saveSchedulingContext } from "../../src/scheduler";
+import { dispatch, registerScheduler, saveSchedulingContext } from "../../src/scheduler";
 
 export async function probeSchedulerRuntime(
   root: string,
@@ -51,12 +51,15 @@ export async function probeSchedulerRuntime(
   ensureLinearSession(db, { sessionId: "session", issueId: "parent", now: clock.now() });
   bindLinearSessionTask(db, "session", "epic");
   activateLinearItem(db, "session", "original");
-  const options = () => ({ now: clock.now(), legacyReadyItemIds: ["blocker"] });
   const heldLoop = new JobLoop(db, clock);
   let heldTicks = 0;
-  registerScheduler(heldLoop, options, () => {
-    heldTicks += 1;
-  });
+  registerScheduler(
+    heldLoop,
+    () => {
+      heldTicks += 1;
+    },
+    clock.now(),
+  );
   const firstTick = await heldLoop.tick();
   assert(firstTick);
   observe(
@@ -83,25 +86,26 @@ export async function probeSchedulerRuntime(
     clock,
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
-    dispatchReady({ legacyReadyItemIds }) {
-      events.push(`dispatch:${getLinearSession(db, "session")?.activeItemId ?? "cleared"}`);
-      dispatchReadyItems(db, { ...options(), legacyReadyItemIds });
-    },
+    scheduling: () => ({}),
   });
   try {
-    registerScheduler(jobs, options, () => {
-      events.push(`reconcile:${getLinearSession(db, "session")?.activeItemId}`);
-      orchestrator.reconcileExecution();
-    });
+    registerScheduler(
+      jobs,
+      () => {
+        events.push(`reconcile:${getLinearSession(db, "session")?.activeItemId}`);
+        orchestrator.reconcileExecution();
+      },
+      clock.now(),
+    );
     const tick = await jobs.tick();
     const admission = db
       .query<{ item_id: string }, []>("SELECT item_id FROM scheduler_admission")
       .get();
     observe(
-      "after restart the same recurring tick reconciles and yields before actual admission",
+      "after restart the same recurring tick yields the merge session and admits the blocker in one dispatch",
       tick?.id === firstTick.id &&
         getJob(db, firstTick.id)?.fireCount === 2 &&
-        JSON.stringify(events) === JSON.stringify(["reconcile:original", "dispatch:cleared"]) &&
+        JSON.stringify(events) === JSON.stringify(["reconcile:original"]) &&
         admission?.item_id === "blocker" &&
         getLinearSession(db, "session")?.activeItemId === null,
       { tick: tick?.id, fireCount: getJob(db, firstTick.id)?.fireCount, events, admission },
@@ -139,17 +143,15 @@ export async function probeSchedulerRuntime(
       paths: ["src/default"],
     });
     const loop = new JobLoop(defaults, clock);
-    const dispatch = registerScheduler(loop, () => ({
-      now: clock.now(),
-      legacyReadyItemIds: ["default"],
-    }));
+    const run = () => dispatch(defaults, { now: clock.now() });
+    registerScheduler(loop, () => void run(), clock.now());
     const tick = await loop.tick();
     const count = defaults
       .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM scheduler_admission")
       .get()!.count;
     observe(
       "without a custom hook the durable tick and returned dispatcher retain default behavior",
-      tick?.queue === "scheduler.tick" && count === 1 && dispatch().length === 0,
+      tick?.queue === "scheduler.tick" && count === 1 && run().length === 0,
       { queue: tick?.queue, admissions: count },
     );
   } finally {
