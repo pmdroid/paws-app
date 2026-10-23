@@ -217,6 +217,7 @@ import type {
   RepositorySuggestion,
   LinearMergeContext,
   IntakeDecision,
+  ProjectOverview,
 } from "../linear";
 import {
   FIRST_ACTIVITY_BODY,
@@ -1406,7 +1407,16 @@ export class Orchestrator {
         request: async (signal) =>
           this.classificationRequest(
             sessionKey,
-            await this.tracker!.loadEpic(delegatedIssueId),
+            item.brief && !item.brief.epic && item.brief.issue.issueId === delegatedIssueId
+              ? {
+                  linearIssueId: item.brief.issue.issueId,
+                  identifier: item.brief.issue.identifier,
+                  title: item.brief.issue.title,
+                  description: item.brief.issue.description,
+                  acceptanceCriteria: item.brief.issue.acceptanceCriteria,
+                  subIssues: [],
+                }
+              : await this.tracker!.loadEpic(delegatedIssueId),
             signal,
           ),
       });
@@ -3310,6 +3320,14 @@ export class Orchestrator {
         );
       }
     }
+    if (context?.overview !== undefined)
+      keepTaskLinearRead(
+        this.db,
+        item.id,
+        "project_overview",
+        projectOverviewText(context.overview),
+        this.now(),
+      );
     const resolved = resolveMergeSettings(context ?? { projectId: null, labels: [] }, policy);
     const settings: TaskMergeSettings = {
       order: resolved.order,
@@ -4948,19 +4966,19 @@ export class Orchestrator {
   private async loadProjectOverview(itemId: string, signal: AbortSignal): Promise<void> {
     const item = getWorkItem(this.db, itemId);
     const tracker = this.options.tracker;
-    if (
-      !item ||
-      getTaskLinearRead(this.db, itemId, "project_overview") !== undefined ||
-      !tracker?.projectOverview
-    )
+    if (!item || getTaskLinearRead(this.db, itemId, "project_overview") !== undefined) return;
+    if (tracker?.issueMergeContext && !getTaskMergeSettings(this.db, itemId)) {
+      await this.mergeSettingsFor(item, signal);
       return;
+    }
+    if (!tracker?.projectOverview) return;
     try {
       const overview = await tracker.projectOverview(item.linearIssueId, { signal });
       keepTaskLinearRead(
         this.db,
         itemId,
         "project_overview",
-        overview ? `Project overview: ${overview.name}\n\n${overview.content}` : "",
+        projectOverviewText(overview),
         this.now(),
       );
     } catch {
@@ -5773,6 +5791,10 @@ function closeActiveRun(
 ): void {
   const run = getRun(db, runId);
   if (run && run.status === "active") markRun(db, runId, status, now);
+}
+
+function projectOverviewText(overview: ProjectOverview | null): string {
+  return overview ? `Project overview: ${overview.name}\n\n${overview.content}` : "";
 }
 
 function inFlight(state: WorkItemRecord["state"]): boolean {
