@@ -29,6 +29,8 @@ type Item = {
   cancelRequested: number;
   liveRun: number;
   liveJob: number;
+  placed: number;
+  placing: number;
   workspaceId: string | null;
   sessionId: string | null;
   priority: number | null;
@@ -118,7 +120,7 @@ function allItems(db: Database, now: number): Item[] {
   return db
     .query<
       Item,
-      [number]
+      [number, number, number]
     >(`SELECT i.id,i.delegation_id AS delegationId,i.linear_issue_id AS issueId,
     i.state,i.version,i.created_at AS createdAt,i.cancel_requested AS cancelRequested,
     EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning')) AS liveRun,
@@ -126,6 +128,11 @@ function allItems(db: Database, now: number): Item[] {
       AND held.status='running' AND (held.locked_until IS NULL OR held.locked_until>?)
       AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
         OR held.queue LIKE 'github.merge.%' OR held.lane='merge')) AS liveJob,
+    EXISTS(SELECT 1 FROM run p JOIN runner_work w ON w.run_id=p.id WHERE p.item_id=i.id
+      AND w.ended_at IS NULL AND w.lease_until>?) AS placed,
+    EXISTS(SELECT 1 FROM job start WHERE json_extract(start.payload,'$.itemId')=i.id
+      AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>?)
+      AND start.queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')) AS placing,
     w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo
     FROM work_item i
     LEFT JOIN linear_session s ON s.session_id=i.session_key
@@ -134,7 +141,7 @@ function allItems(db: Database, now: number): Item[] {
     LEFT JOIN work_item_repository r ON r.item_id=i.id
     WHERE ${delegationHasOpenWork("i.delegation_id")} OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
     OR EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning'))`)
-    .all(now);
+    .all(now, now, now);
 }
 
 function holdsExecution(item: Item): boolean {
@@ -145,14 +152,20 @@ function holdsExecution(item: Item): boolean {
   );
 }
 
-function taskSlots(db: Database, now: number): number | null {
+function taskSlots(db: Database, now: number): { total: number; busy: number } | null {
   const runners = db
-    .query<{ capacity: number }, [number]>(
-      `SELECT COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity
+    .query<{ capacity: number; used: number }, [number, number, number]>(
+      `SELECT COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity,
+       (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) +
+       (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used
        FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
     )
-    .all(now - RUNNER_SEEN_MS);
-  return runners.length ? runners.reduce((total, runner) => total + runner.capacity, 0) : null;
+    .all(now, now, now - RUNNER_SEEN_MS);
+  if (!runners.length) return null;
+  return {
+    total: runners.reduce((total, runner) => total + runner.capacity, 0),
+    busy: runners.reduce((busy, runner) => busy + Math.min(runner.used, runner.capacity), 0),
+  };
 }
 
 function holdsSession(item: Item): boolean {
@@ -293,11 +306,13 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
           a.id.localeCompare(b.id),
       );
     const slots = taskSlots(db, now);
-    const reserved = held.filter((entry) => {
-      const item = byId.get(entry.itemId);
-      return item?.state === "queued" && !holdsExecution(item);
-    }).length;
-    let free = slots === null ? Infinity : slots - items.filter(holdsExecution).length - reserved;
+    const reserved = items.filter(
+      (item) =>
+        !item.placed &&
+        (item.placing ||
+          (item.state === "queued" && held.some((entry) => entry.itemId === item.id))),
+    ).length;
+    let free = slots === null ? Infinity : slots.total - slots.busy - reserved;
     const admitted: string[] = [];
     for (const item of candidates) {
       if (held.some((entry) => entry.itemId === item.id)) continue;
@@ -329,7 +344,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       candidates
         .filter((item) => !held.some((entry) => entry.itemId === item.id))
         .map((item) => item.id),
-      slots ? { busy: Math.min(slots, slots - Math.max(free, 0)), total: slots } : null,
+      slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
       now,
     );
     return admitted;

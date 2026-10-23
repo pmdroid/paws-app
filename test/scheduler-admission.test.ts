@@ -10,6 +10,7 @@ import {
   ensureLinearSession,
   getQueuePosition,
   insertQueuedItem,
+  insertRun,
   listQueuePositions,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -243,6 +244,21 @@ function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number): void 
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',?)", [capacity]);
 }
 
+function placeOnRunner(db: ReturnType<typeof tempDb>, itemId: string): void {
+  const run = insertRun(db, { itemId, now: 0, status: "active" });
+  db.run(
+    `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
+    SELECT ?,id,workspace_id,1,0,?,? FROM runner WHERE id='runner'`,
+    [run.id, `cmd-${itemId}`, 60_000],
+  );
+}
+
+function leaveRunner(db: ReturnType<typeof tempDb>, itemId: string): void {
+  db.run("UPDATE runner_work SET ended_at=0 WHERE run_id IN (SELECT id FROM run WHERE item_id=?)", [
+    itemId,
+  ]);
+}
+
 test("a waiting item's place in line moves up as items ahead start or leave", () => {
   const db = tempDb();
   try {
@@ -250,6 +266,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
     for (const id of ["busy-1", "busy-2"]) {
       insertQueuedItem(db, { id, now: 0 });
       applyWorkItemEvent(db, id, "dispatched");
+      placeOnRunner(db, id);
     }
     const ready = ["a", "b", "c", "d"];
     for (const [index, id] of ready.entries()) insertQueuedItem(db, { id, now: index + 1 });
@@ -276,6 +293,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
 
     // A slot frees and the first item starts: everyone behind it moves up.
     applyWorkItemEvent(db, "busy-1", "blocking_question");
+    leaveRunner(db, "busy-1");
     assert.deepEqual(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ready }), ["a"]);
     assert.deepEqual(line(), [
       ["b", 1, "2/2"],
@@ -307,12 +325,14 @@ test("queued items wait for a free runner slot, and work in flight keeps its slo
     runnerWithSlots(db, 2);
     insertQueuedItem(db, { id: "busy", now: 0 });
     applyWorkItemEvent(db, "busy", "dispatched");
+    placeOnRunner(db, "busy");
     for (const [index, id] of ["a", "b", "c"].entries())
       insertQueuedItem(db, { id, now: index + 1 });
     const ready = ["a", "b", "c"];
     assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ready }), ["a"]);
     assert.deepEqual(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ready }), []);
     applyWorkItemEvent(db, "busy", "blocking_question");
+    leaveRunner(db, "busy");
     assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ready }), ["b"]);
   } finally {
     db.close();
