@@ -96,11 +96,13 @@ function fixture() {
   let failContinue = false;
   let changeAtIntake: (() => void) | undefined;
   let calls = 0;
+  let memberRead: (() => Promise<void>) | undefined;
   const memberships = {
     async installation() {
       return { id: "org", name: "Workspace" };
     },
     async member(organizationId: string, userId: string) {
+      await memberRead?.();
       return { organizationId, userId, active, guest, admin: false, teamIds: teams };
     },
   };
@@ -314,6 +316,9 @@ function fixture() {
     failContinue() {
       failContinue = true;
     },
+    onMemberRead(fn: () => Promise<void>) {
+      memberRead = fn;
+    },
     changeAtIntake(fn: () => void) {
       changeAtIntake = fn;
     },
@@ -484,6 +489,39 @@ test("linked members avoid a new-issue sign-in hold while observers and removed 
     f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='member'");
     expect(await f.assignments.authorize(f.event)).toBe(false);
     expect(getLinearSession(f.db, "session")!.creatorId).toBe("member");
+  } finally {
+    await f.close();
+  }
+});
+
+test("concurrent delegations from the same member are all accepted", async () => {
+  const f = fixture();
+  try {
+    const userId = putWorkspaceUser(f.db, {
+      id: "member",
+      linearUserId: "member",
+      name: "Member",
+      email: "member@example.invalid",
+    });
+    syncWorkspaceMember(f.db, {
+      workspaceId: "workspace",
+      userId,
+      active: true,
+      role: "member",
+      teamIds: ["team"],
+      now: f.clock.now(),
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let reads = 0;
+    f.onMemberRead(() => (++reads === 1 ? held : Promise.resolve()));
+    const first = f.assignments.authorize(f.event);
+    await Bun.sleep(0);
+    f.clock.advance(1_000);
+    const second = await f.assignments.authorize({ ...f.event, dedupeKey: "second" });
+    release();
+    expect([await first, second]).toEqual([true, true]);
+    expect(listOutbox(f.db)).toHaveLength(0);
   } finally {
     await f.close();
   }
