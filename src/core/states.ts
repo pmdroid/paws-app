@@ -1,3 +1,5 @@
+import type { TaskMode } from "./task";
+
 /** Work-item states. The `work_item.state` CHECK list must match this union. */
 export const WORK_ITEM_STATES = [
   "planning",
@@ -22,6 +24,15 @@ export type WorkItemState = (typeof WORK_ITEM_STATES)[number];
 export const TERMINAL_WORK_ITEM_STATES = ["completed", "merged", "cancelled"] as const;
 
 export type TerminalWorkItemState = (typeof TERMINAL_WORK_ITEM_STATES)[number];
+
+export const IN_FLIGHT_ITEM_STATES = [
+  "running",
+  "verifying",
+  "recovering",
+  "awaiting_input",
+  "paused",
+  "merge_queue",
+] as const satisfies readonly WorkItemState[];
 
 /** Events the work-item machine accepts. `cancel` is legal from every non-terminal state. */
 export const WORK_ITEM_EVENTS = [
@@ -77,4 +88,28 @@ export type DelegationState = (typeof DELEGATION_STATES)[number];
 
 export function isTerminalWorkItemState(state: WorkItemState): state is TerminalWorkItemState {
   return state === "completed" || state === "merged" || state === "cancelled";
+}
+
+export function isBlockerSatisfied(blocker: {
+  state: WorkItemState;
+  mode: TaskMode | null;
+}): boolean {
+  return (
+    blocker.state === "merged" ||
+    (blocker.state === "completed" && (blocker.mode === "answer" || blocker.mode === "artifact"))
+  );
+}
+
+export function holdsExecution(row: {
+  state: WorkItemState;
+  liveRun: boolean;
+  liveJob: boolean;
+}): boolean {
+  return (
+    row.liveRun ||
+    row.liveJob ||
+    row.state === "running" ||
+    row.state === "verifying" ||
+    row.state === "recovering"
+  );
 }
