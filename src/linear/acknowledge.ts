@@ -1,6 +1,7 @@
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { LinearRateLimitError } from "./budget";
+import { LinearEntityNotFoundError } from "./graphql";
 import type { AcceptedLinearEvent } from "./events";
 
 /** Posted before intake so a slow Linear read still meets the 10 second first-activity rule. */
@@ -13,6 +14,16 @@ export class LinearIntakeRefusedError extends Error {}
 export type IntakeDecision =
   | { outcome: "accepted" }
   | { outcome: "refused" | "retry"; reason: string };
+
+export function linearReadRetry(error: unknown): { outcome: "retry"; reason: string } {
+  if (error instanceof LinearRateLimitError || error instanceof LinearEntityNotFoundError)
+    throw error;
+  const message = error instanceof Error ? error.message : "read failed";
+  return {
+    outcome: "retry",
+    reason: `Paws could not read this issue from Linear (${message}). It will try again automatically.`,
+  };
+}
 
 export class LinearIssueClosedError extends UserFacingError {
   constructor(identifier: string) {

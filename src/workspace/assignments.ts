@@ -15,8 +15,7 @@ import {
   type JobLoop,
 } from "../db";
 import {
-  LinearEntityNotFoundError,
-  LinearRateLimitError,
+  linearReadRetry,
   type AcceptedLinearEvent,
   type EpicSnapshot,
   type IntakeDecision,
@@ -50,15 +49,6 @@ const TEAM = "You are not a member of this issue's Linear team.";
 const UNRECORDED = retry(
   "Paws has not recorded this session's Linear installation yet. It will try again automatically.",
 );
-
-function unread(error: unknown): Refusal {
-  if (error instanceof LinearRateLimitError || error instanceof LinearEntityNotFoundError)
-    throw error;
-  const message = error instanceof Error ? error.message : "read failed";
-  return retry(
-    `Paws could not read this issue from Linear (${message}). It will try again automatically.`,
-  );
-}
 
 type Hold = {
   sessionId: string;
@@ -280,20 +270,20 @@ export function createWorkspaceAssignments(options: {
         if (!continuations.has(event) || hold.status !== "accepted" || !current(hold))
           return refused(SIGN_IN);
         const signal = AbortSignal.timeout(30_000);
-        const verified = await snapshot(event, signal).catch(unread);
+        const verified = await snapshot(event, signal).catch(linearReadRetry);
         if ("outcome" in verified) return verified;
         if (verified.fingerprint !== hold.fingerprint)
           return refused("This issue changed while Paws waited for you to sign in.");
-        const refusal = await ineligible(verified, signal).catch(unread);
+        const refusal = await ineligible(verified, signal).catch(linearReadRetry);
         if (refusal) return refusal;
         return current(hold) && holds(hold.sessionId)?.status === "accepted"
           ? ACCEPTED
           : refused(STOPPED);
       }
       const signal = AbortSignal.timeout(30_000);
-      const verified = await snapshot(event, signal).catch(unread);
+      const verified = await snapshot(event, signal).catch(linearReadRetry);
       if ("outcome" in verified) return verified;
-      const refusal = await ineligible(verified, signal).catch(unread);
+      const refusal = await ineligible(verified, signal).catch(linearReadRetry);
       if (refusal) return refusal;
       const currentSession = getLinearSession(db, event.sessionId);
       if (
@@ -316,6 +306,13 @@ export function createWorkspaceAssignments(options: {
         issueAction({ sessionId: event.sessionId!, ...verified, event: JSON.stringify(event) });
         return refused(SIGN_IN);
       });
+    },
+    recheck(event: AcceptedLinearEvent): boolean {
+      if (!event.sessionId || event.action !== "created" || event.signal === "stop") return true;
+      return (
+        getLinearSession(db, event.sessionId)?.stoppedAt === null &&
+        getLinearSessionAccess(db, event.sessionId) === "allowed"
+      );
     },
     begin(token: string): string | null {
       if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return null;

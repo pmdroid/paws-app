@@ -12,7 +12,15 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { createProjectFixture } from "./local/project-fixture";
-import { parseAgentEvent, type AcceptedLinearEvent } from "../src/linear";
+import { PROJECT_REFUSAL as refused } from "../src/project-execution";
+import {
+  acknowledgeNewSession,
+  LinearIntakePendingError,
+  parseAgentEvent,
+  type AcceptedLinearEvent,
+} from "../src/linear";
+
+const accepted = { outcome: "accepted" as const };
 
 test("approved project sessions use canonical single-issue intake, dependency holds and controls", async () => {
   const fixture = createProjectFixture();
@@ -124,11 +132,11 @@ test("a plain project member can answer or stop and an observer cannot", async (
       body: "Stop",
       signal: "stop",
     };
-    expect(await f.projects.authorizeEvent(prompted)).toBe(true);
-    expect(await f.projects.authorizeEvent({ ...prompted, actorId: "observer" })).toBe(false);
+    expect(await f.projects.authorizeEvent(prompted)).toEqual(accepted);
+    expect(await f.projects.authorizeEvent({ ...prompted, actorId: "observer" })).toEqual(refused);
     await f.projects.control({ ...f.actor, userId: "lead" }, approval.id, "pause");
-    expect(await f.projects.authorizeEvent(stop)).toBe(true);
-    expect(await f.projects.authorizeEvent({ ...stop, actorId: "observer" })).toBe(false);
+    expect(await f.projects.authorizeEvent(stop)).toEqual(accepted);
+    expect(await f.projects.authorizeEvent({ ...stop, actorId: "observer" })).toEqual(refused);
     await expect(
       f.projects.control({ workspaceId: "workspace", userId: "observer" }, approval.id, "stop"),
     ).rejects.toThrow("steering access");
@@ -246,18 +254,14 @@ test("re-delegating a failed project issue starts it again and a running one sta
         observedAtMs: f.clock.now(),
       });
     }
-    expect(await f.projects.authorizeEvent(created("early"))).toBe(false);
-    const notice = f.db
-      .query<{ payload: string }, []>(
-        "SELECT payload FROM outbox WHERE json_extract(payload,'$.sessionId')='early'",
-      )
-      .get();
-    expect(JSON.parse(notice?.payload ?? "{}").body).toBe(
-      "one is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.",
-    );
+    expect(await f.projects.authorizeEvent(created("early"))).toEqual({
+      outcome: "refused",
+      reason:
+        "one is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.",
+    });
     expect(getWorkItem(f.db, failed)?.state).not.toBe("cancelled");
     f.db.run("UPDATE work_item SET state='failed' WHERE id=?", [failed]);
-    expect(await f.projects.authorizeEvent(created("again"))).toBe(true);
+    expect(await f.projects.authorizeEvent(created("again"))).toEqual(accepted);
     expect(getWorkItem(f.db, failed)?.state).toBe("cancelled");
     await f.orchestrator.intakeLinearTask("one", "again", "again-task");
     const claim = f.projects.progress(preview.id).find((entry) => entry.issueId === "one")!;
@@ -265,6 +269,90 @@ test("re-delegating a failed project issue starts it again and a running one sta
     expect(claim.items).toHaveLength(1);
     expect(claim.items[0]!.id).not.toBe(failed);
     expect(f.projects.canDispatch(claim.epicId!)).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+function createdEvent(
+  f: ReturnType<typeof createProjectFixture>,
+  sessionId: string,
+  creatorId = "actor",
+) {
+  const body = JSON.parse(
+    readFileSync(join(import.meta.dir, "fixtures/linear/agent-session-created.json"), "utf8"),
+  );
+  body.agentSession.id = sessionId;
+  body.agentSession.creatorId = creatorId;
+  body.agentSession.creator.id = creatorId;
+  return parseAgentEvent(JSON.stringify(body), `delivery-${sessionId}`, f.clock.now())!;
+}
+
+async function approvedProject(f: ReturnType<typeof createProjectFixture>) {
+  const preview = await f.projects.preview(f.actor, f.selection, AbortSignal.timeout(10_000));
+  await f.projects.approve(f.actor, preview.id, preview.generation, AbortSignal.timeout(10_000));
+  f.projects.register(f.jobs);
+  await f.jobs.tick();
+}
+
+test("a project task whose Linear read fails once is retried and accepted", async () => {
+  const f = createProjectFixture(":memory:", { authorizeEvents: true });
+  try {
+    await approvedProject(f);
+    f.failMemberRead();
+    const event = createdEvent(f, "session-one", "app");
+    const acknowledged = new Set<string>(["session-one"]);
+    const deliver = (attempt: number) =>
+      acknowledgeNewSession(
+        f.tracker,
+        event,
+        (value) => f.orchestrator.onLinearEvent(value),
+        undefined,
+        { acknowledged, reportFailure: attempt === 0 },
+      );
+    await expect(deliver(0)).rejects.toBeInstanceOf(LinearIntakePendingError);
+    await deliver(1);
+    expect(f.tracker.progress.filter((update) => update.kind === "error")).toEqual([]);
+    expect(
+      f.db.query("SELECT 1 FROM workspace_access_audit WHERE action='access.denied'").all(),
+    ).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a refused project takeover posts one message", async () => {
+  const f = createProjectFixture(":memory:", { authorizeEvents: true });
+  try {
+    await approvedProject(f);
+    ensureLinearSession(f.db, { sessionId: "early", issueId: "one", creatorId: null });
+    recordLinearInstallation(f.db, {
+      sessionId: "early",
+      organizationId: "org",
+      teamId: "team",
+      oauthClientId: "client",
+      appUserId: "app",
+      observedAtMs: f.clock.now(),
+    });
+    expect(
+      await acknowledgeNewSession(f.tracker, createdEvent(f, "early"), (value) =>
+        f.orchestrator.onLinearEvent(value),
+      ),
+    ).toBe(false);
+    const posted = [
+      ...f.tracker.progress
+        .filter((update) => update.sessionId === "early" && update.kind !== "thought")
+        .map((update) => update.body),
+      ...f.db
+        .query<{ body: string }, []>(
+          "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE json_extract(payload,'$.sessionId')='early'",
+        )
+        .all()
+        .map((row) => row.body),
+    ];
+    expect(posted).toEqual([
+      "Paws did not start this work. one is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.",
+    ]);
   } finally {
     await f.close();
   }
