@@ -2228,12 +2228,16 @@ export async function probeRunnerBackend(
       const drain = async () => {
         for (const hostId of hostIds) while (work.commands(hostId).length) await next(hostId);
       };
-      const sent = async (version: string) => {
+      const sent = async (version: string, checkpointBase = base) => {
         await drain();
         reportVersion(version);
         for (const hostId of hostIds) work.heartbeat(hostId);
         const record = tracked();
-        saveCheckpoint(db, record.id, { phase: "running", baseSha: base, wipCommit: head });
+        saveCheckpoint(db, record.id, {
+          phase: "running",
+          baseSha: checkpointBase,
+          wipCommit: head,
+        });
         const stopVersioned = new AbortController();
         const versionedRun = placedBackend.forItem(record.id)(
           input(record, { signal: stopVersioned.signal, checkpoint: false }),
@@ -2254,14 +2258,23 @@ export async function probeRunnerBackend(
       await git(["-C", source, "update-ref", "refs/paws/upstream-main", moved]);
       const beforeRebase = await sent("0.1.22");
       const rebasing = await sent("0.1.23");
+      await git(["-C", source, "update-ref", "refs/paws/upstream-main", base]);
+      const stale = await sent("0.1.23", head);
       await git(["-C", source, "update-ref", "-d", "refs/paws/upstream-main"]);
       await git(["-C", source, "reset", "--hard", base]);
-      if (beforeRebase.type !== "run" || rebasing.type !== "run")
+      if (beforeRebase.type !== "run" || rebasing.type !== "run" || stale.type !== "run")
         throw new Error("Expected run commands");
       observe(
-        "runners on 0.1.23 or later receive the main Paws last fetched, even past the run's base",
-        beforeRebase.repository.mainSha === base && rebasing.repository.mainSha === moved,
-        { before: beforeRebase.repository.mainSha, rebasing: rebasing.repository.mainSha, moved },
+        "runners on 0.1.23 or later receive the main Paws last fetched past the run's base, never an older one",
+        beforeRebase.repository.mainSha === base &&
+          rebasing.repository.mainSha === moved &&
+          (stale.repository.mainSha === undefined || stale.repository.mainSha === head),
+        {
+          before: beforeRebase.repository.mainSha,
+          rebasing: rebasing.repository.mainSha,
+          moved,
+          stale: stale.repository.mainSha,
+        },
       );
       if (legacy.type !== "run" || current.type !== "run") throw new Error("Expected run commands");
       assert.equal(legacy.repository.mainSha, undefined);
