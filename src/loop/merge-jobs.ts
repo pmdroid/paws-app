@@ -7,9 +7,11 @@ import {
   immediate,
   leaveMergeQueue,
   saveCheckpoint,
+  recordGitHubDelivery,
   type Job,
   type RunnerCapacityWaitState,
 } from "../db";
+import { worktreeBranch } from "./sources";
 
 export const MERGE_CI_POLL_MS = 10_000;
 export const MERGE_CI_WAIT_MS = 269 * MERGE_CI_POLL_MS;
@@ -98,13 +100,22 @@ function requeue(
   const result = db.run(
     `UPDATE job
      SET status = 'pending',
-         run_at = ?,
+         run_at = CASE WHEN run_at > ? THEN MIN(run_at, ?) ELSE ? END,
          attempts = ?,
          locked_by = NULL,
          locked_until = NULL,
          payload = ?
      WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-    [runAt, Math.max(0, attempts), JSON.stringify(payload), job.id, job.lockedBy, now],
+    [
+      job.runAt,
+      runAt,
+      runAt,
+      Math.max(0, attempts),
+      JSON.stringify(payload),
+      job.id,
+      job.lockedBy,
+      now,
+    ],
   );
   return result.changes > 0 ? "parked" : "lost";
 }
@@ -151,6 +162,63 @@ export function retryMergeLater(
     [now + delayMs, error instanceof Error ? error.message : String(error), job.id, job.lockedBy],
   );
   return result.changes > 0;
+}
+
+export function acceptGitHubDelivery(
+  db: Database,
+  delivery: { deliveryId: string; event: string; payload: string },
+  now: number,
+): boolean {
+  if (!recordGitHubDelivery(db, delivery, now)) return false;
+  const facts = deliveryFacts(delivery.event, JSON.parse(delivery.payload));
+  const jobs = db
+    .query<{ id: number; payload: string }, [string]>(
+      "SELECT id, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
+    )
+    .all(JOB_KIND.merge);
+  for (const job of jobs) {
+    const payload = payloadRecord(JSON.parse(job.payload));
+    const item = typeof payload.itemId === "string" ? getWorkItem(db, payload.itemId) : null;
+    const matches =
+      delivery.event === "merge_group"
+        ? githubQueueWatch(payload)?.queued === true
+        : [payload.head, payload.ciWaitHead].some(
+            (sha) => typeof sha === "string" && facts.shas.has(sha),
+          ) ||
+          (item !== null && facts.branches.has(worktreeBranch(item)));
+    if (matches)
+      db.run(
+        `UPDATE job SET run_at = CASE WHEN status = 'running' THEN MAX(run_at, ?) ELSE MIN(run_at, ?) END
+         WHERE id = ?`,
+        [now, now, job.id],
+      );
+  }
+  return true;
+}
+
+function deliveryFacts(event: string, body: unknown): { shas: Set<string>; branches: Set<string> } {
+  const record = payloadRecord(body);
+  const field = (value: unknown, ...keys: string[]): unknown =>
+    keys.reduce((current, key) => payloadRecord(current)[key], value);
+  const shas: unknown[] = [];
+  const branches: unknown[] = [];
+  if (event === "check_suite") {
+    shas.push(field(record, "check_suite", "head_sha"));
+    branches.push(field(record, "check_suite", "head_branch"));
+  } else if (event === "check_run") {
+    shas.push(field(record, "check_run", "head_sha"));
+    branches.push(field(record, "check_run", "check_suite", "head_branch"));
+  } else if (event === "status") {
+    shas.push(record.sha);
+    if (Array.isArray(record.branches))
+      branches.push(...record.branches.map((branch) => field(branch, "name")));
+  } else if (event === "pull_request" || event === "pull_request_review") {
+    shas.push(field(record, "pull_request", "head", "sha"));
+    branches.push(field(record, "pull_request", "head", "ref"));
+  }
+  const strings = (values: unknown[]) =>
+    new Set(values.filter((value): value is string => typeof value === "string"));
+  return { shas: strings(shas), branches: strings(branches) };
 }
 
 export function ciWaitVerification(payload: unknown): CiWaitVerification | undefined {

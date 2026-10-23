@@ -7,18 +7,21 @@ import {
   completeJob,
   enqueueJob,
   getJob,
+  getWorkItem,
   insertQueuedItem,
   migrate,
   openDatabase,
 } from "../db";
 import {
   MERGE_CI_POLL_MS,
+  acceptGitHubDelivery,
   MERGE_CI_WAIT_MS,
   ciWaitVerification,
   parkMergeForCi,
   retryMergeLater,
   waitForMergeTurn,
 } from "./merge-jobs";
+import { worktreeBranch } from "./sources";
 
 function queue() {
   const db = openDatabase(":memory:");
@@ -229,5 +232,121 @@ describe("merge job retries", () => {
     });
     clock.advance(29_000);
     expect(await loop.tick()).toBeNull();
+  });
+});
+
+describe("GitHub deliveries", () => {
+  const head = "a".repeat(40);
+
+  function parked(githubQueue?: { queued: boolean }) {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      lane: MERGE_LANE,
+      payload: { itemId: "eng-1", head },
+      now: clock.now(),
+    });
+    const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    if (job === null) throw new Error("missing claim");
+    parkMergeForCi(
+      db,
+      job,
+      clock.now(),
+      { base: "b".repeat(40), head, summary: "accepted" },
+      githubQueue ? { githubQueue } : {},
+    );
+    const branch = worktreeBranch(getWorkItem(db, "eng-1")!);
+    return { db, clock, id, branch };
+  }
+
+  function deliver(
+    db: ReturnType<typeof queue>["db"],
+    now: number,
+    event: string,
+    payload: unknown,
+    deliveryId = `d-${event}`,
+  ) {
+    return acceptGitHubDelivery(db, { deliveryId, event, payload: JSON.stringify(payload) }, now);
+  }
+
+  test("a check_suite delivery for the head wakes its merge job at once", () => {
+    const { db, clock, id } = parked();
+    expect(getJob(db, id)?.runAt).toBeGreaterThan(clock.now());
+    expect(
+      deliver(db, clock.now(), "check_suite", {
+        action: "completed",
+        check_suite: { head_sha: head, head_branch: "elsewhere", pull_requests: [] },
+      }),
+    ).toBe(true);
+    expect(getJob(db, id)?.runAt).toBe(clock.now());
+  });
+
+  test("a redelivered delivery id is recorded once and wakes nothing again", () => {
+    const { db, clock, id } = parked();
+    const payload = { state: "success", sha: head, branches: [] };
+    expect(deliver(db, clock.now(), "status", payload)).toBe(true);
+    db.run("UPDATE job SET run_at = ? WHERE id = ?", [clock.now() + 60_000, id]);
+    expect(deliver(db, clock.now(), "status", payload)).toBe(false);
+    expect(getJob(db, id)?.runAt).toBe(clock.now() + 60_000);
+  });
+
+  test("check_run, status, pull_request and review deliveries match by head or branch", () => {
+    const cases: [string, (branch: string) => unknown][] = [
+      ["check_run", () => ({ check_run: { head_sha: head, check_suite: { head_branch: null } } })],
+      [
+        "check_run",
+        (branch) => ({
+          check_run: { head_sha: "c".repeat(40), check_suite: { head_branch: branch } },
+        }),
+      ],
+      ["status", (branch) => ({ sha: "c".repeat(40), branches: [{ name: branch }] })],
+      [
+        "pull_request",
+        (branch) => ({
+          action: "synchronize",
+          pull_request: { head: { sha: "c".repeat(40), ref: branch } },
+        }),
+      ],
+      [
+        "pull_request_review",
+        () => ({ action: "submitted", pull_request: { head: { sha: head, ref: "other" } } }),
+      ],
+    ];
+    for (const [index, [event, payload]] of cases.entries()) {
+      const { db, clock, id, branch } = parked();
+      expect(deliver(db, clock.now(), event, payload(branch), `d-${index}`)).toBe(true);
+      expect(getJob(db, id)?.runAt, `${event} ${index}`).toBe(clock.now());
+    }
+  });
+
+  test("a delivery for another head or branch leaves the merge job parked", () => {
+    const { db, clock, id } = parked();
+    const runAt = getJob(db, id)?.runAt;
+    deliver(db, clock.now(), "pull_request", {
+      pull_request: { head: { sha: "c".repeat(40), ref: "paws/eng-2" } },
+    });
+    deliver(db, clock.now(), "merge_group", { merge_group: { head_sha: "d".repeat(40) } });
+    expect(getJob(db, id)?.runAt).toBe(runAt);
+  });
+
+  test("a merge_group delivery wakes merges in GitHub's merge queue", () => {
+    const { db, clock, id } = parked({ queued: true });
+    deliver(db, clock.now(), "merge_group", {
+      action: "destroyed",
+      merge_group: { head_sha: "d".repeat(40), head_ref: "refs/heads/gh-readonly-queue/main/pr-7" },
+    });
+    expect(getJob(db, id)?.runAt).toBe(clock.now());
+  });
+
+  test("a delivery while the merge job runs makes its next pass run at once", () => {
+    const { db, clock, id } = parked();
+    clock.advance(MERGE_CI_POLL_MS);
+    const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    expect(job?.id).toBe(id);
+    clock.advance(1_000);
+    deliver(db, clock.now(), "check_suite", { check_suite: { head_sha: head } });
+    expect(parkMergeForCi(db, job!, clock.now(), { head })).toBe("parked");
+    expect(getJob(db, id)).toMatchObject({ status: "pending", runAt: clock.now() });
   });
 });
