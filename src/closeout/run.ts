@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { isTransientFailure } from "../core";
+import { isTransientFailure, isTransientGitError } from "../core";
 import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
 import type { FixRequest, FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
@@ -217,6 +217,14 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
     const message = error instanceof Error ? error.message : String(error);
     return failure("blocked", null, message, input.head);
   }
+  const unreadable = ran.message;
+  if (
+    ran.decision === "blocked" &&
+    ran.items.length === 0 &&
+    unreadable?.startsWith("origin/main is unavailable") &&
+    isTransientGitError(unreadable)
+  )
+    throw new PolicyFetchError(unreadable);
   const moved = await headUnmoved(input.worktree, input.head);
   if (moved) return failure("blocked", exitOf(ran.decision), moved, input.head);
   if (ran.gate !== CLOSEOUT_GATE) {
@@ -475,6 +483,10 @@ async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise
     }
   }
   return parts.join("\n\n");
+}
+
+class PolicyFetchError extends Error {
+  override name = "PolicyFetchError";
 }
 
 const REVIEW_RETRY_DELAYS_MS = [30_000, 120_000, 300_000];
