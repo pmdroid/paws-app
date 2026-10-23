@@ -2273,4 +2273,10 @@ ALTER TABLE agent_hook_session_start RENAME TO agent_hook;
 ALTER TABLE runner_execution_usage ADD COLUMN resets_at INTEGER CHECK (resets_at IS NULL OR resets_at >= 0);
 `,
   },
+  {
+    id: "110_runner_usage_history",
+    sql: `
+CREATE INDEX runner_usage_runner_ended ON runner_execution_usage(runner_id, ended_at);
+`,
+  },
 ];

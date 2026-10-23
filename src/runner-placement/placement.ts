@@ -7,6 +7,8 @@ import {
   getWorkItemRepository,
   immediate,
   runnerHasCapacity,
+  runnerOccupancy,
+  runnerSlotsHeldBetweenCommands,
   delegatedLinearUserId,
   workspaceMember,
 } from "../db";
@@ -37,6 +39,10 @@ const RETRYABLE_OUTCOMES = new Set([
 
 /** How long a continuing task waits for the busy runner that holds its agent session. */
 export const SESSION_GRACE_MS = 2 * 60_000;
+/** How far back finished executions count toward a runner's recent load. */
+export const LOAD_HISTORY_MS = 6 * 60 * 60_000;
+/** Finished work loses half its weight in recent load every hour. */
+export const LOAD_HALF_LIFE_MS = 60 * 60_000;
 
 export function createRunnerPlacement(options: {
   db: Database;
@@ -154,6 +160,42 @@ export function createRunnerPlacement(options: {
         .query("SELECT oauth_client_id,team_id FROM linear_session WHERE session_id=?")
         .get(current.session.sessionId),
     });
+  }
+  /**
+   * Load per runner, both as a share of its slots. `current` counts leased work, helpers, slots
+   * held between commands, and the caller's unassigned reservations. `recent` is the busy time of
+   * executions that finished within LOAD_HISTORY_MS, decayed by age, so a runner that has just
+   * worked long turns yields to one that has been idle even when both are free right now.
+   */
+  function runnerLoad(
+    runnerIds: readonly string[],
+    at: number,
+    reserved?: ReadonlyMap<string, number>,
+  ) {
+    const from = at - LOAD_HISTORY_MS;
+    const history = db.query<{ startedAt: number; endedAt: number }, [string, number, number]>(
+      `SELECT started_at AS startedAt,ended_at AS endedAt FROM runner_execution_usage
+       WHERE runner_id=? AND ended_at>? AND ended_at<=?`,
+    );
+    return new Map(
+      runnerIds.map((id) => {
+        const { capacity, occupied } = runnerOccupancy(db, id, at);
+        const slots = Math.max(capacity, 1);
+        const held = runnerSlotsHeldBetweenCommands(db, id, at);
+        let busy = 0;
+        for (const row of history.all(id, from, at))
+          busy +=
+            Math.max(0, row.endedAt - Math.max(row.startedAt, from)) *
+            0.5 ** ((at - row.endedAt) / LOAD_HALF_LIFE_MS);
+        return [
+          id,
+          {
+            current: (occupied + held + (reserved?.get(id) ?? 0)) / slots,
+            recent: busy / slots / LOAD_HISTORY_MS,
+          },
+        ];
+      }),
+    );
   }
   return {
     async candidates(input) {
@@ -281,9 +323,17 @@ export function createRunnerPlacement(options: {
         }
       } else if (session && input.itemId) sessionWaits.delete(input.itemId);
       if (heldForSession) ranked.splice(0, ranked.length, holder!);
+      const load = runnerLoad(
+        ranked.map(({ runner }) => runner.id),
+        at,
+        input.reserved,
+      );
       ranked.sort(
         (a, b) =>
           a.rank - b.rank ||
+          load.get(a.runner.id)!.current - load.get(b.runner.id)!.current ||
+          Number(a.runner.quotaState === "low") - Number(b.runner.quotaState === "low") ||
+          load.get(a.runner.id)!.recent - load.get(b.runner.id)!.recent ||
           a.runner.virtualFinish - b.runner.virtualFinish ||
           a.runner.lastUsedAt - b.runner.lastUsedAt ||
           a.runner.id.localeCompare(b.runner.id),

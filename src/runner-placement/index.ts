@@ -13,6 +13,8 @@ export type PlacementRequest = {
   excludeRunnerIds?: readonly string[];
   /** The runner holding the item's last agent session, for implementer work. */
   session?: { runnerId: string };
+  /** Slots the caller holds per runner for runs it placed but has not assigned yet. */
+  reserved?: ReadonlyMap<string, number>;
   signal?: AbortSignal;
 };
 export type RunnerPlacement = {
@@ -38,6 +40,11 @@ export type RunnerPlacement = {
   }): { retryable: boolean; usageLimit?: { resetsAt: number | null } };
 };
 
-export { createRunnerPlacement, SESSION_GRACE_MS } from "./placement";
+export {
+  createRunnerPlacement,
+  LOAD_HALF_LIFE_MS,
+  LOAD_HISTORY_MS,
+  SESSION_GRACE_MS,
+} from "./placement";
 
 export { createRunnerPlacementBrowser } from "./browser";
