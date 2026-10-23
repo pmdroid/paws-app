@@ -21,7 +21,7 @@ import {
   writeSkillBundle,
   type SkillFiles,
 } from "./bundle";
-import { skillFolders, type SkillFolder } from "./discover";
+import { skillFolders, skillManifests, type SkillFolder } from "./discover";
 import type { SkillRequest, SkillResolver } from "./resolve";
 
 export type SkillRegistry = {
@@ -66,7 +66,7 @@ export async function findSkills(
   registry: SkillRegistry,
   request: SkillRequest,
 ): Promise<FoundSkill[]> {
-  const resolved = await registry.resolver.resolve(request, registry.signal);
+  const resolved = await registry.resolver.resolve(request, registry.signal, skillManifests);
   return skillFolders(resolved.files, resolved.suggestedName).map((skill) => {
     const name = skillName(skill.name);
     const existing = getSkill(registry.db, name);
@@ -84,7 +84,7 @@ export async function addSkills(
   if (paths.length === 0) throw new SkillError("Choose at least one skill to add.");
   if (paths.some((path) => path !== "" && skillPath(path) !== path))
     throw new SkillError("The subfolder must be a relative path.");
-  const resolved = await registry.resolver.resolve(request, registry.signal);
+  const resolved = await registry.resolver.resolve(request, registry.signal, () => paths);
   const pins: SkillPin[] = [];
   for (const path of paths) {
     const subfolder = [resolved.source.subfolder, path].filter(Boolean).join("/");

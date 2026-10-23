@@ -4,6 +4,13 @@ export type SkillFolder = { path: string; name: string; description: string };
 
 const LOCATIONS = ["skills", ".claude/skills", ".agents/skills", ".codex/skills"];
 const DEPTH = 3;
+const MANIFESTS = [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"];
+
+export function skillManifests(tree: string[]): string[] {
+  return tree.filter(
+    (path) => path === "SKILL.md" || path.endsWith("/SKILL.md") || MANIFESTS.includes(path),
+  );
+}
 
 export function skillFolders(files: SkillFiles, fallback: string): SkillFolder[] {
   const folders = [...files.keys()]
