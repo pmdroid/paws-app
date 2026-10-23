@@ -4,12 +4,14 @@ import { esc, utcClock } from "./format";
 export function renderIntake(snapshot: StatusSnapshot): string {
   const waiting = snapshot.intake ?? [];
   const budget = snapshot.linearBudget;
-  if (!waiting.length && !budget) return "";
+  const webhook = snapshot.linearWebhook;
+  if (!waiting.length && !budget && !webhook) return "";
   const now = Date.parse(snapshot.generatedAt);
   const holdUntil =
     budget?.holdUntil && Date.parse(budget.holdUntil) > now ? budget.holdUntil : null;
   return `<section class="overview-section" aria-labelledby="intake-heading"><h2 id="intake-heading">Intake</h2>
     <p class="overview-summary">${esc(summary(waiting, now, holdUntil))}</p>
+    ${webhook ? `<p class="settings-message" role="alert">${esc(`${webhook.warning} Last verified delivery ${span(now - Date.parse(webhook.lastVerifiedAt))} ago. ${webhook.fix}`)}</p>` : ""}
     ${holdUntil ? `<p role="status">Linear rate limit: waiting until ${esc(utcClock(holdUntil))} UTC</p>` : ""}
     ${budget ? budgetLine(budget) : ""}
     ${waiting.length ? `<ul class="overview-work" role="list">${waiting.map((entry) => row(entry, now)).join("")}</ul>` : ""}
