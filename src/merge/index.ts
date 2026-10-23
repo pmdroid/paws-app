@@ -1,4 +1,10 @@
 export {
+  advanceMerge,
+  type MergeCapabilities,
+  type MergePublication,
+  type MergeVerdict,
+} from "./advance";
+export {
   REBASE_CONFLICT_INSTRUCTION,
   REBASE_CONFLICT_THOUGHT,
   mergeQueueTurn,
