@@ -226,6 +226,8 @@ export function createProjectApprovals(input: {
           organizationId: workspace.organizationId,
           signal,
         });
+        const members =
+          (await input.tracker.listProjectMembers?.(saved.projectId, { signal })) ?? [];
         signal.throwIfAborted();
         return db
           .transaction(() => {
@@ -251,6 +253,12 @@ export function createProjectApprovals(input: {
               )
             )
               throw new Error("Choose a completion policy for every external blocker.");
+            db.run("DELETE FROM project_approval_member WHERE approval_id=?", [id]);
+            for (const member of members)
+              db.run(
+                "INSERT INTO project_approval_member(approval_id,linear_user_id) VALUES(?,?)",
+                [id, member],
+              );
             if (current.approvedAt !== null) return current;
             for (const issueId of preview.includedIssueIds) {
               const reserved = db
