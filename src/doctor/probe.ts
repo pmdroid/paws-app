@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { readSecretFile } from "../credentials";
 import { existsSync } from "node:fs";
 import { resolveAdapter } from "../acp";
@@ -14,6 +15,7 @@ import { createPersonalLinearClient, type CommentFetch } from "../comments";
 import {
   closeoutPolicyRoot,
   loadRuntime,
+  pawsPaths,
   type AgentProfiles,
   type EnvSource,
   type GitHubConfigAuth,
@@ -22,6 +24,7 @@ import {
   type TrackerKind,
 } from "../config";
 import { validate } from "../closeout-spec";
+import { linearWebhookWarning, type LinearWebhookWarning } from "../db";
 import { checkGhAuthStatus, ghDoctorChecks } from "../github";
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
 import { doctorAgentProfiles } from "./agents";
@@ -51,6 +54,7 @@ export type ProbeFacts = {
   oauthClientId: string | null;
   githubDoctor: GitHubDoctorFacts;
   webhooks: boolean;
+  linearWebhook?: LinearWebhookWarning | null;
   publicUrl: string | null;
   repo: string | null;
   team: string | null;
@@ -109,6 +113,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     oauthClientId: runtime.oauthClientId,
     githubDoctor: applyGhFallback(runtime, githubDoctor, gh),
     webhooks: runtime.webhooks,
+    linearWebhook: linearWebhookFact(pawsPaths(runtime.env.home).db),
     publicUrl: runtime.publicUrl,
     repo: runtime.repo,
     team: runtime.linearTeam,
@@ -126,6 +131,20 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     ),
     linear,
   };
+}
+
+function linearWebhookFact(path: string): LinearWebhookWarning | null {
+  if (!existsSync(path)) return null;
+  try {
+    const db = new Database(path, { readonly: true });
+    try {
+      return linearWebhookWarning(db, Date.now());
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 async function ghFacts(repo: { owner: string; repo: string } | null): Promise<{

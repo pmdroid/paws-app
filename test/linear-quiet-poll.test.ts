@@ -8,6 +8,7 @@ import {
   type InboxStore,
   type Sleeper,
 } from "../src/linear";
+import { insertQueuedItem, linearWebhookWarning } from "../src/db";
 import { tempDb } from "./helpers";
 
 const NOW = 1_700_000_000_000;
@@ -131,6 +132,61 @@ describe("catch-up poll in a quiet workspace", () => {
     db.close();
     expect(waits).toEqual([MINUTE]);
   });
+
+  test("missed deliveries found by the catch-up poll raise the webhook may be disabled warning", async () => {
+    const db = tempDb();
+    const store = createInboxStore(db);
+    expect((await deliver(store, NOW, "secret")).status).toBe(200);
+    expect(linearWebhookWarning(db, NOW + MINUTE)).toBeNull();
+    const missed = startCatchUpPoller({
+      source: countingSource(() => missedPrompt()).source,
+      store,
+      onEvent: () => {},
+      sleeper: recordingSleeper([]),
+      now: () => NOW + 20 * MINUTE,
+      mono: () => 0,
+    });
+    await waitFor(() => store.get("activity:activity-missed") !== null);
+    await missed.stop();
+    expect(linearWebhookWarning(db, NOW + 20 * MINUTE)).toEqual({
+      reason: "missed",
+      lastVerifiedMs: NOW,
+      missedMs: NOW + 20 * MINUTE,
+    });
+
+    const waits: number[] = [];
+    const restarted = startCatchUpPoller({
+      source: countingSource(() => emptyData()).source,
+      store: createInboxStore(db),
+      onEvent: () => {},
+      sleeper: recordingSleeper(waits),
+      now: () => NOW + 21 * MINUTE,
+      mono: () => 0,
+    });
+    await waitFor(() => waits.length > 0);
+    await restarted.stop();
+    expect(waits).toEqual([MINUTE]);
+
+    expect((await deliver(store, NOW + 22 * MINUTE, "secret")).status).toBe(200);
+    expect(linearWebhookWarning(db, NOW + 22 * MINUTE)).toBeNull();
+    db.close();
+  });
+
+  test("an hour without a verified delivery warns only while sessions are active", async () => {
+    const db = tempDb();
+    expect((await deliver(createInboxStore(db), NOW, "secret")).status).toBe(200);
+    expect(linearWebhookWarning(db, NOW + 2 * HOUR)).toBeNull();
+    insertQueuedItem(db, { id: "item", sessionKey: "session-webhook" });
+    expect(linearWebhookWarning(db, NOW + HOUR)).toBeNull();
+    expect(linearWebhookWarning(db, NOW + 2 * HOUR)).toEqual({
+      reason: "silent",
+      lastVerifiedMs: NOW,
+      missedMs: null,
+    });
+    db.run("UPDATE work_item SET state = 'merged'");
+    expect(linearWebhookWarning(db, NOW + 2 * HOUR)).toBeNull();
+    db.close();
+  });
 });
 
 let deliveries = 0;
@@ -156,6 +212,26 @@ function deliver(store: InboxStore, at: number, signingSecret: string): Promise<
     "secret",
     { store, now: () => at },
   );
+}
+
+function missedPrompt(): Record<string, unknown> {
+  return {
+    ...emptyData(),
+    agentActivities: {
+      nodes: [
+        {
+          id: "activity-missed",
+          createdAt: new Date(NOW + 5 * MINUTE).toISOString(),
+          updatedAt: new Date(NOW + 5 * MINUTE).toISOString(),
+          user: { id: "human" },
+          signal: null,
+          agentSession: { id: "session-webhook", issue: { id: "iss_webhook" } },
+          content: { __typename: "AgentActivityPromptContent", body: "hi", type: "prompt" },
+        },
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  };
 }
 
 function emptyData(): Record<string, unknown> {

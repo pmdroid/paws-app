@@ -11,6 +11,7 @@ import {
   enterMergeQueue,
   finishCloseoutProgress,
   insertQueuedItem,
+  LINEAR_WEBHOOK_FIX,
   joinMergeQueue,
   keepTaskMergeSettings,
   migrate,
@@ -906,5 +907,21 @@ describe("live status provider", () => {
     const scoped = createLiveStatusProvider(db, { sessionIds: ["s2"] }).snapshot();
     expect(scoped.intake?.map((entry) => entry.issue)).toEqual(["issue-b"]);
     expect(scoped.linearBudget).toBeUndefined();
+  });
+
+  test("the Intake section carries the warning when Linear may have disabled the webhook", () => {
+    const db = database();
+    const snapshot = (atMs: number) =>
+      createLiveStatusProvider(db, { now: () => new Date(atMs) }).snapshot();
+    expect(snapshot(10_000).linearWebhook).toBeUndefined();
+    db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook', 1000)");
+    expect(snapshot(10_000).linearWebhook).toBeUndefined();
+    db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook-missed', 5000)");
+    expect(snapshot(10_000).linearWebhook).toEqual({
+      warning:
+        "Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered.",
+      fix: LINEAR_WEBHOOK_FIX,
+      lastVerifiedAt: new Date(1000).toISOString(),
+    });
   });
 });

@@ -39,7 +39,10 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  describeLinearWebhookWarning,
   getConfirmedRemoteMerge,
+  LINEAR_WEBHOOK_FIX,
+  linearWebhookWarning,
   linearConversationUrl,
   listVisualReviewMarks,
   listVisualReviews,
@@ -192,8 +195,19 @@ export function emptyLiveSnapshot(
 function readIntake(
   db: Database,
   options: LiveStatusOptions,
-): Pick<StatusSnapshot, "intake" | "linearBudget"> {
+): Pick<StatusSnapshot, "intake" | "linearBudget" | "linearWebhook"> {
   const at = (ms: number | null) => (ms === null ? null : iso(ms));
+  const warning = linearWebhookWarning(db, (options.now?.() ?? new Date()).getTime());
+  const webhook =
+    warning === null
+      ? {}
+      : {
+          linearWebhook: {
+            warning: describeLinearWebhookWarning(warning),
+            fix: LINEAR_WEBHOOK_FIX,
+            lastVerifiedAt: iso(warning.lastVerifiedMs),
+          },
+        };
   const intake = listIntakeQueue(db)
     .filter(
       (entry) =>
@@ -209,9 +223,10 @@ function readIntake(
       lastError: entry.lastError,
     }));
   const usage = options.linearUsage?.();
-  if (usage === undefined) return { intake };
+  if (usage === undefined) return { intake, ...webhook };
   return {
     intake,
+    ...webhook,
     linearBudget: {
       requestsRemaining: usage.budget?.requestsRemaining ?? null,
       requestsLimit: usage.budget?.requestsLimit ?? null,

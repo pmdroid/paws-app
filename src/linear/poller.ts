@@ -13,7 +13,11 @@ import type {
 import { activityKey, promptMetadata, sessionCreatedKey, type AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 import type { IntakeQueue } from "./intake-queue";
-import { lastVerifiedWebhookMs, webhookVerificationFailures } from "./webhook";
+import {
+  lastVerifiedWebhookMs,
+  WEBHOOK_MISSED_CURSOR,
+  webhookVerificationFailures,
+} from "./webhook";
 
 /** Poll as a backstop while nothing says webhooks are failing. */
 export const POLL_INTERVAL_WEBHOOK_MS = 12 * 60_000;
@@ -148,7 +152,6 @@ export function startCatchUpPoller(options: {
   let active: Promise<void> | null = null;
   let pending = false;
   let latestBudget: LinearRateBudget | null = null;
-  let missedDeliveryMs: number | null = null;
 
   function pollOnce(): Promise<void> {
     if (control.stopped) return Promise.resolve();
@@ -217,7 +220,8 @@ export function startCatchUpPoller(options: {
     events.sort((left, right) => left.updatedAtMs - right.updatedAtMs || rank(left) - rank(right));
     for (const event of events) {
       const committed = options.store.commit(event);
-      if (committed.inserted && webhookMissed(event)) missedDeliveryMs = now();
+      if (committed.inserted && webhookMissed(event))
+        options.store.setCursor(WEBHOOK_MISSED_CURSOR, now());
       if (!committed.inserted && committed.handled) continue;
       if (options.intake?.accepts(event)) {
         if (committed.inserted) options.intake.arrive(event);
@@ -294,7 +298,7 @@ export function startCatchUpPoller(options: {
             now: now(),
             lastWebhookMs: lastVerifiedWebhookMs(options.store),
             webhookFailures: webhookVerificationFailures(options.store),
-            missedDeliveryMs,
+            missedDeliveryMs: options.store.getCursor(WEBHOOK_MISSED_CURSOR),
             budget: latestBudget,
           }),
           budgetHoldMs(latestBudget, now()),

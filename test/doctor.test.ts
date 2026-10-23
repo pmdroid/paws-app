@@ -16,7 +16,9 @@ import {
   type GitHubDoctorFacts,
   type ProbeFacts,
 } from "../src/doctor";
+import { LINEAR_WEBHOOK_FIX } from "../src/db";
 import { grokLoginStatus } from "../src/install";
+import { migratedDatabase } from "./helpers";
 
 const NAMES = [
   "git",
@@ -90,6 +92,23 @@ test("doctor names what is missing and does not print secret values", () => {
   expect(text).not.toContain("whsec_do_not_print");
 });
 
+test("doctor warns when Linear may have disabled the webhook and says how to re-enable it", () => {
+  const ready = probe(true);
+  ready.facts.webhooks = true;
+  ready.facts.linearWebhook = null;
+  expect(doctorChecks(ready).find((item) => item.name === "linear-webhook-delivery")?.ok).toBe(
+    true,
+  );
+  ready.facts.linearWebhook = { reason: "missed", lastVerifiedMs: 1000, missedMs: 2000 };
+  const text = formatDoctor(doctorChecks(ready));
+  expect(text).toContain(
+    "missing linear-webhook-delivery: Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered.",
+  );
+  expect(text).toContain(`  fix: ${LINEAR_WEBHOOK_FIX}`);
+  ready.facts.webhooks = false;
+  expect(formatDoctor(doctorChecks(ready))).not.toContain("linear-webhook-delivery");
+});
+
 test("doctor loads the closeout policy from origin/main", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-doctor-policy-"));
   const bare = join(root, "origin.git");
@@ -110,8 +129,17 @@ test("doctor loads the closeout policy from origin/main", async () => {
   execFileSync("git", ["-C", repo, "add", ".agents/closeout.yaml"]);
   execFileSync("git", ["-C", repo, "commit", "-m", "policy"]);
   execFileSync("git", ["-C", repo, "push", "origin", "HEAD:main"]);
+  const db = migratedDatabase(join(home, "paws.db"));
+  db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook', 1000)");
+  db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook-missed', 2000)");
+  db.close();
   const env = { HOME: home, PAWS_HOME: home, PAWS_CHECKOUT: repo, PATH: process.env.PATH ?? "" };
   const ready = await realProbe(env);
+  expect(ready.facts.linearWebhook).toEqual({
+    reason: "missed",
+    lastVerifiedMs: 1000,
+    missedMs: 2000,
+  });
   expect(ready.facts.closeout).toEqual({
     ok: true,
     detail: "policy loads on origin/main",
