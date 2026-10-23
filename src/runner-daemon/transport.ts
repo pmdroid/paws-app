@@ -1,7 +1,12 @@
 import { request } from "node:https";
 
 export class RunnerRequestError extends Error {
-  constructor(readonly status: number) {
+  constructor(
+    readonly status: number,
+    readonly method?: string,
+    readonly path?: string,
+    readonly durationMs?: number,
+  ) {
     super(`Runner request failed with HTTP ${status}.`);
     this.name = "RunnerRequestError";
   }
