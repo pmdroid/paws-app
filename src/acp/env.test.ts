@@ -2,11 +2,16 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
+import { EXECUTION_TAG_ENV } from "../process";
 import { isBlockedEnv, minimalAgentEnv } from "./env";
 import { TerminalRegistry } from "./host-tools";
 import { checkOwnLogin } from "./run";
 
 const roots: string[] = [];
+const executionTag = process.env[EXECUTION_TAG_ENV];
+const inheritedTag: Record<string, string> = executionTag
+  ? { [EXECUTION_TAG_ENV]: executionTag }
+  : {};
 const credentials = Object.fromEntries(
   [
     "LINEAR_API_KEY",
@@ -218,6 +223,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       ...benign,
       HOME: home,
       ...(allowXaiApiKey ? { XAI_API_KEY: credentials.XAI_API_KEY } : {}),
+      ...inheritedTag,
     });
   },
 );
@@ -242,7 +248,12 @@ test("host terminal child cannot inherit or reintroduce rejected environment", a
     expect((await terminals.wait({ sessionId: "synthetic-session", terminalId })).exitCode).toBe(0);
     const output = terminals.output({ sessionId: "synthetic-session", terminalId }).output;
     expect(output.split("\n").filter(Boolean).sort()).toEqual(
-      [`HOME=${root}`, `PATH=${benign.PATH}`, "LANG=C.UTF-8"].sort(),
+      [
+        `HOME=${root}`,
+        `PATH=${benign.PATH}`,
+        "LANG=C.UTF-8",
+        ...Object.entries(inheritedTag).map(([name, value]) => `${name}=${value}`),
+      ].sort(),
     );
   } finally {
     await terminals.release({ sessionId: "synthetic-session", terminalId });

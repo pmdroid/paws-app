@@ -5,6 +5,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { EXECUTION_TAG_ENV } from "../process";
 import { ExecutionIdSchema } from "./jobs";
 
+const LEGACY_EXECUTION_TAG_ENV = "PAWS_EXECUTION";
+
 export type ExecutionProcess = { pid: number; born: string; executionId: string };
 
 /** Start time in clock ticks since boot, or undefined once the process is gone or a zombie. */
@@ -33,7 +35,7 @@ export function executionTag(scope: string, executionId: string): Record<string,
 
 /** Live processes tagged with an execution of this scope. Processes of other users are skipped. */
 export function listExecutionProcesses(scope: string, proc = "/proc"): ExecutionProcess[] {
-  const prefix = `${EXECUTION_TAG_ENV}=${scope}/`;
+  const prefixes = [EXECUTION_TAG_ENV, LEGACY_EXECUTION_TAG_ENV].map((name) => `${name}=${scope}/`);
   const found: ExecutionProcess[] = [];
   for (const entry of readdirSync(proc)) {
     if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
@@ -41,11 +43,11 @@ export function listExecutionProcesses(scope: string, proc = "/proc"): Execution
     try {
       tag = readFileSync(join(proc, entry, "environ"), "latin1")
         .split("\0")
-        .find((value) => value.startsWith(prefix));
+        .find((value) => prefixes.some((prefix) => value.startsWith(prefix)));
     } catch {
       continue;
     }
-    const executionId = ExecutionIdSchema.safeParse(tag?.slice(prefix.length));
+    const executionId = ExecutionIdSchema.safeParse(tag?.slice(tag.indexOf("/") + 1));
     if (!executionId.success) continue;
     const born = startTime(Number(entry), proc);
     if (born !== undefined) found.push({ pid: Number(entry), born, executionId: executionId.data });

@@ -280,6 +280,7 @@ function childEnv(home: string): Record<string, string | undefined> {
     PAWS_NO_TUNNEL: "1",
   };
   for (const key of [
+    "PAWS_EXECUTION",
     "LINEAR_ACCESS_TOKEN",
     "LINEAR_REFRESH_TOKEN",
     "LINEAR_CLIENT_ID",
