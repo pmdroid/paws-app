@@ -33,6 +33,7 @@ export {
   type RepositoryBinding,
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
+export { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 export { questionEffects } from "./question-effects";
 
 export { handleLinearAdministration, stopUndelegatedIssue } from "./linear-administration";

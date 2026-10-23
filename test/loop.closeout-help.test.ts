@@ -7,10 +7,11 @@ import {
   insertQueuedItem,
   listCloseoutRecoveries,
   listJobs,
+  listOutbox,
   saveCheckpoint,
   saveCloseoutRecovery,
 } from "../src/db";
-import { questionEffects } from "../src/loop";
+import { askCloseoutHelp, questionEffects } from "../src/loop";
 import { answer, ask, findOpenQuestion, getQuestion, handoffNote } from "../src/questions";
 import { tempDb } from "./helpers";
 
@@ -105,6 +106,61 @@ test("an unusable bypass answer asks the Closeout question again with the error"
   });
   expect(getWorkItem(db, asker.itemId)?.state).toBe("awaiting_input");
   expect(jobs(db)).toEqual([]);
+});
+
+const help = (summary: string) => ({
+  itemId: "ENG-2",
+  taskId: "ENG-2",
+  base: "base",
+  head: "head",
+  policyDigest: "",
+  failedChecks: [],
+  retryBaseline: [],
+  summary,
+});
+
+const delivered = (db: ReturnType<typeof tempDb>) =>
+  listOutbox(db)
+    .filter((row) => row.op === "elicitation")
+    .map((row) => row.payload as { questionId: string; body: string });
+
+test("a Closeout stall asked while another question is open is delivered after its answer", () => {
+  const { db, asker } = parked();
+  const open = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
+  askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: stalled"), { now: NOW + 1 });
+  const queued = listCloseoutRecoveries(db, asker.itemId)[0]!;
+  expect(getQuestion(db, queued.questionId)).toMatchObject({
+    kind: "closeout-help",
+    status: "queued",
+  });
+  expect(delivered(db).map((payload) => payload.questionId)).toEqual([open.question.id]);
+
+  answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
+
+  expect(findOpenQuestion(db, "ses_1")?.id).toBe(queued.questionId);
+  expect(delivered(db).at(-1)?.body).toContain("Closeout needs your help.");
+});
+
+test("a policy field this Paws does not know asks for a Paws update", () => {
+  const { db } = parked();
+  askCloseoutHelp(
+    db,
+    "ses_1",
+    help(
+      "Closeout: blocked\nMessage: .agents/closeout.yaml: /retry must NOT have additional properties ('maxFailedReviewAttempts' was unexpected)",
+    ),
+    { now: NOW },
+  );
+  expect(delivered(db)[0]?.body).toContain(
+    "The Closeout policy on origin/main uses `maxFailedReviewAttempts`, which this version of Paws does not support. Update Paws, then reply retry.",
+  );
+});
+
+test("other blocked policies keep the usual Closeout question", () => {
+  const { db } = parked();
+  askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: invalid YAML"), { now: NOW });
+  expect(delivered(db)[0]?.body).not.toContain("Update Paws");
+  expect(delivered(db)[0]?.body).toContain("Reply with guidance");
 });
 
 test("a CI help answer resumes the agent with the handoff", () => {

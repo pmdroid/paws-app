@@ -11,7 +11,7 @@ import {
   openDatabase,
   recordRebaseReturn,
 } from "../db";
-import { findOpenQuestion } from "../questions";
+import { ask, findOpenQuestion, getQuestion } from "../questions";
 import { askMergeHelp, ciFixes, rebaseReturns, returnToAgent } from "./returns";
 
 function queued() {
@@ -89,6 +89,21 @@ describe("merge returns", () => {
     ).toBe(true);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
     expect(findOpenQuestion(db, "s-1")?.body).toBe("CI failed.");
+  });
+
+  test("CI help asked while another task's question is open waits its turn", () => {
+    const db = queued();
+    insertQueuedItem(db, { id: "eng-2", now: 1, sessionKey: "s-1" });
+    const open = ask(db, { itemId: "eng-2", runId: null, sessionId: "s-1" }, "agent", "Which?");
+    expect(
+      askMergeHelp(db, { itemId: "eng-1", body: "CI failed.", now: 2, session: () => "s-1" }),
+    ).toBe(true);
+    expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
+    expect(findOpenQuestion(db, "s-1")?.id).toBe(open.question.id);
+    const queuedHelp = db
+      .query<{ id: string }, []>("SELECT id FROM question WHERE item_id = 'eng-1'")
+      .get()!;
+    expect(getQuestion(db, queuedHelp.id)).toMatchObject({ kind: "ci-help", status: "queued" });
   });
 
   test("asking again while a question is open, or without a session, asks nothing", () => {
