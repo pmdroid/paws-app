@@ -72,9 +72,20 @@ test.each<RunnerCommand>([
   },
   { ...common, type: "login_check", agent: "codex" },
   { ...common, type: "cancel", runId: "run-1", generation: 2 },
+  { ...common, type: "handover", runId: "run-1", generation: 2 },
   { ...common, type: "upgrade", version: "1.2.3", sha256: "b".repeat(64) },
 ])("signed $type commands verify with their complete typed payload", (command) => {
   expect(verifyRunnerCommand(signed(command), context())).toEqual({ ok: true, command });
+});
+
+test("a handover command gives the runner at most two minutes", () => {
+  const handover = { ...common, type: "handover", runId: "run-1", generation: 2 };
+  expect(
+    RunnerCommandSchema.safeParse({ ...handover, expiresAt: handover.issuedAt + 120_000 }).success,
+  ).toBe(true);
+  expect(
+    RunnerCommandSchema.safeParse({ ...handover, expiresAt: handover.issuedAt + 120_001 }).success,
+  ).toBe(false);
 });
 
 test("signed bot-only commit policies preserve explicit absent humans", () => {

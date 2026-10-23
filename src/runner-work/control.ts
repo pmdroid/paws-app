@@ -421,6 +421,19 @@ export function createRunnerWork(options: {
           ]);
           db.run("DELETE FROM runner_work_grant WHERE run_id=?", [work.runId]);
         }
+        if (command.type === "handover") {
+          // The run keeps its lease and grants: the runner still publishes the WIP commit,
+          // the transcript and the result for this generation.
+          const work = assignment(command.runId);
+          if (
+            !work ||
+            work.runnerId !== command.runnerId ||
+            work.generation !== command.generation ||
+            work.endedAt !== null ||
+            workCommand(work).type !== "run"
+          )
+            throw new Error("Handover assignment changed.");
+        }
         return queue(command);
       });
     },

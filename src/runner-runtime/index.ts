@@ -16,7 +16,12 @@ import {
   type RunnerSpool,
   type RunnerResults,
 } from "../runner-execution";
-import { publishRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
+import {
+  publishRunnerAnswer,
+  publishRunnerHandover,
+  readRunnerHandover,
+  runnerFollowUpRequestId,
+} from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
@@ -685,7 +690,11 @@ export async function openRunnerRuntime(options: {
       entry.execution.command.type !== "task" &&
       result.candidateSha !== entry.execution.command.repository.baseSha
     ) {
-      if (entry.execution.command.type !== "run" || result.cancelled || !result.agentExited)
+      if (
+        entry.execution.command.type !== "run" ||
+        (result.cancelled && !result.handedOver) ||
+        !result.agentExited
+      )
         throw new Error("Unsafe runner candidate result");
       if ((entry.pushAt ?? 0) > monotonic()) return;
       const token = await grant(entry);
@@ -765,6 +774,25 @@ export async function openRunnerRuntime(options: {
       if (command.type !== "cancel") continue;
       const entry = active.get(`${command.runId}:${command.generation}`);
       if (entry) await interrupt(entry, "cancelled by Paws");
+      await options.daemon.acknowledgeCommand(command.id);
+    }
+    for (const command of commands) {
+      if (command.type !== "handover") continue;
+      const entry = active.get(`${command.runId}:${command.generation}`);
+      // Only a running worker can hand over. Paws reports a handover that gets no result.
+      if (
+        entry?.execution.phase === "running" &&
+        entry.execution.command.type === "run" &&
+        !entry.abort.signal.aborted &&
+        command.expiresAt > now()
+      )
+        try {
+          let sequence = 1;
+          while (readRunnerHandover(options.spool, entry.execution.id, sequence)) sequence++;
+          publishRunnerHandover(options.spool, entry.execution.id, sequence, command.expiresAt);
+        } catch (error) {
+          report(error instanceof Error ? error : new Error(String(error)));
+        }
       await options.daemon.acknowledgeCommand(command.id);
     }
     for (const entry of active.values()) {

@@ -24,6 +24,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   appBotCommitIdentity,
+  commitCheckpoint,
+  commitPolicyMessage,
   createUpdateLimiter,
   validateCandidateAttribution,
   assertDescendsFromAny,
@@ -55,7 +57,7 @@ import {
   type RunnerResults,
   type RunnerSpool,
 } from "../runner-execution";
-import { readRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
+import { readRunnerAnswer, readRunnerHandover, runnerFollowUpRequestId } from "../runner-answers";
 import {
   checkDeveloperLogin,
   claudeLimits,
@@ -90,10 +92,19 @@ export interface RunnerWorkerOptions {
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
   followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
+  /** Resolves when the runner asks for handover request `sequence`, with its deadline. */
+  handover?: (sequence: number, signal: AbortSignal) => Promise<{ expiresAt: number }>;
+  now?: () => number;
   loginCommand?: LoginCommandRunner;
   codexRateLimits?: CodexRateLimitReader;
   resume?: boolean;
 }
+
+/** Of the handover time, this much is kept for the WIP commit, the push and the transcript. */
+export const HANDOVER_PUBLISH_RESERVE_MS = 30_000;
+export const HANDOVER_COMMIT_MESSAGE = "wip: handover checkpoint";
+export const HANDOVER_TIMEOUT_NOTICE =
+  "Paws asked this runner to hand over the session, but the agent's current tool call did not finish in time. The session stays on this runner.";
 
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
@@ -486,6 +497,41 @@ export async function executeRunnerCommand(
         : "Check agent connection.";
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
     const earlierSession = command.type === "run" ? command.resumeSessionId : undefined;
+    // A handover stops the agent between tool calls, or while it waits on ask_team, and
+    // publishes the worktree as a WIP commit. A handover that cannot reach that point in time
+    // is reported and the session keeps running here.
+    const handover =
+      command.type === "run" && command.checkpoint !== false && options.handover
+        ? {
+            requested: options.handover,
+            interrupt: new AbortController(),
+            watching: new AbortController(),
+            tools: new Set<string>(),
+            asking: 0,
+          }
+        : undefined;
+    const clock = options.now ?? Date.now;
+    async function watchHandover(state: NonNullable<typeof handover>): Promise<void> {
+      for (let sequence = 1; ; sequence++) {
+        const request = await state.requested(sequence, state.watching.signal);
+        // A request from before a worker restart may already be over.
+        if (request.expiresAt <= clock()) continue;
+        const safeBy = request.expiresAt - HANDOVER_PUBLISH_RESERVE_MS;
+        while (state.tools.size > 0 && state.asking === 0 && clock() < safeBy)
+          await delay(25, undefined, { signal: state.watching.signal });
+        if (state.tools.size > 0 && state.asking === 0) {
+          emit({ type: "progress", text: HANDOVER_TIMEOUT_NOTICE, notice: true });
+          continue;
+        }
+        state.interrupt.abort();
+        return;
+      }
+    }
+    const agentSignal = handover
+      ? options.signal
+        ? AbortSignal.any([options.signal, handover.interrupt.signal])
+        : handover.interrupt.signal
+      : options.signal;
     const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
@@ -542,9 +588,20 @@ export async function executeRunnerCommand(
       worktreePath: worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
       home: options.home,
-      signal: options.signal,
+      signal: agentSignal,
       onEvent(event) {
         try {
+          if (handover && event.type === "session_update") {
+            const update = event.update;
+            if (
+              update.sessionUpdate === "tool_call" ||
+              update.sessionUpdate === "tool_call_update"
+            ) {
+              if (update.status === "completed" || update.status === "failed")
+                handover.tools.delete(update.toolCallId);
+              else if (update.sessionUpdate === "tool_call") handover.tools.add(update.toolCallId);
+            }
+          }
           if (
             (command.type === "review" || command.type === "helper") &&
             event.type === "session_update" &&
@@ -692,7 +749,13 @@ export async function executeRunnerCommand(
                   question: request.question,
                   options: request.options ?? [],
                 });
-                return options.answer(requestId, context.signal);
+                // Paws holds the question once the event is out, so the wait is a safe point.
+                if (handover) handover.asking++;
+                try {
+                  return await options.answer(requestId, context.signal);
+                } finally {
+                  if (handover) handover.asking--;
+                }
               },
             },
     };
@@ -711,10 +774,28 @@ export async function executeRunnerCommand(
                 ),
             })
         : runAgent;
-    const run =
-      command.type === "run" && options.followUp
-        ? await runWithFollowUps(agent, options.followUp, runner)
-        : await runner(agent);
+    const watcher = handover
+      ? watchHandover(handover).catch((error: unknown) => {
+          if (!handover.watching.signal.aborted) throw error;
+        })
+      : undefined;
+    let run: RunAgentResult;
+    try {
+      run =
+        command.type === "run" && options.followUp
+          ? await runWithFollowUps(agent, options.followUp, runner)
+          : await runner(agent);
+    } finally {
+      handover?.watching.abort();
+    }
+    await watcher;
+    const handedOver =
+      handover !== undefined &&
+      handover.interrupt.signal.aborted &&
+      !options.signal?.aborted &&
+      run.cancelled &&
+      run.agentExited;
+    if (handedOver) run = { ...run, handedOver: true };
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
@@ -805,7 +886,25 @@ export async function executeRunnerCommand(
         }
       } else result.reviewText = reviewText;
     };
-    if (repository && run.agentExited && clean) await recordCandidate();
+    if (handedOver && command.type === "run") {
+      await commitCheckpoint(
+        worktree,
+        command.commitPolicy
+          ? commitPolicyMessage(HANDOVER_COMMIT_MESSAGE, command.commitPolicy)
+          : HANDOVER_COMMIT_MESSAGE,
+        options.signal,
+        undefined,
+        env,
+        inputFiles.map((file) => file.path),
+        command.commitPolicy
+          ? appBotCommitIdentity(command.commitPolicy.bot)
+          : command.checkpointBot
+            ? appBotCommitIdentity(command.checkpointBot)
+            : undefined,
+      );
+      await recordCandidate();
+      if (result.candidateSha === command.repository.baseSha) delete result.candidateSha;
+    } else if (repository && run.agentExited && clean) await recordCandidate();
     else if (repository && run.agentExited && wip) {
       await recordCandidate().catch(() => {
         delete result.candidateSha;
@@ -903,6 +1002,14 @@ export async function runRunnerWorker(options: {
           runnerFollowUpRequestId(sequence),
         );
         if (message) return message.answer;
+        await delay(250, undefined, { signal });
+      }
+    },
+    async handover(sequence, signal) {
+      while (true) {
+        signal.throwIfAborted();
+        const request = readRunnerHandover(spool, options.executionId, sequence);
+        if (request) return request;
         await delay(250, undefined, { signal });
       }
     },
