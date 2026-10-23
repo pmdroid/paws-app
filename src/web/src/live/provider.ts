@@ -879,7 +879,8 @@ function toLiveCheck(step: CloseoutStepRecord, nowMs: number, env: NodeJS.Proces
     detail: step.detail,
     attempt: step.attempt,
     timeoutSeconds: step.timeoutSeconds,
-    elapsedMs: step.startedAt === null ? null : Math.max(0, end - step.startedAt),
+    elapsedMs:
+      step.durationMs ?? (step.startedAt === null ? null : Math.max(0, end - step.startedAt)),
     exitCode: step.exitCode,
     timedOut: step.timedOut,
     timeoutReason: step.timeoutReason,
@@ -890,6 +891,7 @@ function toLiveCheck(step: CloseoutStepRecord, nowMs: number, env: NodeJS.Proces
     logPath: step.logPath,
     evidencePath: step.evidencePath,
     active: step.state === "running",
+    tokens: step.tokens ?? null,
   };
 }
 

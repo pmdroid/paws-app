@@ -471,6 +471,7 @@ export async function executeRunnerCommand(
     }
     let reviewText = "";
     let agentLimits: AgentLimit[] = [];
+    let tokens = 0;
     let eventFailure: Error | undefined;
     const agentEnv = minimalAgentEnv({
       PATH: "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
@@ -558,6 +559,7 @@ export async function executeRunnerCommand(
           if (event.type === "session_update" && event.update.sessionUpdate === "usage_update") {
             const limits = claudeLimits(event.update["_meta"]?.["_claude/rateLimit"]);
             if (limits.length) agentLimits = limits;
+            tokens = Math.max(tokens, event.update.used ?? 0);
           }
           emit({ type: "acp", event: compactAcpEvent(event) });
           if (event.type === "hook_failed") {
@@ -754,7 +756,8 @@ export async function executeRunnerCommand(
               : "grok login",
       };
     }
-    if (agentLimits.length) result.run = { ...run, agentLimits };
+    if (agentLimits.length) result.run = { ...result.run, agentLimits };
+    if (tokens > 0) result.run = { ...result.run, tokens };
     const clean = run.stopReason === "end_turn" && !run.errorMessage;
     const wip = !clean && command.type === "run" && !run.cancelled;
     const recordCandidate = async () => {

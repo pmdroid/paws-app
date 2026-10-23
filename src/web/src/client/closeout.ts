@@ -315,10 +315,16 @@ function checkMeta(check: StatusCheck, checkAttempts?: number | null): string {
     parts.push(`attempt ${check.attempt}${checkAttempts === null ? "" : ` of ${checkAttempts}`}`);
 
   if (typeof check.elapsedMs === "number") parts.push(durationLabel(check.elapsedMs));
+  if (typeof check.tokens === "number") parts.push(tokenLabel(check.tokens));
 
   if (typeof check.exitCode === "number") parts.push(`exit ${check.exitCode}`);
   if (check.timedOut) parts.push(esc(check.timeoutReason || "timed out"));
   return parts.join(" · ");
+}
+
+function tokenLabel(tokens: number): string {
+  if (tokens < 1000) return `${tokens} tokens`;
+  return `${Number((tokens / 1000).toFixed(1))}k tokens`;
 }
 
 function checkMark(state: string): string {

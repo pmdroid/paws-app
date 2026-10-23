@@ -29,6 +29,8 @@ export type CloseoutStepWrite = {
   evidencePath: string | null;
   findings: string | null;
   ordinal: number;
+  durationMs?: number | null;
+  tokens?: number | null;
 };
 
 export type CloseoutStepRecord = CloseoutStepWrite & {
@@ -81,6 +83,8 @@ type StepSql = {
   evidence_path: string | null;
   findings: string | null;
   ordinal: number;
+  duration_ms: number | null;
+  tokens: number | null;
 };
 
 export function ensureCloseoutProgress(
@@ -132,11 +136,19 @@ export function upsertCloseoutStep(
     .query<
       Pick<
         StepSql,
-        "command" | "ordinal" | "attempt" | "state" | "started_at" | "findings" | "truncated"
+        | "command"
+        | "ordinal"
+        | "attempt"
+        | "state"
+        | "started_at"
+        | "findings"
+        | "truncated"
+        | "duration_ms"
+        | "tokens"
       >,
       [string, string]
     >(
-      `SELECT command, ordinal, attempt, state, started_at, findings, truncated
+      `SELECT command, ordinal, attempt, state, started_at, findings, truncated, duration_ms, tokens
        FROM closeout_step WHERE progress_id = ? AND step_id = ?`,
     )
     .get(progressId, step.id);
@@ -148,14 +160,17 @@ export function upsertCloseoutStep(
   const startedAt = startedAtFor(existing, step);
   const attempt = step.attempt > 0 ? step.attempt : (existing?.attempt ?? step.attempt);
   const findings = findingsFor(existing, step);
+  const rerun = step.state === "running" || step.state === "pending";
+  const durationMs = step.durationMs ?? (rerun ? null : (existing?.duration_ms ?? null));
+  const tokens = step.tokens ?? (rerun ? null : (existing?.tokens ?? null));
   const truncated = clearOutput ? step.truncated : step.truncated || existing?.truncated === 1;
   immediate(db, () => {
     db.run(
       `INSERT INTO closeout_step (
          progress_id, step_id, kind, state, command, detail, attempt, timeout_seconds,
          started_at, finished_at, exit_code, timed_out, timeout_reason, stdout, stderr,
-         truncated, log_path, evidence_path, findings, ordinal
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?)
+         truncated, log_path, evidence_path, findings, ordinal, duration_ms, tokens
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(progress_id, step_id) DO UPDATE SET
          kind = excluded.kind,
          state = excluded.state,
@@ -172,7 +187,9 @@ export function upsertCloseoutStep(
          log_path = excluded.log_path,
          evidence_path = excluded.evidence_path,
          findings = excluded.findings,
-         ordinal = excluded.ordinal`,
+         ordinal = excluded.ordinal,
+         duration_ms = excluded.duration_ms,
+         tokens = excluded.tokens`,
       [
         progressId,
         step.id,
@@ -192,6 +209,8 @@ export function upsertCloseoutStep(
         step.evidencePath,
         findings,
         ordinal,
+        durationMs,
+        tokens,
       ],
     );
     if (clearOutput) {
@@ -309,6 +328,8 @@ function mapStep(row: StepSql): CloseoutStepRecord {
     evidencePath: row.evidence_path,
     findings: row.findings,
     ordinal: row.ordinal,
+    durationMs: row.duration_ms,
+    tokens: row.tokens,
     stdout: row.stdout,
     stderr: row.stderr,
   };

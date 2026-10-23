@@ -234,12 +234,13 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   const first = toGateDecision(ran);
   const reviewFindings: Array<{ itemId: string; findings: Finding[] }> = [];
   const reviewAttempts = new Map<string, number>();
+  const metrics: ReviewMetrics = new Map();
   const gaps = reviewGaps(first);
   if (
     gaps.length === 0 ||
     gaps.some((item) => first.items.find((entry) => entry.id === item.id)?.state === "exhausted")
   ) {
-    publishReviews(input, first, reviewFindings, reviewAttempts);
+    publishReviews(input, first, reviewFindings, reviewAttempts, metrics);
     return finish(first, input.base, input.head, reviewFindings);
   }
 
@@ -248,6 +249,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
     gaps,
     reviewFindings,
     reviewAttempts,
+    metrics,
     evidenceDir,
     progressIdentity(input.taskId, first),
   );
@@ -282,6 +284,8 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
         detail,
         found ? findingText(found.findings) : null,
         item.attempt ?? reviewAttempts.get(item.id) ?? null,
+        null,
+        metrics.get(item.id),
       );
     }
     return failure("blocked", null, detail, input.head);
@@ -292,7 +296,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
     return failure("invalid", exitOf(judged.decision), "decision gate is not beforePR", input.head);
   }
   const judgedDecision = toGateDecision(judged);
-  publishReviews(input, judgedDecision, reviewFindings, reviewAttempts);
+  publishReviews(input, judgedDecision, reviewFindings, reviewAttempts, metrics);
   return finish(judgedDecision, input.base, input.head, reviewFindings);
 }
 
@@ -485,6 +489,8 @@ async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise
   return parts.join("\n\n");
 }
 
+type ReviewMetrics = Map<string, { durationMs: number; tokens: number | null }>;
+
 class PolicyFetchError extends Error {
   override name = "PolicyFetchError";
 }
@@ -511,11 +517,14 @@ async function addReviewEvidence(
   items: CloseoutItem[],
   reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
   reviewAttempts: Map<string, number>,
+  metrics: ReviewMetrics,
   evidenceDir: string,
   identity: CloseoutProgressIdentity,
 ): Promise<Evaluation | null> {
   for (const item of items) {
     noteReview(input, identity, item.id, "running", item.message, null, item.attempt ?? null);
+    const started = Date.now();
+    let tokens: number | null = null;
     let added;
     try {
       added = await addReview({
@@ -558,6 +567,7 @@ async function addReviewEvidence(
                 },
               }),
             );
+            tokens = result.tokens ?? null;
             return {
               producer: {
                 session: result.session,
@@ -574,9 +584,13 @@ async function addReviewEvidence(
       if (isTransientFailure(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
       const detail = scrub(`reviewer failed for ${item.id}: ${message}`);
-      noteReview(input, identity, item.id, "blocked", detail, null, item.attempt ?? null);
+      noteReview(input, identity, item.id, "blocked", detail, null, item.attempt ?? null, null, {
+        durationMs: Date.now() - started,
+        tokens,
+      });
       return failure("blocked", null, detail, input.head);
     }
+    metrics.set(item.id, { durationMs: Date.now() - started, tokens });
     if (!added.ok) {
       const detail = scrub(`${item.id}: ${added.message}`);
       const refreshed = toGateDecision(
@@ -596,10 +610,20 @@ async function addReviewEvidence(
         }),
       );
       if (refreshed.items.some((entry) => entry.state === "exhausted")) {
-        publishReviews(input, refreshed, reviewFindings, reviewAttempts);
+        publishReviews(input, refreshed, reviewFindings, reviewAttempts, metrics);
         return finish(refreshed, input.base, input.head, reviewFindings);
       }
-      noteReview(input, identity, item.id, "blocked", detail, null, item.attempt ?? null);
+      noteReview(
+        input,
+        identity,
+        item.id,
+        "blocked",
+        detail,
+        null,
+        item.attempt ?? null,
+        null,
+        metrics.get(item.id),
+      );
       return failure("blocked", null, detail, input.head);
     }
     reviewFindings.push({ itemId: item.id, findings: added.record.findings });
@@ -630,6 +654,7 @@ function noteReview(
   findings: string | null,
   attempt: number | null,
   reviewEvidencePath: string | null = null,
+  measured?: { durationMs: number; tokens: number | null },
 ): void {
   const running = state === "running" || state === "pending";
   input.progress?.step(identity, {
@@ -650,6 +675,7 @@ function noteReview(
     evidencePath: reviewEvidencePath,
     findings: findings === null ? null : scrub(findings),
     ordinal: -1,
+    ...measured,
   });
 }
 
@@ -658,6 +684,7 @@ function publishReviews(
   decision: DecisionDocument,
   reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
   reviewAttempts: Map<string, number>,
+  metrics: ReviewMetrics,
 ): void {
   const identity = progressIdentity(input.taskId, decision);
   for (const item of decision.items) {
@@ -683,6 +710,7 @@ function publishReviews(
       found ? findingText(found.findings) : null,
       attempt ?? null,
       reviewEvidencePath,
+      metrics.get(item.id),
     );
   }
 }
