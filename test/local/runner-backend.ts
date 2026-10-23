@@ -53,7 +53,6 @@ import { openQuestion, answerQuestion } from "../../src/questions";
 import { applyWorkItemEvent } from "../../src/db";
 import { PawsShutdown } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
-import { createFakeLinearIssueLifecycle } from "../../src/linear";
 
 export async function probeRunnerBackend(
   root: string,
@@ -1630,24 +1629,9 @@ export async function probeRunnerBackend(
         [id, index * 10],
       );
     }
-    const placementLifecycle = createFakeLinearIssueLifecycle({
-      id: getWorkItem(db, failoverItem.id)!.linearIssueId,
-      teamId: "fixture-team",
-      assigneeId: "owner",
-      delegateId: "app-user",
-      stateType: "started",
-      projectId: "fixture-project",
-    });
     const placement = createRunnerPlacement({
       db,
       now: () => now,
-      lifecycle: placementLifecycle,
-
-      tracker: {
-        async listProjectMembers() {
-          return ["owner"];
-        },
-      },
     });
     let selectionReads = 0;
     const placedBackend = createRemoteAgentRunner({
@@ -1868,10 +1852,6 @@ export async function probeRunnerBackend(
     });
     await preparing;
     const artifactItem = item();
-    placementLifecycle.issues.set(getWorkItem(db, artifactItem.id)!.linearIssueId, {
-      ...placementLifecycle.issue,
-      id: getWorkItem(db, artifactItem.id)!.linearIssueId,
-    });
     await git(["-C", source, "reset", "--hard", base]);
     const continuationState: { answer: string | null; questionId?: string } = { answer: null };
     let publications = 0;
@@ -2104,17 +2084,11 @@ export async function probeRunnerBackend(
         return null;
       };
       for (const hostId of hostIds) work.heartbeat(hostId);
-      const tracked = () => {
-        const record = item();
-        const issueId = getWorkItem(db, record.id)!.linearIssueId;
-        placementLifecycle.issues.set(issueId, { ...placementLifecycle.issue, id: issueId });
-        return record;
-      };
       const paused = async (runId: string) => {
         for (let attempt = 0; attempt < 500 && !usagePause(db, runId); attempt++) await delay(2);
         return usagePause(db, runId);
       };
-      const limited = tracked();
+      const limited = item();
       const limitAbort = new AbortController();
       const lines: string[] = [];
       coolDown(now + 120_000);
@@ -2155,7 +2129,7 @@ export async function probeRunnerBackend(
         },
       );
 
-      const exhausted = tracked();
+      const exhausted = item();
       const exhaustedAbort = new AbortController();
       coolDown(now + 3_600_000);
       const exhaustedRun = placedBackend.forItem(exhausted.id)(
@@ -2174,7 +2148,7 @@ export async function probeRunnerBackend(
       coolDown(0);
       observe("Resume now ends a usage-limit wait and lifts the agent cooldown", true, {});
       const occupied = hostIds.map((hostId) => {
-        const busy = tracked();
+        const busy = item();
         db.run(
           "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
           [
@@ -2187,7 +2161,7 @@ export async function probeRunnerBackend(
         );
         return `busy-${hostId}`;
       });
-      const queued = tracked();
+      const queued = item();
       const waitAbort = new AbortController();
       const waitingRun = placedBackend.forItem(queued.id)(
         input(queued, { signal: waitAbort.signal }),
@@ -2232,7 +2206,7 @@ export async function probeRunnerBackend(
         await drain();
         reportVersion(version);
         for (const hostId of hostIds) work.heartbeat(hostId);
-        const record = tracked();
+        const record = item();
         saveCheckpoint(db, record.id, {
           phase: "running",
           baseSha: checkpointBase,
@@ -2299,7 +2273,7 @@ export async function probeRunnerBackend(
       };
       await drain();
       for (const hostId of hostIds) work.heartbeat(hostId);
-      const restarted = tracked();
+      const restarted = item();
       const restartAbort = new AbortController();
       let restartFailure: unknown = null;
       const restartedRun = placedBackend.forItem(restarted.id)(
@@ -2328,7 +2302,7 @@ export async function probeRunnerBackend(
       const offlineAt = now - 120_000;
       for (const hostId of hostIds)
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [offlineAt, hostId]);
-      const offline = tracked();
+      const offline = item();
       const offlineAbort = new AbortController();
       let offlineSettled = false;
       const offlineRun = placedBackend.forItem(offline.id)(
@@ -2349,7 +2323,7 @@ export async function probeRunnerBackend(
       observe("placement waits for a paired runner to come online instead of failing", true, {
         placedWhenOnline,
       });
-      const raced = tracked();
+      const raced = item();
       const racedAbort = new AbortController();
       let racedFailure: unknown = null;
       let filled: string[] = [];
@@ -2359,7 +2333,7 @@ export async function probeRunnerBackend(
           prepareInputFiles: async ({ prompt }) => {
             if (!filled.length)
               filled = hostIds.map((hostId) => {
-                const busy = tracked();
+                const busy = item();
                 db.run(
                   "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
                   [
