@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +31,12 @@ import {
   type ItemChanges,
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
+import { createAdmission } from "../../src/scheduler";
+
+function mergeAdmission(db: Database) {
+  const admission = createAdmission({ db, managed: true });
+  return (itemId: string) => admission.canMerge(itemId).ok;
+}
 
 export async function probePublicationReadiness(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -171,6 +178,7 @@ export async function probePublicationReadiness(root: string) {
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
+        canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       const beforeGeneration = readyItems(f.db, {
@@ -230,6 +238,7 @@ export async function probePublicationReadiness(root: string) {
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
+        canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       let mergeCalls = 0;
@@ -264,6 +273,7 @@ export async function probePublicationReadiness(root: string) {
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
+        canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       f.setEffects(
@@ -348,6 +358,7 @@ export async function probePublicationReadiness(root: string) {
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
+        canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
@@ -384,7 +395,7 @@ export async function probePublicationReadiness(root: string) {
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
-        canAdvance: () => true,
+        canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
@@ -437,6 +448,7 @@ export async function probePublicationReadiness(root: string) {
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
+        canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
@@ -457,7 +469,7 @@ export async function probePublicationReadiness(root: string) {
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
-        canAdvance: () => permitted,
+        canMerge: (itemId) => permitted && mergeAdmission(f.db)(itemId),
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
