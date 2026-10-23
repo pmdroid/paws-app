@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { ResolvedEvidence } from "../closeout";
+import type { EvidenceApproval, ResolvedEvidence } from "../closeout";
 import { JOB_KIND } from "../core";
 import {
   type WorkItemRecord,
@@ -12,11 +12,24 @@ import {
   saveCheckpoint,
 } from "../db";
 import {
+  acceptedVisualReviews,
+  answerQuestion,
   findOpenQuestion,
   getQuestion,
   getVisualReview,
+  lastVisualReviewFeedback,
   openVisualReview,
+  openVisualReviewContinue,
+  parseVisualReviewAnswer,
+  recordVisualReviewAnswer,
   reviewedEvidenceIds,
+  visualReviewAcceptedHandoff,
+  visualReviewChangesHandoff,
+  visualReviewRounds,
+  VISUAL_REVIEW_CONTINUE_OPTIONS,
+  VISUAL_REVIEW_ROUNDS,
+  type StoredQuestion,
+  type StoredVisualReview,
   visualReviewBody,
   VISUAL_REVIEW_OPTIONS,
   VISUAL_REVIEW_REMINDER,
@@ -143,4 +156,133 @@ export function postNote(
     },
     now,
   });
+}
+
+/**
+ * Applies a reply to an open visual review. Call inside a transaction.
+ *
+ * - `answered`: Accept or Request changes was recorded, or the reviewer said to keep going. The
+ *   task is running again; resume it with `visualReviewHandoff`.
+ * - `asked`: this was the last allowed round of changes, so Paws asked whether to keep going and
+ *   the task keeps waiting.
+ * - `describe`: Request changes without saying which. Nothing is recorded.
+ * - `rejected`: the task no longer waits on this question.
+ */
+export function answerVisualReview(
+  db: Database,
+  input: {
+    question: StoredQuestion;
+    review: StoredVisualReview;
+    answer: string;
+    answeredBy: string;
+    eventKey: string;
+    now: number;
+  },
+): "answered" | "asked" | "describe" | "rejected" {
+  const { question, review, answeredBy, now } = input;
+  const item = getWorkItem(db, question.itemId);
+  if (item === null || item.state !== "awaiting_input" || item.cancelRequested) return "rejected";
+  const parsed = parseVisualReviewAnswer(input.answer);
+  if (review.kind === "review" && parsed.kind === "describe") return "describe";
+  const answered = answerQuestion(db, question.id, {
+    answer: input.answer,
+    answeredBy,
+    eventKey: input.eventKey,
+    now,
+  });
+  if (answered === null) return "rejected";
+  if (review.kind === "continue") {
+    const extra = /^keep going[.!]?$/i.test(input.answer.trim()) ? undefined : input.answer.trim();
+    recordVisualReviewAnswer(db, question.id, {
+      outcome: "continued",
+      answeredBy,
+      now,
+      ...(extra ? { feedback: extra } : {}),
+    });
+    applyWorkItemEvent(db, item.id, "answer_received");
+    return "answered";
+  }
+  if (parsed.kind === "accept") {
+    const headCommit = item.checkpoint?.wipCommit ?? reviewedHead(db, item.id, review);
+    recordVisualReviewAnswer(db, question.id, {
+      outcome: "accepted",
+      answeredBy,
+      now,
+      ...(headCommit ? { headCommit } : {}),
+    });
+    applyWorkItemEvent(db, item.id, "answer_received");
+    return "answered";
+  }
+  recordVisualReviewAnswer(db, question.id, {
+    outcome: "changes_requested",
+    answeredBy,
+    now,
+    feedback: parsed.kind === "changes" ? parsed.feedback : input.answer.trim(),
+  });
+  if (visualReviewRounds(db, item.id, review.checkId) < VISUAL_REVIEW_ROUNDS) {
+    applyWorkItemEvent(db, item.id, "answer_received");
+    return "answered";
+  }
+  const asked = openVisualReviewContinue(db, {
+    itemId: item.id,
+    runId: question.runId,
+    sessionId: question.sessionId,
+    checkId: review.checkId,
+    now,
+  });
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "elicitation",
+    orderingKey: question.sessionId,
+    idempotencyKey: `visual-review-continue:${asked.id}`,
+    payload: {
+      id: asked.id,
+      sessionId: question.sessionId,
+      questionId: asked.id,
+      body: asked.body,
+      options: [...VISUAL_REVIEW_CONTINUE_OPTIONS],
+    },
+    now,
+  });
+  return "asked";
+}
+
+/** What the resumed agent reads after an answered visual review, or null for other questions. */
+export function visualReviewHandoff(db: Database, questionId: string): string | null {
+  const review = getVisualReview(db, questionId);
+  if (review === null) return null;
+  if (review.outcome === "accepted") return visualReviewAcceptedHandoff(review.checkId);
+  if (review.outcome === "changes_requested")
+    return visualReviewChangesHandoff(review.checkId, review.feedback ?? "");
+  if (review.outcome === "continued") {
+    const feedback = lastVisualReviewFeedback(db, review.itemId, review.checkId) ?? "";
+    return visualReviewChangesHandoff(
+      review.checkId,
+      review.feedback ? `${feedback}\n\n${review.feedback}` : feedback,
+    );
+  }
+  return null;
+}
+
+/** The task's accepted visual reviews, as Closeout approvals. `task` is Closeout's task id. */
+export function visualReviewApprovals(
+  db: Database,
+  itemId: string,
+  task: string,
+): EvidenceApproval[] {
+  return acceptedVisualReviews(db, itemId).map((review) => ({
+    task,
+    checkId: review.checkId,
+    evidenceIds: review.evidenceIds,
+    approvedBy: review.answeredBy ?? "",
+    approvedAt: new Date(review.answeredAt ?? review.createdAt).toISOString(),
+    ...(review.headCommit ? { commit: review.headCommit } : {}),
+  }));
+}
+
+/** The latest commit among the files a review showed. */
+function reviewedHead(db: Database, itemId: string, review: StoredVisualReview): string | null {
+  const shown = new Set(review.evidenceIds);
+  const rows = listEvidence(db, itemId).filter((row) => shown.has(row.id));
+  return rows.at(-1)?.headCommit ?? null;
 }
