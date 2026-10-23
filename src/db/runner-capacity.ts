@@ -13,7 +13,18 @@ export function runnerHasCapacity(
   excludeRunId = "",
   additionalReservations = 0,
 ): boolean {
-  const row = db
+  const row = runnerOccupancy(db, runnerId, now, excludeRunId);
+  return row.occupied + additionalReservations < row.capacity;
+}
+
+/** The slots Paws may fill on a runner and the slots leased work and helpers fill now. */
+export function runnerOccupancy(
+  db: Database,
+  runnerId: string,
+  now: number,
+  excludeRunId = "",
+): { capacity: number; occupied: number } {
+  return db
     .query<
       { capacity: number; occupied: number },
       [string, string, number, string, string, number]
@@ -23,7 +34,6 @@ export function runnerHasCapacity(
      (SELECT count(*) FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?) AS occupied`,
     )
     .get(runnerId, runnerId, now, excludeRunId, runnerId, now)!;
-  return row.occupied + additionalReservations < row.capacity;
 }
 
 export function runnerSlotsHeldBetweenCommands(
