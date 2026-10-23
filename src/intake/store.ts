@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   delegationIssueIdSql,
+  isTerminalWorkItemState,
   parentTaskKeySql,
   type DelegationState,
   type WorkBrief,
@@ -214,12 +215,7 @@ function branchName(identifier: string): string {
 }
 
 function delegationState(items: readonly StoredWorkItem[]): DelegationState {
-  if (
-    items.some(
-      (item) => item.state !== "completed" && item.state !== "merged" && item.state !== "cancelled",
-    )
-  )
-    return "running";
+  if (items.some((item) => !isTerminalWorkItemState(item.state))) return "running";
   if (items.length > 0 && items.every((item) => item.state === "cancelled")) return "cancelled";
   return "done";
 }

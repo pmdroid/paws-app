@@ -4,9 +4,12 @@ export { TASK_MODES, type TaskMode } from "./task";
 export type { RepositoryBinding } from "./repository";
 export {
   DELEGATION_STATES,
+  IN_FLIGHT_ITEM_STATES,
   TERMINAL_WORK_ITEM_STATES,
   WORK_ITEM_EVENTS,
   WORK_ITEM_STATES,
+  holdsExecution,
+  isBlockerSatisfied,
   isTerminalWorkItemState,
 } from "./states";
 export type {
@@ -57,7 +60,6 @@ export { LONG_SLEEP_MS, WAKE_GAP_MS } from "./limits";
 export { JOB_KIND, MERGE_LANE, MERGE_WORK, OUTBOX_ACTIVITY, isMergeWork } from "./kinds";
 export {
   AWAKE_ITEM_STATES,
-  IN_FLIGHT_ITEM_STATES,
   decideStartup,
   decideWake,
   formatPauseNote,

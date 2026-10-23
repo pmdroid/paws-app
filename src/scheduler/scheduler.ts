@@ -1,10 +1,12 @@
 import type { Database } from "bun:sqlite";
 import {
-  IN_FLIGHT_ITEM_STATES,
   JOB_KIND,
   delegationHasOpenWork,
+  holdsExecution as itemHoldsExecution,
+  isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
+  type WorkItemState,
 } from "../core";
 import {
   enqueueJob,
@@ -18,12 +20,11 @@ import { readyItems } from "../intake";
 
 const TICK = "scheduler.tick";
 const RUNNER_SEEN_MS = 60_000;
-const ACTIVE = new Set<string>(IN_FLIGHT_ITEM_STATES);
 type Item = {
   id: string;
   delegationId: string;
   issueId: string;
-  state: string;
+  state: WorkItemState;
   version: number;
   createdAt: number;
   cancelRequested: number;
@@ -148,11 +149,11 @@ function allItems(db: Database, now: number): Item[] {
 }
 
 function holdsExecution(item: Item): boolean {
-  return Boolean(
-    item.liveRun ||
-    item.liveJob ||
-    (ACTIVE.has(item.state) && !["merge_queue", "awaiting_input", "paused"].includes(item.state)),
-  );
+  return itemHoldsExecution({
+    state: item.state,
+    liveRun: Boolean(item.liveRun),
+    liveJob: Boolean(item.liveJob),
+  });
 }
 
 function taskSlots(db: Database, now: number): { total: number; busy: number } | null {
@@ -219,9 +220,7 @@ function fairOrder(
 function depths(db: Database, items: Item[]): Map<string, number> {
   const ids = new Map<string, string>();
   for (const item of items) {
-    const terminal =
-      item.state === "completed" || item.state === "merged" || item.state === "cancelled";
-    if (terminal && ids.has(item.issueId)) continue;
+    if (isTerminalWorkItemState(item.state) && ids.has(item.issueId)) continue;
     ids.set(item.issueId, item.id);
   }
   const edges = db

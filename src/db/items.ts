@@ -3,6 +3,7 @@ import {
   capActivityText,
   capReason,
   countsAwakeTime,
+  IN_FLIGHT_ITEM_STATES,
   isTerminalWorkItemState,
   JOB_KIND,
   OUTBOX_ACTIVITY,
@@ -106,14 +107,7 @@ export function listWorkItemsByStates(
 }
 
 export function listInFlightItems(db: Database): WorkItemRecord[] {
-  return listWorkItemsByStates(db, [
-    "running",
-    "verifying",
-    "recovering",
-    "awaiting_input",
-    "paused",
-    "merge_queue",
-  ]);
+  return listWorkItemsByStates(db, IN_FLIGHT_ITEM_STATES);
 }
 
 /** The only writer of `work_item.state`. Throws when `transition` rejects the event. */
