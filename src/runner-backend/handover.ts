@@ -7,6 +7,12 @@ import type { RunnerWork } from "../runner-work";
 
 /** After the runner's result, how long Paws waits for the run to import the WIP commit. */
 const HANDOVER_IMPORT_MS = 2 * 60_000;
+/**
+ * The runner posts a handed-over result only while it is early enough to seal the transcript
+ * before the deadline; this covers the post itself and clock differences. A runner that misses
+ * the deadline posts no handed-over result and keeps the session.
+ */
+const HANDOVER_RESULT_GRACE_MS = 30_000;
 
 export type RunnerHandoverOutcome =
   | { handedOver: true; runnerId: string; wipCommit?: string }
@@ -26,6 +32,7 @@ export function createRemoteHandover(options: {
   pollIntervalMs?: number;
   /** How long the runner has for the handover. Tests shorten it. */
   handoverMs?: number;
+  handoverGraceMs?: number;
 }) {
   const { db, work } = options;
   const limit = Math.min(options.handoverMs ?? RUNNER_HANDOVER_MS, RUNNER_HANDOVER_MS);
@@ -61,7 +68,12 @@ export function createRemoteHandover(options: {
         issuedAt,
         expiresAt: issuedAt + limit,
       });
-      return { ...row, runId, id, deadline: performance.now() + limit };
+      return {
+        ...row,
+        runId,
+        id,
+        deadline: performance.now() + limit + (options.handoverGraceMs ?? HANDOVER_RESULT_GRACE_MS),
+      };
     });
     if (!request) return { handedOver: false, reason: "The task has no running session." };
     const { runId, generation, runnerId, commandId } = request;
