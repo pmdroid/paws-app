@@ -208,6 +208,9 @@ function walk(
       },
       failOn: raw.failOn,
     };
+    if (raw.scope !== undefined) item.scope = raw.scope;
+    if (raw.parallel !== undefined) item.parallel = raw.parallel;
+    if (raw.minChangedLines !== undefined) item.minChangedLines = raw.minChangedLines;
     if (paths.paths.length > 0) item.paths = paths.paths;
     state.items.push(item);
   }

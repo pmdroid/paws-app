@@ -206,6 +206,7 @@ describe("closeout gate", () => {
             id: "adversarial-review",
             gate: "beforePR",
             independence: { differentSession: true, differentModel: true },
+            parallel: false,
           },
         ],
       });

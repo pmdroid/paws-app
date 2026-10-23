@@ -87,9 +87,14 @@ Paws Closeout judges the check from an approval record: the task, the check id, 
 When the turn ends, the item moves to `verifying` and Paws runs the policy against the candidate commit:
 
 - **Command checks.** On a local runner, Paws runs them against the candidate checkout. On a remote runner, Paws uses the agent Closeout result for the same commit. A check passes when that result has nothing pending and nothing blocked. When a commit has no result, for example after a rebase, Paws runs the checks on the item's runner against that commit, the same way `run_closeout` does, and judges those results. A missing result never counts as a failed check. If the runner cannot run them, Paws retries, and then asks in Linear, saying that the checks could not run.
-- **Independent review.** A reviewer in a separate session runs the review skill. A finding at or above the policy's `failOn` severity fails the review.
+- **Independent review.** A reviewer in a separate session runs the review skill. A finding at or above the policy's `failOn` severity fails the review. Three optional settings on the review item make it faster:
+  - `scope: diff` asks the reviewer to read only the diff and the files it changes, without searching the repository or running commands. The default, `candidate`, lets it read the whole checkout.
+  - `parallel: true` starts the review alongside the command checks instead of after them.
+  - `minChangedLines: N` skips the review when the change adds and removes fewer than N lines.
 
-The run page shows these steps and their output while they run.
+The run page shows these steps and their output while they run. A review row shows how long the reviewer took and how many tokens it reported.
+
+The reviewer's model and effort are set in Settings, under Agents.
 
 ### Fix rounds
 

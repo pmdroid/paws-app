@@ -106,6 +106,9 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         differentModel: item.independence.differentModel,
       },
       failOn: item.failOn,
+      ...(item.scope !== undefined ? { scope: item.scope } : {}),
+      ...(item.parallel !== undefined ? { parallel: item.parallel } : {}),
+      ...(item.minChangedLines !== undefined ? { minChangedLines: item.minChangedLines } : {}),
     },
     item.paths,
   );

@@ -96,8 +96,13 @@ export type PolicyReview = {
    * `P1` fails on `P0` and `P1`.
    */
   failOn: Severity;
+  scope?: ReviewScope;
+  parallel?: boolean;
+  minChangedLines?: number;
   paths?: PolicyPaths;
 };
+
+export type ReviewScope = "candidate" | "diff";
 
 /** Media an evidence requirement counts. */
 export type EvidenceMedia = "image" | "video";
@@ -209,6 +214,9 @@ export type ResolvedReview = {
   skill: string;
   independence: Independence;
   failOn: Severity;
+  scope?: ReviewScope;
+  parallel?: boolean;
+  minChangedLines?: number;
   paths?: string[];
 };
 

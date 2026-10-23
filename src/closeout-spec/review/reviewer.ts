@@ -89,7 +89,7 @@ export function createReviewer(agent: ReviewAgent, options: ReviewerOptions) {
       } catch (error) {
         return invalid(candidate, blankProducer(options.model), messageOf(error));
       }
-      const prompt = renderReviewPrompt(material, request.base, request.head);
+      const prompt = renderReviewPrompt(material, request.base, request.head, request.item.scope);
       let checkout: Awaited<ReturnType<typeof createCandidateCheckout>>;
       try {
         checkout = await createCandidateCheckout(

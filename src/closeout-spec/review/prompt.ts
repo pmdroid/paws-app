@@ -1,4 +1,5 @@
 import { sha256Hex } from "../policy/canonical";
+import type { ReviewScope } from "../types";
 import { FINDING_FORMAT } from "./findings";
 import { gitOutput } from "./git";
 
@@ -67,7 +68,15 @@ export async function loadReviewMaterial(input: {
   return { skillPath: input.skill, skill, references, files, diff };
 }
 
-export function renderReviewPrompt(material: ReviewMaterial, base: string, head: string): string {
+export const DIFF_SCOPE =
+  "Review only the diff below and the changed files it lists. Open a changed file only for context the diff lacks. Do not read unchanged files, search the repository, or run commands or tests. This overrides broader instructions in the skill.";
+
+export function renderReviewPrompt(
+  material: ReviewMaterial,
+  base: string,
+  head: string,
+  scope: ReviewScope = "candidate",
+): string {
   const references =
     material.references.length === 0
       ? "(none)"
@@ -78,6 +87,7 @@ export function renderReviewPrompt(material: ReviewMaterial, base: string, head:
     "Review this candidate. The checkout is read-only. Do not edit files.",
     `Base ${base}`,
     `Head ${head}`,
+    ...(scope === "diff" ? [DIFF_SCOPE] : []),
     "",
     `# ${material.skillPath}`,
     material.skill.trimEnd(),
