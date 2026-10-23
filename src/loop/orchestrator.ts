@@ -72,6 +72,7 @@ import {
   OUTBOX_ACTIVITY,
   delegationHasOpenWork,
   delegationIssueIdSql,
+  isBlockerSatisfied,
   isTerminalWorkItemState,
   parentTaskKeySql,
   type Clock,
@@ -4488,7 +4489,8 @@ export class Orchestrator {
     );
     for (const row of rows) {
       const blocker = active.get(row.blocker_linear_issue_id);
-      if (blocker?.state !== "merged" && blocker?.state !== "completed") return false;
+      if (!blocker || !isBlockerSatisfied({ ...blocker, mode: getTaskMode(this.db, blocker.id) }))
+        return false;
     }
     return true;
   }
