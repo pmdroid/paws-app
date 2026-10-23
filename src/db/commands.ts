@@ -39,6 +39,8 @@ export function applyLinearCommand(
   db: Database,
   command: LinearCommand,
   now = command.requestedAt,
+  /** Replaces the default "Cancelled from Linear." response that completes the session. */
+  response?: string,
 ): { applied: boolean } {
   return immediate(db, () => {
     const item = getWorkItem(db, command.itemId);
@@ -77,7 +79,9 @@ export function applyLinearCommand(
     const sessionId = item.sessionKey ?? item.id;
     const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
     const origin = command.source === "dashboard" ? "Paws" : "Linear";
-    const text = command.type === "stop" ? `Stopped from ${origin}.` : `Cancelled from ${origin}.`;
+    const text =
+      response ??
+      (command.type === "stop" ? `Stopped from ${origin}.` : `Cancelled from ${origin}.`);
     enqueueOutboxOnce(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
