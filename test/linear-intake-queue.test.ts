@@ -293,3 +293,49 @@ test("the queue starts nothing during a Linear rate-limit hold and resumes after
     db.close();
   }
 });
+
+test("every arrival posts its first activity at once while both intake slots are busy", async () => {
+  const db = tempDb();
+  const store = createInboxStore(db);
+  const fake = createFakeTracker([]);
+  let release = () => {};
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started: string[] = [];
+  const { onEvent, queue } = createLinearIntake({
+    store,
+    tracker: fake,
+    signal: new AbortController().signal,
+    log: () => {},
+    followUp: async (event) => {
+      started.push(event.sessionId!);
+      await blocked;
+    },
+  });
+  try {
+    for (let n = 0; n < 5; n++) {
+      const event = created(n);
+      store.commit(event);
+      queue.arrive(event);
+    }
+    while (started.length < 2) await Bun.sleep(1);
+    const acknowledged = fake.progress
+      .filter((update) => update.body === "Picked up this issue.")
+      .map((update) => update.sessionId);
+    const whileBusy = [...started];
+    release();
+    await queue.idle();
+    expect({ acknowledged, whileBusy, started, unhandled: unhandled(db) }).toEqual({
+      acknowledged: ["s0", "s1", "s2", "s3", "s4"],
+      whileBusy: ["s0", "s1"],
+      started: ["s0", "s1", "s2", "s3", "s4"],
+      unhandled: 0,
+    });
+  } finally {
+    release();
+    await queue.stop();
+    await onEvent.close();
+    db.close();
+  }
+});
