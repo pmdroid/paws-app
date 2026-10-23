@@ -414,9 +414,6 @@ export async function probeRunnerRepositories(
     }),
   );
   const lock = join(prepared.mirror, "packed-refs.lock");
-  // Git takes packed-refs.lock to delete a snapshot ref but not to create one. Holding it
-  // with no retry limit parks prepare at cleanup, so the abort always lands before
-  // prepare can return, however late the probe sees the file.
   async function holdPackedRefs() {
     await invoke(["--git-dir", prepared.mirror, "config", "core.packedRefsTimeout", "-1"]);
     writeFileSync(lock, "fixture lock", { flag: "wx", mode: 0o600 });
