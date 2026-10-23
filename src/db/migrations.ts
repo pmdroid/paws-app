@@ -2342,4 +2342,11 @@ CREATE UNIQUE INDEX question_answer_event ON question (session_id, answer_event_
 WHERE answer_event_key IS NOT NULL;
 `,
   },
+  {
+    id: "114_inbox_event_issue_state",
+    sql: `
+CREATE INDEX inbox_event_issue ON inbox_event(json_extract(payload,'$.data.id'), updated_at_ms)
+  WHERE json_extract(payload,'$.type')='Issue';
+`,
+  },
 ];

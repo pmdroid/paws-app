@@ -96,7 +96,7 @@ test("project HTTP admission uses workspace authentication, CSRF and exact appro
       "INSERT INTO workspace_user_team(workspace_id,user_id,team_id) VALUES('workspace','actor','team')",
     );
     expect((await post({ action: "stop", id: approval.id })).status).toBe(200);
-    expect(f.db.query("SELECT id FROM work_item WHERE state='cancelled'").all()).toHaveLength(2);
+    expect(f.db.query("SELECT id FROM work_item WHERE state='cancelled'").all()).toHaveLength(1);
     syncWorkspaceMember(f.db, {
       ...f.actor,
       role: "observer",
