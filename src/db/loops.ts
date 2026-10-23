@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { systemClock, type Clock } from "../core";
 import { OutboxDispatcher } from "./dispatcher";
 import { JobLoop } from "./loop";
+import { LINEAR_PROGRESS_INTERVAL_MS } from "./outbox";
 
 const JOB_LEASE_MS = 120_000;
 
@@ -22,7 +23,9 @@ export function startLoops(input: {
     concurrency: input.concurrency,
     leaseMs: JOB_LEASE_MS,
   });
-  const outbox = new OutboxDispatcher(input.db, clock);
+  const outbox = new OutboxDispatcher(input.db, clock, {
+    progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
+  });
   input.prepare?.({ jobs, outbox });
   const task = Promise.all([jobs.run(input.signal), outbox.run(input.signal)]);
   void task.catch(() => undefined);

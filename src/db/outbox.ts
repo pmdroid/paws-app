@@ -15,6 +15,12 @@ export const OUTBOX_STATUSES = ["pending", "sent", "dead", "dropped"] as const;
 export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
 
 export const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
+export const LINEAR_PROGRESS_INTERVAL_MS = 30_000;
+
+const PROGRESS_SQL = (row: string) =>
+  `(${row}.target='linear' AND ${row}.delivery_kind='progress'
+    AND ${row}.op IN ('activity','linear.activity')
+    AND COALESCE(json_extract(${row}.payload,'$.kind'),'') IN ('thought','action'))`;
 
 export type OutboxDelivery = "ordered" | "progress" | "critical" | "terminal" | "stop" | "status";
 
@@ -76,6 +82,7 @@ type OutboxSqlRow = {
 
 export type OutboxClaimOptions = {
   blockedKeys?: readonly string[];
+  progressIntervalMs?: number;
   workerId?: string;
   leaseMs?: number;
   now?: number;
@@ -133,7 +140,7 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
   const workerId = options.workerId ?? "outbox";
   const limit = options.limit ?? 32;
   const rows = db
-    .query<OutboxSqlRow, [string, number, string, number, number, number, number]>(
+    .query<OutboxSqlRow, [string, number, string, number, number, number, number, number]>(
       `WITH ranked AS (
        SELECT o.id, ROW_NUMBER() OVER (
          PARTITION BY o.target, COALESCE('key:' || o.ordering_key, 'row:' || o.id)
@@ -152,6 +159,15 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
              AND terminal.delivery_generation = o.delivery_generation
              AND terminal.delivery_kind IN ('terminal', 'stop')
              AND terminal.status IN ('pending', 'sent') AND terminal.priority <= o.priority
+         ))
+         AND NOT (?8 > 0 AND ${PROGRESS_SQL("o")} AND EXISTS (
+           SELECT 1 FROM outbox s WHERE s.target=o.target AND s.ordering_key=o.ordering_key
+             AND s.delivery_generation=o.delivery_generation AND ${PROGRESS_SQL("s")}
+             AND s.status='sent' AND s.sent_at>?4-?8
+         ) AND NOT EXISTS (
+           SELECT 1 FROM outbox n WHERE n.target=o.target AND n.ordering_key=o.ordering_key
+             AND n.delivery_generation=o.delivery_generation AND n.id>o.id
+             AND n.status='pending' AND n.priority<=5 AND NOT ${PROGRESS_SQL("n")}
          ))
      ), eligible AS (
        SELECT o.*
@@ -175,7 +191,16 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
        ORDER BY o.priority, o.id LIMIT ?7
      ) RETURNING *`,
     )
-    .all(workerId, now + leaseMs, JSON.stringify(options.blockedKeys ?? []), now, now, now, limit);
+    .all(
+      workerId,
+      now + leaseMs,
+      JSON.stringify(options.blockedKeys ?? []),
+      now,
+      now,
+      now,
+      limit,
+      options.progressIntervalMs ?? 0,
+    );
   return rows.map(mapOutbox);
 }
 
@@ -238,15 +263,30 @@ export function stopOutboxSession(
 }
 
 export function completeOutbox(db: Database, row: OutboxRow, now = Date.now()): boolean {
-  const result = db
-    .query<{ status: OutboxStatus }, [number, number, string | null, number]>(
-      `UPDATE outbox SET status = CASE WHEN status = 'pending' THEN 'sent' ELSE status END,
+  return immediate(db, () => {
+    const result = db
+      .query<{ status: OutboxStatus }, [number, number, string | null, number]>(
+        `UPDATE outbox SET status = CASE WHEN status = 'pending' THEN 'sent' ELSE status END,
        sent_at = ?, locked_by = NULL, locked_until = NULL,
        error = CASE WHEN status = 'dropped' THEN 'Superseded delivery completed; external effect may have occurred.' ELSE NULL END
      WHERE id = ? AND status IN ('pending', 'dropped') AND locked_by = ? AND attempts = ? RETURNING status`,
-    )
-    .get(now, row.id, row.lockedBy, row.attempts);
-  return result?.status === "sent";
+      )
+      .get(now, row.id, row.lockedBy, row.attempts);
+    if (result?.status !== "sent") return false;
+    if (row.orderingKey !== null)
+      db.run(
+        `UPDATE outbox SET status = 'sent', sent_at = ?, error = ?
+      WHERE target = ? AND ordering_key = ? AND status = 'dropped' AND error = ?`,
+        [
+          now,
+          `Delivered with outbox ${row.id}.`,
+          row.target,
+          row.orderingKey,
+          `Sending with outbox ${row.id}.`,
+        ],
+      );
+    return true;
+  });
 }
 
 export function releaseOutboxLease(db: Database, row: OutboxRow): void {
@@ -341,6 +381,97 @@ export function dispatchOutbox(db: Database, options: DispatchOptions = {}): Out
   return claimed;
 }
 
+export function coalesceOutbox(
+  db: Database,
+  row: OutboxRow,
+  options: { now?: number; thoughts?: boolean } = {},
+): OutboxRow {
+  if (row.target !== "linear" || row.orderingKey === null) return row;
+  const now = options.now ?? Date.now();
+  const session = row.op.startsWith("linear.session.") && mergeableSession(row);
+  if (!session && !(options.thoughts && row.attempts === 1 && mergeableThought(row))) return row;
+  return immediate(db, () => {
+    const others = db
+      .query<OutboxSqlRow, [string, number, number, number]>(
+        `SELECT * FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
+          AND id <> ? AND status = 'pending' AND (locked_until IS NULL OR locked_until <= ?)
+        ORDER BY id`,
+      )
+      .all(row.orderingKey!, row.generation ?? 0, row.id, now)
+      .map(mapOutbox);
+    const merged = session
+      ? others.filter((other) => other.op.startsWith("linear.session.") && mergeableSession(other))
+      : followingThoughts(row, others);
+    if (merged.length === 0) return row;
+    const payload = session
+      ? mergeSessionPayloads([row, ...merged].sort((a, b) => a.id - b.id))
+      : {
+          ...(row.payload as object),
+          body: [row, ...merged]
+            .map((entry) => (entry.payload as { body: string }).body)
+            .join("\n\n"),
+        };
+    const updated = db.run(
+      `UPDATE outbox SET payload = ? WHERE id = ? AND status = 'pending' AND locked_by = ? AND attempts = ?`,
+      [JSON.stringify(payload), row.id, row.lockedBy, row.attempts],
+    );
+    if (updated.changes !== 1) return row;
+    const ids = JSON.stringify(merged.map((entry) => entry.id));
+    db.run(
+      `UPDATE outbox SET status = 'dropped', error = ? WHERE id IN (SELECT value FROM json_each(?))`,
+      [session ? `Sending with outbox ${row.id}.` : `Merged into outbox ${row.id}.`, ids],
+    );
+    return { ...row, payload };
+  });
+}
+
+const SESSION_FIELDS = new Set([
+  "sessionId",
+  "plan",
+  "summary",
+  "addedExternalUrls",
+  "identifier",
+  "mode",
+]);
+
+function mergeableSession(row: OutboxRow): boolean {
+  return Object.keys(row.payload as object).every((field) => SESSION_FIELDS.has(field));
+}
+
+function mergeSessionPayloads(rows: readonly OutboxRow[]): Record<string, unknown> {
+  const urls = new Map<string, unknown>();
+  let payload: Record<string, unknown> = {};
+  for (const row of rows) {
+    const next = row.payload as Record<string, unknown> & { addedExternalUrls?: { url: string }[] };
+    for (const entry of next.addedExternalUrls ?? [])
+      if (!urls.has(entry.url)) urls.set(entry.url, entry);
+    payload = { ...payload, ...next };
+  }
+  return urls.size === 0 ? payload : { ...payload, addedExternalUrls: [...urls.values()] };
+}
+
+function mergeableThought(row: OutboxRow): boolean {
+  const payload = row.payload as Record<string, unknown>;
+  return (
+    row.delivery === "progress" &&
+    (row.op === "activity" || row.op === "linear.activity") &&
+    payload["kind"] === "thought" &&
+    payload["ephemeral"] !== true &&
+    payload["action"] === undefined &&
+    typeof payload["body"] === "string"
+  );
+}
+
+function followingThoughts(head: OutboxRow, others: readonly OutboxRow[]): OutboxRow[] {
+  const merged: OutboxRow[] = [];
+  for (const other of others) {
+    if (other.id < head.id || other.priority > 5) continue;
+    if (!mergeableThought(other) || (other.payload as { id?: unknown }).id !== undefined) break;
+    merged.push(other);
+  }
+  return merged;
+}
+
 function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | null {
   return immediate(db, () => {
     const now = row.now ?? Date.now();
@@ -365,6 +496,11 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
       generation !== fence.generation ||
       (fence.stopped && delivery !== "stop") ||
       Boolean(terminal);
+    const progressActivity =
+      Boolean(row.orderingKey) &&
+      row.target === "linear" &&
+      delivery === "progress" &&
+      (row.op === "activity" || row.op === "linear.activity");
     const verb = ignore ? "INSERT OR IGNORE" : "INSERT";
     const inserted = db
       .query<{ id: number }, (string | number | null)[]>(
@@ -401,24 +537,15 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
         [row.orderingKey ?? null, inserted.id],
       );
     }
-    if (
-      inserted &&
-      !blocked &&
-      row.orderingKey &&
-      row.target === "linear" &&
-      delivery === "progress" &&
-      (row.op === "activity" || row.op === "linear.activity") &&
-      (row.payload as { ephemeral?: boolean })?.ephemeral === true &&
-      ["thought", "action"].includes((row.payload as { kind?: string })?.kind ?? "")
-    ) {
+    if (inserted && !blocked && progressActivity) {
       db.run(
-        `UPDATE outbox SET status = 'dropped', error = 'Superseded by newer ephemeral progress.'
+        `UPDATE outbox SET status = 'dropped', error = 'Superseded by newer progress.'
         WHERE target = ? AND ordering_key = ? AND delivery_generation = ? AND id < ?
           AND status = 'pending' AND attempts = 0 AND locked_by IS NULL
           AND delivery_kind = 'progress' AND op IN ('activity', 'linear.activity')
           AND json_extract(payload, '$.ephemeral') = 1
           AND json_extract(payload, '$.kind') IN ('thought', 'action')`,
-        [row.target, row.orderingKey, generation, inserted.id],
+        [row.target, row.orderingKey!, generation, inserted.id],
       );
     }
     if (

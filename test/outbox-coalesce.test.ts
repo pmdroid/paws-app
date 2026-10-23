@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
-import { enqueueOutbox, OutboxDispatcher } from "../src/db";
+import { enqueueOutbox, LINEAR_PROGRESS_INTERVAL_MS, OutboxDispatcher } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { createLinearSessionProgress, deliverLinearOutbox } from "../src/loop";
 import { tempDb } from "./helpers";
@@ -9,7 +9,9 @@ function harness() {
   const db = tempDb();
   const clock = new FakeClock(1_000_000);
   const tracker = createFakeTracker();
-  const dispatcher = new OutboxDispatcher(db, clock);
+  const dispatcher = new OutboxDispatcher(db, clock, {
+    progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
+  });
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
@@ -48,7 +50,7 @@ test("a run producing 50 progress events in a minute sends at most a few Linear 
   }
   clock.advance(120_000);
   await flush();
-  expect(requests()).toBeLessThanOrEqual(8);
+  expect(requests()).toBeLessThanOrEqual(6);
   const bodies = tracker.progress.map((update) => update.body).join("\n");
   for (let index = 0; index < 50; index++) {
     if (index % 5 !== 4 && index % 7 !== 3) expect(bodies).toContain(`Thought ${index}`);
