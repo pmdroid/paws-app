@@ -149,7 +149,7 @@ describe("Agent Closeout", () => {
       const html = runPage(snapshot);
       expect(html).toContain("Stopped: the run ended before this check finished");
       expect(html).toContain("test ran for 9m 25s until the run ended at 04:15 UTC");
-      expect(html).toContain('<span class="ico stopped" aria-label="stopped">');
+      expect(html).toContain('<span class="ico stopped" aria-label="stopped">■</span>');
       expect(html).toContain("attempt 2 of 3 · 9m 25s");
       expect(html).not.toContain("is running");
       expect(html).toContain(

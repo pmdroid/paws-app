@@ -274,7 +274,7 @@ function output(
   return (["stdout", "stderr"] as const)
     .map(
       (stream) =>
-        `<pre class="out ${lines}" tabindex="0" aria-label="${stream}" data-log="${logKey(itemId, attempt, check.id, stream)}"${selected === stream ? "" : " hidden"}>${ansiToHtml(check[stream] || (waitingForRunner(check) ? check.detail! : check.state === "running" ? "Waiting for output." : "No output."))}</pre>`,
+        `<pre class="out ${lines}" tabindex="0" aria-label="${stream}" data-log="${logKey(itemId, attempt, check.id, stream)}"${selected === stream ? "" : " hidden"}>${ansiToHtml(check[stream] || (waitingForRunner(check) || (check.state === "stopped" && check.detail) ? check.detail! : check.state === "running" ? "Waiting for output." : "No output."))}</pre>`,
     )
     .join("");
 }
@@ -325,5 +325,6 @@ function checkMark(state: string): string {
   if (state === "passed") return "✓";
   if (state === "failed" || state === "blocked" || state === "exhausted") return "✕";
   if (state === "skipped") return "–";
+  if (state === "stopped") return "■";
   return "";
 }

@@ -5,7 +5,7 @@ import type {
   StatusVerdict,
 } from "../contract";
 import { renderCloseoutChecks, shownAttempt, type CloseoutView } from "./closeout";
-import { durationLabel, esc } from "./format";
+import { durationLabel, esc, utcClock } from "./format";
 
 const AGENT_KEY = "agent:";
 
@@ -98,6 +98,15 @@ function agentResult(
       title: esc(`${running.id} is running · ${of(running)}`),
       description: esc(
         `${(running.attempt ?? 1) > 1 ? "The agent fixed the failing check and is running it again" : "The agent is running it"}${on}${typeof running.elapsedMs === "number" ? ` for ${durationLabel(running.elapsedMs)}` : ""}. ${tally}`,
+      ),
+    };
+  const stopped = checks.find((check) => check.state === "stopped");
+  if (stopped)
+    return {
+      icon: "■",
+      title: "Stopped: the run ended before this check finished",
+      description: esc(
+        `${stopped.id} ran${typeof stopped.elapsedMs === "number" ? ` for ${durationLabel(stopped.elapsedMs)}` : ""} until the run ended${agent.endedAt ? ` at ${utcClock(agent.endedAt)} UTC` : ""}${on}. ${tally}`,
       ),
     };
   const exhausted = checks.find((check) => check.state === "exhausted");
