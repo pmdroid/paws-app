@@ -12,7 +12,7 @@ test("runner package builds run only for published releases, and publication wai
   expect(workflow.on).toEqual({ release: { types: ["published"] } });
   expect(workflow.jobs.build.strategy.matrix.include).toEqual([
     { architecture: "amd64", platform: "linux-x64", runner: "ubuntu-24.04" },
-    { architecture: "arm64", platform: "linux-arm64", runner: ["self-hosted", "Linux", "ARM64"] },
+    { architecture: "arm64", platform: "linux-arm64", runner: "ubuntu-24.04-arm" },
   ]);
   expect(workflow.jobs.publish.needs).toBe("build");
   expect(workflow.permissions).toEqual({ contents: "read" });
