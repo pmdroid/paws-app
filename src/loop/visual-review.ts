@@ -8,7 +8,9 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getWorkItem,
+  linearConversationUrl,
   listEvidence,
+  listVisualReviews,
   saveCheckpoint,
 } from "../db";
 import {
@@ -266,6 +268,35 @@ export function visualReviewApprovals(
     approvedAt: new Date(review.answeredAt ?? review.createdAt).toISOString(),
     ...(review.headCommit ? { commit: review.headCommit } : {}),
   }));
+}
+
+export function visualReviewPullRequestNote(
+  db: Database,
+  item: WorkItemRecord,
+  publicUrl: string | null,
+): string {
+  const accepted = listVisualReviews(db, item.id).filter((review) => review.outcome === "accepted");
+  if (accepted.length === 0) return "";
+  const evidence = new Map(listEvidence(db, item.id).map((row) => [row.id, row]));
+  const question = linearConversationUrl(db, item.sessionKey, item.linearIdentifier);
+  const base = publicUrl?.replace(/\/+$/, "");
+  return accepted
+    .map((review) =>
+      [
+        `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in [Linear](<${question}>).`,
+        ...review.evidenceIds.flatMap((id) => {
+          const row = evidence.get(id);
+          if (!row) return [];
+          const label = row.displayName.replace(/[\\[\]]/g, "\\$&");
+          const url = row.assetUrl || (base ? `${base}/evidence/${encodeURIComponent(id)}` : null);
+          if (!url) return [];
+          return [
+            `${row.assetUrl && row.mediaType.startsWith("image/") ? "!" : ""}[${label}](<${url}>)`,
+          ];
+        }),
+      ].join("\n\n"),
+    )
+    .join("\n\n");
 }
 
 function reviewedHead(db: Database, itemId: string, review: StoredVisualReview): string | null {

@@ -15,8 +15,10 @@ import {
   keepTaskMergeSettings,
   migrate,
   openDatabase,
+  putWorkspaceUser,
   recordCiRound,
   recordConfirmedRemoteMerge,
+  saveEvidence,
   saveTaskBlocks,
   startCloseoutRound,
   upsertCloseoutStep,
@@ -106,6 +108,70 @@ describe("live status provider", () => {
     expect(createLiveStatusProvider(db).snapshot().questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-123" },
     ]);
+  });
+
+  test("visual review rounds carry the reviewer's name, feedback and the screenshots' commit", () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
+    const { run } = beginImplementRun(db, item.id, 1_000);
+    putWorkspaceUser(db, {
+      id: "user-ada",
+      linearUserId: "lin-ada",
+      name: "Ada Reviewer",
+      email: "ada@example.invalid",
+    });
+    for (const [id, commit] of [
+      ["shot-1", "a".repeat(40)],
+      ["shot-2", "b".repeat(40)],
+    ] as const)
+      saveEvidence(db, {
+        id,
+        itemId: item.id,
+        runId: run.id,
+        checkId: "visual-proof",
+        attempt: 1,
+        mediaType: "image/png",
+        sizeBytes: 4,
+        sha256: "0".repeat(64),
+        displayName: `${id}.png`,
+        headCommit: commit,
+        createdAt: 1_000,
+      });
+    db.run(
+      `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, kind, outcome, answered_by, answered_at, feedback)
+       VALUES ('q-1', ?, 'visual-proof', '["shot-1"]', 2000, 'review', 'changes_requested', 'lin-ada', 3000, 'Make the button blue.'),
+              ('q-2', ?, 'visual-proof', '[]', 3000, 'continue', 'continued', 'lin-ada', 3500, NULL),
+              ('q-3', ?, 'visual-proof', '["shot-2"]', 4000, 'review', NULL, NULL, NULL, NULL)`,
+      [item.id, item.id, item.id],
+    );
+    const snapshot = createLiveStatusProvider(db).snapshot();
+    expect(snapshot.items[0]?.visualReviews).toEqual([
+      {
+        questionId: "q-1",
+        checkId: "visual-proof",
+        round: 1,
+        state: "changes_requested",
+        evidenceIds: ["shot-1"],
+        commit: "a".repeat(40),
+        askedAt: new Date(2000).toISOString(),
+        answeredBy: "Ada Reviewer",
+        answeredAt: new Date(3000).toISOString(),
+        feedback: "Make the button blue.",
+      },
+      {
+        questionId: "q-3",
+        checkId: "visual-proof",
+        round: 2,
+        state: "waiting",
+        evidenceIds: ["shot-2"],
+        commit: "b".repeat(40),
+        askedAt: new Date(4000).toISOString(),
+        answeredBy: null,
+        answeredAt: null,
+        feedback: null,
+      },
+    ]);
+    expect(parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot))).ok).toBe(true);
   });
 
   test("HTTP status reads each run's pinned reviewer independently of current settings", async () => {

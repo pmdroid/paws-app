@@ -370,6 +370,14 @@ a.evidence-thumb:focus-visible {
   border-radius: 5px;
   background: var(--secondary-background);
 }
+.run-stepper.with-review {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.visual-review-rounds {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .run-stepper .run-step {
   padding: 0.7rem 0.9rem;
   font-size: 0.875rem;
@@ -574,10 +582,11 @@ a.evidence-thumb:focus-visible {
   }
 }
 @media (max-width: 500px) {
-  .run-stepper {
+  .run-stepper,
+  .run-stepper.with-review {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .run-step:nth-child(3) {
+  .run-step:nth-child(odd) {
     border-left: 0;
   }
   .run-step:nth-child(n + 3) {
