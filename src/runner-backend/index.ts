@@ -260,6 +260,20 @@ export function createRemoteAgentRunner(options: {
       );
     throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
   }
+  /** Reservations per runner whose run has no runner_work row there yet. */
+  function unassigned() {
+    const counts = new Map<string, number>();
+    for (const [runId, hostId] of reservations)
+      if (
+        !db
+          .query<{ held: number }, [string, string]>(
+            "SELECT 1 AS held FROM runner_work WHERE run_id=? AND runner_id=?",
+          )
+          .get(runId, hostId)
+      )
+        counts.set(hostId, (counts.get(hostId) ?? 0) + 1);
+    return counts;
+  }
   async function place(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
@@ -269,7 +283,7 @@ export function createRemoteAgentRunner(options: {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
     const candidates = options.placement
-      ? await options.placement.candidates(placement)
+      ? await options.placement.candidates({ ...placement, reserved: unassigned() })
       : db
           .query<{ id: string; workspaceId: string }, []>(
             `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
@@ -281,17 +295,10 @@ export function createRemoteAgentRunner(options: {
           .all();
     placement.signal?.throwIfAborted();
     offered.push(...candidates.map((runner) => runner.id));
+    const pending = unassigned();
     for (const runner of candidates) {
       if (placement.excludeRunnerIds?.includes(runner.id)) continue;
-      const reserved = [...reservations].filter(
-        ([runId, hostId]) =>
-          hostId === runner.id &&
-          !db
-            .query<{ held: number }, [string, string]>(
-              "SELECT 1 AS held FROM runner_work WHERE run_id=? AND runner_id=?",
-            )
-            .get(runId, hostId),
-      ).length;
+      const reserved = pending.get(runner.id) ?? 0;
       if (reservations.has(item.currentRunId)) {
         rejected.push(`${runner.id}: the run is already being placed`);
         continue;
