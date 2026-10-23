@@ -25,7 +25,7 @@ const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
     assignee { id }
     priority
     children(first: 50, after: $after) {
-      nodes { id identifier title description subIssueSortOrder state { type } team { id } project { id } assignee { id } priority }
+      nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id } assignee { id } priority }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -167,6 +167,7 @@ function createUnlabelledTracker(client: LinearClient): LinearTracker {
           if (id === null || identifier === null || title === null)
             throw new Error("Linear returned an invalid sub-issue");
           if (children.has(id)) throw new Error("Linear repeated a sub-issue during pagination");
+          const url = readString(node, "url");
           children.set(id, {
             linearIssueId: id,
             identifier,
@@ -174,6 +175,7 @@ function createUnlabelledTracker(client: LinearClient): LinearTracker {
             description: readString(node, "description"),
             stateType: readString(dig(node, ["state"]) ?? {}, "type"),
             sort: readNumber(node, "subIssueSortOrder"),
+            ...(url ? { url } : {}),
             ...schedulingMetadata(node),
           });
         }

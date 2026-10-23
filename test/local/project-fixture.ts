@@ -14,6 +14,7 @@ import {
 import {
   createFakeTracker,
   type AcceptedLinearEvent,
+  type LinearIssueOwnership,
   type LinearProjectSnapshot,
 } from "../../src/linear";
 import { Orchestrator } from "../../src/loop";
@@ -71,6 +72,8 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
     { loadProject: async () => project },
   );
   tracker.deps.set("two", [{ blockerLinearIssueId: "one", blockedLinearIssueId: "two" }]);
+  /** Issues outside the delegation, read when a parent summary names its blockers. */
+  const issues = new Map<string, LinearIssueOwnership>();
   const jobs = new JobLoop(db, clock);
   let orchestrator: Orchestrator;
   const started: string[] = [];
@@ -79,6 +82,17 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
   const projects = createApprovedProjects({
     db,
     tracker,
+    lifecycle: {
+      inspect: async (id) =>
+        issues.get(id) ?? {
+          id,
+          identifier: id,
+          teamId: "team",
+          assigneeId: null,
+          delegateId: null,
+          stateType: "unstarted",
+        },
+    },
     now: () => clock.now(),
     bus: new CommandBus(),
     getPort: () => orchestrator,
@@ -143,11 +157,12 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
       return { id: sessionId, url: null };
     },
   });
+  const outbox = new OutboxDispatcher(db, clock);
   orchestrator = new Orchestrator({
     db,
     clock,
     jobs: new JobLoop(db, clock),
-    outbox: new OutboxDispatcher(db, clock),
+    outbox,
     pawsRoot: "/nonexistent-project-proof",
     tracker,
     dispatchReady() {},
@@ -183,6 +198,8 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
     started,
     intake,
     tracker,
+    issues,
+    outbox,
     failMemberRead() {
       failedMemberReads++;
     },

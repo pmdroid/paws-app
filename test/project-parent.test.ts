@@ -28,6 +28,16 @@ const parent: EpicSnapshot = {
   ],
 };
 
+function parentResponses(db: ReturnType<typeof createProjectFixture>["db"]): string[] {
+  return db
+    .query<{ body: string }, []>(
+      `SELECT json_extract(payload,'$.body') AS body FROM outbox
+       WHERE ordering_key='parent-session' AND json_extract(payload,'$.kind')='response' ORDER BY id`,
+    )
+    .all()
+    .map((row) => row.body);
+}
+
 function publish(
   tracker: ReturnType<typeof createProjectFixture>["tracker"],
   snapshot: EpicSnapshot,
@@ -185,21 +195,13 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
         )
         .all(),
     ).toEqual([{ action: "project.approved", user_id: "lead" }]);
-    expect(tracker.progress).toContainEqual(
-      expect.objectContaining({
-        sessionId: "parent-session",
-        kind: "thought",
-        body: "Picked up 2 sub-issues. Each one runs in its own session.",
-      }),
-    );
+    expect(tracker.progress.filter((update) => update.sessionId === "parent-session")).toEqual([]);
     const replay = await orchestrator.intakeLinearTask("parent", "parent-session", "parent-task");
     expect(replay.ok && replay.alreadyExisted).toBe(true);
     if (!replay.ok) return;
     expect(replay.items).toEqual([]);
     expect(replay.delegation.id).toBe(admitted.delegation.id);
-    expect(
-      tracker.progress.filter((update) => update.body.startsWith("Picked up 2 sub-issues")),
-    ).toHaveLength(1);
+    expect(tracker.progress.filter((update) => update.sessionId === "parent-session")).toEqual([]);
 
     projects.register(jobs);
     await jobs.tick();
@@ -511,8 +513,16 @@ test("project execution guard declines parent adoption until runtime is ready", 
 
 test("a delegated parent leaves its finished sub-issues out and still starts the issues they block", async () => {
   const fixture = createProjectFixture();
-  const { db, projects, orchestrator, jobs, tracker, started } = fixture;
+  const { db, projects, orchestrator, jobs, tracker, started, issues } = fixture;
   try {
+    issues.set("child-a", {
+      id: "child-a",
+      identifier: "PAR-2",
+      teamId: "team",
+      assigneeId: null,
+      delegateId: null,
+      stateType: "completed",
+    });
     publish(tracker, {
       ...parent,
       subIssues: [
@@ -547,22 +557,147 @@ test("a delegated parent leaves its finished sub-issues out and still starts the
     ) as { includedIssueIds: string[]; edges: unknown[] };
     expect(preview.includedIssueIds).toEqual(["child-b"]);
     expect(preview.edges).toEqual([]);
-    expect(tracker.progress).toContainEqual(
-      expect.objectContaining({
-        sessionId: "parent-session",
-        body: "Picked up 1 sub-issue. Each one runs in its own session.",
-      }),
-    );
 
     projects.register(jobs);
     await jobs.tick();
     expect(started).toEqual(["child-b"]);
+    expect(parentResponses(db)).toEqual([
+      [
+        "Started the work in 1 sub-issue. It runs in its own session, so reply there to steer it.",
+        "* PAR-3 Second child: started",
+        "",
+        "Stop this session to stop it.",
+      ].join("\n"),
+    ]);
     const claim = db
       .query<{ delegation_id: string }, []>(
         "SELECT delegation_id FROM project_approval_issue WHERE issue_id='child-b'",
       )
       .get()!;
     expect(projects.canDispatch(claim.delegation_id)).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a delegated parent with a chain of sub-issues ends its session with one summary", async () => {
+  const fixture = createProjectFixture();
+  const { db, projects, orchestrator, jobs, tracker, started, outbox, issues } = fixture;
+  try {
+    const url = (identifier: string) => `https://linear.app/team/issue/${identifier}`;
+    tracker.epics.set("chain", {
+      linearIssueId: "chain",
+      identifier: "PAS-369",
+      title: "Move running work between runners",
+      description: null,
+      teamId: "team",
+      subIssues: [
+        {
+          linearIssueId: "list",
+          identifier: "PAS-545",
+          title: "List each runner's running sessions",
+          teamId: "team",
+          url: url("PAS-545"),
+        },
+        {
+          linearIssueId: "move-one",
+          identifier: "PAS-546",
+          title: "Move one running session",
+          teamId: "team",
+          url: url("PAS-546"),
+        },
+        {
+          linearIssueId: "move-all",
+          identifier: "PAS-547",
+          title: "Move all running work",
+          teamId: "team",
+          url: url("PAS-547"),
+        },
+      ],
+    });
+    for (const [id, identifier] of [
+      ["list", "PAS-545"],
+      ["move-one", "PAS-546"],
+      ["move-all", "PAS-547"],
+    ] as const)
+      tracker.epics.set(id, {
+        linearIssueId: id,
+        identifier,
+        title: identifier,
+        description: "Live description",
+        teamId: "team",
+        subIssues: [],
+      });
+    tracker.deps.set("move-one", [
+      { blockerLinearIssueId: "list", blockedLinearIssueId: "move-one" },
+      { blockerLinearIssueId: "outside", blockedLinearIssueId: "move-one" },
+      { blockerLinearIssueId: "shipped", blockedLinearIssueId: "move-one" },
+    ]);
+    tracker.deps.set("move-all", [
+      { blockerLinearIssueId: "move-one", blockedLinearIssueId: "move-all" },
+    ]);
+    const outside = { teamId: "team", assigneeId: null, delegateId: null };
+    issues.set("outside", {
+      ...outside,
+      id: "outside",
+      identifier: "PAS-368",
+      url: url("PAS-368"),
+      stateType: "started",
+    });
+    issues.set("shipped", {
+      ...outside,
+      id: "shipped",
+      identifier: "PAS-300",
+      stateType: "completed",
+    });
+    ensureLinearSession(db, {
+      sessionId: "parent-session",
+      issueId: "chain",
+      organizationId: "org",
+      creatorId: "lead",
+      now: fixture.clock.now(),
+    });
+    const admitted = await orchestrator.intakeLinearTask("chain", "parent-session", "parent-task");
+    expect(admitted.ok).toBe(true);
+    expect(parentResponses(db)).toEqual([]);
+
+    projects.register(jobs);
+    await jobs.tick();
+    expect([...started].sort()).toEqual(["list", "move-all", "move-one"]);
+    const summary = [
+      "Started the work in 3 sub-issues. Each runs in its own session, so reply there to steer it.",
+      `* [PAS-545](${url("PAS-545")}) List each runner's running sessions: started`,
+      `* [PAS-546](${url("PAS-546")}) Move one running session: waits for [PAS-545](${url("PAS-545")}) and [PAS-368](${url("PAS-368")})`,
+      `* [PAS-547](${url("PAS-547")}) Move all running work: waits for [PAS-546](${url("PAS-546")})`,
+      "",
+      "Stop this session to stop them all.",
+    ].join("\n");
+    expect(parentResponses(db)).toEqual([summary]);
+
+    // Later project ticks neither repeat the summary nor post progress in the parent session.
+    fixture.clock.advance(30_000);
+    await jobs.tick();
+    fixture.clock.advance(30_000);
+    await jobs.tick();
+    expect(parentResponses(db)).toEqual([summary]);
+    expect(
+      db
+        .query<{ n: number }, []>(
+          "SELECT count(*) AS n FROM outbox WHERE ordering_key='parent-session'",
+        )
+        .get()?.n,
+    ).toBe(1);
+
+    for (let i = 0; i < 5; i++) {
+      outbox.tick();
+      await outbox.idle();
+    }
+    // A response is Linear's final activity: it completes the parent's session.
+    expect(
+      tracker.progress
+        .filter((update) => update.sessionId === "parent-session")
+        .map(({ kind, body }) => ({ kind, body })),
+    ).toEqual([{ kind: "response", body: summary }]);
   } finally {
     await fixture.close();
   }
