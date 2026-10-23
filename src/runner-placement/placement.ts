@@ -27,6 +27,14 @@ type Candidate = {
   resolvedModel: string | null;
 };
 
+/** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
+const RETRYABLE_OUTCOMES = new Set([
+  "heartbeat_lost",
+  "auth_required",
+  "quota_exhausted",
+  "model_conflict",
+]);
+
 /** How long a continuing task waits for the busy runner that holds its agent session. */
 export const SESSION_GRACE_MS = 2 * 60_000;
 
@@ -352,17 +360,26 @@ export function createRunnerPlacement(options: {
               itemId: string | null;
               role: string;
               endedAt: number | null;
+              outcome: string | null;
+              resetsAt: number | null;
             },
             [string, string]
           >(
-            "SELECT owner_user_id AS ownerId,purpose,agent,item_id AS itemId,role,ended_at AS endedAt FROM runner_execution_usage WHERE command_id=? AND runner_id=?",
+            "SELECT owner_user_id AS ownerId,purpose,agent,item_id AS itemId,role,ended_at AS endedAt,outcome,resets_at AS resetsAt FROM runner_execution_usage WHERE command_id=? AND runner_id=?",
           )
           .get(input.commandId, input.runnerId);
         if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
-        if (usage.endedAt !== null) return { retryable: false };
         const result = input.result;
         if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
           throw new Error("Runner result is not bound to its command");
+        // A replay after a restart repeats the recorded decision without counting usage again.
+        if (usage.endedAt !== null)
+          return {
+            retryable: RETRYABLE_OUTCOMES.has(usage.outcome ?? ""),
+            ...(usage.outcome === "quota_exhausted"
+              ? { usageLimit: { resetsAt: usage.resetsAt } }
+              : {}),
+          };
         const quota = result?.errorMessage
           ? quotaSignal(result.errorMessage, input.finishedAt)
           : null;
@@ -391,7 +408,7 @@ export function createRunnerPlacement(options: {
           model !== null &&
           model === latestImplementation?.model;
         db.run(
-          "UPDATE runner_execution_usage SET ended_at=?,outcome=?,resolved_model=?,output_bytes=? WHERE command_id=?",
+          "UPDATE runner_execution_usage SET ended_at=?,outcome=?,resolved_model=?,output_bytes=?,resets_at=? WHERE command_id=?",
           [
             input.finishedAt,
             modelConflict
@@ -409,6 +426,7 @@ export function createRunnerPlacement(options: {
               : result?.reviewText
                 ? Buffer.byteLength(result.reviewText)
                 : 0,
+            quota?.state === "exhausted" ? quota.resetsAt : null,
             input.commandId,
           ],
         );

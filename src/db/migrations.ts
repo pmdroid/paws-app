@@ -2267,4 +2267,10 @@ DROP TABLE agent_hook;
 ALTER TABLE agent_hook_session_start RENAME TO agent_hook;
 `,
   },
+  {
+    id: "109_runner_usage_resets_at",
+    sql: `
+ALTER TABLE runner_execution_usage ADD COLUMN resets_at INTEGER CHECK (resets_at IS NULL OR resets_at >= 0);
+`,
+  },
 ];
