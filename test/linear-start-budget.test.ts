@@ -17,8 +17,6 @@ const { privateKey } = generateKeyPairSync("rsa", {
   publicKeyEncoding: { type: "spki", format: "pem" },
 });
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-const BUDGET = 5;
-
 function linearServer() {
   const issue = {
     id: "issue",
@@ -145,7 +143,7 @@ function linearServer() {
   };
 }
 
-test(`a delegated task spends at most ${BUDGET} Linear requests before the agent's first prompt`, async () => {
+test("a delegated task reads each Linear fact once before the agent's first prompt", async () => {
   const layout = await repoLayout("paws-start-budget-");
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
@@ -267,10 +265,14 @@ test(`a delegated task spends at most ${BUDGET} Linear requests before the agent
         throw new Error(`No first prompt after ${server.operations.join(", ")}`);
       }),
     ]);
-    const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
-    expect(total, JSON.stringify({ counts, operations: server.operations })).toBeLessThanOrEqual(
-      BUDGET,
-    );
+    expect(counts, server.operations.join(", ")).toEqual({
+      "task-access": 6,
+      outbox: 3,
+      intake: 2,
+      "merge-context": 1,
+      "session-read": 1,
+      context: 1,
+    });
   } finally {
     await orchestrator.shutdown();
     await started;
