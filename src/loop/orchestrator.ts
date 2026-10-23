@@ -243,13 +243,15 @@ import {
 import { askForVisualReview, postNote, remindVisualReview } from "./visual-review";
 import {
   ciWaitVerification,
-  enqueueVerifiedMerge,
+  acceptCloseout,
+  applyCloseoutAcceptance,
   githubQueueWatch,
   parkMergeForCi,
   retryMergeLater,
   waitForMergeTurn,
   type GitHubQueueWatch,
   type MergeWaitReason,
+  type VerificationOwner,
 } from "./merge-jobs";
 import {
   createAcpActivityReporter,
@@ -1942,16 +1944,10 @@ export class Orchestrator {
     if (after === null || after.state === "cancelled") return;
     if (verdict.decision === "accepted" && !verdict.exhausted) {
       const acceptedHead = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
-      applyWorkItemEvent(this.db, item.id, "closeout_accepted");
-      saveCheckpoint(this.db, item.id, {
-        phase: "merge_queue",
-        baseSha: base,
-        wipCommit: acceptedHead,
-      });
-      // New work passed Closeout: the task joins the merge queue at the end, not its old place.
-      leaveMergeQueue(this.db, item.id);
-      enqueueVerifiedMerge(this.db, {
+      acceptCloseout(this.db, {
         itemId: item.id,
+        expected: verdict.owner,
+        base,
         head: acceptedHead,
         summary: verdict.summary,
         now: this.now(),
@@ -1967,18 +1963,18 @@ export class Orchestrator {
     base: string,
     head: string,
     candidate: CandidateIdentity,
-  ): Promise<CloseoutVerdict> {
+  ): Promise<CloseoutVerdict & { owner: VerificationOwner }> {
     if (!this.options.remoteExecution) {
       this.assertJobCurrent(item.id);
+      const owner = getWorkItem(this.db, item.id) ?? item;
       const verdict = await this.verifyCandidate(item, worktree, base, head, candidate, () =>
         this.assertJobCurrent(item.id),
       );
       this.assertJobCurrent(item.id);
-      return verdict;
+      return { ...verdict, owner: { version: owner.version, runId: owner.currentRunId } };
     }
     const priorRunId = item.currentRunId;
     let ownedRunId: string | null = null;
-    let enteredFromQueue = false;
     try {
       item = immediate(this.db, () => {
         const current = getWorkItem(this.db, item.id);
@@ -2004,8 +2000,8 @@ export class Orchestrator {
           JSON.stringify(snapshot.candidate) !== JSON.stringify(candidate)
         )
           throw new Error("Verification candidate identity changed");
-        enteredFromQueue = current.state === "merge_queue";
-        if (enteredFromQueue) applyWorkItemEvent(this.db, current.id, "reverify_requested");
+        if (current.state === "merge_queue")
+          applyWorkItemEvent(this.db, current.id, "reverify_requested");
         const run = insertRun(this.db, {
           itemId: current.id,
           kind: "recheck",
@@ -2051,9 +2047,7 @@ export class Orchestrator {
         assertCurrent,
       );
       assertCurrent();
-      if (enteredFromQueue && verdict.decision === "accepted" && !verdict.exhausted)
-        applyWorkItemEvent(this.db, item.id, "closeout_accepted");
-      return verdict;
+      return { ...verdict, owner: { version: item.version, runId } };
     } finally {
       if (ownedRunId) closeActiveRun(this.db, ownedRunId, this.now());
     }
@@ -2583,11 +2577,11 @@ export class Orchestrator {
       await this.askCloseoutHelp(item, verdict.result, verdict.summary);
       return;
     }
-    if (item.state === "verifying") applyWorkItemEvent(this.db, item.id, "closeout_accepted");
     head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
-    saveCheckpoint(this.db, item.id, { phase: "merge_queue", baseSha: base, wipCommit: head });
-    enqueueVerifiedMerge(this.db, {
+    acceptCloseout(this.db, {
       itemId: item.id,
+      expected: verdict.owner,
+      base,
       head,
       summary: verdict.summary,
       now: this.now(),
@@ -2814,6 +2808,8 @@ export class Orchestrator {
           input.head,
           candidate,
         );
+        if (verdict.decision === "accepted" && !verdict.exhausted)
+          applyCloseoutAcceptance(this.db, item.id, verdict.owner);
         verifying = getWorkItem(this.db, item.id) ?? verifying;
         if (verdict.decision === "accepted")
           publicationCandidate = { sha: input.head, baseSha: input.base };

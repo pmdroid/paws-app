@@ -1,6 +1,14 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, MERGE_LANE } from "../core";
-import { enqueueJobOnce, type Job } from "../db";
+import {
+  applyWorkItemEvent,
+  enqueueJobOnce,
+  getWorkItem,
+  immediate,
+  leaveMergeQueue,
+  saveCheckpoint,
+  type Job,
+} from "../db";
 
 export const MERGE_CI_POLL_MS = 10_000;
 export const MERGE_CI_WAIT_MS = 269 * MERGE_CI_POLL_MS;
@@ -176,5 +184,57 @@ export function enqueueVerifiedMerge(
     jobKey,
     payload,
     now: input.now,
+  });
+}
+
+export type VerificationOwner = { version: number; runId: string | null };
+
+export function applyCloseoutAcceptance(
+  db: Database,
+  itemId: string,
+  expected: VerificationOwner,
+): boolean {
+  return immediate(db, () => {
+    const current = getWorkItem(db, itemId);
+    if (
+      !current ||
+      current.cancelRequested ||
+      current.version !== expected.version ||
+      current.currentRunId !== expected.runId ||
+      (current.state !== "verifying" && current.state !== "merge_queue")
+    )
+      return false;
+    if (current.state === "verifying") applyWorkItemEvent(db, current.id, "closeout_accepted");
+    return true;
+  });
+}
+
+export function acceptCloseout(
+  db: Database,
+  input: {
+    itemId: string;
+    expected: VerificationOwner;
+    base: string;
+    head: string;
+    summary: string;
+    now: number;
+    reverifyJobId?: number;
+  },
+): number | null {
+  return immediate(db, () => {
+    if (!applyCloseoutAcceptance(db, input.itemId, input.expected)) return null;
+    saveCheckpoint(db, input.itemId, {
+      phase: "merge_queue",
+      baseSha: input.base,
+      wipCommit: input.head,
+    });
+    if (input.reverifyJobId === undefined) leaveMergeQueue(db, input.itemId);
+    return enqueueVerifiedMerge(db, {
+      itemId: input.itemId,
+      head: input.head,
+      summary: input.summary,
+      now: input.now,
+      reverifyJobId: input.reverifyJobId,
+    });
   });
 }
