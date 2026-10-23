@@ -21,6 +21,8 @@ const mutations: string[] = [];
 globalThis.fetch = Object.assign(
   async (_url: unknown, init?: RequestInit) => {
     const payload = JSON.parse(String(init?.body));
+    if (payload.query.includes("IntakePoll"))
+      return Response.json({ data: { viewer: { id: "app" } } });
     if (payload.query.includes("PawsSessionInstallation")) {
       started.resolve();
       return released.promise;
