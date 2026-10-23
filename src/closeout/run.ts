@@ -25,6 +25,7 @@ import {
   loadReviewMaterial,
   renderReviewPrompt,
   retryBaseline as readRetryBaseline,
+  reviewRequirements,
   decision as decide,
   run,
   scrubText,
@@ -193,6 +194,18 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   }
 
   const evidenceDir = evidencePath(input.taskId, input.pawsHome);
+  const reviewFindings: Array<{ itemId: string; findings: Finding[] }> = [];
+  const reviewAttempts = new Map<string, number>();
+  const metrics: ReviewMetrics = new Map();
+  const early = await startParallelReviews(
+    input,
+    evidenceDir,
+    reviewFindings,
+    reviewAttempts,
+    metrics,
+  );
+  const progress =
+    early && input.progress ? withoutReviewPlan(input.progress, early.gaps) : input.progress;
   let ran: SpecDecision;
   try {
     ran = await run({
@@ -209,14 +222,17 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
       ...publishedOf(input),
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
-      ...(input.progress !== undefined ? { progress: input.progress } : {}),
+      ...(progress !== undefined ? { progress } : {}),
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
     });
   } catch (error) {
+    await early?.done.catch(() => null);
     if (isTransientFailure(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     return failure("blocked", null, message, input.head);
   }
+  const filledEarly = await early?.done;
+  if (filledEarly) return filledEarly;
   const unreadable = ran.message;
   if (
     ran.decision === "blocked" &&
@@ -232,27 +248,28 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   }
 
   const first = toGateDecision(ran);
-  const reviewFindings: Array<{ itemId: string; findings: Finding[] }> = [];
-  const reviewAttempts = new Map<string, number>();
-  const metrics: ReviewMetrics = new Map();
-  const gaps = reviewGaps(first);
+  const reviewed = early?.gaps ?? [];
+  const gaps = reviewGaps(first).filter((item) => !reviewed.some((entry) => entry.id === item.id));
   if (
-    gaps.length === 0 ||
+    (gaps.length === 0 && reviewed.length === 0) ||
     gaps.some((item) => first.items.find((entry) => entry.id === item.id)?.state === "exhausted")
   ) {
     publishReviews(input, first, reviewFindings, reviewAttempts, metrics);
     return finish(first, input.base, input.head, reviewFindings);
   }
 
-  const filled = await addReviewEvidence(
-    input,
-    gaps,
-    reviewFindings,
-    reviewAttempts,
-    metrics,
-    evidenceDir,
-    progressIdentity(input.taskId, first),
-  );
+  const filled =
+    gaps.length === 0
+      ? null
+      : await addReviewEvidence(
+          input,
+          gaps,
+          reviewFindings,
+          reviewAttempts,
+          metrics,
+          evidenceDir,
+          progressIdentity(input.taskId, first),
+        );
   if (filled) return filled;
 
   let judged: SpecDecision;
@@ -274,7 +291,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const detail = scrub(message);
-    for (const item of gaps) {
+    for (const item of [...reviewed, ...gaps]) {
       const found = reviewFindings.find((entry) => entry.itemId === item.id);
       noteReview(
         input,
@@ -491,6 +508,69 @@ async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise
 
 type ReviewMetrics = Map<string, { durationMs: number; tokens: number | null }>;
 
+async function startParallelReviews(
+  input: EvaluateInput,
+  evidenceDir: string,
+  reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+  reviewAttempts: Map<string, number>,
+  metrics: ReviewMetrics,
+): Promise<{ gaps: CloseoutItem[]; done: Promise<Evaluation | null> } | undefined> {
+  const required = reviewRequirements(input.worktree, input.home, input.policyRoot);
+  if (!required.ok) return undefined;
+  const parallel = new Set(required.items.filter((item) => item.parallel).map((item) => item.id));
+  if (parallel.size === 0) return undefined;
+  let before: DecisionDocument;
+  try {
+    before = toGateDecision(
+      await decide({
+        checkoutExclusions: input.checkoutExclusions,
+        repo: input.worktree,
+        base: input.base,
+        head: input.head,
+        gate: CLOSEOUT_GATE,
+        task: input.taskId,
+        candidate: input.candidate,
+        evidenceDir,
+        ...(input.home !== undefined ? { home: input.home } : {}),
+        ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
+        ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+        ...publishedOf(input),
+      }),
+    );
+  } catch {
+    return undefined;
+  }
+  const gaps = reviewGaps(before).filter((item) => parallel.has(item.id));
+  if (gaps.length === 0) return undefined;
+  const done = addReviewEvidence(
+    input,
+    gaps,
+    reviewFindings,
+    reviewAttempts,
+    metrics,
+    evidenceDir,
+    progressIdentity(input.taskId, before),
+  );
+  done.catch(() => null);
+  return { gaps, done };
+}
+
+function withoutReviewPlan(
+  progress: CloseoutProgress,
+  reviews: readonly CloseoutItem[],
+): CloseoutProgress {
+  return {
+    begin: (identity) => progress.begin(identity),
+    step(identity, step) {
+      if (step.kind === "review" && reviews.some((item) => item.id === step.id)) return;
+      progress.step(identity, step);
+    },
+    output: (identity, stepId, stream, chunk, truncated) =>
+      progress.output(identity, stepId, stream, chunk, truncated),
+    finish: (identity, decision) => progress.finish(identity, decision),
+  };
+}
+
 class PolicyFetchError extends Error {
   override name = "PolicyFetchError";
 }
@@ -555,6 +635,7 @@ async function addReviewEvidence(
                   }),
                   request.base,
                   request.head,
+                  request.item.scope,
                 ),
                 taskId: input.taskId,
                 itemId: request.item.id,

@@ -22,7 +22,12 @@ import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
 import { scrubCommandEnv } from "./run/env";
-import { changedPaths as diffPaths, resolveCommit, type PawsCommandRunner } from "./run/exec";
+import {
+  changedLines,
+  changedPaths as diffPaths,
+  resolveCommit,
+  type PawsCommandRunner,
+} from "./run/exec";
 import { withRetryLock } from "./run/lock";
 import type { CloseoutProgress } from "./run/progress";
 import { runCloseoutCommands } from "./run/run";
@@ -216,7 +221,10 @@ export function reviewRequirements(
   home?: string,
   policyRoot?: string,
 ):
-  | { ok: true; items: Array<{ id: string; gate: Gate; independence: Independence }> }
+  | {
+      ok: true;
+      items: Array<{ id: string; gate: Gate; independence: Independence; parallel: boolean }>;
+    }
   | { ok: false; message: string } {
   const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
@@ -224,7 +232,12 @@ export function reviewRequirements(
     ok: true,
     items: loaded.policy.items
       .filter((item): item is ResolvedReview => item.kind === "review")
-      .map(({ id, gate, independence }) => ({ id, gate, independence })),
+      .map(({ id, gate, independence, parallel }) => ({
+        id,
+        gate,
+        independence,
+        parallel: parallel === true,
+      })),
   };
 }
 
@@ -518,6 +531,9 @@ async function finish(
       input.trust,
     );
   }
+  const lines = policy.items.some((item) => item.gate === input.gate && "minChangedLines" in item)
+    ? await changedLines(input.repo, base, head, scrubCommandEnv(input.env))
+    : undefined;
   const published =
     input.published === undefined
       ? undefined
@@ -545,6 +561,7 @@ async function finish(
       base,
       head,
       ...(paths.paths !== undefined ? { changedPaths: paths.paths } : {}),
+      ...(lines !== undefined ? { changedLines: lines } : {}),
       ...(published !== undefined ? { published } : {}),
       ...(approvals !== undefined ? { approvals } : {}),
     }),
@@ -572,6 +589,7 @@ function requestOf(
   if (input.task !== undefined) request.task = input.task;
   if (input.retryBaseline !== undefined) request.retryBaseline = input.retryBaseline;
   if (extra.changedPaths !== undefined) request.changedPaths = extra.changedPaths;
+  if (extra.changedLines !== undefined) request.changedLines = extra.changedLines;
   if (extra.evidenceError !== undefined) request.evidenceError = extra.evidenceError;
   if (extra.policyLoadError !== undefined) request.policyLoadError = extra.policyLoadError;
   if (extra.published !== undefined) request.published = extra.published;
