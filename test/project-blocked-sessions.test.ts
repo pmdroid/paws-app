@@ -158,3 +158,39 @@ test("the recurring job makes no Linear call for a claim that is still blocked",
     await f.close();
   }
 });
+
+test("the parent summary never says started for a sub-issue whose session is held", async () => {
+  const f = createProjectFixture();
+  try {
+    f.tracker.deps.set("a", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "a" }]);
+    deliverIssue(f, "outside", "OUT-1", "canceled");
+    f.issues.set("outside", {
+      id: "outside",
+      identifier: "OUT-1",
+      teamId: "team",
+      assigneeId: null,
+      delegateId: null,
+      stateType: "canceled",
+    });
+    await delegate(f, [child("a", "CH-1")]);
+    await f.jobs.tick();
+    expect(f.started).toEqual([]);
+    expect(
+      f.db
+        .query<{ body: string }, []>(
+          "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE ordering_key='parent-session'",
+        )
+        .all()
+        .map((row) => row.body),
+    ).toEqual([
+      [
+        "Started the work in 1 sub-issue. It runs in its own session, so reply there to steer it.",
+        "* CH-1 CH-1: waits for OUT-1",
+        "",
+        "Stop this session to stop it.",
+      ].join("\n"),
+    ]);
+  } finally {
+    await f.close();
+  }
+});
