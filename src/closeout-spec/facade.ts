@@ -16,7 +16,7 @@ import { evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
-import { publishedAtHead } from "./published";
+import { approvalsAtHead, publishedAtHead } from "./published";
 import { loadPolicy, loadPolicyFiles, treeFiles, type PolicyFilesLoad } from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
@@ -528,6 +528,16 @@ async function finish(
           policy.items,
           scrubCommandEnv(input.env),
         );
+  const approvals =
+    input.approvals === undefined
+      ? undefined
+      : await approvalsAtHead(
+          input.repo,
+          head,
+          input.approvals,
+          policy.items,
+          scrubCommandEnv(input.env),
+        );
   return evaluate(
     policy,
     snapshot.records,
@@ -536,7 +546,7 @@ async function finish(
       head,
       ...(paths.paths !== undefined ? { changedPaths: paths.paths } : {}),
       ...(published !== undefined ? { published } : {}),
-      ...(input.approvals !== undefined ? { approvals: input.approvals } : {}),
+      ...(approvals !== undefined ? { approvals } : {}),
     }),
     input.trust,
   );
