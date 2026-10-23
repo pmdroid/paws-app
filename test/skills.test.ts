@@ -398,12 +398,12 @@ describe("skill settings API", () => {
       ),
     );
     expect(checked).toEqual(["https://github.com/pmdroid/review.git"]);
-    expect(opened.updates).toEqual({ review: "f".repeat(40) });
+    expect(opened.updates).toEqual({ fake: "f".repeat(40) });
     const updated = await read(
-      await handleSkillSettingsRequest(post({ action: "update", name: "review" }), shared),
+      await handleSkillSettingsRequest(post({ action: "update", name: "fake" }), shared),
     );
     expect(checked).toHaveLength(1);
-    expect(updated.updates).toEqual({ review: "f".repeat(40) });
+    expect(updated.updates).toEqual({ fake: "f".repeat(40) });
   });
 
   test("a change without the CSRF token is refused and not audited", async () => {
