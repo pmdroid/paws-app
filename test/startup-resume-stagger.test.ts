@@ -187,14 +187,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       () => detail(db),
     );
 
-    expect(reads).toEqual(
-      ISSUES.flatMap((id) => [
-        `start:ses_${id}`,
-        `end:ses_${id}`,
-        `start:ses_${id}`,
-        `end:ses_${id}`,
-      ]),
-    );
+    expect(reads).toEqual(ISSUES.flatMap((id) => [`start:ses_${id}`, `end:ses_${id}`]));
     expect(
       listWorkItems(db).map((item) => getWorkItem(db, item.id)?.state),
       detail(db),

@@ -21,7 +21,7 @@ import {
   LinearRateLimitError,
   parseAgentEvent,
 } from "../src/linear";
-import { LinearTaskAccess, TASK_ACCESS_TTL_MS } from "../src/loop";
+import { LinearTaskAccess } from "../src/loop";
 import { tempHome } from "./helpers";
 
 const databases: Database[] = [];
@@ -154,7 +154,8 @@ test("human reassignment keeps a delegated code task running but removal stops e
   f.lifecycle.issue.delegateId = null;
   await expect(f.gate.prepare(f.item, new AbortController().signal)).rejects.toThrow("removed");
   expect(f.stopped).toEqual(["session"]);
-  expect(f.lifecycle.started).toHaveLength(2);
+  expect(f.lifecycle.started.map((input) => input.issueId)).toEqual(["child", "parent", "child"]);
+  expect(f.lifecycle.issue.delegateId).toBeNull();
 });
 
 test.each(["unknown", "rejected"])(
@@ -321,16 +322,59 @@ function linearReads(f: Awaited<ReturnType<typeof fixture>>) {
   return f.access.calls.length + f.lifecycle.inspected.length;
 }
 
-test("repeated task access checks within the cache window read Linear once", async () => {
+test("a task that runs 50 git operations reads Linear task access once", async () => {
   const f = await fixture(true);
-  await f.gate.prepare(f.item, new AbortController().signal);
-  const before = linearReads(f);
-  for (let i = 0; i < 10; i++) await f.gate.assert(f.item, new AbortController().signal);
-  expect(linearReads(f) - before).toBe(5);
-  f.clock.now += TASK_ACCESS_TTL_MS;
-  await f.gate.assert(f.item, new AbortController().signal);
-  expect(linearReads(f) - before).toBe(10);
+  const signal = new AbortController().signal;
+  await f.gate.assert(f.item, signal);
+  const once = linearReads(f);
+  await f.gate.prepare(f.item, signal);
+  for (let i = 0; i < 50; i++) {
+    f.clock.now += 60_000;
+    await f.gate.assert(f.item, signal);
+    await f.gate.assertDelivery("session", signal, { itemId: f.item.id, isCurrent: () => true });
+  }
+  expect(linearReads(f)).toBe(once);
+  expect(f.lifecycle.started.map((input) => input.issueId)).toEqual(["child", "parent"]);
   expect(f.stopped).toEqual([]);
+});
+
+test("a webhook that lands while access is being read keeps the answer from being stored", async () => {
+  const f = await fixture();
+  const signal = new AbortController().signal;
+  const inspect = f.lifecycle.inspect.bind(f.lifecycle);
+  f.lifecycle.inspect = async (...args) => {
+    const issue = await inspect(...args);
+    if (f.lifecycle.inspected.length === 1) f.gate.invalidate({ issueId: "parent" });
+    return issue;
+  };
+  await f.gate.assert(f.item, signal);
+  const before = linearReads(f);
+  await f.gate.assert(f.item, signal);
+  expect(linearReads(f)).toBeGreaterThan(before);
+});
+
+test("an undelegation webhook stops the task before its next git operation", async () => {
+  const f = await fixture(true);
+  const signal = new AbortController().signal;
+  await f.gate.prepare(f.item, signal);
+  f.clock.now += 60 * 60_000;
+  await f.gate.assert(f.item, signal);
+  f.lifecycle.issue.delegateId = null;
+  f.gate.invalidate({ issueId: "parent" });
+  await expect(f.gate.assert(f.item, signal)).rejects.toThrow("removed");
+  expect(f.stopped).toEqual(["session"]);
+});
+
+test("a session stop webhook stops the task before its next git operation without reading Linear", async () => {
+  const f = await fixture(true);
+  const signal = new AbortController().signal;
+  await f.gate.prepare(f.item, signal);
+  await f.gate.assert(f.item, signal);
+  const before = linearReads(f);
+  advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now });
+  f.gate.invalidate({ sessionId: "session" });
+  await expect(f.gate.assert(f.item, signal)).rejects.toThrow("stopped or superseded");
+  expect(linearReads(f)).toBe(before);
 });
 
 test("an undelegation invalidates the cached access and the re-read stops the task", async () => {
