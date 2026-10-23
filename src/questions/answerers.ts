@@ -14,12 +14,19 @@ type Policy = {
 };
 
 export const ANSWER_POLICY: Policy = {
-  agent: () => false,
-  "closeout-bypass": () => false,
-  "visual-review": () => false,
-  "github-auth": () => false,
+  agent: () => true,
+  "closeout-bypass": () => true,
+  "visual-review": (question, user) =>
+    user.id === question.delegatorId || user.id === question.leadId,
+  "github-auth": (question, user) => user.id === question.actorId,
 };
 
-export const answerer = (_id: string): Answerer | null => null;
+export const answerer = (id: string): Answerer | null =>
+  id === "unknown" || id === "linear" || !id.trim() ? null : { id };
 
-export const canAnswer = (_question: AnswerableQuestion, _user: Answerer): boolean => false;
+export const canAnswer = (question: AnswerableQuestion, user: Answerer): boolean =>
+  answerer(user.id) !== null &&
+  (ANSWER_POLICY[question.kind] as (question: AnswerableQuestion, user: Answerer) => boolean)(
+    question,
+    user,
+  );

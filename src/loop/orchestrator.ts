@@ -246,7 +246,9 @@ import {
   renderLinearSessionContext,
 } from "../linear";
 import {
+  answerer,
   answerQuestion,
+  canAnswer,
   elicitationBody,
   findOpenQuestion,
   handoffNote,
@@ -3780,8 +3782,8 @@ export class Orchestrator {
       )
         answeredBy = payload.answeredBy;
     } catch {}
-    if (answeredBy === "unknown" || answeredBy === "linear" || !answeredBy.trim())
-      return "rejected";
+    const user = answerer(answeredBy);
+    if (user === null) return "rejected";
     const review = getVisualReview(this.db, open.id);
     if (review) {
       const item = getWorkItem(this.db, open.itemId);
@@ -3808,6 +3810,7 @@ export class Orchestrator {
       await this.flush();
       return accepted ? "answered" : "rejected";
     }
+    if (!canAnswer({ kind: recovery ? "closeout-bypass" : "agent" }, user)) return "rejected";
     const runnerWaiter = recovery ? undefined : this.waiters.get(open.id);
     if (runnerWaiter) {
       const accepted = immediate(this.db, () => {
@@ -5423,11 +5426,16 @@ export class Orchestrator {
 
   /** The delegator and the project lead answer a visual review. */
   private async canAnswerVisualReview(item: WorkItemRecord, actorId: string): Promise<boolean> {
-    if (delegatedLinearUserId(this.db, item.id) === actorId) return true;
+    const delegatorId = delegatedLinearUserId(this.db, item.id);
+    const user = { id: actorId };
+    if (canAnswer({ kind: "visual-review", delegatorId, leadId: null }, user)) return true;
     const attribution = await this.tracker
       ?.getIssueAttribution?.(item.linearIssueId)
       .catch(() => null);
-    return attribution?.leadId === actorId;
+    return canAnswer(
+      { kind: "visual-review", delegatorId, leadId: attribution?.leadId ?? null },
+      user,
+    );
   }
 
   private prepareInputFiles(item: WorkItemRecord, turnId: string) {
