@@ -192,6 +192,12 @@ test("Accept records the approval, passes the check and opens the pull request",
     const item = listWorkItems(f.db)[0]!;
     const wip = item.checkpoint?.wipCommit;
     expect(wip).toMatch(/^[0-9a-f]{40}$/);
+    putWorkspaceUser(f.db, {
+      id: "user-ada",
+      linearUserId: "delegator-1",
+      name: "Ada Reviewer",
+      email: "ada@example.invalid",
+    });
 
     await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
     expect(getVisualReview(f.db, open.id)).toMatchObject({
@@ -204,6 +210,12 @@ test("Accept records the approval, passes the check and opens the pull request",
 
     await f.driveUntil(() => f.github.opened.length > 0);
     expect(f.github.opened).toHaveLength(1);
+    const body = f.github.opened[0]!.body;
+    expect(body).toContain(
+      "Visual review accepted by Ada Reviewer in [Linear](<https://linear.app/issue/ENG-7>).",
+    );
+    expect(body).toContain(`![shot-1.png](<${ASSET}>)`);
+    expect(body).toContain(`![shot-2.png](<${ASSET}>)`);
     expect(f.prompts).toHaveLength(2);
     expect(f.prompts[1]).toContain("The visual review of check visual-proof was accepted");
     expect(f.tracker.questions).toHaveLength(1);

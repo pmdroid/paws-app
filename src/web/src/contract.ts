@@ -112,6 +112,23 @@ export interface StatusItem {
   /** The item's pull request waits in its repository's GitHub merge queue. */
   githubQueue?: StatusGitHubQueue;
   linearRequests?: number;
+  visualReviews?: StatusVisualReview[];
+}
+
+export const VISUAL_REVIEW_STATES = ["waiting", "accepted", "changes_requested", "stale"] as const;
+export type VisualReviewState = (typeof VISUAL_REVIEW_STATES)[number];
+
+export interface StatusVisualReview {
+  questionId: string;
+  checkId: string;
+  round: number;
+  state: VisualReviewState;
+  evidenceIds: string[];
+  commit: string | null;
+  askedAt: string;
+  answeredBy: string | null;
+  answeredAt: string | null;
+  feedback: string | null;
 }
 
 export interface StatusMergeQueue {
@@ -720,6 +737,29 @@ function readItem(input: unknown, index: number): StatusItem {
     ...(body.linearRequests === undefined
       ? {}
       : { linearRequests: count(body, "linearRequests", path) }),
+    ...(body.visualReviews === undefined
+      ? {}
+      : {
+          visualReviews: array(body, "visualReviews", path).map((entry, at) =>
+            readVisualReview(entry, `${path}.visualReviews[${at}]`),
+          ),
+        }),
+  };
+}
+
+function readVisualReview(input: unknown, path: string): StatusVisualReview {
+  const body = object(input, path);
+  return {
+    questionId: text(body, "questionId", path),
+    checkId: text(body, "checkId", path),
+    round: positiveInteger(body, "round", path),
+    state: oneOf(string(body, "state", path), VISUAL_REVIEW_STATES, `${path}.state`),
+    evidenceIds: stringArray(body, "evidenceIds", path),
+    commit: nullableText(body, "commit", path),
+    askedAt: dateString(body, "askedAt", path),
+    answeredBy: nullableText(body, "answeredBy", path),
+    answeredAt: nullableDate(body, "answeredAt", path),
+    feedback: nullableText(body, "feedback", path),
   };
 }
 
