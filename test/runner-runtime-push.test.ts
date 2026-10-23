@@ -1,0 +1,250 @@
+import { expect, test } from "bun:test";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { openRunnerRuntime } from "../src/runner-runtime";
+import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
+
+function git(args: string[], cwd: string) {
+  const child = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: {
+      PATH: "/usr/bin:/bin",
+      HOME: cwd,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_AUTHOR_NAME: "Fixture",
+      GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+      GIT_COMMITTER_NAME: "Fixture",
+      GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+    },
+  });
+  if (child.exitCode !== 0) throw new Error(child.stderr.toString());
+  return child.stdout.toString().trim();
+}
+
+async function fixture(rejection: string) {
+  const root = mkdtempSync(join(tmpdir(), "paws-runtime-push-"));
+  const now = Date.now();
+  let clock = 0;
+  const source = join(root, "source");
+  mkdirSync(source);
+  git(["init", "-q", "-b", "main"], source);
+  writeFileSync(join(source, "file.txt"), "base\n");
+  git(["add", "."], source);
+  git(["commit", "-q", "-m", "base"], source);
+  const baseSha = git(["rev-parse", "HEAD"], source);
+  git(["clone", "-q", "--bare", source, join(root, "origin.git")], root);
+  writeFileSync(join(source, "file.txt"), "candidate\n");
+  git(["commit", "-q", "-am", "candidate"], source);
+  const candidateSha = git(["rev-parse", "HEAD"], source);
+  git(["bundle", "create", "-q", join(root, "candidate.bundle"), `${baseSha}..HEAD`], source);
+  const spool = {
+    root: join(root, "spool"),
+    runnerUid: process.getuid!(),
+    agentGid: process.getgid!(),
+  };
+  const results = {
+    root: join(root, "results"),
+    agentUid: process.getuid!(),
+    resultsGid: process.getgid!(),
+  };
+  for (const directory of [spool.root, results.root]) {
+    mkdirSync(directory);
+    chmodSync(directory, 0o750);
+  }
+  const command: RunnerCommand = {
+    id: "command",
+    type: "run",
+    runnerId: "runner",
+    workspaceId: "workspace",
+    runId: "run",
+    itemId: "item",
+    generation: 1,
+    issuedAt: now,
+    expiresAt: now + 3_600_000,
+    repository: {
+      owner: "fixture",
+      repo: "repository",
+      remoteUrl: "https://github.com/fixture/repository.git",
+      baseSha,
+    },
+    profile: { agent: "claude", model: null },
+    prompt: "Implement the assigned issue",
+  };
+  const paired = {
+    phase: "paired" as const,
+    runnerId: "runner",
+    workspaceId: "workspace",
+    fingerprint: "fixture",
+    expiresAt: now + 3_600_000,
+  };
+  let pending: RunnerCommand[] = [command];
+  let execution = "";
+  const posted: RunnerResult[] = [];
+  const pushes: number[] = [];
+  const runtime = await openRunnerRuntime({
+    root,
+    spool,
+    results,
+    repositoryRoot: join(root, "repositories"),
+    home: root,
+    now: () => now,
+    monotonic: () => clock,
+    onError: () => {},
+    async networkGit(input) {
+      if (input.operation === "clone")
+        git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
+      else if (input.operation === "push") {
+        pushes.push(clock);
+        throw new Error(rejection);
+      }
+    },
+    broker: {
+      async start(id) {
+        execution = id;
+        const directory = join(results.root, id);
+        mkdirSync(directory);
+        chmodSync(directory, 0o750);
+        writeFileSync(join(directory, "events.jsonl"), "");
+        chmodSync(join(directory, "events.jsonl"), 0o640);
+        return { alreadyAdmitted: false };
+      },
+      async stop() {},
+      alive: () => true,
+    },
+    daemon: {
+      status: () => paired,
+      async heartbeat() {
+        return { leases: [{ runId: "run", generation: 1, expiresAt: now + 60_000 }], fenced: [] };
+      },
+      async pollCommands() {
+        return { commands: pending, rejected: [], deniedRepositories: [] };
+      },
+      pendingCommands: () => pending,
+      async acknowledgeCommand(id) {
+        pending = pending.filter((entry) => entry.id !== id);
+      },
+      async issueRunGrant() {
+        return { token: "token", expiresAt: now + 3_600_000 };
+      },
+      async sendEvent() {
+        return { duplicate: false };
+      },
+      async answers() {
+        return { answers: [] };
+      },
+      async postResult(_runId, _generation, result) {
+        posted.push(result);
+        return { duplicate: false };
+      },
+      async repositoryCredential(_runId, _generation, access) {
+        return {
+          token: "fixture-token",
+          expiresAt: now + 3_600_000,
+          remoteUrl: command.repository.remoteUrl,
+          branch: access === "write" ? "paws/fixture" : null,
+        };
+      },
+      async renewCertificate() {
+        return paired;
+      },
+      async uploadArtifact() {
+        return { ok: true };
+      },
+      async uploadTranscript(_runId, chunk) {
+        return { offset: chunk.offset, duplicate: false };
+      },
+      async finishTranscript() {
+        return { uri: "transcript" };
+      },
+    },
+  });
+  const tick = () => runtime.tick().catch(() => {});
+  const started = () => execution !== "";
+  for (let index = 0; index < 400 && !started(); index++) {
+    await tick();
+    await Bun.sleep(1);
+  }
+  const directory = join(results.root, execution);
+  copyFileSync(join(root, "candidate.bundle"), join(directory, "candidate.bundle"));
+  chmodSync(join(directory, "candidate.bundle"), 0o640);
+  writeFileSync(
+    join(directory, "result.json"),
+    JSON.stringify({
+      executionId: execution,
+      commandId: command.id,
+      run: {
+        role: "implementer",
+        stopReason: "end_turn",
+        timedOut: false,
+        cancelled: false,
+        authRequired: false,
+        agentExited: true,
+      },
+      candidateSha,
+    }),
+  );
+  chmodSync(join(directory, "result.json"), 0o640);
+  return {
+    posted,
+    pushes,
+    async run(minutes: number) {
+      for (let step = 0; step <= minutes * 2; step++) {
+        for (let index = 0; index < 5; index++) {
+          await tick();
+          await Bun.sleep(1);
+        }
+        clock += 30_000;
+      }
+    },
+    async cleanup() {
+      await runtime.stop();
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a candidate push GitHub keeps failing stops after six tries over about 15 minutes with the error and branch",
+  async () => {
+    const f = await fixture(
+      "fatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 502",
+    );
+    try {
+      await f.run(20);
+      expect(f.pushes).toEqual([0, 0, 60_000, 180_000, 420_000, 900_000]);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.stopReason).toBe("error");
+      expect(f.posted[0]!.pushFailure).toEqual({
+        branch: "paws/fixture",
+        error: expect.stringContaining("The requested URL returned error: 502"),
+      });
+      expect(f.posted[0]!.errorMessage).toContain("paws/fixture");
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a candidate push GitHub rejects for permission stops on the first try",
+  async () => {
+    const f = await fixture(
+      "remote: Permission to fixture/repository.git denied to paws-test[bot].\nfatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 403",
+    );
+    try {
+      await f.run(2);
+      expect(f.pushes).toEqual([0]);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.pushFailure).toEqual({
+        branch: "paws/fixture",
+        error: expect.stringContaining("Permission to fixture/repository.git denied"),
+      });
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);

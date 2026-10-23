@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { MAX_TOKEN_TTL_MS, TOKEN_TTL_SKEW_MS, type GitHubApp } from "../github";
+import {
+  MAX_TOKEN_TTL_MS,
+  TOKEN_TTL_SKEW_MS,
+  type GitHubApp,
+  type InstallationToken,
+} from "../github";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 
 const inputSchema = z.strictObject({
@@ -16,6 +21,56 @@ async function github<T>(operation: () => Promise<T>): Promise<T> {
   } catch (error) {
     throw new GitHubUnavailableError(error instanceof Error ? error.message : String(error));
   }
+}
+
+type Bot = { appId: string; login: string; id: number };
+
+export const TOKEN_REUSE_MARGIN_MS = 5 * 60_000;
+
+function remember<V>(cache: Map<string, Promise<V>>, key: string, load: () => Promise<V>) {
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const pending = load();
+  cache.set(key, pending);
+  pending.catch(() => {
+    if (cache.get(key) === pending) cache.delete(key);
+  });
+  return pending;
+}
+
+export function cacheRepositoryCredentials<
+  T extends {
+    github: GitHubApp;
+    installationForRepository(repository: string): string | null;
+    checkpointBot?: (repository: string) => Promise<Bot>;
+  },
+>(options: T, now: () => number = Date.now): T {
+  const tokens = new Map<string, Promise<InstallationToken>>();
+  const bots = new Map<string, Promise<Bot>>();
+  const checkpointBot = options.checkpointBot;
+  return {
+    ...options,
+    github: {
+      async mintInstallationToken(input) {
+        const key = `${input.installationId}:${input.repository}:${input.access ?? "write"}`;
+        const cached = tokens.get(key);
+        if (cached) {
+          const token = await cached;
+          if (token.expiresAt - now() > TOKEN_REUSE_MARGIN_MS) return token;
+          if (tokens.get(key) === cached) tokens.delete(key);
+        }
+        return remember(tokens, key, () => options.github.mintInstallationToken(input));
+      },
+    },
+    ...(checkpointBot
+      ? {
+          checkpointBot: (repository: string) =>
+            remember(bots, `${options.installationForRepository(repository)}:${repository}`, () =>
+              checkpointBot(repository),
+            ),
+        }
+      : {}),
+  };
 }
 
 export function createRunnerRepositoryAccess(options: {

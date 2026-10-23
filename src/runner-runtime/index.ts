@@ -22,6 +22,12 @@ import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "..
 import { openExecutionJournal, type Execution } from "../runner-journal";
 
 class RemoteFailure extends Error {}
+class GitHubFailure extends RemoteFailure {}
+const GITHUB_UNAVAILABLE = "GitHub git operation failed";
+
+const CANDIDATE_PUSH_RETRY_MS = [0, 60_000, 120_000, 240_000, 480_000];
+const PERMANENT_PUSH_REJECTION =
+  /\[remote rejected\]|protected branch|\bGH0\d\d\b|Permission to \S+ denied|Repository not found|pre-receive hook declined/i;
 
 async function remote<T>(
   operation: () => Promise<T>,
@@ -37,7 +43,7 @@ async function remote<T>(
       ![408, 429].includes(error.status)
     )
       throw error;
-    throw new RemoteFailure(
+    throw new (unavailable === GITHUB_UNAVAILABLE ? GitHubFailure : RemoteFailure)(
       `${unavailable}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
@@ -51,10 +57,12 @@ const workerResult = z.object({
     commandId: true,
     candidateSha: true,
     reviewText: true,
+    pushFailure: true,
   }).strip(),
   candidateSha: RunnerResultSchema.shape.candidateSha,
   reviewText: RunnerResultSchema.shape.reviewText,
 });
+type PushFailure = NonNullable<RunnerResult["pushFailure"]>;
 type Active = {
   execution: Execution;
   abort: AbortController;
@@ -68,6 +76,8 @@ type Active = {
   followUps?: number;
   transcriptSealed?: boolean;
   restarts?: number;
+  pushTries?: number;
+  pushAt?: number;
 };
 
 export async function openRunnerRuntime(options: {
@@ -184,7 +194,12 @@ export async function openRunnerRuntime(options: {
     }
     return entry.grant.token;
   }
-  async function interrupt(entry: Active, reason: string, notify = false) {
+  async function interrupt(
+    entry: Active,
+    reason: string,
+    notify = false,
+    pushFailure?: PushFailure,
+  ) {
     const first = !entry.abort.signal.aborted;
     entry.abort.abort();
     if (first)
@@ -195,13 +210,18 @@ export async function openRunnerRuntime(options: {
       );
     entry.stopped ??= (async () => {
       await quiesce(entry);
-      if (notify) await fail(entry.execution, reason, entry.transcriptSealed);
+      if (notify) await fail(entry.execution, reason, entry.transcriptSealed, pushFailure);
       journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
     })();
     await entry.stopped;
   }
-  async function fail(execution: Execution, reason: string, sealed = false) {
+  async function fail(
+    execution: Execution,
+    reason: string,
+    sealed = false,
+    pushFailure?: PushFailure,
+  ) {
     const { command } = execution;
     if (command.type !== "run" && command.type !== "review" && command.type !== "task") return;
     try {
@@ -267,6 +287,7 @@ export async function openRunnerRuntime(options: {
               0,
               16_384,
             ),
+          ...(pushFailure ? { pushFailure } : {}),
         }),
         token,
       );
@@ -293,7 +314,7 @@ export async function openRunnerRuntime(options: {
     root: options.repositoryRoot,
     home: options.home,
     networkGit: (input) =>
-      remote(() => (options.networkGit ?? runGitHubGit)(input), "GitHub git operation failed"),
+      remote(() => (options.networkGit ?? runGitHubGit)(input), GITHUB_UNAVAILABLE),
     async credential(command, access) {
       const entry = active.get(key(command));
       if (!entry || entry.execution.command.id !== command.id)
@@ -396,7 +417,7 @@ export async function openRunnerRuntime(options: {
                     env,
                     signal: entry.abort.signal,
                   }),
-                "GitHub git operation failed",
+                GITHUB_UNAVAILABLE,
               );
               return "";
             },
@@ -666,6 +687,7 @@ export async function openRunnerRuntime(options: {
     ) {
       if (entry.execution.command.type !== "run" || result.cancelled || !result.agentExited)
         throw new Error("Unsafe runner candidate result");
+      if ((entry.pushAt ?? 0) > monotonic()) return;
       const token = await grant(entry);
       const credential = await remote(() =>
         options.daemon.repositoryCredential(
@@ -678,15 +700,36 @@ export async function openRunnerRuntime(options: {
       check(entry);
       if (!credential.branch) throw new Error("Runner publication branch is missing");
       entry.publicationBranch = credential.branch;
-      await repositories.publish(
-        entry.execution.command,
-        {
-          bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
-          sha: result.candidateSha,
-          branch: credential.branch,
-        },
-        entry.abort.signal,
-      );
+      try {
+        await repositories.publish(
+          entry.execution.command,
+          {
+            bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
+            sha: result.candidateSha,
+            branch: credential.branch,
+          },
+          entry.abort.signal,
+        );
+      } catch (error) {
+        if (!(error instanceof GitHubFailure)) throw error;
+        const tries = (entry.pushTries ?? 0) + 1;
+        entry.pushTries = tries;
+        const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
+        if (!permanent && tries <= CANDIDATE_PUSH_RETRY_MS.length) {
+          entry.pushAt = monotonic() + CANDIDATE_PUSH_RETRY_MS[tries - 1]!;
+          throw error;
+        }
+        const failure = { branch: credential.branch, error: error.message.slice(0, 4096) };
+        await interrupt(
+          entry,
+          permanent
+            ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
+            : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
+          true,
+          failure,
+        );
+        return;
+      }
       check(entry);
     }
     await drainTranscript(entry, true);
