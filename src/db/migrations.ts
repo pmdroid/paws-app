@@ -2358,4 +2358,14 @@ ALTER TABLE rebase_return ADD COLUMN recorded_at INTEGER;
 UPDATE rebase_return SET recorded_at = (SELECT created_at FROM job WHERE job.id = rebase_return.job_id);
 `,
   },
+  {
+    id: "116_work_item_awake_breakdown",
+    sql: `
+ALTER TABLE work_item ADD COLUMN accepted_head TEXT;
+ALTER TABLE work_item ADD COLUMN agent_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN closeout_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN waiting_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN recheck_ms INTEGER NOT NULL DEFAULT 0;
+`,
+  },
 ];

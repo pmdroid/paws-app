@@ -277,7 +277,7 @@ describe("laptop sleep and wake", () => {
       expect(getWorkItem(db, "eng-9")?.state).toBe("failed");
       expect(activities(db).at(-1)?.payload).toMatchObject({
         kind: "error",
-        body: "Run hit the awake time cap (180 min).",
+        body: "Run hit the awake time cap (180 min). Counted: agent turns 45 min, Closeout 2 h 15 min.",
       });
     } finally {
       host.stop();

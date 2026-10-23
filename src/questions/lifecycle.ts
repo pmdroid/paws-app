@@ -36,6 +36,7 @@ const SUPERSEDES: Record<QuestionKind, boolean> = {
   clarification: false,
   repository: false,
   "runner-wait": true,
+  "time-limit": false,
 };
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);
