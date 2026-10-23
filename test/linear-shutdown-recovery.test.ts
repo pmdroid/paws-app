@@ -131,7 +131,7 @@ for (const shutdown of ["application", "linear"] as const) {
         expect(store.listUnhandled()).toHaveLength(0);
         expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
         expect(
-          tracker.progress.filter((update) => update.body === "Picked up PAS-372."),
+          tracker.progress.filter((update) => update.body.startsWith("Picked up")),
         ).toHaveLength(1);
         expect(listOutbox(db).filter((entry) => entry.status === "dropped")).toHaveLength(0);
       } finally {

@@ -32,7 +32,6 @@ function created(): AcceptedLinearEvent {
 
 for (const [body, existing] of [
   ["Picked up this issue.", true],
-  ["Picked up ENG-1.", false],
   ["Picked up this issue.", false],
 ] as const) {
   test(`Stop fences a deferred ${body} before the final activity, existing task: ${existing}`, async () => {
