@@ -1,5 +1,6 @@
 import {
   listSkills,
+  recordRunAgentSetup,
   recordRunnerCapacity,
   recordRunnerSkills,
   teamRepositoryAllowedSql,
@@ -368,6 +369,22 @@ export function createRunnerWork(options: {
           ],
         );
         db.run("DELETE FROM runner_work_grant WHERE run_id=?", [command.runId]);
+        recordRunAgentSetup(db, {
+          runId: command.runId,
+          runnerId: command.runnerId,
+          agent: command.profile.agent,
+          hooks:
+            command.type === "run" && command.profile.agent !== "grok"
+              ? [
+                  { name: "Paws Closeout", event: "stop" },
+                  ...(command.hooks ?? []).map((hook) => ({
+                    name: hook.command,
+                    event: hook.event,
+                  })),
+                ]
+              : [],
+          at,
+        });
         return { envelope, leaseUntil };
       });
     },
