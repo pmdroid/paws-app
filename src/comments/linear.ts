@@ -1,4 +1,4 @@
-import { LinearHttpError } from "../linear";
+import { budgetFromHeaders, LinearHttpError, rateLimitFrom } from "../linear";
 import type { CommentBoard, CommentWrite, IssueComment } from "./board";
 
 const GRAPHQL_URL = "https://api.linear.app/graphql";
@@ -64,9 +64,10 @@ export function createPersonalLinearClient(options: {
         },
         body: JSON.stringify({ query, variables: variables ?? {} }),
       });
-      if (!response.ok)
-        throw new LinearHttpError(response.status, "", response.headers.get("retry-after"));
-      const json: unknown = await response.json();
+      const json: unknown = await response.json().catch(() => null);
+      const limited = rateLimitFrom(response, json, budgetFromHeaders(response.headers));
+      if (limited !== null) throw limited;
+      if (!response.ok) throw new LinearHttpError(response.status, "", response.headers);
       if (!isRecord(json)) throw new Error("Linear GraphQL returned no data");
       const errors = json["errors"];
       if (Array.isArray(errors) && errors.length > 0) {
