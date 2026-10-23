@@ -123,9 +123,11 @@ export {
   type StoredRun,
 } from "./runs";
 export {
+  deliveredLinearIssueState,
   listOpenQuestions,
   listWorkItemBlocks,
   listWorkItemFacts,
+  type DeliveredLinearIssueState,
   type OpenQuestionRecord,
   type WorkItemBlockRecord,
   type WorkItemFact,
