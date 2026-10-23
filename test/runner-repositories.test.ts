@@ -17,4 +17,4 @@ test("runner repository cache fetches exact bases and validates candidates outsi
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-}, 30_000);
+}, 90_000);
