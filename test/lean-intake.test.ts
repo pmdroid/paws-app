@@ -136,14 +136,12 @@ const solo: EpicSnapshot = {
   subIssues: [],
 };
 
-test("intake of a lone issue makes at most three Linear calls after the first activity and classifies nothing", async () => {
+test("intake of a lone issue reads the issue and its relations after the first activity, posts nothing more and classifies nothing", async () => {
   const f = setup(solo);
   try {
     await f.intake();
     expect(f.calls[0]).toBe("postProgress");
-    expect(f.intakeCalls.length).toBeLessThanOrEqual(3);
-    expect(f.intakeCalls).not.toContain("getSession");
-    expect(f.intakeCalls).not.toContain("listSessionActivities");
+    expect(f.intakeCalls).toEqual(["loadEpic", "listDeps"]);
     expect(f.launches).toEqual([]);
     expect(getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)?.state).toBe(
       "queued",
@@ -160,6 +158,7 @@ test("a lone issue hydrates its session context and classifies at start", async 
     const intakeCalls = f.calls.length;
     await f.jobs.tick();
     const started = f.calls.slice(intakeCalls);
+    expect(started).not.toContain("loadEpic");
     expect(started).toContain("getSession");
     expect(started).toContain("listSessionActivities");
     const hydrated = intakeCalls + started.indexOf("listSessionActivities") + 1;

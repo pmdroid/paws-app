@@ -50,6 +50,7 @@ import {
   type GitHubTokenProvider,
 } from "../src/github";
 import {
+  acknowledgeNewSession,
   createFakeTracker,
   createFakeLinearAccessReads,
   createFakeLinearIssueLifecycle,
@@ -3123,6 +3124,16 @@ test("a Linear rate limit during a run waits for the reset and merges instead of
   ).toEqual([]);
 }, 120_000);
 
+test("a task from start to merge reads its Linear issue context once", async () => {
+  const result = await runCiFix({ failRounds: 0, linearTaskModes: true });
+  expect(result.state, result.detail).toBe("merged");
+  const reads = result.linearCalls.filter(
+    (call) => !["postProgress", "updateSession", "setStatus"].includes(call),
+  );
+  expect(reads, result.detail).toEqual([...new Set(reads)]);
+  expect(result.linearCalls.length, result.linearCalls.join(", ")).toBeLessThanOrEqual(15);
+}, 120_000);
+
 test("a Closeout policy without a review check never starts the reviewer", async () => {
   const result = await runCiFix({ failRounds: 0, withoutReview: true });
   expect(result.state, result.detail).toBe("merged");
@@ -3482,8 +3493,10 @@ async function runCiFix(options: {
   attemptsAfterFirstFix?: number;
   rateLimitFirstLaunch?: boolean;
   withoutReview?: boolean;
+  linearTaskModes?: boolean;
 }): Promise<{
   state: string | null;
+  linearCalls: string[];
   implementRuns: number;
   reviewerLaunches: number;
   lines: string[];
@@ -3501,15 +3514,60 @@ async function runCiFix(options: {
     );
   if (options.attempts !== undefined)
     await writeFile(configPath, `[merge]\nci_fix_attempts = ${options.attempts}\n`);
-  const tracker = createFakeTracker([
+  const linearCalls: string[] = [];
+  const tracker = new Proxy(
+    Object.assign(
+      createFakeTracker([
+        {
+          linearIssueId: "ci-rounds",
+          identifier: "ENG-94",
+          title: "Write ok.txt",
+          description: null,
+          subIssues: [],
+        },
+      ]),
+      {
+        async getSession() {
+          return {
+            id: "ses_1",
+            status: "active",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            endedAt: null,
+            dismissedAt: null,
+            appUserId: "agent",
+            creatorId: "human",
+            issue: {
+              id: "ci-rounds",
+              identifier: "ENG-94",
+              title: "Write ok.txt",
+              description: null,
+            },
+            comment: null,
+            sourceComment: null,
+            summary: null,
+            plan: null,
+            context: null,
+            externalLinks: [],
+            pullRequest: null,
+          };
+        },
+        async listSessionActivities() {
+          return [];
+        },
+      },
+    ),
     {
-      linearIssueId: "ci-rounds",
-      identifier: "ENG-94",
-      title: "Write ok.txt",
-      description: null,
-      subIssues: [],
+      get(target, key, receiver) {
+        const value: unknown = Reflect.get(target, key, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          linearCalls.push(String(key));
+          return value.apply(target, args);
+        };
+      },
     },
-  ]);
+  );
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const queuedSummary = queuedSummaries(db);
@@ -3529,6 +3587,7 @@ async function runCiFix(options: {
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
+    linearTaskModes: options.linearTaskModes,
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
     github: {
       appId: "1",
@@ -3580,7 +3639,18 @@ async function runCiFix(options: {
       const steps: FakeScript["steps"] =
         input.purpose === "implement"
           ? [writeOk(input.worktree, `ok-${implementRuns}\n`), { type: "end" }]
-          : emptyReview().steps;
+          : input.purpose === "classify"
+            ? [
+                {
+                  type: "update",
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: JSON.stringify({ mode: "code" }) },
+                  },
+                },
+                { type: "end" },
+              ]
+            : emptyReview().steps;
       writeFileSync(
         scriptPath,
         JSON.stringify({
@@ -3597,7 +3667,9 @@ async function runCiFix(options: {
   });
   let answered = false;
   try {
-    await orchestrator.onLinearEvent(linearEvent("created", null, null, "ci-rounds"));
+    await acknowledgeNewSession(tracker, linearEvent("created", null, null, "ci-rounds"), (event) =>
+      orchestrator.onLinearEvent(event),
+    );
     const deadline = Date.now() + 90_000;
     while (Date.now() < deadline) {
       const state = stateOf(db, "ENG-94") ?? "";
@@ -3615,6 +3687,7 @@ async function runCiFix(options: {
     while (outbox.tick().length > 0) await outbox.idle();
     return {
       state: stateOf(db, "ENG-94"),
+      linearCalls,
       implementRuns,
       reviewerLaunches,
       lines: queuedSummary().filter((body) => body.startsWith("CI: ")),

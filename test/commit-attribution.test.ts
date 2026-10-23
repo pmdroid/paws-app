@@ -342,7 +342,7 @@ test("production Linear client reads canonical issue project lead across real HT
   }
 });
 
-test("issue attribution is read once per task run until the issue changes", async () => {
+test("issue attribution is read once per task across its runs until the issue changes", async () => {
   const reads: string[] = [];
   let failing = false;
   const cache = new IssueAttributionCache({
@@ -356,21 +356,22 @@ test("issue attribution is read once per task run until the issue changes", asyn
   for (let i = 0; i < 10; i++) await run("run-1").getIssueAttribution("issue");
   expect(reads).toEqual(["issue"]);
   await run("run-2").getIssueAttribution("issue");
-  expect(reads).toHaveLength(2);
+  expect(reads).toHaveLength(1);
   cache.invalidate("another-issue");
   await run("run-2").getIssueAttribution("issue");
-  expect(reads).toHaveLength(2);
+  expect(reads).toHaveLength(1);
   cache.invalidate("issue");
   await run("run-2").getIssueAttribution("issue");
-  expect(reads).toHaveLength(3);
+  expect(reads).toHaveLength(2);
   cache.invalidate();
   failing = true;
   await expect(run("run-2").getIssueAttribution("issue")).rejects.toThrow("outage");
   failing = false;
   await run("run-2").getIssueAttribution("issue");
-  await run("run-2").getIssueAttribution("issue");
-  expect(reads).toHaveLength(5);
+  await run("run-3").getIssueAttribution("issue");
+  expect(reads).toHaveLength(4);
+  cache.invalidate();
   await run(null).getIssueAttribution("issue");
   await run(null).getIssueAttribution("issue");
-  expect(reads).toHaveLength(7);
+  expect(reads).toHaveLength(6);
 });
