@@ -196,7 +196,13 @@ export {
   type CiRound,
   type CiRoundCheck,
 } from "./ci-rounds";
-export { countRebaseReturns, recordRebaseReturn, type RebaseReturn } from "./rebase-returns";
+export {
+  countRebaseReturns,
+  listRebaseReturns,
+  recordRebaseReturn,
+  type RebaseReturn,
+  type RebaseReturnRecord,
+} from "./rebase-returns";
 export {
   recordGitHubDelivery,
   latestGitHubDelivery,
