@@ -10,6 +10,7 @@ export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
 export {
   createLinearLedger,
+  currentLinearCaller,
   linearBudget,
   linearCaller,
   linearCallerFor,
