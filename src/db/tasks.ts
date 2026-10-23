@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { TaskMode } from "../core";
 import { immediate } from "./tx";
-import { applyWorkItemEvent, getWorkItem } from "./items";
+import { applyWorkItemEvent, cancelAdvancingJobs, getWorkItem } from "./items";
 import { enqueueOutboxOnce } from "./outbox";
 import { markRun } from "./runs";
 import { artifactPublicationReady, listArtifacts } from "./artifacts";
@@ -82,13 +82,16 @@ export function selectTaskModeForTurn(
   });
 }
 
+export type ResultFinish = { runId?: string; announce?: () => void };
+
 export function completeAnswerTask(
   db: Database,
   itemId: string,
   response: string,
   now = Date.now(),
+  finish: ResultFinish = {},
 ): void {
-  completeResultTask(db, itemId, response, "answer", now);
+  completeResultTask(db, itemId, response, "answer", now, finish);
 }
 
 export function completeArtifactTask(
@@ -96,6 +99,7 @@ export function completeArtifactTask(
   itemId: string,
   response: string,
   now = Date.now(),
+  finish: ResultFinish = {},
 ): void {
   immediate(db, () => {
     if (
@@ -103,7 +107,7 @@ export function completeArtifactTask(
       !listArtifacts(db, itemId).some((artifact) => artifact.state === "uploaded")
     )
       throw new Error("Artifact completion requires a successfully uploaded deliverable");
-    completeResultTask(db, itemId, response, "artifact", now);
+    completeResultTask(db, itemId, response, "artifact", now, finish);
   });
 }
 
@@ -113,11 +117,17 @@ function completeResultTask(
   response: string,
   mode: "answer" | "artifact",
   now: number,
+  finish: ResultFinish,
 ): void {
   if (!response.trim()) throw new Error("Answer completion requires a prepared response");
   immediate(db, () => {
     const item = getWorkItem(db, itemId);
-    if (!item || item.state !== "running" || item.cancelRequested)
+    if (
+      !item ||
+      item.state !== "running" ||
+      item.cancelRequested ||
+      (finish.runId !== undefined && item.currentRunId !== finish.runId)
+    )
       throw new Error("Task is no longer running");
     if (getTaskMode(db, itemId) !== mode)
       throw new Error(`Only ${mode} tasks complete at this response boundary`);
@@ -125,6 +135,7 @@ function completeResultTask(
     db.run("UPDATE work_item_task SET response = ? WHERE item_id = ?", [response, itemId]);
     applyWorkItemEvent(db, itemId, mode === "answer" ? "answer_completed" : "artifact_completed");
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", now);
+    cancelAdvancingJobs(db, itemId, `${mode}_completed`, now);
     enqueueOutboxOnce(db, {
       target: "linear",
       op: "activity",
@@ -133,5 +144,6 @@ function completeResultTask(
       payload: { sessionId: item.sessionKey, kind: "response", body: response },
       now,
     });
+    finish.announce?.();
   });
 }

@@ -23,6 +23,7 @@ export {
   clearProgress,
   configureWorkItem,
   deferWorkItem,
+  completeMergedItem,
   failWorkItem,
   getWorkItem,
   listInFlightItems,

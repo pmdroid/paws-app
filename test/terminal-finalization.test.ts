@@ -5,7 +5,11 @@ import { JOB_KIND } from "../src/core";
 import {
   applyWorkItemEvent,
   beginImplementRun,
+  completeAnswerTask,
+  completeMergedItem,
   enqueueJob,
+  enqueueOutboxOnce,
+  enterMergeQueue,
   failWorkItem,
   getJob,
   getRun,
@@ -15,7 +19,10 @@ import {
   insertRun,
   listOutbox,
   openDatabase,
+  recordConfirmedRemoteMerge,
+  saveTaskMode,
   setCurrentRun,
+  type WorkItemRecord,
 } from "../src/db";
 import { migratedDatabase, tempDb, tempHome } from "./helpers";
 
@@ -107,4 +114,129 @@ test("a committed failure survives a restart and is not repeated", () => {
   ]);
   expect(failWorkItem(restored, failed, "run_error", "The agent crashed.", 3)).toBe(false);
   expect(listOutbox(restored, "session")).toHaveLength(1);
+});
+
+function mergingTask(db: Database) {
+  const { item, run } = runningTask(db);
+  enterMergeQueue(db, item.id, { phase: "merge_queue" });
+  const jobId = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: 2 });
+  recordConfirmedRemoteMerge(db, {
+    itemId: item.id,
+    repositoryOwner: "acme",
+    repositoryName: "app",
+    pullNumber: 7,
+    pullUrl: null,
+    mergeSha: "abc",
+    confirmedAt: 3,
+  });
+  return { item: getWorkItem(db, item.id)!, run, jobId };
+}
+
+function announceMerge(db: Database) {
+  const announced: string[] = [];
+  return {
+    announced,
+    announce: (item: WorkItemRecord) => {
+      announced.push(item.id);
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "session",
+        idempotencyKey: `${item.id}:merged`,
+        payload: { sessionId: "session", kind: "thought", body: "Merged." },
+        now: 4,
+      });
+    },
+  };
+}
+
+test("a confirmed merge commits its state, run, jobs and notice together and only once", () => {
+  const file = join(tempHome(), "paws.db");
+  const db = migratedDatabase(file);
+  const { item, run, jobId } = mergingTask(db);
+  const { announced, announce } = announceMerge(db);
+  expect(completeMergedItem(db, { itemId: item.id, now: 4, announce })?.state).toBe("merged");
+  db.close();
+  const restored = openDatabase(file);
+  databases.push(restored);
+  expect(getWorkItem(restored, item.id)?.state).toBe("merged");
+  expect(getRun(restored, run.id)?.status).toBe("ended");
+  expect(getJob(restored, jobId)?.status).toBe("cancelled");
+  expect(listOutbox(restored, "session")).toHaveLength(1);
+  expect(completeMergedItem(restored, { itemId: item.id, now: 5, announce })).toBeNull();
+  expect(announced).toEqual([item.id]);
+  expect(listOutbox(restored, "session")).toHaveLength(1);
+});
+
+test("a fault in the merge notice leaves the task in the merge queue", () => {
+  const db = tempDb();
+  databases.push(db);
+  const { item, run, jobId } = mergingTask(db);
+  breakOutbox(db);
+  const { announce } = announceMerge(db);
+  expect(() => completeMergedItem(db, { itemId: item.id, now: 4, announce })).toThrow(
+    "injected fault",
+  );
+  expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+  expect(getRun(db, run.id)?.status).toBe("active");
+  expect(getJob(db, jobId)?.status).toBe("pending");
+});
+
+test("a merge result for a cancelled, superseded or unconfirmed task changes nothing", () => {
+  const db = tempDb();
+  databases.push(db);
+  const { item } = mergingTask(db);
+  const { announced, announce } = announceMerge(db);
+  applyWorkItemEvent(db, item.id, "restart");
+  applyWorkItemEvent(db, item.id, "dispatched");
+  expect(completeMergedItem(db, { itemId: item.id, now: 4, announce })).toBeNull();
+  applyWorkItemEvent(db, item.id, "cancel");
+  expect(completeMergedItem(db, { itemId: item.id, now: 4, announce })).toBeNull();
+  const other = insertQueuedItem(db, { id: "ENG-2" });
+  beginImplementRun(db, other.id, 5);
+  enterMergeQueue(db, other.id, { phase: "merge_queue" });
+  expect(completeMergedItem(db, { itemId: other.id, now: 6, announce })).toBeNull();
+  expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
+  expect(getWorkItem(db, other.id)?.state).toBe("merge_queue");
+  expect(announced).toEqual([]);
+});
+
+test("an answer from a superseded run cannot complete the task", () => {
+  const db = tempDb();
+  databases.push(db);
+  const { item, run, jobId } = runningTask(db);
+  saveTaskMode(db, item.id, "answer");
+  const next = insertRun(db, { itemId: item.id, now: 2 });
+  setCurrentRun(db, item.id, next.id);
+  expect(() => completeAnswerTask(db, item.id, "Stale answer.", 3, { runId: run.id })).toThrow(
+    "no longer running",
+  );
+  expect(getWorkItem(db, item.id)?.state).toBe("running");
+  let announced = 0;
+  completeAnswerTask(db, item.id, "The total is 42.", 4, {
+    runId: next.id,
+    announce: () => announced++,
+  });
+  expect(getWorkItem(db, item.id)?.state).toBe("completed");
+  expect(getRun(db, next.id)?.status).toBe("ended");
+  expect(getJob(db, jobId)?.status).toBe("cancelled");
+  expect(announced).toBe(1);
+});
+
+test("a fault in the answer's session update rolls the completion back", () => {
+  const db = tempDb();
+  databases.push(db);
+  const { item, run } = runningTask(db);
+  saveTaskMode(db, item.id, "answer");
+  expect(() =>
+    completeAnswerTask(db, item.id, "The total is 42.", 2, {
+      runId: run.id,
+      announce: () => {
+        throw new Error("session update failed");
+      },
+    }),
+  ).toThrow("session update failed");
+  expect(getWorkItem(db, item.id)?.state).toBe("running");
+  expect(getRun(db, run.id)?.status).toBe("active");
+  expect(listOutbox(db, "session")).toEqual([]);
 });

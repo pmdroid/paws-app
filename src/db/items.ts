@@ -16,6 +16,7 @@ import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
 import { getRun, markRun } from "./runs";
+import { getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
 
 export type WorkItemRecord = {
@@ -284,6 +285,61 @@ export function failWorkItem(
     );
     return true;
   });
+}
+
+export function completeMergedItem(
+  db: Database,
+  input: {
+    itemId: string;
+    now: number;
+    announce?: (item: WorkItemRecord) => void;
+  },
+): WorkItemRecord | null {
+  return immediate(db, () => {
+    const current = getWorkItem(db, input.itemId);
+    if (
+      current === null ||
+      current.state !== "merge_queue" ||
+      current.cancelRequested ||
+      getConfirmedRemoteMerge(db, current.id) === null
+    )
+      return null;
+    input.announce?.(current);
+    const merged = applyWorkItemEvent(db, current.id, "merge_accepted");
+    endActiveRun(db, current.currentRunId, input.now);
+    cancelAdvancingJobs(db, current.id, "merged", input.now);
+    return merged;
+  });
+}
+
+export function endActiveRun(db: Database, runId: string | null, now: number): void {
+  if (runId === null) return;
+  const run = getRun(db, runId);
+  if (run && (run.status === "active" || run.status === "provisioning"))
+    markRun(db, runId, "ended", now);
+}
+
+export function cancelAdvancingJobs(
+  db: Database,
+  itemId: string,
+  reason: string,
+  now: number,
+): void {
+  db.run(
+    `UPDATE job SET status = 'cancelled', last_error = ?, finished_at = ?
+     WHERE status = 'pending' AND json_extract(payload, '$.itemId') = ?
+       AND (queue IN (?, ?, ?) OR queue = ? OR queue LIKE ?)`,
+    [
+      reason,
+      now,
+      itemId,
+      JOB_KIND.start,
+      JOB_KIND.resume,
+      JOB_KIND.reverify,
+      JOB_KIND.merge,
+      `${JOB_KIND.merge}.%`,
+    ],
+  );
 }
 
 export function deferWorkItem(
