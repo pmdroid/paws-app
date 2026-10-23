@@ -8,6 +8,7 @@ import {
   linearItem,
   LinearRateLimitError,
 } from "../src/linear";
+import { migrate, openDatabase } from "../src/db";
 import { startServer } from "../src/server";
 
 const AUTH = {
@@ -262,6 +263,45 @@ describe("shared Linear budget", () => {
       });
     } finally {
       await server.stop(true);
+    }
+  });
+  test("/api/status carries the Linear budget and hold from the same ledger", async () => {
+    const ledger = createLinearLedger({ now: () => START, log: () => {} });
+    ledger.observe("tracker", {
+      requestsRemaining: 0,
+      requestsLimit: 1500,
+      requestsResetMs: START + 15 * 60_000,
+      complexityRemaining: null,
+      complexityLimit: null,
+      complexityResetMs: null,
+      complexity: null,
+    });
+    ledger.limited("tracker", new LinearRateLimitError(15 * 60_000, ledger.usage().budget!));
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const server = startServer({
+      port: 0,
+      hostname: "127.0.0.1",
+      webhooks: false,
+      db,
+      statusEnv: {},
+      linearUsage: () => ledger.usage(),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/status`);
+      expect(await response.json()).toMatchObject({
+        source: "live",
+        intake: [],
+        linearBudget: {
+          requestsRemaining: 0,
+          requestsLimit: 1500,
+          resetAt: "2026-10-22T18:15:00.000Z",
+          holdUntil: "2026-10-22T18:15:00.000Z",
+        },
+      });
+    } finally {
+      await server.stop(true);
+      db.close();
     }
   });
 });
