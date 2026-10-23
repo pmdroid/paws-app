@@ -49,6 +49,10 @@ export type SerialMergeInput = {
     head: string;
     summary: string;
   };
+  updateOnOverlap?: {
+    packages: readonly string[];
+    onUpToDateRule?: () => Promise<void>;
+  };
 };
 
 /**
