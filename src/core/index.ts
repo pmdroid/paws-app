@@ -62,6 +62,7 @@ export {
   decideWake,
   formatPauseNote,
   isAwakeItemState,
+  countsAwakeTime,
   isInFlightItemState,
   pauseOutcome,
   type StartupDecision,

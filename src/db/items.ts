@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
   capActivityText,
   capReason,
-  isAwakeItemState,
+  countsAwakeTime,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   transition,
@@ -236,7 +236,7 @@ export function accrueAwake(
     const current = getWorkItem(db, id);
     if (current === null) throw new Error(`work item ${id} not found`);
     const delta = current.lastMonoMs === null ? 0 : Math.max(0, mono - current.lastMonoMs);
-    const awake = isAwakeItemState(current.state);
+    const awake = countsAwakeTime(current.state, current.checkpoint);
     const awakeMs = current.awakeMs + (awake ? delta : 0);
     db.run("UPDATE work_item SET awake_ms = ?, last_mono_ms = ? WHERE id = ?", [awakeMs, mono, id]);
     const updated = getWorkItem(db, id);
