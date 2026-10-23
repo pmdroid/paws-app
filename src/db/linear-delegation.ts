@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { delegationIssueIdSql } from "../core";
 
 export type LinearTaskDelegation = {
   appUserId: string;
@@ -82,5 +83,23 @@ export function linearSessionsForDelegatedTeams(
     ORDER BY s.session_id`,
     )
     .all(input.organizationId, input.oauthClientId, input.appUserId, JSON.stringify(input.teamIds))
+    .map((row) => row.session_id);
+}
+
+export function linearSessionsForUndelegatedIssue(
+  db: Database,
+  input: { organizationId: string; appUserId: string; issueId: string; createdAtMs: number },
+): string[] {
+  return db
+    .query<{ session_id: string }, [string, string, string, number]>(
+      `SELECT s.session_id FROM linear_session s
+    WHERE s.organization_id = ?1 AND s.app_user_id = ?2 AND s.stopped_at IS NULL AND s.created_at <= ?4
+      AND (EXISTS (SELECT 1 FROM work_item i WHERE i.session_key = s.session_id
+          AND i.state NOT IN ('completed', 'merged', 'cancelled') AND i.created_at <= ?4
+          AND (s.issue_id = ?3 OR i.linear_issue_id = ?3 OR ${delegationIssueIdSql("i")} = ?3))
+        OR (s.issue_id = ?3 AND NOT EXISTS (SELECT 1 FROM work_item i WHERE i.session_key = s.session_id)))
+    ORDER BY s.session_id`,
+    )
+    .all(input.organizationId, input.appUserId, input.issueId, input.createdAtMs)
     .map((row) => row.session_id);
 }

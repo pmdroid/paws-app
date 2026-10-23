@@ -36,7 +36,7 @@ export {
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
 
-export { handleLinearAdministration } from "./linear-administration";
+export { handleLinearAdministration, stopUndelegatedIssue } from "./linear-administration";
 export { LinearTaskAccess } from "./linear-task-access";
 export { TASK_ACCESS_TTL_MS } from "./github-integration";
 export { createRepositoryGit } from "./repository-git";

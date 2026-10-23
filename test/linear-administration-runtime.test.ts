@@ -310,16 +310,53 @@ test("team removal keeps the authorized stopped response while human unassignmen
   expect(f.requests).toEqual(["Cancelled from Linear."]);
 });
 
-test("notification dedupe follows successful reconciliation and serializes overlapping delivery IDs", async () => {
-  const f = await fixture(false);
+test("undelegation cancels every queued task of the issue and stops its session without reading Linear", async () => {
+  const f = await fixture(false, true);
   const payload = {
     ...scope,
     type: "AppUserNotification",
     action: "issueUnassignedFromYou",
     createdAt: new Date().toISOString(),
     notification: {
-      id: "notification",
+      id: "undelegated",
       type: "issueUnassignedFromYou",
+      userId: "app",
+      issueId: "issue",
+      issue: { id: "issue", teamId: "team" },
+    },
+  };
+  const event = parseAgentEvent(JSON.stringify(payload), "undelegation", Date.now())!;
+  const reconciled: string[] = [];
+  await handleLinearAdministration(f.db, event, {
+    ...scope,
+    notify: (command) => f.notifications.push(command.itemId),
+    interrupt: async (sessionId) => {
+      f.interrupted.push(sessionId);
+    },
+    reconcile: async (notification) => {
+      reconciled.push(notification.issueId);
+    },
+  });
+  expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual([
+    "cancelled",
+    "cancelled",
+  ]);
+  expect(f.notifications).toEqual(f.task.items.map((item) => item.id));
+  expect(f.interrupted).toEqual(["session"]);
+  expect(getLinearSession(f.db, "session")?.stoppedAt).not.toBeNull();
+  expect(reconciled).toEqual(["issue"]);
+});
+
+test("notification dedupe follows successful reconciliation and serializes overlapping delivery IDs", async () => {
+  const f = await fixture(false);
+  const payload = {
+    ...scope,
+    type: "AppUserNotification",
+    action: "issueNewComment",
+    createdAt: new Date().toISOString(),
+    notification: {
+      id: "notification",
+      type: "issueNewComment",
       userId: "app",
       issueId: "issue",
       issue: { id: "issue", teamId: "team" },
@@ -409,7 +446,7 @@ test("production notification ingress reconciles delegation once without workflo
     statuses: [200, 200],
     state: "cancelled",
     pending: 0,
-    sessionReads: 1,
+    sessionReads: 0,
     workflowMutations: 0,
   });
 });
