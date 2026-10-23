@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { UserFacingError, RunnerSlotsBusyError } from "../src/core";
-import { FIRST_ACTIVITY_BODY, acknowledgeNewSession, createLinearTracker } from "../src/linear";
+import {
+  FIRST_ACTIVITY_BODY,
+  acknowledgeNewSession,
+  createLinearTracker,
+  LinearIntakeRefusedError,
+} from "../src/linear";
 import { createFakeTracker, type LinearClient } from "../src/linear";
 
 describe("linear tracker", () => {
@@ -183,16 +188,29 @@ describe("linear tracker", () => {
     expect(tracker.progress.map((update) => update.body)).toEqual([FIRST_ACTIVITY_BODY]);
   });
 
-  test("a refused session says why nothing starts", async () => {
+  test("a refused session says which rule applied", async () => {
     const tracker = createFakeTracker();
-    expect(await acknowledgeNewSession(tracker, created("webhook"), async () => false)).toBe(false);
+    const refuse = async () => {
+      throw new LinearIntakeRefusedError("This issue is delegated to another agent.");
+    };
+    expect(await acknowledgeNewSession(tracker, created("webhook"), refuse)).toBe(false);
+    expect(
+      await acknowledgeNewSession(tracker, created("retry"), refuse, undefined, {
+        acknowledged: new Set(["ses_2"]),
+        reportFailure: false,
+      }),
+    ).toBe(false);
     expect(tracker.progress.map((update) => [update.kind, update.body])).toEqual([
       ["thought", FIRST_ACTIVITY_BODY],
-      [
-        "error",
-        "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
-      ],
+      ["error", "Paws did not start this work. This issue is delegated to another agent."],
+      ["error", "Paws did not start this work. This issue is delegated to another agent."],
     ]);
+  });
+
+  test("a follow-up that returns false posts nothing more", async () => {
+    const tracker = createFakeTracker();
+    expect(await acknowledgeNewSession(tracker, created("webhook"), async () => false)).toBe(false);
+    expect(tracker.progress.map((update) => update.body)).toEqual([FIRST_ACTIVITY_BODY]);
   });
 
   test("a start that waits for a runner slot says it is queued, not an error", async () => {

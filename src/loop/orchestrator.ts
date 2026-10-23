@@ -216,10 +216,12 @@ import type {
   RepositoryHints,
   RepositorySuggestion,
   LinearMergeContext,
+  IntakeDecision,
 } from "../linear";
 import {
   FIRST_ACTIVITY_BODY,
   LinearIntakePendingError,
+  LinearIntakeRefusedError,
   LinearRateLimitError,
   linearCaller,
   linearItem,
@@ -321,7 +323,7 @@ export type OrchestratorOptions = {
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
-  authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
+  authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<IntakeDecision>;
   remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
@@ -515,8 +517,7 @@ export class Orchestrator {
 
   async onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
-    if (this.options.authorizeLinearEvent && !(await this.options.authorizeLinearEvent(event)))
-      return false;
+    if (!(await this.authorizeLinearEvent(event))) return false;
     if (event.signal === "stop") {
       const receiptKey = JSON.stringify(
         event.activityId ? ["activity", event.activityId] : ["event", event.dedupeKey],
@@ -564,10 +565,7 @@ export class Orchestrator {
     const done = previous
       .catch(() => undefined)
       .then(async () => {
-        if (
-          this.options.authorizeLinearEvent &&
-          !(await this.options.authorizeLinearEvent(event))
-        ) {
+        if (!(await this.authorizeLinearEvent(event, true))) {
           if (event.sessionId !== null)
             discardLinearTurns(this.db, event.sessionId, [turnEventKey]);
           return false;
@@ -587,6 +585,22 @@ export class Orchestrator {
     } finally {
       if (this.sessionEvents.get(key) === done) this.sessionEvents.delete(key);
     }
+  }
+
+  private async authorizeLinearEvent(event: AcceptedLinearEvent, last = false): Promise<boolean> {
+    const decision = await this.options.authorizeLinearEvent?.(event);
+    if (decision === undefined) return true;
+    const created = event.action === "created" && event.signal !== "stop";
+    if (created && (last || decision.outcome !== "accepted")) {
+      const reason = decision.outcome === "accepted" ? "" : `: ${decision.reason}`;
+      console.error(
+        `linear intake ${event.issueId ?? "-"} session ${event.sessionId ?? "-"} ${decision.outcome}${reason}`,
+      );
+    }
+    if (decision.outcome === "accepted") return true;
+    if (decision.outcome === "retry") throw new LinearIntakePendingError(decision.reason);
+    if (created) throw new LinearIntakeRefusedError(decision.reason);
+    return false;
   }
 
   async interruptLinearSession(sessionId: string): Promise<void> {

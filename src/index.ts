@@ -118,6 +118,7 @@ import {
   parseLinearUndelegation,
   sessionCreatedKey,
   type AcceptedLinearEvent,
+  type IntakeDecision,
   type LinearRunning,
   type TrackerAdapter,
 } from "./linear";
@@ -181,6 +182,16 @@ import {
   createRemoteSessionAgentRunner,
   fetchRunnerCandidate,
 } from "./runner-backend";
+
+const ACCEPTED: IntakeDecision = { outcome: "accepted" };
+const MEMBERS_ONLY: IntakeDecision = {
+  outcome: "refused",
+  reason: "Only active members of the Paws workspace can work with Paws.",
+};
+const PROJECT_REFUSAL: IntakeDecision = {
+  outcome: "refused",
+  reason: "This issue belongs to a Paws project run that continues in its earlier session.",
+};
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -812,7 +823,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         onLinearIntake: projectExecution.accepted,
         adoptLinearParent: projectExecution.adoptParent,
         authorizeLinearEvent: async (event) =>
-          (await projectExecution.authorizeEvent(event)) ?? true,
+          (await projectExecution.authorizeEvent(event)) === false ? PROJECT_REFUSAL : ACCEPTED,
         ...(workspace && linear?.tracker && linear.issueLifecycle
           ? {
               canDispatchDelegation: managedDelegationReady,
@@ -861,10 +872,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               authorizeLinearIntake: (sessionId, spec) =>
                 projectExecution.authorizeIntake(sessionId, spec) &&
                 (assignments?.authorizeIntake(sessionId, spec) ?? true),
-              authorizeLinearEvent: async (event) =>
-                (await (await workspace.access).authorizeLinearEvent(event)) &&
-                ((await projectExecution.authorizeEvent(event)) ??
-                  (assignments ? await assignments.authorize(event) : true)),
+              authorizeLinearEvent: async (event) => {
+                if (!(await (await workspace.access).authorizeLinearEvent(event)))
+                  return MEMBERS_ONLY;
+                const project = await projectExecution.authorizeEvent(event);
+                if (project !== undefined) return project ? ACCEPTED : PROJECT_REFUSAL;
+                return assignments ? assignments.authorize(event) : ACCEPTED;
+              },
             }
           : {}),
         githubAuth:

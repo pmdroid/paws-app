@@ -24,7 +24,9 @@ import { readyItems, syncItemDependencies } from "../src/intake";
 import { attachOrchestrator } from "../src/loop";
 import { FakeClock } from "../src/core";
 import {
+  acknowledgeNewSession,
   createFakeTracker,
+  LinearIntakePendingError,
   type AcceptedLinearEvent,
   type LinearSessionSnapshot,
 } from "../src/linear";
@@ -35,7 +37,7 @@ import {
   workspaceTokenHash,
 } from "../src/workspace";
 
-function fixture() {
+function fixture({ installed = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-assignment-"));
   let db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -124,14 +126,17 @@ function fixture() {
     }),
   };
   ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
-  recordLinearInstallation(db, {
-    sessionId: "session",
-    organizationId: "org",
-    oauthClientId: "client",
-    appUserId: "app",
-    teamId: "team",
-    observedAtMs: clock.now(),
-  });
+  const install = () =>
+    recordLinearInstallation(db, {
+      sessionId: "session",
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      teamId: "team",
+      observedAtMs: clock.now(),
+    });
+  if (installed) install();
+  let failedSessionReads = 0;
   const continuations: string[] = [];
   const build = () =>
     createWorkspaceAssignments({
@@ -151,6 +156,10 @@ function fixture() {
       tracker: {
         ...tracker,
         async getSession() {
+          if (failedSessionReads > 0) {
+            failedSessionReads--;
+            throw new Error("Linear HTTP 503");
+          }
           return structuredClone(session);
         },
       },
@@ -160,7 +169,7 @@ function fixture() {
       async continue(value) {
         calls++;
         expect(await currentAccess.authorizeLinearEvent(value)).toBe(true);
-        expect(await assignments.authorize(value)).toBe(true);
+        expect(await assignments.authorize(value)).toEqual({ outcome: "accepted" });
         if (failContinue) {
           failContinue = false;
           throw new Error("Interrupted before canonical intake");
@@ -207,8 +216,9 @@ function fixture() {
       },
       clock,
       authorizeLinearEvent: async (incoming) =>
-        (await currentAccess.authorizeLinearEvent(incoming)) &&
-        (await assignments.authorize(incoming)),
+        (await currentAccess.authorizeLinearEvent(incoming))
+          ? await assignments.authorize(incoming)
+          : { outcome: "refused", reason: "denied" },
       authorizeLinearIntake: (sessionId, spec) => assignments.authorizeIntake(sessionId, spec),
       launch: () => {
         throw new Error("No agent may start in the onboarding fixture");
@@ -298,6 +308,13 @@ function fixture() {
     get db() {
       return db;
     },
+    install,
+    failSessionRead() {
+      failedSessionReads++;
+    },
+    get orchestrator() {
+      return orchestrator;
+    },
     get assignments() {
       return assignments;
     },
@@ -345,8 +362,10 @@ function fixture() {
 test("first assignment holds without manufacturing membership and resumes once after browser OAuth and restart", async () => {
   const f = fixture();
   try {
-    expect(await f.assignments.authorize(f.event)).toBe(false);
-    expect(await f.assignments.authorize({ ...f.event, deliveryId: "duplicate" })).toBe(false);
+    expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
+    expect(await f.assignments.authorize({ ...f.event, deliveryId: "duplicate" })).toMatchObject({
+      outcome: "refused",
+    });
     expect(listOutbox(f.db)).toHaveLength(1);
     expect(
       f.db.query("SELECT 1 FROM workspace_user WHERE linear_user_id='member'").get(),
@@ -367,7 +386,7 @@ test("first assignment holds without manufacturing membership and resumes once a
     expect(listWorkItems(f.db)).toHaveLength(1);
     expect(listJobs(f.db).filter((job) => job.queue === "item.start")).toHaveLength(1);
     expect(f.continuations).toEqual([f.event.dedupeKey]);
-    expect(await f.assignments.authorize(f.event)).toBe(false);
+    expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
     expect(
       f.db
         .query("SELECT action FROM workspace_access_audit WHERE action='assignment.resumed'")
@@ -448,7 +467,10 @@ test("held prompts cannot become initial delegation; Stop invalidates hold; expi
         body: "Go ahead",
         actorId: "member",
       }),
-    ).toBe(false);
+    ).toEqual({
+      outcome: "refused",
+      reason: "It waits until you sign in to Paws with your Linear account.",
+    });
     f.clock.advance(600_001);
     expect((await f.begin(original)).status).toBe(400);
     await f.restart();
@@ -457,9 +479,9 @@ test("held prompts cannot become initial delegation; Stop invalidates hold; expi
     expect(f.link()).not.toBe(original);
     expect((await f.begin(original)).status).toBe(400);
     const start = await f.begin();
-    expect(await f.assignments.authorize({ ...f.event, signal: "stop", action: "prompted" })).toBe(
-      true,
-    );
+    expect(
+      await f.assignments.authorize({ ...f.event, signal: "stop", action: "prompted" }),
+    ).toEqual({ outcome: "accepted" });
     expect((await f.callback(start)).status).toBe(400);
     expect(f.calls).toBe(0);
   } finally {
@@ -484,11 +506,122 @@ test("linked members avoid a new-issue sign-in hold while observers and removed 
       teamIds: ["team"],
       now: f.clock.now(),
     });
-    expect(await f.assignments.authorize(f.event)).toBe(true);
+    expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "accepted" });
     expect(listOutbox(f.db)).toHaveLength(0);
     f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='member'");
-    expect(await f.assignments.authorize(f.event)).toBe(false);
+    expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
     expect(getLinearSession(f.db, "session")!.creatorId).toBe("member");
+  } finally {
+    await f.close();
+  }
+});
+
+function linkMember(f: ReturnType<typeof fixture>) {
+  const userId = putWorkspaceUser(f.db, {
+    id: "member",
+    linearUserId: "member",
+    name: "Member",
+    email: "member@example.invalid",
+  });
+  syncWorkspaceMember(f.db, {
+    workspaceId: "workspace",
+    userId,
+    active: true,
+    role: "member",
+    teamIds: ["team"],
+    now: f.clock.now(),
+  });
+}
+
+const rules: [string, string, (f: ReturnType<typeof fixture>) => void][] = [
+  [
+    "delegated elsewhere",
+    "This issue is delegated to another agent.",
+    (f) => (f.ownership.delegateId = "another-app"),
+  ],
+  [
+    "closed issue",
+    "This issue is completed or canceled.",
+    (f) => (f.ownership.stateType = "completed"),
+  ],
+  [
+    "issue outside the team",
+    "This issue is not in the Linear team Paws is installed for.",
+    (f) => (f.ownership.teamId = "other"),
+  ],
+  [
+    "ended session",
+    "This session already ended in Linear.",
+    (f) => (f.session.endedAt = new Date(f.clock.now()).toISOString()),
+  ],
+  [
+    "session started by Paws",
+    "Paws could not tell who started this session.",
+    (f) => (f.session.creatorId = "app"),
+  ],
+  [
+    "stopped session",
+    "This session was stopped or replaced by a newer delegation.",
+    (f) => advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() }),
+  ],
+  ["inactive account", "Your Linear account is not active.", (f) => f.setActive(false)],
+  ["guest", "Linear guests cannot delegate issues to Paws.", (f) => f.setGuest(true)],
+  ["outside the team", "You are not a member of this issue's Linear team.", (f) => f.setTeams([])],
+  [
+    "inactive membership",
+    "Your Paws workspace membership is not active.",
+    (f) => f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='member'"),
+  ],
+  [
+    "observer",
+    "Observers in the Paws workspace cannot delegate issues to Paws.",
+    (f) => f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='member'"),
+  ],
+];
+
+for (const [rule, reason, apply] of rules)
+  test(`a delegation refused for ${rule} says so`, async () => {
+    const f = fixture();
+    try {
+      linkMember(f);
+      apply(f);
+      expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "refused", reason });
+    } finally {
+      await f.close();
+    }
+  });
+
+test("a member's delegation whose first Linear read fails is retried and accepted", async () => {
+  const f = fixture();
+  try {
+    linkMember(f);
+    f.failSessionRead();
+    const acknowledged = new Set<string>();
+    const deliver = (attempt: number) =>
+      acknowledgeNewSession(
+        f.tracker,
+        f.event,
+        (event) => f.orchestrator.onLinearEvent(event),
+        undefined,
+        { acknowledged, reportFailure: attempt === 0 },
+      );
+    await expect(deliver(0)).rejects.toBeInstanceOf(LinearIntakePendingError);
+    await deliver(1);
+    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(f.tracker.progress.filter((update) => update.kind === "error")).toEqual([]);
+    expect(f.tracker.progress[1]!.body).toContain("Linear HTTP 503");
+  } finally {
+    await f.close();
+  }
+});
+
+test("a delegation that arrives before its installation is recorded is accepted once it is", async () => {
+  const f = fixture({ installed: false });
+  try {
+    linkMember(f);
+    expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "retry" });
+    f.install();
+    expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "accepted" });
   } finally {
     await f.close();
   }
@@ -497,20 +630,7 @@ test("linked members avoid a new-issue sign-in hold while observers and removed 
 test("concurrent delegations from the same member are all accepted", async () => {
   const f = fixture();
   try {
-    const userId = putWorkspaceUser(f.db, {
-      id: "member",
-      linearUserId: "member",
-      name: "Member",
-      email: "member@example.invalid",
-    });
-    syncWorkspaceMember(f.db, {
-      workspaceId: "workspace",
-      userId,
-      active: true,
-      role: "member",
-      teamIds: ["team"],
-      now: f.clock.now(),
-    });
+    linkMember(f);
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
     let reads = 0;
@@ -520,7 +640,7 @@ test("concurrent delegations from the same member are all accepted", async () =>
     f.clock.advance(1_000);
     const second = await f.assignments.authorize({ ...f.event, dedupeKey: "second" });
     release();
-    expect([await first, second]).toEqual([true, true]);
+    expect([await first, second]).toEqual([{ outcome: "accepted" }, { outcome: "accepted" }]);
     expect(listOutbox(f.db)).toHaveLength(0);
   } finally {
     await f.close();
@@ -592,7 +712,9 @@ test("a new canonical generation does not reuse an obsolete onboarding hold", as
     await f.assignments.authorize(f.event);
     const previous = f.link();
     advanceLinearSessionGeneration(f.db, "session", { now: f.clock.now() });
-    expect(await f.assignments.authorize({ ...f.event, dedupeKey: "new-assignment" })).toBe(false);
+    expect(
+      await f.assignments.authorize({ ...f.event, dedupeKey: "new-assignment" }),
+    ).toMatchObject({ outcome: "refused" });
     expect(listOutbox(f.db)).toHaveLength(2);
     expect(f.link()).not.toBe(previous);
     expect((await f.begin(previous)).status).toBe(400);

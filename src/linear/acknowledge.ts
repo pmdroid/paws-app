@@ -8,6 +8,12 @@ export const FIRST_ACTIVITY_BODY = "Picked up this issue.";
 
 export class LinearIntakePendingError extends Error {}
 
+export class LinearIntakeRefusedError extends Error {}
+
+export type IntakeDecision =
+  | { outcome: "accepted" }
+  | { outcome: "refused" | "retry"; reason: string };
+
 export class LinearIssueClosedError extends UserFacingError {
   constructor(identifier: string) {
     super(`${identifier} is closed, so Paws won't start work on it. Reopen the issue to continue.`);
@@ -54,22 +60,25 @@ export async function acknowledgeNewSession(
   try {
     const accepted = await followUp(event);
     options.signal?.throwIfAborted();
-    if (
-      accepted === false &&
-      (first || (options.acknowledgedOnArrival === true && event.action === "created")) &&
-      event.sessionId !== null
-    )
-      await tracker.postProgress(
-        {
-          sessionId: event.sessionId,
-          kind: "error",
-          body: "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
-        },
-        { signal: options.signal },
-      );
     return accepted;
   } catch (error) {
     if (options.signal?.aborted) throw error;
+    if (error instanceof LinearIntakeRefusedError) {
+      if (
+        event.action === "created" &&
+        event.sessionId !== null &&
+        (first || options.acknowledgedOnArrival === true || options.reportFailure === false)
+      )
+        await tracker.postProgress(
+          {
+            sessionId: event.sessionId,
+            kind: "error",
+            body: `Paws did not start this work. ${error.message}`,
+          },
+          { signal: options.signal },
+        );
+      return false;
+    }
     if (error instanceof LinearIssueClosedError && event.sessionId !== null) {
       await tracker.postProgress(
         { sessionId: event.sessionId, kind: "error", body: error.message },
