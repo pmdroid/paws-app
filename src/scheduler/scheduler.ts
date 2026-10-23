@@ -48,6 +48,7 @@ export type SchedulerOptions = {
   defaultRepository?: RepositoryBinding | null;
   canDispatchDelegation?: (delegationId: string) => boolean;
   handoffForItem?: (itemId: string) => string | undefined;
+  ownerCap?: number | null;
 };
 
 export function schedulerPaths(paths: readonly string[]): string[] {
