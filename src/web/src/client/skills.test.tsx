@@ -7,6 +7,7 @@ import {
   renderSkillSettings,
   skillSourceGuess,
   type FoundSkill,
+  type SkillHook,
   type SkillListing,
 } from "./skills";
 
@@ -306,16 +307,18 @@ describe("skills found in a repository", () => {
     name: "impeccable",
     description: "Use when the user wants to design, redesign, shape, critique, audit, or polish.",
     added: false,
+    hooks: [],
   };
   const several: FoundSkill[] = [
-    { path: "skills/lint", name: "lint", description: "Lints", added: false },
+    { path: "skills/lint", name: "lint", description: "Lints", added: false, hooks: [] },
     {
       path: "skills/a-review-skill-with-a-rather-long-name-for-a-phone/and/deeper",
       name: "a-review-skill-with-a-rather-long-name-for-a-phone",
       description: "",
       added: false,
+      hooks: [],
     },
-    { path: "", name: "polish", description: "Polishes", added: true },
+    { path: "", name: "polish", description: "Polishes", added: true, hooks: [] },
   ];
 
   test("one skill is listed with its description and path, and preselected", () => {
@@ -384,5 +387,118 @@ describe("skills found in a repository", () => {
     expect(discoversSkills(draft("pbakaus/impeccable", "skills/x"))).toBe(false);
     expect(discoversSkills(draft("impeccable"))).toBe(false);
     expect(discoversSkills(draft(""))).toBe(false);
+  });
+});
+
+describe("a found skill's own hooks", () => {
+  const command =
+    '[ ! -f "$PAWS_SKILL_DIR/scripts/impeccable" ] || "$PAWS_SKILL_DIR/scripts/impeccable" hook';
+  const hook = (index: number, patch: Partial<SkillHook>): SkillHook => ({
+    id: `.claude/skills/impeccable#${index}`,
+    source: "Stop",
+    event: "stop",
+    label: "When the agent stops",
+    matcher: null,
+    command,
+    timeoutSeconds: 30,
+    reason: null,
+    ...patch,
+  });
+  const sessionStart = hook(0, {
+    source: "SessionStart",
+    event: "session_start",
+    label: "When a session starts",
+    timeoutSeconds: 5,
+  });
+  const afterEdit = hook(1, {
+    source: "PostToolUse Edit|Write",
+    event: "after_edit",
+    label: "After a file edit",
+    timeoutSeconds: 5,
+  });
+  const stop = hook(2, {});
+  const unsupported = hook(3, {
+    source: "UserPromptSubmit",
+    event: null,
+    label: "Not supported",
+    timeoutSeconds: 60,
+    reason: "Paws has no UserPromptSubmit hook.",
+  });
+  const skill = (hooks: SkillHook[], patch: Partial<FoundSkill> = {}): FoundSkill => ({
+    path: ".claude/skills/impeccable",
+    name: "impeccable",
+    description: "Design polish",
+    added: false,
+    hooks,
+    ...patch,
+  });
+  const found = (skills: FoundSkill[]) =>
+    markup(
+      renderSkillSettings({
+        data: listing,
+        busy: null,
+        error: null,
+        notice: null,
+        draft: { source: "pbakaus/impeccable", ref: "", subfolder: "", agents: ["claude"] },
+        found: { key: "pbakaus/impeccable", skills },
+      }),
+    );
+
+  test("every supported hook is listed and checked", () => {
+    const html = found([skill([sessionStart, afterEdit, stop])]);
+    expect(html).toContain("Also add its 3 hooks");
+    expect(html.match(/name="skill-hook" checked=""/g)).toHaveLength(3);
+    expect(html).toContain('value=".claude/skills/impeccable#1"');
+    expect(html).toContain("<b>When a session starts</b>");
+    expect(html).toContain("<b>After a file edit</b>");
+    expect(html).toContain("<b>When the agent stops</b>");
+    expect(html).toContain("PostToolUse Edit|Write · 5s timeout");
+    expect(html).toContain("Stop · 30s timeout");
+    expect(html).toContain("$PAWS_SKILL_DIR/scripts/impeccable");
+    expect(html).not.toContain("Not supported");
+  });
+
+  test("a hook Paws cannot run is listed unchecked with the reason", () => {
+    const html = found([skill([sessionStart, unsupported, stop])]);
+    expect(html).toContain("Also add its 2 hooks");
+    expect(html.match(/name="skill-hook" checked=""/g)).toHaveLength(2);
+    expect(html).toMatch(
+      /<input[^>]*disabled=""[^>]*name="skill-hook" value="\.claude\/skills\/impeccable#3"/,
+    );
+    expect(html).toMatch(/<span[^>]*>Not supported<\/span>/);
+    expect(html).toContain("UserPromptSubmit · 60s timeout");
+    expect(html).toContain("Paws has no UserPromptSubmit hook.");
+  });
+
+  test("when no hook is supported, none is checked", () => {
+    const html = found([skill([unsupported])]);
+    expect(html).toContain("None of its hooks can run in Paws");
+    expect(html).not.toContain("Also add");
+    expect(html).not.toMatch(/name="skill-hook" checked/);
+    expect(html).toContain("Paws has no UserPromptSubmit hook.");
+  });
+
+  test("skills without hooks or already added offer none; several name their skill", () => {
+    expect(found([skill([])])).not.toContain('name="skill-hook"');
+    expect(found([skill([stop], { added: true })])).not.toContain('name="skill-hook"');
+    const html = found([
+      skill([stop]),
+      skill([{ ...afterEdit, id: "skills/lint#0" }], { path: "skills/lint", name: "lint" }),
+    ]);
+    expect(html).toContain("Also add impeccable&#x27;s 1 hook");
+    expect(html).toContain("Also add lint&#x27;s 1 hook");
+  });
+
+  test("the hook list fits a 390 px phone without horizontal scroll", () => {
+    const html = found([skill([sessionStart, afterEdit, stop, unsupported])]);
+    expect(classNames(html, "skill-pick")).toHaveLength(5);
+    for (const pick of classNames(html, "skill-pick")) {
+      expect(pick).toContain("grid-cols-[auto_minmax(0,1fr)]");
+      expect(pick).toContain("min-w-0");
+      expect(pick).toContain("[overflow-wrap:anywhere]");
+    }
+    for (const copy of classNames(html, "skill-pick-copy")) expect(copy).toContain("min-w-0");
+    expect(html).toMatch(/<span[^>]*class="[^"]*whitespace-normal[^"]*">Not supported/);
+    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   });
 });

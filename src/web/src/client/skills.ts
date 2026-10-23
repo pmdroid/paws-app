@@ -26,7 +26,24 @@ export type SkillRollout = {
   failed: string[];
 };
 
-export type FoundSkill = { path: string; name: string; description: string; added: boolean };
+export type SkillHook = {
+  id: string;
+  source: string;
+  event: string | null;
+  label: string;
+  matcher: string | null;
+  command: string;
+  timeoutSeconds: number;
+  reason: string | null;
+};
+
+export type FoundSkill = {
+  path: string;
+  name: string;
+  description: string;
+  added: boolean;
+  hooks: SkillHook[];
+};
 
 export type SkillListing = {
   found?: FoundSkill[];
