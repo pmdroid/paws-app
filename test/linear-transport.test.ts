@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { isTransientFailure, retryAfterMs } from "../src/core";
 import { createLinearClient } from "../src/linear";
 
 const token = "synthetic-linear-token";
@@ -116,5 +117,40 @@ describe("Linear transport cancellation", () => {
     resolveRefresh(token);
     await Bun.sleep(0);
     expect(requests).toBe(1);
+  });
+});
+
+describe("Linear HTTP failures", () => {
+  const failing = (status: number, headers?: Record<string, string>) =>
+    createLinearClient({
+      auth: {
+        hasToken: () => true,
+        ensureFresh: async () => token,
+        forceRefresh: async () => token,
+      },
+      fetch: async () => new Response("", { status, ...(headers ? { headers } : {}) }),
+    })
+      .query("query { viewer { id } }")
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+  test.each([502, 503, 504])("HTTP %d is a temporary failure", async (status) => {
+    const error = await failing(status);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(`Linear GraphQL HTTP ${status}`);
+    expect(isTransientFailure(error)).toBe(true);
+  });
+
+  test("HTTP 400 is not a temporary failure", async () => {
+    const error = await failing(400);
+    expect(error).toBeInstanceOf(Error);
+    expect(isTransientFailure(error)).toBe(false);
+  });
+
+  test("Retry-After on a 503 becomes the retry delay", async () => {
+    expect(retryAfterMs(await failing(503, { "retry-after": "7" }))).toBe(7_000);
+    expect(retryAfterMs(await failing(503))).toBeNull();
   });
 });
