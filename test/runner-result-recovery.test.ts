@@ -20,7 +20,11 @@ import {
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
+import {
+  RUNNER_LEASE_GRACE_MS,
+  type RunnerCommand,
+  type RunnerResult,
+} from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
@@ -189,7 +193,7 @@ test("an expired execution without an accepted result follows the existing recov
   const f = await fixture();
   try {
     const { command } = f.admit(1);
-    f.clock.at += 60_001;
+    f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     expect(() => f.results.read(f.run.id, 1, command.id)).toThrow(
       "Runner work is fenced or its lease expired.",
     );

@@ -30,7 +30,7 @@ import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
-import type { RunnerCommand } from "../src/runner-protocol";
+import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
@@ -450,9 +450,12 @@ async function runRemoteFault(fault: Fault) {
         if (fault === "fenced" && runner.faulty) {
           runner.faultedAttempts++;
           runner.stale = true;
-          db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now() - 60_001, runnerId]);
+          db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
+            Date.now() - 60_001 - RUNNER_LEASE_GRACE_MS,
+            runnerId,
+          ]);
           db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
-            Date.now() - 1,
+            Date.now() - 1 - RUNNER_LEASE_GRACE_MS,
             command.runId,
           ]);
           continue;

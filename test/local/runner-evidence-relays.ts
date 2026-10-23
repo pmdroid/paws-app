@@ -24,7 +24,7 @@ import {
   RUNNER_TRANSCRIPT_CHUNK_BYTES,
 } from "../../src/runner-transcripts";
 import { createRunnerWorkHttp } from "../../src/runner-work";
-import type { RunnerCommand } from "../../src/runner-protocol";
+import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 
 export async function probeRunnerEvidenceRelays(
@@ -377,7 +377,7 @@ export async function probeRunnerEvidenceRelays(
     await rejected;
     daemon = openRunnerDaemon(options);
     await daemon.uploadArtifact(run.id, artifactChunk(0), grant.token);
-    now += 60_001;
+    now += 60_001 + RUNNER_LEASE_GRACE_MS;
     await assert.rejects(
       daemon.uploadArtifact(run.id, artifactChunk(0), grant.token),
       statusError(409),

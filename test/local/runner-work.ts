@@ -390,8 +390,8 @@ export async function probeRunnerWork(
     now = cap;
     assert.equal(work.heartbeat(firstRunner).leases[0]!.expiresAt, command.expiresAt);
     now = command.expiresAt;
-    assert.throws(() => work.issueGrant(grantInput), /lease expired/);
-    assert.throws(() => work.event({ ...event, sequence: 2 }), /lease expired/);
+    assert.throws(() => work.issueGrant(grantInput), /command expired/);
+    assert.throws(() => work.event({ ...event, sequence: 2 }), /command expired/);
     const expired = work.heartbeat(firstRunner);
     assert.deepEqual(expired.leases, []);
     assert.equal(expired.fenced[0]!.generation, 1);

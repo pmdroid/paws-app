@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 
+export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
+
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const generation = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
