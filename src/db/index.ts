@@ -244,6 +244,11 @@ export {
   type EvidenceMediaType,
   type StoredEvidence,
 } from "./evidence";
+export {
+  linearConversationUrl,
+  listVisualReviews,
+  type VisualReviewRecord,
+} from "./visual-reviews";
 export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
 export {
   listLinearSessions,
