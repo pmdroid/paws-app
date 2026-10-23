@@ -22,6 +22,16 @@ type Mapped = { event: HookEvent; matcher: string | null };
 
 const EDIT_TOOLS = ["Edit", "Write", "MultiEdit"];
 
+export function hookFiles(tree: string[]): string[] {
+  return tree.filter(
+    (path) =>
+      path === ".claude/settings.json" ||
+      path === ".claude-plugin/plugin.json" ||
+      path === "hooks.json" ||
+      path.endsWith("/hooks.json"),
+  );
+}
+
 export function skillHooks(files: SkillFiles, folder: string): SkillHook[] {
   const seen = new Set<string>();
   return hookConfigs(files)

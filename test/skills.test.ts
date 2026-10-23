@@ -336,7 +336,7 @@ describe("finding skills in a repository", () => {
     const commit = git(repo, "rev-parse", "HEAD");
     const pins = registry(createSkillResolver());
 
-    const added = await addSkills(
+    const { skills: added } = await addSkills(
       pins,
       { kind: "git", url: repo },
       ["skills/lint", "skills/review"],
@@ -599,7 +599,9 @@ describe("skill sources", () => {
     const log = join(root, "objects.log");
     const pins = registry(createSkillResolver({ git: tracingGit(log, { refuseFilter: true }) }));
 
-    const [lint] = await addSkills(pins, { kind: "git", url: repo }, ["skills/lint"], {
+    const {
+      skills: [lint],
+    } = await addSkills(pins, { kind: "git", url: repo }, ["skills/lint"], {
       agents: ["claude"],
     });
 
