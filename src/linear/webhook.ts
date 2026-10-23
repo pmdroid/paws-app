@@ -46,6 +46,8 @@ const failures = new WeakMap<InboxStore, number>();
 
 export const WEBHOOK_CURSOR = "linear:webhook";
 
+export const WEBHOOK_MISSED_CURSOR = "linear:webhook-missed";
+
 /** When the last signed, well-formed delivery reached this inbox. Null before the first one. */
 export function lastVerifiedWebhookMs(store: InboxStore): number | null {
   return store.getCursor(WEBHOOK_CURSOR);
