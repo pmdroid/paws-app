@@ -327,7 +327,9 @@ export function createRemoteAgentRunner(options: {
         `SELECT w.runner_id AS runnerId, w.workspace_id AS workspaceId, c.envelope,
          w.consumed_sequence AS cursor
          FROM runner_work w JOIN runner_command c ON c.id=w.command_id
-         WHERE w.run_id=? AND w.ended_at IS NULL AND w.lease_until>?`,
+         WHERE w.run_id=?1 AND w.ended_at IS NULL AND (w.lease_until>?2 OR EXISTS(
+           SELECT 1 FROM runner_result r
+           WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id))`,
       )
       .get(runId, now());
     if (!row) return undefined;
