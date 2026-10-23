@@ -32,6 +32,7 @@ describe("process", () => {
       PAWS_HOST: "127.0.0.1",
     };
     for (const key of [
+      "PAWS_EXECUTION",
       "LINEAR_ACCESS_TOKEN",
       "LINEAR_REFRESH_TOKEN",
       "LINEAR_CLIENT_ID",

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
  * Names the runner execution a process belongs to. The runner sets it on each worker, and
  * every owned process inherits it, so the runner can find what an execution left behind.
  */
-export const EXECUTION_TAG_ENV = "PAWS_EXECUTION";
+export const EXECUTION_TAG_ENV = "PAWS_RUNNER_EXECUTION_TAG";
 
 export class OwnedProcess extends EventEmitter {
   readonly pid: number | undefined;
