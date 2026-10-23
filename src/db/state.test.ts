@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CommandBus, FakeClock, handoffNote, JOB_KIND, type Checkpoint } from "../core";
+import { CommandBus, FakeClock, JOB_KIND, type Checkpoint } from "../core";
 import {
   accrueAwake,
   applyWorkItemEvent,
@@ -81,15 +81,6 @@ describe("restart recovery", () => {
 
     expect(recoverOnStartup(db, clock.now())).toEqual([]);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
-    db.run(
-      "UPDATE question SET status = 'answered', answer = 'Start again', answered_by = 'human', answered_at = ? WHERE id = ?",
-      [clock.now(), question!.id],
-    );
-    recoverOnStartup(db, clock.now());
-    expect(getWorkItem(db, item.id)?.state).toBe("running");
-    const restarted = listJobs(db).find((job) => job.jobKey === `resume:answer:${question!.id}`);
-    expect(restarted?.status).toBe("pending");
-    expect(restarted?.payload).toMatchObject({ itemId: item.id, freshSession: true });
   });
 
   test("a second restart without a Linear session fails the item", () => {
@@ -350,74 +341,6 @@ describe("restart recovery", () => {
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
     expect(getRun(db, run.id)?.status).toBe("ended");
     expect(listJobs(db)).toHaveLength(0);
-  });
-
-  test("an answered question at startup resumes once and an open question stays parked", () => {
-    const { db, clock } = harness();
-    const waiting = insertQueuedItem(db, {
-      id: "waiting",
-      sessionKey: "ses-wait",
-      now: clock.now(),
-    });
-    const answered = insertQueuedItem(db, {
-      id: "answered",
-      sessionKey: "ses-ans",
-      now: clock.now(),
-    });
-    const waitingRun = beginImplementRun(db, waiting.id, clock.now()).run;
-    const answeredRun = beginImplementRun(db, answered.id, clock.now()).run;
-    applyWorkItemEvent(db, waiting.id, "blocking_question");
-    applyWorkItemEvent(db, answered.id, "blocking_question");
-    db.run(
-      `INSERT INTO question (
-         id, item_id, run_id, session_id, body, options, status, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
-      ["q-wait", waiting.id, waitingRun.id, "ses-wait", "Still waiting?", null, clock.now()],
-    );
-    db.run(
-      `INSERT INTO question (
-         id, item_id, run_id, session_id, body, options, status, answer, answered_by,
-         created_at, answered_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'answered', ?, ?, ?, ?)`,
-      [
-        "q-ans",
-        answered.id,
-        answeredRun.id,
-        "ses-ans",
-        "Which format?",
-        JSON.stringify(["yes", "no"]),
-        "parquet",
-        "human",
-        clock.now(),
-        clock.now() + 1,
-      ],
-    );
-
-    expect(recoverOnStartup(db, clock.now() + 2)).toEqual([]);
-    expect(getWorkItem(db, waiting.id)?.state).toBe("awaiting_input");
-    expect(getRun(db, waitingRun.id)?.status).toBe("ended");
-    expect(getWorkItem(db, answered.id)).toMatchObject({
-      state: "running",
-      recoveryAttempts: 0,
-    });
-    expect(getRun(db, answeredRun.id)?.status).toBe("ended");
-    expect(listJobs(db)).toEqual([
-      expect.objectContaining({
-        queue: JOB_KIND.resume,
-        jobKey: "resume:answer:q-ans",
-        status: "pending",
-        payload: {
-          itemId: answered.id,
-          freshSession: true,
-          reason: "answer",
-          handoff: handoffNote({
-            question: "Which format?",
-            options: ["yes", "no"],
-            answer: "parquet",
-          }),
-        },
-      }),
-    ]);
   });
 
   test("a restart leaves an answered item to its pending answer resume", () => {

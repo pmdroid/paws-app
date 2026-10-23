@@ -27,7 +27,12 @@ import {
   type PolledActivity,
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
-import { findOpenQuestion, getQuestion } from "../src/questions";
+import {
+  answer as answerAsked,
+  elicitationBody,
+  findOpenQuestion,
+  getQuestion,
+} from "../src/questions";
 import { handleStatusRequest } from "../src/web";
 import { tempDb, tempHome } from "./helpers";
 
@@ -295,11 +300,84 @@ test("ambiguous outcomes ask for clarification before repository access", async 
     await f.jobs.tick();
     const session = getLinearSession(f.db, "session")!;
     expect(getWorkItem(f.db, session.activeItemId!)?.state).toBe("awaiting_input");
-    expect(f.tracker.questions[0]?.body).toBe("Explain it, create a file, or change the code?");
+    expect(f.tracker.questions[0]?.body).toBe(
+      elicitationBody("Explain it, create a file, or change the code?"),
+    );
     expect(f.tracker.statuses).toEqual([]);
     expect(f.launches).toEqual(["classify"]);
     expect(existsSync(join(f.root, "worktrees"))).toBe(false);
   } finally {
+    f.db.close();
+  }
+});
+
+const waitOnAnotherQuestion = (db: Database) =>
+  db.run(
+    `INSERT INTO question (id, item_id, session_id, kind, body, status, created_at)
+     VALUES ('waiting', 'other', 'session', 'runner-wait', 'Move or keep waiting?', 'open', 1)`,
+  );
+
+const questionOf = (db: Database, itemId: string) =>
+  getQuestion(
+    db,
+    db.query<{ id: string }, [string]>("SELECT id FROM question WHERE item_id = ?").get(itemId)!.id,
+  )!;
+
+test("a clarification asked while the session waits on another question queues behind it", async () => {
+  const f = setup("clarify", "Explain it, create a file, or change the code?");
+  try {
+    waitOnAnotherQuestion(f.db);
+    await f.orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    const itemId = getLinearSession(f.db, "session")!.activeItemId!;
+    expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
+    expect(questionOf(f.db, itemId)).toMatchObject({ kind: "clarification", status: "queued" });
+    expect(f.tracker.questions).toEqual([]);
+    answerAsked(f.db, {
+      sessionId: "session",
+      deliveryId: "keep-waiting",
+      body: "Keep waiting",
+      answeredBy: "human",
+    });
+    expect(questionOf(f.db, itemId).status).toBe("open");
+    expect(
+      listOutbox(f.db).filter(
+        (row) =>
+          row.op === "elicitation" && row.idempotencyKey.endsWith(questionOf(f.db, itemId).id),
+      ),
+    ).toHaveLength(1);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("ask_team while the session waits on another question queues the agent's question", async () => {
+  const f = setup(
+    "answer",
+    undefined,
+    false,
+    "ok",
+    undefined,
+    undefined,
+    false,
+    false,
+    [],
+    [{ type: "ask_team", question: "Which screenshot?" }],
+  );
+  try {
+    waitOnAnotherQuestion(f.db);
+    await f.orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    const itemId = getLinearSession(f.db, "session")!.activeItemId!;
+    expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
+    expect(questionOf(f.db, itemId)).toMatchObject({
+      kind: "agent",
+      status: "queued",
+      body: "Which screenshot?",
+    });
+    expect(f.tracker.questions).toEqual([]);
+  } finally {
+    await f.orchestrator.shutdown();
     f.db.close();
   }
 });

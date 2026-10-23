@@ -2,6 +2,8 @@ export type Answerer = { id: string };
 
 export type AnswerableQuestion =
   | { kind: "agent" }
+  | { kind: "clarification" }
+  | { kind: "repository" }
   | { kind: "runner-wait" }
   | { kind: "closeout-bypass" }
   | { kind: "visual-review"; delegatorId: string | null; leadId: string | null }
@@ -16,6 +18,8 @@ type Policy = {
 
 export const ANSWER_POLICY: Policy = {
   agent: () => true,
+  clarification: () => true,
+  repository: () => true,
   "runner-wait": () => true,
   "closeout-bypass": () => true,
   "visual-review": (question, user) =>
