@@ -22,7 +22,7 @@ export type OutboxHandler = (
  */
 export class OutboxDispatcher {
   private handler: OutboxHandler | null = null;
-  private readonly pending = new Set<Promise<void>>();
+  private readonly pending = new Map<Promise<void>, OutboxRow>();
   private readonly active = new Map<number, { row: OutboxRow; controller: AbortController }>();
 
   constructor(
@@ -63,13 +63,13 @@ export class OutboxDispatcher {
     for (const message of claimed) {
       const controller = new AbortController();
       this.active.set(message.id, { row: message, controller });
-      this.track(this.deliver(message, controller));
+      this.track(message, this.deliver(message, controller));
     }
     return claimed;
   }
 
-  async idle(): Promise<void> {
-    await Promise.all([...this.pending]);
+  async idle(match: (row: OutboxRow) => boolean = () => true): Promise<void> {
+    await Promise.all([...this.pending].flatMap(([task, row]) => (match(row) ? [task] : [])));
   }
 
   async run(
@@ -84,8 +84,8 @@ export class OutboxDispatcher {
     await this.idle();
   }
 
-  private track(task: Promise<void>): void {
-    this.pending.add(task);
+  private track(row: OutboxRow, task: Promise<void>): void {
+    this.pending.set(task, row);
     void task.finally(() => {
       this.pending.delete(task);
     });
