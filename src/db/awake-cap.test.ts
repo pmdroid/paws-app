@@ -5,6 +5,7 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   configureWorkItem,
+  enqueueJob,
   getRun,
   getWorkItem,
   insertQueuedItem,
@@ -92,8 +93,10 @@ describe("awake-time cap after Closeout accepted the work", () => {
     accrueAwake(db, item.id, clock.mono(), clock.now());
     clock.advance(20 * MINUTE);
 
+    enqueueJob(db, { queue: "run.resume", payload: { itemId: item.id }, now: clock.now() });
     const result = accrueAwake(db, item.id, clock.mono(), clock.now());
-    expect(result).toMatchObject({ capped: false, asked: true });
+    expect(result).toMatchObject({ capped: false, asked: true, stopAgent: true });
+    expect(listJobs(db).filter((job) => job.status === "pending")).toEqual([]);
     expect(result.item).toMatchObject({ state: "awaiting_input", cancelRequested: false });
     expect(getRun(db, run.id)?.status).toBe("ended");
     const question = db
