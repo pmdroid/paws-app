@@ -1,17 +1,25 @@
 import { describe, expect, test } from "bun:test";
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusAgentCloseout, StatusSnapshot } from "../contract";
 import { demoStatus } from "../demo";
 import { agentSectionKey, agentVerdict, renderAgentCloseout } from "./agent-closeout";
 import { checkKey, emptyCloseoutView } from "./closeout";
 import { render } from "./render";
+import { routeHref } from "./route";
+import { themedMarkup } from "./theme";
 
 function demoAgent(): StatusAgentCloseout {
   return demoStatus().agentCloseout![0]!;
 }
 
-function runPage(snapshot: StatusSnapshot, open: Record<string, boolean> = {}): string {
+function runPage(
+  snapshot: StatusSnapshot,
+  open: Record<string, boolean> = {},
+  id = "r-102",
+): string {
   return render({
-    route: { view: "runs", id: "r-102" },
+    route: { view: "runs", id },
     phase: "ready",
     snapshot,
     via: "bundled",
@@ -133,4 +141,75 @@ describe("Agent Closeout", () => {
     );
     expect(pawsOnly).toContain('id="agent-check-2-test-out"');
   });
+
+  test("desktop: an ended run shows its unfinished check as stopped at the run's end and links the task's current run", () => {
+    for (const generatedAt of ["2026-10-22T05:06:00.000Z", "2026-10-22T06:30:00.000Z"]) {
+      const snapshot = endedRun();
+      snapshot.generatedAt = generatedAt;
+      const html = runPage(snapshot);
+      expect(html).toContain("Stopped: the run ended before this check finished");
+      expect(html).toContain("test ran for 9m 25s until the run ended at 04:15 UTC");
+      expect(html).toContain('<span class="ico stopped" aria-label="stopped">');
+      expect(html).toContain("attempt 2 of 3 · 9m 25s");
+      expect(html).not.toContain("is running");
+      expect(html).toContain(
+        `This task continues in run <a class="mono" href="${routeHref({ view: "runs", id: CURRENT })}">c1b566d1</a>.`,
+      );
+    }
+  });
+
+  test("390 px: the stopped check and the link to the current run wrap instead of widening the page", () => {
+    const html = renderToStaticMarkup(
+      createElement(Fragment, null, themedMarkup(runPage(endedRun()))),
+    );
+    expect(html).toContain("Stopped: the run ended before this check finished");
+    expect(html).toContain(">c1b566d1</a>");
+    expect(html).not.toContain(`>${CURRENT}<`);
+    const notice = classNames(html, "run-continues");
+    expect(notice).toHaveLength(1);
+    expect(notice[0]).toContain("closeout-result");
+    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
+  });
+
+  test("the task's current run shows its own Agent Closeout under the same run page", () => {
+    const snapshot = endedRun();
+    snapshot.runs = snapshot.runs.map((run) =>
+      run.id === "r-102" ? { ...run, attempts: ["r-102", CURRENT] } : run,
+    );
+    const current = demoAgent();
+    current.runId = CURRENT;
+    snapshot.agentCloseout!.push(current);
+    const html = runPage(snapshot, {}, CURRENT);
+    expect(html).toContain("test is running · attempt 2 of 3");
+    expect(html).not.toContain("Stopped: the run ended before this check finished");
+    expect(html).not.toContain("This task continues in run");
+  });
 });
+
+const CURRENT = "c1b566d1-d000-4322-809e-0e36a2af3f93";
+
+function endedRun(): StatusSnapshot {
+  const snapshot = demoStatus();
+  const agent = snapshot.agentCloseout![0]!;
+  agent.endedAt = "2026-10-22T04:15:48.000Z";
+  agent.continuesIn = CURRENT;
+  const last = agent.attempts.at(-1)!;
+  last.checks = last.checks.map((check) =>
+    check.state === "running"
+      ? {
+          ...check,
+          state: "stopped",
+          active: false,
+          elapsedMs: 565_000,
+          detail: "Stopped: the run ended before this check finished.",
+        }
+      : check,
+  );
+  return snapshot;
+}
+
+function classNames(html: string, marker: string): string[] {
+  return [...html.matchAll(/class="([^"]*)"/g)]
+    .map((match) => match[1] ?? "")
+    .filter((value) => value.split(/\s+/).includes(marker));
+}
