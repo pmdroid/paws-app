@@ -16,6 +16,8 @@ import {
   MERGE_CI_WAIT_MS,
   ciWaitVerification,
   parkMergeForCi,
+  retryMergeLater,
+  waitForMergeTurn,
 } from "./merge-jobs";
 
 function queue() {
@@ -176,5 +178,56 @@ describe("merge CI wait", () => {
       head: "head-sha",
       summary: "accepted once",
     });
+  });
+});
+
+describe("merge job retries", () => {
+  test("waiting for the task's other job does not spend an attempt", async () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      lane: MERGE_LANE,
+      payload: { itemId: "eng-1", head: "head-sha" },
+      maxAttempts: 2,
+      now: clock.now(),
+    });
+    const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
+    loop.register(JOB_KIND.merge, (job) => {
+      waitForMergeTurn(db, job, clock.now());
+    });
+    for (let pass = 0; pass < 5; pass++) {
+      await loop.tick();
+      clock.advance(10_000);
+    }
+    expect(getJob(db, id)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      payload: { itemId: "eng-1", head: "head-sha" },
+    });
+  });
+
+  test("a failed attempt waits for its backoff and keeps the attempt spent", async () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      lane: MERGE_LANE,
+      payload: { itemId: "eng-1" },
+      now: clock.now(),
+    });
+    const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
+    loop.register(JOB_KIND.merge, (job) => {
+      retryMergeLater(db, job, clock.now(), 30_000, new Error("GitHub returned 502"));
+    });
+    await loop.tick();
+    expect(getJob(db, id)).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      runAt: clock.now() + 30_000,
+      lastError: "GitHub returned 502",
+    });
+    clock.advance(29_000);
+    expect(await loop.tick()).toBeNull();
   });
 });

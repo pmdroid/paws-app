@@ -244,6 +244,8 @@ import {
   enqueueVerifiedMerge,
   githubQueueWatch,
   parkMergeForCi,
+  retryMergeLater,
+  waitForMergeTurn,
   type GitHubQueueWatch,
   type MergeWaitReason,
 } from "./merge-jobs";
@@ -1082,33 +1084,31 @@ export class Orchestrator {
       ),
     );
     jobs.register(JOB_KIND.merge, async (job, context) => {
+      const ownerId = readString(job.payload, "itemId");
+      // The start job that ran Closeout may still be finishing, for example posting to Linear.
+      // Wait for it without spending an attempt, or the merge job dies before the PR opens.
+      if (ownerId !== null && this.jobContexts.has(ownerId)) {
+        if (context.isCurrent()) waitForMergeTurn(this.db, job, this.now());
+        return;
+      }
       let waiting: MergeWait | undefined;
-      await this.failOnLastAttempt(job, context, "merge", () =>
-        this.runLeasedJob(job.payload, context, async () => {
-          try {
-            await this.runOwnedJob(job.payload, async () => {
-              waiting = await this.merge(job.payload, job.id);
-            });
-          } catch (error) {
-            if (!(error instanceof LinearReconciliationPendingError)) throw error;
-            immediate(this.db, () => {
-              if (!context.isCurrent()) throw context.signal.reason;
-              enqueueJobOnce(this.db, {
-                queue:
-                  getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
-                    ? JOB_KIND.reverify
-                    : job.queue,
-                lane: job.lane,
-                priority: job.priority,
-                payload: job.payload,
-                jobKey: `merge-reconciliation:${job.id}`,
-                now: this.now(),
-                runAt: this.now() + 30000,
-              });
-            });
-          }
-        }),
-      );
+      try {
+        await this.mergeAttempt(job, context, (wait) => {
+          waiting = wait;
+        });
+      } catch (error) {
+        // A failed pull-request or merge step is Paws's own. It retries from the accepted
+        // candidate with backoff; the agent is not resumed. The last attempt fails the task.
+        if (this.shuttingDown || job.attempts >= job.maxAttempts || !context.isCurrent())
+          throw error;
+        const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(
+          `merge job ${job.id} attempt ${job.attempts} of ${job.maxAttempts} failed, retrying in ${delayMs} ms: ${message}`,
+        );
+        if (!retryMergeLater(this.db, job, this.now(), delayMs, error)) throw error;
+        return;
+      }
       if (waiting === undefined) return;
       if (
         parkMergeForCi(
@@ -1127,7 +1127,12 @@ export class Orchestrator {
         return;
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
-      if (item) this.fail(item, "merge", `merge timed out waiting for GitHub: ${waiting.message}`);
+      if (item)
+        this.fail(
+          item,
+          "merge",
+          withAcceptedBranch(`merge timed out waiting for GitHub: ${waiting.message}`, item),
+        );
     });
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
@@ -1158,6 +1163,39 @@ export class Orchestrator {
           ? "critical"
           : "normal",
       ),
+    );
+  }
+
+  private async mergeAttempt(
+    job: Job,
+    context: JobContext,
+    onWait: (wait: MergeWait | undefined) => void,
+  ): Promise<void> {
+    await this.failOnLastAttempt(job, context, "merge", () =>
+      this.runLeasedJob(job.payload, context, async () => {
+        try {
+          await this.runOwnedJob(job.payload, async () => {
+            onWait(await this.merge(job.payload, job.id));
+          });
+        } catch (error) {
+          if (!(error instanceof LinearReconciliationPendingError)) throw error;
+          immediate(this.db, () => {
+            if (!context.isCurrent()) throw context.signal.reason;
+            enqueueJobOnce(this.db, {
+              queue:
+                getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
+                  ? JOB_KIND.reverify
+                  : job.queue,
+              lane: job.lane,
+              priority: job.priority,
+              payload: job.payload,
+              jobKey: `merge-reconciliation:${job.id}`,
+              now: this.now(),
+              runAt: this.now() + 30000,
+            });
+          });
+        }
+      }),
     );
   }
 
@@ -1277,7 +1315,9 @@ export class Orchestrator {
         (item.state === "verifying" || item.state === "merge_queue")
       ) {
         const message = error instanceof Error ? error.message : String(error);
-        this.fail(item, reason, `Stopped after ${job.attempts} attempts. ${message}`, error);
+        const accepted = item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue";
+        const text = `Stopped after ${job.attempts} attempts. ${message}`;
+        this.fail(item, reason, accepted ? withAcceptedBranch(text, item) : text, error);
       }
       throw error;
     }
@@ -5738,6 +5778,12 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
     state === "paused" ||
     state === "merge_queue"
   );
+}
+
+/** Names the branch that holds the work Closeout accepted, for a failure Linear sees. */
+function withAcceptedBranch(text: string, item: WorkItemRecord): string {
+  const sentence = /[.!?]$/.test(text) ? text : `${text}.`;
+  return `${sentence} The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`;
 }
 
 function branchUpdatedMessage(base: string): string {
