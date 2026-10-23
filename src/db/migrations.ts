@@ -2171,4 +2171,15 @@ CREATE TABLE agent_hook (
 ) STRICT;
 `,
   },
+  {
+    id: "100_visual_review_answer",
+    sql: `
+ALTER TABLE visual_review ADD COLUMN kind TEXT NOT NULL DEFAULT 'review' CHECK(kind IN ('review','continue'));
+ALTER TABLE visual_review ADD COLUMN outcome TEXT CHECK(outcome IS NULL OR outcome IN ('accepted','changes_requested','stale','continued'));
+ALTER TABLE visual_review ADD COLUMN answered_by TEXT;
+ALTER TABLE visual_review ADD COLUMN answered_at INTEGER;
+ALTER TABLE visual_review ADD COLUMN feedback TEXT;
+ALTER TABLE visual_review ADD COLUMN head_commit TEXT;
+`,
+  },
 ];
