@@ -68,7 +68,12 @@ export function createLinearSessionProgress(
           ORDER BY id DESC LIMIT 1`,
         )
         .get(sessionId, generation, op, at)?.payload;
-      if (delivered === payload) {
+      const field = op === "linear.session.plan" ? "plan" : "summary";
+      if (
+        delivered !== undefined &&
+        JSON.stringify((JSON.parse(delivered) as SessionUpdate)[field]) ===
+          JSON.stringify(update[field])
+      ) {
         if (pending)
           db.run(
             `UPDATE outbox SET status = 'dropped', error = 'Matches the session metadata already sent.'
@@ -86,12 +91,13 @@ export function createLinearSessionProgress(
         return;
       }
       const last = db
-        .query<{ at: number | null }, [number, string, number, string, number]>(
+        .query<{ at: number | null }, [number, string, number, number]>(
           `SELECT MAX(CASE WHEN status = 'sent' THEN sent_at ELSE ? END) AS at FROM outbox
-          WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ? AND op = ?
+          WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
+            AND op LIKE 'linear.session.%'
             AND (status = 'sent' OR (status = 'pending' AND locked_until > ?))`,
         )
-        .get(at, sessionId, generation, op, at)?.at;
+        .get(at, sessionId, generation, at)?.at;
       const id = enqueueOutboxOnce(db, {
         target: "linear",
         op,

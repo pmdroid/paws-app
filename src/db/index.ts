@@ -91,6 +91,7 @@ export {
   dispatchOutbox,
   enqueueOutbox,
   enqueueOutboxOnce,
+  LINEAR_PROGRESS_INTERVAL_MS,
   getOutbox,
   listOutbox,
   OUTBOX_STATUSES,
