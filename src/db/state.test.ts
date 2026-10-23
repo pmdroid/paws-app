@@ -7,8 +7,10 @@ import {
   accrueAwake,
   applyWorkItemEvent,
   beginImplementRun,
+  cancelOpenJobs,
   claimNextJob,
   completeJob,
+  deferWorkItem,
   enqueueJob,
   enqueueJobOnce,
   enterMergeQueue,
@@ -185,6 +187,73 @@ describe("restart recovery", () => {
       db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.resume'", [clock.now()]);
       clock.advance(20 * 60_000);
     }
+  });
+
+  test("a second restart while the reattach follower is pending queues no other one", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { now: clock.now() });
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
+      [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 3_600_000],
+    );
+    recoverOnStartup(db, clock.now());
+    clock.advance(60_000);
+    recoverOnStartup(db, clock.now());
+    expect(
+      listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+    ).toHaveLength(1);
+  });
+
+  describe("a pending transient retry", () => {
+    function deferred() {
+      const { db, clock } = harness();
+      const item = insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
+      const { item: running } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+      deferWorkItem(db, running, {
+        retry: 4,
+        delayMs: 600_000,
+        handoff: "keep going",
+        message: "Retrying.",
+        now: clock.now(),
+      });
+      return { db, clock, item, runAt: clock.now() + 600_000 };
+    }
+    const pendingResumes = (db: ReturnType<typeof harness>["db"]) =>
+      listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending");
+
+    test("survives repeated restarts with its deadline, retry count and handoff", () => {
+      const { db, clock, item, runAt } = deferred();
+      for (let restart = 0; restart < 3; restart++) {
+        clock.advance(1_000);
+        prepareShutdown(db, clock.now());
+        recoverOnStartup(db, clock.now());
+      }
+      expect(pendingResumes(db)).toMatchObject([
+        { runAt, payload: { reason: "transient_failure", retry: 4, handoff: "keep going" } },
+      ]);
+      expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 0 });
+      expect(claimNextJob(db, { now: clock.now() })).toBeNull();
+    });
+
+    test("runs once with its saved retry count when due", () => {
+      const { db, clock, runAt } = deferred();
+      clock.advance(700_000);
+      recoverOnStartup(db, clock.now());
+      const claimed = claimNextJob(db, { now: clock.now() });
+      expect(claimed).toMatchObject({ runAt, payload: { retry: 4, handoff: "keep going" } });
+      completeJob(db, claimed!, clock.now());
+      expect(claimNextJob(db, { now: clock.now() })).toBeNull();
+    });
+
+    test("does not run after the item is cancelled", () => {
+      const { db, clock, item } = deferred();
+      recoverOnStartup(db, clock.now());
+      cancelOpenJobs(db, { itemId: item.id, reason: "stop", now: clock.now() });
+      clock.advance(700_000);
+      expect(claimNextJob(db, { now: clock.now() })).toBeNull();
+    });
   });
 
   test("a verifying task whose runner holds Closeout work resumes instead of reattaching", () => {
