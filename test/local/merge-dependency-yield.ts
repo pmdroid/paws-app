@@ -14,6 +14,7 @@ import {
   recordLinearInstallation,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
+import { createAdmission } from "../../src/scheduler";
 
 export async function probeMergeDependencyYield(
   root: string,
@@ -48,7 +49,7 @@ export async function probeMergeDependencyYield(
       outbox: new OutboxDispatcher(db, clock),
       clock,
       pawsRoot: directory,
-      canAdvanceItem: guard,
+      ...(guard ? { admission: createAdmission({ db, authority: guard }) } : {}),
       repository: { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" },
       github: {
         appId: "",

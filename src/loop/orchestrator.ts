@@ -72,7 +72,6 @@ import {
   OUTBOX_ACTIVITY,
   delegationHasOpenWork,
   delegationIssueIdSql,
-  isBlockerSatisfied,
   isTerminalWorkItemState,
   parentTaskKeySql,
   type Clock,
@@ -220,6 +219,7 @@ import {
   type GitHubTokenProvider,
 } from "../github";
 import { intakeDelegatedIssue, readyItems, stopAdoptedParent, type IntakeResult } from "../intake";
+import { createAdmission, type ItemAdmission } from "../scheduler";
 import type {
   AcceptedLinearEvent,
   DependencyEdge,
@@ -413,8 +413,7 @@ export type OrchestratorOptions = {
     signal?: AbortSignal,
     candidate?: { sha: string; baseSha: string },
   ) => boolean | Promise<boolean>;
-  canDispatchDelegation?: (delegationId: string) => boolean;
-  canAdvanceItem?: (itemId: string) => boolean;
+  admission?: ItemAdmission;
   dispatchReady?: (input: { legacyReadyItemIds: readonly string[] }) => void;
   clock?: Clock;
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
@@ -514,9 +513,11 @@ export class Orchestrator {
   private readonly githubAuth: GitHubAuthQuestions | null;
   private readonly authRecoveryController = new AbortController();
   private authRecovery: Promise<void> | null = null;
+  private readonly admission: ItemAdmission;
 
   constructor(private readonly options: OrchestratorOptions) {
     this.tracker = options.tracker ?? null;
+    this.admission = options.admission ?? createAdmission({ db: options.db });
     this.githubAuth = options.githubAuth
       ? new GitHubAuthQuestions(
           options.db,
@@ -1460,12 +1461,7 @@ export class Orchestrator {
     const loaded = getWorkItem(this.db, itemId);
     if (loaded === null) return;
     if (loaded.cancelRequested || loaded.state === "cancelled") return;
-    if (
-      loaded.state === "queued" &&
-      (this.options.canDispatchDelegation?.(loaded.delegationId) === false ||
-        !this.blockersClear(loaded))
-    )
-      return;
+    if (loaded.state === "queued" && !this.admission.canStart(loaded.id).ok) return;
     if (loaded.state === "awaiting_input" || loaded.state === "paused") return;
     const sessionId = loaded.sessionKey;
     if (sessionId && getLinearSession(this.db, sessionId))
@@ -2720,11 +2716,7 @@ export class Orchestrator {
     }
     if (item.state !== "merge_queue") return;
     immediate(this.db, () => {
-      if (
-        this.workspaceForDelegation(item.delegationId)
-          ? this.options.canAdvanceItem?.(item.id) !== true
-          : !this.blockersClear(item)
-      )
+      if (!this.admission.canMerge(item.id).ok)
         throw new LinearReconciliationPendingError("Linear dependencies are still running");
       const sessionId = item.sessionKey;
       const session = sessionId ? getLinearSession(this.db, sessionId) : null;
@@ -3973,7 +3965,7 @@ export class Orchestrator {
   }
 
   private assertReconciled(item: WorkItemRecord): void {
-    if (this.options.canDispatchDelegation?.(item.delegationId) === false)
+    if (!this.admission.canDispatchDelegation(item.delegationId))
       throw new LinearReconciliationPendingError(
         "Linear execution changes are still being reconciled",
       );
@@ -4277,11 +4269,7 @@ export class Orchestrator {
     for (const delegationId of delegationIds) this.questionDependencyCycle(delegationId);
     const queued = items.filter((item) => item.state === "queued" && !item.cancelRequested);
     queued.sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
-    const ready = queued.filter(
-      (item) =>
-        this.options.canDispatchDelegation?.(item.delegationId) !== false &&
-        this.blockersClear(item),
-    );
+    const ready = queued.filter((item) => this.admission.canStart(item.id).ok);
     if (this.options.dispatchReady) {
       this.options.dispatchReady({ legacyReadyItemIds: ready.map((item) => item.id) });
       this.noteQueued(ready);
@@ -4356,11 +4344,13 @@ export class Orchestrator {
       for (const item of this.allItems()) {
         if (
           item.state !== "merge_queue" ||
-          this.options.canDispatchDelegation?.(item.delegationId) === false ||
+          !this.admission.canDispatchDelegation(item.delegationId) ||
           [...this.live.values()].some((live) => live.itemId === item.id) ||
           !this.delegationItems(item.delegationId).some(
             (other) =>
-              other.id !== item.id && other.state === "queued" && this.blockersClear(other),
+              other.id !== item.id &&
+              other.state === "queued" &&
+              this.admission.canStart(other.id).ok,
           )
         )
           continue;
@@ -4378,7 +4368,7 @@ export class Orchestrator {
 
   private questionDependencyCycle(delegationId: string): void {
     const workspace = this.workspaceForDelegation(delegationId);
-    if (!workspace || this.options.canDispatchDelegation?.(delegationId) === false) return;
+    if (!workspace || !this.admission.canDispatchDelegation(delegationId)) return;
     const ids: string[] = [];
     try {
       for (const item of this.delegationItems(delegationId))
@@ -4420,40 +4410,6 @@ export class Orchestrator {
         )
         .get(delegationId)?.id ?? null
     );
-  }
-
-  private blockersClear(item: WorkItemRecord): boolean {
-    if (item.cancelRequested) return false;
-    const workspace = this.workspaceForDelegation(item.delegationId);
-    if (workspace) {
-      try {
-        return readyItems(this.db, {
-          itemId: item.id,
-          workspaceId: workspace,
-        }).readyItemIds.includes(item.id);
-      } catch {
-        return false;
-      }
-    }
-    const rows = this.db
-      .query<{ blocker_linear_issue_id: string }, [string, string]>(
-        `SELECT blocker_linear_issue_id FROM task_block
-         WHERE blocked_linear_issue_id = ?
-         AND EXISTS (
-           SELECT 1 FROM work_item
-           WHERE delegation_id = ? AND linear_issue_id = task_block.blocker_linear_issue_id
-         )`,
-      )
-      .all(item.linearIssueId, item.delegationId);
-    const active = new Map(
-      this.delegationItems(item.delegationId).map((entry) => [entry.linearIssueId, entry]),
-    );
-    for (const row of rows) {
-      const blocker = active.get(row.blocker_linear_issue_id);
-      if (!blocker || !isBlockerSatisfied({ ...blocker, mode: getTaskMode(this.db, blocker.id) }))
-        return false;
-    }
-    return true;
   }
 
   private ensureRun(item: WorkItemRecord): { id: string } {

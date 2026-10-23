@@ -58,7 +58,7 @@ try {
   runtime.githubForRepository=()=>({});
   let mergeFailure='';
   try {await runtime.merge({itemId:item.id},'proof')}catch(error){mergeFailure=error.message}
-  console.log(JSON.stringify({...observed,mergeFailure,composedHold:runtime.options.canDispatchDelegation(claim.epicId)}));
+  console.log(JSON.stringify({...observed,mergeFailure,composedHold:runtime.options.admission.canDispatchDelegation(claim.epicId)}));
 }finally{
   Orchestrator.prototype.register=register;
   await paws.stop();

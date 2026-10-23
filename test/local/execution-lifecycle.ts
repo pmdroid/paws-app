@@ -16,6 +16,7 @@ import {
   getWorkItem,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
+import { createAdmission } from "../../src/scheduler";
 import { readyItems, syncItemDependencies } from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 
@@ -229,7 +230,7 @@ export async function probeExecutionLifecycle(
       outbox: new OutboxDispatcher(guardDb, clock),
       clock,
       pawsRoot: join(root, "admission"),
-      canDispatchDelegation: () => allowed,
+      admission: createAdmission({ db: guardDb, authority: () => allowed }),
     });
     try {
       guardDb.run(

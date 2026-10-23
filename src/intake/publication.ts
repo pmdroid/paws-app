@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, delegationHasOpenWork } from "../core";
-import { canAdvanceItem, hasPendingDelegationChanges } from "./dependencies";
 import type { createItemReconciler } from "./reconciliation";
 
 export type PublicationPhase = "publish" | "merge";
@@ -29,7 +28,7 @@ type Identity = {
 export function createPublicationReadiness(input: {
   db: Database;
   reconciler: Pick<ReturnType<typeof createItemReconciler>, "reconcile">;
-  canAdvance?: (itemId: string) => boolean;
+  canMerge: (itemId: string) => boolean;
   now?: () => number;
 }) {
   const { db, reconciler } = input;
@@ -107,12 +106,7 @@ export function createPublicationReadiness(input: {
     if (
       saved?.binding === key &&
       (saved.phase === phase || saved.phase === "merge") &&
-      !hasPendingDelegationChanges(db, before.identity.delegationId) &&
-      canAdvanceItem(db, {
-        workspaceId: before.identity.workspaceId,
-        itemId,
-      }) &&
-      input.canAdvance?.(itemId) !== false
+      input.canMerge(itemId)
     )
       return true;
     ready.delete(itemId);
@@ -128,17 +122,7 @@ export function createPublicationReadiness(input: {
     }
     signal?.throwIfAborted();
     const after = current(itemId, candidate);
-    if (
-      !after ||
-      after.binding !== before.binding ||
-      hasPendingDelegationChanges(db, after.identity.delegationId) ||
-      !canAdvanceItem(db, {
-        workspaceId: after.identity.workspaceId,
-        itemId,
-      }) ||
-      input.canAdvance?.(itemId) === false
-    )
-      return false;
+    if (!after || after.binding !== before.binding || !input.canMerge(itemId)) return false;
     ready.set(itemId, { binding: JSON.stringify([after.binding, after.generation]), phase });
     return true;
   }
