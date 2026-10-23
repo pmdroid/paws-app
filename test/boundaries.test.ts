@@ -86,7 +86,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   acp: ["core", "config", "process", "worktree-checkout", "closeout-spec"],
   closeout: ["core", "closeout-spec"],
   "closeout-spec": ["core", "worktree-checkout"],
-  github: ["process"],
+  github: ["core", "process"],
   questions: ["core"],
   decisions: ["db", "scheduler"],
   web: ["db"],
