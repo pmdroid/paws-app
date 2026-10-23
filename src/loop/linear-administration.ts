@@ -149,3 +149,17 @@ export async function handleLinearAdministration(
   }
   return true;
 }
+
+export async function stopUndelegatedIssue(
+  _db: Database,
+  _undelegation: {
+    organizationId: string;
+    appUserId: string;
+    issueId: string;
+    createdAtMs: number;
+  },
+  _options: {
+    notify: (command: LinearCommand) => void;
+    interrupt?: (sessionId: string) => Promise<void>;
+  },
+): Promise<void> {}

@@ -122,6 +122,13 @@ export function parseLinearSessionInstallation(
   return { sessionId, organizationId, oauthClientId, appUserId, teamId };
 }
 
+export function parseLinearUndelegation(
+  _event: AcceptedLinearEvent,
+  _appUserId: string | null,
+): { organizationId: string; issueId: string; createdAtMs: number } | null {
+  return null;
+}
+
 export function matchesLinearInstallation(
   event: LinearAdministration,
   installation: LinearInstallation,

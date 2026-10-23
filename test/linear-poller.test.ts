@@ -716,6 +716,53 @@ describe("linear intake poll", () => {
     db.close();
   });
 
+  test("a poll that finds a delegated issue undelegated stops its tasks", async () => {
+    const db = tempDb();
+    const store = createInboxStore(db);
+    const commands: { type: string; itemId: string }[] = [];
+    let tick = 0;
+    const { client } = scripted(({ query }) => {
+      if (!query.includes("IntakePoll")) {
+        if (query.includes("IssueSnapshot")) return loneSnapshot();
+        return { issue: emptyRelations() };
+      }
+      tick += 1;
+      return page([issue("iss_stop", "ENG-9", [], tick === 1 ? "app_1" : null)]);
+    });
+    const tracker = createLinearTracker(client);
+    const gate = hold();
+    const waits: number[] = [];
+    const poller = startCatchUpPoller({
+      source: createIntakePollSource(client, { teamId: TEAM }),
+      store,
+      db,
+      onEvent: async (event) => {
+        if (event.action !== "created" || event.issueId === null) return;
+        const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
+        if (result.ok)
+          for (const item of result.items)
+            configureWorkItem(db, item.id, { sessionKey: "ses_stop" });
+      },
+      submitCommand: (command) => {
+        commands.push({ type: command.type, itemId: command.itemId });
+      },
+      hot: () => false,
+      sleeper: recordingSleeper(waits, gate),
+      now: () => NOW,
+    });
+    await waitFor(() => waits.length > 0);
+    expect(commands).toEqual([]);
+    gate.release?.();
+    await waitFor(() => commands.length === 1);
+    const item = db
+      .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id = 'iss_stop'")
+      .get();
+    expect(commands).toEqual([{ type: "stop", itemId: item!.id }]);
+    await poller.stop();
+    await poller.settled;
+    db.close();
+  });
+
   test("an open question counts as active work", () => {
     const db = tempDb();
     expect(linearWorkIsHot(db)).toBe(false);

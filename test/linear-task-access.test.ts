@@ -21,7 +21,7 @@ import {
   LinearRateLimitError,
   parseAgentEvent,
 } from "../src/linear";
-import { LinearTaskAccess } from "../src/loop";
+import { LinearTaskAccess, stopUndelegatedIssue } from "../src/loop";
 import { tempHome } from "./helpers";
 
 const databases: Database[] = [];
@@ -410,4 +410,32 @@ test("a failed access check is never cached", async () => {
   };
   await expect(f.gate.assert(f.item, new AbortController().signal)).rejects.toThrow("offline");
   await expect(f.gate.assert(f.item, new AbortController().signal)).rejects.toThrow("offline");
+});
+
+test("a task queued behind a blocker is cancelled when its issue is undelegated and does not start after", async () => {
+  const f = await fixture(true);
+  const cancelled: string[] = [];
+  await stopUndelegatedIssue(
+    f.db,
+    { ...scope, issueId: "parent", createdAtMs: Date.now() },
+    { notify: (command) => cancelled.push(command.itemId) },
+  );
+  expect(cancelled).toEqual([f.item.id]);
+  const item = getWorkItem(f.db, f.item.id)!;
+  expect(item.state).toBe("cancelled");
+  await expect(f.gate.prepare(item, new AbortController().signal)).rejects.toThrow(
+    "Linear task was stopped or superseded.",
+  );
+  expect(f.lifecycle.started).toEqual([]);
+  expect(f.access.calls).toEqual([]);
+});
+
+test("an undelegation that predates the task leaves it queued", async () => {
+  const f = await fixture(true);
+  await stopUndelegatedIssue(
+    f.db,
+    { ...scope, issueId: "parent", createdAtMs: 0 },
+    { notify: () => {} },
+  );
+  expect(getWorkItem(f.db, f.item.id)?.state).toBe("queued");
 });

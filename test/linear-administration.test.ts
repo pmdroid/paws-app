@@ -8,6 +8,7 @@ import {
   parseAgentEvent,
   parseLinearAdministration,
   parseLinearSessionInstallation,
+  parseLinearUndelegation,
   type AcceptedLinearEvent,
 } from "../src/linear";
 
@@ -252,5 +253,45 @@ describe("Linear administration event normalization", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("Linear issue undelegation", () => {
+  const issue = (data: Record<string, unknown>, updatedFrom: Record<string, unknown>) =>
+    event({
+      type: "Issue",
+      action: "update",
+      organizationId: "organization",
+      createdAt: new Date(at).toISOString(),
+      data: { id: "issue", ...data },
+      updatedFrom,
+    });
+
+  test("a delegate moving away from Paws undelegates the issue", () => {
+    const undelegated = { organizationId: "organization", issueId: "issue", createdAtMs: at };
+    expect(
+      parseLinearUndelegation(issue({ delegateId: null }, { delegateId: "paws-app" }), "paws-app"),
+    ).toEqual(undelegated);
+    expect(
+      parseLinearUndelegation(
+        issue({ delegateId: "human" }, { delegateId: "paws-app" }),
+        "paws-app",
+      ),
+    ).toEqual(undelegated);
+  });
+
+  test("other issue changes are not undelegations", () => {
+    expect(
+      parseLinearUndelegation(issue({ delegateId: "paws-app" }, { delegateId: null }), "paws-app"),
+    ).toBeNull();
+    expect(
+      parseLinearUndelegation(issue({ delegateId: null }, { delegateId: "human" }), "paws-app"),
+    ).toBeNull();
+    expect(
+      parseLinearUndelegation(issue({ delegateId: "paws-app" }, { title: "Old" }), "paws-app"),
+    ).toBeNull();
+    expect(
+      parseLinearUndelegation(issue({ delegateId: null }, { delegateId: "paws-app" }), null),
+    ).toBeNull();
   });
 });

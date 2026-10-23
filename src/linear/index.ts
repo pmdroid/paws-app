@@ -150,6 +150,7 @@ export type {
 } from "./history";
 export {
   parseLinearAdministration,
+  parseLinearUndelegation,
   parseLinearSessionInstallation,
   matchesLinearInstallation,
 } from "./administration";
