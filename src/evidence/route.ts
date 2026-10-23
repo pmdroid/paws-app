@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getEvidence, getWorkItem } from "../db";
+import { getEvidence, getVisualReviewMark, getWorkItem } from "../db";
 import { evidencePath } from "./store";
 import { ULID_PATTERN } from "./ulid";
 
@@ -28,7 +28,7 @@ export async function handleEvidenceRequest(
     return new Response(null, { status: 405, headers: { ...PRIVATE, allow: "GET, HEAD" } });
   const id = path.slice(EVIDENCE_API_PATH.length);
   if (!ULID_PATTERN.test(id)) return notFound();
-  const evidence = getEvidence(options.db, id);
+  const evidence = getEvidence(options.db, id) ?? markedEvidence(options.db, id);
   if (evidence === null) return notFound();
   const item = getWorkItem(options.db, evidence.itemId);
   if (item?.sessionKey == null || !options.sessionIds.includes(item.sessionKey)) return notFound();
@@ -62,6 +62,17 @@ export async function handleEvidenceRequest(
       "content-range": `bytes ${range.start}-${range.end}/${size}`,
     },
   });
+}
+
+function markedEvidence(db: Database, id: string) {
+  const mark = getVisualReviewMark(db, id);
+  if (mark === null) return null;
+  return {
+    itemId: mark.itemId,
+    sizeBytes: mark.sizeBytes,
+    mediaType: "image/png",
+    displayName: `marked-${getEvidence(db, mark.evidenceId)?.displayName ?? "screenshot.png"}`,
+  };
 }
 
 function notFound(): Response {

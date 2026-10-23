@@ -41,6 +41,7 @@ import type {
 import {
   getConfirmedRemoteMerge,
   linearConversationUrl,
+  listVisualReviewMarks,
   listVisualReviews,
   getTaskMergeSettings,
   getRun,
@@ -458,6 +459,10 @@ function visualReviewsOf(
     visualReviews: reviews.map((review) => {
       const round = (rounds.get(review.checkId) ?? 0) + 1;
       rounds.set(review.checkId, round);
+      const marks = listVisualReviewMarks(db, review.questionId).map((mark) => ({
+        id: mark.id,
+        evidenceId: mark.evidenceId,
+      }));
       return {
         questionId: review.questionId,
         checkId: review.checkId,
@@ -472,6 +477,7 @@ function visualReviewsOf(
         answeredBy: review.answeredBy || null,
         answeredAt: review.answeredAt === null ? null : iso(review.answeredAt),
         feedback: review.feedback?.trim() || null,
+        ...(marks.length ? { marks } : {}),
       };
     }),
   };

@@ -129,6 +129,7 @@ export interface StatusVisualReview {
   answeredBy: string | null;
   answeredAt: string | null;
   feedback: string | null;
+  marks?: { id: string; evidenceId: string }[];
 }
 
 export interface StatusMergeQueue {
@@ -760,6 +761,17 @@ function readVisualReview(input: unknown, path: string): StatusVisualReview {
     answeredBy: nullableText(body, "answeredBy", path),
     answeredAt: nullableDate(body, "answeredAt", path),
     feedback: nullableText(body, "feedback", path),
+    ...(body.marks === undefined
+      ? {}
+      : {
+          marks: array(body, "marks", path).map((entry, at) => {
+            const mark = object(entry, `${path}.marks[${at}]`);
+            return {
+              id: text(mark, "id", `${path}.marks[${at}]`),
+              evidenceId: text(mark, "evidenceId", `${path}.marks[${at}]`),
+            };
+          }),
+        }),
   };
 }
 

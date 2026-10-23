@@ -8,12 +8,14 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  saveVisualReviewMarks,
   syncWorkspaceMember,
   type VisualReviewMark,
 } from "../src/db";
 import {
   createEvidenceStore,
   evidencePath,
+  handleEvidenceRequest,
   handleVisualReviewChanges,
   type VisualReviewChanges,
 } from "../src/evidence";
@@ -107,6 +109,7 @@ async function harness(role: "owner" | "observer" = "owner") {
     return body;
   };
   return {
+    db,
     root,
     questionId: question.id,
     first,
@@ -238,4 +241,23 @@ describe("POST /api/visual-review-changes", () => {
     expect(h.markFiles()).toEqual([]);
     expect(existsSync(evidencePath(h.root, h.first.id))).toBe(true);
   });
+});
+
+test("a stored mark is served like evidence to members who can see the task", async () => {
+  const h = await harness();
+  await h.send(h.form({ questionId: h.questionId, [`mark:${h.first.id}`]: MARKED }));
+  const [mark] = h.calls[0]!.marks;
+  saveVisualReviewMarks(h.db, [mark!]);
+  const get = (sessionIds: string[]) =>
+    handleEvidenceRequest(new Request(`https://paws.example/api/evidence/${mark!.id}`), {
+      db: h.db,
+      root: h.root,
+      sessionIds,
+    });
+  const visible = (await get(["ses_1"]))!;
+  expect(visible.status).toBe(200);
+  expect(visible.headers.get("content-type")).toBe("image/png");
+  expect(visible.headers.get("content-disposition")).toContain("marked-first.png");
+  expect(new Uint8Array(await visible.arrayBuffer())).toEqual(MARKED);
+  expect((await get(["ses_other"]))!.status).toBe(404);
 });
