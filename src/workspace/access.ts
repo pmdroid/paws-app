@@ -9,6 +9,7 @@ import {
   getWorkspace,
   listUserWorkspaces,
   listWorkspaceMembers,
+  membershipFresh,
   putWorkspaceUser,
   syncWorkspaceMember,
   workspaceForOrganization,
@@ -88,8 +89,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     )
       throw new Error("This workspace is not installed.");
     const observedAt = now();
-    if (!force && member.checkedAt <= observedAt && observedAt - member.checkedAt < 5 * 60_000)
-      return;
+    if (!force && membershipFresh(member, observedAt)) return;
     const key = `${workspaceKey}:${userId}`;
     let operation = pending.get(key);
     if (force && operation !== undefined) {

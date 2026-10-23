@@ -322,6 +322,8 @@ export {
   readWorkspaceSession,
   saveWorkspaceSession,
   syncWorkspaceMember,
+  MEMBERSHIP_BACKSTOP_MS,
+  membershipFresh,
   workspaceForOrganization,
   workspaceMember,
   workspaceLinearMember,

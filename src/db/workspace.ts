@@ -19,6 +19,12 @@ export type WorkspaceMember = {
   checkedAt: number;
   teamIds: string[];
 };
+export const MEMBERSHIP_BACKSTOP_MS = 6 * 60 * 60_000;
+
+export function membershipFresh(member: WorkspaceMember, now: number): boolean {
+  return member.checkedAt <= now && now - member.checkedAt < MEMBERSHIP_BACKSTOP_MS;
+}
+
 export type WorkspaceSession = {
   tokenHash: string;
   userId: string;

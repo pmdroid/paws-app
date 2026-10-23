@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { MEMBERSHIP_BACKSTOP_MS } from "../db";
 import type { WorkspaceAssignments } from "./assignments";
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
@@ -80,12 +81,9 @@ export function startWorkspaceAccess(
     return operation;
   }
 
-  const timer = setInterval(
-    () => {
-      if (pending === undefined) void refresh().catch(options.onError);
-    },
-    options.refreshIntervalMs ?? 60 * 60_000,
-  );
+  const timer = setInterval(() => {
+    if (pending === undefined) void refresh().catch(options.onError);
+  }, options.refreshIntervalMs ?? MEMBERSHIP_BACKSTOP_MS);
   timer.unref();
   return {
     access,

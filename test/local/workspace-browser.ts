@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
+  MEMBERSHIP_BACKSTOP_MS,
   migrate,
   openDatabase,
   syncWorkspaceMember,
@@ -259,7 +260,7 @@ export async function probeWorkspaceBrowser(
             .digest("base64url"),
       { storedVerifier: pendingRow?.verifier, status: resumed.status },
     );
-    now += 5 * 60_000;
+    now += MEMBERSHIP_BACKSTOP_MS;
     membershipFailure = true;
     const csrfRejected = await fetch(`${origin}/api/auth/logout`, {
       method: "POST",
@@ -318,12 +319,12 @@ export async function probeWorkspaceBrowser(
       { guestRole: guestMember?.role, preservedRole, restoredRole: restoredMember?.role },
     );
     active = false;
-    now += 5 * 60_000;
+    now += MEMBERSHIP_BACKSTOP_MS;
     const removed = await fetch(`${origin}/api/auth/session`, {
       headers: { cookie: member.cookie! },
     });
     observe(
-      "membership removal is enforced at the next request after five minutes",
+      "membership removal is enforced at the next request after the backstop",
       removed.status === 401,
       { status: removed.status },
     );

@@ -13,6 +13,7 @@ import {
   syncWorkspaceMember,
   workspaceForOrganization,
   workspaceLinearMember,
+  membershipFresh,
   workspaceMember,
   type JobLoop,
 } from "../db";
@@ -132,11 +133,7 @@ export function createApprovedProjects(input: {
       approval.preview,
       approval.source,
     );
-    if (
-      [result.member, result.lead].some(
-        (member) => member.checkedAt > now() || now() - member.checkedAt > 300_000,
-      )
-    )
+    if ([result.member, result.lead].some((member) => !membershipFresh(member, now())))
       throw new Error("Refresh project membership before continuing execution.");
     if (approval.approvedAt === null || approval.pausedAt !== null || approval.stoppedAt !== null)
       throw new Error("Project execution is paused or stopped.");
@@ -757,7 +754,14 @@ export function createApprovedProjects(input: {
           context.signal.throwIfAborted();
           try {
             const approval = readProjectApproval(db, row.id)!;
-            await refreshAuthority(approval, context.signal);
+            if (
+              [approval.actorId, approval.leadUserId].some((userId) => {
+                const member = workspaceMember(db, approval.workspaceId, userId);
+                return member === null || !membershipFresh(member, now());
+              })
+            )
+              await refreshAuthority(approval, context.signal);
+            else authority(approval);
             for (const claim of claims(row.id)) {
               if (claim.sessionId) {
                 if (!claim.epicId) await input.resumeSession(claim.sessionId);
