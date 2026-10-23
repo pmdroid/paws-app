@@ -185,6 +185,29 @@ describe("visual review on the run page", () => {
     expect(html).toContain("shot-1.png · Superseded");
   });
 
+  test("waiting: the run page holds the drawing entry for the open question", () => {
+    const { snapshot, runId } = waiting();
+    expect(runPage(snapshot, runId)).toContain(
+      '<div id="review-draw" data-question="q-1" hidden></div>',
+    );
+    const { snapshot: done, runId: doneRun } = changes();
+    expect(runPage(done, doneRun)).not.toContain('id="review-draw"');
+  });
+
+  test("changes requested with marks: each marked screenshot shows next to its original", () => {
+    const { snapshot, runId } = fixture(
+      [{ ...CHANGES, marks: [{ id: "mark-1", evidenceId: "shot-1" }] }],
+      "running",
+    );
+    const html = runPage(snapshot, runId);
+    expect(html).toContain('href="/api/evidence/mark-1"');
+    expect(html).toContain('alt="Marked shot-1.png"');
+    expect(html).toContain("shot-1.png · Marked by the reviewer");
+    expect(html.indexOf("shot-1.png · Superseded")).toBeLessThan(
+      html.indexOf("shot-1.png · Marked by the reviewer"),
+    );
+  });
+
   test("a run without a visual review keeps its four steps", () => {
     const { snapshot, runId } = fixture([], "running");
     const html = runPage(snapshot, runId);

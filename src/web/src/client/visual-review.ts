@@ -1,6 +1,6 @@
 import type { StatusItem, StatusSnapshot, StatusVisualReview } from "../contract";
 import { ago, esc, linkButtons } from "./format";
-import { evidencePageHref, thumbnailMedia } from "./evidence";
+import { evidenceFileUrl, evidencePageHref, thumbnailMedia } from "./evidence";
 
 const STATE_TAG: Record<StatusVisualReview["state"], [string, string]> = {
   waiting: ["warn", "Waiting"],
@@ -32,7 +32,7 @@ export function visualReviewSection(
   const waiting = waitingVisualReview(item);
   const links = snapshot.questions.find((question) => question.id === waiting?.questionId)?.links;
   const summary = waiting
-    ? `<section class="closeout-result blocked"><div class="min-w-0"><h3>Waiting for ${esc(item.owner ?? "the person who delegated this issue")} or the project lead · round ${waiting.round}</h3><p>Accept the screenshots in Linear, or reply with the changes you want. The task resumes with the answer.</p>${links?.length ? `<div class="row">${linkButtons(links)}</div>` : ""}</div></section>`
+    ? `<section class="closeout-result blocked"><div class="min-w-0"><h3>Waiting for ${esc(item.owner ?? "the person who delegated this issue")} or the project lead · round ${waiting.round}</h3><p>Accept the screenshots in Linear, or reply with the changes you want. The task resumes with the answer.</p>${links?.length ? `<div class="row">${linkButtons(links)}</div>` : ""}<div id="review-draw" data-question="${esc(waiting.questionId)}" hidden></div></div></section>`
     : last.state === "accepted"
       ? `<section class="closeout-result accepted"><div class="min-w-0"><h3>Accepted by ${esc(last.answeredBy ?? "a reviewer")}${last.answeredAt ? ` · ${esc(ago(last.answeredAt, snapshot.generatedAt))}` : ""}</h3><p>The pull request records the approved screenshots.</p></div></section>`
       : "";
@@ -63,10 +63,13 @@ function roundEntry(
       : "";
   const files = review.evidenceIds
     .flatMap((id) => snapshot.evidence?.find((entry) => entry.id === id) ?? [])
-    .map(
-      (entry) =>
-        `<li><a class="evidence-thumb" href="${esc(evidencePageHref(entry.id))}" aria-label="${esc(entry.displayName)}">${thumbnailMedia(entry, engineUrl)}</a><span class="muted">${esc(entry.displayName)} · ${esc(EVIDENCE_STATE[review.state])}</span></li>`,
-    )
+    .map((entry) => {
+      const mark = review.marks?.find((row) => row.evidenceId === entry.id);
+      const marked = mark
+        ? `<li><a class="evidence-thumb" href="${esc(evidenceFileUrl(mark.id, engineUrl))}" target="_blank" rel="noopener" aria-label="${esc(`Marked ${entry.displayName}`)}"><img src="${esc(evidenceFileUrl(mark.id, engineUrl))}" alt="${esc(`Marked ${entry.displayName}`)}" loading="lazy" decoding="async" class="block h-full w-full object-cover" /></a><span class="muted">${esc(entry.displayName)} · Marked by the reviewer</span></li>`
+        : "";
+      return `<li><a class="evidence-thumb" href="${esc(evidencePageHref(entry.id))}" aria-label="${esc(entry.displayName)}">${thumbnailMedia(entry, engineUrl)}</a><span class="muted">${esc(entry.displayName)} · ${esc(EVIDENCE_STATE[review.state])}</span></li>${marked}`;
+    })
     .join("");
   return `<li class="visual-review-round"><div class="row"><b>Round ${review.round}</b><span class="tag">${esc(review.checkId)}</span><span class="tag ${tone}">${esc(label)}</span>${review.commit ? `<span class="mono muted">${esc(review.commit.slice(0, 7))}</span>` : ""}${who}</div>${feedback}${addressed}${files ? `<ul class="evidence-more">${files}</ul>` : ""}</li>`;
 }

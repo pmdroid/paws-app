@@ -38,6 +38,7 @@ import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createProjects } from "./projects";
 import { createExecutionControls } from "./execution-controls";
+import { createReviewDraw } from "./review-draw";
 import { createEvidenceMedia } from "./evidence-media";
 import {
   initializeWorkspaceAccess,
@@ -57,6 +58,7 @@ const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const projects = createProjects();
 const executionControls = createExecutionControls(reload);
+const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
 const STORAGE_KEY = "paws.statusEngineUrl";
@@ -317,6 +319,8 @@ function paint(): void {
     sessionStart.mount(sessionRoot, currentEngine(), source(), model.route.view === "sessions");
   const executionRoot = document.querySelector<HTMLElement>("#execution-controls");
   if (executionRoot) executionControls.mount(executionRoot, currentEngine(), source());
+  const drawRoot = document.querySelector<HTMLElement>("#review-draw");
+  if (drawRoot) reviewDraw.mount(drawRoot, snapshot, currentEngine(), source());
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
   if (runnerRoot && model.route.view === "runners")
     runners.mount(runnerRoot, currentEngine(), source(), model.route.id);
