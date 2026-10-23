@@ -13,7 +13,8 @@ import {
   type WorkItemRecord,
 } from "../db";
 import { answerQuestion, findOpenQuestion, getQuestion, openQuestion } from "../questions";
-import { TASK_ACCESS_TTL_MS } from "./linear-task-access";
+
+export const TASK_ACCESS_TTL_MS = 5 * 60_000;
 
 export type GitHubIntegration = {
   attributionReady?(item: WorkItemRecord): Promise<boolean>;

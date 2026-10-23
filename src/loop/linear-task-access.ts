@@ -31,8 +31,6 @@ import {
 
 export class LinearAccessRemovedError extends Error {}
 
-export const TASK_ACCESS_TTL_MS = 5 * 60_000;
-
 type AccessVerdict = {
   sessionId: string;
   access: LinearSessionInstallation;

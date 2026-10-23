@@ -37,7 +37,8 @@ export {
 export { itemPathId, worktreeBranch } from "./sources";
 
 export { handleLinearAdministration } from "./linear-administration";
-export { LinearTaskAccess, TASK_ACCESS_TTL_MS } from "./linear-task-access";
+export { LinearTaskAccess } from "./linear-task-access";
+export { TASK_ACCESS_TTL_MS } from "./github-integration";
 export { createRepositoryGit } from "./repository-git";
 export { createLinearInputLoader, inputSources } from "./input-files";
 export { createTaskPlanner } from "./task-planner";
