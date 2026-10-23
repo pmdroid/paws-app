@@ -438,6 +438,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     ...(secrets.db
       ? {
           db: secrets.db,
+          ...(secrets.linearUsage ? { linearUsage: secrets.linearUsage } : {}),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
           ...(secrets.closeoutHome ? { closeoutHome: secrets.closeoutHome } : {}),
           ...(secrets.evidenceRoot ? { evidenceRoot: secrets.evidenceRoot } : {}),

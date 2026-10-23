@@ -48,6 +48,7 @@ import {
   listCiRounds,
   listCloseoutRounds,
   listEvidence,
+  listIntakeQueue,
   listJobs,
   listLinearTurnsForItem,
   listOpenQuestions,
@@ -142,6 +143,16 @@ export type LiveStatusOptions = {
     workspace?: string | null;
   };
   env?: NodeJS.ProcessEnv;
+  linearUsage?: () => LinearUsageView;
+};
+
+export type LinearUsageView = {
+  budget: {
+    requestsRemaining: number | null;
+    requestsLimit: number | null;
+    requestsResetMs: number | null;
+  } | null;
+  holdUntilMs: number | null;
 };
 
 export function createLiveStatusProvider(
@@ -150,7 +161,7 @@ export function createLiveStatusProvider(
 ): { snapshot(): StatusSnapshot } {
   return {
     snapshot() {
-      return readLiveSnapshot(db, options);
+      return { ...readLiveSnapshot(db, options), ...readIntake(db, options) };
     },
   };
 }
@@ -170,6 +181,38 @@ export function emptyLiveSnapshot(
     verdicts: [],
     mergeQueue: [],
     events: [],
+  };
+}
+
+function readIntake(
+  db: Database,
+  options: LiveStatusOptions,
+): Pick<StatusSnapshot, "intake" | "linearBudget"> {
+  const at = (ms: number | null) => (ms === null ? null : iso(ms));
+  const intake = listIntakeQueue(db)
+    .filter(
+      (entry) =>
+        options.sessionIds === undefined ||
+        (entry.sessionId !== null && options.sessionIds.includes(entry.sessionId)),
+    )
+    .map((entry) => ({
+      issue: entry.issue,
+      title: entry.title,
+      receivedAt: iso(entry.receivedAt),
+      attempts: entry.attempts,
+      nextAttemptAt: at(entry.nextAttemptAt),
+      lastError: entry.lastError,
+    }));
+  const usage = options.linearUsage?.();
+  if (usage === undefined) return { intake };
+  return {
+    intake,
+    linearBudget: {
+      requestsRemaining: usage.budget?.requestsRemaining ?? null,
+      requestsLimit: usage.budget?.requestsLimit ?? null,
+      resetAt: at(usage.budget?.requestsResetMs ?? null),
+      holdUntil: at(usage.holdUntilMs),
+    },
   };
 }
 

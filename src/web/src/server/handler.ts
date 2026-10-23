@@ -8,7 +8,11 @@ import {
   type StatusSnapshot,
 } from "../contract";
 import { demoStatus } from "../demo";
-import { createLiveStatusProvider, emptyLiveSnapshot } from "../live/provider";
+import {
+  createLiveStatusProvider,
+  emptyLiveSnapshot,
+  type LiveStatusOptions,
+} from "../live/provider";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
@@ -45,6 +49,7 @@ export interface StatusServerOptions {
   evidenceRoot?: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
+  linearUsage?: LiveStatusOptions["linearUsage"];
 }
 
 export function fakeStatusProvider(): StatusProvider {
@@ -173,6 +178,7 @@ function liveProvider(options?: {
   db?: Database;
   env?: Record<string, string | undefined>;
   closeoutHome?: string;
+  linearUsage?: LiveStatusOptions["linearUsage"];
 }): StatusProvider {
   if (options?.provider) return options.provider;
   if (options?.db) {
@@ -180,6 +186,7 @@ function liveProvider(options?: {
       ...(options.sessionIds === undefined ? {} : { sessionIds: options.sessionIds }),
       ...(options.env ? { env: options.env } : {}),
       ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
+      ...(options.linearUsage ? { linearUsage: options.linearUsage } : {}),
     });
   }
   return { snapshot: () => emptyLiveSnapshot() };

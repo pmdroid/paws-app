@@ -395,3 +395,4 @@ export {
 } from "./skills";
 export type { RunnerSkillStatus, SkillAgent, SkillPin, SkillSource } from "./skills";
 export { deleteHook, listHooks, saveHook } from "./hooks";
+export { listIntakeQueue, type IntakeQueueEntry } from "./intake-queue";

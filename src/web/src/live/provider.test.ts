@@ -719,4 +719,65 @@ describe("live status provider", () => {
     const flaggedBody = (await flagged?.json()) as { source: string };
     expect(flaggedBody.source).toBe("demo");
   });
+  test("intake queue and Linear budget come from the inbox and the ledger, scoped to the session", async () => {
+    const db = database();
+    const event = (key: string, session: string, received: number, payload: object, extra = "") =>
+      db.run(
+        `INSERT INTO inbox_event (dedupe_key, source, action, session_id, issue_id, signal, updated_at_ms, payload, received_at${extra ? ", attempts, next_attempt_at, last_error" : ""}) VALUES (?, 'webhook', 'created', ?, ?, NULL, 1, ?, ?${extra})`,
+        [key, session, `issue-${key}`, JSON.stringify(payload), received],
+      );
+    event(
+      "a",
+      "s1",
+      1_000,
+      { agentSession: { issue: { identifier: "ENG-1", title: "First" } } },
+      ", 2, 90000, 'Linear GraphQL: RATELIMITED'",
+    );
+    event("b", "s2", 2_000, { kind: "session" });
+    db.run(
+      "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at, handled) VALUES ('done', 'webhook', 'created', 's1', 1, '{}', 500, 1)",
+    );
+    db.run(
+      "INSERT INTO inbox_event (dedupe_key, source, action, session_id, signal, updated_at_ms, payload, received_at) VALUES ('stop', 'webhook', 'prompted', 's1', 'stop', 1, '{}', 600)",
+    );
+    const usage = () => ({
+      budget: { requestsRemaining: 0, requestsLimit: 1500, requestsResetMs: 3_600_000 },
+      holdUntilMs: 300_000,
+    });
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+      linearUsage: usage,
+    });
+    const parsed = parseStatusSnapshot(await response!.json());
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.snapshot.items).toEqual([]);
+    expect(parsed.snapshot.intake).toEqual([
+      {
+        issue: "ENG-1",
+        title: "First",
+        receivedAt: new Date(1_000).toISOString(),
+        attempts: 2,
+        nextAttemptAt: new Date(90_000).toISOString(),
+        lastError: "Linear GraphQL: RATELIMITED",
+      },
+      {
+        issue: "issue-b",
+        title: null,
+        receivedAt: new Date(2_000).toISOString(),
+        attempts: 0,
+        nextAttemptAt: null,
+        lastError: null,
+      },
+    ]);
+    expect(parsed.snapshot.linearBudget).toEqual({
+      requestsRemaining: 0,
+      requestsLimit: 1500,
+      resetAt: new Date(3_600_000).toISOString(),
+      holdUntil: new Date(300_000).toISOString(),
+    });
+    const scoped = createLiveStatusProvider(db, { sessionIds: ["s2"] }).snapshot();
+    expect(scoped.intake?.map((entry) => entry.issue)).toEqual(["issue-b"]);
+    expect(scoped.linearBudget).toBeUndefined();
+  });
 });

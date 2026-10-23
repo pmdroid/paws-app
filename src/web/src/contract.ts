@@ -379,6 +379,24 @@ export interface StatusSnapshot {
   agentCloseout?: StatusAgentCloseout[];
   /** Failed CI reads of the visible items' pull requests, with every check on each head. */
   ciRounds?: StatusCiRound[];
+  intake?: StatusIntakeEntry[];
+  linearBudget?: StatusLinearBudget;
+}
+
+export interface StatusIntakeEntry {
+  issue: string;
+  title: string | null;
+  receivedAt: string;
+  attempts: number;
+  nextAttemptAt: string | null;
+  lastError: string | null;
+}
+
+export interface StatusLinearBudget {
+  requestsRemaining: number | null;
+  requestsLimit: number | null;
+  resetAt: string | null;
+  holdUntil: string | null;
 }
 
 export const EVIDENCE_KINDS = ["video", "image"] as const;
@@ -532,6 +550,38 @@ function readSnapshot(input: unknown): StatusSnapshot {
             readCiRound(entry, `ciRounds[${index}]`),
           ),
         }),
+    ...(body.intake === undefined
+      ? {}
+      : {
+          intake: array(body, "intake", "status").map((entry, index) =>
+            readIntake(entry, `intake[${index}]`),
+          ),
+        }),
+    ...(body.linearBudget === undefined || body.linearBudget === null
+      ? {}
+      : { linearBudget: readLinearBudget(body.linearBudget, "linearBudget") }),
+  };
+}
+
+function readIntake(input: unknown, path: string): StatusIntakeEntry {
+  const body = object(input, path);
+  return {
+    issue: text(body, "issue", path),
+    title: nullableText(body, "title", path),
+    receivedAt: dateString(body, "receivedAt", path),
+    attempts: count(body, "attempts", path),
+    nextAttemptAt: nullableDate(body, "nextAttemptAt", path),
+    lastError: nullableText(body, "lastError", path),
+  };
+}
+
+function readLinearBudget(input: unknown, path: string): StatusLinearBudget {
+  const body = object(input, path);
+  return {
+    requestsRemaining: optionalCount(body, "requestsRemaining", path),
+    requestsLimit: optionalCount(body, "requestsLimit", path),
+    resetAt: nullableDate(body, "resetAt", path),
+    holdUntil: nullableDate(body, "holdUntil", path),
   };
 }
 
@@ -1053,6 +1103,10 @@ function dateString(body: Record<string, unknown>, key: string, path: string): s
     throw new StatusContractError(`${path}.${key} must be a timestamp`);
   }
   return value;
+}
+
+function nullableDate(body: Record<string, unknown>, key: string, path: string): string | null {
+  return body[key] === null ? null : dateString(body, key, path);
 }
 
 function oneOf<T extends string>(value: string, allowed: readonly T[], path: string): T {
