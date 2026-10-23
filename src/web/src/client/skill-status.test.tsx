@@ -65,7 +65,6 @@ function classNames(html: string, marker: string): string[] {
     .filter((value) => value.split(/\s+/).includes(marker));
 }
 
-/** Nothing in the markup has a fixed width that could push a 390 px page sideways. */
 function expectNoFixedWidths(html: string) {
   expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-(?:[4-9]\d|1\d\d)(?:[\s"])/);
@@ -78,7 +77,6 @@ describe("runner page skills", () => {
     expect(html).toContain(
       '<b>impeccable</b><span class="mono" title="2.4.1">2.4.1</span></span><span class="tag ok">Up to date</span>',
     );
-    // A commit pin shows short; the full commit stays in the title.
     expect(html).toContain(`<span class="mono" title="${commit}">a1b2c3d</span>`);
     expect(html).toContain('data-skill-state="installing"');
     expect(html).toContain('<span class="tag running">Installing</span>');
@@ -112,7 +110,6 @@ describe("runner page skills", () => {
     expect(runnerRowMarkup(runner, { now, serverVersion: "1.2.0" })).toContain(
       '<span class="tag bad">Skill install failed</span>',
     );
-    // An older Paws sends no skills; the card leaves the block out instead of claiming none.
     const { skills: _, ...older } = runner;
     expect(
       runnerDetailMarkup(older, {
@@ -136,7 +133,6 @@ describe("runner page skills", () => {
     }
     for (const name of classNames(themed, "runner-skill-name")) expect(name).toContain("flex-wrap");
     expect(classNames(themed, "runner-skill-list")[0]).toContain("min-w-0");
-    // The error spans the row under the name and state instead of widening it.
     expect(themed).toMatch(/class="runner-skill[^"]*\[&amp;&gt;p\]:col-span-full/);
     expectNoFixedWidths(themed);
   });

@@ -399,7 +399,6 @@ function continuesNotice(runId: string): string {
 
 const HOOK_EVENTS: Record<string, string> = { stop: "When the agent stops" };
 
-/** The skill versions and hooks the run started with. */
 export function runSetupSection(setup: StatusRunSetup): string {
   const skills = setup.skills.length
     ? `<ul class="run-setup-list" role="list" aria-label="Skills">${setup.skills

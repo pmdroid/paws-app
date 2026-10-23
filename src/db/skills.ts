@@ -113,7 +113,6 @@ export type RunnerSkillStatus = {
   version: string;
   sha256: string;
   status: "installed" | "pending" | "refused";
-  /** Why the runner refused the bundle. Older runners do not say. */
   error: string | null;
   reportedAt: number;
 };
@@ -153,25 +152,17 @@ export function listRunnerSkills(db: Database, runnerId: string): RunnerSkillSta
     .all(runnerId);
 }
 
-/**
- * How a runner stands against one registered skill. `installing`: the runner has not reported
- * the pinned bundle yet, or a home is still being brought to it. `out_of_date`: it still reports
- * an earlier bundle. `failed`: it refused the pinned bundle.
- */
 export type RunnerSkillState = "up_to_date" | "installing" | "out_of_date" | "failed";
 
 export type RunnerSkillView = {
   name: string;
-  /** The pinned version. */
   version: string;
-  /** What the runner reports for this skill; null when it reports nothing usable. */
   installedVersion: string | null;
   state: RunnerSkillState;
   error: string | null;
   reportedAt: number | null;
 };
 
-/** Every registered skill as `runnerId` last reported it, in pin order. */
 export function runnerSkillStates(
   db: Database,
   runnerId: string,
@@ -192,8 +183,7 @@ export function runnerSkillStates(
               : row.status === "pending"
                 ? "installing"
                 : "failed"
-            : // A refusal of an earlier pin is retried with the new one on the next heartbeat.
-              row.status === "refused"
+            : row.status === "refused"
               ? "installing"
               : "out_of_date";
       return {
@@ -207,12 +197,10 @@ export function runnerSkillStates(
     });
 }
 
-/** Per registered skill: how many runners that are not revoked have the pinned bundle. */
 export type SkillRollout = {
   name: string;
   total: number;
   upToDate: number;
-  /** Runner names per state other than up to date. */
   installing: string[];
   outOfDate: string[];
   failed: string[];
@@ -247,22 +235,15 @@ export function skillRollouts(
   return [...rollouts.values()];
 }
 
-/** A hook that ran beside the agent, such as Paws's own Closeout Stop hook. */
 export type RunHook = { name: string; event: "stop" };
 
-/** The skills and hooks a run started with, on the runner that took it. */
 export type RunAgentSetup = {
   runnerId: string;
-  /** `pending`: the runner was still installing this version, so the run may have had the one before. */
   skills: { name: string; version: string; status: "installed" | "pending" }[];
   hooks: RunHook[];
   recordedAt: number;
 };
 
-/**
- * Snapshot what `runnerId` reports for the skills that apply to `agent` as the run is assigned.
- * A later attempt on another runner replaces it.
- */
 export function recordRunAgentSetup(
   db: Database,
   input: { runId: string; runnerId: string; agent: string; hooks: RunHook[]; at: number },

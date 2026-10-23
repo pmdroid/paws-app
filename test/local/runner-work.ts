@@ -162,7 +162,6 @@ export async function probeRunnerWork(
     );
     const assigned = work.assign(command);
     assert.equal(assigned.leaseUntil, now + 60_000);
-    // The run page lists what the runner had for this agent, and Paws's own Closeout hook.
     assert.deepEqual(runAgentSetup(db, run.id), {
       runnerId: firstRunner,
       skills: [

@@ -52,12 +52,10 @@ export type Runner = {
   agents?: AgentSignIn[];
   /** Sessions with a live work lease on this runner, oldest first. */
   running?: RunningSession[];
-  /** Registered skills as this runner last reported them; older Paws releases leave it out. */
   skills?: RunnerSkill[];
 };
 export type RunnerSkill = {
   name: string;
-  /** The version pinned in Paws. */
   version: string;
   installedVersion: string | null;
   state: "up_to_date" | "installing" | "out_of_date" | "failed";
@@ -271,7 +269,6 @@ const SKILL_STATES: Record<RunnerSkill["state"], [string, string]> = {
   failed: ["bad", "Install failed"],
 };
 
-/** Each registered skill with its version, its state on this runner and the last install error. */
 export function runnerSkillsMarkup(skills: readonly RunnerSkill[]): string {
   if (!skills.length)
     return '<p class="muted">No skills registered. Owners and admins add them in Settings → Agents.</p>';

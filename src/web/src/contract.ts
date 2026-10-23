@@ -181,14 +181,11 @@ export interface StatusRun {
   links: StatusLink[];
   /** Present while the run waits for its agent's usage limit to reset. */
   usagePause?: StatusUsagePause;
-  /** The skills and hooks the run started with, once a runner took it. */
   setup?: StatusRunSetup;
 }
 
 export interface StatusRunSetup {
-  /** `installing`: the runner was still installing this version, so the run may have had the earlier one. */
   skills: { name: string; version: string; installing: boolean }[];
-  /** `event` is when the hook runs, such as `stop`. */
   hooks: { name: string; event: string }[];
 }
 

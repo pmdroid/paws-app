@@ -315,7 +315,6 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
   };
 }
 
-/** The message Paws shows for a refused skill. Paths stay on the runner. */
 function installError(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   if (!message || /(?:^|\s)\/\S/.test(message))

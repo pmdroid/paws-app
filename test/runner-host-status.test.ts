@@ -301,7 +301,6 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
   expect(listRunnerSkills(runner.db, runner.runnerId)).toEqual([
     { ...installed[0]!, status: "installed", error: null, reportedAt: runner.now() },
   ]);
-  // A refused bundle carries the runner's reason; Paws keeps it for the runner page.
   const refused = {
     name: "impeccable",
     version: "2.4.1",

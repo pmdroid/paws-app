@@ -126,7 +126,6 @@ export type RunnerOverview = RunnerRecord & {
   concurrency: { desired: number | null; applied: number; ceiling: number | null } | null;
   /** Sessions holding a live work lease on this runner, oldest first. */
   running: RunnerSession[];
-  /** Every registered skill as this runner last reported it. */
   skills: RunnerSkillView[];
 };
 

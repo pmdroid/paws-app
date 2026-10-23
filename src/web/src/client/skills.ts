@@ -17,7 +17,6 @@ export type SkillPin = {
   removedAt: number | null;
 };
 
-/** How many runners that are not revoked have a skill's pinned bundle, and which ones lag. */
 export type SkillRollout = {
   name: string;
   total: number;
@@ -29,7 +28,6 @@ export type SkillRollout = {
 
 export type SkillListing = {
   skills: SkillPin[];
-  /** Older Paws releases leave it out. */
   rollouts?: SkillRollout[];
   agents: SkillAgent[];
   limitBytes: number;
@@ -103,7 +101,6 @@ function runnerNames(names: readonly string[], state: string): string {
   return names.length <= 2 ? `${names.join(", ")} ${state}` : `${names.length} runners ${state}`;
 }
 
-/** "2 of 2 up to date", then one badge per runner state that lags behind the pin. */
 export function skillRolloutMarkup(rollout: SkillRollout | undefined): string {
   if (!rollout) return "";
   if (rollout.total === 0)
