@@ -54,7 +54,7 @@ export function applyLinearCommand(
       [item.id],
     );
     db.run(
-      "UPDATE question SET cancelled_at = ? WHERE item_id = ? AND status = 'open' AND cancelled_at IS NULL",
+      "UPDATE question SET cancelled_at = ? WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL",
       [now, item.id],
     );
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);

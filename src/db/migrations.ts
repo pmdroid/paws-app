@@ -2301,4 +2301,45 @@ WHERE job.queue = 'run.resume' AND json_extract(job.payload, '$.reason') = 'reba
   AND EXISTS (SELECT 1 FROM work_item WHERE work_item.id = json_extract(job.payload, '$.itemId'));
 `,
   },
+  {
+    id: "113_question_kind_queue",
+    foreignKeys: false,
+    sql: `
+CREATE TABLE question_lifecycle (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  run_id TEXT,
+  session_id TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'agent',
+  body TEXT NOT NULL,
+  context TEXT,
+  options TEXT CHECK (options IS NULL OR json_valid(options)),
+  status TEXT NOT NULL CHECK (status IN ('queued', 'open', 'answered')),
+  answer TEXT,
+  answered_by TEXT,
+  created_at INTEGER NOT NULL,
+  answered_at INTEGER,
+  cancelled_at INTEGER,
+  answer_event_key TEXT
+) STRICT;
+INSERT INTO question_lifecycle (
+  id, item_id, run_id, session_id, kind, body, options, status, answer, answered_by,
+  created_at, answered_at, cancelled_at, answer_event_key
+)
+SELECT
+  id, item_id, run_id, session_id,
+  CASE WHEN status = 'open' AND cancelled_at IS NULL
+    AND options = '["Move to another runner","Keep waiting"]' THEN 'runner-wait' ELSE 'agent' END,
+  body, options, status, answer, answered_by, created_at, answered_at, cancelled_at, answer_event_key
+FROM question;
+DROP TABLE question;
+ALTER TABLE question_lifecycle RENAME TO question;
+CREATE INDEX question_session_open ON question (session_id, status);
+CREATE INDEX question_run_kind ON question (run_id, kind);
+CREATE UNIQUE INDEX question_one_active_session ON question (session_id)
+WHERE status = 'open' AND cancelled_at IS NULL;
+CREATE UNIQUE INDEX question_answer_event ON question (session_id, answer_event_key)
+WHERE answer_event_key IS NOT NULL;
+`,
+  },
 ];

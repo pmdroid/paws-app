@@ -22,7 +22,14 @@ import {
   type TrackerAdapter,
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { findOpenQuestion, getQuestion, handoffNote, openQuestion } from "../src/questions";
+import {
+  answerQuestion,
+  ask,
+  findOpenQuestion,
+  getQuestion,
+  handoffNote,
+  openQuestion,
+} from "../src/questions";
 import { tempDb } from "./helpers";
 
 const NOW = 1_700_000_000_000;
@@ -364,6 +371,30 @@ test("a polled prompt reaches answer delivery with normalized actor and creation
   } finally {
     poller.stop();
     await poller.settled;
+    db.close();
+  }
+});
+
+test("a runner wait asked before a restart is answered by the next process without a resume", async () => {
+  const { db, item, question, orchestrator } = setup();
+  try {
+    answerQuestion(db, question.id, { answer: "No", answeredBy: "human-1", now: NOW });
+    applyWorkItemEvent(db, item.id, "answer_received");
+    const wait = ask(
+      db,
+      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses_1" },
+      "runner-wait",
+      "Move the task to another runner, or keep waiting?",
+      { options: ["Move to another runner", "Keep waiting"], now: NOW },
+    );
+    expect(wait.status).toBe("asked");
+    await orchestrator.onLinearEvent(prompt(NOW + 1, "keep-waiting"));
+    expect(getQuestion(db, wait.question.id)).toMatchObject({
+      status: "answered",
+      answeredBy: "human-1",
+    });
+    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
+  } finally {
     db.close();
   }
 });
