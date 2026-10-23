@@ -100,13 +100,8 @@ function requeue(
   return result.changes > 0 ? "parked" : "lost";
 }
 
-/** How long a merge job waits before it checks again whether the task's other job let go. */
 export const MERGE_OWNER_POLL_MS = 5_000;
 
-/**
- * Puts a merge job back without spending an attempt, for example while the task's start job is
- * still finishing after Closeout accepted the candidate.
- */
 export function waitForMergeTurn(
   db: Database,
   job: Job,
@@ -116,7 +111,6 @@ export function waitForMergeTurn(
   return requeue(db, job, now + delayMs, payloadRecord(job.payload), now, job.attempts - 1);
 }
 
-/** Schedules the next attempt of a failed merge job. The attempt stays spent. */
 export function retryMergeLater(
   db: Database,
   job: Job,

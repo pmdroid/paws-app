@@ -483,7 +483,6 @@ describe("hard caps", () => {
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
-    // A restart or a moved main sends the accepted candidate back through Closeout.
     applyWorkItemEvent(db, item.id, "reverify_requested");
     clock.advance(4 * 60 * 60_000);
     const result = accrueAwake(db, item.id, clock.mono(), clock.now());

@@ -1085,8 +1085,6 @@ export class Orchestrator {
     );
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const ownerId = readString(job.payload, "itemId");
-      // The start job that ran Closeout may still be finishing, for example posting to Linear.
-      // Wait for it without spending an attempt, or the merge job dies before the PR opens.
       if (ownerId !== null && this.jobContexts.has(ownerId)) {
         if (context.isCurrent()) waitForMergeTurn(this.db, job, this.now());
         return;
@@ -1097,8 +1095,6 @@ export class Orchestrator {
           waiting = wait;
         });
       } catch (error) {
-        // A failed pull-request or merge step is Paws's own. It retries from the accepted
-        // candidate with backoff; the agent is not resumed. The last attempt fails the task.
         if (this.shuttingDown || job.attempts >= job.maxAttempts || !context.isCurrent())
           throw error;
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
@@ -5780,7 +5776,6 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
   );
 }
 
-/** Names the branch that holds the work Closeout accepted, for a failure Linear sees. */
 function withAcceptedBranch(text: string, item: WorkItemRecord): string {
   const sentence = /[.!?]$/.test(text) ? text : `${text}.`;
   return `${sentence} The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`;

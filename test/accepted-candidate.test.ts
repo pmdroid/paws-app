@@ -153,7 +153,6 @@ async function runAccepted(options: {
       ]);
       const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-8");
       if (options.capAfterAcceptance && !capChecked && item?.state === "merge_queue") {
-        // The agent's session is still open, and the task is past its awake time cap.
         const runId = item.currentRunId;
         if (runId) markRun(db, runId, "active", Date.now());
         db.run("UPDATE work_item SET max_awake_ms = 1, awake_ms = 60000 WHERE id = ?", [item.id]);
