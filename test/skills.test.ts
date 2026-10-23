@@ -4,7 +4,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { getSkill, migrate, openDatabase } from "../src/db";
+import {
+  getSkill,
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+  recordRunnerSkills,
+  syncWorkspaceMember,
+} from "../src/db";
 import { handleSkillSettingsRequest, type SkillSettingsOptions } from "../src/settings";
 import {
   addSkill,
@@ -219,6 +226,40 @@ describe("skill pins", () => {
     const removed = removeSkill({ db, now: 5 }, "fake");
     expect(removed.removedAt).toBe(5);
     expect(() => removeSkill({ db, now: 6 }, "fake")).toThrow("No skill named fake");
+  });
+
+  test("a removed skill is forgotten once no runner reports it", async () => {
+    await addSkill(registry(fakeSkillResolver()), { kind: "npm", package: "impeccable" });
+    const userId = putWorkspaceUser(db, {
+      id: "user-1",
+      linearUserId: "user-linear",
+      name: "Owner",
+      email: "owner@example.invalid",
+    });
+    db.run("INSERT INTO workspace VALUES('ws-1','org-1','Workspace',1)");
+    syncWorkspaceMember(db, {
+      workspaceId: "ws-1",
+      userId,
+      role: "owner",
+      active: true,
+      teamIds: [],
+      now: 1,
+    });
+    for (const id of ["runner-1", "runner-2"])
+      db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'ws-1',?,?,'active',1,1)",
+        [id, userId, id],
+      );
+    const installed = [
+      { name: "fake", version: "1.0.0", sha256: "a", status: "installed" as const },
+    ];
+    recordRunnerSkills(db, "runner-1", installed, 2);
+    recordRunnerSkills(db, "runner-2", installed, 2);
+    removeSkill({ db, now: 5 }, "fake");
+    recordRunnerSkills(db, "runner-1", [], 6);
+    expect(getSkill(db, "fake")?.removedAt).toBe(5);
+    recordRunnerSkills(db, "runner-2", [], 7);
+    expect(getSkill(db, "fake")).toBeNull();
   });
 });
 
