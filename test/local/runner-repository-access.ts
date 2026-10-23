@@ -114,8 +114,12 @@ export async function probeRunnerRepositoryAccess(
   let installation: string | null = "fixture-installation";
   const bot = { appId: "99", login: "paws-test[bot]", id: 88 };
   let currentBot = bot;
+  let botOutage = false;
   const endpoint = createRunnerRepositoryAccess({
-    checkpointBot: async () => currentBot,
+    checkpointBot: async () => {
+      if (botOutage) throw new Error("GitHub returned HTTP 504");
+      return currentBot;
+    },
     work,
     github,
     now: () => now,
@@ -344,6 +348,22 @@ export async function probeRunnerRepositoryAccess(
     assert.equal(JSON.parse(skew.body).expiresAt, now + MAX_TOKEN_TTL_MS);
     assert(JSON.parse(skew.body).expiresAt <= provider.expiresAt.getTime());
     tokenLifetime = 60_000;
+    beforeMint = () => {
+      throw new Error("GitHub returned HTTP 502");
+    };
+    const mintFailure = await exchange(first, "read");
+    beforeMint = undefined;
+    botOutage = true;
+    const botFailure = await exchange(first, "write");
+    botOutage = false;
+    assert.equal(mintFailure.status, 503);
+    assert.equal(botFailure.status, 503);
+    assert(!mintFailure.body.includes("fake-installation-token"));
+    assert.equal((await exchange(first, "read")).status, 200);
+    observe("a GitHub failure while minting or checking the bot is retryable, not a denial", true, {
+      mintFailure: mintFailure.status,
+      botFailure: botFailure.status,
+    });
     observe(
       "valid provider clock skew is accepted with conservative one-hour runner expiry",
       true,

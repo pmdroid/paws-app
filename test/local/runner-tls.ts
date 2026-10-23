@@ -29,9 +29,11 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
   let authorizationCount = 0;
   let expireAtAuthorization = 0;
   let bodyAuthorized: (() => void) | undefined;
+  const logged: string[] = [];
   const listener = await startRunnerListener({
     tls: { ...server, ca: authority.certificate },
     now: () => now,
+    log: (line) => logged.push(line),
     authorize: async (peer) => {
       authorizationCount++;
       if (authorizationCount === expireAtAuthorization) {
@@ -44,6 +46,12 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
     },
     async fetch(input, peer) {
       accepted.push({ path: new URL(input.url).pathname, peer });
+      if (new URL(input.url).pathname === "/unavailable")
+        return new Response(null, { status: 503 });
+      if (new URL(input.url).pathname === "/slow") {
+        now += 6_000;
+        return new Response(null, { status: 204 });
+      }
       if (new URL(input.url).pathname === "/expire-before-response") {
         now = certificate.notAfter + 1;
         return new Response(null, { status: 204 });
@@ -156,6 +164,16 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
       status: valid.status,
       fingerprint: certificate.fingerprint,
       serial: certificate.serial,
+    });
+    assert.equal(logged.length, 0);
+    assert.equal((await call({ cert: certificate.pem, key, path: "/unavailable" })).status, 503);
+    assert.equal((await call({ cert: certificate.pem, key, path: "/slow" })).status, 204);
+    now = Date.now();
+    assert.equal(logged.length, 2);
+    assert.match(logged[0]!, /GET \/unavailable answered 503 in \d+ ms/);
+    assert.match(logged[1]!, /GET \/slow answered 204 in 6\d{3} ms/);
+    observe("failed and slow runner requests are logged with path, status and duration", true, {
+      logged,
     });
     const missing = await denied({
       headers: { "x-client-cert": certificate.pem.replace(/\n/g, "") },

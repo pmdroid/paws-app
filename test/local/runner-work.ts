@@ -360,6 +360,28 @@ export async function probeRunnerWork(
       true,
       { matchingQuestionAllowed: true, unrelatedWaitDenied: true, answeredTaskResumed: true },
     );
+    now += 90_000;
+    const reattached = work.heartbeat(firstRunner);
+    assert.deepEqual(reattached.fenced, []);
+    assert.equal(reattached.leases[0]!.expiresAt, now + 60_000);
+    now += 90_000;
+    const renewedGrant = work.issueGrant(grantInput);
+    assert.equal(renewedGrant.expiresAt, now + 60_000);
+    assert.equal(work.authorize({ ...event, token: renewedGrant.token }).command.id, command.id);
+    assert.equal(
+      work.event({
+        ...event,
+        token: renewedGrant.token,
+        sequence: 2,
+        event: { type: "progress", text: "Back online" },
+      }).duplicate,
+      false,
+    );
+    observe(
+      "a lease that lapsed during a control-plane outage is renewed while its run is still current",
+      true,
+      { heartbeatReattached: true, grantRenewedLease: true, eventAccepted: true },
+    );
     now += 15_000;
     const heartbeat = work.heartbeat(firstRunner);
     assert.equal(heartbeat.leases[0]!.expiresAt, now + 60_000);
@@ -368,8 +390,8 @@ export async function probeRunnerWork(
     now = cap;
     assert.equal(work.heartbeat(firstRunner).leases[0]!.expiresAt, command.expiresAt);
     now = command.expiresAt;
-    assert.throws(() => work.issueGrant(grantInput), /lease expired/);
-    assert.throws(() => work.event({ ...event, sequence: 2 }), /lease expired/);
+    assert.throws(() => work.issueGrant(grantInput), /command expired/);
+    assert.throws(() => work.event({ ...event, sequence: 2 }), /command expired/);
     const expired = work.heartbeat(firstRunner);
     assert.deepEqual(expired.leases, []);
     assert.equal(expired.fenced[0]!.generation, 1);

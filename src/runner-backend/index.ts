@@ -45,7 +45,7 @@ import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
-import type { RunnerCommand, RunnerResult } from "../runner-protocol";
+import { RUNNER_LEASE_GRACE_MS, type RunnerCommand, type RunnerResult } from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
@@ -1025,7 +1025,7 @@ export function createRemoteAgentRunner(options: {
                   "SELECT last_seen_at AS lastSeen FROM runner WHERE id=?",
                 )
                 .get(selected.id)?.lastSeen ?? 0) <=
-                now() - 60_000
+                now() - 60_000 - RUNNER_LEASE_GRACE_MS
             ) {
               const lost = immediate(db, () =>
                 options.placement?.finished({
