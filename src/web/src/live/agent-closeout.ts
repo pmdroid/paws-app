@@ -28,6 +28,7 @@ export function agentCloseoutOf(
   events: readonly AgentCloseoutEvent[],
   nowMs: number,
   env: NodeJS.ProcessEnv,
+  endedAtMs: number | null = null,
 ): StatusAgentCloseout | null {
   const last = events.at(-1);
   if (last === undefined) return null;
@@ -102,7 +103,7 @@ export function agentCloseoutOf(
     const checksShown = shown.map(({ entry, run }) =>
       entry.kind === "evidence"
         ? evidenceCheck(entry, report?.status.get(entry.id))
-        : toCheck(entry, run, nowMs, env),
+        : toCheck(entry, run, nowMs, env, endedAtMs),
     );
     attempts.push({
       number,
@@ -132,11 +133,23 @@ function toCheck(
   run: Run | undefined,
   nowMs: number,
   env: NodeJS.ProcessEnv,
+  endedAtMs: number | null,
 ): StatusCheck {
   const kind = checkKind(entry.kind);
   if (run === undefined)
     return { id: entry.id, kind, state: "pending", command: entry.command, detail: null };
   const done = run.finished;
+  if (done === undefined && endedAtMs !== null)
+    return {
+      id: entry.id,
+      kind,
+      state: "stopped",
+      command: entry.command,
+      detail: "Stopped: the run ended before this check finished.",
+      attempt: run.attempt,
+      elapsedMs: Math.max(0, endedAtMs - run.startedAt),
+      active: false,
+    };
   if (done === undefined)
     return {
       id: entry.id,

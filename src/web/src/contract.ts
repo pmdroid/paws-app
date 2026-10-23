@@ -52,6 +52,7 @@ export const CHECK_STATES = [
   "skipped",
   "blocked",
   "exhausted",
+  "stopped",
 ] as const;
 export const CHECK_KINDS = ["setup", "command", "review", "evidence"] as const;
 export const STEP_STATES = ["done", "run", "wait"] as const;
@@ -242,6 +243,8 @@ export interface StatusAgentCloseout {
   updatedAt: string;
   attempts: StatusCloseoutAttempt[];
   steps: StatusAgentCloseoutStep[];
+  endedAt?: string;
+  continuesIn?: string;
 }
 
 export const AGENT_CLOSEOUT_TOOLS = ["get_closeout", "run_closeout"] as const;
@@ -637,6 +640,8 @@ function readAgentCloseout(input: unknown, path: string): StatusAgentCloseout {
         headSha: optionalText(row, "headSha"),
       };
     }),
+    ...(body.endedAt === undefined ? {} : { endedAt: dateString(body, "endedAt", path) }),
+    ...(body.continuesIn === undefined ? {} : { continuesIn: text(body, "continuesIn", path) }),
   };
 }
 

@@ -296,30 +296,53 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     }),
     events: eventsFor(rows),
     evidence: evidenceFor(db, records),
-    agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
+    agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
     ciRounds: ciRoundsFor(db, records, env),
   };
 }
 
 function agentCloseoutFor(
   db: Database,
-  items: readonly StatusItem[],
+  records: readonly WorkItemRecord[],
   nowMs: number,
   env: NodeJS.ProcessEnv,
 ): StatusAgentCloseout[] {
-  const shown = items.flatMap((item) => (item.runId ? [[item.runId, item.id] as const] : []));
+  const stored = new Map<string, StoredRun[]>();
+  for (const run of listRuns(db)) stored.set(run.itemId, [...(stored.get(run.itemId) ?? []), run]);
+  const shown = records.flatMap((record) => {
+    const runs = stored.get(record.id) ?? [];
+    const current = runs.find((run) => run.id === record.currentRunId);
+    if (current === undefined) return [];
+    return [...new Set([runs[0]!, current])].map((run) => ({ record, run, current }));
+  });
   const byRun = new Map<string, AgentCloseoutEvent[]>();
   for (const event of listAgentCloseout(
     db,
-    shown.map(([runId]) => runId),
+    shown.map(({ run }) => run.id),
   )) {
     const events = byRun.get(event.runId) ?? [];
     events.push(event);
     byRun.set(event.runId, events);
   }
-  return shown.flatMap(([runId, itemId]) => {
-    const folded = agentCloseoutOf(itemId, runId, byRun.get(runId) ?? [], nowMs, env);
-    return folded ? [folded] : [];
+  return shown.flatMap(({ record, run, current }) => {
+    const endedAt = run.status === "ended" || run.status === "lost" ? run.updatedAt : null;
+    const folded = agentCloseoutOf(
+      publicId(record),
+      run.id,
+      byRun.get(run.id) ?? [],
+      nowMs,
+      env,
+      endedAt,
+    );
+    if (folded === null) return [];
+    if (endedAt === null) return [folded];
+    return [
+      {
+        ...folded,
+        endedAt: iso(endedAt),
+        ...(current === run ? {} : { continuesIn: current.id }),
+      },
+    ];
   });
 }
 

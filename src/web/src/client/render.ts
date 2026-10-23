@@ -350,7 +350,10 @@ function viewRuns(
   const item = findItem(snapshot, selected.itemId);
   const title = item?.title ?? selected.itemId;
   const verdict = itemVerdict(snapshot, selected.itemId);
-  const agent = findAgentCloseout(snapshot.agentCloseout, selected.id);
+  const agent = findAgentCloseout(
+    snapshot.agentCloseout,
+    id !== null && selected.attempts?.includes(id) ? id : selected.id,
+  );
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
   const transcriptPath = `/status/runs/${encodeURIComponent(selected.id)}/transcript`;
   const transcriptHref = engine === null ? transcriptPath : new URL(transcriptPath, engine).href;
@@ -361,6 +364,7 @@ function viewRuns(
       <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}${item?.linearRequests === undefined ? "" : ` · ${item.linearRequests} Linear request${item.linearRequests === 1 ? "" : "s"}`}</p>
     </header>
     ${phaseStrip(item, selected, verdict, agent)}
+    ${agent?.continuesIn ? continuesNotice(agent.continuesIn) : ""}
     ${item ? queueNotice(item) : ""}
     ${item ? mergeQueueNotice(item) : ""}
     ${item ? githubQueueNotice(item) : ""}
@@ -379,6 +383,10 @@ function viewRuns(
       ${activityActions(snapshot.source === "live" ? transcriptHref : null, selected.links)}
       <div class="log" data-log="activity-${esc(selected.id)}" data-follow="">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
     </section></article>`;
+}
+
+function continuesNotice(runId: string): string {
+  return `<section class="closeout-result run-continues" aria-label="Current run"><span class="result-icon" aria-hidden="true">→</span><p>This task continues in run <a class="mono" href="${routeHref({ view: "runs", id: runId })}">${esc(runId.slice(0, 8))}</a>.</p></section>`;
 }
 
 function executionControls(run: StatusRun): string {
