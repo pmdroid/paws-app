@@ -992,6 +992,7 @@ function readCheck(input: unknown, path: string): StatusCheck {
     logPath: optionalText(body, "logPath"),
     evidencePath: optionalText(body, "evidencePath"),
     active: optionalBoolean(body, "active"),
+    tokens: optionalCount(body, "tokens", path),
   };
 }
 

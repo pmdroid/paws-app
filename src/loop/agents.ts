@@ -133,7 +133,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       const turn = async (
         turnPrompt: string,
         resume?: RunAgentOptions["resume"],
-      ): Promise<{ identity: AgentIdentity; sessionId: string; text: string }> => {
+      ): Promise<{ identity: AgentIdentity; sessionId: string; text: string; tokens?: number }> => {
         let text = "";
         const refusals: Extract<AcpEvent, { type: "permission" }>[] = [];
         let result: RunAgentResult;
@@ -193,11 +193,17 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
           identity: result.identity,
           sessionId: result.sessionId ?? result.identity.session,
           text,
+          ...(result.tokens === undefined ? {} : { tokens: result.tokens }),
         };
       };
       const first = await turn(prompt);
       const parsed = parseReviewFindings(first.text);
-      if (parsed.ok) return { ...first.identity, findings: parsed.findings };
+      if (parsed.ok)
+        return {
+          ...first.identity,
+          findings: parsed.findings,
+          ...(first.tokens === undefined ? {} : { tokens: first.tokens }),
+        };
       // One follow-up in the same reviewer session. A runner that cannot load the
       // session replays the review prompt and the earlier reply instead.
       const followUp = findingsFollowUp(parsed.reason);
@@ -205,7 +211,15 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         sessionId: first.sessionId,
         replayPrompt: [prompt, "Your earlier reply:", first.text, followUp].join("\n\n"),
       });
-      return { ...second.identity, findings: parseFindings(second.text) };
+      const tokens =
+        first.tokens === undefined && second.tokens === undefined
+          ? undefined
+          : (first.tokens ?? 0) + (second.tokens ?? 0);
+      return {
+        ...second.identity,
+        findings: parseFindings(second.text),
+        ...(tokens === undefined ? {} : { tokens }),
+      };
     },
   };
 }

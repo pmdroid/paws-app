@@ -2242,4 +2242,11 @@ CREATE TABLE run_agent_setup (
 ) STRICT;
 `,
   },
+  {
+    id: "107_closeout_step_review_metrics",
+    sql: `
+ALTER TABLE closeout_step ADD COLUMN duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0);
+ALTER TABLE closeout_step ADD COLUMN tokens INTEGER CHECK (tokens IS NULL OR tokens >= 0);
+`,
+  },
 ];
