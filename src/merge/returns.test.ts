@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
+  beginImplementRun,
   enqueueJob,
   enterMergeQueue,
   getWorkItem,
@@ -17,6 +18,7 @@ function queued() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  beginImplementRun(db, "eng-1", 1);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
   return db;
 }
