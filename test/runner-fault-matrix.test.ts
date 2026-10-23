@@ -19,7 +19,11 @@ import {
   resumeUsagePauseNow,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
-import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
+import {
+  createFakeLinearIssueLifecycle,
+  createFakeTracker,
+  createLinearClient,
+} from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -32,7 +36,13 @@ import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { migratedDatabase } from "./helpers";
 
-type Fault = "fenced" | "busy" | "unpaired" | "usage-limit" | "preparation-usage-limit";
+type Fault =
+  | "fenced"
+  | "busy"
+  | "unpaired"
+  | "usage-limit"
+  | "preparation-usage-limit"
+  | "linear-503";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const fakeAgent = join(import.meta.dir, "../src/acp/testing/fake-agent.ts");
@@ -81,6 +91,21 @@ test("a deferred remote run is lost, holds no runner slot, and its retry is a ne
   expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
   expect(new Set(result.runIds).size, result.detail).toBe(2);
   expect(result.heldSlots, result.detail).toBe(0);
+}, 60_000);
+
+test("a Linear 503 while the task is placed is retried and the task reaches Closeout", async () => {
+  const result = await runRemoteFault("linear-503");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual([1]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(
+    result.thoughts.some(
+      (body) =>
+        body.includes("Linear GraphQL HTTP 503") && /Paws tries again in \d+ s\.$/.test(body),
+    ),
+    result.detail,
+  ).toBe(true);
 }, 60_000);
 
 test("a usage limit is waited out inside failover and the task reaches Closeout after the reset", async () => {
@@ -226,7 +251,23 @@ async function runRemoteFault(fault: Fault) {
     health,
     placement: createRunnerPlacement({
       db,
-      lifecycle,
+      lifecycle: {
+        ...lifecycle,
+        async inspect(issueId, options) {
+          if (fault === "linear-503" && runner.faulty) {
+            runner.faultedAttempts++;
+            await createLinearClient({
+              auth: {
+                hasToken: () => true,
+                ensureFresh: async () => "synthetic-linear-token",
+                forceRefresh: async () => "synthetic-linear-token",
+              },
+              fetch: async () => new Response("", { status: 503 }),
+            }).query("query { viewer { id } }");
+          }
+          return lifecycle.inspect(issueId, options);
+        },
+      },
       tracker: { listProjectMembers: async () => ["owner"] },
     }),
     pollIntervalMs: 5,
