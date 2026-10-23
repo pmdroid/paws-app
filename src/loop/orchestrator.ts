@@ -276,7 +276,6 @@ import {
   type VerificationOwner,
 } from "./merge-jobs";
 import {
-  MAX_REBASE_RETURNS,
   REBASE_CONFLICT_INSTRUCTION,
   REBASE_CONFLICT_THOUGHT,
   mergeQueueTurn,
@@ -286,17 +285,18 @@ import {
   ciFixRoundLine,
   ciWaitVerification,
   parkMerge,
+  rebaseBudgetFor,
   serialMergeStep,
   wakeMergesBehind,
   askMergeHelp,
   ciFixes,
-  rebaseReturns,
   returnToAgent,
   type MergeContext,
   type MergeReturnReason,
   type MergeStep,
   type MergeWait,
   type OrderCapabilities,
+  type RebaseConflict,
 } from "../merge";
 import {
   createAcpActivityReporter,
@@ -2882,12 +2882,16 @@ export class Orchestrator {
       },
     });
     const ciFixLimit = this.ciFixAttempts();
+    const conflict: RebaseConflict = {
+      base: merged.base ?? null,
+      files: merged.conflictFiles ?? null,
+    };
     const { step, leaveQueue } = serialMergeStep({
       result: merged,
       queued,
       closeoutAfterUpdate,
       closeoutFailed: closeoutFailure !== null,
-      rebaseReturns: rebaseReturns(this.db, item.id),
+      rebaseBudget: rebaseBudgetFor(this.db, item.id, conflict, this.now()),
       ciFixes: ciFixes(this.db, item.id),
       ciFixLimit,
     });
@@ -2932,7 +2936,7 @@ export class Orchestrator {
         this.returnToAgent(
           item,
           "rebase-conflict",
-          MAX_REBASE_RETURNS,
+          () => rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed,
           REBASE_CONFLICT_INSTRUCTION,
           () => REBASE_CONFLICT_THOUGHT,
           (returnJobId) =>
@@ -2941,6 +2945,8 @@ export class Orchestrator {
               jobId: returnJobId,
               candidate: merged.head ?? null,
               reason: "merge",
+              ...conflict,
+              recordedAt: this.now(),
             }),
         )
       )
@@ -2954,7 +2960,7 @@ export class Orchestrator {
           this.returnToAgent(
             item,
             "ci-failed",
-            ciFixLimit,
+            (fixes) => fixes < ciFixLimit,
             ciFixHandoff(checks),
             (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
             (_, attempt) => round("agent", attempt),
@@ -3166,7 +3172,7 @@ export class Orchestrator {
   private returnToAgent(
     item: WorkItemRecord,
     reason: MergeReturnReason,
-    limit: number,
+    admit: (returns: number) => boolean,
     handoff: string,
     thought: (attempt: number) => string,
     record: (jobId: number, attempt: number) => void,
@@ -3174,7 +3180,7 @@ export class Orchestrator {
     return returnToAgent(this.db, {
       itemId: item.id,
       reason,
-      limit,
+      admit,
       handoff,
       now: this.now(),
       record,
@@ -4336,12 +4342,15 @@ export class Orchestrator {
         "Prior ACP process cleanup could not be verified; user update remains pending",
       );
     // Linear's "Fix merge conflicts" on the open pull request is a rebase-conflict return.
-    const rebase =
+    const upstream =
       item.id === routed?.id &&
       this.hasOpenedPullRequest(item.id) &&
-      turns.some((turn) => isMergeConflictRequest(turn.body)) &&
-      rebaseReturns(this.db, item.id) < MAX_REBASE_RETURNS &&
-      (await this.fetchUpstreamMain(item));
+      turns.some((turn) => isMergeConflictRequest(turn.body))
+        ? await this.fetchUpstreamMain(item)
+        : null;
+    const conflict: RebaseConflict = { base: upstream, files: null };
+    const rebase =
+      upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
     immediate(this.db, () => {
@@ -4378,18 +4387,23 @@ export class Orchestrator {
           jobId,
           candidate: null,
           reason: "linear",
+          ...conflict,
+          recordedAt: this.now(),
         });
     });
     await this.flush();
   }
 
-  /** Fetch main into the item's worktree, as a merge pass does before a rebase-conflict return. */
-  private async fetchUpstreamMain(item: WorkItemRecord): Promise<boolean> {
+  /**
+   * Fetch main into the item's worktree, as a merge pass does before a
+   * rebase-conflict return. Returns main's commit, or null without a worktree.
+   */
+  private async fetchUpstreamMain(item: WorkItemRecord): Promise<string | null> {
     const repository = this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
-    if (!repository || !github || !existsSync(worktree)) return false;
-    await fetchUpstreamMain({
+    if (!repository || !github || !existsSync(worktree)) return null;
+    return fetchUpstreamMain({
       worktree,
       owner: repository.owner,
       repo: repository.repo,
@@ -4397,7 +4411,6 @@ export class Orchestrator {
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
-    return true;
   }
 
   private async forwardFollowUp(
