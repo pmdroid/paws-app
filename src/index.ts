@@ -65,6 +65,7 @@ import {
   listWorkItemsByStates,
   listWorkItems,
   clearUsagePauses,
+  countLinearRequest,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -406,6 +407,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       ? openLinear({
           db,
           signal: abort.signal,
+          countItemRequest: (itemId) => countLinearRequest(db, itemId),
           secretsDir: paths.secretsDir,
           isAuthorized: () =>
             !isLinearAppRevoked(db, {
@@ -1174,7 +1176,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
         const forItem = <T>(itemId: string, run: () => T): T => {
           const item = getWorkItem(db, itemId);
-          return item ? linearItem(item.linearIdentifier, run) : run();
+          return item ? linearItem(item.linearIdentifier, run, item.id) : run();
         };
         created.jobs.register("linear.item.reconcile", async (job) => {
           const target = job.payload as { itemId: string; workspaceId: string };

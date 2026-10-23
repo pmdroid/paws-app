@@ -110,6 +110,7 @@ export interface StatusItem {
   mergeQueue?: StatusMergeQueue;
   /** The item's pull request waits in its repository's GitHub merge queue. */
   githubQueue?: StatusGitHubQueue;
+  linearRequests?: number;
 }
 
 export interface StatusMergeQueue {
@@ -711,6 +712,9 @@ function readItem(input: unknown, index: number): StatusItem {
     ...(body.githubQueue === undefined
       ? {}
       : { githubQueue: readGitHubQueue(body.githubQueue, `${path}.githubQueue`) }),
+    ...(body.linearRequests === undefined
+      ? {}
+      : { linearRequests: count(body, "linearRequests", path) }),
   };
 }
 
