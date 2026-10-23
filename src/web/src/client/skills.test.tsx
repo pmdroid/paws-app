@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { themedMarkup } from "./theme";
-import { parseSkillSource, renderSkillSettings, type SkillListing } from "./skills";
+import {
+  parseSkillSource,
+  renderSkillSettings,
+  skillSourceGuess,
+  type SkillListing,
+} from "./skills";
+
+const TREE = "https://github.com/pbakaus/impeccable/tree/main/.claude/skills/impeccable";
 
 const listing: SkillListing = {
   agents: ["claude", "codex", "grok"],
@@ -189,9 +196,93 @@ describe("skill source field", () => {
     });
     expect(parseSkillSource("github.com/pmdroid/skills")).toEqual({
       kind: "git",
-      url: "https://github.com/pmdroid/skills",
+      url: "github.com/pmdroid/skills",
     });
     expect(parseSkillSource("git@github.com:pmdroid/skills.git")).toMatchObject({ kind: "git" });
     expect(parseSkillSource("  ")).toBeNull();
+  });
+
+  test("a bare owner/repo is GitHub and npm stays reachable as npm:", () => {
+    expect(parseSkillSource("pbakaus/impeccable")).toEqual({
+      kind: "git",
+      url: "pbakaus/impeccable",
+    });
+    expect(parseSkillSource("npm:impeccable@2.4.1")).toEqual({
+      kind: "npm",
+      package: "impeccable",
+      version: "2.4.1",
+    });
+  });
+
+  test("reads the ref and subfolder from a GitHub tree or blob URL", () => {
+    expect(skillSourceGuess(TREE)).toEqual({ ref: "main", subfolder: ".claude/skills/impeccable" });
+    expect(skillSourceGuess(`${TREE}/`)).toEqual({
+      ref: "main",
+      subfolder: ".claude/skills/impeccable",
+    });
+    expect(
+      skillSourceGuess(
+        "https://github.com/pbakaus/impeccable/blob/main/.claude/skills/impeccable/SKILL.md",
+      ),
+    ).toEqual({ ref: "main", subfolder: ".claude/skills/impeccable" });
+    expect(skillSourceGuess("https://github.com/pmdroid/skills/tree/release/1.2/skills/x")).toEqual(
+      { ref: "release", subfolder: "1.2/skills/x" },
+    );
+    expect(skillSourceGuess("https://github.com/pbakaus/impeccable.git")).toEqual({
+      ref: "",
+      subfolder: "",
+    });
+    expect(skillSourceGuess("impeccable")).toBeNull();
+  });
+
+  test("an untouched guess leaves the split to the server; an owner's change is sent", () => {
+    expect(parseSkillSource(TREE, "main", ".claude/skills/impeccable")).toEqual({
+      kind: "git",
+      url: TREE,
+    });
+    expect(parseSkillSource(TREE, "v2", ".claude/skills/impeccable")).toEqual({
+      kind: "git",
+      url: TREE,
+      ref: "v2",
+      subfolder: ".claude/skills/impeccable",
+    });
+  });
+});
+
+describe("filled-in ref and subfolder", () => {
+  const html = markup(
+    renderSkillSettings({
+      data: listing,
+      busy: null,
+      error: null,
+      notice: null,
+      draft: {
+        source: TREE,
+        ref: "main",
+        subfolder: ".claude/skills/impeccable",
+        agents: ["claude", "codex"],
+      },
+    }),
+  );
+
+  test("opens the section and shows what was read from the URL", () => {
+    expect(html).toMatch(/<details[^>]*open=""/);
+    expect(html).toContain(`value="${TREE}"`);
+    expect(html).toContain('value="main"');
+    expect(html).toContain('value=".claude/skills/impeccable"');
+    expect(html).toContain("A GitHub tree or blob URL fills these in.");
+  });
+
+  test("fits a 390 px phone without horizontal scroll", () => {
+    const controls = classNames(html, "settings-controls")[0]!;
+    expect(controls).toContain("grid-cols-1");
+    expect(controls).toContain("sm:grid-cols-2");
+    for (const field of classNames(html, "settings-field")) expect(field).toContain("min-w-0");
+    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
+  });
+
+  test("a plain source keeps the section closed", () => {
+    const closed = renderSkillSettings({ data: listing, busy: null, error: null, notice: null });
+    expect(closed).not.toMatch(/<details[^>]*open/);
   });
 });

@@ -18,6 +18,7 @@ import {
   createSkillResolver,
   createSkillUpdates,
   fakeSkillResolver,
+  readSkillSource,
   removeSkill,
   SKILL_BUNDLE_FILE,
   updateSkill,
@@ -101,6 +102,71 @@ function git(cwd: string, ...args: string[]) {
   return result.stdout.toString().trim();
 }
 
+describe("skill source text", () => {
+  test("reads every common git form and fills the ref and subfolder from the URL", () => {
+    expect(readSkillSource("pbakaus/impeccable")).toEqual({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable",
+    });
+    expect(readSkillSource("https://github.com/pbakaus/impeccable")).toEqual({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable",
+    });
+    expect(readSkillSource("https://github.com/pbakaus/impeccable.git")).toEqual({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable.git",
+    });
+    expect(readSkillSource("https://github.com/pbakaus/impeccable/")).toEqual({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable",
+    });
+    expect(
+      readSkillSource("https://github.com/pbakaus/impeccable/tree/main/.claude/skills/impeccable/"),
+    ).toEqual({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable",
+      path: "main/.claude/skills/impeccable",
+    });
+    expect(
+      readSkillSource(
+        "https://github.com/pbakaus/impeccable/blob/main/.claude/skills/impeccable/SKILL.md",
+      ),
+    ).toEqual({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable",
+      path: "main/.claude/skills/impeccable",
+    });
+    expect(readSkillSource("github.com/pmdroid/skills/tree/release/1.2/skills/x")).toEqual({
+      kind: "git",
+      url: "https://github.com/pmdroid/skills",
+      path: "release/1.2/skills/x",
+    });
+    expect(readSkillSource("git@github.com:pmdroid/skills.git")).toEqual({
+      kind: "git",
+      url: "git@github.com:pmdroid/skills.git",
+    });
+    expect(readSkillSource("ssh://git@example.test/skills.git")).toEqual({
+      kind: "git",
+      url: "ssh://git@example.test/skills.git",
+    });
+  });
+
+  test("npm packages keep working and a bare owner/repo is GitHub unless it says npm:", () => {
+    expect(readSkillSource("impeccable")).toEqual({ kind: "npm", package: "impeccable" });
+    expect(readSkillSource("@acme/skill@1.2.3")).toEqual({
+      kind: "npm",
+      package: "@acme/skill",
+      version: "1.2.3",
+    });
+    expect(readSkillSource("npm:impeccable@2.4.1")).toEqual({
+      kind: "npm",
+      package: "impeccable",
+      version: "2.4.1",
+    });
+    expect(() => readSkillSource("  ")).toThrow("Choose an npm package or a git URL.");
+  });
+});
+
 describe("skill sources", () => {
   test("an npm package resolves to its exact latest version and a checksummed bundle", async () => {
     const npm = npmRegistry({
@@ -171,6 +237,33 @@ describe("skill sources", () => {
     const bundle = join(root, "skills", "review-paws", commit, SKILL_BUNDLE_FILE);
     expect(skill.sha256).toBe(sha256(bundle));
     expect(await bundleFiles(bundle)).toEqual({ "SKILL.md": "---\nname: review-paws\n---\n" });
+  });
+
+  test("a ref with a slash in a tree URL resolves against the repository's refs", async () => {
+    const repo = join(root, "release-repo");
+    mkdirSync(join(repo, "skills", "x"), { recursive: true });
+    git(repo, "init", "--quiet", "--initial-branch=main");
+    writeFileSync(join(repo, "README.md"), "main");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "Start");
+    git(repo, "checkout", "--quiet", "-b", "release/1.2");
+    writeFileSync(join(repo, "skills", "x", "SKILL.md"), "---\nname: x\n---\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "Add x");
+    const commit = git(repo, "rev-parse", "HEAD");
+    git(repo, "checkout", "--quiet", "main");
+
+    const skill = await addSkill(
+      registry(createSkillResolver()),
+      { kind: "git", url: repo, path: "release/1.2/skills/x" },
+      { agents: ["claude"] },
+    );
+
+    expect(skill).toMatchObject({
+      name: "x",
+      version: commit,
+      source: { kind: "git", url: repo, ref: "release/1.2", subfolder: "skills/x" },
+    });
   });
 
   test("only the subfolder of a git source counts toward the limit", async () => {
@@ -404,6 +497,47 @@ describe("skill settings API", () => {
     );
     expect(checked).toHaveLength(1);
     expect(updated.updates).toEqual({ fake: "f".repeat(40) });
+  });
+
+  test("the API reads a GitHub tree URL with no other input", async () => {
+    const listing = await read(
+      await handleSkillSettingsRequest(
+        post({
+          action: "add",
+          source: "https://github.com/pbakaus/impeccable/tree/main/.claude/skills/impeccable",
+        }),
+        options(),
+      ),
+    );
+    expect(listing.error).toBeUndefined();
+    expect(getSkill(db, "fake")!.source).toEqual({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable",
+      ref: "main",
+      subfolder: ".claude/skills/impeccable",
+    });
+  });
+
+  test("the API reads git forms in the url field and an owner's ref or subfolder wins", async () => {
+    const resolver = fakeSkillResolver();
+    const add = (source: unknown) =>
+      handleSkillSettingsRequest(post({ action: "add", source }), options({ resolver }));
+    await add({ kind: "git", url: "pbakaus/impeccable" });
+    await add({
+      kind: "git",
+      url: "https://github.com/pbakaus/impeccable/tree/main/.claude/skills/impeccable",
+      ref: "v2",
+      subfolder: "skills/impeccable",
+    });
+    expect(resolver.calls).toEqual([
+      { kind: "git", url: "https://github.com/pbakaus/impeccable" },
+      {
+        kind: "git",
+        url: "https://github.com/pbakaus/impeccable",
+        ref: "v2",
+        subfolder: "skills/impeccable",
+      },
+    ]);
   });
 
   test("a change without the CSRF token is refused and not audited", async () => {

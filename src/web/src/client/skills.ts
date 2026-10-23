@@ -61,25 +61,35 @@ export function parseSkillSource(
 ): Record<string, string> | null {
   const value = text.trim();
   if (!value) return null;
-  const folder: Record<string, string> = subfolder.trim() ? { subfolder: subfolder.trim() } : {};
-  if (/^(?:https?|ssh|git|file):\/\/|^[\w.-]+@[\w.-]+:|^\/|\.git$/.test(value))
-    return {
-      kind: "git",
-      url: value,
-      ...(ref.trim() ? { ref: ref.trim() } : {}),
-      ...folder,
-    };
-  if (/^(?:github\.com|gitlab\.com|bitbucket\.org)\//.test(value))
-    return {
-      kind: "git",
-      url: `https://${value}`,
-      ...(ref.trim() ? { ref: ref.trim() } : {}),
-      ...folder,
-    };
-  const at = value.lastIndexOf("@");
+  const pinned = { ref: ref.trim(), subfolder: subfolder.trim() };
+  const folder: Record<string, string> = pinned.subfolder ? { subfolder: pinned.subfolder } : {};
+  const guess = skillSourceGuess(value);
+  if (guess) {
+    const changed = pinned.ref !== guess.ref || pinned.subfolder !== guess.subfolder;
+    return changed
+      ? { kind: "git", url: value, ...(pinned.ref ? { ref: pinned.ref } : {}), ...folder }
+      : { kind: "git", url: value };
+  }
+  const name = value.replace(/^npm:/, "").trim();
+  const at = name.lastIndexOf("@");
   return at > 0
-    ? { kind: "npm", package: value.slice(0, at), version: value.slice(at + 1), ...folder }
-    : { kind: "npm", package: value, ...folder };
+    ? { kind: "npm", package: name.slice(0, at), version: name.slice(at + 1), ...folder }
+    : { kind: "npm", package: name, ...folder };
+}
+
+const GIT_SOURCE =
+  /^(?:https?|ssh|git|file):\/\/|^[\w.-]+@[\w.-]+:|^\/|\.git\/*$|^(?:github\.com|gitlab\.com|bitbucket\.org)\/|^\w[\w.-]*\/\w[\w.-]*$/;
+const GITHUB_TREE =
+  /^(?:https?:\/\/)?github\.com\/[\w.-]+\/[\w.-]+?(?:\.git)?\/(tree|blob)\/(.+?)\/*$/;
+
+export function skillSourceGuess(text: string): { ref: string; subfolder: string } | null {
+  const value = text.trim();
+  if (!GIT_SOURCE.test(value)) return null;
+  const tree = GITHUB_TREE.exec(value);
+  if (!tree) return { ref: "", subfolder: "" };
+  const [ref = "", ...folder] = tree[2]!.split("/");
+  if (tree[1] === "blob") folder.pop();
+  return { ref, subfolder: folder.join("/") };
 }
 
 export function skillSourceLabel(skill: SkillPin): string {
@@ -162,7 +172,7 @@ export function renderSkillSettings(view: SkillView): string {
   return `<section class="settings-section">${intro}<div class="col">${table}${feedback}
     <form id="skill-add-form" class="col"><fieldset class="settings-fields" ${busy ? "disabled" : ""}>
       <div class="settings-field"><label for="skill-source">Add a skill</label><input id="skill-source" name="skill-source" value="${esc(draft.source)}" placeholder="npm package, git URL, or upload a folder" autocapitalize="none" spellcheck="false" aria-describedby="skill-source-help"><small class="sub" id="skill-source-help">Paws pins the exact package version or commit. Each skill needs a SKILL.md and stays under ${megabytes} MB.</small></div>
-      <details class="skill-options"><summary>Git ref and subfolder</summary><div class="settings-controls"><div class="settings-field"><label for="skill-ref">Git ref</label><input id="skill-ref" name="skill-ref" value="${esc(draft.ref)}" placeholder="main, v1.2.0, or a commit" autocapitalize="none" spellcheck="false"></div><div class="settings-field"><label for="skill-subfolder">Subfolder</label><input id="skill-subfolder" name="skill-subfolder" value="${esc(draft.subfolder)}" placeholder="skills/review" autocapitalize="none" spellcheck="false"></div></div></details>
+      <details class="skill-options" ${draft.ref || draft.subfolder ? "open" : ""}><summary>Git ref and subfolder</summary><small class="sub">A GitHub tree or blob URL fills these in. Change either to pin something else.</small><div class="settings-controls"><div class="settings-field"><label for="skill-ref">Git ref</label><input id="skill-ref" name="skill-ref" value="${esc(draft.ref)}" placeholder="main, v1.2.0, or a commit" autocapitalize="none" spellcheck="false"></div><div class="settings-field"><label for="skill-subfolder">Subfolder</label><input id="skill-subfolder" name="skill-subfolder" value="${esc(draft.subfolder)}" placeholder="skills/review" autocapitalize="none" spellcheck="false"></div></div></details>
       <div class="settings-field"><span class="sub">Agents</span><div class="row">${view.data.agents.map((agent) => `<label class="settings-inherit"><input type="checkbox" name="skill-agent" value="${agent}" ${draft.agents.includes(agent) ? "checked" : ""}>${AGENT_NAMES[agent]}</label>`).join("")}</div></div>
       <div class="row"><button class="btn primary" type="submit">Add skill</button></div>
       <div class="settings-field"><label for="skill-upload">Or upload a folder</label><input id="skill-upload" name="skill-upload" type="file" webkitdirectory="" multiple></div>
@@ -290,12 +300,26 @@ export function createSkillSettings(): {
     input.value = "";
     void run(`Uploading ${folder}…`, form, true);
   };
+  let filled = { ref: "", subfolder: "" };
+  const input = (event: Event) => {
+    const source = event.target as HTMLInputElement;
+    if (source.name !== "skill-source" || !root) return;
+    const guess = skillSourceGuess(source.value) ?? { ref: "", subfolder: "" };
+    for (const key of ["ref", "subfolder"] as const) {
+      const field = root.querySelector<HTMLInputElement>(`[name="skill-${key}"]`);
+      if (field && [filled[key], ""].includes(field.value)) field.value = guess[key];
+    }
+    filled = guess;
+    const options = root.querySelector<HTMLDetailsElement>(".skill-options");
+    if (options && (guess.ref || guess.subfolder)) options.open = true;
+  };
   return {
     mount(next, nextEngine) {
       if (root === next && engine === nextEngine) return;
       root?.removeEventListener("click", click);
       root?.removeEventListener("submit", submit);
       root?.removeEventListener("change", change);
+      root?.removeEventListener("input", input);
       if (engine !== nextEngine) {
         generation += 1;
         view = { data: null, busy: null, error: null, notice: null };
@@ -305,6 +329,7 @@ export function createSkillSettings(): {
       root.addEventListener("click", click);
       root.addEventListener("submit", submit);
       root.addEventListener("change", change);
+      root.addEventListener("input", input);
       if (!engine) {
         view.error = "Connect to your Paws dashboard to manage skills.";
         paint();

@@ -4,6 +4,8 @@ import {
   addSkill,
   addUploadedSkill,
   changeSkillAgents,
+  gitSource,
+  readSkillSource,
   removeSkill,
   SKILL_BUNDLE_LIMIT,
   SkillError,
@@ -133,6 +135,7 @@ export async function handleSkillSettingsRequest(
 }
 
 function parseSource(value: unknown): SkillRequest {
+  if (typeof value === "string") return readSkillSource(value);
   if (!isRecord(value)) throw new SkillError("Choose an npm package or a git URL.");
   const text = (key: string) => {
     const field = value[key];
@@ -154,7 +157,12 @@ function parseSource(value: unknown): SkillRequest {
     const url = text("url");
     if (url === undefined) throw new SkillError("Enter a git URL.");
     const ref = text("ref");
-    return { kind: "git", url, ...(ref ? { ref } : {}), ...(subfolder ? { subfolder } : {}) };
+    const { path, ...source } = gitSource(url);
+    return {
+      ...source,
+      ...(ref ? { ref } : path ? { path } : {}),
+      ...(subfolder ? { subfolder } : {}),
+    };
   }
   throw new SkillError("Choose an npm package or a git URL.");
 }
