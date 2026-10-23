@@ -72,7 +72,6 @@ import {
   openDatabase,
   prepareShutdown,
   recoverOnStartup,
-  recordGitHubDelivery,
   listSkills,
   refreshRepositoryCatalog,
   startLoops,
@@ -128,6 +127,7 @@ import {
   type TrackerAdapter,
 } from "./linear";
 import {
+  acceptGitHubDelivery,
   attachOrchestrator,
   createLinearArtifactReader,
   itemPathId,
@@ -752,7 +752,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       port: env.port,
       linearWebhookSecret: env.linearWebhookSecret,
       githubWebhookSecret: env.githubWebhookSecret,
-      githubWebhook: { accept: (delivery) => recordGitHubDelivery(db, delivery) },
+      githubWebhook: { accept: (delivery) => acceptGitHubDelivery(db, delivery, Date.now()) },
       slackSigningSecret:
         envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),

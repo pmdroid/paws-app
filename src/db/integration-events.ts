@@ -10,12 +10,14 @@ export type IntegrationEvent = {
 export function recordGitHubDelivery(
   db: Database,
   input: Omit<IntegrationEvent, "receivedAt">,
-): void {
-  db.run(
+  now = Date.now(),
+): boolean {
+  const result = db.run(
     `INSERT INTO github_delivery (delivery_id, event, payload, received_at)
     VALUES (?, ?, ?, ?) ON CONFLICT(delivery_id) DO NOTHING`,
-    [input.deliveryId, input.event, input.payload, Date.now()],
+    [input.deliveryId, input.event, input.payload, now],
   );
+  return result.changes > 0;
 }
 
 export function listGitHubDeliveries(db: Database): IntegrationEvent[] {
