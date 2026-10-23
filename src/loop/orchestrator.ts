@@ -329,6 +329,7 @@ export type OrchestratorOptions = {
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<IntakeDecision>;
   remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
+  outboxWaitMs?: number;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
   linearIntakeActor?: (sessionId: string) => string | undefined;
