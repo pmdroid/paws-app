@@ -600,7 +600,8 @@ export function createRemoteAgentRunner(options: {
                     .get(selected.id)?.version,
                   REBASE_RUNNER_VERSION,
                 );
-              const fetchedMain = acceptsRebase
+              const checkpointBase = getWorkItem(db, itemId)?.checkpoint?.baseSha;
+              const upstreamMain = acceptsRebase
                 ? await git([
                     "-C",
                     input.worktreePath,
@@ -613,8 +614,22 @@ export function createRemoteAgentRunner(options: {
                     () => undefined,
                   )
                 : undefined;
-              const mainCandidate =
-                input.mainSha ?? fetchedMain ?? getWorkItem(db, itemId)?.checkpoint?.baseSha;
+              const fetchedMain =
+                upstreamMain &&
+                checkpointBase &&
+                (await git([
+                  "-C",
+                  input.worktreePath,
+                  "merge-base",
+                  "--is-ancestor",
+                  upstreamMain,
+                  checkpointBase,
+                ])
+                  .then(() => true)
+                  .catch(() => false))
+                  ? undefined
+                  : upstreamMain;
+              const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
               const mainSha =
                 !taskScope &&
                 acceptsMainCommit &&
