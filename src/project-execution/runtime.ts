@@ -278,24 +278,15 @@ export function createApprovedProjects(input: {
     if (db.query("SELECT 1 FROM outbox WHERE idempotency_key=?").get(key)) return;
     const { preview } = approval;
     const issues = new Map(preview.project.issues.map((issue) => [issue.linearIssueId, issue]));
-    const finished = new Set(
-      db
-        .query<{ issueId: string }, [string]>(
-          `SELECT c.issue_id AS issueId FROM project_approval_issue c JOIN work_item i
-           ON i.delegation_id=c.delegation_id AND i.linear_issue_id=c.issue_id
-           WHERE c.approval_id=? AND i.state IN ('merged','completed')`,
-        )
-        .all(approval.id)
-        .map((row) => row.issueId),
-    );
     const outside = new Map<string, SummaryIssue | null>();
     const subIssues: SummarySubIssue[] = [];
     for (const issueId of preview.order) {
       const issue = issues.get(issueId);
       if (!issue) continue;
+      const pending = pendingBlockers(approval, issueId);
       const blockers: SummaryIssue[] = [];
       for (const edge of preview.edges) {
-        if (edge.blockedLinearIssueId !== issueId || finished.has(edge.blockerLinearIssueId))
+        if (edge.blockedLinearIssueId !== issueId || !pending.includes(edge.blockerLinearIssueId))
           continue;
         const blocker = issues.get(edge.blockerLinearIssueId);
         if (blocker) blockers.push({ identifier: blocker.identifier, url: blocker.url ?? null });
@@ -318,6 +309,9 @@ export function createApprovedProjects(input: {
           external.push(blocker);
       }
       signal.throwIfAborted();
+      for (const blockerId of pending)
+        if (!issues.has(blockerId) && !outside.get(blockerId))
+          external.push({ identifier: identifierFor(approval, blockerId), url: null });
       external.sort((left, right) => left.identifier.localeCompare(right.identifier));
       subIssues.push({
         identifier: issue.identifier,
@@ -398,15 +392,17 @@ export function createApprovedProjects(input: {
         .get(approval.workspaceId, blockerId) === null
     );
   }
-  function waitingFor(approval: ProjectApproval, issueId: string): string[] {
+  function pendingBlockers(approval: ProjectApproval, issueId: string): string[] {
     const blockers = new Set([
       ...approval.preview.edges
         .filter((edge) => edge.blockedLinearIssueId === issueId)
         .map((edge) => edge.blockerLinearIssueId),
       ...listTaskBlockers(db, issueId),
     ]);
-    return [...blockers]
-      .filter((blockerId) => !blockerSatisfied(approval, blockerId))
+    return [...blockers].filter((blockerId) => !blockerSatisfied(approval, blockerId));
+  }
+  function waitingFor(approval: ProjectApproval, issueId: string): string[] {
+    return pendingBlockers(approval, issueId)
       .map((blockerId) => identifierFor(approval, blockerId))
       .sort();
   }
