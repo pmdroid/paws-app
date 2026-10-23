@@ -792,7 +792,7 @@ export class Orchestrator {
     });
     if (request?.signal) this.activityRequests.set(id, request.signal);
     try {
-      await this.flush(request?.signal);
+      await this.flush(request?.signal, update.sessionId);
       request?.signal?.throwIfAborted();
     } finally {
       if (this.activityRequests.get(id) === request?.signal) this.activityRequests.delete(id);
@@ -4887,28 +4887,36 @@ export class Orchestrator {
     );
   }
 
-  private async flush(signal?: AbortSignal): Promise<void> {
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      signal?.throwIfAborted();
-      const claimed = this.options.outbox.tick();
-      const idle = this.options.outbox.idle();
-      if (signal) {
-        signal.throwIfAborted();
+  private async flush(signal?: AbortSignal, session?: string | null): Promise<void> {
+    const claimed = new Set<number>();
+    const needed = (row: OutboxRow) =>
+      session ? row.orderingKey === session : claimed.has(row.id);
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), this.options.outboxWaitMs ?? OUTBOX_WAIT_MS);
+    const stop = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+    try {
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        signal?.throwIfAborted();
+        const ticked = this.options.outbox.tick();
+        for (const row of ticked) claimed.add(row.id);
+        if (stop.aborted) break;
         let onAbort: () => void = () => {};
         try {
           await Promise.race([
-            idle,
-            new Promise<never>((_resolve, reject) => {
-              onAbort = () => reject(signal.reason);
-              signal.addEventListener("abort", onAbort, { once: true });
+            this.options.outbox.idle(needed),
+            new Promise<void>((resolve) => {
+              onAbort = resolve;
+              stop.addEventListener("abort", onAbort, { once: true });
             }),
           ]);
         } finally {
-          signal.removeEventListener("abort", onAbort);
+          stop.removeEventListener("abort", onAbort);
         }
-      } else await idle;
+        if (stop.aborted || !ticked.some(needed)) break;
+      }
       signal?.throwIfAborted();
-      if (claimed.length === 0) return;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -5793,6 +5801,7 @@ export class Orchestrator {
 
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
+const OUTBOX_WAIT_MS = 30_000;
 const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
 const CHECKS_RATE_LIMIT_WAIT_MS = 60 * 60_000;
 

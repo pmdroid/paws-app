@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listOutbox, migrate, openDatabase } from "../src/db";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  enqueueOutbox,
+  listOutbox,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { tempHome } from "./helpers";
@@ -91,5 +98,37 @@ test("a transport that ignores abort cannot hold its own workflow step past the 
     await f.outbox.idle();
     await f.orchestrator.shutdown();
     f.db.close();
+  }
+});
+
+test("the dispatcher settles one session while another session's transport stays open", async () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const dispatcher = new OutboxDispatcher(db, systemClock);
+  const held = Promise.withResolvers<void>();
+  dispatcher.setHandler(async (row) => {
+    if (row.orderingKey === "A") await held.promise;
+  });
+  for (const key of ["A", "B"])
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: key,
+      idempotencyKey: key,
+      payload: { sessionId: key, kind: "thought", body: key },
+    });
+  const status = (key: string) => listOutbox(db).find((row) => row.orderingKey === key)?.status;
+  try {
+    expect(dispatcher.tick()).toHaveLength(2);
+    await dispatcher.idle((row) => row.orderingKey === "B");
+    expect(status("B")).toBe("sent");
+    expect(status("A")).toBe("pending");
+    held.resolve();
+    await dispatcher.idle();
+    expect(status("A")).toBe("sent");
+  } finally {
+    held.resolve();
+    await dispatcher.idle();
+    db.close();
   }
 });
