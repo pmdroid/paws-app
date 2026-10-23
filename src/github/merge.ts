@@ -5,7 +5,8 @@ import type { GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitFailureReason, redact, withCredential } from "./git";
-import { pushWithLease } from "./push";
+import { mainOverlap, readUpToDateRule } from "./overlap";
+import { pushWithLease, remoteBranchSha } from "./push";
 import { waitForMergeReadiness } from "./readiness";
 import { hasGitTransportCause } from "./transport";
 import {
@@ -55,6 +56,8 @@ export type SerialMergeInput = {
   };
 };
 
+type Pushed = { base: string; head: string; kept?: boolean; overlap?: string[] };
+
 /**
  * Rebase onto the fetched main, re-run Closeout, and squash-merge only if
  * the verified head and base are still current. A moved SHA fails closed
@@ -78,12 +81,29 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
   }
 
   let lastGuard: "sha" | "http_409" = "sha";
+  let keepWhenApart = input.updateOnOverlap !== undefined;
   for (let cycle = 1; cycle <= MAX_SHA_GUARD_CYCLES; cycle++) {
     if (input.isCancelled?.()) {
       return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
     }
-    const pushed = await pushRebased(input, url, branch, gitExec);
-    if (!pushed.ok) return { ...pushed.result, cycle };
+    let pushed: Pushed | undefined;
+    let overlap: string[] | undefined;
+    if (keepWhenApart) {
+      const apart = await keepHead(input, url, branch, gitExec);
+      if ("kept" in apart) pushed = apart.kept;
+      else {
+        overlap = apart.overlap;
+        if (apart.ruleOn) {
+          keepWhenApart = false;
+          await input.updateOnOverlap?.onUpToDateRule?.();
+        }
+      }
+    }
+    if (pushed === undefined) {
+      const rebased = await pushRebased(input, url, branch, gitExec);
+      if (!rebased.ok) return { ...rebased.result, cycle };
+      pushed = { base: rebased.base, head: rebased.head, ...(overlap ? { overlap } : {}) };
+    }
 
     const verified =
       reuseVerification(input, pushed) ??
@@ -92,6 +112,8 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
         base: pushed.base,
         head: pushed.head,
         cycle,
+        ...(pushed.kept ? { kept: true } : {}),
+        ...(pushed.overlap?.length ? { overlap: pushed.overlap } : {}),
       }));
     if (!verified.accepted) {
       return {
@@ -141,8 +163,16 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     await fetchMain(input.worktree, url, mergeToken, gitExec, input.sleep);
     const baseNow = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
     if (headNow !== pushed.head || baseNow !== pushed.base) {
-      lastGuard = "sha";
-      continue;
+      const apart =
+        pushed.kept === true &&
+        headNow === pushed.head &&
+        (await mainOverlap(input.worktree, input.updateOnOverlap?.packages ?? [], gitExec)).shared
+          .length === 0;
+      if (!apart) {
+        lastGuard = "sha";
+        continue;
+      }
+      pushed = { ...pushed, base: baseNow };
     }
 
     if (input.isCancelled?.()) {
@@ -183,6 +213,11 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
       lastGuard = "http_409";
       continue;
     }
+    if (pushed.kept && (merged.status !== 200 || !isRecord(merged.body) || !merged.body.merged)) {
+      keepWhenApart = false;
+      lastGuard = "sha";
+      continue;
+    }
     if (merged.status !== 200 || !isRecord(merged.body) || merged.body.merged !== true) {
       return {
         merged: false,
@@ -215,6 +250,44 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     message:
       lastGuard === "http_409" ? "merge API returned 409" : "head or base changed before merge",
   };
+}
+
+async function keepHead(
+  input: SerialMergeInput,
+  url: string,
+  branch: string,
+  gitExec: GitExec,
+): Promise<{ kept: Pushed } | { overlap?: string[]; ruleOn?: true }> {
+  const minted = await operationToken(input, "push");
+  input.onCredential?.("push", minted);
+  try {
+    await fetchMain(input.worktree, url, minted, gitExec, input.sleep);
+    const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
+    const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
+    const compared = await mainOverlap(
+      input.worktree,
+      input.updateOnOverlap?.packages ?? [],
+      gitExec,
+    );
+    if (compared.base === base) return {};
+    if (compared.shared.length > 0) return { overlap: compared.shared };
+    const rule = await readUpToDateRule({ ...input, token: minted, branch: "main" });
+    if (rule === true) return { ruleOn: true };
+    if (
+      (await remoteBranchSha({
+        worktree: input.worktree,
+        url,
+        branch,
+        token: minted,
+        gitExec,
+        sleep: input.sleep,
+      })) !== head
+    )
+      return {};
+    return { kept: { base, head, kept: true } };
+  } catch {
+    return {};
+  }
 }
 
 async function pushRebased(
@@ -366,10 +439,7 @@ function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"
   );
 }
 
-function reuseVerification(
-  input: SerialMergeInput,
-  pushed: { base: string; head: string },
-): ReverifyResult | undefined {
+function reuseVerification(input: SerialMergeInput, pushed: Pushed): ReverifyResult | undefined {
   const prior = input.priorVerification;
   if (prior === undefined || prior.base !== pushed.base || prior.head !== pushed.head) {
     return undefined;
