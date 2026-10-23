@@ -223,6 +223,37 @@ describe("what a runner is running now", () => {
     expect(labels[0]).toContain(">under a minute</span>");
   });
 
+  test("the runner card lists every session to members and observers alike", () => {
+    const busy = {
+      ...runner,
+      idle: false,
+      slots: { used: 2, total: 3 },
+      running: [working, closeout],
+    };
+    for (const role of ["owner", "member", "observer"]) {
+      const html = runnerDetailMarkup(busy, { ...view, userId: "someone", role });
+      const slots =
+        /<section class="runner-block" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
+          html,
+        )?.[0];
+      expect(slots?.match(/data-running-run=/g)).toHaveLength(2);
+      expect(slots).toContain('<span class="lin-id">ENG-7</span>');
+      expect(slots).toContain('href="/runs/run-1">Parse &lt;config&gt; files</a>');
+      expect(slots).toContain('<span class="st running">Working</span>');
+      expect(slots).toContain(">12m</span>");
+      expect(slots).toContain('<span class="lin-id">ENG-9</span>');
+      expect(slots).toContain('<span class="st verifying">Closeout</span>');
+      expect(slots).toContain(">1h 15m</span>");
+      expect(slots).not.toContain("<button");
+    }
+    const idle = runnerDetailMarkup(
+      { ...runner, slots: { used: 0, total: 1 }, running: [] },
+      { ...view, role: "observer" },
+    );
+    expect(idle).toContain("Nothing running");
+    expect(idle).not.toContain("data-running-run=");
+  });
+
   test("free slots collapse into one row after the busy ones", () => {
     const some = runnerRunningMarkup([working], now, { used: 1, total: 3 });
     expect(some.match(/<li /g)).toHaveLength(2);
