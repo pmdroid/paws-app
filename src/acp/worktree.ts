@@ -46,7 +46,18 @@ async function revParse(gitDir: string, ref: string): Promise<string | undefined
  * Fetch stores remote branches at `origin/*` so a worktree can be added from
  * `origin/main` without moving a branch that is already checked out.
  */
-const mirrorRefreshes = new Map<string, Promise<unknown>>();
+const mirrorWork = new Map<string, Promise<unknown>>();
+
+async function onMirror<T>(path: string, work: () => Promise<T>): Promise<T> {
+  const previous = mirrorWork.get(path) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(work);
+  mirrorWork.set(path, next);
+  try {
+    return await next;
+  } finally {
+    if (mirrorWork.get(path) === next) mirrorWork.delete(path);
+  }
+}
 
 export async function ensureBareMirror(options: {
   remoteUrl: string;
@@ -56,14 +67,7 @@ export async function ensureBareMirror(options: {
   networkGit?: (args: string[]) => Promise<string>;
 }): Promise<Mirror> {
   const path = mirrorPath(options.pawsRoot, options.owner, options.repo);
-  const previous = mirrorRefreshes.get(path) ?? Promise.resolve();
-  const refresh = previous.catch(() => undefined).then(() => refreshMirror(path, options));
-  mirrorRefreshes.set(path, refresh);
-  try {
-    return await refresh;
-  } finally {
-    if (mirrorRefreshes.get(path) === refresh) mirrorRefreshes.delete(path);
-  }
+  return onMirror(path, () => refreshMirror(path, options));
 }
 
 async function refreshMirror(
@@ -127,6 +131,13 @@ export async function createWorktree(options: {
   startRef?: string;
 }): Promise<Worktree> {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  return onMirror(gitDir, () => addWorktree(gitDir, options));
+}
+
+async function addWorktree(
+  gitDir: string,
+  options: Parameters<typeof createWorktree>[0],
+): Promise<Worktree> {
   if (!(await exists(gitDir))) {
     throw new Error(`bare mirror is missing at ${gitDir}; call ensureBareMirror first`);
   }

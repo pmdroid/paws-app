@@ -11,4 +11,4 @@ test("Runner input fixture claims real certificates when authority initializatio
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);

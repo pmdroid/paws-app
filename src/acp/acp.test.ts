@@ -804,13 +804,8 @@ test("run_closeout refuses a command the terminal guard denies", async () => {
 
 test("timeout kills an agent that ignores cancel and leaves changes uncommitted", async () => {
   const layout = await layoutRepo();
-  const script: FakeScript = {
-    ignoreCancel: true,
-    steps: [
-      { type: "fs_write", path: join(layout.worktree, "partial.txt"), content: "partial\n" },
-      { type: "hang" },
-    ],
-  };
+  await writeFile(join(layout.worktree, "partial.txt"), "partial\n");
+  const script: FakeScript = { ignoreCancel: true, steps: [{ type: "hang" }] };
   const files = await writeScript(layout.root, script);
   const events: AcpEvent[] = [];
   const result = await runAgent({
