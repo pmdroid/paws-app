@@ -5344,17 +5344,11 @@ export class Orchestrator {
   ): Promise<boolean> {
     const reviews = acceptedVisualReviews(this.db, item.id);
     if (reviews.length === 0) return false;
-    const repository = this.repositoryForItem(item);
-    if (!repository) return false;
-    const required = visualReviewRequirements(
-      worktree,
-      this.options.home,
-      this.options.closeoutPolicyRoot?.(repository),
-    );
-    if (!required.ok) return false;
-    const checks = new Set(required.items.map((entry) => entry.id));
+    const requirements = this.visualReviewRequirements(item, worktree);
+    if (requirements.length === 0) return false;
+    const checks = new Set(requirements.map((entry) => entry.id));
     const approvals = visualReviewApprovals(this.db, item.id, itemPathId(item));
-    const valid = new Set(await approvalsAtHead(worktree, head, approvals, required.items));
+    const valid = new Set(await approvalsAtHead(worktree, head, approvals, requirements));
     const outdated = reviews.filter(
       (review, index) => checks.has(review.checkId) && !valid.has(approvals[index]!),
     );
