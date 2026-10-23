@@ -98,8 +98,11 @@ export {
 export { PawsShutdown, RunnerSlotsBusyError, UserFacingError } from "./user-facing-error";
 export {
   MAX_TRANSIENT_RETRIES,
+  RUNNER_CAPACITY_WAIT_MS,
+  RunnerCapacityWait,
   TRANSIENT_RETRY_BASE_MS,
   isTransientFailure,
+  placementWaitMs,
   isTransientGitError,
   retryNote,
   retryAfterMs,

@@ -6,6 +6,7 @@ const TRANSIENT_ERROR_NAMES = new Set([
   "UsageLimitPause",
   "RunnerWorkFencedError",
   "RunnerUnavailableError",
+  "RunnerCapacityWait",
   "PawsShutdown",
   "TimeoutError",
   "GitTransportError",
@@ -40,6 +41,23 @@ export function isTransientGitError(stderr: string): boolean {
 export const MAX_TRANSIENT_RETRIES = 5;
 export const TRANSIENT_RETRY_BASE_MS = 30_000;
 export const TRANSIENT_RETRY_CAP_MS = 10 * 60_000;
+export const RUNNER_CAPACITY_WAIT_MS = 60 * 60_000;
+const PLACEMENT_WAIT_POLLS = [20, 60, 120, 240];
+
+export function placementWaitMs(attempt: number, pollIntervalMs = 250) {
+  return pollIntervalMs * PLACEMENT_WAIT_POLLS[Math.min(attempt, PLACEMENT_WAIT_POLLS.length - 1)]!;
+}
+
+export class RunnerCapacityWait extends Error {
+  override readonly name = "RunnerCapacityWait";
+  constructor(readonly runnerIds: readonly string[]) {
+    super(
+      runnerIds.length
+        ? `Waiting for a free slot on runner ${runnerIds.join(", ")}`
+        : "Waiting for a paired runner to come online",
+    );
+  }
+}
 
 export function isTransientFailure(error: unknown, depth = 0): boolean {
   if (typeof error !== "object" || error === null || depth > 3) return false;

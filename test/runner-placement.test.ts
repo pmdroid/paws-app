@@ -18,7 +18,7 @@ import {
   SESSION_GRACE_MS,
   type PlacementRequest,
 } from "../src/runner-placement";
-import { placementWaitMs } from "../src/runner-backend";
+import { placementWaitMs } from "../src/core";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 

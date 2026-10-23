@@ -57,16 +57,20 @@ import {
   type UsageLimit,
   type UsageLimitWait,
 } from "./failover";
-import { PawsShutdown, WORKSPACE_HOOK_LIMIT, type WorkspaceHook } from "../core";
+import {
+  PawsShutdown,
+  RunnerCapacityWait,
+  WORKSPACE_HOOK_LIMIT,
+  type WorkspaceHook,
+} from "../core";
 import { quotaSignal, type RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {
   override readonly name = "RunnerUnavailableError";
 }
 
-const CAPACITY_WAIT_MS = 60 * 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
-const PLACEMENT_WAIT_POLLS = [20, 60, 120, 240];
+const NO_FREE_CAPACITY = ": no free capacity";
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
 const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
@@ -169,10 +173,6 @@ function snapshotCommit(workspace: string, repository: { owner: string; repo: st
   }
 }
 
-export function placementWaitMs(attempt: number, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS) {
-  return pollIntervalMs * PLACEMENT_WAIT_POLLS[Math.min(attempt, PLACEMENT_WAIT_POLLS.length - 1)]!;
-}
-
 export function createRemoteAgentRunner(options: {
   db: Database;
   work: RunnerWork;
@@ -227,41 +227,37 @@ export function createRemoteAgentRunner(options: {
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     limit?: UsageLimit,
   ) {
-    const capacityDeadline = performance.now() + CAPACITY_WAIT_MS;
-    for (let attempt = 0; ; attempt++) {
-      const rejected: string[] = [];
-      const offered: string[] = [];
-      const selected = await place(itemId, placement, rejected, offered);
-      if (selected) return { ...selected, offered };
-      const agent = placement.profile?.agent;
-      const resetsAt = agent
-        ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
-        : null;
-      // Placement offers only the busy runner holding the agent's session during its grace period.
-      const heldForSession =
-        placement.session !== undefined &&
-        offered.length === 1 &&
-        offered[0] === placement.session.runnerId;
-      if (
-        (resetsAt === null || heldForSession) &&
-        (rejected.some((reason) => reason.endsWith(": no free capacity")) ||
-          (offered.length === 0 &&
-            db
-              .query("SELECT 1 FROM runner WHERE status='active' AND revoked_at IS NULL LIMIT 1")
-              .get() !== null)) &&
-        performance.now() < capacityDeadline
-      ) {
-        await delay(placementWaitMs(attempt, interval), undefined, { signal: placement.signal });
-        continue;
-      }
-      if (agent && limit && limit.resumeAt > now())
-        throw new UsageLimitPause(agent, limit.resumeAt, limit.resetsAt, limit.runnerId);
-      if (!agent || resetsAt === null)
-        throw new RunnerUnavailableError(
-          `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
-        );
-      throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
-    }
+    const rejected: string[] = [];
+    const offered: string[] = [];
+    const selected = await place(itemId, placement, rejected, offered);
+    if (selected) return { ...selected, offered };
+    const agent = placement.profile?.agent;
+    const resetsAt = agent
+      ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
+      : null;
+    const heldForSession =
+      placement.session !== undefined &&
+      offered.length === 1 &&
+      offered[0] === placement.session.runnerId;
+    const busy = rejected
+      .filter((reason) => reason.endsWith(NO_FREE_CAPACITY))
+      .map((reason) => reason.slice(0, -NO_FREE_CAPACITY.length));
+    if (
+      (resetsAt === null || heldForSession) &&
+      (busy.length > 0 ||
+        (offered.length === 0 &&
+          db
+            .query("SELECT 1 FROM runner WHERE status='active' AND revoked_at IS NULL LIMIT 1")
+            .get() !== null))
+    )
+      throw new RunnerCapacityWait(busy);
+    if (agent && limit && limit.resumeAt > now())
+      throw new UsageLimitPause(agent, limit.resumeAt, limit.resetsAt, limit.runnerId);
+    if (!agent || resetsAt === null)
+      throw new RunnerUnavailableError(
+        `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
+      );
+    throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
   }
   async function place(
     itemId: string,
@@ -300,7 +296,7 @@ export function createRemoteAgentRunner(options: {
         continue;
       }
       if (!runnerHasCapacity(db, runner.id, now(), "", reserved)) {
-        rejected.push(`${runner.id}: no free capacity`);
+        rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
         continue;
       }
       try {

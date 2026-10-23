@@ -51,7 +51,7 @@ import {
 } from "../../src/runner-transcripts";
 import { openQuestion, answerQuestion } from "../../src/questions";
 import { applyWorkItemEvent } from "../../src/db";
-import { PawsShutdown } from "../../src/core";
+import { PawsShutdown, RunnerCapacityWait } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
 
 export async function probeRunnerBackend(
@@ -2206,18 +2206,17 @@ export async function probeRunnerBackend(
         return `busy-${hostId}`;
       });
       const queued = item();
+      const fullWait = await placedBackend
+        .forItem(queued.id)(input(queued))
+        .catch((error: unknown) => error);
+      assert(fullWait instanceof RunnerCapacityWait);
+      assert(fullWait.runnerIds.length > 0);
+      assert(fullWait.runnerIds.every((id) => hostIds.includes(id)));
+      db.run("UPDATE runner_work SET ended_at=? WHERE command_id=?", [Date.now(), occupied[0]!]);
       const waitAbort = new AbortController();
       const waitingRun = placedBackend.forItem(queued.id)(
         input(queued, { signal: waitAbort.signal }),
       );
-      let waitSettled = false;
-      void waitingRun.then(
-        () => (waitSettled = true),
-        () => (waitSettled = true),
-      );
-      await delay(60);
-      assert.equal(waitSettled, false);
-      db.run("UPDATE runner_work SET ended_at=? WHERE command_id=?", [Date.now(), occupied[0]!]);
       const placedWhenFree = await dispatched();
       assert.equal(placedWhenFree, hostIds[0]);
       waitAbort.abort();
@@ -2226,9 +2225,11 @@ export async function probeRunnerBackend(
         `UPDATE runner_work SET ended_at=? WHERE command_id IN (${occupied.map(() => "?").join(",")})`,
         [Date.now(), ...occupied],
       );
-      observe("a full runner makes placement wait for a free slot instead of failing", true, {
-        placedWhenFree,
-      });
+      observe(
+        "a full runner ends placement with a wait naming the busy runners, and places once a slot frees",
+        true,
+        { placedWhenFree },
+      );
       const reportVersion = (version: string) => {
         for (const hostId of hostIds)
           db.run(
@@ -2347,18 +2348,16 @@ export async function probeRunnerBackend(
       for (const hostId of hostIds)
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [offlineAt, hostId]);
       const offline = item();
+      const offlineWait = await placedBackend
+        .forItem(offline.id)(input(offline))
+        .catch((error: unknown) => error);
+      assert(offlineWait instanceof RunnerCapacityWait);
+      assert.deepEqual(offlineWait.runnerIds, []);
+      for (const hostId of hostIds) work.heartbeat(hostId);
       const offlineAbort = new AbortController();
-      let offlineSettled = false;
       const offlineRun = placedBackend.forItem(offline.id)(
         input(offline, { signal: offlineAbort.signal }),
       );
-      void offlineRun.then(
-        () => (offlineSettled = true),
-        () => (offlineSettled = true),
-      );
-      await delay(60);
-      assert.equal(offlineSettled, false);
-      for (const hostId of hostIds) work.heartbeat(hostId);
       const placedWhenOnline = await dispatched();
       assert.notEqual(placedWhenOnline, null);
       offlineAbort.abort();
@@ -2394,22 +2393,22 @@ export async function probeRunnerBackend(
           },
         }),
       );
-      void racedRun.catch((error: unknown) => (racedFailure = error));
-      for (let attempt = 0; attempt < 500 && !filled.length; attempt++) await delay(2);
-      await delay(60);
-      assert.equal(racedFailure, null);
+      await racedRun.catch((error: unknown) => (racedFailure = error));
+      assert(racedFailure instanceof RunnerCapacityWait);
       db.run(
         `UPDATE runner_work SET ended_at=? WHERE command_id IN (${filled.map(() => "?").join(",")})`,
         [Date.now(), ...filled],
       );
+      const retriedRun = placedBackend.forItem(raced.id)(
+        input(raced, { signal: racedAbort.signal }),
+      );
       const placedAfterRace = await dispatched();
       assert.notEqual(placedAfterRace, null);
-      assert.equal(racedFailure, null);
       racedAbort.abort();
-      await racedRun.catch(() => undefined);
+      await retriedRun.catch(() => undefined);
       await drain();
       observe(
-        "a runner that fills up between selection and assignment places the run again instead of failing",
+        "a runner that fills up between selection and assignment waits for a slot instead of failing",
         true,
         { placedAfterRace },
       );
