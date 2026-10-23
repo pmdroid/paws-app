@@ -178,7 +178,23 @@ function foundMarkup(skills: FoundSkill[]): string {
         `<label class="skill-pick"><input type="checkbox" name="skill-pick" value="${esc(skill.path)}" ${skill.added ? "disabled" : single ? "checked" : ""}><span class="skill-pick-copy"><span class="skill-name"><b>${esc(skill.name)}</b>${skill.added ? '<span class="tag wrap">Already added</span>' : ""}</span>${skill.description ? `<span class="sub">${esc(skill.description)}</span>` : ""}<span class="mono">${esc(skill.path || "Repository root")}</span></span></label>`,
     )
     .join("");
-  return `<div class="settings-field"><span class="sub">Skills in this repository</span><div class="skill-found">${rows}</div></div>`;
+  const hooked = skills.filter((skill) => !skill.added && skill.hooks.length);
+  return `<div class="settings-field"><span class="sub">Skills in this repository</span><div class="skill-found">${rows}</div></div>${hooked.map((skill) => hooksMarkup(skill, hooked.length > 1)).join("")}`;
+}
+
+function hooksMarkup(skill: FoundSkill, named: boolean): string {
+  const supported = skill.hooks.filter((hook) => hook.event !== null).length;
+  const whose = named ? `${skill.name}'s` : "its";
+  const title = supported
+    ? `Also add ${whose} ${supported} hook${supported === 1 ? "" : "s"}`
+    : `None of ${whose} hooks can run in Paws`;
+  const rows = skill.hooks
+    .map(
+      (hook) =>
+        `<label class="skill-pick"><input type="checkbox" name="skill-hook" value="${esc(hook.id)}" ${hook.event === null ? "disabled" : "checked"}><span class="skill-pick-copy"><span class="skill-name">${hook.event === null ? `<span class="tag warn wrap">${esc(hook.label)}</span>` : `<b>${esc(hook.label)}</b>`}</span><span class="mono">${esc(hook.command)}</span><span class="sub">${esc(hook.source)} · ${hook.timeoutSeconds}s timeout</span>${hook.reason ? `<span class="sub">${esc(hook.reason)}</span>` : ""}</span></label>`,
+    )
+    .join("");
+  return `<div class="settings-field"><span class="sub">${esc(title)}</span><div class="skill-found">${rows}</div></div>`;
 }
 
 export function renderSkillSettings(view: SkillView): string {
@@ -332,11 +348,11 @@ export function createSkillSettings(): {
       );
       return;
     }
-    const paths = view.found?.skills.length
-      ? [...root!.querySelectorAll<HTMLInputElement>('[name="skill-pick"]:checked')].map(
-          (input) => input.value,
-        )
-      : undefined;
+    const checked = (name: string) =>
+      [...root!.querySelectorAll<HTMLInputElement>(`[name="${name}"]:checked`)].map(
+        (input) => input.value,
+      );
+    const paths = view.found?.skills.length ? checked("skill-pick") : undefined;
     if (paths?.length === 0) {
       view.draft = draft;
       view.error = "Choose at least one skill to add.";
@@ -345,7 +361,12 @@ export function createSkillSettings(): {
     }
     void run(
       `Fetching ${draft.source.trim()}…`,
-      { action: "add", source, agents: draft.agents, ...(paths ? { paths } : {}) },
+      {
+        action: "add",
+        source,
+        agents: draft.agents,
+        ...(paths ? { paths, hooks: checked("skill-hook") } : {}),
+      },
       true,
     );
   };
