@@ -146,20 +146,15 @@ import {
   type RepositoryBinding,
   type HostGitHubAuth,
 } from "./loop";
-import {
-  createItemReconciler,
-  createPublicationReadiness,
-  hasPendingDelegationChanges,
-  canAdvanceItem,
-} from "./intake";
+import { createItemReconciler, createPublicationReadiness } from "./intake";
 import { createExecutionControls } from "./execution-controls";
 import {
   createApprovedProjects,
   createProjectHttp,
   createProjectExecutionGuard,
 } from "./project-execution";
-import { delegationSnapshotsComplete, saveExternalBlockerPolicies } from "./intake";
-import { registerScheduler, saveSchedulingContext } from "./scheduler";
+import { saveExternalBlockerPolicies } from "./intake";
+import { createAdmission, registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
@@ -317,10 +312,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let projects: ReturnType<typeof createApprovedProjects> | null = null;
   let projectHttp: ReturnType<typeof createProjectHttp> | null = null;
   const projectExecution = createProjectExecutionGuard(db, () => projects);
-  const managedDelegationReady = (delegationId: string): boolean =>
-    projectExecution.canDispatch(delegationId) &&
-    !hasPendingDelegationChanges(db, delegationId) &&
-    delegationSnapshotsComplete(db, delegationId);
   const repository = repositoryBinding(runtime.repo);
   const repositories = [runtime.repo, ...runtime.file.githubRepos]
     .map(repositoryBinding)
@@ -821,10 +812,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     comment !== null
       ? commentTracker(db, comment.tracker, comment.mode)
       : (linear?.tracker ?? null);
+  const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
+  const admission = createAdmission({ db, authority: projectExecution.canDispatch, managed });
   const loops = startLoops({
     db,
     signal: abort.signal,
-    concurrency: workspace && linear?.tracker && linear.issueLifecycle ? 4 : 1,
+    concurrency: managed ? 4 : 1,
     prepare(created) {
       assignments?.register(created.jobs);
       const attached = attachOrchestrator({
@@ -844,78 +837,38 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             }
           : {}),
         linearAccess: linearTaskAccess ?? undefined,
-        canDispatchDelegation: projectExecution.canDispatch,
-        publicationReady: (itemId) => {
-          const item = getWorkItem(db, itemId);
-          return !!item && projectExecution.canDispatch(item.delegationId);
-        },
-        authorizeLinearIntake: projectExecution.authorizeIntake,
+        admission,
+        authorizeLinearIntake: workspace
+          ? (sessionId, spec) =>
+              projectExecution.authorizeIntake(sessionId, spec) &&
+              (assignments?.authorizeIntake(sessionId, spec) ?? true)
+          : projectExecution.authorizeIntake,
         linearIntakeScope: projectExecution.scope,
         linearIntakeActor: projectExecution.actor,
         onLinearIntake: projectExecution.accepted,
         adoptLinearParent: projectExecution.adoptParent,
-        authorizeLinearEvent: async (event) =>
-          (await projectExecution.authorizeEvent(event)) ?? ACCEPTED,
-        recheckLinearEvent: (event) => projectExecution.recheckEvent(event) ?? true,
-        ...(workspace && linear?.tracker && linear.issueLifecycle
+        authorizeLinearEvent: async (event) => {
+          if (!workspace) return (await projectExecution.authorizeEvent(event)) ?? ACCEPTED;
+          if (!(await (await workspace.access).authorizeLinearEvent(event))) return MEMBERS_ONLY;
+          return (
+            (await projectExecution.authorizeEvent(event)) ??
+            (assignments ? assignments.authorize(event) : ACCEPTED)
+          );
+        },
+        recheckLinearEvent: async (event) =>
+          workspace
+            ? (await workspace.access).recheckLinearEvent(event) &&
+              (projectExecution.recheckEvent(event) ?? assignments?.recheck(event) ?? true)
+            : (projectExecution.recheckEvent(event) ?? true),
+        ...(managed
           ? {
-              canDispatchDelegation: managedDelegationReady,
-              canAdvanceItem: (itemId: string) => {
-                const item = getWorkItem(db, itemId);
-                const sessionId = item?.sessionKey ?? null;
-                const session = sessionId ? getLinearSession(db, sessionId) : null;
-                const currentWorkspace = session?.organizationId
-                  ? db
-                      .query<{ id: string }, [string]>(
-                        "SELECT id FROM workspace WHERE linear_organization_id=?",
-                      )
-                      .get(session.organizationId)
-                  : null;
-                return (
-                  item !== null &&
-                  projectExecution.canDispatch(item.delegationId) &&
-                  currentWorkspace !== null &&
-                  canAdvanceItem(db, {
-                    itemId,
-                    workspaceId: currentWorkspace.id,
-                  })
-                );
-              },
               dispatchReady: (input: { legacyReadyItemIds: readonly string[] }) => {
                 legacyReadyItemIds = input.legacyReadyItemIds;
                 dispatch?.();
               },
               publicationReady: (
                 ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
-              ) =>
-                Promise.resolve(publication?.publicationReady(...args) ?? false).then(
-                  (publicationAllowed) => {
-                    const item = getWorkItem(db, args[0]);
-                    return (
-                      publicationAllowed &&
-                      !!item &&
-                      projectExecution.canDispatch(item.delegationId)
-                    );
-                  },
-                ),
-            }
-          : {}),
-        ...(workspace
-          ? {
-              authorizeLinearIntake: (sessionId, spec) =>
-                projectExecution.authorizeIntake(sessionId, spec) &&
-                (assignments?.authorizeIntake(sessionId, spec) ?? true),
-              authorizeLinearEvent: async (event) => {
-                if (!(await (await workspace.access).authorizeLinearEvent(event)))
-                  return MEMBERS_ONLY;
-                return (
-                  (await projectExecution.authorizeEvent(event)) ??
-                  (assignments ? assignments.authorize(event) : ACCEPTED)
-                );
-              },
-              recheckLinearEvent: async (event) =>
-                (await workspace.access).recheckLinearEvent(event) &&
-                (projectExecution.recheckEvent(event) ?? assignments?.recheck(event) ?? true),
+              ) => Promise.resolve(publication?.publicationReady(...args) ?? false),
             }
           : {}),
         githubAuth:
@@ -1166,7 +1119,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           },
           afterChanges: (changes) => attached.finishDelegationChanges(changes),
         });
-        publication = createPublicationReadiness({ db, reconciler });
+        publication = createPublicationReadiness({
+          db,
+          reconciler,
+          canMerge: (itemId) => admission.canMerge(itemId).ok,
+        });
         const enqueueMissingSnapshots = () => {
           const targets = db
             .query<{ itemId: string; workspaceId: string }, []>(
@@ -1252,7 +1209,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               now: Date.now(),
               defaultRepository: repository,
               legacyReadyItemIds,
-              canDispatchDelegation: managedDelegationReady,
+              canDispatchDelegation: admission.canDispatchDelegation,
               handoffForItem: (itemId) => attached.dependencyHandoff(itemId),
               ownerCap: ownerCap(paths.configFile),
             };
