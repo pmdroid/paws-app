@@ -86,6 +86,9 @@ test.skipIf(process.platform === "win32")(
       if (running(descendant)) process.kill(descendant, "SIGKILL");
     }
   },
+  // With its anchor killed, stop() waits the full 5 s kill confirmation before it reports
+  // false, so this test needs more than Bun's default 5 s.
+  15_000,
 );
 
 test.skipIf(process.platform === "win32")(
