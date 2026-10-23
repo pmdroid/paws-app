@@ -66,7 +66,7 @@ export async function handleHookSettingsRequest(
   if (body.action === "remove") {
     const removed = typeof body.id === "string" ? deleteHook(options.db, body.id) : null;
     if (!removed) return json({ error: "That hook is already gone." }, 404);
-    options.audit("settings.hook.remove", `Removed hook ${describe(removed)}`);
+    options.audit("settings.hook.remove", `Removed hook ${describeHook(removed)}`);
     return listing("Removed the hook. Runs that already started keep it until they end.");
   }
   if (body.action !== "add") return json({ error: "Unknown hook action" }, 400);
@@ -103,11 +103,11 @@ export async function handleHookSettingsRequest(
       409,
     );
   saveHook(options.db, hook, (options.now ?? Date.now)());
-  options.audit("settings.hook.add", `Added hook ${describe(hook)}`);
+  options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
   return listing(`Added the hook. Runs that start from now on get it.`);
 }
 
-function describe(hook: WorkspaceHook): string {
+export function describeHook(hook: WorkspaceHook): string {
   const matcher = hook.matcher ? ` matching ${hook.matcher}` : "";
   const skill = hook.skill ? ` from skill ${hook.skill}` : "";
   return `${HOOK_EVENT_LABELS[hook.event].toLowerCase()}${matcher}: ${hook.command}${skill} for ${names(hook.agents)}`;
