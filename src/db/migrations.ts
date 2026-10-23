@@ -2223,4 +2223,10 @@ CREATE TABLE visual_review_mark (
 CREATE INDEX visual_review_mark_question ON visual_review_mark (question_id);
 `,
   },
+  {
+    id: "105_queue_position_owner_cap",
+    sql: `
+ALTER TABLE queue_position ADD COLUMN owner_cap INTEGER CHECK (owner_cap IS NULL OR owner_cap >= 1);
+`,
+  },
 ];

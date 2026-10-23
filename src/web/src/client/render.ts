@@ -20,6 +20,9 @@ import {
   linkList,
   mergeQueueLine,
   queueLine,
+  capLine,
+  unmergedBlockers,
+  waitReason,
   runLabel,
   PHASE_NAMES,
   statePill,
@@ -293,7 +296,9 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
 
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
   const blockers = unmergedBlockers(snapshot, item);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${blockers.length ? `<span class="muted">Blocked by ${esc(blockers.join(", "))}</span>` : ""}</div></li>`;
+  const reason =
+    waitReason(snapshot, item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {
@@ -317,12 +322,6 @@ function itemRuns(snapshot: StatusSnapshot, itemId: string): StatusRun[] {
   return snapshot.runs
     .filter((run) => run.itemId === itemId)
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
-}
-
-function unmergedBlockers(snapshot: StatusSnapshot, item: StatusItem): string[] {
-  return item.blockers.filter(
-    (id) => !["merged", "completed"].includes(findItem(snapshot, id)?.state ?? "queued"),
-  );
 }
 
 function viewRuns(
@@ -411,7 +410,7 @@ function usagePauseSection(run: StatusRun, pause: StatusUsagePause): string {
 /** Where a queued task stands while every runner slot is busy. */
 function queueNotice(item: StatusItem): string {
   if (item.state !== "queued" || !item.queue) return "";
-  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>Paws starts ${esc(item.id)} when a slot frees. It holds no runner slot while it waits.</p></div></section>`;
+  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p></div></section>`;
 }
 
 /** Where a task stands in its repository's merge queue. Only the first one moves. */

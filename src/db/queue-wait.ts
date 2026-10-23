@@ -20,6 +20,7 @@ export type QueuePosition = {
   position: number;
   busySlots: number;
   totalSlots: number;
+  ownerCap: number | null;
 };
 
 /** Replace the waiting line. The scheduler writes it after every admission pass. */
@@ -28,13 +29,14 @@ export function saveQueuePositions(
   waiting: readonly string[],
   slots: { busy: number; total: number } | null,
   now: number,
+  ownerCaps: ReadonlyMap<string, number> = new Map(),
 ): void {
   db.run("DELETE FROM queue_position");
   if (slots === null) return;
   waiting.forEach((itemId, index) =>
     db.run(
-      "INSERT INTO queue_position(item_id,position,busy_slots,total_slots,updated_at) VALUES(?,?,?,?,?)",
-      [itemId, index + 1, slots.busy, slots.total, now],
+      "INSERT INTO queue_position(item_id,position,busy_slots,total_slots,owner_cap,updated_at) VALUES(?,?,?,?,?,?)",
+      [itemId, index + 1, slots.busy, slots.total, ownerCaps.get(itemId) ?? null, now],
     ),
   );
 }
@@ -42,7 +44,7 @@ export function saveQueuePositions(
 export function listQueuePositions(db: Database): QueuePosition[] {
   return db
     .query<QueuePosition, []>(
-      `SELECT item_id AS itemId,position,busy_slots AS busySlots,total_slots AS totalSlots
+      `SELECT item_id AS itemId,position,busy_slots AS busySlots,total_slots AS totalSlots,owner_cap AS ownerCap
        FROM queue_position ORDER BY position`,
     )
     .all();

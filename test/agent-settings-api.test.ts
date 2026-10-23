@@ -61,7 +61,7 @@ describe("local agent settings API", () => {
         { repo: "pmdroid/barkvisor" },
       ],
       merge: { ciFixAttempts: 3 },
-      queue: { startTimeoutHours: 24 },
+      queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
     });
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
   });
@@ -74,7 +74,7 @@ describe("local agent settings API", () => {
     expect(await response!.json()).toEqual({
       ...settings,
       merge: { ciFixAttempts: 3 },
-      queue: { startTimeoutHours: 24 },
+      queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
     });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
@@ -149,14 +149,17 @@ describe("local agent settings API", () => {
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { queue: unknown })
         .queue;
-    expect(await read()).toEqual({ startTimeoutHours: 24 });
+    expect(await read()).toEqual({ startTimeoutHours: 24, maxRunningPerOwner: null });
 
     const put = (queue: unknown) =>
       handleAgentSettingsRequest(request(undefined, "PUT", { ...settings, queue }), options);
     const saved = await put({ startTimeoutHours: 6 });
     expect(saved?.status).toBe(200);
-    expect(((await saved!.json()) as { queue: unknown }).queue).toEqual({ startTimeoutHours: 6 });
-    expect(await read()).toEqual({ startTimeoutHours: 6 });
+    expect(((await saved!.json()) as { queue: unknown }).queue).toEqual({
+      startTimeoutHours: 6,
+      maxRunningPerOwner: null,
+    });
+    expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("[queue]\nstart_timeout_hours = 6");
     expect(text).toContain("ci_fix_attempts = 5");
@@ -165,7 +168,7 @@ describe("local agent settings API", () => {
       request(undefined, "PUT", { ...settings, merge: { ciFixAttempts: 4 } }),
       options,
     );
-    expect(await read()).toEqual({ startTimeoutHours: 6 });
+    expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
     expect((await put({ startTimeoutHours: 720 }))?.status).toBe(200);
     await put({ startTimeoutHours: 720 });
     expect(readFileSync(options.configPath, "utf8").match(/\[queue\]/g)).toHaveLength(1);
@@ -185,8 +188,37 @@ describe("local agent settings API", () => {
     ]) {
       expect((await put(queue))?.status).toBe(400);
     }
-    expect(await read()).toEqual({ startTimeoutHours: 720 });
+    expect(await read()).toEqual({ startTimeoutHours: 720, maxRunningPerOwner: null });
     expect(audits).toHaveLength(3);
+  });
+
+  test("reads, writes and clears the running task cap per owner and audits each change", async () => {
+    const { options } = fixture();
+    const audits: [string, string][] = [];
+    options.audit = (action, subject) => audits.push([action, subject]);
+    const read = async () =>
+      ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { queue: unknown })
+        .queue;
+    const put = (queue: unknown) =>
+      handleAgentSettingsRequest(request(undefined, "PUT", { ...settings, queue }), options);
+
+    expect((await put({ maxRunningPerOwner: 3 }))?.status).toBe(200);
+    expect(await read()).toEqual({ startTimeoutHours: 24, maxRunningPerOwner: 3 });
+    expect(readFileSync(options.configPath, "utf8")).toContain(
+      "[queue]\nstart_timeout_hours = 24\nmax_running_per_owner = 3",
+    );
+    expect((await put({ startTimeoutHours: 6 }))?.status).toBe(200);
+    expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: 3 });
+    for (const queue of [{ maxRunningPerOwner: 0 }, { maxRunningPerOwner: 2.5 }])
+      expect((await put(queue))?.status).toBe(400);
+    expect((await put({ maxRunningPerOwner: null }))?.status).toBe(200);
+    expect(await read()).toEqual({ startTimeoutHours: 6, maxRunningPerOwner: null });
+    expect(readFileSync(options.configPath, "utf8")).not.toContain("max_running_per_owner");
+    expect(audits).toEqual([
+      ["settings.queue-owner-cap", "Running tasks per owner no cap → 3"],
+      ["settings.queue-start-timeout", "Queue start timeout 24 h → 6 h"],
+      ["settings.queue-owner-cap", "Running tasks per owner 3 → no cap"],
+    ]);
   });
 
   test("PUT repairs malformed saved profile sections without changing unrelated config", async () => {

@@ -438,6 +438,7 @@ function toItem(
             position: waiting.position,
             busySlots: waiting.busySlots,
             totalSlots: waiting.totalSlots,
+            ...(waiting.ownerCap === null ? {} : { ownerCap: waiting.ownerCap }),
           },
         }
       : {}),
