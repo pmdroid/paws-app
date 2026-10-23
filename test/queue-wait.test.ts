@@ -139,6 +139,8 @@ test("the status API shows a queued item's place in line until it starts", () =>
     saveQueuePositions(db, ["waiting"], { busy: 4, total: 4 }, 3);
     expect(queueOf("ahead")).toBeUndefined();
     expect(queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4 });
+    saveQueuePositions(db, ["waiting"], { busy: 4, total: 4 }, 4, new Map([["waiting", 3]]));
+    expect(queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4, ownerCap: 3 });
   } finally {
     db.close();
   }

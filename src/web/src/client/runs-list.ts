@@ -8,6 +8,7 @@ import {
   safeHref,
   statePill,
   taskPhase,
+  waitReason,
 } from "./format";
 import { routeHref } from "./route";
 
@@ -154,5 +155,6 @@ function filterGroup(
 function rowMarkup(snapshot: StatusSnapshot, row: RunRow): string {
   const { run, item } = row;
   const pr = item?.pr ? safeHref(item.pr.url) : null;
-  return `<tr data-run-id="${esc(run.id)}"><td class="run-cell"><a class="work-title" href="${routeHref({ view: "runs", id: run.id })}"><span class="lin-id">${esc(run.itemId)}</span> <b>${esc(item?.title ?? run.id)}</b></a></td><td class="run-cell hide-phone">${esc(item?.project?.name ?? "No project")}</td><td class="run-cell hide-phone">${esc(item?.owner ?? "")}</td><td class="run-cell"><span class="tag" data-run-phase>${esc(PHASE_NAMES[row.phase]!)}</span></td><td class="run-cell hide-phone">${statePill(run.state, runLabel(run.state))}</td><td class="run-cell hide-phone"><span class="muted">${esc(ago(run.startedAt, snapshot.generatedAt))}</span></td><td class="run-cell">${pr && item?.pr ? `<a href="${esc(pr)}" target="_blank" rel="noopener noreferrer" aria-label="Pull request ${item.pr.number}">#${item.pr.number}</a>` : ""}</td></tr>`;
+  const waiting = item ? waitReason(snapshot, item) : null;
+  return `<tr data-run-id="${esc(run.id)}"><td class="run-cell"><a class="work-title" href="${routeHref({ view: "runs", id: run.id })}"><span class="lin-id">${esc(run.itemId)}</span> <b>${esc(item?.title ?? run.id)}</b></a>${waiting ? `<div class="muted" data-wait-reason>${esc(waiting)}</div>` : ""}</td><td class="run-cell hide-phone">${esc(item?.project?.name ?? "No project")}</td><td class="run-cell hide-phone">${esc(item?.owner ?? "")}</td><td class="run-cell"><span class="tag" data-run-phase>${esc(PHASE_NAMES[row.phase]!)}</span></td><td class="run-cell hide-phone">${statePill(run.state, runLabel(run.state))}</td><td class="run-cell hide-phone"><span class="muted">${esc(ago(run.startedAt, snapshot.generatedAt))}</span></td><td class="run-cell">${pr && item?.pr ? `<a href="${esc(pr)}" target="_blank" rel="noopener noreferrer" aria-label="Pull request ${item.pr.number}">#${item.pr.number}</a>` : ""}</td></tr>`;
 }

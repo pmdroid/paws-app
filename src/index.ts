@@ -24,8 +24,10 @@ import {
   ensureLayout,
   loadRuntime,
   loadEnv,
+  loadConfigFile,
   loadRunnerControl,
   pawsPaths,
+  readQueueSettings,
   type EnvSource,
   type PawsEnv,
   type PawsPaths,
@@ -1221,6 +1223,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               legacyReadyItemIds,
               canDispatchDelegation: managedDelegationReady,
               handoffForItem: (itemId) => attached.dependencyHandoff(itemId),
+              ownerCap: ownerCap(paths.configFile),
             };
           },
           () => attached.reconcileExecution(),
@@ -1481,6 +1484,14 @@ function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteEx
     agentForSession: () => required,
     agentForItem: () => required,
   };
+}
+
+function ownerCap(configFile: string): number | null {
+  try {
+    return readQueueSettings(loadConfigFile(configFile)).maxRunningPerOwner;
+  } catch {
+    return null;
+  }
 }
 
 function down(): LinearRunning {

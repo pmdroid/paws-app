@@ -156,6 +156,8 @@ export interface StatusQueuePosition {
   position: number;
   busySlots: number;
   totalSlots: number;
+  /** Set while the task waits on its owner's cap of running tasks. */
+  ownerCap?: number;
 }
 
 export interface StatusActivity {
@@ -800,6 +802,7 @@ function readQueue(input: unknown, path: string): StatusQueuePosition {
     position: positiveInteger(body, "position", path),
     busySlots: count(body, "busySlots", path),
     totalSlots: positiveInteger(body, "totalSlots", path),
+    ...(body.ownerCap === undefined ? {} : { ownerCap: positiveInteger(body, "ownerCap", path) }),
   };
 }
 
