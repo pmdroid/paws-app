@@ -14,6 +14,7 @@ import {
   auditWorkspaceAccess,
   enqueueJob,
   immediate,
+  latestGitHubDelivery,
   listWorkspaceRepositories,
   workspaceMember,
 } from "../db";
@@ -185,6 +186,7 @@ export function createHostedGitHubConnect(options: {
             requiresSignIn: !permitted(),
             installationUrl: discovered.installationUrl,
             repositoryCount: repositories.length,
+            lastDelivery: latestGitHubDelivery(db),
           },
           { headers: { "cache-control": "no-store" } },
         );

@@ -11,6 +11,7 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  recordGitHubDelivery,
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
 } from "../src/db";
@@ -425,6 +426,11 @@ test("GitHub setup discovers the approved installation and exposes status withou
       status: "connected",
       canManage: false,
       repositoryCount: 1,
+      lastDelivery: null,
+    });
+    recordGitHubDelivery(f.db, { deliveryId: "d-1", event: "check_suite", payload: "{}" }, 5_000);
+    expect(await (await f.handler()(automaticRequest(f, "GET")))?.json()).toMatchObject({
+      lastDelivery: { event: "check_suite", receivedAt: 5_000 },
     });
     f.setInstallationStatus(404);
     const removed = await f.handler()(automaticRequest(f, "GET"));

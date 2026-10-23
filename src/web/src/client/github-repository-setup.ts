@@ -2,6 +2,7 @@ import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { githubUrl } from "./github-url";
+import { githubDeliveryLine, type GitHubDelivery } from "./github-delivery";
 
 type Mapping = { repository: string; teamId: string };
 type Catalog = {
@@ -174,6 +175,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
         requiresSignIn?: boolean;
         installationUrl?: string;
         repositoryCount?: number;
+        lastDelivery?: GitHubDelivery;
         error?: string;
       } | null;
       if (!healthResponse.ok || !health)
@@ -213,7 +215,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
         search = "";
         status.textContent =
           health.status === "connected"
-            ? `Connected · ${health.repositoryCount ?? 0} repositories available to Paws.`
+            ? `Connected · ${health.repositoryCount ?? 0} repositories available to Paws.${githubDeliveryLine(health.lastDelivery)}`
             : catalog.signedIn
               ? "Choose repositories and match them to Linear teams."
               : "Sign in with GitHub to choose your repositories.";
