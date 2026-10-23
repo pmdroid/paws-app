@@ -240,6 +240,26 @@ describe("shared Linear budget", () => {
     expect(ledger.usage().items).toEqual([{ item: "PAS-2", requests: 2 }]);
   });
 
+  test("counts each request toward its task for the run page", async () => {
+    const counted: string[] = [];
+    const ledger = createLinearLedger({ log: () => {}, countItem: (id) => counted.push(id) });
+    const client = createLinearClient({
+      auth: AUTH,
+      fetch: async () => linearResponse(budgetHeaders(4000, 10, START + 3_600_000)),
+      ledger,
+    });
+    const viewer = () => client.query("query { viewer { id } }");
+    await linearItem("PAS-1", () => linearCaller("outbox", viewer), "item-1");
+    await linearCaller("context", () => linearItem("PAS-1", viewer, "item-1"));
+    await linearItem("PAS-2", viewer);
+    await viewer();
+    expect(counted).toEqual(["item-1", "item-1"]);
+    expect(ledger.usage().items).toEqual([
+      { item: "PAS-1", requests: 2 },
+      { item: "PAS-2", requests: 1 },
+    ]);
+  });
+
   test("/health reports the Linear usage", async () => {
     const ledger = createLinearLedger({ log: () => {} });
     const server = startServer({
