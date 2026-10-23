@@ -18,7 +18,7 @@ export type RemoteSkillSource = Exclude<SkillSource, { kind: "upload" }>;
 /** What to resolve. `version` pins an npm version or dist-tag; omitted, the newest wins. */
 export type SkillRequest =
   | (Extract<SkillSource, { kind: "npm" }> & { version?: string })
-  | Extract<SkillSource, { kind: "git" }>;
+  | (Extract<SkillSource, { kind: "git" }> & { path?: string });
 
 export type ResolvedSkill = {
   source: RemoteSkillSource;

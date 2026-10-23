@@ -82,6 +82,10 @@ export function parseSkillSource(
     : { kind: "npm", package: value, ...folder };
 }
 
+export function skillSourceGuess(_text: string): { ref: string; subfolder: string } | null {
+  return null;
+}
+
 export function skillSourceLabel(skill: SkillPin): string {
   const source = skill.source;
   const where =
