@@ -12,6 +12,7 @@ import {
   type SkillFiles,
   type SkillRequest,
   type SkillResolver,
+  type SkillUpdates,
 } from "../skills";
 import { isRecord, json, localRequest, readJson, sameToken } from "./handler";
 
@@ -22,6 +23,7 @@ export type SkillSettingsOptions = {
   /** `~/.paws/skills`. */
   root: string;
   resolver: SkillResolver;
+  updates?: SkillUpdates;
   csrfToken: string;
   trustedOrigin?: string;
   /** The signed-in member's workspace role. Absent on a local Paws without workspaces. */
@@ -50,12 +52,16 @@ export async function handleSkillSettingsRequest(
     return json({
       skills,
       rollouts: skillRollouts(options.db, skills),
+      ...(options.updates ? { updates: options.updates.available(skills) } : {}),
       agents: SKILL_AGENTS,
       limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
       ...(notice ? { notice } : {}),
     });
   };
-  if (request.method === "GET") return listing();
+  if (request.method === "GET") {
+    await options.updates?.check(listSkills(options.db));
+    return listing();
+  }
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);

@@ -29,6 +29,7 @@ export type SkillRollout = {
 export type SkillListing = {
   skills: SkillPin[];
   rollouts?: SkillRollout[];
+  updates?: Record<string, string>;
   agents: SkillAgent[];
   limitBytes: number;
   notice?: string;
@@ -119,13 +120,16 @@ export function skillRolloutMarkup(rollout: SkillRollout | undefined): string {
   return `<div class="skill-runners"><span class="tag">${rollout.upToDate} of ${rollout.total} up to date</span>${behind}</div>`;
 }
 
-function skillRow(skill: SkillPin, busy: boolean, rollout?: SkillRollout): string {
+function skillRow(skill: SkillPin, busy: boolean, rollout?: SkillRollout, update?: string): string {
   const name = esc(skill.name);
+  const available = update
+    ? `<span class="tag now wrap" title="Update moves the pin to ${esc(update)}">Update available · ${esc(update.slice(0, 7))}</span>`
+    : "";
   const removed = skill.removedAt !== null;
   const actions = removed
     ? ""
     : `<div class="skill-actions">${skill.source.kind === "upload" ? "" : `<button class="btn" type="button" data-skill="update" data-name="${name}" ${busy ? "disabled" : ""} aria-label="Update ${name}">Update</button>`}<button class="btn" type="button" data-skill="remove" data-name="${name}" ${busy ? "disabled" : ""} aria-label="Remove ${name}">Remove</button></div>`;
-  return `<tr><td class="skill-cell"><div class="skill-name"><b>${name}</b><span>${esc(shortVersion(skill))}</span>${removed ? '<span class="tag warn">Removing from runners</span>' : ""}</div><p class="sub">${esc(skillSourceLabel(skill))} · ${skill.agents.map((agent) => AGENT_NAMES[agent]).join(", ")}</p><p class="mono" title="SHA-256 ${esc(skill.sha256)}">sha256 ${esc(skill.sha256.slice(0, 12))}</p></td><td class="skill-state">${removed ? "" : skillRolloutMarkup(rollout)}${actions}</td></tr>`;
+  return `<tr><td class="skill-cell"><div class="skill-name"><b>${name}</b><span>${esc(shortVersion(skill))}</span>${removed ? "" : available}${removed ? '<span class="tag warn">Removing from runners</span>' : ""}</div><p class="sub">${esc(skillSourceLabel(skill))} · ${skill.agents.map((agent) => AGENT_NAMES[agent]).join(", ")}</p><p class="mono" title="SHA-256 ${esc(skill.sha256)}">sha256 ${esc(skill.sha256.slice(0, 12))}</p></td><td class="skill-state">${removed ? "" : skillRolloutMarkup(rollout)}${actions}</td></tr>`;
 }
 
 export function renderSkillSettings(view: SkillView): string {
@@ -142,6 +146,7 @@ export function renderSkillSettings(view: SkillView): string {
             skill,
             busy,
             view.data!.rollouts?.find((rollout) => rollout.name === skill.name),
+            view.data!.updates?.[skill.name],
           ),
         )
         .join("")}</tbody></table>`

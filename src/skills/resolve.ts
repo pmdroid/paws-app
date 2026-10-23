@@ -151,21 +151,10 @@ async function resolveGit(
   try {
     const run = (args: string[]) => git(context, dir, args);
     await run(["init", "--quiet"]);
-    let commit: string;
-    if (ref !== undefined && /^[0-9a-f]{40}$/i.test(ref)) commit = ref.toLowerCase();
-    else {
-      const listed = await run(["ls-remote", "--", url, ref ?? "HEAD"]);
-      const lines = listed.split("\n").filter(Boolean);
-      // An annotated tag lists its commit as `<tag>^{}`; prefer that, then an exact match.
-      const line =
-        lines.find((value) => value.endsWith("^{}")) ??
-        lines.find((value) => value.split("\t")[1] === ref) ??
-        lines[0];
-      const found = line?.split("\t")[0];
-      if (found === undefined || !/^[0-9a-f]{40}$/.test(found))
-        throw new SkillError(`${url} has no ${ref ?? "default branch"} to pin.`, 404);
-      commit = found;
-    }
+    const commit =
+      ref !== undefined && commitRef(ref)
+        ? ref.toLowerCase()
+        : await remoteCommit(context, dir, url, ref);
     await run(["fetch", "--quiet", "--depth", "1", "--", url, commit]);
     await run(["checkout", "--quiet", "--detach", "FETCH_HEAD"]);
     const head = (await run(["rev-parse", "HEAD"])).trim();
@@ -186,6 +175,46 @@ async function resolveGit(
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+export function commitRef(ref: string): boolean {
+  return /^[0-9a-f]{40}$/i.test(ref);
+}
+
+export async function gitRemoteCommit(
+  url: string,
+  ref: string | undefined,
+  options: { git?: string; signal?: AbortSignal } = {},
+): Promise<string> {
+  return remoteCommit(
+    { git: options.git ?? "git", limit: SKILL_BUNDLE_LIMIT, signal: options.signal },
+    tmpdir(),
+    url,
+    ref,
+  );
+}
+
+async function remoteCommit(
+  context: GitContext,
+  cwd: string,
+  url: string,
+  ref: string | undefined,
+): Promise<string> {
+  const listed = await git(context, cwd, [
+    "ls-remote",
+    "--",
+    url,
+    ...(ref === undefined ? ["HEAD"] : [ref, `${ref}^{}`]),
+  ]);
+  const lines = listed.split("\n").filter(Boolean);
+  const line =
+    lines.find((value) => value.endsWith("^{}")) ??
+    lines.find((value) => value.split("\t")[1] === ref) ??
+    lines[0];
+  const found = line?.split("\t")[0];
+  if (found === undefined || !/^[0-9a-f]{40}$/.test(found))
+    throw new SkillError(`${url} has no ${ref ?? "default branch"} to pin.`, 404);
+  return found;
 }
 
 /** https, ssh, git, or a local path on this machine. Never a transport helper such as `ext::`. */

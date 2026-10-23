@@ -73,6 +73,7 @@ import {
   prepareShutdown,
   recoverOnStartup,
   recordGitHubDelivery,
+  listSkills,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -159,7 +160,7 @@ import { delegationSnapshotsComplete, saveExternalBlockerPolicies } from "./inta
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
-import { createSkillResolver } from "./skills";
+import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { findOpenQuestion } from "./questions";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import {
@@ -349,6 +350,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     catalogTimer.unref?.();
     abort.signal.addEventListener("abort", () => clearInterval(catalogTimer));
   }
+  const skillUpdates = createSkillUpdates();
+  const skillUpdateTimer = setInterval(
+    () => void skillUpdates.check(listSkills(db)),
+    SKILL_UPDATE_INTERVAL,
+  );
+  skillUpdateTimer.unref?.();
+  abort.signal.addEventListener("abort", () => clearInterval(skillUpdateTimer));
   const webhooks = runtime.webhooks;
   const channel: "comments" | "agent-session" =
     runtime.linearMode === "agent-session" ? "agent-session" : "comments";
@@ -757,7 +765,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         orchestrator ? orchestrator.requestVisualReviewChanges(input) : "rejected",
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
-      skillSettings: { root: paths.skillsDir, resolver: createSkillResolver() },
+      skillSettings: {
+        root: paths.skillsDir,
+        resolver: createSkillResolver(),
+        updates: skillUpdates,
+      },
       agentSettings: {
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),

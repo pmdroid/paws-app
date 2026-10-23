@@ -6,6 +6,10 @@ import { parseSkillSource, renderSkillSettings, type SkillListing } from "./skil
 const listing: SkillListing = {
   agents: ["claude", "codex", "grok"],
   limitBytes: 50 * 1024 * 1024,
+  updates: {
+    "a-review-skill-with-a-rather-long-name-for-a-phone":
+      "f0e1d2c3b4a5968778695a4b3c2d1e0f12345678",
+  },
   skills: [
     {
       name: "impeccable",
@@ -84,6 +88,13 @@ describe("skills section", () => {
     expect(html).toContain('aria-label="Remove polish"');
     expect(html).toContain("Removing from runners");
     expect(html).not.toContain('aria-label="Remove retired"');
+  });
+
+  test("a git skill whose ref moved shows the new short commit", () => {
+    expect(html).toMatch(
+      /<b>a-review-skill-with-a-rather-long-name-for-a-phone<\/b><span>a1b2c3d<\/span><span[^>]*title="Update moves the pin to f0e1d2c3b4a5968778695a4b3c2d1e0f12345678"[^>]*>Update available · f0e1d2c<\/span>/,
+    );
+    expect(html.match(/Update available/g)).toHaveLength(1);
   });
 
   test("the add form takes a source, ref, subfolder, agents, or an uploaded folder", () => {
