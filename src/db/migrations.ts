@@ -2349,4 +2349,10 @@ CREATE INDEX inbox_event_issue ON inbox_event(json_extract(payload,'$.data.id'),
   WHERE json_extract(payload,'$.type')='Issue';
 `,
   },
+  {
+    id: "115_runner_skill_waiting",
+    sql: `
+ALTER TABLE runner_skill ADD COLUMN waiting INTEGER;
+`,
+  },
 ];

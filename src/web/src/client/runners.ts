@@ -60,6 +60,7 @@ export type RunnerSkill = {
   installedVersion: string | null;
   state: "up_to_date" | "installing" | "out_of_date" | "failed";
   error: string | null;
+  waiting?: number | null;
   reportedAt: number | null;
 };
 export type StrayProcess = { pid: number; name: string; ageSeconds: number; cpuPercent: number };
@@ -269,17 +270,23 @@ const SKILL_STATES: Record<RunnerSkill["state"], [string, string]> = {
   failed: ["bad", "Install failed"],
 };
 
-export function runnerSkillsMarkup(skills: readonly RunnerSkill[]): string {
+export function waitingLabel(tasks: number, runner: string): string {
+  return `Waiting for ${tasks} running ${tasks === 1 ? "task" : "tasks"} on ${runner}`;
+}
+
+export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: string): string {
   if (!skills.length)
     return '<p class="muted">No skills registered. Owners and admins add them in Settings → Agents.</p>';
   const rows = skills
     .map((skill) => {
-      const [tone, label] = SKILL_STATES[skill.state] ?? SKILL_STATES.installing;
+      const [tone, state] = SKILL_STATES[skill.state] ?? SKILL_STATES.installing;
+      const label = skill.waiting ? "Waiting" : state;
       const pinned = skillVersionLabel(skill.version);
       const has =
         skill.installedVersion === null ? null : skillVersionLabel(skill.installedVersion);
-      const detail =
-        skill.state === "out_of_date" && has
+      const detail = skill.waiting
+        ? `${waitingLabel(skill.waiting, runner)}.${has && has !== pinned ? ` Has ${has} until they end.` : ""}`
+        : skill.state === "out_of_date" && has
           ? `Has ${has}. Paws pins ${pinned}.`
           : skill.state === "installing" && has && has !== pinned
             ? `Has ${has} until no run is using it.`
@@ -290,7 +297,7 @@ export function runnerSkillsMarkup(skills: readonly RunnerSkill[]): string {
         skill.state === "failed"
           ? `<p class="runner-skill-error" role="note">${esc(skill.error ?? "The runner did not report why.")}</p>`
           : "";
-      return `<li class="runner-skill" data-skill-state="${esc(skill.state)}"><span class="runner-skill-name"><b>${esc(skill.name)}</b><span class="mono" title="${esc(skill.version)}">${esc(pinned)}</span></span><span class="tag ${tone}">${label}</span>${detail ? `<p class="muted">${esc(detail)}</p>` : ""}${error}</li>`;
+      return `<li class="runner-skill" data-skill-state="${esc(skill.state)}"><span class="runner-skill-name"><b>${esc(skill.name)}</b><span class="mono" title="${esc(skill.version)}">${esc(pinned)}</span></span><span class="tag ${tone}">${esc(label)}</span>${detail ? `<p class="muted">${esc(detail)}</p>` : ""}${error}</li>`;
     })
     .join("");
   return `<ul class="runner-skill-list" role="list" aria-label="Installed skills">${rows}</ul>`;
@@ -602,7 +609,7 @@ export function runnerDetailMarkup(
           runner.skills.length
             ? `<span class="muted">${runner.skills.filter((skill) => skill.state === "up_to_date").length} of ${runner.skills.length} up to date</span>`
             : "",
-          runnerSkillsMarkup(runner.skills),
+          runnerSkillsMarkup(runner.skills, runner.name),
         )
   }${block("host", "Host", "", runnerMetricsMarkup(metrics, view.now))}${
     metrics?.strayProcesses?.length
