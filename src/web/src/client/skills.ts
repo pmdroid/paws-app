@@ -26,7 +26,10 @@ export type SkillRollout = {
   failed: string[];
 };
 
+export type FoundSkill = { path: string; name: string; description: string; added: boolean };
+
 export type SkillListing = {
+  found?: FoundSkill[];
   skills: SkillPin[];
   rollouts?: SkillRollout[];
   updates?: Record<string, string>;
@@ -44,7 +47,12 @@ export type SkillView = {
   notice: string | null;
   denied?: boolean;
   draft?: SkillDraft;
+  found?: { key: string; skills: FoundSkill[] };
 };
+
+export function discoversSkills(_draft: SkillDraft): boolean {
+  return false;
+}
 
 const AGENT_NAMES: Record<SkillAgent, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 const ALL_AGENTS: SkillAgent[] = ["claude", "codex", "grok"];

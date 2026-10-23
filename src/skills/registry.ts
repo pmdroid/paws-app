@@ -19,6 +19,7 @@ import {
   writeSkillBundle,
   type SkillFiles,
 } from "./bundle";
+import type { SkillFolder } from "./discover";
 import type { SkillRequest, SkillResolver } from "./resolve";
 
 export type SkillRegistry = {
@@ -55,6 +56,24 @@ export async function addSkill(
     { name, source: resolved.source, version: resolved.version, agents },
     resolved.files,
   );
+}
+
+export type FoundSkill = SkillFolder & { added: boolean };
+
+export async function findSkills(
+  _registry: SkillRegistry,
+  _request: SkillRequest,
+): Promise<FoundSkill[]> {
+  return [];
+}
+
+export async function addSkills(
+  _registry: SkillRegistry,
+  _request: SkillRequest,
+  _paths: readonly string[],
+  _options: { agents?: readonly string[] } = {},
+): Promise<SkillPin[]> {
+  return [];
 }
 
 /** Pin an uploaded folder. Its version is the checksum of its contents. */
