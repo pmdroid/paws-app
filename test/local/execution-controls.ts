@@ -117,7 +117,7 @@ export function createExecutionControlsFixture(root: string) {
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
     tracker: createFakeTracker(),
-    dispatchReady() {},
+    scheduling: () => ({}),
   });
   let joining: Promise<void> | null = null;
   let revokeOnResume = false;

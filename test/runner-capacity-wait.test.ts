@@ -29,7 +29,7 @@ import { createRunnerPlacement } from "../src/runner-placement";
 import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
-import { dispatchReadyItems } from "../src/scheduler";
+import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { migratedDatabase } from "./helpers";
 
@@ -185,7 +185,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     home: root,
     tracker,
     repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
-    dispatchReady() {},
+    scheduling: () => ({}),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },
@@ -276,7 +276,8 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    expect(dispatchReadyItems(db, { now: Date.now() })).toHaveLength(5);
+    dispatch(db, { now: Date.now() });
+    expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
     const parked = () =>

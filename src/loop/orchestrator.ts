@@ -1,7 +1,6 @@
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
@@ -70,7 +69,6 @@ import {
   type GitCommitPolicy,
   JOB_KIND,
   OUTBOX_ACTIVITY,
-  delegationHasOpenWork,
   delegationIssueIdSql,
   isTerminalWorkItemState,
   parentTaskKeySql,
@@ -117,8 +115,6 @@ import {
   applyWorkItemEvent,
   configureWorkItem,
   enqueueJobOnce,
-  enqueueJob,
-  mergeLaneSql,
   countCiFixes,
   countRebaseReturns,
   recordRebaseReturn,
@@ -218,8 +214,8 @@ import {
   type GitHubBinding,
   type GitHubTokenProvider,
 } from "../github";
-import { intakeDelegatedIssue, readyItems, stopAdoptedParent, type IntakeResult } from "../intake";
-import { createAdmission, type ItemAdmission } from "../scheduler";
+import { intakeDelegatedIssue, stopAdoptedParent, type IntakeResult } from "../intake";
+import { createAdmission, dispatch, type ItemAdmission, type SchedulerOptions } from "../scheduler";
 import type {
   AcceptedLinearEvent,
   DependencyEdge,
@@ -414,7 +410,7 @@ export type OrchestratorOptions = {
     candidate?: { sha: string; baseSha: string },
   ) => boolean | Promise<boolean>;
   admission?: ItemAdmission;
-  dispatchReady?: (input: { legacyReadyItemIds: readonly string[] }) => void;
+  scheduling?: () => Pick<SchedulerOptions, "defaultRepository" | "ownerCap">;
   clock?: Clock;
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
   channel?: "comments" | "agent-session";
@@ -791,7 +787,7 @@ export class Orchestrator {
           });
         }
       }
-      this.pump();
+      this.dispatch();
     }
     await this.flush();
   }
@@ -1524,7 +1520,7 @@ export class Orchestrator {
       });
     if (taskKey && classification?.mode === "code" && classification.redirect) {
       await this.intakeLinearTask(this.delegationIssueId(item)!, item.sessionKey, taskKey);
-      this.pump();
+      this.dispatch();
       return false;
     }
     if (saved === "code") return true;
@@ -1606,7 +1602,7 @@ export class Orchestrator {
             context: [this.workContext(item), handoff].join("\n\n"),
           });
           await this.intakeLinearTask(issueId, item.sessionKey, taskKey);
-          this.pump();
+          this.dispatch();
           return false;
         }
       }
@@ -1786,7 +1782,7 @@ export class Orchestrator {
           finish,
         );
       } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now(), finish);
-      this.pump();
+      this.dispatch();
     } catch (error) {
       if (
         !this.askedRuns.has(run.id) &&
@@ -2675,7 +2671,7 @@ export class Orchestrator {
     )
       return;
     if (getConfirmedRemoteMerge(this.db, item.id)) {
-      if (completeMergedItem(this.db, { itemId: item.id, now: this.now() })) this.pump();
+      if (completeMergedItem(this.db, { itemId: item.id, now: this.now() })) this.dispatch();
       return;
     }
     this.assertReconciled(item);
@@ -3059,7 +3055,7 @@ export class Orchestrator {
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
     }).catch(() => undefined);
-    this.pump();
+    this.dispatch();
     await this.flush();
   }
 
@@ -4102,7 +4098,7 @@ export class Orchestrator {
   }
 
   reconcileExecution(): void {
-    this.pump();
+    this.dispatch();
   }
 
   sweepWorktrees(signal: AbortSignal): Promise<void> {
@@ -4179,51 +4175,26 @@ export class Orchestrator {
     return [resume, dependencies].filter(Boolean).join("\n\n") || undefined;
   }
 
-  private pump(): void {
-    this.yieldIdleMergeSessions();
-    const items = this.allItems();
-    const delegationIds = new Set(
-      this.db
-        .query<{ id: string }, []>(
-          `SELECT DISTINCT delegation_id AS id FROM work_item WHERE ${delegationHasOpenWork("work_item.delegation_id")}`,
-        )
-        .all()
-        .map((row) => row.id),
-    );
-    for (const delegationId of delegationIds) this.questionDependencyCycle(delegationId);
-    const queued = items.filter((item) => item.state === "queued" && !item.cancelRequested);
-    queued.sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
-    const ready = queued.filter((item) => this.admission.canStart(item.id).ok);
-    if (this.options.dispatchReady) {
-      this.options.dispatchReady({ legacyReadyItemIds: ready.map((item) => item.id) });
-      this.noteQueued(ready);
-      return;
-    }
-    if (listInFlightItems(this.db).length > 0) return;
-    const item = ready[0];
-    if (!item) return;
-    immediate(this.db, () => {
-      if (
-        this.db
-          .query(
-            "SELECT 1 FROM job WHERE queue=? AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=? LIMIT 1",
-          )
-          .get(JOB_KIND.start, item.id)
-      )
-        return;
-      enqueueJob(this.db, {
-        queue: JOB_KIND.start,
-        jobKey: `start:${item.id}:${item.version}:${crypto.randomUUID()}`,
-        payload: { itemId: item.id, handoff: this.dependencyHandoff(item.id) },
-        now: this.now(),
-      });
+  private dispatch(): void {
+    const scheduling = this.options.scheduling?.();
+    dispatch(this.db, {
+      now: this.now(),
+      admission: this.admission,
+      handoffForItem: (itemId) => this.dependencyHandoff(itemId),
+      sessionFor: (itemId) => {
+        const item = getWorkItem(this.db, itemId);
+        return item && this.activitySession(item);
+      },
+      ...(scheduling
+        ? { ...scheduling, onWaiting: (itemIds) => this.noteQueued(itemIds) }
+        : { maxInFlight: 1 }),
     });
   }
 
-  private noteQueued(ready: readonly WorkItemRecord[]): void {
+  private noteQueued(itemIds: readonly string[]): void {
     const now = this.now();
     const hours = this.queueStartTimeoutHours();
-    for (const { id } of ready) {
+    for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
       if (
@@ -4261,79 +4232,6 @@ export class Orchestrator {
         now,
       });
     }
-  }
-
-  private yieldIdleMergeSessions(): void {
-    immediate(this.db, () => {
-      for (const item of this.allItems()) {
-        if (
-          item.state !== "merge_queue" ||
-          !this.admission.canDispatchDelegation(item.delegationId) ||
-          [...this.live.values()].some((live) => live.itemId === item.id) ||
-          !this.delegationItems(item.delegationId).some(
-            (other) =>
-              other.id !== item.id &&
-              other.state === "queued" &&
-              this.admission.canStart(other.id).ok,
-          )
-        )
-          continue;
-        this.db.run(
-          `UPDATE linear_session SET active_item_id=NULL WHERE active_item_id=?
-           AND NOT EXISTS(SELECT 1 FROM run WHERE item_id=? AND status IN ('active','provisioning'))
-           AND NOT EXISTS(SELECT 1 FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until>?)
-             AND json_extract(payload,'$.itemId')=?
-             AND (queue IN ('item.start','run.resume','run.reverify') OR ${mergeLaneSql("job")}))`,
-          [item.id, item.id, this.now(), item.id],
-        );
-      }
-    });
-  }
-
-  private questionDependencyCycle(delegationId: string): void {
-    const workspace = this.workspaceForDelegation(delegationId);
-    if (!workspace || !this.admission.canDispatchDelegation(delegationId)) return;
-    const ids: string[] = [];
-    try {
-      for (const item of this.delegationItems(delegationId))
-        ids.push(
-          ...readyItems(this.db, { itemId: item.id, workspaceId: workspace }).cycleHeldItemIds,
-        );
-    } catch {
-      return;
-    }
-    if (!ids.length) return;
-    const items = ids
-      .map((id) => getWorkItem(this.db, id))
-      .filter((item): item is WorkItemRecord => item !== null);
-    const session = this.delegationSession(items);
-    if (!session) return;
-    const digest = createHash("sha256")
-      .update(JSON.stringify([...ids].sort()))
-      .digest("hex");
-    const key = `dependency-cycle:${delegationId}:${digest}`;
-    if (this.db.query("SELECT 1 FROM outbox WHERE idempotency_key=?").get(key)) return;
-    immediate(this.db, () => {
-      const body = `Linear dependencies contain a cycle. Update the dependencies in Linear to release this work: ${items.map((item) => item.linearIdentifier).join(", ")}. Unaffected work can continue.`;
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "activity",
-        orderingKey: session,
-        idempotencyKey: key,
-        payload: { sessionId: session, kind: "thought", body },
-        now: this.now(),
-      });
-    });
-  }
-
-  private workspaceForDelegation(delegationId: string): string | null {
-    return (
-      this.db
-        .query<{ id: string }, [string]>(
-          `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN work_item i ON i.session_key=s.session_id WHERE i.delegation_id=? LIMIT 1`,
-        )
-        .get(delegationId)?.id ?? null
-    );
   }
 
   private ensureRun(item: WorkItemRecord): { id: string } {
@@ -4385,7 +4283,7 @@ export class Orchestrator {
     } else {
       this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
     }
-    this.pump();
+    this.dispatch();
   }
 
   private planHook(
