@@ -18,7 +18,11 @@ const HOOK_EXTRA_ENV = [
 
 export const HOOK_FAILURES_FILE = "hook-failures.jsonl";
 
-type AgentEvent = { name: "PreToolUse" | "PostToolUse" | "Stop"; key: string; matcher?: string };
+type AgentEvent = {
+  name: "PreToolUse" | "PostToolUse" | "Stop" | "SessionStart";
+  key: string;
+  matcher?: string;
+};
 
 /** Each agent's own hook event and tool matcher for a workspace hook. */
 export function agentHookEvent(
@@ -40,6 +44,8 @@ export function agentHookEvent(
       return { name: "PreToolUse", key: "pre_tool_use", ...(matcher ? { matcher } : {}) };
     case "stop":
       return { name: "Stop", key: "stop" };
+    case "session_start":
+      return { name: "SessionStart", key: "session_start" };
   }
 }
 
@@ -121,7 +127,12 @@ export function codexHookTrust(
   hash: (body: Record<string, unknown>) => string,
 ): { key: string; hash: string }[] {
   const entries: { key: string; hash: string }[] = [];
-  const keys = { PreToolUse: "pre_tool_use", PostToolUse: "post_tool_use", Stop: "stop" } as const;
+  const keys = {
+    PreToolUse: "pre_tool_use",
+    PostToolUse: "post_tool_use",
+    Stop: "stop",
+    SessionStart: "session_start",
+  } as const;
   for (const [name, groups] of Object.entries(document) as [keyof typeof keys, HookGroup[]][]) {
     for (const [group, entry] of groups.entries())
       for (const [index, handler] of entry.hooks.entries())

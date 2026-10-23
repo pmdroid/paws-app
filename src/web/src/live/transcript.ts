@@ -137,6 +137,7 @@ const HOOK_LABELS: Record<string, string> = {
   before_shell: "before a shell command",
   before_tool: "before a tool call",
   stop: "when the agent stops",
+  session_start: "when a session starts",
 };
 
 function toolValue(value: unknown): string {

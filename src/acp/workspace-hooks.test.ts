@@ -10,7 +10,7 @@ import {
   codexStopHookTrustHash,
   installCloseoutStopHook,
 } from "./closeout-hook";
-import { HOOK_FAILURES_FILE, readHookFailures } from "./workspace-hooks";
+import { HOOK_FAILURES_FILE, agentHookEvent, readHookFailures } from "./workspace-hooks";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -249,4 +249,43 @@ test("a failing or slow hook is recorded for the run page and does not block the
     { id: "hook_slow", event: "before_shell", command: "sleep 5", reason: "timed out after 1s" },
   ]);
   expect(readHookFailures(join(runDirectory, HOOK_FAILURES_FILE), offset).failures).toEqual([]);
+});
+
+test("a session start hook maps to SessionStart for Claude and Codex, without a matcher", () => {
+  for (const agent of ["claude", "codex"] as const)
+    expect(agentHookEvent(agent, "session_start", null)).toEqual({
+      name: "SessionStart",
+      key: "session_start",
+    });
+});
+
+test("a session start hook runs once when a Claude or Codex session starts", async () => {
+  for (const agent of ["claude", "codex"] as const) {
+    const marker = join(temp(), "started");
+    const { installed } = await install(agent, [
+      hook({ id: "hook_start", event: "session_start", command: `echo started >> ${marker}` }),
+      hook({ id: "hook_edit", command: `echo edited >> ${marker}` }),
+    ]);
+    const hooksPath = agent === "codex" ? join(installed.env.CODEX_HOME!, "hooks.json") : "";
+    const hooks =
+      agent === "claude"
+        ? claudeHooks(installed.sessionMeta)
+        : (JSON.parse(readFileSync(hooksPath, "utf8")) as { hooks: Hooks }).hooks;
+    expect(hooks.SessionStart).toHaveLength(1);
+    const [group] = hooks.SessionStart!;
+    expect(group?.matcher).toBeUndefined();
+    expect(group?.hooks).toHaveLength(1);
+    const handler = group!.hooks[0]!;
+    const ran = spawnSync(handler.command, handler.args ?? [], {
+      input: JSON.stringify({ hook_event_name: "SessionStart", source: "startup" }),
+      env: { PATH: process.env.PATH! },
+      encoding: "utf8",
+    });
+    expect(ran.status).toBe(0);
+    expect(readFileSync(marker, "utf8")).toBe("started\n");
+    if (agent === "codex")
+      expect(readFileSync(join(installed.env.CODEX_HOME!, "config.toml"), "utf8")).toContain(
+        `[hooks.state."${hooksPath}:session_start:0:0"]`,
+      );
+  }
 });
