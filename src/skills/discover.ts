@@ -59,18 +59,20 @@ function declaredPaths(files: SkillFiles): string[] {
     .filter((path) => path !== null);
 }
 
-function manifestJson(files: SkillFiles, path: string): { skills?: unknown; plugins?: unknown } {
+export function manifestJson(files: SkillFiles, path: string): Record<string, unknown> {
   const bytes = files.get(path);
   if (bytes === undefined) return {};
   try {
     const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    return value !== null && typeof value === "object" ? value : {};
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   } catch {
     return {};
   }
 }
 
-function strings(value: unknown): string[] {
+export function strings(value: unknown): string[] {
   if (typeof value === "string") return [value];
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }

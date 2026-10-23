@@ -1,9 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
+import { HOOK_AGENTS, WORKSPACE_HOOK_LIMIT, type HookAgent, type WorkspaceHook } from "../core";
 import {
   getSkill,
+  listHooks,
   markSkillRemoved,
+  saveHook,
   saveSkill,
   setSkillAgents,
   SKILL_AGENTS,
@@ -22,6 +26,7 @@ import {
   type SkillFiles,
 } from "./bundle";
 import { skillFolders, skillManifests, type SkillFolder } from "./discover";
+import { hookFiles, skillHooks, type SkillHook } from "./hooks";
 import type { SkillRequest, SkillResolver } from "./resolve";
 
 export type SkillRegistry = {
@@ -60,17 +65,25 @@ export async function addSkill(
   );
 }
 
-export type FoundSkill = SkillFolder & { added: boolean };
+export type FoundSkill = SkillFolder & { added: boolean; hooks: SkillHook[] };
 
 export async function findSkills(
   registry: SkillRegistry,
   request: SkillRequest,
 ): Promise<FoundSkill[]> {
-  const resolved = await registry.resolver.resolve(request, registry.signal, skillManifests);
+  const resolved = await registry.resolver.resolve(request, registry.signal, (tree) => [
+    ...skillManifests(tree),
+    ...hookFiles(tree),
+  ]);
   return skillFolders(resolved.files, resolved.suggestedName).map((skill) => {
     const name = skillName(skill.name);
     const existing = getSkill(registry.db, name);
-    return { ...skill, name, added: existing !== null && existing.removedAt === null };
+    return {
+      ...skill,
+      name,
+      added: existing !== null && existing.removedAt === null,
+      hooks: skillHooks(resolved.files, skill.path),
+    };
   });
 }
 
@@ -78,18 +91,50 @@ export async function addSkills(
   registry: SkillRegistry,
   request: SkillRequest,
   paths: readonly string[],
-  options: { agents?: readonly string[] } = {},
-): Promise<SkillPin[]> {
+  options: { agents?: readonly string[]; hooks?: readonly string[] } = {},
+): Promise<{ skills: SkillPin[]; hooks: WorkspaceHook[] }> {
   const agents = skillAgents(options.agents);
   if (paths.length === 0) throw new SkillError("Choose at least one skill to add.");
   if (paths.some((path) => path !== "" && skillPath(path) !== path))
     throw new SkillError("The subfolder must be a relative path.");
-  const resolved = await registry.resolver.resolve(request, registry.signal, () => paths);
-  const pins: SkillPin[] = [];
-  for (const path of paths) {
-    const subfolder = [resolved.source.subfolder, path].filter(Boolean).join("/");
+  const resolved = await registry.resolver.resolve(request, registry.signal, (tree) => [
+    ...paths,
+    ...hookFiles(tree),
+  ]);
+  const hookAgents = HOOK_AGENTS.filter((agent: HookAgent) => agents.includes(agent));
+  const chosen = paths.map((path) => {
     const files = skillSubfolder(resolved.files, path || undefined);
     const name = chooseName(undefined, files, path.split("/").at(-1) || resolved.suggestedName);
+    const hooks = skillHooks(resolved.files, path).flatMap(({ id, event, ...hook }) =>
+      event !== null && options.hooks?.includes(id)
+        ? [
+            {
+              id: `hook_${randomUUID().replaceAll("-", "")}`,
+              event,
+              matcher: hook.matcher,
+              command: hook.command,
+              timeoutSeconds: hook.timeoutSeconds,
+              agents: hookAgents,
+              skill: name,
+            },
+          ]
+        : [],
+    );
+    return { path, files, name, hooks };
+  });
+  const hooks = chosen.flatMap((skill) => skill.hooks);
+  if (hooks.length && hookAgents.length === 0)
+    throw new SkillError(
+      "Hooks run only for Claude and Codex. Choose one of them, or leave the hooks out.",
+    );
+  if (listHooks(registry.db).length + hooks.length > WORKSPACE_HOOK_LIMIT)
+    throw new SkillError(
+      `Paws runs at most ${WORKSPACE_HOOK_LIMIT} hooks. Remove some, or add fewer of this skill's hooks.`,
+      409,
+    );
+  const pins: SkillPin[] = [];
+  for (const { path, files, name } of chosen) {
+    const subfolder = [resolved.source.subfolder, path].filter(Boolean).join("/");
     pins.push(
       await pin(
         registry,
@@ -103,7 +148,8 @@ export async function addSkills(
       ),
     );
   }
-  return pins;
+  for (const hook of hooks) saveHook(registry.db, hook, registry.now);
+  return { skills: pins, hooks };
 }
 
 /** Pin an uploaded folder. Its version is the checksum of its contents. */

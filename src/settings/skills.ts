@@ -20,6 +20,7 @@ import {
   type SkillUpdates,
 } from "../skills";
 import { isRecord, json, localRequest, readJson, sameToken } from "./handler";
+import { describeHook } from "./hooks";
 
 export const SKILL_SETTINGS_PATH = "/api/settings/skills";
 
@@ -103,10 +104,18 @@ export async function handleSkillSettingsRequest(
         const paths = stringList(body.paths);
         if (paths) {
           const source = parseSource(body.source);
-          const skills = await addSkills(registry, source, paths, agents ? { agents } : {});
+          const { skills, hooks } = await addSkills(registry, source, paths, {
+            ...(agents ? { agents } : {}),
+            hooks: stringList(body.hooks) ?? [],
+          });
           for (const skill of skills) options.audit("settings.skill.add", added(skill));
+          for (const hook of hooks)
+            options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
+          const hookCount = hooks.length
+            ? ` and ${hooks.length} hook${hooks.length === 1 ? "" : "s"}`
+            : "";
           return listing(
-            `Added ${skills.map((skill) => `${skill.name} ${shortVersion(skill)}`).join(", ")}.`,
+            `Added ${skills.map((skill) => `${skill.name} ${shortVersion(skill)}`).join(", ")}${hookCount}.`,
           );
         }
         const skill = await addSkill(registry, parseSource(body.source), {
