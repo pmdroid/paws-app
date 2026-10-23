@@ -133,6 +133,10 @@ export function recordRunnerSkills(
       skill.status,
       reportedAt,
     ]);
+  db.run(
+    `DELETE FROM agent_skill WHERE removed_at IS NOT NULL AND name NOT IN (
+       SELECT s.name FROM runner_skill s JOIN runner r ON r.id=s.runner_id WHERE r.revoked_at IS NULL)`,
+  );
 }
 
 export function listRunnerSkills(db: Database, runnerId: string): RunnerSkillStatus[] {
