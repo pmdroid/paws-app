@@ -136,7 +136,7 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
         appUserId: "app",
         observedAtMs: clock.now(),
       });
-      assert.equal(await projects.authorizeEvent(event), true);
+      assert.deepEqual(await projects.authorizeEvent(event), { outcome: "accepted" });
       if (!intake.delayed)
         await orchestrator.intakeLinearTask(target.id, sessionId, `task-${target.id}`);
       started.push(target.id);
@@ -159,9 +159,7 @@ export function createProjectFixture(filename = ":memory:", { authorizeEvents = 
     ...(authorizeEvents
       ? {
           authorizeLinearEvent: async (event: AcceptedLinearEvent) =>
-            (await projects.authorizeEvent(event)) === false
-              ? { outcome: "refused" as const, reason: "Refused." }
-              : { outcome: "accepted" as const },
+            (await projects.authorizeEvent(event)) ?? { outcome: "accepted" as const },
         }
       : {}),
   });

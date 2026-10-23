@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
-import type { createApprovedProjects } from "./runtime";
+import { PROJECT_REFUSAL, type createApprovedProjects } from "./runtime";
 
 type Runtime = ReturnType<typeof createApprovedProjects>;
 type Access = Pick<
@@ -11,6 +11,7 @@ type Access = Pick<
   | "actor"
   | "accepted"
   | "authorizeEvent"
+  | "recheckEvent"
   | "scopeSnapshot"
   | "adoptParent"
 >;
@@ -61,6 +62,11 @@ export function createProjectExecutionGuard(db: Database, current: () => Runtime
     async authorizeEvent(event) {
       const active = current();
       if (active) return active.authorizeEvent(event);
+      return event.sessionId && reserved(event.sessionId) ? PROJECT_REFUSAL : undefined;
+    },
+    recheckEvent(event) {
+      const active = current();
+      if (active) return active.recheckEvent(event);
       return event.sessionId && reserved(event.sessionId) ? false : undefined;
     },
     async scopeSnapshot(sessionId, snapshot, signal) {

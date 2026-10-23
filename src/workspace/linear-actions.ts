@@ -16,22 +16,51 @@ export function createWorkspaceLinearActions(options: {
   memberships: LinearMembershipReads;
   now: () => number;
 }) {
-  return async (event: AcceptedLinearEvent): Promise<boolean> => {
+  function denied(
+    event: AcceptedLinearEvent,
+    workspaceId: string | null,
+    userId: string | null,
+  ): false {
+    auditWorkspaceAccess(options.db, {
+      workspaceId,
+      userId,
+      action: "access.denied",
+      subject: `linear:${event.sessionId ?? "unknown"}:${event.activityId ?? event.dedupeKey}`,
+      now: options.now(),
+    });
+    return false;
+  }
+  function recheck(event: AcceptedLinearEvent): boolean {
+    if (event.action !== "prompted" && event.signal !== "stop") return true;
+    const workspace = workspaceForOrganization(options.db, options.organizationId);
+    const member =
+      workspace && event.actorId
+        ? workspaceLinearMember(options.db, workspace.id, event.actorId)
+        : null;
+    const installation = event.sessionId
+      ? getLinearSessionInstallation(options.db, event.sessionId)
+      : null;
+    return (
+      (workspace !== null &&
+        event.sessionId !== null &&
+        installation?.organizationId === options.organizationId &&
+        installation.oauthClientId === options.clientId &&
+        installation.teamId !== null &&
+        getLinearSessionAccess(options.db, event.sessionId) === "allowed" &&
+        (member === null ||
+          (member.active &&
+            member.role !== "observer" &&
+            member.teamIds.includes(installation.teamId)))) ||
+      denied(event, workspace?.id ?? null, member?.userId ?? null)
+    );
+  }
+  async function authorize(event: AcceptedLinearEvent): Promise<boolean> {
     if (event.action !== "prompted" && event.signal !== "stop") return true;
     const workspace = workspaceForOrganization(options.db, options.organizationId);
     const actorId = event.actorId;
     const member =
       workspace && actorId ? workspaceLinearMember(options.db, workspace.id, actorId) : null;
-    const deny = () => {
-      auditWorkspaceAccess(options.db, {
-        workspaceId: workspace?.id ?? null,
-        userId: member?.userId ?? null,
-        action: "access.denied",
-        subject: `linear:${event.sessionId ?? "unknown"}:${event.activityId ?? event.dedupeKey}`,
-        now: options.now(),
-      });
-      return false;
-    };
+    const deny = () => denied(event, workspace?.id ?? null, member?.userId ?? null);
     if (
       workspace === null ||
       !actorId?.trim() ||
@@ -86,5 +115,6 @@ export function createWorkspaceLinearActions(options: {
     return identity.active && !identity.guest && identity.teamIds.includes(before.teamId)
       ? true
       : deny();
-  };
+  }
+  return { authorize, recheck };
 }

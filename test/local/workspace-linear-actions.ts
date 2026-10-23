@@ -175,6 +175,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     tracker: createFakeTracker(),
     clock,
     authorizeLinearEvent: decide(access.authorizeLinearEvent),
+    recheckLinearEvent: access.recheckLinearEvent,
   });
   const resumes = () => listJobs(db).filter((j) => j.queue === JOB_KIND.resume).length;
   const audits = () =>
@@ -283,9 +284,27 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       getQuestion(db, unavailable.question.id)?.status === "answered" && resumes() === 2,
       { resumes: resumes() },
     );
-    const queued = task("new-member");
-    const queuedEntered = Promise.withResolvers<void>(),
-      queuedRelease = Promise.withResolvers<void>();
+    const removeOwnerTeam = () => {
+      now++;
+      syncWorkspaceMember(db, {
+        workspaceId: "workspace",
+        userId: "owner",
+        active: true,
+        role: "member",
+        teamIds: [],
+        now,
+      });
+    };
+    const restoreOwnerTeam = () =>
+      syncWorkspaceMember(db, {
+        workspaceId: "workspace",
+        userId: "owner",
+        active: true,
+        role: "member",
+        teamIds: ["team"],
+        now,
+      });
+    const queued = task("owner");
     let calls = 0;
     const queueLoop = attachOrchestrator({
       db,
@@ -296,29 +315,24 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       clock,
       authorizeLinearEvent: async (event) => {
         calls++;
-        if (calls === 2) {
-          queuedEntered.resolve();
-          await queuedRelease.promise;
-        }
-        return decide(access.authorizeLinearEvent)(event);
+        const decision = await decide(access.authorizeLinearEvent)(event);
+        removeOwnerTeam();
+        return decision;
       },
+      recheckLinearEvent: access.recheckLinearEvent,
     });
-    const queuedPending = queueLoop.onLinearEvent(queued.event);
-    await queuedEntered.promise;
-    identities.get("new-member")!.teamIds = [];
-    queuedRelease.resolve();
-    await queuedPending;
+    await queueLoop.onLinearEvent(queued.event);
     observe(
-      "queued execution rechecks Linear membership after initial acceptance",
-      calls === 2 &&
+      "queued execution rechecks stored membership after one Linear authorization",
+      calls === 1 &&
         getQuestion(db, queued.question.id)?.status === "open" &&
         resumes() === 2 &&
         listPendingLinearTurns(db, queued.event.sessionId!).length === 0,
       { calls, question: getQuestion(db, queued.question.id)?.status, resumes: resumes() },
     );
     await queueLoop.shutdown();
-    identities.get("new-member")!.teamIds = ["team"];
-    const followup = task("new-member");
+    restoreOwnerTeam();
+    const followup = task("owner");
     answerQuestion(db, followup.question.id, {
       answer: "Earlier answer",
       answeredBy: "owner",
@@ -334,9 +348,12 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       tracker: createFakeTracker(),
       clock,
       authorizeLinearEvent: async (event) => {
-        if (++followupCalls === 2) identities.get("new-member")!.teamIds = [];
-        return decide(access.authorizeLinearEvent)(event);
+        followupCalls++;
+        const decision = await decide(access.authorizeLinearEvent)(event);
+        removeOwnerTeam();
+        return decision;
       },
+      recheckLinearEvent: access.recheckLinearEvent,
     });
     await followupLoop.onLinearEvent(followup.event);
     const turn = db
@@ -344,7 +361,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       .get(followup.event.dedupeKey);
     observe(
       "a follow-up revoked before queued execution cannot survive as pending steering",
-      followupCalls === 2 &&
+      followupCalls === 1 &&
         turn?.state === "cancelled" &&
         listPendingLinearTurns(db, followup.event.sessionId!).length === 0,
       { calls: followupCalls, turn },
