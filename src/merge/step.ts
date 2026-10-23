@@ -1,4 +1,5 @@
 import type { SerialMergeResult } from "../github";
+import type { MergeWait } from "./wait";
 
 export const MAX_REBASE_RETURNS = 3;
 
@@ -83,3 +84,11 @@ function step(facts: SerialMergeFacts, unreadable: boolean, mainMoved: boolean):
         };
   return { kind: "failed", message: result.message ?? result.outcome };
 }
+
+export type MergeStep =
+  | { kind: "merged" }
+  | ({ kind: "wait" } & MergeWait)
+  | { kind: "returned" }
+  | { kind: "asked" }
+  | { kind: "failed"; reason: string; message: string }
+  | { kind: "obsolete" };

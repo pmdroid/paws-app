@@ -53,6 +53,8 @@ export {
   getJob,
   listJobs,
   mergeLaneSql,
+  parkLeasedJob,
+  retryLeasedJob,
   JOB_STATUSES,
   type ClaimOptions,
   type Job,

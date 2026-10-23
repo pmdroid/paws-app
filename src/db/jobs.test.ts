@@ -19,6 +19,8 @@ import {
   listJobs,
   migrate,
   openDatabase,
+  parkLeasedJob,
+  retryLeasedJob,
 } from "./index";
 
 function queue(clock = new FakeClock(1_000), leaseMs = 5_000) {
@@ -364,3 +366,40 @@ for (const operation of ["complete", "fail", "extend"] as const) {
     db.close();
   });
 }
+
+describe("leased job writes", () => {
+  test("parking a leased job keeps the earlier run_at, sets the payload, and frees the lease", () => {
+    const { db, clock, leaseMs } = queue();
+    const id = enqueueJob(db, { queue: "x", payload: { a: 1 }, now: clock.now() });
+    const job = claimNextJob(db, { now: clock.now(), leaseMs })!;
+    expect(
+      parkLeasedJob(db, job, {
+        runAt: clock.now() + 10_000,
+        payload: { a: 2 },
+        attempts: -1,
+        now: clock.now(),
+      }),
+    ).toBe(true);
+    expect(getJob(db, id)).toMatchObject({
+      status: "pending",
+      runAt: clock.now() + 10_000,
+      attempts: 0,
+      lockedBy: null,
+      payload: { a: 2 },
+    });
+  });
+
+  test("a park or retry after the lease expired or moved on is lost", () => {
+    const { db, clock, leaseMs } = queue();
+    enqueueJob(db, { queue: "x", now: clock.now() });
+    const job = claimNextJob(db, { now: clock.now(), leaseMs })!;
+    clock.advance(leaseMs + 1);
+    expect(
+      parkLeasedJob(db, job, { runAt: clock.now(), payload: {}, attempts: 0, now: clock.now() }),
+    ).toBe(false);
+    const again = claimNextJob(db, { now: clock.now(), leaseMs })!;
+    expect(retryLeasedJob(db, job, clock.now() + 1_000, "boom")).toBe(false);
+    expect(retryLeasedJob(db, again, clock.now() + 1_000, "boom")).toBe(true);
+    expect(getJob(db, again.id)).toMatchObject({ status: "pending", lastError: "boom" });
+  });
+});
