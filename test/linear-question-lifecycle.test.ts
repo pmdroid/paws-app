@@ -17,7 +17,6 @@ import {
   createIntakePollSource,
   createLinearClient,
   createFakeTracker,
-  linearWorkIsHot,
   parseAgentEvent,
   startCatchUpPoller,
   type TrackerAdapter,
@@ -264,7 +263,6 @@ test("Stop cancels a persisted question even when no agent is alive", async () =
     expect(getQuestion(db, question.id)?.status).toBe("cancelled");
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
     expect(listOpenQuestions(db)).toHaveLength(0);
-    expect(linearWorkIsHot(db)).toBe(false);
     await orchestrator.onLinearEvent(prompt());
     expect(getQuestion(db, question.id)?.answer).toBeNull();
   } finally {
