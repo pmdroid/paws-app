@@ -7,7 +7,7 @@ import {
   syncItemDependencies,
 } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { dispatchReadyItems } from "../src/scheduler";
+import { dispatch } from "../src/scheduler";
 import { tempDb } from "./helpers";
 
 const issue = {
@@ -135,7 +135,7 @@ test("the scheduler admits an item without reading the epic table", async () => 
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
     ).toBeNull();
     expect(
-      dispatchReadyItems(db, {
+      dispatch(db, {
         now: 2,
         legacyReadyItemIds: intake.items.map((item) => item.id),
       }),

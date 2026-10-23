@@ -25,7 +25,7 @@ import {
   parseAgentEvent,
 } from "../src/linear";
 import { LinearTaskAccess, attachOrchestrator } from "../src/loop";
-import { dispatchReadyItems } from "../src/scheduler";
+import { dispatch } from "../src/scheduler";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -87,7 +87,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       linearTaskModes: true,
       linearAccess: gate,
       dispatchReady: ({ legacyReadyItemIds }) => {
-        dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds });
+        dispatch(db, { now: clock.now(), legacyReadyItemIds });
       },
       launch(input) {
         if (input.purpose === "implement") implementations.push(input.itemId);

@@ -248,7 +248,7 @@ function depths(db: Database, items: Item[]): Map<string, number> {
   return result;
 }
 
-export function dispatchReadyItems(db: Database, options: SchedulerOptions = {}): string[] {
+export function dispatch(db: Database, options: SchedulerOptions = {}): string[] {
   const now = options.now ?? Date.now();
   return immediate(db, () => {
     requeueOrphanedWork(db, now);
@@ -400,10 +400,10 @@ export function registerScheduler(
   options: () => SchedulerOptions,
   onTick?: () => void,
 ): () => string[] {
-  const dispatch = () => dispatchReadyItems(jobs.db, options());
+  const run = () => dispatch(jobs.db, options());
   jobs.register(TICK, () => {
     if (onTick) onTick();
-    else dispatch();
+    else run();
   });
   enqueueJobOnce(jobs.db, {
     queue: TICK,
@@ -411,5 +411,5 @@ export function registerScheduler(
     recurringEveryMs: 30_000,
     now: options().now,
   });
-  return dispatch;
+  return run;
 }

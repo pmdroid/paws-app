@@ -29,7 +29,7 @@ import { createRunnerPlacement } from "../src/runner-placement";
 import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
-import { dispatchReadyItems } from "../src/scheduler";
+import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { migratedDatabase } from "./helpers";
 
@@ -276,7 +276,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    expect(dispatchReadyItems(db, { now: Date.now() })).toHaveLength(5);
+    expect(dispatch(db, { now: Date.now() })).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
     const parked = () =>

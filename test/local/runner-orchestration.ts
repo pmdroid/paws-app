@@ -35,7 +35,7 @@ import { findOpenQuestion } from "../../src/questions";
 import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
 import { attachOrchestrator, FakeHostGitHubAuth } from "../../src/loop";
-import { dispatchReadyItems, saveSchedulingContext } from "../../src/scheduler";
+import { dispatch, saveSchedulingContext } from "../../src/scheduler";
 import { migratedDatabase } from "../helpers";
 
 export const RUNNER_ORCHESTRATION_SCENARIOS = [
@@ -364,7 +364,7 @@ export async function probeRunnerOrchestration(
       ...(mergeDependencyYield
         ? {
             dispatchReady({ legacyReadyItemIds }: { legacyReadyItemIds: readonly string[] }) {
-              dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds });
+              dispatch(db, { now: clock.now(), legacyReadyItemIds });
             },
             publicationReady(itemId: string) {
               assert.equal(getLinearSession(db, "session")?.activeItemId, itemId);

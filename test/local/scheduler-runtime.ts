@@ -18,7 +18,7 @@ import {
   openDatabase,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
-import { dispatchReadyItems, registerScheduler, saveSchedulingContext } from "../../src/scheduler";
+import { dispatch, registerScheduler, saveSchedulingContext } from "../../src/scheduler";
 
 export async function probeSchedulerRuntime(
   root: string,
@@ -85,7 +85,7 @@ export async function probeSchedulerRuntime(
     pawsRoot: root,
     dispatchReady({ legacyReadyItemIds }) {
       events.push(`dispatch:${getLinearSession(db, "session")?.activeItemId ?? "cleared"}`);
-      dispatchReadyItems(db, { ...options(), legacyReadyItemIds });
+      dispatch(db, { ...options(), legacyReadyItemIds });
     },
   });
   try {
@@ -139,7 +139,7 @@ export async function probeSchedulerRuntime(
       paths: ["src/default"],
     });
     const loop = new JobLoop(defaults, clock);
-    const dispatch = registerScheduler(loop, () => ({
+    const run = registerScheduler(loop, () => ({
       now: clock.now(),
       legacyReadyItemIds: ["default"],
     }));
@@ -149,7 +149,7 @@ export async function probeSchedulerRuntime(
       .get()!.count;
     observe(
       "without a custom hook the durable tick and returned dispatcher retain default behavior",
-      tick?.queue === "scheduler.tick" && count === 1 && dispatch().length === 0,
+      tick?.queue === "scheduler.tick" && count === 1 && run().length === 0,
       { queue: tick?.queue, admissions: count },
     );
   } finally {
