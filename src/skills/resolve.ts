@@ -169,7 +169,8 @@ async function resolveGit(
     await run(["fetch", "--quiet", "--depth", "1", "--", url, commit]);
     await run(["checkout", "--quiet", "--detach", "FETCH_HEAD"]);
     const head = (await run(["rev-parse", "HEAD"])).trim();
-    const files = skillSubfolder(readSkillFolder(dir, context.limit), request.subfolder);
+    const subfolder = request.subfolder === undefined ? "" : skillPath(request.subfolder)!;
+    const files = skillSubfolder(readSkillFolder(dir, context.limit, subfolder), request.subfolder);
     const repo = url.replace(/\.git$/, "").replace(/\/+$/, "");
     return {
       source: {
