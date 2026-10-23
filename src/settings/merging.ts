@@ -30,6 +30,7 @@ export type MergeSettingsOptions = {
    * page offers "Add to the GitHub merge queue" only when one has.
    */
   githubQueues?: (signal: AbortSignal) => Promise<string[]>;
+  upToDateRules?: (signal: AbortSignal) => Promise<string[]>;
 };
 
 export const MERGE_SETTINGS_PATH = "/api/settings/merging";
@@ -74,6 +75,7 @@ export async function handleMergeSettingsRequest(
       choices,
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
+      ...(options.upToDateRules ? await upToDateRuleView(options.upToDateRules) : {}),
     });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
@@ -136,6 +138,13 @@ async function githubQueueView(
       githubQueueError: "Paws could not check which repositories have a GitHub merge queue.",
     };
   }
+}
+
+async function upToDateRuleView(
+  upToDateRules: (signal: AbortSignal) => Promise<string[]>,
+): Promise<{ upToDateRule?: string[] }> {
+  const repositories = await upToDateRules(AbortSignal.timeout(10_000)).catch(() => []);
+  return repositories.length ? { upToDateRule: repositories } : {};
 }
 
 /** Whether any level chooses "Add to the GitHub merge queue". */

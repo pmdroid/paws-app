@@ -90,6 +90,7 @@ export type ServerOptions = {
     mergeChoices?: (signal: AbortSignal) => Promise<MergeChoices>;
     /** Configured repositories whose main has a GitHub merge queue, for Settings → Merging. */
     githubQueues?: (signal: AbortSignal) => Promise<string[]>;
+    upToDateRules?: (signal: AbortSignal) => Promise<string[]>;
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: { root: string; resolver: SkillResolver; limit?: number };
@@ -412,7 +413,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const { mergeChoices, githubQueues, ...agentSettings } = secrets.agentSettings;
+    const { mergeChoices, githubQueues, upToDateRules, ...agentSettings } = secrets.agentSettings;
     const shared = {
       ...agentSettings,
       csrfToken,
@@ -436,6 +437,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...shared,
         ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
+        ...(upToDateRules ? { upToDateRules } : {}),
       }));
     if (settings !== null) return settings;
   }

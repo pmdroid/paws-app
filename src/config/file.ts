@@ -26,6 +26,7 @@ import {
   type MainMoved,
   type MergeOrder,
   type MergeOverride,
+  type MergeRepositories,
   type MergeRule,
 } from "./merge";
 import { renderQueueSettings } from "./queue";
@@ -102,6 +103,7 @@ export type PawsConfigFile = {
   mergeProjects?: Record<string, MergeOverride>;
   /** `[[merge.rules]]`. */
   mergeRules?: MergeRule[];
+  mergeRepositories?: MergeRepositories;
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
   /** `[queue] start_timeout_hours`. Missing means the default of 24. */

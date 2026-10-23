@@ -135,6 +135,8 @@ export type ReverifyInput = {
   base: string;
   head: string;
   cycle: number;
+  kept?: true;
+  overlap?: string[];
 };
 
 export type ReverifyResult = {
