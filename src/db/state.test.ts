@@ -436,7 +436,7 @@ describe("hard caps", () => {
     expect(listOutbox(db)[0]?.payload).toEqual({
       sessionId: item.sessionKey ?? item.id,
       kind: "error",
-      body: "Run hit the awake time cap (1 min).",
+      body: "Run hit the awake time cap (1 min). Counted: agent turns under 1 min, Closeout 0 min.",
     });
   });
 

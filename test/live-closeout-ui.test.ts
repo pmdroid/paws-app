@@ -184,7 +184,9 @@ describe("live closeout ui", () => {
     accrueAwake(db, id, 1_000, now + 1_000);
     const run = snapshotOf(db, now + 1_000).runs.find((entry) => entry.itemId === id);
     expect(run?.state).toBe("stopped");
-    expect(run?.summary).toBe("Run hit the awake time cap (1 min).");
+    expect(run?.summary).toBe(
+      "Run hit the awake time cap (1 min). Counted: agent turns 0 min, Closeout under 1 min.",
+    );
     expect(run?.activity.at(-1)?.kind).toBe("err");
   });
 

@@ -194,6 +194,7 @@ import {
   type TaskMergeSettings,
   leaveMergeQueue,
   delegatedLinearUserId,
+  resetAwakeTime,
 } from "../db";
 import {
   publishAccepted,
@@ -3672,9 +3673,10 @@ export class Orchestrator {
         setCurrentRun(this.db, itemId, null);
         if (item.state === "failed" || item.state === "exhausted") {
           this.db.run(
-            "UPDATE work_item SET cancel_requested=0,awake_ms=0,last_mono_ms=NULL,turn_count=0,recovery_attempts=0 WHERE id=?",
+            "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
             [itemId],
           );
+          resetAwakeTime(this.db, itemId);
           applyWorkItemEvent(this.db, itemId, "requeue");
         } else if (
           [
@@ -4356,9 +4358,10 @@ export class Orchestrator {
     immediate(this.db, () => {
       if (item!.cancelRequested || item!.state === "failed" || item!.state === "exhausted") {
         this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, awake_ms = 0, last_mono_ms = NULL, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
+          "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
           [item!.id],
         );
+        resetAwakeTime(this.db, item!.id);
         if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
       }
       if (item!.currentRunId) markRun(this.db, item!.currentRunId!, "ended", this.now());

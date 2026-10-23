@@ -24,9 +24,33 @@ export function isAwakeItemState(state: WorkItemState): boolean {
   return (AWAKE_ITEM_STATES as readonly string[]).includes(state);
 }
 
-export function countsAwakeTime(state: WorkItemState, checkpoint: Checkpoint | null): boolean {
-  if (!isAwakeItemState(state)) return false;
-  return state === "running" || checkpoint?.phase !== "merge_queue";
+/**
+ * Where an in-flight item's time goes. Only `agent` and `closeout` count toward the
+ * awake-time cap. `recheck` is Paws checking a candidate Closeout already accepted
+ * again: in the merge queue (PAS-470), or after a restart or wake re-verifies it.
+ */
+export type AwakeCategory = "agent" | "closeout" | "waiting" | "recheck";
+
+export function awakeCategory(
+  state: WorkItemState,
+  checkpoint: Checkpoint | null,
+  acceptedHead: string | null = null,
+): AwakeCategory | null {
+  if (state === "awaiting_input" || state === "paused") return "waiting";
+  if (!isAwakeItemState(state)) return null;
+  if (state === "running") return "agent";
+  if (checkpoint?.phase === "merge_queue") return "recheck";
+  if (acceptedHead !== null && checkpoint?.wipCommit === acceptedHead) return "recheck";
+  return state === "verifying" ? "closeout" : "agent";
+}
+
+export function countsAwakeTime(
+  state: WorkItemState,
+  checkpoint: Checkpoint | null,
+  acceptedHead: string | null = null,
+): boolean {
+  const category = awakeCategory(state, checkpoint, acceptedHead);
+  return category === "agent" || category === "closeout";
 }
 
 export type StartupDecision =
