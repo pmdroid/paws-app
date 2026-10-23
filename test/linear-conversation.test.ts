@@ -503,7 +503,7 @@ test("an accepted answer question redirects through classification before code e
 }, 20000);
 
 test("a prompt interrupts intake classification and is routed once after the old owner exits", async () => {
-  const f = fixture("classify", true);
+  const f = fixture("classify", true, true);
   try {
     const initial = f.orchestrator.onLinearEvent(event("created", null, 1));
     await until(() => f.starts.includes("classify"));
@@ -654,7 +654,7 @@ test("a failed Stop transaction leaves no receipt, generation or partial cancell
 });
 
 test("administrative interruption joins a zero-item classifier without a Linear Stop response", async () => {
-  const f = fixture("classify", true);
+  const f = fixture("classify", true, true);
   try {
     const original = f.orchestrator
       .onLinearEvent(event("created", null, 1))
