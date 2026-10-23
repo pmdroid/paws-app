@@ -6,10 +6,6 @@ import { readRunnerJob } from "../src/runner-execution";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 
-async function until(check: () => boolean) {
-  for (let i = 0; i < 400 && !check(); i++) await Bun.sleep(5);
-}
-
 test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
   "a held answer request for one execution leaves the other execution and cancellations moving",
   async () => {
@@ -155,10 +151,13 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       },
     });
     try {
-      await Promise.race([runtime.tick(), Bun.sleep(50)]);
-      await until(() => executions.size === 2);
-      for (let i = 0; i < 20 && !posted.length; i++)
-        await Promise.race([runtime.tick(), Bun.sleep(50)]);
+      const tickUntil = async (done: () => boolean) => {
+        while (!done()) {
+          await runtime.tick();
+          await Bun.sleep(1);
+        }
+      };
+      await tickUntil(() => posted.length > 0 && answered.includes("run-a"));
       expect(posted.map((entry) => entry.runId)).toEqual(["run-b"]);
       expect(answered.filter((runId) => runId === "run-a")).toEqual(["run-a"]);
       pending = [
@@ -173,14 +172,12 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
           expiresAt: now + 60_000,
         },
       ];
-      for (let i = 0; i < 20 && !acknowledged.includes("cancel-a"); i++)
-        await Promise.race([runtime.tick(), Bun.sleep(50)]);
+      await tickUntil(() => acknowledged.includes("cancel-a"));
       expect(acknowledged).toContain("cancel-a");
       expect(stopped).toContain(executions.get("run-a")!);
       expect(answered.filter((runId) => runId === "run-a")).toEqual(["run-a"]);
       held.resolve({ answers: [] });
       await runtime.tick();
-      await Bun.sleep(20);
       expect(posted.map((entry) => entry.runId)).toEqual(["run-b"]);
       expect(posted[0]!.result.executionId).toBe(executions.get("run-b")!);
     } finally {
