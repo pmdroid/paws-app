@@ -6,10 +6,12 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   getSkill,
+  listHooks,
   migrate,
   openDatabase,
   putWorkspaceUser,
   recordRunnerSkills,
+  saveHook,
   syncWorkspaceMember,
 } from "../src/db";
 import { handleSkillSettingsRequest, type SkillSettingsOptions } from "../src/settings";
@@ -28,6 +30,10 @@ import {
   type SkillRegistry,
 } from "../src/skills";
 
+const IMPECCABLE_SCRIPT = '"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/impeccable"';
+const IMPECCABLE_HOOK = `[ ! -f ${IMPECCABLE_SCRIPT} ] || ${IMPECCABLE_SCRIPT} hook`;
+const SKILL_HOOK =
+  '[ ! -f "$PAWS_SKILL_DIR/scripts/impeccable" ] || "$PAWS_SKILL_DIR/scripts/impeccable" hook';
 const SKILL = "---\nname: impeccable\ndescription: Design polish\n---\nUse care.\n";
 
 let root: string;
@@ -130,7 +136,19 @@ function impeccableRepo(): string {
     ".claude-plugin/marketplace.json",
     JSON.stringify({ plugins: [{ name: "impeccable", source: "./plugin" }] }),
   );
-  write(".claude/settings.json", "{}");
+  const hook = (timeout: number) => ({
+    hooks: [{ type: "command", command: IMPECCABLE_HOOK, timeout, statusMessage: "Checking" }],
+  });
+  write(
+    ".claude/settings.json",
+    JSON.stringify({
+      hooks: {
+        SessionStart: [hook(5)],
+        PostToolUse: [{ matcher: "Edit|Write", ...hook(5) }],
+        Stop: [hook(30)],
+      },
+    }),
+  );
   git(repo, "init", "--quiet", "--initial-branch=main");
   git(repo, "add", ".");
   git(repo, "commit", "--quiet", "-m", "Add impeccable");
@@ -265,12 +283,43 @@ describe("finding skills in a repository", () => {
       kind: "git",
       url: impeccableRepo(),
     });
-    expect(found).toEqual([
+    expect(found).toMatchObject([
       {
         path: ".claude/skills/impeccable",
         name: "impeccable",
         description: "Design polish",
         added: false,
+      },
+    ]);
+    expect(
+      found[0]!.hooks.map(({ id, source, event, command, timeoutSeconds }) => ({
+        id,
+        source,
+        event,
+        command,
+        timeoutSeconds,
+      })),
+    ).toEqual([
+      {
+        id: ".claude/skills/impeccable#0",
+        source: "SessionStart",
+        event: "session_start",
+        command: SKILL_HOOK,
+        timeoutSeconds: 5,
+      },
+      {
+        id: ".claude/skills/impeccable#1",
+        source: "PostToolUse Edit|Write",
+        event: "after_edit",
+        command: SKILL_HOOK,
+        timeoutSeconds: 5,
+      },
+      {
+        id: ".claude/skills/impeccable#2",
+        source: "Stop",
+        event: "stop",
+        command: SKILL_HOOK,
+        timeoutSeconds: 30,
       },
     ]);
   });
@@ -663,7 +712,13 @@ describe("skill pins", () => {
 });
 
 type Listing = {
-  found?: { path: string; name: string; description: string; added: boolean }[];
+  found?: {
+    path: string;
+    name: string;
+    description: string;
+    added: boolean;
+    hooks: { id: string; event: string | null }[];
+  }[];
   skills: { name: string; version: string; agents: string[]; removedAt: number | null }[];
   updates?: Record<string, string>;
   notice?: string;
@@ -828,8 +883,14 @@ describe("skill settings API", () => {
       await handleSkillSettingsRequest(post({ action: "find", source }), options({ resolver })),
     );
     expect(found.found).toEqual([
-      { path: "skills/lint", name: "lint", description: "About lint", added: false },
-      { path: "skills/review", name: "review", description: "About review", added: false },
+      { path: "skills/lint", name: "lint", description: "About lint", added: false, hooks: [] },
+      {
+        path: "skills/review",
+        name: "review",
+        description: "About review",
+        added: false,
+        hooks: [],
+      },
     ]);
     expect(getSkill(db, "lint")).toBeNull();
 
@@ -854,6 +915,98 @@ describe("skill settings API", () => {
       ),
     );
     expect(none.error).toBe("Choose at least one skill to add.");
+  });
+
+  test("adding impeccable also adds its chosen hooks in the same request", async () => {
+    const source = { kind: "git", url: impeccableRepo() };
+    const opts = options({ resolver: createSkillResolver() });
+    const found = await read(
+      await handleSkillSettingsRequest(post({ action: "find", source }), opts),
+    );
+    const hooks = found.found![0]!.hooks.map((hook) => hook.id);
+    expect(hooks).toHaveLength(3);
+
+    const added = await read(
+      await handleSkillSettingsRequest(
+        post({
+          action: "add",
+          source,
+          paths: [".claude/skills/impeccable"],
+          agents: ["claude", "codex", "grok"],
+          hooks: [hooks[0], hooks[2], "skills/other#0"],
+        }),
+        opts,
+      ),
+    );
+
+    expect(added.error).toBeUndefined();
+    expect(added.notice).toMatch(/^Added impeccable [0-9a-f]{7} and 2 hooks\.$/);
+    expect(listHooks(db).map(({ id: _id, ...hook }) => hook)).toEqual([
+      {
+        event: "session_start",
+        matcher: null,
+        command: SKILL_HOOK,
+        timeoutSeconds: 5,
+        agents: ["claude", "codex"],
+        skill: "impeccable",
+      },
+      {
+        event: "stop",
+        matcher: null,
+        command: SKILL_HOOK,
+        timeoutSeconds: 30,
+        agents: ["claude", "codex"],
+        skill: "impeccable",
+      },
+    ]);
+    expect(audit.map(([action]) => action)).toEqual([
+      "settings.skill.add",
+      "settings.hook.add",
+      "settings.hook.add",
+    ]);
+    expect(audit[1]![1]).toBe(
+      `Added hook when a session starts: ${SKILL_HOOK} from skill impeccable for Claude, Codex`,
+    );
+  });
+
+  test("skill hooks keep the hook limit and need Claude or Codex", async () => {
+    const source = { kind: "git", url: impeccableRepo() };
+    const opts = options({ resolver: createSkillResolver() });
+    const all = [0, 1, 2].map((index) => `.claude/skills/impeccable#${index}`);
+    const add = (patch: Record<string, unknown>) =>
+      handleSkillSettingsRequest(
+        post({ action: "add", source, paths: [".claude/skills/impeccable"], hooks: all, ...patch }),
+        opts,
+      );
+
+    const grok = await add({ agents: ["grok"] });
+    expect(grok!.status).toBe(400);
+    expect((await read(grok)).error).toBe(
+      "Hooks run only for Claude and Codex. Choose one of them, or leave the hooks out.",
+    );
+
+    for (let index = 0; index < 18; index += 1)
+      saveHook(
+        db,
+        {
+          id: `hook_${index}`,
+          event: "stop",
+          matcher: null,
+          command: "true",
+          timeoutSeconds: 5,
+          agents: ["claude"],
+          skill: null,
+        },
+        1,
+      );
+    const full = await add({});
+    expect(full!.status).toBe(409);
+    expect((await read(full)).error).toBe(
+      "Paws runs at most 20 hooks. Remove some, or add fewer of this skill's hooks.",
+    );
+    expect(getSkill(db, "impeccable")).toBeNull();
+    expect(listHooks(db)).toHaveLength(18);
+    expect(audit).toEqual([]);
   });
 
   test("a change without the CSRF token is refused and not audited", async () => {

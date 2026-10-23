@@ -22,6 +22,7 @@ import {
   type SkillFiles,
 } from "./bundle";
 import { skillFolders, skillManifests, type SkillFolder } from "./discover";
+import type { SkillHook } from "./hooks";
 import type { SkillRequest, SkillResolver } from "./resolve";
 
 export type SkillRegistry = {
@@ -60,7 +61,7 @@ export async function addSkill(
   );
 }
 
-export type FoundSkill = SkillFolder & { added: boolean };
+export type FoundSkill = SkillFolder & { added: boolean; hooks: SkillHook[] };
 
 export async function findSkills(
   registry: SkillRegistry,
@@ -70,7 +71,7 @@ export async function findSkills(
   return skillFolders(resolved.files, resolved.suggestedName).map((skill) => {
     const name = skillName(skill.name);
     const existing = getSkill(registry.db, name);
-    return { ...skill, name, added: existing !== null && existing.removedAt === null };
+    return { ...skill, name, added: existing !== null && existing.removedAt === null, hooks: [] };
   });
 }
 
