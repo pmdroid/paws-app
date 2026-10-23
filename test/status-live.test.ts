@@ -3,6 +3,7 @@ import { formatEvidenceSummary } from "../src/closeout";
 import {
   applyWorkItemEvent,
   beginImplementRun,
+  countLinearRequest,
   enqueueJob,
   enqueueOutbox,
   enterMergeQueue,
@@ -227,6 +228,27 @@ test("fake e2e rows show up on /api/status as live work", async () => {
     );
     const demo = (await hidden?.json()) as { source: string };
     expect(demo.source).toBe("demo");
+  } finally {
+    db.close();
+  }
+});
+
+test("each task on /api/status carries the Linear requests it made", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: NOW });
+    insertQueuedItem(db, { id: "item-2", sessionKey: "ses_2", now: NOW });
+    for (let request = 0; request < 3; request++) countLinearRequest(db, "item-1");
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    const parsed = parseStatusSnapshot(await response?.json());
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(
+      Object.fromEntries(parsed.snapshot.items.map((item) => [item.id, item.linearRequests])),
+    ).toEqual({ "item-1": 3, "item-2": 0 });
   } finally {
     db.close();
   }

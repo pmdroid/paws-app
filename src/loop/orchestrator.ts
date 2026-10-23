@@ -1060,7 +1060,7 @@ export class Orchestrator {
   private forItem<T>(payload: unknown, run: () => T): T {
     const itemId = readString(payload, "itemId");
     const item = itemId ? getWorkItem(this.db, itemId) : null;
-    return item ? linearItem(item.linearIdentifier, run) : run();
+    return item ? linearItem(item.linearIdentifier, run, item.id) : run();
   }
 
   private register(): void {

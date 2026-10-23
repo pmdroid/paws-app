@@ -227,6 +227,20 @@ describe("status views", () => {
     );
   });
 
+  test("the run page shows how many Linear requests the task made", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs.find((entry) => entry.id === "r-102");
+    const item = snapshot.items.find((entry) => entry.id === run?.itemId);
+    if (!run || !item) throw new Error("missing fixture");
+    item.linearRequests = 12;
+    const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(page).toContain(" · 12 Linear requests</p>");
+    item.linearRequests = 1;
+    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).toContain(
+      " · 1 Linear request</p>",
+    );
+  });
+
   test("a task in the merge queue shows its place on the run and issue pages", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");

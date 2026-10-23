@@ -36,7 +36,7 @@ export function createLinearClient(options: {
         if (isCurrent && !isCurrent()) throw new Error("Linear request was superseded.");
       };
       current();
-      const { caller, priority, item } = currentLinearCaller();
+      const { caller, priority, item, itemId } = currentLinearCaller();
       const held = ledger.admit(caller, priority);
       if (held !== null) throw held;
       const run = async (token: string) => {
@@ -59,7 +59,7 @@ export function createLinearClient(options: {
         response = await run(token);
       }
       const budget = budgetFromHeaders(response.headers);
-      ledger.observe(caller, budget, item);
+      ledger.observe(caller, budget, item, itemId);
       const json: unknown = await abortable(response.json(), signal).catch((error: unknown) => {
         signal?.throwIfAborted();
         if (error instanceof Error && error.name === "AbortError") throw error;
