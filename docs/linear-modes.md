@@ -34,7 +34,7 @@ Getting started tells you to enable webhooks on the OAuth application and select
 
 A `response`, `elicitation`, or `error` activity also creates a comment in the thread. That comment is a side effect of an activity on a session, not a path that works with only a personal API key.
 
-A created session must receive an activity, or an `externalUrls` update, within 10 seconds or Linear marks it unresponsive. Later activities can go stale after 30 minutes. Paws polls every 3 seconds when no tunnel is up and every 60 seconds when one is (`POLL_INTERVAL_DOWN_MS`, `POLL_INTERVAL_UP_MS` in `src/linear`). Sixty seconds cannot meet the 10 second window. Three seconds meets it only when the new session is already listable and the poll lands in time. Comment mode does not use that deadline.
+A created session must receive an activity, or an `externalUrls` update, within 10 seconds or Linear marks it unresponsive. Later activities can go stale after 30 minutes. The catch-up poll runs once at start, then every 12 minutes, or once a minute while webhooks look broken (`POLL_INTERVAL_WEBHOOK_MS`, `POLL_INTERVAL_FAILING_MS` in `src/linear`). Neither meets the 10 second window, so the first activity comes from the webhook handler. Comment mode does not use that deadline.
 
 Ephemeral `thought` and `action` activities are replaced in the session UI by the next activity. That display exists only in the session UI.
 
