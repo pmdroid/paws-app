@@ -578,6 +578,67 @@ describe("live status provider", () => {
     ]);
   });
 
+  test("a review keeps its measured duration and tokens when a later evaluation reads it again", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const item = insertQueuedItem(db, { id: "ENG-7", title: "Review", sessionKey: "ses_7", now });
+    beginImplementRun(db, item.id, now);
+    enterMergeQueue(db, item.id, {
+      phase: "merge_queue",
+      baseSha: "d".repeat(40),
+      wipCommit: "c".repeat(40),
+    });
+    const identity = {
+      taskId: item.id,
+      base: "d".repeat(40),
+      head: "c".repeat(40),
+      policyDigest: "sha256:policy",
+      policyPath: ".agents/closeout.yaml",
+    };
+    const review = (state: CloseoutStepWrite["state"], at: number, extra = {}) =>
+      upsertCloseoutStep(
+        db,
+        item.id,
+        identity,
+        {
+          id: "independent-review",
+          kind: "review",
+          state,
+          command: "",
+          detail: null,
+          attempt: 1,
+          timeoutSeconds: null,
+          startedAt: state === "running" ? at : null,
+          finishedAt: state === "running" ? null : at,
+          exitCode: null,
+          timedOut: false,
+          timeoutReason: null,
+          truncated: false,
+          logPath: null,
+          evidencePath: null,
+          findings: null,
+          ordinal: -1,
+          ...extra,
+        },
+        at,
+      );
+    review("running", now);
+    review("passed", now + 200_000, { durationMs: 180_000, tokens: 52_000 });
+    review("passed", now + 900_000);
+    finishCloseoutProgress(db, item.id, identity, "accepted", now + 900_000);
+    const check = createLiveStatusProvider(db, {
+      now: () => new Date(now + 900_000),
+    }).snapshot().verdicts[0]?.checks[0];
+    expect(check?.elapsedMs).toBe(180_000);
+    expect(check?.tokens).toBe(52_000);
+    review("running", now + 950_000);
+    const rerun = createLiveStatusProvider(db, {
+      now: () => new Date(now + 960_000),
+    }).snapshot().verdicts[0]?.checks[0];
+    expect(rerun?.elapsedMs).toBe(10_000);
+    expect(rerun?.tokens ?? null).toBeNull();
+  });
+
   test("a re-check of a rebased head starts a new round of Closeout attempts", () => {
     const db = database();
     const now = 1_700_000_000_000;

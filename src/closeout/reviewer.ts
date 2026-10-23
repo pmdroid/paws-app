@@ -26,6 +26,7 @@ export type ReviewResult = {
   model: string;
   provider: string;
   findings: Finding[];
+  tokens?: number;
 };
 
 export interface CodexReviewer {

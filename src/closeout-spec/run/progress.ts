@@ -40,6 +40,8 @@ export type CloseoutProgressStep = {
   evidencePath: string | null;
   findings: string | null;
   ordinal: number;
+  durationMs?: number | null;
+  tokens?: number | null;
 };
 
 export interface CloseoutProgress {
