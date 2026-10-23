@@ -8,6 +8,16 @@ const inputSchema = z.strictObject({
 });
 const idSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 
+class GitHubUnavailableError extends Error {}
+
+async function github<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    throw new GitHubUnavailableError(error instanceof Error ? error.message : String(error));
+  }
+}
+
 export function createRunnerRepositoryAccess(options: {
   work: RunnerWork;
   github: GitHubApp;
@@ -54,7 +64,7 @@ export function createRunnerRepositoryAccess(options: {
           : undefined;
       const matchesBot = async () => {
         if (!expectedBot) return input.access !== "write" || !options.checkpointBot;
-        const bot = await options.checkpointBot?.(repository);
+        const bot = await github(async () => options.checkpointBot?.(repository));
         return (
           bot?.appId === expectedBot.appId &&
           bot?.login === expectedBot.login &&
@@ -64,11 +74,13 @@ export function createRunnerRepositoryAccess(options: {
       if (!(await matchesBot())) return denied();
       options.work.authorize(access);
       if (options.installationForRepository(repository) !== installationId) return denied();
-      const credential = await options.github.mintInstallationToken({
-        access: input.access,
-        repository,
-        installationId,
-      });
+      const credential = await github(() =>
+        options.github.mintInstallationToken({
+          access: input.access,
+          repository,
+          installationId,
+        }),
+      );
       if (!(await matchesBot())) return denied();
       const current = options.work.authorize(access);
       const checkedAt = now();
@@ -98,6 +110,11 @@ export function createRunnerRepositoryAccess(options: {
         return Response.json(
           { error: "Runner work is fenced.", code: "fenced" },
           { status: 409, headers: { "cache-control": "no-store" } },
+        );
+      if (error instanceof GitHubUnavailableError)
+        return Response.json(
+          { error: "GitHub is unavailable. Try again." },
+          { status: 503, headers: { "cache-control": "no-store" } },
         );
       return denied();
     }

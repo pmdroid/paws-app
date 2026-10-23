@@ -32,6 +32,7 @@ import { createRunnerArtifactStore } from "../../src/runner-artifacts";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
 import { createRunnerInputStore } from "../../src/runner-inputs";
 import {
+  RUNNER_LEASE_GRACE_MS,
   verifyRunnerCommand,
   type RunnerCommand,
   type RunnerInputFile,
@@ -1650,7 +1651,7 @@ export async function probeRunnerBackend(
     const expiring = backend.forItem(expired.id)(input(expired));
     const expiry = assert.rejects(expiring, /lease expired/);
     await next();
-    now += 60_000;
+    now += 60_000 + RUNNER_LEASE_GRACE_MS;
     await expiry;
     observe(
       "expired remote lease rejects the waiting result and cannot silently run locally",
@@ -1780,7 +1781,10 @@ export async function probeRunnerBackend(
       index++
     )
       await delay(1);
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_000, hostIds[0]!]);
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
+      now - 60_000 - RUNNER_LEASE_GRACE_MS,
+      hostIds[0]!,
+    ]);
     const firstStop = await next(hostIds[0]!, false);
     assert.equal(firstStop.type, "cancel");
     await delay(10);
@@ -1867,7 +1871,10 @@ export async function probeRunnerBackend(
       token: thirdToken.token,
       result: { ...result(thirdAttempt), candidateSha: head },
     });
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, hostIds[2]!]);
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
+      now - 60_001 - RUNNER_LEASE_GRACE_MS,
+      hostIds[2]!,
+    ]);
     assert.equal((await failover).stopReason, "end_turn");
     assert.match(
       readFileSync(`${runDir(root, failoverItem.run.id)}/acp.jsonl`, "utf8"),
@@ -1989,7 +1996,10 @@ export async function probeRunnerBackend(
         errorMessage: "You've hit your session limit. Retry-After: 120",
       },
     });
-    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, hostIds[0]!]);
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
+      now - 60_001 - RUNNER_LEASE_GRACE_MS,
+      hostIds[0]!,
+    ]);
     const artifactStop = await next(hostIds[0]!, false);
     assert.equal(artifactStop.type, "cancel");
     for (const envelope of work.commands(hostIds[0]!)) {
@@ -2334,7 +2344,7 @@ export async function probeRunnerBackend(
       void restartedRun.catch((error: unknown) => (restartFailure = error));
       const firstPlacement = await nextRun();
       db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
-        now - 1,
+        now - 1 - RUNNER_LEASE_GRACE_MS,
         firstPlacement.runId,
       ]);
       for (const hostId of hostIds) work.heartbeat(hostId);

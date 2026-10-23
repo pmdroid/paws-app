@@ -19,8 +19,10 @@ export async function startRunnerListener(options: {
   authorize(peer: RunnerPeer): boolean | Promise<boolean>;
   fetch(request: Request, peer: RunnerPeer): Promise<Response>;
   now?: () => number;
+  log?: (line: string) => void;
 }): Promise<RunnerListener> {
   const now = options.now ?? Date.now;
+  const log = options.log ?? console.warn;
   const connections = new Map<TLSSocket, string | null>();
   const revoked = new Set<string>();
   const pending = new Set<Promise<void>>();
@@ -68,6 +70,7 @@ export async function startRunnerListener(options: {
     return peer;
   }
   async function handle(request: Http2ServerRequest, response: Http2ServerResponse) {
+    const started = now();
     const abort = new AbortController();
     let cancelBody: (() => Promise<void>) | null = null;
     response.once("close", () => {
@@ -128,6 +131,12 @@ export async function startRunnerListener(options: {
       void cancelBody?.().catch(() => {});
       if (!response.headersSent && !response.destroyed) reject(response, 403);
       else response.destroy();
+    } finally {
+      const elapsed = now() - started;
+      if (response.statusCode >= 500 || response.statusCode === 403 || elapsed >= 5_000)
+        log(
+          `Runner request ${request.method} ${request.url.split("?", 1)[0]} answered ${response.statusCode} in ${elapsed} ms`,
+        );
     }
   }
   let server = createServer(options.tls);

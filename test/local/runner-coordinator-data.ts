@@ -22,7 +22,7 @@ import {
 } from "../../src/runner-transcripts";
 import { S3Client } from "bun";
 import { createFetchGitHubClient, createGitHubApp } from "../../src/github";
-import type { RunnerCommand } from "../../src/runner-protocol";
+import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 
 export async function probeRunnerCoordinatorData(
@@ -348,7 +348,7 @@ export async function probeRunnerCoordinatorData(
       true,
       { retainedArtifact: true, retainedTranscript: true, wrongGrant: 403, staleGeneration: 409 },
     );
-    now += 60_001;
+    now += 60_001 + RUNNER_LEASE_GRACE_MS;
     await assert.rejects(
       daemon.repositoryCredential(run.id, 1, "read", grant.token),
       statusError(409),

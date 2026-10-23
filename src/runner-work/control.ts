@@ -22,6 +22,7 @@ import {
   workspaceSessionIds,
 } from "../db";
 import {
+  RUNNER_LEASE_GRACE_MS,
   RunnerCommandSchema,
   RunnerEventSchema,
   type RunnerEvent,
@@ -195,6 +196,7 @@ export function createRunnerWork(options: {
   ): Assignment {
     const identity = runner(runnerId);
     const work = assignment(runId);
+    const lapsed = work !== null && work.leaseUntil <= at && !settled;
     if (
       !work ||
       work.runnerId !== runnerId ||
@@ -202,7 +204,9 @@ export function createRunnerWork(options: {
       work.generation !== generation ||
       work.runnerFence !== identity.fence ||
       work.endedAt !== null ||
-      (work.leaseUntil <= at && !settled)
+      (lapsed &&
+        (work.leaseUntil + RUNNER_LEASE_GRACE_MS <= at ||
+          !runnerHasCapacity(db, runnerId, at, runId)))
     )
       throw new RunnerWorkFencedError("Runner work is fenced or its lease expired.");
     const command = workCommand(work);
@@ -224,6 +228,11 @@ export function createRunnerWork(options: {
     )
       throw new Error("Run repository binding changed.");
     return work;
+  }
+  function renew(work: Assignment, at: number) {
+    const leaseUntil = Math.min(workCommand(work).expiresAt, at + 60_000);
+    db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [leaseUntil, work.runId]);
+    return leaseUntil;
   }
   function accepted(work: Assignment) {
     return (
@@ -493,10 +502,12 @@ export function createRunnerWork(options: {
         for (const row of rows) {
           try {
             live(runnerId, row.runId, row.generation, at, true, accepted(row));
-            if (row.leaseUntil <= at) continue;
-            const expiresAt = Math.min(workCommand(row).expiresAt, at + 60_000);
-            db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [expiresAt, row.runId]);
-            leases.push({ runId: row.runId, generation: row.generation, expiresAt });
+            if (row.leaseUntil + RUNNER_LEASE_GRACE_MS <= at) continue;
+            leases.push({
+              runId: row.runId,
+              generation: row.generation,
+              expiresAt: renew(row, at),
+            });
           } catch {
             db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [at, row.runId]);
             db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]);
@@ -523,7 +534,8 @@ export function createRunnerWork(options: {
         const work = live(input.runnerId, input.runId, input.generation, now());
         if (work.commandId !== input.commandId) throw new Error("Run command changed.");
         const token = workspaceSecret();
-        const expiresAt = Math.min(work.leaseUntil, now() + 60_000);
+        const leaseUntil = work.leaseUntil > now() ? work.leaseUntil : renew(work, now());
+        const expiresAt = Math.min(leaseUntil, now() + 60_000);
         db.run("DELETE FROM runner_work_grant WHERE run_id=?", [input.runId]);
         db.run("INSERT INTO runner_work_grant VALUES(?,?,?,?)", [
           workspaceTokenHash(token),
