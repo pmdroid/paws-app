@@ -3,6 +3,7 @@ import {
   capActivityText,
   capReason,
   countsAwakeTime,
+  isTerminalWorkItemState,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   transition,
@@ -262,19 +263,26 @@ export function failWorkItem(
   reason: string,
   text: string,
   now: number,
-): void {
-  const version = moveToFailed(db, item);
-  journal(`item ${item.linearIdentifier} failed: ${reason}`);
-  db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
-  if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-  cancelOpenJobs(db, { itemId: item.id, reason, now });
-  enqueueOutboxOnce(db, {
-    target: OUTBOX_ACTIVITY.target,
-    op: OUTBOX_ACTIVITY.op,
-    orderingKey: item.sessionKey ?? item.id,
-    idempotencyKey: `fail:${item.id}:${version}:${reason}`,
-    payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
-    now,
+): boolean {
+  return immediate(db, () => {
+    const current = getWorkItem(db, item.id);
+    if (
+      current === null ||
+      current.version !== item.version ||
+      current.currentRunId !== item.currentRunId ||
+      current.state === "failed" ||
+      isTerminalWorkItemState(current.state)
+    )
+      return false;
+    commitFailure(
+      db,
+      current,
+      reason,
+      text,
+      now,
+      (version) => `fail:${item.id}:${version}:${reason}`,
+    );
+    return true;
   });
 }
 
@@ -323,21 +331,35 @@ function failForCap(
   reason: "turns" | "time",
   now: number,
 ): void {
+  commitFailure(
+    db,
+    item,
+    `cap:${reason}`,
+    capActivityText(reason, item.maxTurns, item.maxAwakeMs),
+    now,
+    (version) => `cap:${item.id}:${version}:${reason}`,
+  );
+}
+
+function commitFailure(
+  db: Database,
+  item: WorkItemRecord,
+  reason: string,
+  text: string,
+  now: number,
+  idempotencyKey: (version: number) => string,
+): void {
   const version = moveToFailed(db, item);
+  journal(`item ${item.linearIdentifier} failed: ${reason}`);
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-  journal(`item ${item.linearIdentifier} failed: cap:${reason}`);
-  cancelOpenJobs(db, { itemId: item.id, reason: `cap:${reason}`, now });
+  cancelOpenJobs(db, { itemId: item.id, reason, now });
   enqueueOutboxOnce(db, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.sessionKey ?? item.id,
-    idempotencyKey: `cap:${item.id}:${version}:${reason}`,
-    payload: {
-      sessionId: item.sessionKey ?? item.id,
-      kind: "error",
-      body: capActivityText(reason, item.maxTurns, item.maxAwakeMs),
-    },
+    idempotencyKey: idempotencyKey(version),
+    payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
     now,
   });
 }

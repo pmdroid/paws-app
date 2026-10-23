@@ -73,7 +73,7 @@ test("a delayed failure cannot fail the run that superseded it", () => {
   applyWorkItemEvent(db, item.id, "dispatched");
   const next = insertRun(db, { itemId: item.id, now: 3 });
   setCurrentRun(db, item.id, next.id);
-  failWorkItem(db, item, "run_error", "The old agent crashed.", 4);
+  expect(failWorkItem(db, item, "run_error", "The old agent crashed.", 4)).toBe(false);
   expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", currentRunId: next.id });
   expect(getRun(db, run.id)?.status).toBe("active");
   expect(getRun(db, next.id)?.status).toBe("active");
@@ -85,7 +85,7 @@ test("a delayed failure leaves a cancelled task cancelled", () => {
   databases.push(db);
   const { item } = runningTask(db);
   applyWorkItemEvent(db, item.id, "cancel");
-  failWorkItem(db, item, "run_error", "The agent crashed.", 2);
+  expect(failWorkItem(db, item, "run_error", "The agent crashed.", 2)).toBe(false);
   expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
   expect(listOutbox(db, "session")).toEqual([]);
 });
@@ -94,7 +94,7 @@ test("a committed failure survives a restart and is not repeated", () => {
   const file = join(tempHome(), "paws.db");
   const db = migratedDatabase(file);
   const { item, run, jobId } = runningTask(db);
-  failWorkItem(db, item, "run_error", "The agent crashed.", 2);
+  expect(failWorkItem(db, item, "run_error", "The agent crashed.", 2)).toBe(true);
   db.close();
   const restored = openDatabase(file);
   databases.push(restored);
@@ -105,6 +105,6 @@ test("a committed failure survives a restart and is not repeated", () => {
   expect(listOutbox(restored, "session").map((row) => row.payload)).toEqual([
     { sessionId: "session", kind: "error", body: "The agent crashed." },
   ]);
-  failWorkItem(restored, failed, "run_error", "The agent crashed.", 3);
+  expect(failWorkItem(restored, failed, "run_error", "The agent crashed.", 3)).toBe(false);
   expect(listOutbox(restored, "session")).toHaveLength(1);
 });
