@@ -28,6 +28,7 @@ export {
 export {
   Orchestrator,
   attachOrchestrator,
+  type HandoverOutcome,
   type OrchestratorOptions,
   type ExecutionChanges,
   type RepositoryBinding,
