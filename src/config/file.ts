@@ -106,6 +106,8 @@ export type PawsConfigFile = {
   ciFixAttempts?: number;
   /** `[queue] start_timeout_hours`. Missing means the default of 24. */
   queueStartTimeoutHours?: number;
+  /** `[queue] max_running_per_owner`. Missing means no cap. */
+  queueMaxRunningPerOwner?: number;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
 };
@@ -253,7 +255,10 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     renderCheckoutProjects(parseCheckoutProjects(current)) +
     renderProjectSkills(parseProjectSkills(current)) +
     renderMergeSettings(storedMerge(parseConfigToml(current))) +
-    renderQueueSettings({ startTimeoutHours: parseConfigToml(current).queueStartTimeoutHours });
+    renderQueueSettings({
+      startTimeoutHours: parseConfigToml(current).queueStartTimeoutHours,
+      maxRunningPerOwner: parseConfigToml(current).queueMaxRunningPerOwner,
+    });
   const next =
     profiles === null
       ? rendered
@@ -447,6 +452,7 @@ function assignConfig(
   }
   if (section === "queue") {
     if (key === "start_timeout_hours") config.queueStartTimeoutHours = asInt(value, line);
+    if (key === "max_running_per_owner") config.queueMaxRunningPerOwner = asInt(value, line);
     return;
   }
   if (section === "checkout") {

@@ -36,6 +36,7 @@ type Item = {
   priority: number | null;
   owner: string | null;
   repo: string | null;
+  turn: string;
 };
 type Admission = {
   itemId: string;
@@ -134,7 +135,8 @@ function allItems(db: Database, now: number): Item[] {
     EXISTS(SELECT 1 FROM job start WHERE json_extract(start.payload,'$.itemId')=i.id
       AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>?)
       AND start.queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')) AS placing,
-    w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo
+    w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo,
+    COALESCE('project:'||i.project_approval_id,'user:'||i.owner_user_id,'') AS turn
     FROM work_item i
     LEFT JOIN linear_session s ON s.session_id=i.session_key
     LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
@@ -185,6 +187,33 @@ function footprint(item: Item, options: SchedulerOptions): Admission {
     repositoryKey: repository.toLowerCase(),
     sessionId: item.sessionId,
   };
+}
+
+function fairOrder(
+  candidates: readonly Item[],
+  running: ReadonlyMap<string, number>,
+  cap: number | null,
+): { item: Item; capped: boolean }[] {
+  const lines = new Map<string, Item[]>();
+  for (const item of candidates) lines.set(item.turn, [...(lines.get(item.turn) ?? []), item]);
+  const rank = new Map(candidates.map((item, index) => [item.id, index]));
+  const load = new Map(running);
+  const order: { item: Item; capped: boolean }[] = [];
+  while (lines.size) {
+    const head = (turn: string) => rank.get(lines.get(turn)![0]!.id)!;
+    const ahead = (turn: string, best: string) => {
+      const difference = (load.get(turn) ?? 0) - (load.get(best) ?? 0);
+      return difference < 0 || (difference === 0 && head(turn) < head(best));
+    };
+    const next = [...lines.keys()].reduce((best, turn) => (ahead(turn, best) ? turn : best));
+    const line = lines.get(next)!;
+    const item = line.shift()!;
+    if (!line.length) lines.delete(next);
+    const count = load.get(next) ?? 0;
+    order.push({ item, capped: cap !== null && count >= cap });
+    load.set(next, count + 1);
+  }
+  return order;
 }
 
 function depths(db: Database, items: Item[]): Map<string, number> {
@@ -314,9 +343,22 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id))),
     ).length;
     let free = slots === null ? Infinity : slots.total - slots.busy - reserved;
+    const running = new Map<string, number>();
+    for (const item of items)
+      if (
+        holdsExecution(item) ||
+        (item.state === "queued" && held.some((entry) => entry.itemId === item.id))
+      )
+        running.set(item.turn, (running.get(item.turn) ?? 0) + 1);
+    const cap = options.ownerCap ?? null;
+    const order = fairOrder(
+      candidates.filter((item) => !held.some((entry) => entry.itemId === item.id)),
+      running,
+      cap,
+    );
     const admitted: string[] = [];
-    for (const item of candidates) {
-      if (held.some((entry) => entry.itemId === item.id)) continue;
+    for (const { item, capped } of order) {
+      if (capped) continue;
       if (free <= 0) break;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
@@ -340,13 +382,15 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       admitted.push(item.id);
       free -= 1;
     }
+    const waiting = order.filter(({ item }) => !admitted.includes(item.id));
     saveQueuePositions(
       db,
-      candidates
-        .filter((item) => !held.some((entry) => entry.itemId === item.id))
-        .map((item) => item.id),
+      [...waiting.filter(({ capped }) => !capped), ...waiting.filter(({ capped }) => capped)].map(
+        ({ item }) => item.id,
+      ),
       slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
       now,
+      new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
     );
     return admitted;
   });

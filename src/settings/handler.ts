@@ -89,7 +89,10 @@ export async function handleAgentSettingsRequest(
     if (mergeBody !== undefined) merge = { ...previous, ...parseMergeSettings(mergeBody) };
     if (queueBody !== undefined)
       queue = {
-        ...(previousQueue ?? { startTimeoutHours: DEFAULT_QUEUE_START_TIMEOUT_HOURS }),
+        ...(previousQueue ?? {
+          startTimeoutHours: DEFAULT_QUEUE_START_TIMEOUT_HOURS,
+          maxRunningPerOwner: null,
+        }),
         ...parseQueueSettings(queueBody),
       };
   } catch (error) {
@@ -116,6 +119,12 @@ export async function handleAgentSettingsRequest(
     options.audit?.(
       "settings.queue-start-timeout",
       `Queue start timeout ${hoursBefore} h → ${queue.startTimeoutHours} h`,
+    );
+  const capBefore = previousQueue?.maxRunningPerOwner ?? null;
+  if (queue !== undefined && queue.maxRunningPerOwner !== capBefore)
+    options.audit?.(
+      "settings.queue-owner-cap",
+      `Running tasks per owner ${capBefore ?? "no cap"} → ${queue.maxRunningPerOwner ?? "no cap"}`,
     );
   return json({ ...settings, merge: { ciFixAttempts: saved }, queue: savedQueue });
 }
