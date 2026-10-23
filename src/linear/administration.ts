@@ -147,6 +147,27 @@ export function parseLinearUndelegation(
   return { organizationId, appUserId, issueId, createdAtMs };
 }
 
+export function parseLinearUserChange(event: AcceptedLinearEvent): {
+  organizationId: string;
+  userId: string;
+  active: boolean | null;
+  guest: boolean | null;
+} | null {
+  const payload = verifiedPayload(event);
+  if (payload === null || readString(payload, "type") !== "User") return null;
+  const data = child(payload, "data");
+  const organizationId = id(payload, "organizationId");
+  const userId = data === null ? null : id(data, "id");
+  if (data === null || organizationId === null || userId === null) return null;
+  const flag = (key: string) => (typeof data[key] === "boolean" ? data[key] : null);
+  return {
+    organizationId,
+    userId,
+    active: readString(payload, "action") === "remove" ? false : flag("active"),
+    guest: flag("guest"),
+  };
+}
+
 export function matchesLinearInstallation(
   event: LinearAdministration,
   installation: LinearInstallation,

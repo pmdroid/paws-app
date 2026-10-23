@@ -160,6 +160,35 @@ export function syncWorkspaceMember(
   });
 }
 
+export function applyLinearUserChange(
+  db: Database,
+  input: {
+    organizationId: string;
+    userId: string;
+    active: boolean | null;
+    guest: boolean | null;
+    now: number;
+  },
+): boolean {
+  const workspace = workspaceForOrganization(db, input.organizationId);
+  const member = workspace && workspaceLinearMember(db, workspace.id, input.userId);
+  if (!member) return false;
+  if (input.active === false || input.guest === true)
+    return syncWorkspaceMember(db, {
+      workspaceId: member.workspaceId,
+      userId: member.userId,
+      active: input.active !== false && member.active,
+      role: (input.guest ?? member.role === "observer") ? "observer" : "member",
+      teamIds: member.teamIds,
+      now: Math.max(input.now, member.checkedAt),
+    });
+  db.run("UPDATE workspace_member SET checked_at=0 WHERE workspace_id=? AND user_id=?", [
+    member.workspaceId,
+    member.userId,
+  ]);
+  return true;
+}
+
 export function createWorkspaceBootstrap(
   db: Database,
   input: { tokenHash: string; organizationId: string; expiresAt: number },

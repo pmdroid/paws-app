@@ -157,6 +157,7 @@ export type {
 export {
   parseLinearAdministration,
   parseLinearUndelegation,
+  parseLinearUserChange,
   parseLinearSessionInstallation,
   matchesLinearInstallation,
 } from "./administration";
