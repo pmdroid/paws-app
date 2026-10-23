@@ -189,10 +189,6 @@ const MEMBERS_ONLY: IntakeDecision = {
   outcome: "refused",
   reason: "Only active members of the Paws workspace can work with Paws.",
 };
-const PROJECT_REFUSAL: IntakeDecision = {
-  outcome: "refused",
-  reason: "This issue belongs to a Paws project run that continues in its earlier session.",
-};
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -825,7 +821,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         onLinearIntake: projectExecution.accepted,
         adoptLinearParent: projectExecution.adoptParent,
         authorizeLinearEvent: async (event) =>
-          (await projectExecution.authorizeEvent(event)) === false ? PROJECT_REFUSAL : ACCEPTED,
+          (await projectExecution.authorizeEvent(event)) ?? ACCEPTED,
+        recheckLinearEvent: (event) => projectExecution.recheckEvent(event) ?? true,
         ...(workspace && linear?.tracker && linear.issueLifecycle
           ? {
               canDispatchDelegation: managedDelegationReady,
@@ -877,10 +874,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               authorizeLinearEvent: async (event) => {
                 if (!(await (await workspace.access).authorizeLinearEvent(event)))
                   return MEMBERS_ONLY;
-                const project = await projectExecution.authorizeEvent(event);
-                if (project !== undefined) return project ? ACCEPTED : PROJECT_REFUSAL;
-                return assignments ? assignments.authorize(event) : ACCEPTED;
+                return (
+                  (await projectExecution.authorizeEvent(event)) ??
+                  (assignments ? assignments.authorize(event) : ACCEPTED)
+                );
               },
+              recheckLinearEvent: async (event) =>
+                (await workspace.access).recheckLinearEvent(event) &&
+                (projectExecution.recheckEvent(event) ?? assignments?.recheck(event) ?? true),
             }
           : {}),
         githubAuth:

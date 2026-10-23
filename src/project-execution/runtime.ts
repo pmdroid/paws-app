@@ -5,7 +5,6 @@ import {
   auditWorkspaceAccess,
   bindWorkItemRepository,
   enqueueJobOnce,
-  enqueueOutboxOnce,
   getLinearSession,
   getWorkItem,
   immediate,
@@ -16,13 +15,15 @@ import {
   workspaceMember,
   type JobLoop,
 } from "../db";
-import type {
-  AcceptedLinearEvent,
-  DependencyEdge,
-  EpicSnapshot,
-  LinearMembershipReads,
-  TrackerAdapter,
-  createSessionStarter,
+import {
+  linearReadRetry,
+  type AcceptedLinearEvent,
+  type DependencyEdge,
+  type EpicSnapshot,
+  type IntakeDecision,
+  type LinearMembershipReads,
+  type TrackerAdapter,
+  type createSessionStarter,
 } from "../linear";
 import { orderByBlocks, readExternalBlockerEvidence, type IntakeResult } from "../intake";
 import { workspaceId } from "../workspace";
@@ -35,6 +36,12 @@ import {
   type ProjectApproval,
 } from "./approval";
 import type { ProjectBlockerPolicy, ProjectPreview } from "./preview";
+
+export const PROJECT_REFUSAL = {
+  outcome: "refused" as const,
+  reason: "This issue belongs to a Paws project run that continues in its earlier session.",
+};
+const ACCEPTED: IntakeDecision = { outcome: "accepted" };
 
 type Claim = {
   approvalId: string;
@@ -81,6 +88,38 @@ export function createApprovedProjects(input: {
       .query<Claim, [string]>(`SELECT approval_id AS approvalId,issue_id AS issueId,
       session_id AS sessionId,delegation_id AS epicId FROM project_approval_issue WHERE session_id=?`)
       .get(sessionId);
+  }
+  function eventClaim(event: AcceptedLinearEvent) {
+    if (!event.issueId || !event.sessionId) return null;
+    const session = getLinearSession(db, event.sessionId);
+    return db
+      .query<
+        Claim,
+        [string, string]
+      >(`SELECT c.approval_id AS approvalId,c.issue_id AS issueId,c.session_id AS sessionId,c.delegation_id AS epicId
+        FROM project_approval_issue c JOIN workspace w ON w.id=c.workspace_id WHERE c.issue_id=? AND c.released_at IS NULL AND w.linear_organization_id=?`)
+      .get(event.issueId, session?.organizationId ?? "");
+  }
+  function refuse(
+    approval: ProjectApproval,
+    event: AcceptedLinearEvent,
+    reason = PROJECT_REFUSAL.reason,
+  ): IntakeDecision {
+    auditWorkspaceAccess(db, {
+      workspaceId: approval.workspaceId,
+      userId: null,
+      action: "access.denied",
+      subject: `project.event:${event.dedupeKey}`,
+      now: now(),
+    });
+    return { outcome: "refused", reason };
+  }
+  function steers(approval: ProjectApproval, event: AcceptedLinearEvent, takeover: boolean) {
+    const actor = db
+      .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
+      .get(event.actorId ?? (takeover ? sessionCreator(event.payload) : null) ?? "");
+    const member = actor ? workspaceMember(db, approval.workspaceId, actor.id) : null;
+    return !!member?.active && member.role !== "observer";
   }
   function authority(approval: ProjectApproval) {
     const result = assertProjectAuthority(
@@ -139,7 +178,13 @@ export function createApprovedProjects(input: {
       );
     return { ...snapshot, subIssues: [] };
   }
-  async function refreshAuthority(approval: ProjectApproval, signal: AbortSignal) {
+  async function refreshAuthority(
+    approval: ProjectApproval,
+    signal: AbortSignal,
+    unread = (error: unknown): never => {
+      throw error;
+    },
+  ) {
     const workspace = assertProjectAuthority(
       db,
       { workspaceId: approval.workspaceId, userId: approval.actorId },
@@ -149,11 +194,9 @@ export function createApprovedProjects(input: {
     for (const userId of new Set([approval.actorId, approval.leadUserId])) {
       const member = workspaceMember(db, approval.workspaceId, userId)!;
       const observedAt = now();
-      const identity = await input.memberships.member(
-        workspace.organizationId,
-        member.linearUserId,
-        signal,
-      );
+      const identity = await input.memberships
+        .member(workspace.organizationId, member.linearUserId, signal)
+        .catch(unread);
       signal.throwIfAborted();
       if (
         identity.organizationId !== workspace.organizationId ||
@@ -420,60 +463,35 @@ export function createApprovedProjects(input: {
         ),
       });
     },
-    async authorizeEvent(event: AcceptedLinearEvent): Promise<boolean | undefined> {
-      if (!event.issueId || !event.sessionId) return undefined;
-      const session = getLinearSession(db, event.sessionId);
-      const claim = db
-        .query<
-          Claim,
-          [string, string]
-        >(`SELECT c.approval_id AS approvalId,c.issue_id AS issueId,c.session_id AS sessionId,c.delegation_id AS epicId
-        FROM project_approval_issue c JOIN workspace w ON w.id=c.workspace_id WHERE c.issue_id=? AND c.released_at IS NULL AND w.linear_organization_id=?`)
-        .get(event.issueId, session?.organizationId ?? "");
+    async authorizeEvent(event: AcceptedLinearEvent): Promise<IntakeDecision | undefined> {
+      const claim = eventClaim(event);
       if (!claim) return undefined;
       const approval = readProjectApproval(db, claim.approvalId)!;
-      const deny = () => {
-        auditWorkspaceAccess(db, {
-          workspaceId: approval.workspaceId,
-          userId: null,
-          action: "access.denied",
-          subject: `project.event:${event.dedupeKey}`,
-          now: now(),
-        });
-        return false;
-      };
       const takeover = claim.sessionId !== event.sessionId;
       if (takeover && (event.action !== "created" || !restartable(approval, claim))) {
-        if (event.action === "created" && approval.stoppedAt === null) {
-          const identifier =
-            approval.preview.project.issues.find((issue) => issue.linearIssueId === claim.issueId)
-              ?.identifier ?? "This issue";
-          enqueueOutboxOnce(db, {
-            target: "linear",
-            op: "activity",
-            orderingKey: event.sessionId,
-            idempotencyKey: `project-running:${event.sessionId}`,
-            payload: {
-              sessionId: event.sessionId,
-              kind: "response",
-              body: `${identifier} is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.`,
-              id: crypto.randomUUID(),
-            },
-            now: now(),
-          });
-        }
-        return deny();
+        if (event.action !== "created" || approval.stoppedAt !== null)
+          return refuse(approval, event);
+        const identifier =
+          approval.preview.project.issues.find((issue) => issue.linearIssueId === claim.issueId)
+            ?.identifier ?? "This issue";
+        return refuse(
+          approval,
+          event,
+          `${identifier} is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.`,
+        );
       }
+      const read: { failure?: unknown } = {};
       try {
-        if (takeover || event.action === "prompted" || event.signal === "stop") {
-          const actor = db
-            .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-            .get(event.actorId ?? (takeover ? sessionCreator(event.payload) : null) ?? "");
-          const member = actor ? workspaceMember(db, approval.workspaceId, actor.id) : null;
-          if (!member?.active || member.role === "observer") return deny();
-        }
-        if (event.signal === "stop") return true;
-        await refreshAuthority(approval, AbortSignal.timeout(30_000));
+        if (
+          (takeover || event.action === "prompted" || event.signal === "stop") &&
+          !steers(approval, event, takeover)
+        )
+          return refuse(approval, event);
+        if (event.signal === "stop") return ACCEPTED;
+        await refreshAuthority(approval, AbortSignal.timeout(30_000), (error) => {
+          read.failure = error;
+          throw error;
+        });
         if (takeover) {
           const moved = immediate(db, () => {
             if (!restartable(approval, claim)) return false;
@@ -489,12 +507,24 @@ export function createApprovedProjects(input: {
             );
             return true;
           });
-          if (!moved) return deny();
+          if (!moved) return refuse(approval, event);
         }
-        return true;
+        return ACCEPTED;
       } catch {
-        return deny();
+        return "failure" in read ? linearReadRetry(read.failure) : refuse(approval, event);
       }
+    },
+    recheckEvent(event: AcceptedLinearEvent): boolean | undefined {
+      const claim = eventClaim(event);
+      if (!claim) return undefined;
+      const approval = readProjectApproval(db, claim.approvalId)!;
+      if (
+        claim.sessionId === event.sessionId &&
+        ((event.action !== "prompted" && event.signal !== "stop") || steers(approval, event, false))
+      )
+        return true;
+      refuse(approval, event);
+      return false;
     },
     async scopeSnapshot(sessionId: string, snapshot: EpicSnapshot, signal?: AbortSignal) {
       const claim = claimForSession(sessionId);

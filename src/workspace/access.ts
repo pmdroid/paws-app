@@ -60,7 +60,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     throw new Error("Paws browser sign-in requires an HTTPS origin.");
   const origin = configured.origin;
   const now = options.now ?? Date.now;
-  const authorizeLinearEvent = createWorkspaceLinearActions({
+  const linearActions = createWorkspaceLinearActions({
     db: options.db,
     organizationId: options.installedOrganization.id,
     clientId: options.clientId,
@@ -391,8 +391,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     return operation.finally(() => operations.delete(operation));
   }
   return {
-    authorizeLinearEvent: (event: Parameters<typeof authorizeLinearEvent>[0]) =>
-      track(() => authorizeLinearEvent(event)),
+    authorizeLinearEvent: (event: Parameters<typeof linearActions.authorize>[0]) =>
+      track(() => linearActions.authorize(event)),
+    recheckLinearEvent: linearActions.recheck,
     authenticate: (request: Request) => track(() => authenticate(request)),
     repositoryTeams: (request: Request, signal: AbortSignal) =>
       track(async () => {

@@ -7,6 +7,6 @@ export {
   assertProjectAuthority,
 } from "./approval";
 export type { ProjectApproval } from "./approval";
-export { createApprovedProjects } from "./runtime";
+export { createApprovedProjects, PROJECT_REFUSAL } from "./runtime";
 export { createProjectHttp } from "./http";
 export { createProjectExecutionGuard } from "./guard";

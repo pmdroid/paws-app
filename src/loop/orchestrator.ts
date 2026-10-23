@@ -328,6 +328,7 @@ export type OrchestratorOptions = {
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<IntakeDecision>;
+  recheckLinearEvent?: (event: AcceptedLinearEvent) => boolean | Promise<boolean>;
   remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
@@ -418,6 +419,10 @@ type MergeWait = {
 
 /** Rebase conflicts keep a fixed limit. CI failures use the `[merge] ci_fix_attempts` setting. */
 const MAX_REBASE_RETURNS = 3;
+const LINEAR_ACCESS_CHANGED: IntakeDecision = {
+  outcome: "refused",
+  reason: "Access to this session changed while Paws waited to start it.",
+};
 /** The first line of a CI fix handoff under the GitHub merge queue order. */
 const CI_FIX_SOURCE = {
   pull: "The pull request's own checks failed before Paws could add it to the GitHub merge queue.",
@@ -521,7 +526,8 @@ export class Orchestrator {
 
   async onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
-    if (!(await this.authorizeLinearEvent(event))) return false;
+    const decision = await this.options.authorizeLinearEvent?.(event);
+    if (!this.admitLinearEvent(event, decision)) return false;
     if (event.signal === "stop") {
       const receiptKey = JSON.stringify(
         event.activityId ? ["activity", event.activityId] : ["event", event.dedupeKey],
@@ -569,7 +575,11 @@ export class Orchestrator {
     const done = previous
       .catch(() => undefined)
       .then(async () => {
-        if (!(await this.authorizeLinearEvent(event, true))) {
+        const current =
+          (await this.options.recheckLinearEvent?.(event)) === false
+            ? LINEAR_ACCESS_CHANGED
+            : decision;
+        if (!this.admitLinearEvent(event, current, true)) {
           if (event.sessionId !== null)
             discardLinearTurns(this.db, event.sessionId, [turnEventKey]);
           return false;
@@ -591,8 +601,11 @@ export class Orchestrator {
     }
   }
 
-  private async authorizeLinearEvent(event: AcceptedLinearEvent, last = false): Promise<boolean> {
-    const decision = await this.options.authorizeLinearEvent?.(event);
+  private admitLinearEvent(
+    event: AcceptedLinearEvent,
+    decision: IntakeDecision | undefined,
+    last = false,
+  ): boolean {
     if (decision === undefined) return true;
     const created = event.action === "created" && event.signal !== "stop";
     if (created && (last || decision.outcome !== "accepted")) {
