@@ -5,6 +5,7 @@ import {
   auditWorkspaceAccess,
   bindWorkItemRepository,
   enqueueJobOnce,
+  enqueueOutboxOnce,
   getLinearSession,
   getWorkItem,
   immediate,
@@ -21,6 +22,7 @@ import {
   type DependencyEdge,
   type EpicSnapshot,
   type IntakeDecision,
+  type LinearIssueLifecycle,
   type LinearMembershipReads,
   type TrackerAdapter,
   type createSessionStarter,
@@ -35,6 +37,7 @@ import {
   readProjectApproval,
   type ProjectApproval,
 } from "./approval";
+import { parentSummaryMessage, type SummaryIssue, type SummarySubIssue } from "./parent-summary";
 import type { ProjectBlockerPolicy, ProjectPreview } from "./preview";
 
 export const PROJECT_REFUSAL = {
@@ -59,6 +62,7 @@ type Port = {
 export function createApprovedProjects(input: {
   db: Database;
   tracker: TrackerAdapter;
+  lifecycle: Pick<LinearIssueLifecycle, "inspect">;
   memberships: LinearMembershipReads;
   startSession: ReturnType<typeof createSessionStarter>;
   resumeSession: (sessionId: string) => Promise<void>;
@@ -255,6 +259,85 @@ export function createApprovedProjects(input: {
     } catch {
       return false;
     }
+  }
+  /**
+   * End an adopted parent's own session with one response once its sub-issue sessions
+   * are open: each sub-issue, whether it started, and the unfinished issues it waits for.
+   */
+  async function summarizeParent(approval: ProjectApproval, signal: AbortSignal) {
+    const prefix = "parent:";
+    if (approval.source !== "parent" || !approval.generation.startsWith(prefix)) return;
+    const sessionId = approval.generation.slice(prefix.length);
+    const key = `parent-summary:${approval.id}`;
+    if (db.query("SELECT 1 FROM outbox WHERE idempotency_key=?").get(key)) return;
+    const { preview } = approval;
+    const issues = new Map(preview.project.issues.map((issue) => [issue.linearIssueId, issue]));
+    const finished = new Set(
+      db
+        .query<{ issueId: string }, [string]>(
+          `SELECT c.issue_id AS issueId FROM project_approval_issue c JOIN work_item i
+           ON i.delegation_id=c.delegation_id AND i.linear_issue_id=c.issue_id
+           WHERE c.approval_id=? AND i.state IN ('merged','completed')`,
+        )
+        .all(approval.id)
+        .map((row) => row.issueId),
+    );
+    const outside = new Map<string, SummaryIssue | null>();
+    const subIssues: SummarySubIssue[] = [];
+    for (const issueId of preview.order) {
+      const issue = issues.get(issueId);
+      if (!issue) continue;
+      const blockers: SummaryIssue[] = [];
+      for (const edge of preview.edges) {
+        if (edge.blockedLinearIssueId !== issueId || finished.has(edge.blockerLinearIssueId))
+          continue;
+        const blocker = issues.get(edge.blockerLinearIssueId);
+        if (blocker) blockers.push({ identifier: blocker.identifier, url: blocker.url ?? null });
+      }
+      const external: SummaryIssue[] = [];
+      for (const edge of await input.tracker.listDeps(issueId)) {
+        const blockerId = edge.blockerLinearIssueId;
+        if (edge.blockedLinearIssueId !== issueId || issues.has(blockerId)) continue;
+        if (!outside.has(blockerId)) {
+          const read = await input.lifecycle.inspect(blockerId, { signal });
+          outside.set(
+            blockerId,
+            ["completed", "canceled"].includes(read.stateType)
+              ? null
+              : { identifier: read.identifier ?? blockerId, url: read.url ?? null },
+          );
+        }
+        const blocker = outside.get(blockerId);
+        if (blocker && !external.some((entry) => entry.identifier === blocker.identifier))
+          external.push(blocker);
+      }
+      signal.throwIfAborted();
+      external.sort((left, right) => left.identifier.localeCompare(right.identifier));
+      subIssues.push({
+        identifier: issue.identifier,
+        title: issue.title,
+        url: issue.url ?? null,
+        blockers: [...blockers, ...external],
+      });
+    }
+    if (!subIssues.length) return;
+    db.transaction(() => {
+      const current = readProjectApproval(db, approval.id);
+      if (!current || current.stoppedAt !== null) return;
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: sessionId,
+        idempotencyKey: key,
+        payload: {
+          sessionId,
+          kind: "response",
+          body: parentSummaryMessage(subIssues),
+          id: crypto.randomUUID(),
+        },
+        now: now(),
+      });
+    }).immediate();
   }
   function adoptParent(
     sessionId: string,
@@ -698,6 +781,7 @@ export function createApprovedProjects(input: {
                 },
               );
             }
+            await summarizeParent(readProjectApproval(db, row.id)!, context.signal);
             db.run("UPDATE project_approval SET last_error=NULL WHERE id=?", [row.id]);
           } catch {
             context.signal.throwIfAborted();
