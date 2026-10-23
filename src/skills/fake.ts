@@ -24,12 +24,26 @@ export function fakeSkillResolver(
           : request.kind === "npm"
             ? `1.${count}.0`
             : String(count + 1).repeat(40);
-      const { version: _pinned, ...source } = request as SkillRequest & { version?: string };
+      const {
+        version: _pinned,
+        path,
+        ...source
+      } = request as SkillRequest & {
+        version?: string;
+        path?: string;
+      };
+      const [ref, ...folder] = path?.split("/") ?? [];
       return {
-        source,
+        source: ref
+          ? ({
+              ...(folder.length ? { subfolder: folder.join("/") } : {}),
+              ...source,
+              ref,
+            } as ResolvedSkill["source"])
+          : source,
         version,
         files: files(request),
-        suggestedName: key
+        suggestedName: (folder.at(-1) || key)
           .split("/")
           .at(-1)!
           .replace(/\.git$/, ""),
