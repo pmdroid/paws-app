@@ -11,7 +11,7 @@ import {
   type GitCommitPolicy,
 } from "../../src/core";
 import { runGitHubGit } from "../../src/github";
-import { REBASE_CONFLICT_INSTRUCTION } from "../../src/loop";
+import { REBASE_CONFLICT_INSTRUCTION } from "../../src/merge";
 import { fetchRunnerCandidate } from "../../src/runner-backend";
 import type { RunnerJob } from "../../src/runner-execution";
 import type { RunnerCommand } from "../../src/runner-protocol";
