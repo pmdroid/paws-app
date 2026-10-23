@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +15,7 @@ import {
   getWorkItem,
   listEvidence,
   listJobs,
+  listVisualReviewMarks,
   listWorkItems,
   migrate,
   openDatabase,
@@ -264,6 +265,76 @@ test("Request changes resumes the agent with the feedback, and new screenshots a
   }
 }, 120_000);
 
+test("Request changes from the run page hands the marked screenshot and note to the agent", async () => {
+  let worktree = "";
+  const f = await pausedForReview({
+    implement(dir, n, prompt) {
+      worktree = dir;
+      return n === 1 || prompt.includes('publish_artifact and checkId "visual-proof"')
+        ? publishTwo(dir, n)
+        : [];
+    },
+  });
+  try {
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+    const shot = listEvidence(f.db, item.id)[1]!;
+    const marked = Buffer.concat([PNG, Buffer.from("red circle")]);
+    const mark = {
+      id: "01JAAAAAAAAAAAAAAAAAAAAAAA",
+      questionId: open.id,
+      evidenceId: shot.id,
+      sizeBytes: marked.byteLength,
+      sha256: createHash("sha256").update(marked).digest("hex"),
+      createdAt: Date.now(),
+    };
+    writeFileSync(path.join(f.evidenceRoot, mark.id), marked);
+    const request = { questionId: open.id, note: "Move the save button left", marks: [mark] };
+
+    expect(
+      await f.orchestrator.requestVisualReviewChanges({ ...request, answeredBy: "someone-else" }),
+    ).toBe("forbidden");
+    expect(getQuestion(f.db, open.id)?.status).toBe("open");
+    expect(listVisualReviewMarks(f.db, open.id)).toEqual([]);
+
+    expect(
+      await f.orchestrator.requestVisualReviewChanges({ ...request, answeredBy: "delegator-1" }),
+    ).toBe("answered");
+    expect(getVisualReview(f.db, open.id)).toMatchObject({
+      outcome: "changes_requested",
+      answeredBy: "delegator-1",
+      feedback: "Move the save button left",
+    });
+    expect(listVisualReviewMarks(f.db, open.id)).toEqual([mark]);
+    expect(
+      await f.orchestrator.requestVisualReviewChanges({ ...request, answeredBy: "delegator-1" }),
+    ).toBe("rejected");
+
+    await f.driveUntil(() => f.tracker.questions.length === 2);
+    expect(f.prompts[1]).toContain("Move the save button left");
+    expect(f.prompts[1]).toContain(
+      `- ./.paws-visual-review/${mark.id}.png: shot-2.png (evidence ${shot.id}, published at commit ${shot.headCommit.slice(0, 7)})`,
+    );
+    const text = f
+      .received(1)
+      .map((block) => block.text ?? "")
+      .join("\n");
+    const local = new RegExp(`\\./\\.paws-visual-review/[0-9a-f]{64}/${mark.id}\\.png`).exec(
+      text,
+    )?.[0];
+    expect(local).toBeString();
+    expect(text).toContain(`Input file: ${local} (image/png)`);
+    expect(readFileSync(path.join(worktree, local!))).toEqual(marked);
+    const ignored = await exec("git", ["-C", worktree, "check-ignore", local!]);
+    expect(ignored.stdout.trim()).toBe(local!);
+    expect(readFileSync(path.join(f.evidenceRoot, shot.id))).toEqual(
+      Buffer.concat([PNG, Buffer.from("shot-2.png")]),
+    );
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
 test("after three rounds of changes Paws asks whether to keep going instead of resuming", async () => {
   const f = await pausedForReview();
   try {
@@ -393,6 +464,7 @@ async function pausedForReview(
   const github = createFakeGitHub();
   const results: string[] = [];
   const prompts: string[] = [];
+  const implementResults: string[] = [];
   let implementResult = "";
   const implement =
     options.implement ??
@@ -408,6 +480,7 @@ async function pausedForReview(
     let steps: Step[] = [];
     if (input.purpose === "implement") {
       prompts.push(input.prompt);
+      implementResults.push(resultPath);
       if (prompts.length === 1) implementResult = resultPath;
       steps = implement(input.worktree, prompts.length, input.prompt);
     }
@@ -456,6 +529,13 @@ async function pausedForReview(
     prompts,
     uploads,
     orchestrator,
+    evidenceRoot,
+    received(n: number) {
+      const result = JSON.parse(readFileSync(implementResults[n]!, "utf8")) as {
+        prompts?: { type: string; text?: string }[][];
+      };
+      return (result.prompts ?? []).flat();
+    },
     runnerId: await runnerId,
     advance(ms: number) {
       offset += ms;

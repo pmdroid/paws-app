@@ -22,7 +22,13 @@ import {
   type ReadLinearArtifact,
   type StartLinearSession,
 } from "../web";
-import { EVIDENCE_API_PATH, handleEvidenceRequest } from "../evidence";
+import {
+  EVIDENCE_API_PATH,
+  handleEvidenceRequest,
+  handleVisualReviewChanges,
+  VISUAL_REVIEW_CHANGES_PATH,
+  type VisualReviewChanges,
+} from "../evidence";
 import {
   HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
@@ -76,6 +82,7 @@ export type ServerOptions = {
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
+  visualReviewChanges?: VisualReviewChanges;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken"> & {
@@ -148,6 +155,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
+          ...(options.visualReviewChanges
+            ? { visualReviewChanges: options.visualReviewChanges }
+            : {}),
         }))();
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
@@ -188,6 +198,7 @@ type Secrets = {
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
+  visualReviewChanges?: VisualReviewChanges;
 };
 
 async function route(request: Request, secrets: Secrets): Promise<Response> {
@@ -338,6 +349,17 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         if (response !== null) return response;
       }
     }
+  }
+  if (path === VISUAL_REVIEW_CHANGES_PATH) {
+    if (!secrets.db || !secrets.evidenceDir || !secrets.visualReviewChanges)
+      return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleVisualReviewChanges(request, {
+      db: secrets.db,
+      root: secrets.evidenceDir,
+      principal,
+      sessionIds,
+      submit: secrets.visualReviewChanges,
+    }))!;
   }
   if (path.startsWith(EVIDENCE_API_PATH)) {
     if (secrets.db === undefined || secrets.evidenceDir === undefined)

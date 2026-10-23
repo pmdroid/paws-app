@@ -750,6 +750,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       statusEnv: envSource,
       closeoutHome: paths.home,
       evidenceDir: paths.evidenceDir,
+      visualReviewChanges: async (input) =>
+        orchestrator ? orchestrator.requestVisualReviewChanges(input) : "rejected",
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: { root: paths.skillsDir, resolver: createSkillResolver() },
