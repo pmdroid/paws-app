@@ -102,6 +102,7 @@ import {
   taskRequiresRepository,
   selectTaskModeForTurn,
   completeAnswerTask,
+  completeMergedItem,
   completeArtifactTask,
   artifactPublicationReady,
   listArtifacts,
@@ -1688,6 +1689,7 @@ export class Orchestrator {
       )
         throw new Error(result.errorMessage ?? `Answer stopped (${result.stopReason})`);
       activity.flush();
+      const finish = { runId: run.id, announce: () => sessionProgress?.phase("completed") };
       if (mode === "artifact") {
         const links = listArtifacts(this.db, item.id)
           .filter((artifact) => artifact.state === "uploaded")
@@ -1700,9 +1702,9 @@ export class Orchestrator {
           item.id,
           [activity.resultBody(), ...links].join("\n\n"),
           this.now(),
+          finish,
         );
-      } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now());
-      sessionProgress?.phase("completed");
+      } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now(), finish);
       this.pump();
     } catch (error) {
       if (
@@ -2618,10 +2620,7 @@ export class Orchestrator {
     )
       return;
     if (getConfirmedRemoteMerge(this.db, item.id)) {
-      if (item.state === "merge_queue") {
-        applyWorkItemEvent(this.db, item.id, "merge_accepted");
-        this.pump();
-      }
+      if (completeMergedItem(this.db, { itemId: item.id, now: this.now() })) this.pump();
       return;
     }
     this.assertReconciled(item);
@@ -2882,8 +2881,7 @@ export class Orchestrator {
         confirmedAt: this.now(),
       });
     if (this.stopped(item.id)) {
-      if (merged.merged && getWorkItem(this.db, item.id)?.state === "merge_queue")
-        applyWorkItemEvent(this.db, item.id, "merge_accepted");
+      if (merged.merged) completeMergedItem(this.db, { itemId: item.id, now: this.now() });
       return;
     }
     if (!merged.merged)
@@ -2975,10 +2973,21 @@ export class Orchestrator {
   }
 
   private async completeMerge(item: WorkItemRecord, repository: RepositoryBinding): Promise<void> {
-    this.post(item, "thought", `Merged ${item.linearIdentifier}.`, `${item.id}:merged`);
-    applyWorkItemEvent(this.db, item.id, "merge_accepted");
-    this.sessionProgress(item)?.phase("completed");
-    this.postStatus(item, "completed");
+    const merged = completeMergedItem(this.db, {
+      itemId: item.id,
+      now: this.now(),
+      announce: (current) => {
+        this.post(
+          current,
+          "thought",
+          `Merged ${current.linearIdentifier}.`,
+          `${current.id}:merged`,
+        );
+        this.sessionProgress(current)?.phase("completed");
+        this.postStatus(current, "completed");
+      },
+    });
+    if (!merged) return;
     await removeWorktree({
       owner: repository.owner,
       repo: repository.repo,
