@@ -16,6 +16,7 @@ import { handleSkillSettingsRequest, type SkillSettingsOptions } from "../src/se
 import {
   addSkill,
   createSkillResolver,
+  createSkillUpdates,
   fakeSkillResolver,
   removeSkill,
   SKILL_BUNDLE_FILE,
@@ -295,6 +296,7 @@ describe("skill pins", () => {
 
 type Listing = {
   skills: { name: string; version: string; agents: string[]; removedAt: number | null }[];
+  updates?: Record<string, string>;
   notice?: string;
   error?: string;
 };
@@ -370,6 +372,38 @@ describe("skill settings API", () => {
       ["settings.skill.agents", "Skill impeccable now applies to Claude, Codex"],
       ["settings.skill.remove", "Removed skill impeccable 1.1.0"],
     ]);
+  });
+
+  test("opening the section checks git refs; changes reuse the last check", async () => {
+    const checked: string[] = [];
+    const updates = createSkillUpdates({
+      latest: async (url) => {
+        checked.push(url);
+        return "f".repeat(40);
+      },
+    });
+    const shared = options({ updates });
+    await handleSkillSettingsRequest(
+      post({
+        action: "add",
+        source: { kind: "git", url: "https://github.com/pmdroid/review.git" },
+      }),
+      shared,
+    );
+    expect(checked).toEqual([]);
+    const opened = await read(
+      await handleSkillSettingsRequest(
+        new Request("http://127.0.0.1:8787/api/settings/skills"),
+        shared,
+      ),
+    );
+    expect(checked).toEqual(["https://github.com/pmdroid/review.git"]);
+    expect(opened.updates).toEqual({ fake: "f".repeat(40) });
+    const updated = await read(
+      await handleSkillSettingsRequest(post({ action: "update", name: "fake" }), shared),
+    );
+    expect(checked).toHaveLength(1);
+    expect(updated.updates).toEqual({ fake: "f".repeat(40) });
   });
 
   test("a change without the CSRF token is refused and not audited", async () => {

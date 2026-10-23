@@ -40,7 +40,7 @@ import {
   type AgentSettingsOptions,
   type MergeChoices,
 } from "../settings";
-import type { SkillResolver } from "../skills";
+import type { SkillResolver, SkillUpdates } from "../skills";
 import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
@@ -93,7 +93,12 @@ export type ServerOptions = {
     upToDateRules?: (signal: AbortSignal) => Promise<string[]>;
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
-  skillSettings?: { root: string; resolver: SkillResolver; limit?: number };
+  skillSettings?: {
+    root: string;
+    resolver: SkillResolver;
+    updates?: SkillUpdates;
+    limit?: number;
+  };
 };
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
