@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { HookEvent } from "../core";
 
 /** Agents that load skills from their home directory. Every one of them supports skills today. */
 export const SKILL_AGENTS = ["claude", "codex", "grok"] as const;
@@ -113,6 +114,7 @@ export type RunnerSkillStatus = {
   version: string;
   sha256: string;
   status: "installed" | "pending" | "refused";
+  error: string | null;
   reportedAt: number;
 };
 
@@ -120,19 +122,23 @@ export type RunnerSkillStatus = {
 export function recordRunnerSkills(
   db: Database,
   runnerId: string,
-  skills: readonly Omit<RunnerSkillStatus, "reportedAt">[],
+  skills: readonly (Omit<RunnerSkillStatus, "reportedAt" | "error"> & { error?: string })[],
   reportedAt: number,
 ): void {
   db.run("DELETE FROM runner_skill WHERE runner_id=?", [runnerId]);
   for (const skill of skills)
-    db.run("INSERT INTO runner_skill VALUES(?,?,?,?,?,?)", [
-      runnerId,
-      skill.name,
-      skill.version,
-      skill.sha256,
-      skill.status,
-      reportedAt,
-    ]);
+    db.run(
+      "INSERT INTO runner_skill(runner_id,name,version,sha256,status,error,reported_at) VALUES(?,?,?,?,?,?,?)",
+      [
+        runnerId,
+        skill.name,
+        skill.version,
+        skill.sha256,
+        skill.status,
+        skill.status === "refused" ? (skill.error ?? null) : null,
+        reportedAt,
+      ],
+    );
   db.run(
     `DELETE FROM agent_skill WHERE removed_at IS NOT NULL AND name NOT IN (
        SELECT s.name FROM runner_skill s JOIN runner r ON r.id=s.runner_id WHERE r.revoked_at IS NULL)`,
@@ -142,7 +148,141 @@ export function recordRunnerSkills(
 export function listRunnerSkills(db: Database, runnerId: string): RunnerSkillStatus[] {
   return db
     .query<RunnerSkillStatus, [string]>(
-      "SELECT name,version,sha256,status,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
+      "SELECT name,version,sha256,status,error,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
     )
     .all(runnerId);
+}
+
+export type RunnerSkillState = "up_to_date" | "installing" | "out_of_date" | "failed";
+
+export type RunnerSkillView = {
+  name: string;
+  version: string;
+  installedVersion: string | null;
+  state: RunnerSkillState;
+  error: string | null;
+  reportedAt: number | null;
+};
+
+export function runnerSkillStates(
+  db: Database,
+  runnerId: string,
+  pins: readonly SkillPin[] = listSkills(db),
+): RunnerSkillView[] {
+  const reported = new Map(listRunnerSkills(db, runnerId).map((row) => [row.name, row]));
+  return pins
+    .filter((entry) => entry.removedAt === null)
+    .map((entry) => {
+      const row = reported.get(entry.name);
+      const current = row?.sha256 === entry.sha256;
+      const state: RunnerSkillState =
+        row === undefined
+          ? "installing"
+          : current
+            ? row.status === "installed"
+              ? "up_to_date"
+              : row.status === "pending"
+                ? "installing"
+                : "failed"
+            : row.status === "refused"
+              ? "installing"
+              : "out_of_date";
+      return {
+        name: entry.name,
+        version: entry.version,
+        installedVersion: row && row.status !== "refused" ? row.version : null,
+        state,
+        error: state === "failed" ? row!.error : null,
+        reportedAt: row?.reportedAt ?? null,
+      };
+    });
+}
+
+export type SkillRollout = {
+  name: string;
+  total: number;
+  upToDate: number;
+  installing: string[];
+  outOfDate: string[];
+  failed: string[];
+};
+
+export function skillRollouts(
+  db: Database,
+  pins: readonly SkillPin[] = listSkills(db),
+): SkillRollout[] {
+  const runners = db
+    .query<{ id: string; name: string }, []>(
+      "SELECT id,name FROM runner WHERE revoked_at IS NULL AND status<>'revoked' ORDER BY created_at,id",
+    )
+    .all();
+  const rollouts = new Map<string, SkillRollout>(
+    pins
+      .filter((entry) => entry.removedAt === null)
+      .map((entry) => [
+        entry.name,
+        { name: entry.name, total: 0, upToDate: 0, installing: [], outOfDate: [], failed: [] },
+      ]),
+  );
+  for (const runner of runners)
+    for (const skill of runnerSkillStates(db, runner.id, pins)) {
+      const rollout = rollouts.get(skill.name)!;
+      rollout.total += 1;
+      if (skill.state === "up_to_date") rollout.upToDate += 1;
+      else if (skill.state === "installing") rollout.installing.push(runner.name);
+      else if (skill.state === "out_of_date") rollout.outOfDate.push(runner.name);
+      else rollout.failed.push(runner.name);
+    }
+  return [...rollouts.values()];
+}
+
+export type RunHook = { name: string; event: HookEvent };
+
+export type RunAgentSetup = {
+  runnerId: string;
+  skills: { name: string; version: string; status: "installed" | "pending" }[];
+  hooks: RunHook[];
+  recordedAt: number;
+};
+
+export function recordRunAgentSetup(
+  db: Database,
+  input: { runId: string; runnerId: string; agent: string; hooks: RunHook[]; at: number },
+): void {
+  const pins = new Map(
+    listSkills(db)
+      .filter(
+        (entry) => entry.removedAt === null && entry.agents.includes(input.agent as SkillAgent),
+      )
+      .map((entry) => [entry.name, entry]),
+  );
+  const skills = listRunnerSkills(db, input.runnerId)
+    .filter((row) => pins.has(row.name) && row.status !== "refused")
+    .map((row) => ({
+      name: row.name,
+      version: row.version,
+      status: row.status as "installed" | "pending",
+    }));
+  db.run(
+    `INSERT INTO run_agent_setup(run_id,runner_id,skills,hooks,recorded_at) VALUES(?,?,?,?,?)
+     ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,skills=excluded.skills,
+       hooks=excluded.hooks,recorded_at=excluded.recorded_at`,
+    [input.runId, input.runnerId, JSON.stringify(skills), JSON.stringify(input.hooks), input.at],
+  );
+}
+
+export function runAgentSetup(db: Database, runId: string): RunAgentSetup | null {
+  const row = db
+    .query<{ runnerId: string; skills: string; hooks: string; recordedAt: number }, [string]>(
+      "SELECT runner_id AS runnerId,skills,hooks,recorded_at AS recordedAt FROM run_agent_setup WHERE run_id=?",
+    )
+    .get(runId);
+  return row
+    ? {
+        runnerId: row.runnerId,
+        skills: JSON.parse(row.skills) as RunAgentSetup["skills"],
+        hooks: JSON.parse(row.hooks) as RunHook[],
+        recordedAt: row.recordedAt,
+      }
+    : null;
 }

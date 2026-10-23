@@ -181,6 +181,12 @@ export interface StatusRun {
   links: StatusLink[];
   /** Present while the run waits for its agent's usage limit to reset. */
   usagePause?: StatusUsagePause;
+  setup?: StatusRunSetup;
+}
+
+export interface StatusRunSetup {
+  skills: { name: string; version: string; installing: boolean }[];
+  hooks: { name: string; event: string }[];
 }
 
 export interface StatusUsagePause {
@@ -827,6 +833,30 @@ function readRun(input: unknown, index: number): StatusRun {
     ...(body.usagePause === undefined || body.usagePause === null
       ? {}
       : { usagePause: readUsagePause(body.usagePause, `${path}.usagePause`) }),
+    ...(body.setup === undefined || body.setup === null
+      ? {}
+      : { setup: readRunSetup(body.setup, `${path}.setup`) }),
+  };
+}
+
+function readRunSetup(input: unknown, path: string): StatusRunSetup {
+  const body = object(input, path);
+  return {
+    skills: array(body, "skills", path).map((entry, index) => {
+      const skill = object(entry, `${path}.skills[${index}]`);
+      return {
+        name: text(skill, "name", `${path}.skills[${index}]`),
+        version: text(skill, "version", `${path}.skills[${index}]`),
+        installing: optionalBoolean(skill, "installing"),
+      };
+    }),
+    hooks: array(body, "hooks", path).map((entry, index) => {
+      const hook = object(entry, `${path}.hooks[${index}]`);
+      return {
+        name: text(hook, "name", `${path}.hooks[${index}]`),
+        event: text(hook, "event", `${path}.hooks[${index}]`),
+      };
+    }),
   };
 }
 

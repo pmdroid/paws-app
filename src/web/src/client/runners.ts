@@ -1,5 +1,5 @@
 import { renderMarkup } from "./theme";
-import { durationLabel, esc, statePill } from "./format";
+import { durationLabel, esc, skillVersionLabel, statePill } from "./format";
 import { readCsrfToken } from "./github-auth";
 import { openAgentAccounts } from "./agent-accounts";
 import { routeHref } from "./route";
@@ -52,6 +52,15 @@ export type Runner = {
   agents?: AgentSignIn[];
   /** Sessions with a live work lease on this runner, oldest first. */
   running?: RunningSession[];
+  skills?: RunnerSkill[];
+};
+export type RunnerSkill = {
+  name: string;
+  version: string;
+  installedVersion: string | null;
+  state: "up_to_date" | "installing" | "out_of_date" | "failed";
+  error: string | null;
+  reportedAt: number | null;
 };
 export type StrayProcess = { pid: number; name: string; ageSeconds: number; cpuPercent: number };
 export type RunningSession = {
@@ -199,6 +208,9 @@ export function runnerRowMarkup(
     updateAvailable(runner, view.serverVersion)
       ? '<span class="tag warn">Update available</span>'
       : "",
+    runner.status !== "revoked" && runner.skills?.some((skill) => skill.state === "failed")
+      ? '<span class="tag bad">Skill install failed</span>'
+      : "",
   ].join("");
   const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
   const meta = [
@@ -248,6 +260,40 @@ export function runnerHistoryMarkup(usage: Usage[]): string {
     })
     .join("");
   return `<table class="runner-history"><thead><tr><th>Started</th><th>Task</th><th>Agent</th><th class="hide-phone">Duration</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+const SKILL_STATES: Record<RunnerSkill["state"], [string, string]> = {
+  up_to_date: ["ok", "Up to date"],
+  installing: ["running", "Installing"],
+  out_of_date: ["warn", "Out of date"],
+  failed: ["bad", "Install failed"],
+};
+
+export function runnerSkillsMarkup(skills: readonly RunnerSkill[]): string {
+  if (!skills.length)
+    return '<p class="muted">No skills registered. Owners and admins add them in Settings → Agents.</p>';
+  const rows = skills
+    .map((skill) => {
+      const [tone, label] = SKILL_STATES[skill.state] ?? SKILL_STATES.installing;
+      const pinned = skillVersionLabel(skill.version);
+      const has =
+        skill.installedVersion === null ? null : skillVersionLabel(skill.installedVersion);
+      const detail =
+        skill.state === "out_of_date" && has
+          ? `Has ${has}. Paws pins ${pinned}.`
+          : skill.state === "installing" && has && has !== pinned
+            ? `Has ${has} until no run is using it.`
+            : skill.state === "installing" && skill.reportedAt === null
+              ? "Not reported by this runner yet."
+              : "";
+      const error =
+        skill.state === "failed"
+          ? `<p class="runner-skill-error" role="note">${esc(skill.error ?? "The runner did not report why.")}</p>`
+          : "";
+      return `<li class="runner-skill" data-skill-state="${esc(skill.state)}"><span class="runner-skill-name"><b>${esc(skill.name)}</b><span class="mono" title="${esc(skill.version)}">${esc(pinned)}</span></span><span class="tag ${tone}">${label}</span>${detail ? `<p class="muted">${esc(detail)}</p>` : ""}${error}</li>`;
+    })
+    .join("");
+  return `<ul class="runner-skill-list" role="list" aria-label="Installed skills">${rows}</ul>`;
 }
 
 const PHASES: Record<RunningSession["phase"], [string, string]> = {
@@ -546,6 +592,17 @@ export function runnerDetailMarkup(
           "Agents",
           signIn,
           `<ul class="runner-agent-list" role="list" aria-label="Agent sign-in and usage">${signIns.map((entry) => agentMarkup(entry, view.now)).join("")}</ul>`,
+        )
+  }${
+    revoked || runner.skills === undefined
+      ? ""
+      : block(
+          "skills",
+          "Skills",
+          runner.skills.length
+            ? `<span class="muted">${runner.skills.filter((skill) => skill.state === "up_to_date").length} of ${runner.skills.length} up to date</span>`
+            : "",
+          runnerSkillsMarkup(runner.skills),
         )
   }${block("host", "Host", "", runnerMetricsMarkup(metrics, view.now))}${
     metrics?.strayProcesses?.length

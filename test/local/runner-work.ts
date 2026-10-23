@@ -14,6 +14,9 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  recordRunnerSkills,
+  runAgentSetup,
+  saveSkill,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
@@ -138,8 +141,52 @@ export async function probeRunnerWork(
         }),
       /repository or task changed/,
     );
-    const assigned = work.assign(command);
+    const pin = {
+      source: { kind: "npm" as const, package: "impeccable" },
+      sha256: "a".repeat(64),
+      sizeBytes: 4,
+      updatedAt: now,
+    };
+    saveSkill(db, { ...pin, name: "impeccable", version: "2.4.1", agents: ["claude", "codex"] });
+    saveSkill(db, { ...pin, name: "claude-only", version: "1.0.0", agents: ["claude"] });
+    saveSkill(db, { ...pin, name: "updating", version: "3.0.0", agents: ["codex"] });
+    recordRunnerSkills(
+      db,
+      firstRunner,
+      [
+        { name: "claude-only", version: "1.0.0", sha256: pin.sha256, status: "installed" },
+        { name: "impeccable", version: "2.4.1", sha256: pin.sha256, status: "installed" },
+        { name: "updating", version: "3.0.0", sha256: pin.sha256, status: "pending" },
+      ],
+      now,
+    );
+    const assigned = work.assign({
+      ...command,
+      hooks: [
+        {
+          id: workspaceId(),
+          event: "after_edit",
+          matcher: null,
+          command: "bun run fmt",
+          timeoutSeconds: 60,
+          agents: ["codex"],
+          skill: null,
+        },
+      ],
+    });
     assert.equal(assigned.leaseUntil, now + 60_000);
+    assert.deepEqual(runAgentSetup(db, run.id), {
+      runnerId: firstRunner,
+      skills: [
+        { name: "impeccable", version: "2.4.1", status: "installed" },
+        { name: "updating", version: "3.0.0", status: "pending" },
+      ],
+      hooks: [
+        { name: "Paws Closeout", event: "stop" },
+        { name: "bun run fmt", event: "after_edit" },
+      ],
+      recordedAt: now,
+    });
     const verified = verifyRunnerCommand(assigned.envelope, {
       trustedKeys: new Map([["fixture", keys.publicKey]]),
       runnerId: firstRunner,

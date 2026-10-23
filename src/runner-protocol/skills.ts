@@ -46,6 +46,7 @@ export const RunnerInstalledSkillSchema = z.strictObject({
   version,
   sha256,
   status: z.enum(["installed", "pending", "refused"]),
+  error: z.string().min(1).max(500).optional(),
 });
 
 export const RunnerInstalledSkillsSchema = z.array(RunnerInstalledSkillSchema).max(256);

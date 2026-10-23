@@ -88,7 +88,13 @@ describe("runner skill installer", () => {
     await installer.sync([next.skill]);
     expect(errors).toEqual(["Skill impeccable 2.5.0 failed its checksum and was not installed."]);
     expect(installer.installed()).toEqual([
-      { name: "impeccable", version: "2.5.0", sha256: next.skill.sha256, status: "refused" },
+      {
+        name: "impeccable",
+        version: "2.5.0",
+        sha256: next.skill.sha256,
+        status: "refused",
+        error: "Skill impeccable 2.5.0 failed its checksum and was not installed.",
+      },
     ]);
     const manifest = join(home(homeA), ".claude/skills/impeccable/SKILL.md");
     expect(readFileSync(manifest, "utf8")).toContain("v1");
@@ -175,7 +181,10 @@ describe("runner skill installer", () => {
     };
     served.set("escape@1.0.0", bytes);
     await installer.sync([skill]);
-    expect(installer.installed()[0]?.status).toBe("refused");
+    expect(installer.installed()[0]).toMatchObject({
+      status: "refused",
+      error: "Skill escape has a file outside its folder.",
+    });
     expect(errors).toEqual(["Skill escape has a file outside its folder."]);
   });
 });

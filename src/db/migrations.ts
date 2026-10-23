@@ -2229,4 +2229,17 @@ CREATE INDEX visual_review_mark_question ON visual_review_mark (question_id);
 ALTER TABLE queue_position ADD COLUMN owner_cap INTEGER CHECK (owner_cap IS NULL OR owner_cap >= 1);
 `,
   },
+  {
+    id: "106_run_agent_setup",
+    sql: `
+ALTER TABLE runner_skill ADD COLUMN error TEXT;
+CREATE TABLE run_agent_setup (
+  run_id TEXT PRIMARY KEY REFERENCES run(id),
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  skills TEXT NOT NULL,
+  hooks TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
