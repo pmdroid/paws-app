@@ -46,6 +46,33 @@ describe("Settings → Merging", () => {
     expect(picker).not.toContain(">Paws<");
   });
 
+  test("offers the GitHub merge queue only when a repository has one", () => {
+    const render = (view: Partial<MergeSettingsView>) =>
+      renderMergeSettings({ data: { ...data(), ...view }, busy: null, error: null, saved: false });
+    const without = render({ githubQueue: { repositories: [] } });
+    expect(without).not.toContain('value="github-queue"');
+    expect(render({ githubQueue: null, githubQueueError: "Paws could not check." })).toContain(
+      "Paws could not check.",
+    );
+    expect(render({})).not.toContain('value="github-queue"');
+    const offered = render({ githubQueue: { repositories: ["acme/platform"] } });
+    expect(offered).toContain(
+      '<option value="github-queue" >Add to the GitHub merge queue</option>',
+    );
+    // A level that already uses it keeps it, and says the repositories fall back.
+    const kept = render({
+      default: { order: "github-queue", mainMoved: "ci" },
+      githubQueue: { repositories: [] },
+    });
+    expect(kept).toContain('<option value="github-queue" selected>');
+    expect(kept).toContain("No configured repository has a GitHub merge queue");
+    const help = render({
+      default: { order: "github-queue", mainMoved: "ci" },
+      githubQueue: { repositories: ["acme/platform"] },
+    });
+    expect(help).toContain("GitHub&#39;s merge queue on acme/platform.");
+  });
+
   test("falls back to typed project ids and labels when Linear choices are unavailable", () => {
     const html = renderMergeSettings({
       data: {

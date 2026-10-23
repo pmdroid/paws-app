@@ -108,6 +108,8 @@ export interface StatusItem {
   queue?: StatusQueuePosition;
   /** A task's place in its repository's merge queue. 1 merges next. */
   mergeQueue?: StatusMergeQueue;
+  /** The item's pull request waits in its repository's GitHub merge queue. */
+  githubQueue?: StatusGitHubQueue;
 }
 
 export interface StatusMergeQueue {
@@ -118,6 +120,15 @@ export interface StatusMergeQueue {
   total: number;
   /** The issue in front, or null for the first. */
   ahead: string | null;
+}
+
+export interface StatusGitHubQueue {
+  /** GitHub's position, 1 is next. Null when GitHub did not report one. */
+  position: number | null;
+  /** GitHub's `MergeQueueEntryState`, for example `AWAITING_CHECKS`. */
+  state: string;
+  /** For example "Second in the acme/platform GitHub merge queue, waiting for checks." */
+  line: string;
 }
 
 export interface StatusQueuePosition {
@@ -647,6 +658,9 @@ function readItem(input: unknown, index: number): StatusItem {
     ...(body.mergeQueue === undefined
       ? {}
       : { mergeQueue: readMergeQueue(body.mergeQueue, `${path}.mergeQueue`) }),
+    ...(body.githubQueue === undefined
+      ? {}
+      : { githubQueue: readGitHubQueue(body.githubQueue, `${path}.githubQueue`) }),
   };
 }
 
@@ -657,6 +671,15 @@ function readMergeQueue(input: unknown, path: string): StatusMergeQueue {
     position: positiveInteger(body, "position", path),
     total: positiveInteger(body, "total", path),
     ahead: nullableText(body, "ahead", path),
+  };
+}
+
+function readGitHubQueue(input: unknown, path: string): StatusGitHubQueue {
+  const body = object(input, path);
+  return {
+    position: body.position === null ? null : positiveInteger(body, "position", path),
+    state: text(body, "state", path),
+    line: text(body, "line", path),
   };
 }
 

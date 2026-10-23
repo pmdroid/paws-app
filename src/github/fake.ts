@@ -156,3 +156,168 @@ export function createFakeGitHub(): FakeGitHub {
     },
   };
 }
+
+type FakeQueuedPull = {
+  id: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  head: string | null;
+  mergeSha: string | null;
+  entry: { position: number; state: string } | null;
+  lastEvent: { type: "added" } | { type: "removed"; reason: string; actor: string | null } | null;
+};
+
+export type FakeMergeQueue = {
+  /** Base branches that have a merge queue. */
+  branches: Set<string>;
+  /** Every `enqueuePullRequest` call. */
+  enqueued: { pullRequestId: string; head: string }[];
+  /** Each merge queue GraphQL read and write, in order. */
+  calls: string[];
+  /** Answer a merge queue GraphQL request, or null for any other request. */
+  respond(request: {
+    method: string;
+    path: string;
+    body?: unknown;
+  }): Promise<GitHubResponse | null>;
+  /** GitHub merged the queued pull request. */
+  merge(number: number, sha?: string): void;
+  /** GitHub, or a person when `actor` is a login, removed the pull request from the queue. */
+  remove(number: number, reason: string, actor?: string | null): void;
+  /** Move a queued pull request to a position and entry state. */
+  move(number: number, position: number, state?: string): void;
+  isQueued(number: number): boolean;
+};
+
+/**
+ * GitHub's merge queue for one repository: `repository.mergeQueue(branch:)`, the pull request's
+ * `mergeQueueEntry` and last queue event, and `enqueuePullRequest`. `headOf` gives the pull
+ * request head GitHub would report.
+ */
+export function createFakeMergeQueue(
+  options: {
+    branches?: string[];
+    headOf?: (number: number) => string | Promise<string>;
+    /** Pull requests ahead of an enqueued one. */
+    ahead?: number;
+  } = {},
+): FakeMergeQueue {
+  const pulls = new Map<number, FakeQueuedPull>();
+  const enqueued: FakeMergeQueue["enqueued"] = [];
+  const calls: string[] = [];
+  const branches = new Set(options.branches ?? ["main"]);
+  const pull = (number: number): FakeQueuedPull => {
+    let found = pulls.get(number);
+    if (!found) {
+      found = {
+        id: `PR_${number}`,
+        state: "OPEN",
+        head: null,
+        mergeSha: null,
+        entry: null,
+        lastEvent: null,
+      };
+      pulls.set(number, found);
+    }
+    return found;
+  };
+  const byId = (id: string) => [...pulls.entries()].find(([, value]) => value.id === id);
+  return {
+    branches,
+    enqueued,
+    calls,
+    async respond(request) {
+      if (request.method !== "POST" || request.path !== "/graphql") return null;
+      const body = request.body as { query?: string; variables?: Record<string, unknown> };
+      const query = body?.query ?? "";
+      const variables = body?.variables ?? {};
+      if (query.includes("query MergeQueueExists")) {
+        calls.push("exists");
+        const branch = String(variables.branch ?? "");
+        return {
+          status: 200,
+          body: {
+            data: {
+              repository: { mergeQueue: branches.has(branch) ? { id: `MQ_${branch}` } : null },
+            },
+          },
+        };
+      }
+      if (query.includes("query MergeQueueEntry")) {
+        calls.push("entry");
+        const number = Number(variables.number);
+        const value = pull(number);
+        if (options.headOf) value.head = await options.headOf(number);
+        const last = value.lastEvent;
+        return {
+          status: 200,
+          body: {
+            data: {
+              repository: {
+                pullRequest: {
+                  id: value.id,
+                  state: value.state,
+                  headRefOid: value.head ?? "0".repeat(40),
+                  baseRefName: "main",
+                  mergeCommit: value.mergeSha ? { oid: value.mergeSha } : null,
+                  mergeQueueEntry: value.entry,
+                  timelineItems: {
+                    nodes:
+                      last === null
+                        ? []
+                        : last.type === "added"
+                          ? [{ kind: "AddedToMergeQueueEvent" }]
+                          : [
+                              {
+                                kind: "RemovedFromMergeQueueEvent",
+                                reason: last.reason,
+                                actor: last.actor
+                                  ? { login: last.actor }
+                                  : { login: "github-merge-queue" },
+                              },
+                            ],
+                  },
+                },
+              },
+            },
+          },
+        };
+      }
+      if (query.includes("mutation EnqueuePullRequest")) {
+        calls.push("enqueue");
+        const id = String(variables.id);
+        const head = String(variables.head);
+        enqueued.push({ pullRequestId: id, head });
+        const found = byId(id);
+        if (!found) return { status: 200, body: { errors: [{ message: "Could not resolve" }] } };
+        const [, value] = found;
+        if (value.head !== null && value.head !== head)
+          return { status: 200, body: { errors: [{ message: "Head ref is out of date" }] } };
+        value.entry = { position: (options.ahead ?? 0) + 1, state: "QUEUED" };
+        value.lastEvent = { type: "added" };
+        return {
+          status: 200,
+          body: { data: { enqueuePullRequest: { mergeQueueEntry: value.entry } } },
+        };
+      }
+      return null;
+    },
+    merge(number, sha = `queue-merge-${number}`) {
+      const value = pull(number);
+      value.state = "MERGED";
+      value.mergeSha = sha;
+      value.entry = null;
+    },
+    remove(number, reason, actor = null) {
+      const value = pull(number);
+      value.entry = null;
+      value.lastEvent = { type: "removed", reason, actor };
+    },
+    move(number, position, state = "AWAITING_CHECKS") {
+      const value = pull(number);
+      value.entry = { position, state };
+    },
+    isQueued(number) {
+      return pulls.get(number)?.entry != null;
+    },
+  };
+}

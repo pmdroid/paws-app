@@ -25,6 +25,11 @@ export type MergeSettingsOptions = {
   /** Records each change in the audit history. */
   audit?: (action: string, subject: string) => void;
   choices?: (signal: AbortSignal) => Promise<MergeChoices>;
+  /**
+   * The configured repositories (`owner/repo`) whose base branch has a GitHub merge queue. The
+   * page offers "Add to the GitHub merge queue" only when one has.
+   */
+  githubQueues?: (signal: AbortSignal) => Promise<string[]>;
 };
 
 export const MERGE_SETTINGS_PATH = "/api/settings/merging";
@@ -64,7 +69,12 @@ export async function handleMergeSettingsRequest(
         choicesError = "Linear projects and labels could not be loaded.";
       }
     }
-    return json({ ...view(policy), choices, ...(choicesError ? { choicesError } : {}) });
+    return json({
+      ...view(policy),
+      choices,
+      ...(choicesError ? { choicesError } : {}),
+      ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
+    });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
@@ -92,6 +102,20 @@ export async function handleMergeSettingsRequest(
     current = storedMerge(config);
     before = readMergeSettings(config);
   } catch {}
+  if (options.githubQueues && usesGitHubQueue(policy) && !(before && usesGitHubQueue(before))) {
+    let repositories: string[] | null = null;
+    try {
+      repositories = await options.githubQueues(AbortSignal.timeout(10_000));
+    } catch {}
+    if (repositories !== null && repositories.length === 0)
+      return json(
+        {
+          error:
+            "No configured repository has a GitHub merge queue, so Add to the GitHub merge queue is not available.",
+        },
+        400,
+      );
+  }
   try {
     writeMergePolicy(options.configPath, policy, current);
   } catch {
@@ -99,6 +123,26 @@ export async function handleMergeSettingsRequest(
   }
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
   return json(view(policy));
+}
+
+async function githubQueueView(
+  githubQueues: (signal: AbortSignal) => Promise<string[]>,
+): Promise<{ githubQueue: { repositories: string[] } | null; githubQueueError?: string }> {
+  try {
+    return { githubQueue: { repositories: await githubQueues(AbortSignal.timeout(10_000)) } };
+  } catch {
+    return {
+      githubQueue: null,
+      githubQueueError: "Paws could not check which repositories have a GitHub merge queue.",
+    };
+  }
+}
+
+/** Whether any level chooses "Add to the GitHub merge queue". */
+function usesGitHubQueue(policy: MergePolicy): boolean {
+  return [policy.default, ...Object.values(policy.projects), ...policy.rules].some(
+    (choice) => choice.order === "github-queue",
+  );
 }
 
 function view(policy: MergePolicy) {

@@ -1,4 +1,5 @@
-// Settings → Merging against the real settings handler and a temporary config.toml.
+// Settings → Merging against the real settings handler and a temporary config.toml, and a run
+// page whose pull request waits in the GitHub merge queue.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-merge-settings-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -16,7 +17,17 @@ const MONOREPO = "0b5c1d2e-3f40-4a51-8b62-7c83d94e05f6";
 const PAYMENTS = "4179d503-3ec3-4be7-a8ef-4415a2d9b5e9";
 const snapshot = demoStatus();
 snapshot.source = "live";
+const queuedRun = snapshot.runs.find((run) => run.id === "r-102")!;
+const queuedItem = snapshot.items.find((item) => item.id === queuedRun.itemId)!;
+queuedItem.state = "merge_queue";
+queuedItem.githubQueue = {
+  position: 2,
+  state: "AWAITING_CHECKS",
+  line: "Second in the acme/platform GitHub merge queue, waiting for checks.",
+};
 const audits: string[] = [];
+/** Configured repositories whose main has a GitHub merge queue. */
+let githubQueues = ["acme/platform"];
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -38,6 +49,7 @@ const server = Bun.serve({
           ],
           labels: ["Bug", "Chore", "Feature"],
         }),
+        githubQueues: async () => githubQueues,
       })) ??
       (await handleStatusRequest(request, {
         provider: { snapshot: () => snapshot },
@@ -57,6 +69,7 @@ const browser = await chromium.launch({
 const errors: string[] = [];
 try {
   for (const width of [1440, 390]) {
+    githubQueues = ["acme/platform"];
     writeFileSync(
       configPath,
       `[merge]\norder = "queue"\nmain_moved = "overlap"\n\n[merge.projects."${PAWS}"]\n\n[merge.projects."${MONOREPO}"]\norder = "github-queue"\nmain_moved = "overlap"\n`,
@@ -68,6 +81,10 @@ try {
     await expect(page.getByRole("heading", { name: "Workspace default" })).toBeVisible();
     await expect(page.locator("#project-0-main")).toBeDisabled();
     await expect(page.locator("#project-1-order")).toHaveValue("github-queue");
+    await expect(page.locator("#project-1-order-help")).toHaveText(
+      "GitHub's merge queue on acme/platform. A repository without one merges each pull request when its CI is green.",
+    );
+    await expect(page.locator('#default-order option[value="github-queue"]')).toHaveCount(1);
 
     // Payments: run Closeout again after a branch update.
     await page.locator("#merge-new-project").selectOption(PAYMENTS);
@@ -96,6 +113,35 @@ try {
       .toBe(true);
     await page.evaluate(() => scrollTo(0, 0));
     await page.screenshot({ path: join(directory, `merging-${width}.png`), fullPage: true });
+
+    // Without a merge queue in any repository, only a level that already uses it keeps the choice.
+    githubQueues = [];
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Workspace default" })).toBeVisible();
+    await expect(page.locator('#default-order option[value="github-queue"]')).toHaveCount(0);
+    await expect(page.locator('#project-2-order option[value="github-queue"]')).toHaveCount(0);
+    await expect(page.locator("#project-1-order-help")).toContainText(
+      "No configured repository has a GitHub merge queue",
+    );
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.screenshot({
+      path: join(directory, `merging-no-github-queue-${width}.png`),
+      fullPage: true,
+    });
+
+    await page.goto(`http://127.0.0.1:${server.port}/status/runs/r-102`);
+    await expect(
+      page.getByRole("heading", {
+        name: "Second in the acme/platform GitHub merge queue, waiting for checks.",
+      }),
+    ).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+      .toBe(true);
+    await page.screenshot({
+      path: join(directory, `run-github-queue-${width}.png`),
+      fullPage: true,
+    });
     await page.close();
   }
   expect(errors).toEqual([]);

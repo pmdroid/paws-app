@@ -81,6 +81,7 @@ import {
   type StatusCloseoutAttempt,
   type StatusEvent,
   type StatusEvidence,
+  type StatusGitHubQueue,
   type StatusItem,
   type StatusMergeQueue,
   type StatusMergeEntry,
@@ -212,7 +213,18 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     }),
   );
   const items = records.map((record) =>
-    toItem(db, record, rows, runs, options.project?.repo, itemsByIssue, facts, queue, merging),
+    toItem(
+      db,
+      record,
+      rows,
+      runs,
+      options.project?.repo,
+      itemsByIssue,
+      facts,
+      queue,
+      merging,
+      jobs,
+    ),
   );
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -324,6 +336,7 @@ function toItem(
   facts: ReadonlyMap<string, WorkItemFact>,
   queue: ReadonlyMap<string, QueuePosition>,
   merging: ReadonlyMap<string, StatusMergeQueue>,
+  jobs: readonly Job[],
 ): StatusItem {
   const id = publicId(record);
   const runId = linkedRunId(record, runs);
@@ -331,6 +344,8 @@ function toItem(
   const fact = facts.get(record.id);
   const waiting = record.state === "queued" ? queue.get(record.id) : undefined;
   const mergeQueue = record.state === "merge_queue" ? merging.get(record.id) : undefined;
+  const githubQueue =
+    record.state === "merge_queue" ? githubQueueOf(mergeJob(record.id, jobs)) : undefined;
   return {
     id,
     title: textOr(record.title, id),
@@ -355,7 +370,25 @@ function toItem(
         }
       : {}),
     ...(mergeQueue ? { mergeQueue } : {}),
+    ...(githubQueue ? { githubQueue } : {}),
   };
+}
+
+/** What the merge job last saw of the pull request in GitHub's merge queue. */
+function githubQueueOf(job: Job | undefined): StatusGitHubQueue | undefined {
+  if (job === undefined || (job.status !== "pending" && job.status !== "running")) return undefined;
+  const payload = job.payload;
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const value = (payload as Record<string, unknown>).githubQueue;
+  if (typeof value !== "object" || value === null) return undefined;
+  const watch = value as Record<string, unknown>;
+  if (watch.queued !== true || typeof watch.line !== "string" || typeof watch.state !== "string")
+    return undefined;
+  const position =
+    typeof watch.position === "number" && Number.isInteger(watch.position) && watch.position >= 1
+      ? watch.position
+      : null;
+  return { position, state: watch.state, line: watch.line };
 }
 
 function runsFor(

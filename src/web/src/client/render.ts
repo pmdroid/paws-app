@@ -278,6 +278,7 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
     </div>
     ${queueNotice(item)}
     ${mergeQueueNotice(item)}
+    ${githubQueueNotice(item)}
     <h3>Runs</h3>
     ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><div class="between"><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a>${statePill(run.state, runLabel(run.state))}</div></li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
     <h3>Blocked by</h3>
@@ -359,6 +360,7 @@ function viewRuns(
     ${phaseStrip(item, selected, verdict, agent)}
     ${item ? queueNotice(item) : ""}
     ${item ? mergeQueueNotice(item) : ""}
+    ${item ? githubQueueNotice(item) : ""}
     ${selected.usagePause ? usagePauseSection(selected, selected.usagePause) : executionControls(selected)}
     ${snapshot.questions
       .filter((question) => question.itemId === selected.itemId)
@@ -404,6 +406,13 @@ function mergeQueueNotice(item: StatusItem): string {
       ? "This pull request moves now: Paws updates its branch onto main if main moved, waits for CI on that commit, and merges it."
       : `${queue.ahead ?? "The task ahead"} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
   return `<section class="closeout-result queue-notice" aria-labelledby="merge-queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${queue.position}</span><div><h3 id="merge-queue-${esc(item.id)}">${esc(mergeQueueLine(queue))}</h3><p>${esc(detail)}</p></div></section>`;
+}
+
+/** Where the item's pull request stands in its repository's GitHub merge queue. */
+function githubQueueNotice(item: StatusItem): string {
+  if (item.state !== "merge_queue" || !item.githubQueue) return "";
+  const queue = item.githubQueue;
+  return `<section class="closeout-result queue-notice" aria-labelledby="github-queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${queue.position ?? "–"}</span><div><h3 id="github-queue-${esc(item.id)}">${esc(queue.line)}</h3><p>GitHub updates, batches and tests this pull request with the others in its merge queue. Paws does not rebase it or run Closeout again.</p></div></section>`;
 }
 
 /** The transcript and the run's own links, as one row of buttons above the log. */
