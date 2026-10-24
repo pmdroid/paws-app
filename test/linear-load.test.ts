@@ -52,7 +52,7 @@ test("100 tasks stay under 1,700 Linear requests and spend none while they wait 
   const ledger = createLinearLedger({
     now: () => clock.now(),
     log: () => {},
-    countItem: (itemId) => countLinearRequest(db, itemId),
+    countItem: (itemId, caller) => countLinearRequest(db, itemId, caller),
   });
   const runner = seedRunner(db, clock.now());
   let requests = 0;

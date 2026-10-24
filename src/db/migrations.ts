@@ -2421,4 +2421,15 @@ CREATE TABLE item_hold (
 DELETE FROM job WHERE queue = 'execution.reconcile';
 `,
   },
+  {
+    id: "123_linear_item_caller_request",
+    sql: `
+CREATE TABLE linear_item_caller_request (
+  item_id TEXT NOT NULL,
+  caller TEXT NOT NULL,
+  requests INTEGER NOT NULL,
+  PRIMARY KEY (item_id, caller)
+) STRICT;
+`,
+  },
 ];
