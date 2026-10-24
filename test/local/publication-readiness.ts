@@ -34,7 +34,7 @@ import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/lin
 import { createAdmission } from "../../src/scheduler";
 
 function mergeAdmission(db: Database) {
-  const admission = createAdmission({ db, managed: true });
+  const admission = createAdmission({ db });
   return (itemId: string) => admission.canMerge(itemId).ok;
 }
 
