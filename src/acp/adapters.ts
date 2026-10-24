@@ -93,6 +93,19 @@ export function adapterBinPath(
   return installedLauncher(root, bin, runnerBase) ?? join(root, "node_modules", ".bin", bin);
 }
 
+/**
+ * The `claude` or `codex` CLI the runner starts for a sign-in check or a usage read. On a runner
+ * release this is the installed launcher's absolute path, so it does not depend on `PATH`. In a
+ * checkout it stays the bare name: the developer's own CLI from their `PATH`.
+ */
+export function providerCliPath(
+  cli: "claude" | "codex",
+  root: string = pawsPackageRoot(),
+  runnerBase: string = RUNNER_BASE,
+): string {
+  return installedLauncher(root, cli, runnerBase) ?? cli;
+}
+
 /** Versions installed by `bun install`, for doctor. */
 export function adapterVersions(root: string = pawsPackageRoot()): AdapterVersions {
   return {

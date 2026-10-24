@@ -9,6 +9,7 @@ export {
   GROK_LOGIN_MESSAGE,
   pawsPackageRoot,
   pinnedAdapters,
+  providerCliPath,
   rejectAutoApprove,
   resolveAdapter,
   resolveGrokCommand,

@@ -115,6 +115,11 @@ export interface RunAgentOptions {
    * for Closeout checks, as they already are in `env` for the agent.
    */
   runtimeBinPaths?: readonly string[];
+  /**
+   * `PATH` Closeout checks start from, before `runtimeBinPaths`. Without it they inherit this
+   * process's `PATH`. The runner sets it so checks do not see the runner's own Bun.
+   */
+  closeoutBasePath?: string;
   checkpointEnv?: NodeJS.ProcessEnv;
   checkpointIdentity?: GitCommitIdentity;
   commitPolicy?: GitCommitPolicy;
