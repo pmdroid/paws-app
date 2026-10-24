@@ -414,7 +414,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       ? openLinear({
           db,
           signal: abort.signal,
-          countItemRequest: (itemId) => countLinearRequest(db, itemId),
+          countItemRequest: (itemId, caller) => countLinearRequest(db, itemId, caller),
           secretsDir: paths.secretsDir,
           isAuthorized: () =>
             !isLinearAppRevoked(db, {
