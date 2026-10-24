@@ -173,6 +173,54 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(result.item).toMatchObject({ awakeMs: 29 * MINUTE, recheckMs: 32 * MINUTE });
   });
 
+  test("a task an older Paws already moved back to verifying is protected after the upgrade", () => {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const accepted = insertQueuedItem(db, {
+      id: "eng-1",
+      sessionKey: "a",
+      maxAwakeMs: 30 * MINUTE,
+      now: 0,
+    });
+    beginImplementRun(db, accepted.id, clock.now());
+    applyWorkItemEvent(db, accepted.id, "turn_ended");
+    applyWorkItemEvent(db, accepted.id, "closeout_accepted");
+    saveCheckpoint(db, accepted.id, {
+      phase: "merge_queue",
+      baseSha: "base",
+      wipCommit: "accepted",
+    });
+    const fresh = insertQueuedItem(db, {
+      id: "eng-2",
+      sessionKey: "b",
+      maxAwakeMs: 30 * MINUTE,
+      now: 0,
+    });
+    beginImplementRun(db, fresh.id, clock.now());
+    applyWorkItemEvent(db, fresh.id, "turn_ended");
+    saveCheckpoint(db, fresh.id, { phase: "verifying", baseSha: "base", wipCommit: "unchecked" });
+    db.run("UPDATE work_item SET accepted_head = NULL");
+    recoverOnStartup(db, clock.now());
+    expect(getWorkItem(db, accepted.id)).toMatchObject({
+      state: "verifying",
+      checkpoint: { phase: "verifying" },
+    });
+    for (const column of ["accepted_head", "agent_ms", "closeout_ms", "waiting_ms", "recheck_ms"])
+      db.run(`ALTER TABLE work_item DROP COLUMN ${column}`);
+    db.run("DELETE FROM schema_migration WHERE id = '115_work_item_awake_breakdown'");
+    db.run("UPDATE work_item SET awake_ms = ? WHERE id = ?", [29 * MINUTE, accepted.id]);
+
+    migrate(db);
+    expect(getWorkItem(db, accepted.id)?.acceptedHead).toBe("accepted");
+    expect(getWorkItem(db, fresh.id)?.acceptedHead).toBeNull();
+    accrueAwake(db, accepted.id, clock.mono(), clock.now());
+    clock.advance(32 * MINUTE);
+    const result = accrueAwake(db, accepted.id, clock.mono(), clock.now());
+    expect(result.capped).toBe(false);
+    expect(result.item).toMatchObject({ awakeMs: 29 * MINUTE, recheckMs: 32 * MINUTE });
+  });
+
   test("without a Linear session, a resumed agent at the cap pauses instead of failing", () => {
     const { clock, db, item, run } = acceptedItem(30 * MINUTE);
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);

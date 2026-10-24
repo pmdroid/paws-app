@@ -2369,7 +2369,11 @@ ALTER TABLE work_item ADD COLUMN recheck_ms INTEGER NOT NULL DEFAULT 0;
 UPDATE work_item SET accepted_head = json_extract(checkpoint, '$.wipCommit')
 WHERE checkpoint IS NOT NULL AND json_valid(checkpoint)
   AND json_extract(checkpoint, '$.wipCommit') IS NOT NULL
-  AND (state = 'merge_queue' OR json_extract(checkpoint, '$.phase') = 'merge_queue');
+  AND (state = 'merge_queue' OR json_extract(checkpoint, '$.phase') = 'merge_queue'
+    OR (state = 'verifying' AND EXISTS (
+      SELECT 1 FROM job WHERE job.queue = 'run.reverify' AND job.job_key LIKE 'reverify:%'
+        AND job.status IN ('pending', 'running')
+        AND json_extract(job.payload, '$.itemId') = work_item.id)));
 `,
   },
 ];
