@@ -108,3 +108,13 @@ function toVerdict(result: GateResult, attempt: number): CloseoutVerdict {
     result.decision?.decision === "rejected" ? "rejected" : "blocked";
   return { decision, exhausted, summary, result };
 }
+
+export function awaitsVisualReview(result: GateResult | undefined): boolean {
+  if (result?.outcome !== "blocked") return false;
+  const open = (result.decision?.items ?? []).filter(
+    (item) => item.state !== "passed" && item.state !== "failed" && item.state !== "skipped",
+  );
+  return (
+    open.length > 0 && open.every((item) => item.kind === "evidence" && item.state === "missing")
+  );
+}

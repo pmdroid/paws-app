@@ -7,7 +7,7 @@ export {
 } from "../closeout-spec";
 export { createFakeCloseoutGate } from "./fake";
 export type { FakeCloseoutGate } from "./fake";
-export { createCloseoutGate } from "./gate";
+export { awaitsVisualReview, createCloseoutGate } from "./gate";
 export type { CloseoutDecision, CloseoutGate, CloseoutRunInput, CloseoutVerdict } from "./gate";
 export type { CloseoutGateOptions } from "./gate";
 export type { FixRequest, FixResult, FixRunner } from "./fixer";
