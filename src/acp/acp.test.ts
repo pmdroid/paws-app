@@ -295,6 +295,43 @@ test.each([
   expect(trace.methods).not.toContain("authenticate");
 });
 
+test.each([
+  {
+    options: [{ label: "Accept as a pre-existing runner failure and proceed", value: "proceed" }],
+    error: "at most 24 characters",
+  },
+  { options: ["Retry", "Accept", "Split", "Stop"], error: "at most 3 options" },
+])("ask_team refuses options Linear would show as a dropdown: %j", async ({ options, error }) => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [{ type: "ask_team", question: "How should the test check go?", options }],
+  });
+  let asked = false;
+  await runAgent({
+    role: "reviewer",
+    itemId: "ENG-1",
+    runId: "run-ask-long",
+    prompt: "need a decision",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    askTeam: {
+      async ask() {
+        asked = true;
+        return { answer: "retry" };
+      },
+    },
+    onEvent: () => undefined,
+  });
+  const trace = await readResult(files.resultPath);
+  expect(asked).toBe(false);
+  expect(trace.askTeam?.ok).toBe(false);
+  expect(trace.askTeam?.error).toContain(error);
+});
+
 for (const capability of ["image", "embeddedContext", "fallback"] as const) {
   test(`agent input files use negotiated ${capability} prompt content`, async () => {
     const layout = await layoutRepo();
