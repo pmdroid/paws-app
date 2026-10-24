@@ -68,9 +68,29 @@ export function pawsPackageRoot(start: string = import.meta.dir): string {
   throw new Error(`paws package root was not found from ${start}`);
 }
 
-/** Absolute path of the package bin. This does not search PATH. */
-export function adapterBinPath(role: AgentRole, root: string = pawsPackageRoot()): string {
-  return join(root, "node_modules", ".bin", PINS[role].bin);
+/** Runner install root: releases under `releases/`, `current` points at one, agent launchers in `bin/`. */
+export const RUNNER_BASE = "/opt/paws-runner";
+
+/**
+ * The installed launcher for `bin` when `root` is a runner release, which has no agents in its own
+ * `node_modules` (`deploy/linux/install.py` installs them). The launcher runs the agent's current
+ * version and holds that version for the session.
+ */
+function installedLauncher(root: string, bin: string, base: string): string | null {
+  if (!root.startsWith(`${base}/releases/`) && root !== `${base}/current`) return null;
+  if (existsSync(join(root, "node_modules", ".bin", bin))) return null;
+  const launcher = join(base, "bin", bin);
+  return existsSync(launcher) ? launcher : null;
+}
+
+/** Absolute path of the package bin, or a runner's installed launcher. This does not search PATH. */
+export function adapterBinPath(
+  role: AgentRole,
+  root: string = pawsPackageRoot(),
+  runnerBase: string = RUNNER_BASE,
+): string {
+  const bin = PINS[role].bin;
+  return installedLauncher(root, bin, runnerBase) ?? join(root, "node_modules", ".bin", bin);
 }
 
 /** Versions installed by `bun install`, for doctor. */
@@ -119,6 +139,7 @@ export function resolveAdapter(
 export function resolveGrokCommand(
   agents?: AgentsConfig,
   packageRoot: string = pawsPackageRoot(),
+  runnerBase: string = RUNNER_BASE,
 ): GrokCommand {
   const args = [...GROK_AGENT_ARGS];
   rejectAutoApprove(args);
@@ -133,6 +154,8 @@ export function resolveGrokCommand(
     }
     return { command: configured, args, error: null };
   }
+  const launcher = installedLauncher(packageRoot, "grok", runnerBase);
+  if (launcher) return { command: launcher, args, error: null };
   const command = join(packageRoot, "node_modules", ".bin", "grok");
   if (!existsSync(command)) {
     return {
