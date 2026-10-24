@@ -190,6 +190,8 @@ describe("one page per issue", () => {
     expect(own).toContain('shared with <a class="lin-id" href="/issues/PAS-368">PAS-368</a>');
     expect(sibling).toContain('shared with <a class="lin-id" href="/issues/PAS-367">PAS-367</a>');
     expect(sibling).not.toContain("First turn read the issue.");
+    // The session link opens the issue delegated first in it.
+    expect(issueRedirect(`/sessions/${SESSION}`, snapshot)).toBe("/issues/PAS-367");
   });
 
   test("the page names the task only as PAS-367, with no internal id in visible text", () => {
