@@ -239,7 +239,7 @@ test("each task on /api/status carries the Linear requests it made", async () =>
     migrate(db);
     insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: NOW });
     insertQueuedItem(db, { id: "item-2", sessionKey: "ses_2", now: NOW });
-    for (let request = 0; request < 3; request++) countLinearRequest(db, "item-1");
+    for (let request = 0; request < 3; request++) countLinearRequest(db, "item-1", "outbox");
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
       db,
       env: {},
