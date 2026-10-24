@@ -324,7 +324,7 @@ function throughAncestors(
     const remainder = parts.slice(cut).join("/");
     const entry = entryAt(git, repo, commit, prefix);
     if ("ok" in entry) return entry;
-    if (entry.kind === "absent") continue;
+    if (entry.kind === "absent" || entry.kind === "directory") continue;
     if (entry.kind === "file") return { kind: "missing" };
     if (entry.target.length === 0 || entry.target.includes("\0"))
       return { ok: false, message: `skill link is broken: ${prefix}` };
@@ -346,6 +346,7 @@ function throughAncestors(
 
 type Entry =
   | { kind: "absent" }
+  | { kind: "directory" }
   | { kind: "file" }
   | { kind: "link"; target: string }
   | { ok: false; message: string };
@@ -354,7 +355,7 @@ function entryAt(git: GitReader, repo: string, commit: string, path: string): En
   const listed = git.listBlobs(repo, commit, path);
   if (!listed.ok) return { ok: false, message: "could not read the policy file" };
   const exact = listed.blobs.find((entry) => entry.path === path);
-  if (exact === undefined) return { kind: "absent" };
+  if (exact === undefined) return { kind: listed.blobs.length > 0 ? "directory" : "absent" };
   if (exact.mode !== "120000") return { kind: "file" };
   const read = git.readBlob(repo, exact.object);
   if (!read.ok) return { ok: false, message: "could not read the policy file" };
@@ -415,8 +416,8 @@ function directoryAt(
   for (let hops = 0; current !== ""; hops += 1) {
     const entry = entryAt(git, repo, commit, current);
     if ("ok" in entry) return entry;
-    if (entry.kind === "absent") break;
-    if (entry.kind === "file") return { ok: false, message: `skill link is broken: ${linkPath}` };
+    if (entry.kind === "directory") break;
+    if (entry.kind !== "link") return { ok: false, message: `skill link is broken: ${linkPath}` };
     if (entry.target.length === 0 || entry.target.includes("\0"))
       return { ok: false, message: `skill link is broken: ${current}` };
     if (depth + hops >= LINK_DEPTH) return { ok: false, message: `skill link loops: ${current}` };
