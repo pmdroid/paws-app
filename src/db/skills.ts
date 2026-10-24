@@ -115,6 +115,7 @@ export type RunnerSkillStatus = {
   sha256: string;
   status: "installed" | "pending" | "refused";
   error: string | null;
+  waiting: number | null;
   reportedAt: number;
 };
 
@@ -122,13 +123,16 @@ export type RunnerSkillStatus = {
 export function recordRunnerSkills(
   db: Database,
   runnerId: string,
-  skills: readonly (Omit<RunnerSkillStatus, "reportedAt" | "error"> & { error?: string })[],
+  skills: readonly (Omit<RunnerSkillStatus, "reportedAt" | "error" | "waiting"> & {
+    error?: string;
+    waiting?: number;
+  })[],
   reportedAt: number,
 ): void {
   db.run("DELETE FROM runner_skill WHERE runner_id=?", [runnerId]);
   for (const skill of skills)
     db.run(
-      "INSERT INTO runner_skill(runner_id,name,version,sha256,status,error,reported_at) VALUES(?,?,?,?,?,?,?)",
+      "INSERT INTO runner_skill(runner_id,name,version,sha256,status,error,waiting,reported_at) VALUES(?,?,?,?,?,?,?,?)",
       [
         runnerId,
         skill.name,
@@ -136,6 +140,7 @@ export function recordRunnerSkills(
         skill.sha256,
         skill.status,
         skill.status === "refused" ? (skill.error ?? null) : null,
+        skill.status === "pending" ? (skill.waiting ?? null) : null,
         reportedAt,
       ],
     );
@@ -148,7 +153,7 @@ export function recordRunnerSkills(
 export function listRunnerSkills(db: Database, runnerId: string): RunnerSkillStatus[] {
   return db
     .query<RunnerSkillStatus, [string]>(
-      "SELECT name,version,sha256,status,error,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
+      "SELECT name,version,sha256,status,error,waiting,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
     )
     .all(runnerId);
 }
@@ -161,6 +166,7 @@ export type RunnerSkillView = {
   installedVersion: string | null;
   state: RunnerSkillState;
   error: string | null;
+  waiting: number | null;
   reportedAt: number | null;
 };
 
@@ -193,6 +199,7 @@ export function runnerSkillStates(
         installedVersion: row && row.status !== "refused" ? row.version : null,
         state,
         error: state === "failed" ? row!.error : null,
+        waiting: current && state === "installing" ? row.waiting : null,
         reportedAt: row?.reportedAt ?? null,
       };
     });
@@ -203,6 +210,7 @@ export type SkillRollout = {
   total: number;
   upToDate: number;
   installing: string[];
+  waiting: { runner: string; tasks: number }[];
   outOfDate: string[];
   failed: string[];
 };
@@ -221,7 +229,15 @@ export function skillRollouts(
       .filter((entry) => entry.removedAt === null)
       .map((entry) => [
         entry.name,
-        { name: entry.name, total: 0, upToDate: 0, installing: [], outOfDate: [], failed: [] },
+        {
+          name: entry.name,
+          total: 0,
+          upToDate: 0,
+          installing: [],
+          waiting: [],
+          outOfDate: [],
+          failed: [],
+        },
       ]),
   );
   for (const runner of runners)
@@ -229,6 +245,7 @@ export function skillRollouts(
       const rollout = rollouts.get(skill.name)!;
       rollout.total += 1;
       if (skill.state === "up_to_date") rollout.upToDate += 1;
+      else if (skill.waiting) rollout.waiting.push({ runner: runner.name, tasks: skill.waiting });
       else if (skill.state === "installing") rollout.installing.push(runner.name);
       else if (skill.state === "out_of_date") rollout.outOfDate.push(runner.name);
       else rollout.failed.push(runner.name);
