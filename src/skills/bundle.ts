@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { withTarModes } from "../runner-protocol";
+
+export type SkillFile = Uint8Array & { executable?: true };
 
 /** Skill files keyed by their path inside the skill folder, `/`-separated. */
-export type SkillFiles = Map<string, Uint8Array>;
+export type SkillFiles = Map<string, SkillFile>;
+
+export function skillFile(bytes: Uint8Array, mode: number): SkillFile {
+  return mode & 0o111 ? Object.assign(bytes, { executable: true as const }) : bytes;
+}
 
 export type SkillBundle = { path: string; sha256: string; sizeBytes: number };
 
@@ -74,7 +81,7 @@ export function readSkillFolder(
       } else if (stat.isFile() && under(path)) {
         size += stat.size;
         if (size > limit) throw tooLarge(limit);
-        files.set(path, readFileSync(full));
+        files.set(path, skillFile(readFileSync(full), stat.mode));
       }
     }
   };
@@ -143,8 +150,13 @@ export async function writeSkillBundle(
   if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(options.version))
     throw new SkillError("The resolved version is not a usable folder name.");
   const entries: Record<string, Uint8Array> = {};
-  for (const path of [...files.keys()].sort()) entries[path] = files.get(path)!;
-  const bytes = await new Bun.Archive(entries, { compress: "gzip" }).bytes();
+  const executables = new Map<string, number>();
+  for (const path of [...files.keys()].sort()) {
+    entries[path] = files.get(path)!;
+    if (files.get(path)!.executable) executables.set(path, 0o755);
+  }
+  const tar = await new Bun.Archive(entries).bytes();
+  const bytes = Bun.gzipSync(withTarModes(tar, executables));
   if (bytes.byteLength > limit) throw tooLarge(limit);
   const dir = join(options.root, options.name, options.version);
   mkdirSync(dir, { recursive: true, mode: 0o700 });

@@ -3,10 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SkillSource } from "../db";
+import { tarModes } from "../runner-protocol";
 import {
   readSkillFolder,
   SKILL_BUNDLE_LIMIT,
   SkillError,
+  skillFile,
   skillPath,
   skillSubfolder,
   tooLarge,
@@ -101,13 +103,15 @@ async function resolveNpm(
   if (!integrityMatches(bytes, dist))
     throw new SkillError(`The ${name}@${version} tarball does not match its npm checksum.`, 502);
   const files: SkillFiles = new Map();
+  const modes = tarModes(bytes);
   let size = 0;
   for (const [path, file] of await new Bun.Archive(bytes).files()) {
     size += file.size;
     if (size > context.limit) throw tooLarge(context.limit);
     // npm packs everything under one top folder, normally `package/`.
     const inner = path.replace(/^[^/]+\//, "");
-    if (inner !== path) files.set(inner, new Uint8Array(await file.arrayBuffer()));
+    if (inner !== path)
+      files.set(inner, skillFile(new Uint8Array(await file.arrayBuffer()), modes.get(path) ?? 0));
   }
   return {
     source: {

@@ -19,12 +19,13 @@ import {
   RUNNER_SKILL_FOLDERS,
   RunnerSkillManifestSchema,
   runnerSkillPath,
+  tarModes,
   type RunnerInstalledSkill,
   type RunnerSkill,
   type RunnerSkillAgent,
 } from "../runner-protocol";
 
-type Installed = { version: string; sha256: string; agents: RunnerSkillAgent[] };
+type Installed = { version: string; sha256: string; agents: RunnerSkillAgent[]; modes?: true };
 type Refused = { name: string; version: string; sha256: string; at: number; error?: string };
 type State = {
   /** Skills every idle home should have. A refused update keeps the previous version here. */
@@ -80,7 +81,8 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     writeFileSync(partial, JSON.stringify(state), { mode: 0o600 });
     renameSync(partial, statePath);
   }
-  const bundlePath = (sha256: string) => join(bundles, sha256);
+  const unpackedName = (sha256: string) => `${sha256}.modes`;
+  const bundlePath = (sha256: string) => join(bundles, unpackedName(sha256));
 
   /** Check the bytes against the manifest and keep the unpacked files under `bundles/<sha256>/`. */
   async function fetchBundle(skill: RunnerSkill) {
@@ -92,6 +94,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
         `Skill ${skill.name} ${skill.version} failed its checksum and was not installed.`,
       );
     const files = await new Bun.Archive(bytes).files();
+    const modes = tarModes(bytes);
     const partial = join(bundles, `${skill.sha256}.${randomUUID()}.partial`);
     try {
       let size = 0;
@@ -103,7 +106,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
           throw new Error(`Skill ${skill.name} is over the bundle limit.`);
         mkdirSync(dirname(join(partial, safe)), { recursive: true, mode: 0o700 });
         writeFileSync(join(partial, safe), new Uint8Array(await file.arrayBuffer()), {
-          mode: 0o600,
+          mode: privateMode(modes.get(path) ?? 0),
           flag: "wx",
         });
       }
@@ -141,7 +144,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       if (lstatSync(source).isDirectory()) copyTree(source, target);
       else {
         copyFileSync(source, target, constants.COPYFILE_EXCL);
-        chmodSync(target, 0o644);
+        chmodSync(target, privateMode(lstatSync(source).mode));
         lchownSync(target, options.owner.uid, options.owner.gid);
       }
     }
@@ -187,9 +190,14 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
         for (const agent of have?.agents ?? [])
           if (!skill.agents.includes(agent)) removeFolder(home, agent, skill.name);
         for (const agent of skill.agents)
-          if (have?.sha256 !== skill.sha256 || !have.agents.includes(agent))
+          if (have?.sha256 !== skill.sha256 || !have.modes || !have.agents.includes(agent))
             installFolder(home, agent, skill);
-        next[skill.name] = { version: skill.version, sha256: skill.sha256, agents: skill.agents };
+        next[skill.name] = {
+          version: skill.version,
+          sha256: skill.sha256,
+          agents: skill.agents,
+          modes: true,
+        };
       } catch (error) {
         report(error);
         if (have) next[skill.name] = have;
@@ -247,7 +255,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     saveState();
     for (const home of Object.keys(state.homes)) if (!existsSync(home)) delete state.homes[home];
     for (const home of homes()) applyHome(home);
-    const keep = new Set(desired.map((skill) => skill.sha256));
+    const keep = new Set(desired.map((skill) => unpackedName(skill.sha256)));
     for (const entry of readdirSync(bundles))
       if (!keep.has(entry)) rmSync(join(bundles, entry), { recursive: true, force: true });
     saveState();
@@ -300,7 +308,10 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       );
       for (const skill of state.desired) {
         if (reported.some((entry) => entry.name === skill.name)) continue;
-        const behind = (home: string) => state.homes[home]?.[skill.name]?.sha256 !== skill.sha256;
+        const behind = (home: string) => {
+          const entry = state.homes[home]?.[skill.name];
+          return entry?.sha256 !== skill.sha256 || !entry?.modes;
+        };
         const waiting = [...holds.values()].filter(behind).length;
         reported.push({
           name: skill.name,
@@ -313,6 +324,10 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       return reported;
     },
   };
+}
+
+function privateMode(mode: number): number {
+  return mode & 0o111 ? 0o700 : 0o600;
 }
 
 function installError(error: unknown): string {
