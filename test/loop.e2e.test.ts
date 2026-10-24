@@ -30,9 +30,7 @@ import {
   saveCheckpoint,
   recoverOnStartup,
   listJobs,
-  listMergeQueues,
   listCloseoutRecoveries,
-  listCiRounds,
   listCloseoutRounds,
   listRuns,
   listArtifacts,
@@ -40,7 +38,6 @@ import {
   listOutbox,
   migrate,
   openDatabase,
-  type CiRound,
 } from "../src/db";
 import {
   createFakeGitHub,
@@ -2581,286 +2578,6 @@ test.each(["pending", "merged"] as const)(
   120_000,
 );
 
-type MergeQueueRun = {
-  /** Identifiers in the order their pull requests merged. */
-  merged: string[];
-  /** Identifiers in queue order once every queued task was ready, with CI still held. */
-  queued: string[];
-  /** Merged while the queue was held. */
-  mergedWhileHeld: string[];
-  /** States when the run stopped. */
-  states: Record<string, string | null>;
-  /** `ci-failed` returns to the agent, by identifier. */
-  ciReturns: string[];
-  bodies: string[];
-  summaries: string[];
-  notifying: string[];
-  detail: string;
-};
-
-/**
- * Separate issues in one repository. Each writes its own file, so a branch update is clean. CI is
- * held (pending) for every queued task until they are all in the queue. `review` tasks report
- * REVIEW_REQUIRED until approved after the others merged; `hotfix` tasks use Merge each when green.
- * With `failFirstCi`, the first candidate CI runs on after the hold fails, and stays failed.
- */
-async function runMergeQueue(options: {
-  queue: string[];
-  review?: string[];
-  hotfix?: string[];
-  failFirstCi?: boolean;
-}): Promise<MergeQueueRun> {
-  const layout = await repoLayout("paws-e2e-");
-  const all = [...options.queue, ...(options.review ?? []), ...(options.hotfix ?? [])];
-  const issueId = (identifier: string) => `mq-${identifier}`;
-  const tracker = createFakeTracker(
-    all.map((identifier) => ({
-      linearIssueId: issueId(identifier),
-      identifier,
-      title: `Write ${identifier}.txt`,
-      description: null,
-      subIssues: [],
-    })),
-  );
-  await writeFile(
-    path.join(layout.pawsRoot, "config.toml"),
-    '[[merge.rules]]\nlabel = "Hotfix"\norder = "ci-green"\n',
-  );
-  for (const identifier of options.hotfix ?? [])
-    tracker.mergeContexts.set(issueId(identifier), { projectId: null, labels: ["Hotfix"] });
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
-  const queuedSummary = queuedSummaries(db);
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
-  const github = createFakeGitHub();
-  const client = githubClient(layout.bare, github);
-  const awaitingReview = new Set(options.review ?? []);
-  const failedHeads = new Set<string>();
-  let held = true;
-  const pullOf = (number: number) =>
-    /^Fixes (\S+)/.exec(github.opened[number - 1]?.body ?? "")?.[1] ?? "";
-  const turns = new Map<string, number>();
-  let sequence = 0;
-  const orchestrator = attachOrchestrator({
-    db,
-    jobs,
-    outbox,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    // The runner scheduler with free slots: every ready task starts, so they all reach the queue.
-    scheduling: () => ({}),
-    github: {
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: PRIVATE_KEY,
-      client: {
-        async request(req) {
-          if (req.path !== "/graphql") return client.request(req);
-          const variables = (req.body as { variables: { number: number; head?: string } })
-            .variables;
-          const identifier = pullOf(variables.number);
-          if (variables.head === undefined)
-            return {
-              status: 200,
-              body: {
-                data: {
-                  repository: {
-                    pullRequest: {
-                      reviewDecision: awaitingReview.has(identifier) ? "REVIEW_REQUIRED" : null,
-                    },
-                  },
-                },
-              },
-            };
-          const body = fakeMergeReadiness(variables.head);
-          if (held && !(options.hotfix ?? []).includes(identifier))
-            body.data.repository.object.statusCheckRollup.contexts.nodes = [
-              { name: "ci", conclusion: null },
-            ];
-          else if (options.failFirstCi && failedHeads.size === 0) {
-            failedHeads.add(variables.head);
-            body.data.repository.object.statusCheckRollup.contexts.nodes = [
-              { name: "ci", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" },
-            ];
-          } else if (failedHeads.has(variables.head))
-            body.data.repository.object.statusCheckRollup.contexts.nodes = [
-              { name: "ci", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" },
-            ];
-          return { status: 200, body };
-        },
-      },
-    },
-    launch(input) {
-      sequence += 1;
-      const identifier = sourceIdentifier(input.itemId);
-      const scriptPath = path.join(layout.root, `mq-${sequence}.json`);
-      const resultPath =
-        input.purpose === "implement" ? path.join(layout.root, `mq-result-${sequence}.json`) : "";
-      const turn = turns.get(identifier) ?? 0;
-      if (input.purpose === "implement") turns.set(identifier, turn + 1);
-      const steps: FakeScript["steps"] =
-        input.purpose === "implement"
-          ? [
-              {
-                type: "fs_write",
-                path: path.join(input.worktree, `${identifier}.txt`),
-                content: `turn ${turn}\n`,
-              },
-              { type: "end" },
-            ]
-          : emptyReview().steps;
-      writeFileSync(
-        scriptPath,
-        JSON.stringify({
-          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
-          steps,
-        }),
-      );
-      return {
-        command: process.execPath,
-        args: [fakeAgent, resultPath, scriptPath],
-        env: process.env,
-      };
-    },
-  });
-  const merged = () =>
-    github.merged.map((merge) => pullOf(merge.number)).filter((identifier) => identifier !== "");
-  const run = async (done: () => boolean, ms: number) => {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline && !done()) {
-      if ((await jobs.tick()) !== null) continue;
-      // Nothing is due: waiting merge jobs come back on a timer, so run them now.
-      db.run("UPDATE job SET run_at = ? WHERE status = 'pending' AND run_at > ?", [
-        Date.now(),
-        Date.now(),
-      ]);
-      await Bun.sleep(25);
-    }
-  };
-  try {
-    // The seeded check needs ok.txt; each task writes only its own file.
-    await commitOnMain(layout.bare, "ok\n");
-    for (const [index, identifier] of all.entries())
-      await orchestrator.onLinearEvent({
-        ...linearEvent("created", null, null, issueId(identifier)),
-        sessionId: `ses_mq_${index}`,
-      });
-    const queuedCount = options.queue.length;
-    await run(
-      () =>
-        listMergeQueues(db).length === queuedCount &&
-        (options.hotfix ?? []).every((identifier) => merged().includes(identifier)) &&
-        (options.review ?? []).every((identifier) =>
-          tracker.progress.some(
-            (update) =>
-              update.body.startsWith("Waiting for an approving review on pull request") &&
-              update.sessionId === `ses_mq_${all.indexOf(identifier)}`,
-          ),
-        ),
-      90_000,
-    );
-    const identifierOf = (itemId: string) => getWorkItem(db, itemId)?.linearIdentifier ?? itemId;
-    const queued = listMergeQueues(db).map((entry) => identifierOf(entry.itemId));
-    const mergedWhileHeld = merged();
-    held = false;
-    await run(() => options.queue.every((identifier) => merged().includes(identifier)), 90_000);
-    awaitingReview.clear();
-    await run(() => all.every((identifier) => merged().includes(identifier)), 60_000);
-    while (outbox.tick().length > 0) await outbox.idle();
-    return {
-      merged: merged(),
-      queued,
-      mergedWhileHeld,
-      states: Object.fromEntries(all.map((identifier) => [identifier, stateOf(db, identifier)])),
-      ciReturns: listJobs(db)
-        .filter(
-          (job) =>
-            job.queue === JOB_KIND.resume &&
-            (job.payload as { reason?: string }).reason === "ci-failed",
-        )
-        .map((job) => identifierOf((job.payload as { itemId: string }).itemId)),
-      bodies: tracker.progress.map((update) => update.body),
-      summaries: queuedSummary(),
-      notifying: [
-        ...tracker.progress
-          .filter((update) => ["response", "error", "elicitation"].includes(update.kind))
-          .map((update) => update.body),
-        ...tracker.questions.map((question) => question.body),
-      ],
-      detail: debug(layout, db),
-    };
-  } finally {
-    await orchestrator.shutdown().catch(() => undefined);
-    db.close();
-    await layout.cleanup();
-  }
-}
-
-test("three ready tasks merge one at a time in the order they became ready", async () => {
-  // Created out of identifier order, so they become ready as ENG-103, ENG-101, ENG-102.
-  const result = await withGitIdentity(() =>
-    runMergeQueue({ queue: ["ENG-103", "ENG-101", "ENG-102"] }),
-  );
-  expect(result.queued, result.detail).toEqual(["ENG-103", "ENG-101", "ENG-102"]);
-  // Only the first moves: nothing merged while its CI was pending.
-  expect(result.mergedWhileHeld, result.detail).toEqual([]);
-  expect(result.merged, result.detail).toEqual(["ENG-103", "ENG-101", "ENG-102"]);
-  // Linear hears each position once, not on every poll, and only as the session summary.
-  expect(
-    result.bodies.filter((body) => body.includes("pmdroid/paws-demo queue")),
-    result.detail,
-  ).toEqual([]);
-  // Main moves twice while the queue drains; only the pull request responses notify.
-  expect(
-    result.notifying.filter((body) => !body.startsWith("Opened ")),
-    result.detail,
-  ).toEqual([]);
-  expect(result.notifying, result.detail).toHaveLength(3);
-  const queueLines = result.summaries.filter((body) => body.includes("pmdroid/paws-demo queue"));
-  expect(queueLines.toSorted(), result.detail).toEqual(
-    [
-      "Second in the pmdroid/paws-demo queue. ENG-103 merges first.",
-      "Third in the pmdroid/paws-demo queue. ENG-101 merges first.",
-      "First in the pmdroid/paws-demo queue. Merging next.",
-      "First in the pmdroid/paws-demo queue. Merging next.",
-    ].toSorted(),
-  );
-}, 180_000);
-
-test("a task waiting for a review holds no place, and a task outside the queue merges on its own", async () => {
-  const result = await withGitIdentity(() =>
-    runMergeQueue({ queue: ["ENG-111", "ENG-112"], review: ["ENG-113"], hotfix: ["ENG-114"] }),
-  );
-  // The queue is held on CI, yet the Merge each when green task merged.
-  expect(result.mergedWhileHeld, result.detail).toEqual(["ENG-114"]);
-  expect(result.queued.toSorted(), result.detail).toEqual(["ENG-111", "ENG-112"]);
-  // The task waiting for a review did not block the queue, and joined it once approved.
-  expect(result.merged, result.detail).toEqual(["ENG-114", ...result.queued, "ENG-113"]);
-  expect(result.bodies, result.detail).toContain(
-    "Waiting for an approving review on pull request #3. It joins the pmdroid/paws-demo merge queue once approved.",
-  );
-  expect(Object.values(result.states), result.detail).toEqual([
-    "merged",
-    "merged",
-    "merged",
-    "merged",
-  ]);
-}, 180_000);
-
-test("a CI failure at the front goes back to the agent, the next task moves, and the fix rejoins at the end", async () => {
-  const result = await withGitIdentity(() =>
-    runMergeQueue({ queue: ["ENG-121", "ENG-122", "ENG-123"], failFirstCi: true }),
-  );
-  expect(result.queued, result.detail).toEqual(["ENG-121", "ENG-122", "ENG-123"]);
-  // ENG-121 fails CI at the front and goes back to the agent once; ENG-122 moves next.
-  expect(result.ciReturns, result.detail).toEqual(["ENG-121"]);
-  // Its fix passes Closeout and rejoins behind ENG-123.
-  expect(result.merged, result.detail).toEqual(["ENG-122", "ENG-123", "ENG-121"]);
-}, 180_000);
-
 test("post_update posts one Linear thought and refuses a second update within a minute", async () => {
   const layout = await repoLayout("paws-e2e-");
   const tracker = createFakeTracker([
@@ -3107,45 +2824,6 @@ test("CI green on the first round merges without a fix round", async () => {
   expect(result.questions).toEqual([]);
 }, 120_000);
 
-test("a CI failure goes back to the agent and merges once the fix is green", async () => {
-  const result = await runCiFix({ attempts: 3, failRounds: 1 });
-  expect(result.state, result.detail).toBe("merged");
-  expect(result.implementRuns).toBe(2);
-  expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
-  expect(result.questions).toEqual([]);
-  expect(result.prompts[1]).toContain(
-    "End of the `test` log:\n```\nbun test v1.4.2\n✗ formats an empty list\n 1 fail\n```",
-  );
-  expect(result.rounds).toHaveLength(1);
-  expect(result.rounds[0]).toMatchObject({ next: "agent", fix: 1, fixLimit: 3 });
-  expect(result.rounds[0]?.runId).not.toBeNull();
-  expect(result.rounds[0]?.checks.map((check) => [check.name, check.state])).toEqual([
-    ["lint", "passed"],
-    ["test", "failed"],
-    ["e2e", "running"],
-  ]);
-  expect(result.rounds[0]?.checks[1]).toMatchObject({
-    url: "https://ci.example/1",
-    logSource: "actions",
-    logTail: "bun test v1.4.2\n✗ formats an empty list\n 1 fail",
-  });
-}, 120_000);
-
-test("when the CI fix attempts run out, Paws asks in Linear instead of failing", async () => {
-  const result = await runCiFix({ attempts: 1, failRounds: 99 });
-  expect(result.state, result.detail).toBe("awaiting_input");
-  expect(result.implementRuns).toBe(2);
-  expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 1."]);
-  expect(result.questions).toHaveLength(1);
-  expect(result.questions[0]).toContain("The agent used all 1 CI fix attempt.");
-  expect(result.questions[0]).toContain("- test (https://ci.example/1)");
-  expect(result.rounds.map((round) => [round.next, round.fix, round.fixLimit])).toEqual([
-    ["agent", 1, 1],
-    ["asked", null, 1],
-  ]);
-  expect(new Set(result.rounds.map((round) => round.head)).size).toBe(2);
-}, 120_000);
-
 test("a reply with guidance after the last CI fix attempt starts one more fix round", async () => {
   const result = await runCiFix({
     attempts: 1,
@@ -3157,24 +2835,6 @@ test("a reply with guidance after the last CI fix attempt starts one more fix ro
   expect(result.questions).toHaveLength(1);
   expect(result.prompts[2]).toContain("Pin the clock in the test.");
   expect(result.prompts[2]).toContain("- test (https://ci.example/1)");
-}, 120_000);
-
-test("with CI fix attempts set to 0, Paws asks on the first failure", async () => {
-  const result = await runCiFix({ attempts: 0, failRounds: 99 });
-  expect(result.state, result.detail).toBe("awaiting_input");
-  expect(result.implementRuns).toBe(1);
-  expect(result.lines).toEqual([]);
-  expect(result.questions).toHaveLength(1);
-  expect(result.questions[0]).toContain("CI fix attempts are set to 0");
-}, 120_000);
-
-test("a changed CI fix setting applies to the next CI round of a running task", async () => {
-  const result = await runCiFix({ attempts: 3, failRounds: 99, attemptsAfterFirstFix: 1 });
-  expect(result.state, result.detail).toBe("awaiting_input");
-  expect(result.implementRuns).toBe(2);
-  expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
-  expect(result.questions).toHaveLength(1);
-  expect(result.questions[0]).toContain("The agent used all 1 CI fix attempt.");
 }, 120_000);
 
 test("with the GitHub merge queue order, Paws queues the accepted pull request and GitHub merges it", async () => {
@@ -3217,43 +2877,6 @@ test("with the GitHub merge queue order, Paws queues the accepted pull request a
       "First in the pmdroid/paws-demo GitHub merge queue, waiting for checks.",
     ],
   });
-}, 120_000);
-
-test("a GitHub merge queue removal for a failing check goes back to the agent and queues the fix again", async () => {
-  const result = await runGitHubQueue((queue, pull, round, enqueued) => {
-    if (enqueued === 1) queue.remove(pull, "FAILED_CHECKS");
-    else queue.merge(pull);
-  });
-  expect(result.state, result.detail).toBe("merged");
-  expect(result.implementRuns).toBe(2);
-  expect(result.enqueued).toBe(2);
-  expect(result.selfMerges).toBe(0);
-  expect(result.summaries).toContain(
-    "CI: `FAILED_CHECKS` failed. Sent back to the agent, fix 1 of 3.",
-  );
-  expect(result.prompts[1]).toContain("GitHub's merge queue removed the pull request");
-  expect(result.questions).toEqual([]);
-}, 120_000);
-
-test("a person removing the pull request from the GitHub merge queue makes Paws ask in Linear", async () => {
-  const result = await runGitHubQueue((queue, pull) => queue.remove(pull, "MANUAL", "octocat"));
-  expect(result.state, result.detail).toBe("awaiting_input");
-  expect(result.implementRuns).toBe(1);
-  expect(result.enqueued).toBe(1);
-  expect(result.questions).toHaveLength(1);
-  expect(result.questions[0]).toContain("@octocat removed");
-  expect(result.questions[0]).toContain("from the pmdroid/paws-demo GitHub merge queue (MANUAL).");
-  expect(result.questions[0]).toContain("What should Paws do?");
-}, 120_000);
-
-test("without a merge queue on main, the GitHub merge queue order merges the pull request itself", async () => {
-  const result = await runGitHubQueue(() => undefined, { branches: [] });
-  expect(result.state, result.detail).toBe("merged");
-  expect(result.enqueued).toBe(0);
-  expect(result.selfMerges).toBe(1);
-  expect(result.summaries).toContain(
-    "main in pmdroid/paws-demo has no GitHub merge queue. Paws merges the pull request itself when its CI is green.",
-  );
 }, 120_000);
 
 /**
@@ -3440,7 +3063,6 @@ async function runCiFix(options: {
   /** How many distinct head commits report a failing `test` check, in order. */
   failRounds: number;
   answer?: string;
-  attemptsAfterFirstFix?: number;
   rateLimitFirstLaunch?: boolean;
   withoutReview?: boolean;
   linearTaskModes?: boolean;
@@ -3453,7 +3075,6 @@ async function runCiFix(options: {
   bodies: string[];
   questions: string[];
   prompts: string[];
-  rounds: CiRound[];
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
@@ -3580,11 +3201,6 @@ async function runCiFix(options: {
       if (input.purpose === "implement") {
         implementRuns += 1;
         prompts.push(input.prompt);
-        if (implementRuns === 2 && options.attemptsAfterFirstFix !== undefined)
-          writeFileSync(
-            configPath,
-            `[merge]\nci_fix_attempts = ${options.attemptsAfterFirstFix}\n`,
-          );
       }
       const steps: FakeScript["steps"] =
         input.purpose === "implement"
@@ -3644,7 +3260,6 @@ async function runCiFix(options: {
       bodies: tracker.progress.map((update) => update.body),
       questions: tracker.questions.map((question) => question.body),
       prompts,
-      rounds: listCiRounds(db),
       detail: debug(layout, db),
     };
   } finally {
