@@ -112,26 +112,6 @@ def install_production(bun, source, workspace):
     return workspace / "node_modules"
 
 
-def compile_runner(bun, source, destination):
-    with tempfile.TemporaryDirectory(prefix="paws-runner-compile-") as home:
-        completed = subprocess.run(
-            [str(bun), "build", str(source / "src" / "index.ts"), "--compile", "--outfile", str(destination), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--target=bun"],
-            cwd=source,
-            env={**release.COMMAND_ENV, "HOME": home},
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=900,
-        )
-    if completed.returncode != 0:
-        detail = " ".join(completed.stderr.decode(errors="replace").splitlines()[-8:])[:800]
-        raise ValueError(f"Runner compilation failed: {detail}")
-    content = read_package_file(destination, 536_870_912)
-    destination.unlink()
-    if not content.startswith(b"\x7fELF"):
-        raise ValueError("Compiled runner is not a native executable")
-    return content
-
-
 def pack(arguments):
     source = pathlib.Path(arguments.source).resolve(strict=True)
     bun = pathlib.Path(arguments.bun).resolve(strict=True)
@@ -164,13 +144,12 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules, p
     output = pathlib.Path(arguments.output)
     output.mkdir(mode=0o700)
     mise = release.verify_mise(read_package_file(arguments.mise, release.MISE_LIMIT), arguments.platform) if arguments.mise else release.download_mise(arguments.platform)
-    compiled = compile_runner(bun, source, output / "paws-runner")
     artifact = output / "artifact.tar"
     launcher_targets = set()
     with tarfile.open(artifact, "w", format=tarfile.USTAR_FORMAT) as archive:
         add_content(archive, "bin/bun", runtime, True)
         add_content(archive, "bin/mise", mise, True)
-        add_content(archive, "bin/paws-runner", compiled, True)
+        add_content(archive, "bin/paws-runner", release.RUNNER_LAUNCHER, True)
         add_content(archive, "app/package.json", manifest)
         add_content(archive, "app/bun.lock", read_package_file(source / "bun.lock", 16_777_216))
         for name, target in provider_targets.items():

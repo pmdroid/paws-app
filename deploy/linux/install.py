@@ -246,10 +246,8 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             unpacked = pathlib.Path(temporary)
             extract_verified(artifact, unpacked)
             bun = unpacked / "bin/bun"
-            runner_binary = unpacked / "bin/paws-runner"
-            with runner_binary.open("rb") as stream:
-                if stream.read(4) != b"\x7fELF":
-                    raise ValueError("Packaged runner is not a native executable")
+            if release.read_regular(unpacked / "bin/paws-runner", 4096) != release.RUNNER_LAUNCHER:
+                raise ValueError("Packaged runner is not the runner launcher")
             if release.command([str(bun), "--version"]).decode().strip() != release.BUN_VERSION:
                 raise ValueError("Packaged Bun does not match the pinned runtime")
             release.verify_mise(release.read_regular(unpacked / "bin/mise", release.MISE_LIMIT), manifest["platform"])
