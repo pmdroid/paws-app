@@ -43,6 +43,24 @@ function linearServer() {
             issue: { id: issue.id, team: issue.team },
           },
         };
+      case "IssueStart":
+        return {
+          issue: {
+            ...issue,
+            team: {
+              id: issue.team.id,
+              states: {
+                nodes: [{ id: "doing", position: 1 }],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+            labels: { nodes: [] },
+            children: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            relations: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            inverseRelations: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+          },
+          user: { id: variables["actor"], app: false },
+        };
       case "PawsTeamAccess":
         return { team: { id: variables["id"] } };
       case "IssueOwnership":
@@ -266,10 +284,8 @@ test("a delegated task reads each Linear fact once before the agent's first prom
       }),
     ]);
     expect(counts, server.operations.join(", ")).toEqual({
-      "task-access": 4,
+      "task-access": 2,
       outbox: 3,
-      intake: 2,
-      "merge-context": 1,
       "session-read": 1,
       context: 1,
     });
