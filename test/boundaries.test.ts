@@ -65,6 +65,7 @@ const MODULES = [
   "skills",
   "runtimes",
   "runner-mise",
+  "agent-catalog",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -109,6 +110,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   settings: ["config", "core", "db", "skills"],
   skills: ["core", "db", "runner-protocol"],
   runtimes: [],
+  "agent-catalog": ["db"],
   host: ["core", "db"],
   loop: [
     "decisions",
