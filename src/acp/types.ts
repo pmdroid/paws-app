@@ -110,6 +110,11 @@ export interface RunAgentOptions {
   command?: string;
   args?: string[];
   env?: NodeJS.ProcessEnv;
+  /**
+   * Bin dirs of the runtimes the runner installed for this task. They go in front of `PATH`
+   * for Closeout checks, as they already are in `env` for the agent.
+   */
+  runtimeBinPaths?: readonly string[];
   checkpointEnv?: NodeJS.ProcessEnv;
   checkpointIdentity?: GitCommitIdentity;
   commitPolicy?: GitCommitPolicy;

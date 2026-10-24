@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { anyPathMatches, pathsMatch } from "./policy/paths";
 import { loadMemoryPolicy, type TreePolicy } from "./policy/resolve";
 import type { PolicyFilesLoad } from "./policy/load";
@@ -38,6 +38,11 @@ export type CloseoutSession = {
 export type CloseoutSessionOptions = {
   policy: () => Promise<PolicyFilesLoad>;
   signal?: AbortSignal;
+  /**
+   * Bin dirs of the task's installed runtimes. A check's `PATH` starts with them, so it finds
+   * those runtimes before the system ones. Without them the check inherits `PATH` unchanged.
+   */
+  runtimeBinPaths?: readonly string[];
   allowCommand?: (argv: readonly string[]) => void;
   onProgress?: (event: CloseoutSessionEvent) => void;
 };
@@ -413,7 +418,13 @@ async function execute(
   notify(options, { type: "started", ...progress });
   const started = Date.now();
   const timeoutSeconds = item.timeoutSeconds ?? 30;
-  const result = await runCommand(workspace, argv, timeoutSeconds, options.signal);
+  const result = await runCommand(
+    workspace,
+    argv,
+    timeoutSeconds,
+    options.signal,
+    options.runtimeBinPaths,
+  );
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   if (result.cancelled) {
     notify(options, {
@@ -643,13 +654,16 @@ function killCommand(pid: number | undefined): void {
   }
 }
 
-function commandEnv(): Record<string, string> {
-  return {
+function commandEnv(runtimeBinPaths: readonly string[] = []): Record<string, string> {
+  const env: Record<string, string> = {
     ...scrubCommandEnv(),
     GIT_CONFIG_COUNT: "0",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
   };
+  if (runtimeBinPaths.length)
+    env.PATH = [...runtimeBinPaths, ...(env.PATH ? [env.PATH] : [])].join(delimiter);
+  return env;
 }
 
 function runCommand(
@@ -657,6 +671,7 @@ function runCommand(
   argv: readonly string[],
   timeoutSeconds: number,
   signal?: AbortSignal,
+  runtimeBinPaths?: readonly string[],
 ): Promise<{
   code: number;
   timedOut: boolean;
@@ -695,7 +710,7 @@ function runCommand(
   return new Promise((resolve) => {
     const child = spawn(command, argv.slice(1), {
       cwd: workspace,
-      env: commandEnv(),
+      env: commandEnv(runtimeBinPaths),
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
