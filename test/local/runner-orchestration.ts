@@ -344,7 +344,6 @@ export async function probeRunnerOrchestration(
       repository: { owner: "acme", repo: "fixture", remoteUrl: origin },
       ...(scenario === "success"
         ? {
-            channel: "agent-session" as const,
             githubAuth: Object.assign(new FakeHostGitHubAuth(), {
               integration: {
                 check: async (current: WorkItemRecord) => {

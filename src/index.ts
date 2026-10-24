@@ -12,7 +12,6 @@ import {
   worktreePath,
 } from "./acp";
 import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
-import { withCommentActivities, type CommentMode } from "./comments";
 import {
   closeoutPolicyRoot,
   ensureLayout,
@@ -30,7 +29,6 @@ import {
   type RuntimeConfig,
 } from "./config";
 import {
-  WORK_ITEM_STATES,
   delegationHasOpenWork,
   type LinearCommand,
   type GitCommitPolicy,
@@ -62,7 +60,6 @@ import {
   getWorkItemRepositoryAnswer,
   getTaskMode,
   taskRequiresRepository,
-  listWorkItemsByStates,
   listWorkItems,
   clearUsagePauses,
   countLinearRequest,
@@ -123,7 +120,6 @@ import {
   type AcceptedLinearEvent,
   type IntakeDecision,
   type LinearRunning,
-  type TrackerAdapter,
 } from "./linear";
 import {
   acceptGitHubDelivery,
@@ -155,7 +151,6 @@ import { createAdmission, registerScheduler, saveSchedulingContext } from "./sch
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
-import { findOpenQuestion } from "./questions";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import {
   issueVerifiedWorkspaceBootstrap,
@@ -1298,72 +1293,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return stopping;
     },
   };
-}
-
-export function commentTracker(
-  db: Database,
-  base: TrackerAdapter,
-  mode: CommentMode,
-): TrackerAdapter {
-  return withCommentActivities(base, {
-    async postProgress(update) {
-      bindIssue(db, mode, update.sessionId);
-      await mode.postProgress(update);
-    },
-    async askQuestion(question) {
-      bindIssue(db, mode, question.sessionId);
-      await mode.askQuestion(question);
-    },
-  });
-}
-
-function bindIssue(db: Database, mode: CommentMode, sessionId: string): void {
-  const match = listWorkItemsByStates(db, WORK_ITEM_STATES).find(
-    (item) => item.linearIssueId === sessionId,
-  );
-  mode.bind({
-    itemId: match?.id ?? sessionId,
-    linearIssueId: sessionId,
-    sessionId,
-  });
-}
-
-export async function syncComments(
-  db: Database,
-  mode: CommentMode,
-  orchestrator: Pick<Orchestrator, "bus" | "onLinearEvent">,
-): Promise<void> {
-  const items = listWorkItemsByStates(db, WORK_ITEM_STATES);
-  const issues = new Set(items.map((item) => item.linearIssueId));
-  for (const issueId of issues) {
-    const match = items.find((item) => item.linearIssueId === issueId);
-    if (match === undefined) continue;
-    mode.bind({ itemId: match.id, linearIssueId: issueId, sessionId: issueId });
-    const result = await mode.sync(issueId, findOpenQuestion(db, issueId));
-    for (const answer of result.resumed) {
-      await orchestrator.onLinearEvent({
-        dedupeKey: `comment-answer:${answer.questionId}`,
-        deliveryId: null,
-        source: "poll",
-        action: "prompted",
-        sessionId: issueId,
-        issueId,
-        activityId: null,
-        body: answer.answer,
-        signal: null,
-        updatedAtMs: Date.now(),
-        payload: JSON.stringify({ answeredBy: answer.answeredBy, questionId: answer.questionId }),
-      });
-    }
-    for (const stopped of result.stopped) {
-      submitCommand(db, orchestrator.bus, {
-        type: "stop",
-        itemId: stopped.itemId,
-        source: "linear",
-        requestedAt: stopped.requestedAt,
-      });
-    }
-  }
 }
 
 export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {
