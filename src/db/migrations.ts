@@ -2460,4 +2460,18 @@ ALTER TABLE work_item ADD COLUMN linear_project_id TEXT;
 ALTER TABLE work_item ADD COLUMN linear_project_name TEXT;
 `,
   },
+  {
+    id: "128_runner_runtime",
+    sql: `
+CREATE TABLE runner_runtime (
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  tool TEXT NOT NULL,
+  version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('installed','failed')),
+  error TEXT,
+  reported_at INTEGER NOT NULL,
+  PRIMARY KEY (runner_id, tool, version)
+) STRICT;
+`,
+  },
 ];

@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
+  listRunnerRuntimes,
   listRunnerSkills,
+  type RunnerRuntimeStatus,
   skillRollouts,
   type RunnerSkillView,
   markSkillRemoved,
@@ -582,4 +584,66 @@ test("the runner list shows each registered skill as up to date, installing, out
       { total: 1, upToDate: 0, installing: ["Host VM"], waiting: [], outOfDate: [], failed: [] },
     ],
   ]);
+});
+
+test("a heartbeat with runtimes stores them and the runner list returns them", async () => {
+  const runner = await fixture();
+  const failure = "Paws could not install the runtime python@3.99: mise exited with code 1.";
+  expect(
+    (
+      await runner.heartbeat({
+        ...sample,
+        runtimes: [
+          { tool: "node", version: "22", status: "installed" },
+          { tool: "python", version: "3.99", status: "failed", error: failure },
+          { tool: "aqua:cli/cli", version: "2.62.0", status: "installed" },
+        ],
+      })
+    )?.status,
+  ).toBe(200);
+  const at = runner.now();
+  const expected: RunnerRuntimeStatus[] = [
+    { tool: "aqua:cli/cli", version: "2.62.0", status: "installed", error: null, reportedAt: at },
+    { tool: "node", version: "22", status: "installed", error: null, reportedAt: at },
+    { tool: "python", version: "3.99", status: "failed", error: failure, reportedAt: at },
+  ];
+  expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual(expected);
+  const list = (await runner.list()) as unknown as { runners: { runtimes: unknown }[] };
+  expect(list.runners[0]!.runtimes).toEqual(expected);
+
+  // A heartbeat without the field, from a runner that has not installed any, keeps the rows.
+  runner.advance(15_000);
+  expect((await runner.heartbeat(sample))?.status).toBe(200);
+  expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual(expected);
+
+  // The next report replaces the last one.
+  expect(
+    (
+      await runner.heartbeat({
+        runtimes: [{ tool: "python", version: "3.99", status: "installed" }],
+      })
+    )?.status,
+  ).toBe(200);
+  expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual([
+    {
+      tool: "python",
+      version: "3.99",
+      status: "installed",
+      error: null,
+      reportedAt: runner.now(),
+    },
+  ]);
+});
+
+test("a heartbeat with a malformed runtime is refused", async () => {
+  const runner = await fixture();
+  for (const runtime of [
+    { tool: "npm:left-pad", version: "1.0.0", status: "installed" },
+    { tool: "node", version: "../22", status: "installed" },
+    { tool: "node", version: "22", status: "pending" },
+    { tool: "node", version: "22", status: "failed", error: "x".repeat(501) },
+    { tool: "node", version: "22", status: "installed", path: "/usr/bin" },
+  ])
+    expect((await runner.heartbeat({ runtimes: [runtime] }))?.status).toBe(403);
+  expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual([]);
 });
