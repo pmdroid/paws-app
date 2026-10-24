@@ -510,15 +510,15 @@ test("Linear requests for a long Closeout with an agent question and a visual re
         { type: "ask_team", question: "Should ok.txt end with a newline?" },
         ...toolCalls(round + 10),
       ],
+      (worktree, round) => [...toolCalls(round), write(worktree, "draft.txt")],
       (worktree, round) => {
         writeFileSync(path.join(worktree, "shot.png"), PNG);
         return [
           ...toolCalls(round),
-          write(worktree, "draft.txt"),
+          write(worktree, "notes.txt"),
           { type: "publish_artifact", path: "shot.png", checkId: "visual-proof" },
         ];
       },
-      (worktree, round) => [...toolCalls(round), write(worktree, "notes.txt")],
       (worktree, round) => [...toolCalls(round), write(worktree, "ok.txt", "ok\n")],
     ],
   });
@@ -530,6 +530,25 @@ test("Linear requests for a long Closeout with an agent question and a visual re
     "session-read": 1,
     "task-access": 7,
   });
+});
+
+test("a Closeout fix round that publishes a screenshot asks for a visual review, not Closeout help", async () => {
+  const result = await runTask({
+    policy: POLICY,
+    rounds: [
+      (worktree, round) => [...toolCalls(round, 1), write(worktree, "draft.txt")],
+      (worktree, round) => {
+        writeFileSync(path.join(worktree, "shot.png"), PNG);
+        return [
+          ...toolCalls(round, 1),
+          write(worktree, "ok.txt", "ok\n"),
+          { type: "publish_artifact", path: "shot.png", checkId: "visual-proof" },
+        ];
+      },
+    ],
+  });
+  expect(result.state, result.operations).toBe("merged");
+  expect(result.asked).toEqual(["visual-review"]);
 });
 
 test("Linear requests while CI is pending and main moves before the merge", async () => {
