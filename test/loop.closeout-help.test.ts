@@ -11,6 +11,7 @@ import {
   saveCheckpoint,
   saveCloseoutRecovery,
 } from "../src/db";
+import { formatEvidenceSummary } from "../src/closeout";
 import { askCloseoutHelp, questionEffects } from "../src/loop";
 import { answer, ask, findOpenQuestion, getQuestion, handoffNote } from "../src/questions";
 import { tempDb } from "./helpers";
@@ -161,6 +162,26 @@ test("other blocked policies keep the usual Closeout question", () => {
   askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: invalid YAML"), { now: NOW });
   expect(delivered(db)[0]?.body).not.toContain("Update Paws");
   expect(delivered(db)[0]?.body).toContain("Reply with guidance");
+});
+
+test("the Closeout help question names the task as its Linear identifier", () => {
+  const { db } = parked();
+  const pathId = "PAS-367-01M5NDWPQZ0JQ91E1MFMVEY6EP";
+  const summary = formatEvidenceSummary({
+    outcome: "exhausted",
+    taskId: pathId,
+    taskLabel: "PAS-367",
+    base: "base",
+    head: "head",
+    fixAttempts: 3,
+    evaluations: 4,
+    exitCode: 1,
+    decision: null,
+  });
+  askCloseoutHelp(db, "ses_1", { ...help(summary), taskId: pathId }, { now: NOW });
+  const body = delivered(db)[0]?.body ?? "";
+  expect(body).toContain("Task: PAS-367\n");
+  expect(body).not.toContain("01M5NDWPQZ0JQ91E1MFMVEY6EP");
 });
 
 test("a CI help answer resumes the agent with the handoff", () => {

@@ -368,7 +368,7 @@ function issuePage(
   );
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
-    <header class="run-heading"><div class="row wrap">${run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0">${esc(snapshot.project.repo)}${item.branch ? ` · ${esc(item.branch)}` : ""}</span></div>
+    <header class="run-heading"><div class="row wrap">${run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
       <h1><span class="lin-id">${esc(item.id)}</span> ${esc(item.title)}</h1>
       ${issueFacts(snapshot, item, run)}
       ${item.links.length ? `<div class="row wrap">${linkButtons(item.links)}</div>` : ""}

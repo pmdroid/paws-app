@@ -78,7 +78,7 @@ test("explicit issue creation persists authoritative context and links Linear to
   expect(env.calls[1]?.variables).toEqual({
     id: "session",
     input: {
-      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status/sessions/session" }],
+      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status/issues/ENG-1" }],
     },
   });
   expect(env.seen).toHaveLength(1);

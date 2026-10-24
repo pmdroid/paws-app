@@ -298,7 +298,7 @@ function paint(): void {
   shell.setBreadcrumb(
     detail
       ? { issueId: detail.itemId, entityId: detail.id }
-      : model.route.view === "evidence" && model.route.id
+      : (model.route.view === "evidence" || model.route.view === "issues") && model.route.id
         ? { issueId: null, entityId: model.route.id }
         : null,
   );
