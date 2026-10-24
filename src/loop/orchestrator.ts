@@ -4992,11 +4992,11 @@ export class Orchestrator {
    * The repository's runtime list from mise config on origin/main, read once per run. Its
    * notices are returned with the first read only, so the task gets each line once.
    */
-  private async runtimeList(item: WorkItemRecord, worktreePath: string): Promise<RuntimeList> {
+  private async runtimeList(item: WorkItemRecord, repo: string): Promise<RuntimeList> {
     const runId = getWorkItem(this.db, item.id)?.currentRunId ?? item.id;
     const cached = this.runtimeLists.get(item.id);
     if (cached?.runId === runId) return { runtimes: cached.list.runtimes, notices: [] };
-    const list = runtimeList(trustedRootFiles(worktreePath, RUNTIME_FILES));
+    const list = runtimeList(trustedRootFiles(repo, RUNTIME_FILES));
     this.runtimeLists.set(item.id, { runId, list });
     return list;
   }
