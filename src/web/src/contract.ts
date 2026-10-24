@@ -505,11 +505,13 @@ export function parseStatusSnapshot(input: unknown): ParseResult {
 
 export function statusIntegrity(snapshot: StatusSnapshot): string[] {
   const problems: string[] = [];
+  // An earlier attempt (a replaced Linear session) shares its issue's id with the current one.
   const items = ids(
-    snapshot.items.map((item) => item.id),
+    snapshot.items.filter((item) => item.endedAt === undefined).map((item) => item.id),
     "item",
     problems,
   );
+  for (const item of snapshot.items) if (item.endedAt !== undefined) items.add(item.id);
   const runs = ids(
     snapshot.runs.map((run) => run.id),
     "run",
