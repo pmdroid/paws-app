@@ -8,7 +8,15 @@ bun run build:status
 bun run paws --no-tunnel
 ```
 
-Configure [HTTPS workspace access](workspace-access.md), then open the dashboard. Sign in as a Linear workspace admin and authorize Paws. Connect GitHub in Integrations, select the demo repository, and map it to the sandbox Linear team. Configure a [local Closeout policy](local-closeout.md), or commit `.agents/closeout.yaml` on the repository's `origin/main`. The configured HTTPS origin serves the dashboard at `/status` and health at `/health`.
+Paws needs a configured Linear workspace. Configure [HTTPS workspace access](workspace-access.md), with `PAWS_PUBLIC_DASHBOARD=1`, then open the dashboard. Sign in as a Linear workspace admin and authorize Paws. Connect GitHub in Integrations, select the demo repository, and map it to the sandbox Linear team. Configure a [local Closeout policy](local-closeout.md), or commit `.agents/closeout.yaml` on the repository's `origin/main`. The configured HTTPS origin serves the dashboard at `/status` and health at `/health`.
+
+Check the prerequisites before delegating:
+
+```sh
+bun run paws doctor
+```
+
+`linear-workspace` must be ok and name the workspace you signed in to. Without a workspace, Paws logs how to configure one and starts no work.
 
 ## Linear work
 
@@ -29,12 +37,12 @@ The parent is **Export rows**. The three sub-issues merge in `blocks` order:
 
 Delegate the parent issue to the Paws app.
 
-Watch the issue comments (each one starts with `Paws:`):
+Watch the Paws agent session on the parent issue:
 
 1. `Picked up 3 sub-issues; order: ENG-2 → ENG-3 → ENG-4`.
 2. ENG-2 fails Closeout once, the implementer commits a fix, Closeout accepts, a pull request opens (`Fixes ENG-2` on the first line, `Fix attempts: 1` in the body), and Paws squash-merges it.
 3. ENG-3 opens and merges after ENG-2.
-4. ENG-4 parks on a question comment. Reply in that thread with `yes` or `no`, or with your own words. The run continues with that answer.
+4. ENG-4 parks on a question in its agent session. Answer `yes` or `no`, or reply in your own words. The run continues with that answer.
 5. ENG-4 merges.
 
 ### Linear agent sessions

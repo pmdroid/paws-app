@@ -3631,7 +3631,6 @@ export class Orchestrator {
   }
 
   private dispatch(): void {
-    const scheduling = this.options.scheduling?.();
     dispatch(this.db, {
       now: this.now(),
       admission: this.admission,
@@ -3641,9 +3640,8 @@ export class Orchestrator {
         const item = getWorkItem(this.db, itemId);
         return item && this.activitySession(item);
       },
-      ...(scheduling
-        ? { ...scheduling, onWaiting: (itemIds) => this.noteQueued(itemIds) }
-        : { maxInFlight: 1 }),
+      ...this.options.scheduling?.(),
+      onWaiting: (itemIds) => this.noteQueued(itemIds),
     });
   }
 

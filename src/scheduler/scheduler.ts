@@ -5,7 +5,6 @@ import {
   delegationHasOpenWork,
   holdsExecution as itemHoldsExecution,
   isBlockerSatisfied,
-  isInFlightItemState,
   isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
@@ -19,6 +18,7 @@ import {
   immediate,
   mergeLaneSql,
   requeueOrphanedWork,
+  listItemHolds,
   saveItemHolds,
   saveQueuePositions,
   type ItemHold,
@@ -64,7 +64,6 @@ export type SchedulerOptions = {
   sessionFor?: (itemId: string) => string | null;
   onWaiting?: (itemIds: readonly string[]) => void;
   ownerCap?: number | null;
-  maxInFlight?: number;
   log?: (line: string) => void;
 };
 
@@ -452,16 +451,6 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id))),
     ).length;
     let free = slots === null ? Infinity : slots.total - slots.busy - reserved;
-    if (options.maxInFlight !== undefined)
-      free = Math.min(
-        free,
-        options.maxInFlight -
-          items.filter(
-            (item) =>
-              isInFlightItemState(item.state) ||
-              (item.state === "queued" && held.some((entry) => entry.itemId === item.id)),
-          ).length,
-      );
     const running = new Map<string, number>();
     for (const item of items)
       if (
@@ -511,9 +500,18 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       now,
       new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
     );
+    const withoutWorkspace = new Set(
+      starts.flatMap(({ item, start }) =>
+        !start.ok && start.held === "workspace" ? [item.id] : [],
+      ),
+    );
     const holds: ItemHold[] = [
+      ...listItemHolds(db).filter((hold) => withoutWorkspace.has(hold.itemId)),
       ...starts.flatMap(({ item, start }): ItemHold[] =>
-        start.ok || start.held === "missing" || start.held === "cancelled"
+        start.ok ||
+        start.held === "missing" ||
+        start.held === "cancelled" ||
+        start.held === "workspace"
           ? []
           : [
               {

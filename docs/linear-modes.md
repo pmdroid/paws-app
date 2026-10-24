@@ -2,9 +2,9 @@
 
 Linear is the issue tracker. GitHub authentication for repositories and pull requests is described in [GitHub sign-in](github-login.md).
 
-Comment mode is the Linear mode Paws writes for a local run. Agent-session mode stays available in `src/linear` and is optional.
+Paws runs work only for a configured Linear workspace: agent-session mode behind [Workspace access](workspace-access.md), with `PAWS_PUBLIC_DASHBOARD=1`. Without one, `bun run paws doctor` reports `linear-workspace` as missing and Paws starts no work.
 
-Paws runs on the developer's machine. The local MVP does not open a public URL, so it does not depend on Linear delivering a webhook. Comment mode uses a Linear personal API key and ordinary issue comments. Nothing in this tree calls Linear; the notes below are from Linear's docs and the published GraphQL operations, plus what Pascal should confirm in a workspace.
+Comment mode uses a Linear personal API key and ordinary issue comments, and does not depend on Linear delivering a webhook. Nothing in this tree calls Linear; the notes below are from Linear's docs and the published GraphQL operations, plus what Pascal should confirm in a workspace.
 
 ## What we needed to know
 

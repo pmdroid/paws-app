@@ -1,3 +1,4 @@
+import "../quiet-journal";
 import { join } from "node:path";
 import {
   migrate,

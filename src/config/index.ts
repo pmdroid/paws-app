@@ -26,7 +26,7 @@ export type {
 export { PAWS_GITHUB_OAUTH_CLIENT_ID } from "./file";
 export { ensureLayout, pawsPaths } from "./paths";
 export type { PawsPaths } from "./paths";
-export { loadRuntime } from "./runtime";
+export { LINEAR_WORKSPACE_REQUIRED, loadRuntime } from "./runtime";
 export type { RuntimeConfig } from "./runtime";
 export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
 export type { GitHubAppCredentials } from "./github-app";

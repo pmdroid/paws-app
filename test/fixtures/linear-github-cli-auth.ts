@@ -22,6 +22,7 @@ import {
 } from "../../src/db";
 import { attachOrchestrator, GitHubAuthQuestions } from "../../src/loop";
 import { findOpenQuestion, getQuestion } from "../../src/questions";
+import { createAdmission } from "../../src/scheduler";
 
 const home = process.argv[2]!;
 const denied = process.argv[3] === "denied";
@@ -127,8 +128,13 @@ if (denied) {
     actorForItem: () => "linear-owner",
   });
   let launches = 0;
+  const admission = createAdmission({ db });
   const orchestrator = attachOrchestrator({
     db,
+    admission: {
+      ...admission,
+      canStart: (id) => (id === item.id ? { ok: false, held: "blocked" } : admission.canStart(id)),
+    },
     jobs,
     clock,
     outbox: new OutboxDispatcher(db, clock),
