@@ -24,19 +24,16 @@ test("dispatch asks readiness itself instead of trusting a handed-in ready list"
   }
 });
 
-test("maxInFlight 1 keeps the no-workspace path serial", () => {
+test("dispatch admits ready Items while another one is in flight", () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "first", now: 1 });
-    insertQueuedItem(db, { id: "second", now: 2 });
-    const serial = { maxInFlight: 1 };
-    expect(dispatch(db, { now: 1000, ...serial })).toEqual(["first"]);
-    expect(dispatch(db, { now: 1001, ...serial })).toEqual([]);
+    expect(dispatch(db, { now: 1000 })).toEqual(["first"]);
     db.run("UPDATE work_item SET state='running' WHERE id='first'");
     db.run("UPDATE job SET status='done' WHERE json_extract(payload,'$.itemId')='first'");
-    expect(dispatch(db, { now: 1002, ...serial })).toEqual([]);
-    db.run("UPDATE work_item SET state='merged' WHERE id='first'");
-    expect(dispatch(db, { now: 1003, ...serial })).toEqual(["second"]);
+    insertQueuedItem(db, { id: "second", now: 2 });
+    insertQueuedItem(db, { id: "third", now: 3 });
+    expect(dispatch(db, { now: 1001 })).toEqual(["second", "third"]);
   } finally {
     db.close();
   }

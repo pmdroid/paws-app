@@ -4,7 +4,6 @@ import {
   JOB_KIND,
   delegationHasOpenWork,
   holdsExecution as itemHoldsExecution,
-  isInFlightItemState,
   isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
@@ -60,7 +59,6 @@ export type SchedulerOptions = {
   sessionFor?: (itemId: string) => string | null;
   onWaiting?: (itemIds: readonly string[]) => void;
   ownerCap?: number | null;
-  maxInFlight?: number;
 };
 
 export function schedulerPaths(paths: readonly string[]): string[] {
@@ -426,16 +424,6 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id))),
     ).length;
     let free = slots === null ? Infinity : slots.total - slots.busy - reserved;
-    if (options.maxInFlight !== undefined)
-      free = Math.min(
-        free,
-        options.maxInFlight -
-          items.filter(
-            (item) =>
-              isInFlightItemState(item.state) ||
-              (item.state === "queued" && held.some((entry) => entry.itemId === item.id)),
-          ).length,
-      );
     const running = new Map<string, number>();
     for (const item of items)
       if (
