@@ -2359,7 +2359,13 @@ UPDATE rebase_return SET recorded_at = (SELECT created_at FROM job WHERE job.id 
 `,
   },
   {
-    id: "116_work_item_awake_breakdown",
+    id: "116_visual_review_carried",
+    sql: `
+ALTER TABLE visual_review ADD COLUMN carried TEXT CHECK(carried IS NULL OR json_valid(carried));
+`,
+  },
+  {
+    id: "117_work_item_awake_breakdown",
     sql: `
 ALTER TABLE work_item ADD COLUMN accepted_head TEXT;
 ALTER TABLE work_item ADD COLUMN agent_ms INTEGER NOT NULL DEFAULT 0;
