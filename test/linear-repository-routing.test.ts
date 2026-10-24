@@ -24,6 +24,7 @@ import {
 import { findOpenQuestion } from "../src/questions";
 import { withCommentActivities } from "../src/comments";
 import { tempDb, tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 const repositories: RepositoryBinding[] = ["one", "two", "private"].map((repo) => ({
   owner: "acme",
@@ -110,6 +111,7 @@ function fixture(
   const attach = () =>
     attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       tracker,

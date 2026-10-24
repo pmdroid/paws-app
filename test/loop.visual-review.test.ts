@@ -51,6 +51,7 @@ import {
 } from "../src/questions";
 import { githubClient } from "./e2e-harness";
 import { screenshotPng, type Rect } from "./png";
+import { workspaceAdmission } from "./fake-workspace";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -859,6 +860,7 @@ async function pausedForReview(
   };
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     clock,

@@ -21,6 +21,7 @@ import {
   type LinearClient,
 } from "../src/linear";
 import { attachOrchestrator, itemPathId } from "../src/loop";
+import { workspaceAdmission } from "./fake-workspace";
 
 const agent = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
 const childDescription =
@@ -135,6 +136,7 @@ for (const source of ["linear", "linear-comments"] as const) {
     let outbox = new OutboxDispatcher(db, systemClock);
     let orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       ...(source === "linear-comments" ? { channel: "comments" as const } : {}),
@@ -176,6 +178,7 @@ for (const source of ["linear", "linear-comments"] as const) {
       outbox = new OutboxDispatcher(db, systemClock);
       orchestrator = attachOrchestrator({
         db,
+        admission: workspaceAdmission(db),
         jobs,
         outbox,
         ...(source === "linear-comments" ? { channel: "comments" as const } : {}),

@@ -1,3 +1,4 @@
+import { workspaceAdmission } from "./fake-workspace";
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -399,6 +400,7 @@ async function askOnce(answerDuringTurn?: string): Promise<{
   const attach = (loop: JobLoop, dispatcher: OutboxDispatcher) =>
     attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs: loop,
       outbox: dispatcher,
       pawsRoot: layout.pawsRoot,
@@ -616,6 +618,7 @@ test("the implementer's prompt includes the project overview with its mock links
   };
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,

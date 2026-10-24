@@ -9,6 +9,7 @@ import { createFakeGitHub } from "../src/github";
 import { handleLinearWebhook, linearCallerFor, openLinear } from "../src/linear";
 import { attachOrchestrator, LinearTaskAccess, type AgentLaunch } from "../src/loop";
 import { githubClient, repoLayout } from "./e2e-harness";
+import { workspaceAdmission } from "./fake-workspace";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -230,6 +231,7 @@ test("a delegated task spends at most five Linear requests before the agent's fi
   };
   orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     tracker: linear.tracker,
