@@ -441,15 +441,15 @@ describe("policy errors", () => {
       "skill is missing: .agents/skills/missing/SKILL.md",
     );
 
-    const symlink = createFakeGitReader({
+    const broken = createFakeGitReader({
       [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
       ".agents/skills/look/SKILL.md": "look\n",
     });
-    symlink.put(".agents/skills/look/references/rubric.md", "target", "120000");
+    broken.put(".agents/skills/look/references/rubric.md", "target", "120000");
     expectBlocked(
-      loadPolicy({ repo: tempDir(), git: symlink, env: {} }),
+      loadPolicy({ repo: tempDir(), git: broken, env: {} }),
       "repo",
-      "skill file is a symlink: .agents/skills/look/references/rubric.md",
+      "skill link is broken: .agents/skills/look/references/rubric.md",
     );
 
     const gitlink = createFakeGitReader({
@@ -464,11 +464,55 @@ describe("policy errors", () => {
     );
 
     const entryLink = createFakeGitReader();
-    entryLink.put(PUBLIC_POLICY_PATH, 'specVersion: "0.1"\n', "120000");
+    entryLink.put(PUBLIC_POLICY_PATH, "nowhere.yaml", "120000");
     expectBlocked(
       loadPolicy({ repo: tempDir(), git: entryLink, env: {} }),
       "repo",
-      "policy path is not a file: .agents/closeout.yaml",
+      "skill link is broken: .agents/closeout.yaml",
+    );
+  });
+
+  test("symlinks in the origin tree are followed and keep the linked path", () => {
+    const git = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+      ".agents/skills/look/AGENTS.md": "rules\n",
+    });
+    git.put(".agents/skills/look/CLAUDE.md", "AGENTS.md", "120000");
+    git.put(".agents/skills/look/references/nested.md", "../AGENTS.md", "120000");
+    const policy = present(loadPolicy({ repo: tempDir(), git, env: {} }));
+    expect(policy.files.map((file) => file.path)).toEqual([
+      ".agents/closeout.yaml",
+      ".agents/skills/look/AGENTS.md",
+      ".agents/skills/look/CLAUDE.md",
+      ".agents/skills/look/SKILL.md",
+      ".agents/skills/look/references/nested.md",
+    ]);
+    expect(policy.files[2]?.sha256).toBe(sha256("rules\n"));
+    expect(policy.files[4]?.sha256).toBe(sha256("rules\n"));
+    expect(new TextDecoder().decode(policy.skillFiles?.get(".agents/skills/look/CLAUDE.md"))).toBe(
+      "rules\n",
+    );
+
+    const entry = createFakeGitReader({
+      ".agents/policy.yaml": reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+    });
+    entry.put(PUBLIC_POLICY_PATH, "policy.yaml", "120000");
+    expect(present(loadPolicy({ repo: tempDir(), git: entry, env: {} })).entryPath).toBe(
+      PUBLIC_POLICY_PATH,
+    );
+
+    const loop = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+    });
+    loop.put(".agents/skills/look/a.md", "b.md", "120000");
+    loop.put(".agents/skills/look/b.md", "a.md", "120000");
+    expectBlocked(
+      loadPolicy({ repo: tempDir(), git: loop, env: {} }),
+      "repo",
+      "skill link loops: .agents/skills/look/a.md",
     );
   });
 
@@ -857,17 +901,43 @@ ${commandItem("local-draft")}
     expect(policy.files[2]?.sha256).toBe(sha256("home rubric\n"));
   });
 
-  test("a global skill symlink is an error", () => {
+  test("global skill symlinks are followed, broken links and loops are errors", () => {
     const home = tempDir();
     writeRepoFile(home, PUBLIC_POLICY_PATH, reviewPolicy(".agents/skills/look/SKILL.md"));
     writeRepoFile(home, ".agents/skills/look/SKILL.md", "look\n");
-    const link = join(home, ".agents/skills/look/references/extra.md");
+    writeRepoFile(home, ".agents/skills/look/AGENTS.md", "rules\n");
+    symlinkSync("AGENTS.md", join(home, ".agents/skills/look/CLAUDE.md"));
+    const shared = tempDir();
+    writeRepoFile(shared, "rubric.md", "shared rubric\n");
+    symlinkSync(shared, join(home, ".agents/skills/look/references"));
+    const policy = present(
+      loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} }),
+    );
+    expect(policy.files.map((file) => file.path)).toEqual([
+      ".agents/closeout.yaml",
+      ".agents/skills/look/AGENTS.md",
+      ".agents/skills/look/CLAUDE.md",
+      ".agents/skills/look/SKILL.md",
+      ".agents/skills/look/references/rubric.md",
+    ]);
+    expect(policy.files[2]?.sha256).toBe(sha256("rules\n"));
+    expect(policy.files[4]?.sha256).toBe(sha256("shared rubric\n"));
+
+    const link = join(home, ".agents/skills/look/references-more/extra.md");
     mkdirSync(dirname(link), { recursive: true });
-    symlinkSync("target", link);
+    symlinkSync("missing-target", link);
     expectBlocked(
       loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} }),
       "global",
-      `skill file is a symlink: ${link}`,
+      `skill link is broken: ${link}`,
+    );
+    rmSync(link);
+
+    symlinkSync("..", join(home, ".agents/skills/look/loop"));
+    expectBlocked(
+      loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} }),
+      "global",
+      `skill link loops: ${join(home, ".agents/skills/look/loop")}`,
     );
   });
 

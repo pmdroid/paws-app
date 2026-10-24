@@ -1,4 +1,5 @@
-import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { policyCanonicalJson, sha256Hex, sha256Text, sortPolicyFiles } from "./canonical";
 import { decodeUtf8, isRecord, parsePolicy } from "./document";
@@ -291,19 +292,20 @@ function listSkillFiles(root: string, skillFile: string): TreeList {
   if (slash <= 0) return { ok: false, message: `skill is missing: ${skillFile}` };
   const dirAbs = inside(root, skillFile.slice(0, slash));
   if (dirAbs === undefined) return { ok: false, message: `skill is missing: ${skillFile}` };
-  let dirStat;
-  try {
-    dirStat = lstatSync(dirAbs);
-  } catch {
+  const dirStat = followStat(dirAbs);
+  if (dirStat.status === "broken") return { ok: false, message: dirStat.message };
+  if (dirStat.status === "missing" || !dirStat.stat.isDirectory())
     return { ok: false, message: `skill is missing: ${skillFile}` };
-  }
-  if (dirStat.isSymbolicLink()) return { ok: false, message: `skill file is a symlink: ${dirAbs}` };
-  if (!dirStat.isDirectory()) return { ok: false, message: `skill is missing: ${skillFile}` };
   const found: string[] = [];
+  const visited = new Set<string>();
   const stack = [dirAbs];
   while (stack.length > 0) {
     const current = stack.pop();
     if (current === undefined) break;
+    const real = realDirectory(current);
+    if (real === undefined) return { ok: false, message: `skill link is broken: ${current}` };
+    if (visited.has(real)) return { ok: false, message: `skill link loops: ${current}` };
+    visited.add(real);
     let entries;
     try {
       entries = readdirSync(current, { withFileTypes: true });
@@ -312,20 +314,58 @@ function listSkillFiles(root: string, skillFile: string): TreeList {
     }
     for (const entry of entries) {
       const absolute = join(current, entry.name);
-      if (entry.isSymbolicLink())
-        return { ok: false, message: `skill file is a symlink: ${absolute}` };
-      if (entry.isDirectory()) {
+      const target = entry.isSymbolicLink() ? followStat(absolute) : undefined;
+      if (target?.status === "broken") return { ok: false, message: target.message };
+      if (target?.status === "missing")
+        return { ok: false, message: `skill link is broken: ${absolute}` };
+      const isDirectory = target ? target.stat.isDirectory() : entry.isDirectory();
+      const isFile = target ? target.stat.isFile() : entry.isFile();
+      if (isDirectory) {
+        const realChild = realDirectory(absolute);
+        if (realChild === undefined)
+          return { ok: false, message: `skill link is broken: ${absolute}` };
+        if (
+          [...visited].some((seen) => seen === realChild || seen.startsWith(`${realChild}${sep}`))
+        )
+          return { ok: false, message: `skill link loops: ${absolute}` };
         stack.push(absolute);
         continue;
       }
-      if (!entry.isFile()) continue;
-      const rel = relative(root, absolute);
-      if (rel.startsWith(".."))
-        return { ok: false, message: `skill file is a symlink: ${absolute}` };
-      found.push(rel.split(sep).join("/"));
+      if (!isFile) continue;
+      found.push(relative(root, absolute).split(sep).join("/"));
     }
   }
   return { ok: true, paths: found };
+}
+
+type FollowStat =
+  | { status: "ok"; stat: Stats }
+  | { status: "missing" }
+  | { status: "broken"; message: string };
+
+function followStat(absolute: string): FollowStat {
+  try {
+    return { status: "ok", stat: statSync(absolute) };
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    let link = false;
+    try {
+      link = lstatSync(absolute).isSymbolicLink();
+    } catch {
+      return { status: "missing" };
+    }
+    if (!link) return { status: "missing" };
+    if (code === "ELOOP") return { status: "broken", message: `skill link loops: ${absolute}` };
+    return { status: "broken", message: `skill link is broken: ${absolute}` };
+  }
+}
+
+function realDirectory(absolute: string): string | undefined {
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return undefined;
+  }
 }
 
 export function enqueuePolicyPaths(value: unknown, pending: string[]): void {

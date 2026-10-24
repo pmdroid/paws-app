@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import type {
   DecisionWarning,
   PolicyLoadResult,
@@ -8,7 +8,7 @@ import type {
   ResolvedPolicyPresent,
 } from "../types";
 import { decodeUtf8, tryParseYamlValue } from "./document";
-import type { GitBlob, GitReader } from "./git";
+import type { GitReader } from "./git";
 import { repoPath } from "./paths";
 import {
   enqueuePolicyPaths,
@@ -242,6 +242,131 @@ function regularMode(mode: string): boolean {
   return mode === "100644" || mode === "100755";
 }
 
+const LINK_DEPTH = 16;
+
+type Resolved =
+  | { kind: "file"; bytes: Uint8Array }
+  | { kind: "directory"; entries: Array<{ path: string; bytes: Uint8Array }> }
+  | { kind: "missing" };
+
+function resolveTarget(
+  git: GitReader,
+  repo: string,
+  commit: string,
+  path: string,
+  depth: number,
+): Resolved | { ok: false; message: string } {
+  if (depth > LINK_DEPTH) return { ok: false, message: `skill link loops: ${path}` };
+  const listed = git.listBlobs(repo, commit, path);
+  if (!listed.ok) return { ok: false, message: "could not read the policy file" };
+  const exact = listed.blobs.find((entry) => entry.path === path);
+  if (exact !== undefined) {
+    if (exact.mode === "120000") {
+      const read = git.readBlob(repo, exact.object);
+      if (!read.ok) return { ok: false, message: "could not read the policy file" };
+      return followLink(git, repo, commit, path, decodeUtf8(read.bytes) ?? "", depth + 1);
+    }
+    if (!regularMode(exact.mode))
+      return { ok: false, message: `skill path is not a file: ${path}` };
+    const read = git.readBlob(repo, exact.object);
+    if (!read.ok) return { ok: false, message: "could not read the policy file" };
+    return { kind: "file", bytes: read.bytes };
+  }
+  const below = listed.blobs.filter((entry) => entry.path.startsWith(`${path}/`));
+  if (below.length === 0) return { kind: "missing" };
+  const entries: Array<{ path: string; bytes: Uint8Array }> = [];
+  for (const blob of below) {
+    const resolved = resolveTarget(git, repo, commit, blob.path, depth + 1);
+    if ("ok" in resolved) return resolved;
+    if (resolved.kind === "file")
+      entries.push({ path: blob.path.slice(path.length + 1), bytes: resolved.bytes });
+    else if (resolved.kind === "directory")
+      for (const entry of resolved.entries)
+        entries.push({
+          path: `${blob.path.slice(path.length + 1)}/${entry.path}`,
+          bytes: entry.bytes,
+        });
+  }
+  return { kind: "directory", entries };
+}
+
+function followLink(
+  git: GitReader,
+  repo: string,
+  commit: string,
+  linkPath: string,
+  target: string,
+  depth: number,
+): Resolved | { ok: false; message: string } {
+  if (target.length === 0 || target.includes("\0"))
+    return { ok: false, message: `skill link is broken: ${linkPath}` };
+  if (!target.startsWith("/")) {
+    const joined = normalizeJoin(linkPath.slice(0, linkPath.lastIndexOf("/")), target);
+    if (joined !== undefined && repoPath(joined) !== undefined) {
+      const inTree = resolveTarget(git, repo, commit, joined, depth);
+      if ("ok" in inTree || inTree.kind !== "missing") return inTree;
+    }
+  }
+  const onDisk = target.startsWith("/")
+    ? target
+    : join(repo, linkPath.slice(0, linkPath.lastIndexOf("/") + 1), target);
+  return readDisk(onDisk, linkPath, depth);
+}
+
+function normalizeJoin(dir: string, target: string): string | undefined {
+  const segments: string[] = dir.length ? dir.split("/") : [];
+  for (const part of target.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (segments.length === 0) return undefined;
+      segments.pop();
+      continue;
+    }
+    segments.push(part);
+  }
+  return segments.join("/");
+}
+
+function readDisk(
+  absolute: string,
+  linkPath: string,
+  depth: number,
+): Resolved | { ok: false; message: string } {
+  let info;
+  try {
+    info = statSync(absolute);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "ELOOP") return { ok: false, message: `skill link loops: ${linkPath}` };
+    return { ok: false, message: `skill link is broken: ${linkPath}` };
+  }
+  if (info.isFile()) {
+    try {
+      return { kind: "file", bytes: new Uint8Array(readFileSync(absolute)) };
+    } catch {
+      return { ok: false, message: "could not read the policy file" };
+    }
+  }
+  if (!info.isDirectory()) return { ok: false, message: `skill path is not a file: ${linkPath}` };
+  if (depth > LINK_DEPTH) return { ok: false, message: `skill link loops: ${linkPath}` };
+  const entries: Array<{ path: string; bytes: Uint8Array }> = [];
+  let names: string[];
+  try {
+    names = readdirSync(absolute);
+  } catch {
+    return { ok: false, message: "could not read the skill directory" };
+  }
+  for (const name of names.sort()) {
+    const child = readDisk(join(absolute, name), `${linkPath}/${name}`, depth + 1);
+    if ("ok" in child) return child;
+    if (child.kind === "file") entries.push({ path: name, bytes: child.bytes });
+    else if (child.kind === "directory")
+      for (const entry of child.entries)
+        entries.push({ path: `${name}/${entry.path}`, bytes: entry.bytes });
+  }
+  return { kind: "directory", entries };
+}
+
 function materialize(
   git: GitReader,
   repo: string,
@@ -256,21 +381,18 @@ function materialize(
     if (seen.has(relative)) continue;
     seen.add(relative);
     if (repoPath(relative) === undefined) continue;
-    const listed = git.listBlobs(repo, commit, relative);
-    if (!listed.ok) return { ok: false, message: "could not read the policy file" };
-    const blob = listed.blobs.find((entry) => entry.path === relative);
-    if (blob === undefined) continue;
-    if (!regularMode(blob.mode))
+    const resolved = resolveTarget(git, repo, commit, relative, 0);
+    if ("ok" in resolved) return resolved;
+    if (resolved.kind === "missing") continue;
+    if (resolved.kind === "directory")
       return { ok: false, message: `policy path is not a file: ${relative}` };
-    const read = git.readBlob(repo, blob.object);
-    if (!read.ok) return { ok: false, message: "could not read the policy file" };
-    files.set(relative, read.bytes);
+    files.set(relative, resolved.bytes);
     if (relative.endsWith("/SKILL.md")) {
       const slash = relative.lastIndexOf("/");
       const copied = copyTree(git, repo, commit, files, relative.slice(0, slash));
       if (!copied.ok) return copied;
     } else {
-      const text = decodeUtf8(read.bytes);
+      const text = decodeUtf8(resolved.bytes);
       if (text !== undefined) {
         const parsed = tryParseYamlValue(text);
         if (parsed !== undefined) enqueuePolicyPaths(parsed, pending);
@@ -287,30 +409,15 @@ function copyTree(
   files: Map<string, Uint8Array>,
   dir: string,
 ): { ok: true } | { ok: false; message: string } {
-  const listed = git.listBlobs(repo, commit, dir);
-  if (!listed.ok) return { ok: false, message: "could not read the policy file" };
-  for (const blob of listed.blobs) {
-    const stored = storeSkillBlob(git, repo, files, blob);
-    if (!stored.ok) return stored;
+  const resolved = resolveTarget(git, repo, commit, dir, 0);
+  if ("ok" in resolved) return resolved;
+  if (resolved.kind !== "directory")
+    return { ok: false, message: `skill is missing: ${dir}/SKILL.md` };
+  for (const entry of resolved.entries) {
+    const path = `${dir}/${entry.path}`;
+    if (repoPath(path) === undefined)
+      return { ok: false, message: `import path is not repository-relative: ${path}` };
+    files.set(path, entry.bytes);
   }
-  return { ok: true };
-}
-
-function storeSkillBlob(
-  git: GitReader,
-  repo: string,
-  files: Map<string, Uint8Array>,
-  blob: GitBlob,
-): { ok: true } | { ok: false; message: string } {
-  if (blob.mode === "120000")
-    return { ok: false, message: `skill file is a symlink: ${blob.path}` };
-  if (!regularMode(blob.mode))
-    return { ok: false, message: `skill path is not a file: ${blob.path}` };
-  const read = git.readBlob(repo, blob.object);
-  if (!read.ok) return { ok: false, message: "could not read the policy file" };
-  if (repoPath(blob.path) === undefined) {
-    return { ok: false, message: `import path is not repository-relative: ${blob.path}` };
-  }
-  files.set(blob.path, read.bytes);
   return { ok: true };
 }
