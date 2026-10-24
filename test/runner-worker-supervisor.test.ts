@@ -231,15 +231,15 @@ test("a new agent home has the current skills when its first worker starts, pinn
       prepareHome: (home) => skills.prepareHome(home),
       hold: (home, executionId) => {
         holds.push(`hold ${executionId}`);
-        skills.hold(home, executionId);
+        return skills.hold(home, executionId);
       },
       release: (executionId) => {
         holds.push(`release ${executionId}`);
         skills.release(executionId);
       },
     },
-    launch(_executionId, home) {
-      seen = readFileSync(join(home, ".claude/skills/impeccable/SKILL.md"), "utf8");
+    launch(_executionId, _home, _log, _resume, _tag, folder) {
+      seen = readFileSync(join(folder!, ".claude/skills/impeccable/SKILL.md"), "utf8");
       const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
         detached: true,
         stdio: "ignore",
