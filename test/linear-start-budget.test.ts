@@ -266,7 +266,7 @@ test("a delegated task reads each Linear fact once before the agent's first prom
       }),
     ]);
     expect(counts, server.operations.join(", ")).toEqual({
-      "task-access": 6,
+      "task-access": 4,
       outbox: 3,
       intake: 2,
       "merge-context": 1,
