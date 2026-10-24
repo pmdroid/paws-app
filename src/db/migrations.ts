@@ -2453,4 +2453,11 @@ ALTER TABLE item_hold_next RENAME TO item_hold;
     id: "126_work_item_project_lead",
     sql: `ALTER TABLE work_item_scheduling ADD COLUMN project_lead_id TEXT;`,
   },
+  {
+    id: "127_work_item_linear_project",
+    sql: `
+ALTER TABLE work_item ADD COLUMN linear_project_id TEXT;
+ALTER TABLE work_item ADD COLUMN linear_project_name TEXT;
+`,
+  },
 ];

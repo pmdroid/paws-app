@@ -7,7 +7,12 @@ import {
   type WorkBrief,
   type WorkItemState,
 } from "../core";
-import { applyWorkItemEvent, saveTaskBlocks } from "../db";
+import {
+  applyWorkItemEvent,
+  saveTaskBlocks,
+  saveWorkItemLinearProject,
+  type WorkItemLinearProject,
+} from "../db";
 import type { DependencyEdge } from "../linear";
 import type { OrderNode } from "./order";
 import { ulid } from "./ulid";
@@ -137,6 +142,8 @@ export function insertRunningQueue(
     title: string;
     ordered: readonly OrderNode[];
     briefs: ReadonlyMap<string, WorkBrief>;
+    /** Each issue's Linear project from the intake snapshot. Missing issues keep none. */
+    projects?: ReadonlyMap<string, WorkItemLinearProject | null>;
     edges: readonly DependencyEdge[];
     now: number;
     sessionKey?: string | null;
@@ -175,6 +182,8 @@ export function insertRunningQueue(
           input.sessionKey ?? null,
         ],
       );
+      const project = input.projects?.get(item.linearIssueId);
+      if (project) saveWorkItemLinearProject(db, item.id, project);
     }
     saveTaskBlocks(
       db,

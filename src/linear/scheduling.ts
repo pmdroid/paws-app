@@ -12,11 +12,14 @@ export function schedulingMetadata(issue: Record<string, unknown>): LinearSchedu
     const value = issue[field];
     if (value === null && field !== "team") {
       result[target] = null;
+      if (field === "project") result.projectName = null;
       continue;
     }
     const id = isRecord(value) ? readString(value, "id") : null;
     if (!id?.trim()) throw new Error(`Linear returned invalid scheduling ${field}`);
     result[target] = id;
+    const name = field === "project" && isRecord(value) ? readString(value, "name") : null;
+    if (name?.trim()) result.projectName = name.trim();
   }
   const project = issue["project"];
   if (isRecord(project) && "lead" in project) {
