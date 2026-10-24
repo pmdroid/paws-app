@@ -23,14 +23,24 @@ spec.loader.exec_module(release)
 DEVELOPMENT = ("typescript", "oxlint", "@types/bun")
 
 
-def synthetic_source(source):
+AGENT_MANIFEST = pathlib.Path(sys.argv[1]).with_name("agents.json")
+
+
+def agent_pins(content):
+    return {entry["package"]: entry["version"] for entry in json.loads(content)["agents"].values()}
+
+
+def synthetic_source(source, agents=None):
     for name in release.REQUIRED:
         path = source / name.removeprefix("app/")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"synthetic package file")
-        if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
-            path.chmod(0o755)
-    manifest = {"dependencies": {"@openai/codex": "1.0.0", "media": "1.0.0"}, "devDependencies": {name: "1.0.0" for name in DEVELOPMENT}}
+    agents = agents if agents is not None else AGENT_MANIFEST.read_bytes()
+    (source / "deploy/linux/agents.json").write_bytes(agents)
+    for name in ("adapter", "media"):
+        (source / "node_modules" / name).mkdir(parents=True, exist_ok=True)
+        (source / "node_modules" / name / "package.json").write_text(json.dumps({"name": name, "version": "1.0.0"}))
+    manifest = {"dependencies": {"adapter": "1.0.0", "media": "1.0.0", **agent_pins(agents)}, "devDependencies": {name: "1.0.0" for name in DEVELOPMENT}}
     (source / "package.json").write_text(json.dumps(manifest))
 
 
@@ -134,8 +144,8 @@ class ReleaseVerification(unittest.TestCase):
                 executable = source / "node_modules" / target
                 executable.parent.mkdir(parents=True, exist_ok=True)
                 executable.write_bytes(b"#!/usr/bin/env node\n")
-                launcher = source / "node_modules/.bin/claude-agent-acp"
-                launcher.unlink()
+                launcher = source / "node_modules/.bin/adapter"
+                launcher.parent.mkdir(parents=True, exist_ok=True)
                 launcher.symlink_to(executable)
                 runtime = self.root / ("bun-" + str(index))
                 runtime.write_bytes(b"synthetic Bun runtime")
@@ -150,15 +160,10 @@ class ReleaseVerification(unittest.TestCase):
                         self.assertEqual(members["bin/mise"].mode, 0o755)
                         with tarfile.open(output / "artifact.tar") as archive:
                             self.assertEqual(archive.extractfile("bin/paws-runner").read(), release.RUNNER_LAUNCHER)
-                            for provider in ("claude", "codex"):
-                                launcher = archive.extractfile("app/node_modules/.bin/" + provider).read().decode()
-                                self.assertIn("'/opt/paws-runner/current/node_modules/", launcher)
-                                self.assertNotIn("/usr/bin/node", launcher)
-                                self.assertEqual(members["app/node_modules/.bin/" + provider].mode, 0o755)
-                            codex = archive.extractfile("app/node_modules/.bin/codex").read().decode()
-                            self.assertIn("exec /opt/paws-runner/bin/bun --no-env-file '", codex)
-                            adapter = archive.extractfile("app/node_modules/.bin/claude-agent-acp").read().decode()
-                            self.assertIn("exec /opt/paws-runner/bin/bun --no-env-file '", adapter)
+                            adapter = archive.extractfile("app/node_modules/.bin/adapter").read().decode()
+                            self.assertIn("exec /opt/paws-runner/bin/bun --no-env-file '/opt/paws-runner/current/node_modules/" + target, adapter)
+                            self.assertNotIn("/usr/bin/node", adapter)
+                        self.assertFalse(any(name.startswith("app/node_modules/.bin/") and name.rsplit("/", 1)[1] in release.PROVIDER_EXECUTABLES for name in members))
                     else:
                         with self.assertRaises(ValueError):
                             packager.pack(arguments)
@@ -239,6 +244,7 @@ class ReleaseVerification(unittest.TestCase):
             (production / name).parent.mkdir(parents=True, exist_ok=True)
             (production / name).write_bytes(b"#!/usr/bin/env node\n")
         (production / "media/package.json").write_text(json.dumps({"name": "media", "dependencies": {"left-pad": "1.0.0"}, "devDependencies": {"typescript": "1.0.0"}}))
+        (production / ".bin").mkdir(exist_ok=True)
         (production / ".bin/tsc").symlink_to("../typescript/bin/tsc")
         runtime = self.root / "bun-production"
         runtime.write_bytes(b"synthetic Bun runtime")
@@ -250,7 +256,7 @@ class ReleaseVerification(unittest.TestCase):
             packager.pack(arguments)
         members = release.inspect_archive(self.root / "package-production/artifact.tar")
         self.assertLessEqual(release.REQUIRED, members.keys())
-        self.assertIn("app/" + release.PROVIDER_EXECUTABLES["codex"], members)
+        self.assertFalse(any(name.startswith("app/node_modules/@agentclientprotocol/claude-agent-acp/") for name in members))
         self.assertIn("app/node_modules/media/index.js", members)
         packages = {name for member in members if member.startswith("app/node_modules/") for name in packager.package_names(tuple(member.removeprefix("app/node_modules/").split("/")))}
         self.assertEqual({name for name in packages if name.endswith("-musl")}, set())
@@ -263,43 +269,31 @@ class ReleaseVerification(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "needs a development dependency: typescript"):
                 packager.pack(argparse.Namespace(**{**vars(arguments), "output": self.root / "package-production-hard"}))
 
-    def test_missing_bundled_provider_targets_reject_packaging(self):
+    def test_packaging_refuses_agent_pins_that_differ_from_package_json(self):
         specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
         packager = importlib.util.module_from_spec(specification)
         specification.loader.exec_module(packager)
-        for index, missing in enumerate(("node_modules/@openai/codex/bin/codex.js", *release.PROVIDER_EXECUTABLES.values(), release.CODEX_PLATFORM_PACKAGE)):
-            with self.subTest(missing=missing):
-                source = self.root / ("missing-provider-" + str(index))
-                synthetic_source(source)
-                (source / missing).unlink()
-                runtime = self.root / ("missing-provider-bun-" + str(index))
-                runtime.write_bytes(b"synthetic Bun runtime")
-                arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / ("missing-provider-package-" + str(index)), mise=None)
-                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
-                    with self.assertRaises(FileNotFoundError):
-                        packager.pack(arguments)
+        source = self.root / "source-agent-pins"
+        synthetic_source(source)
+        manifest = json.loads((source / "package.json").read_text())
+        manifest["dependencies"]["@agentclientprotocol/codex-acp"] = "9.9.9"
+        (source / "package.json").write_text(json.dumps(manifest))
+        runtime = self.root / "bun-agent-pins"
+        runtime.write_bytes(b"synthetic Bun runtime")
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-agent-pins", mise=None)
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
+            with self.assertRaisesRegex(ValueError, "agent-manifest.py"):
+                packager.pack(arguments)
 
-    def test_archive_missing_a_bundled_provider_target_is_rejected(self):
-        for missing in (name for name in release.REQUIRED if name.endswith(("/claude", "/codex", "/codex.js"))):
-            with self.subTest(missing=missing):
+    def test_archive_that_ships_a_coding_agent_is_rejected(self):
+        for extra in ("app/node_modules/@openai/codex/bin/codex.js", "app/node_modules/@xai-official/grok/package.json", "app/node_modules/.bin/claude-agent-acp"):
+            with self.subTest(extra=extra):
                 with tarfile.open(self.artifact, "w") as archive:
-                    for name in release.REQUIRED - {missing}:
+                    for name in release.REQUIRED | {extra}:
                         member = tarfile.TarInfo(name)
-                        member.mode = 0o644
+                        member.mode = 0o755
                         archive.addfile(member, io.BytesIO())
-                with self.assertRaisesRegex(ValueError, "missing required"):
-                    release.inspect_archive(self.artifact)
-
-    def test_nonexecutable_bundled_provider_target_is_rejected(self):
-        providers = {"app/" + target for target in release.PROVIDER_EXECUTABLES.values()} | {"app/node_modules/.bin/claude", "app/node_modules/.bin/codex"}
-        for target in providers:
-            with self.subTest(target=target):
-                with tarfile.open(self.artifact, "w") as archive:
-                    for name in release.REQUIRED:
-                        member = tarfile.TarInfo(name)
-                        member.mode = 0o644 if name == target else 0o755
-                        archive.addfile(member, io.BytesIO())
-                with self.assertRaisesRegex(ValueError, "must be executable"):
+                with self.assertRaisesRegex(ValueError, "agents.json"):
                     release.inspect_archive(self.artifact)
 
     def test_mise_is_pinned_for_both_architectures(self):
@@ -383,11 +377,11 @@ class ReleaseVerification(unittest.TestCase):
 
     def archive(self, extra=None):
         with tarfile.open(self.artifact, "w") as archive:
-            for name in sorted(release.REQUIRED):
+            for name in sorted(release.REQUIRED | {"app/node_modules/yaml/package.json", "app/node_modules/.bin/yaml"}):
                 member = tarfile.TarInfo(name)
                 content = b"synthetic reviewed release file"
                 member.size = len(content)
-                member.mode = 0o755 if name in release.BINARIES or name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values() or name in ("app/node_modules/.bin/claude", "app/node_modules/.bin/codex") else 0o644
+                member.mode = 0o755 if name in release.BINARIES else 0o644
                 archive.addfile(member, io.BytesIO(content))
             if extra is not None:
                 archive.addfile(extra, io.BytesIO(b"x" * extra.size) if extra.isfile() else None)
@@ -486,5 +480,298 @@ class ReleaseVerification(unittest.TestCase):
             self.verify()
 
 
+def load(name):
+    specification = importlib.util.spec_from_file_location(name.replace("-", "_"), pathlib.Path(sys.argv[1]).with_name(name + ".py"))
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+BUN = os.environ.get("PAWS_TEST_BUN") or shutil.which("bun")
+ARCH, TRIPLE = release.ARCHITECTURE
+NODE_AGENT = """#!/usr/bin/env node
+const input = require("readline").createInterface({ input: process.stdin });
+input.on("line", (line) => {
+  const request = JSON.parse(line);
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { name: NAME, version: VERSION, argv: process.argv.slice(2), file: __filename } }) + "\\n");
+});
+"""
+NATIVE_AGENT = """#!/bin/sh
+read -r line
+printf '{"jsonrpc":"2.0","id":1,"result":{"name":"NAME","version":"VERSION","argv":["%s"],"file":"%s"}}\\n' "$*" "$0"
+exec cat >/dev/null
+"""
+
+
+def node_agent(name, version):
+    return NODE_AGENT.replace("NAME", json.dumps(name)).replace("VERSION", json.dumps(version)).encode()
+
+
+def native_agent(name, version):
+    return NATIVE_AGENT.replace("NAME", name).replace("VERSION", version).encode()
+
+
+def fake_packages(version, marker):
+    """Stand-ins for every package the three agents install, with the files the launchers and installer expect."""
+    vendor = f"vendor/{TRIPLE}-unknown-linux-musl"
+    return {
+        "@agentclientprotocol/claude-agent-acp": ({"bin": {"claude-agent-acp": "dist/index.js"}, "dependencies": {f"@anthropic-ai/claude-agent-sdk-linux-{ARCH}": version, f"@anthropic-ai/claude-agent-sdk-linux-{ARCH}-musl": version}}, {"dist/index.js": (node_agent("claude-agent-acp", version), 0o755)}),
+        f"@anthropic-ai/claude-agent-sdk-linux-{ARCH}": ({}, {"claude": (native_agent("claude", version), 0o755)}),
+        f"@anthropic-ai/claude-agent-sdk-linux-{ARCH}-musl": ({}, {"claude": (native_agent("claude-musl", version), 0o755)}),
+        "@agentclientprotocol/codex-acp": ({"bin": {"codex-acp": "dist/index.js"}, "dependencies": {"@openai/codex": version, f"@openai/codex-linux-{ARCH}": version}}, {"dist/index.js": (node_agent("codex-acp", version), 0o755)}),
+        "@openai/codex": ({"bin": {"codex": "bin/codex.js"}}, {"bin/codex.js": (node_agent("codex", version), 0o755)}),
+        f"@openai/codex-linux-{ARCH}": ({}, {f"{vendor}/bin/codex": (native_agent("codex-native", version), 0o755), f"{vendor}/bin/codex-code-mode-host": (b"#!/bin/sh\n", 0o755), f"{vendor}/codex-resources/voice/bin/codex-voice-host": (b"#!/bin/sh\n", 0o755), f"{vendor}/codex-resources/bwrap": (b"#!/bin/sh\n", 0o755)}),
+        "@xai-official/grok": ({"bin": {"grok": "bin/grok"}, "scripts": {"postinstall": f"touch {marker}"}}, {"bin/grok": (node_agent("grok", version), 0o755)}),
+    }
+
+
+def tarball(name, version, metadata, files):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path, (content, mode) in {"package.json": (json.dumps({"name": name, "version": version, **metadata}).encode(), 0o644), **files}.items():
+            member = tarfile.TarInfo("package/" + path)
+            member.size = len(content)
+            member.mode = mode
+            archive.addfile(member, io.BytesIO(content))
+    return buffer.getvalue()
+
+
+def integrity(content):
+    import base64
+    return "sha512-" + base64.b64encode(hashlib.sha512(content).digest()).decode()
+
+
+class FakeRegistry:
+    """npm registry on 127.0.0.1 serving packuments and tarballs; `served` can be swapped to tamper a tarball."""
+
+    def __init__(self):
+        import http.server
+        import threading
+        import urllib.parse
+        self.packuments = {}
+        self.served = {}
+        self.requests = []
+        registry = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = urllib.parse.unquote(self.path).lstrip("/")
+                registry.requests.append(path)
+                content = registry.served.get(path) if path.endswith(".tgz") else json.dumps(registry.packuments[path]).encode() if path in registry.packuments else None
+                if content is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+
+            def log_message(self, *_):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def publish(self, name, version, metadata, files):
+        content = tarball(name, version, metadata, files)
+        path = f"{name}/-/{name.split('/')[-1]}-{version}.tgz"
+        self.served[path] = content
+        packument = self.packuments.setdefault(name, {"name": name, "dist-tags": {}, "versions": {}})
+        packument["versions"][version] = {"name": name, "version": version, **metadata, "dist": {"tarball": self.url + path, "integrity": integrity(content)}}
+        packument["dist-tags"]["latest"] = version
+        return path
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@unittest.skipIf(BUN is None, "the pinned Bun is required to install agents")
+class AgentInstallation(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory(prefix="paws-agent-test-")
+        cls.root = pathlib.Path(cls.temporary.name)
+        cls.marker = cls.root / "install-script-ran"
+        cls.registry = FakeRegistry()
+        cls.paths = {}
+        for version in ("1.0.0", "2.0.0"):
+            for name, (metadata, files) in fake_packages(version, cls.marker).items():
+                cls.paths[(name, version)] = cls.registry.publish(name, version, metadata, files)
+        generator = load("agent-manifest")
+        cls.manifests = {}
+        for version in ("1.0.0", "2.0.0"):
+            agents = {}
+            for agent in release.AGENT_PACKAGES:
+                workspace = cls.root / f"lock-{agent}-{version}"
+                workspace.mkdir()
+                agents[agent] = generator.agent_entry(BUN, agent, version, workspace, registry=cls.registry.url)
+            cls.manifests[version] = json.dumps({"format": 1, "agents": agents}, indent=2)
+        cls.original = dict(cls.registry.served)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.registry.close()
+        cls.temporary.cleanup()
+
+    def setUp(self):
+        self.registry.served = dict(self.original)
+        self.marker.unlink(missing_ok=True)
+        self.installer = load("install")
+        self.work = pathlib.Path(tempfile.mkdtemp(prefix="case-", dir=self.root))
+        self.base = self.work / "opt"
+        (self.base / "bin").mkdir(parents=True)
+        (self.base / "bin/bun").symlink_to(BUN)
+        self.installer.root_directory = lambda path, mode=0o755: path.mkdir(parents=True, exist_ok=True)
+        self.installer.STATE = self.work / "state"
+        self.installer.STATE.mkdir(mode=0o700)
+
+    def manifest(self, version):
+        return release.parse_agent_manifest(self.manifests[version])
+
+    def install(self, version):
+        return self.installer.install_agents(self.manifest(version), BUN, self.base, self.registry.url)
+
+    def current(self, agent):
+        return os.readlink(self.base / "agents" / agent / "current")
+
+    def session(self, launcher, *arguments):
+        """Start a launcher and wait until the fake agent answers, so its version folder is held."""
+        process = subprocess.Popen([str(self.base / "bin" / launcher), *arguments], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={"PATH": "/usr/bin:/bin", "HOME": str(self.work)})
+        process.stdin.write(b'{"jsonrpc":"2.0","id":1,"method":"initialize"}\n')
+        process.stdin.flush()
+        answer = json.loads(process.stdout.readline() or b"null")
+        def cleanup():
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+        self.addCleanup(cleanup)
+        return process, answer
+
+    def finish(self, process):
+        process.stdin.close()
+        self.assertEqual(process.wait(timeout=10), 0, process.stderr.read().decode())
+
+    def test_package_install_then_agents_install_and_each_launcher_runs_a_fake_task(self):
+        packager = load("package")
+        source = self.work / "source"
+        synthetic_source(source, self.manifests["1.0.0"].encode())
+        output = self.work / "package"
+        arguments = argparse.Namespace(source=source, bun=pathlib.Path(BUN), version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=output, mise=None)
+        if subprocess.run([BUN, "--version"], capture_output=True, check=True).stdout.decode().strip() != release.BUN_VERSION:
+            self.skipTest("the pinned Bun version is required")
+        with mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
+            packager.pack(arguments)
+        unpacked = self.work / "unpacked"
+        unpacked.mkdir()
+        self.installer.extract_verified(output / "artifact.tar", unpacked)
+        self.assertEqual((unpacked / "deploy/linux/agents.json").read_text(), self.manifests["1.0.0"])
+        self.assertFalse((unpacked / "app/node_modules/@agentclientprotocol/claude-agent-acp").exists())
+        lock = self.work / "agents.lock"
+        with mock.patch.object(self.installer, "lock_agents", lambda: os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)):
+            manifest = self.installer.prepare_agents(output / "artifact.tar", self.base, self.registry.url)
+            statuses = self.installer.finish_agents(manifest, self.base)
+        self.assertEqual(statuses, {agent: {"version": "1.0.0", "status": "installed"} for agent in release.AGENT_PACKAGES})
+        expected = {"claude-agent-acp": "claude-agent-acp", "claude": "claude", "codex-acp": "codex-acp", "codex": "codex", "grok": "grok"}
+        for launcher, (agent, target, _) in release.PROVIDER_EXECUTABLES.items():
+            with self.subTest(launcher=launcher):
+                folder = self.base / "agents" / agent / "1.0.0"
+                process, answer = self.session(launcher, "task", "it's spaced")
+                self.assertEqual(answer["result"]["name"], expected[launcher])
+                self.assertEqual(answer["result"]["version"], "1.0.0")
+                self.assertEqual(answer["result"]["argv"], ["task", "it's spaced"] if release.PROVIDER_EXECUTABLES[launcher][2] else ["task it's spaced"])
+                self.assertEqual(pathlib.Path(answer["result"]["file"]).resolve(), (folder / target).resolve())
+                self.assertTrue(self.installer.held(folder))
+                self.finish(process)
+                self.assertFalse(self.installer.held(folder))
+        codex = self.base / "agents/codex/1.0.0" / release.CODEX_VENDOR
+        self.assertFalse((codex / "codex-resources/voice").exists())
+        self.assertTrue((codex / "bin/codex-code-mode-host").is_file())
+        self.assertTrue((codex / "codex-resources/bwrap").is_file())
+        sdk = self.base / "agents/claude/1.0.0/node_modules/@anthropic-ai"
+        self.assertEqual(sorted(path.name for path in sdk.iterdir()), [f"claude-agent-sdk-linux-{ARCH}"])
+
+    def test_a_tarball_whose_integrity_does_not_match_is_refused_and_the_previous_version_stays(self):
+        self.install("1.0.0")
+        self.installer.activate_agents(self.manifest("1.0.0"), self.base)
+        path = self.paths[(f"@openai/codex-linux-{ARCH}", "2.0.0")]
+        metadata, files = fake_packages("2.0.0", self.marker)[f"@openai/codex-linux-{ARCH}"]
+        self.registry.served[path] = tarball(f"@openai/codex-linux-{ARCH}", "2.0.0", metadata, {**files, "extra": (b"tampered", 0o644)})
+        with self.assertRaisesRegex(self.installer.AgentInstallError, r"Coding agent codex 2\.0\.0 was not installed: .*[Ii]ntegrity") as raised:
+            self.install("2.0.0")
+        self.assertEqual(raised.exception.agent, "codex")
+        self.assertIn(path, self.registry.requests)
+        self.assertFalse((self.base / "agents/codex/2.0.0").exists())
+        self.assertEqual(sorted(path.name for path in (self.base / "agents/codex").iterdir()), ["1.0.0", "current"])
+        for agent in release.AGENT_PACKAGES:
+            self.assertEqual(self.current(agent), "1.0.0")
+        process, answer = self.session("codex-acp")
+        self.assertEqual(answer["result"]["version"], "1.0.0")
+        self.finish(process)
+
+    def test_a_manifest_whose_lockfile_and_pins_differ_is_refused_before_bun_runs(self):
+        changes = (
+            lambda manifest: manifest["agents"]["codex"]["packages"][0].update(integrity="sha512-" + "A" * 86 + "=="),
+            lambda manifest: manifest["agents"]["codex"]["lockfile"]["packages"]["@openai/codex"].__setitem__(1, self.registry.url + "elsewhere.tgz"),
+            lambda manifest: manifest["agents"]["codex"]["packages"].pop(),
+            lambda manifest: manifest["agents"]["grok"]["lockfile"].__setitem__("trustedDependencies", ["@xai-official/grok"]),
+            lambda manifest: manifest["agents"]["claude"].__setitem__("version", "2.0.0"),
+            lambda manifest: manifest["agents"].pop("grok"),
+        )
+        for index, change in enumerate(changes):
+            with self.subTest(index=index):
+                manifest = json.loads(self.manifests["1.0.0"])
+                change(manifest)
+                with self.assertRaises(ValueError):
+                    release.parse_agent_manifest(json.dumps(manifest))
+
+    def test_install_scripts_do_not_run(self):
+        control = self.work / "control"
+        control.mkdir()
+        (control / "package.json").write_text(json.dumps({**release.agent_package_json("grok", "1.0.0"), "trustedDependencies": ["@xai-official/grok"]}))
+        subprocess.run([BUN, "install"], cwd=control, env={**release.COMMAND_ENV, "HOME": str(self.work), "BUN_INSTALL_CACHE_DIR": str(self.work / "control-cache"), "BUN_CONFIG_REGISTRY": self.registry.url}, capture_output=True, check=True, timeout=60)
+        self.assertTrue(self.marker.exists(), "the fake package's postinstall runs when scripts are allowed")
+        self.marker.unlink()
+        calls = []
+        run = subprocess.run
+        def recording(arguments, **options):
+            calls.append(arguments)
+            return run(arguments, **options)
+        with mock.patch.object(self.installer.subprocess, "run", side_effect=recording):
+            self.install("1.0.0")
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(all("--ignore-scripts" in arguments and "--frozen-lockfile" in arguments for arguments in calls))
+        self.assertEqual(len(calls), 3)
+
+    def test_a_second_version_installs_beside_the_first_and_current_waits_for_sessions_on_the_old_one(self):
+        self.install("1.0.0")
+        self.assertEqual(self.installer.activate_agents(self.manifest("1.0.0"), self.base)["claude"]["status"], "installed")
+        first = self.base / "agents/claude/1.0.0"
+        snapshot = {path: path.read_bytes() for path in first.rglob("*") if path.is_file() and not path.is_symlink()}
+        process, answer = self.session("claude-agent-acp")
+        self.assertEqual(answer["result"]["version"], "1.0.0")
+        self.install("2.0.0")
+        self.assertEqual(sorted(path.name for path in (self.base / "agents/claude").iterdir()), ["1.0.0", "2.0.0", "current"])
+        statuses = self.installer.activate_agents(self.manifest("2.0.0"), self.base)
+        self.assertEqual(statuses["claude"], {"version": "2.0.0", "status": "waiting"})
+        self.assertEqual(self.current("claude"), "1.0.0")
+        self.assertEqual({agent: statuses[agent]["status"] for agent in ("codex", "grok")}, {"codex": "installed", "grok": "installed"})
+        self.assertEqual(self.current("codex"), "2.0.0")
+        self.finish(process)
+        self.assertEqual(self.installer.activate_agents(self.manifest("2.0.0"), self.base)["claude"]["status"], "installed")
+        self.assertEqual(self.current("claude"), "2.0.0")
+        self.assertEqual({path: path.read_bytes() for path in first.rglob("*") if path.is_file() and not path.is_symlink()}, snapshot)
+        inode = first.stat().st_ino
+        self.installer.install_agent_version("claude", self.manifest("1.0.0")["agents"]["claude"], BUN, self.base, self.registry.url)
+        self.assertEqual(first.stat().st_ino, inode)
+        process, answer = self.session("claude-agent-acp")
+        self.assertEqual(answer["result"]["version"], "2.0.0")
+        self.finish(process)
+
+
 if __name__ == "__main__":
-    unittest.main(argv=sys.argv[:1], verbosity=2)
+    unittest.main(argv=[sys.argv[0], *sys.argv[2:]], verbosity=2)

@@ -298,16 +298,16 @@ module.main()
                 raise RuntimeError("Actual interrupted installation did not recover its exact release")
             if stage == "current" and selected.stat().st_ino != selected_inode:
                 raise RuntimeError("Exact recovery replaced the selected release directory")
-            for provider in ("claude", "codex"):
-                pointer = pathlib.Path("/opt/paws-runner/bin") / provider
-                if os.readlink(pointer) != "../current/node_modules/.bin/" + provider or not pointer.is_file():
-                    raise RuntimeError("Interrupted installation did not recover bundled provider pointers")
+            for launcher in installer.release.PROVIDER_EXECUTABLES:
+                pointer = pathlib.Path("/opt/paws-runner/bin") / launcher
+                if pointer.is_symlink() or pointer.read_bytes() != installer.release.agent_launcher(launcher):
+                    raise RuntimeError("Interrupted installation did not recover the agent launchers")
             interrupted.append(stage)
         def agent_identity():
             os.setgroups(os.getgrouplist(agent.pw_name, agent.pw_gid))
             os.setgid(agent.pw_gid)
             os.setuid(agent.pw_uid)
-        accessible = subprocess.run(["/usr/bin/python3", "-I", "-c", "from pathlib import Path;assert Path('/opt/paws-runner/current/src/index.ts').read_bytes();assert Path('/opt/paws-runner/current/node_modules/.bin/claude-agent-acp').read_bytes()"], preexec_fn=agent_identity, capture_output=True, check=False)
+        accessible = subprocess.run(["/usr/bin/python3", "-I", "-c", "from pathlib import Path;assert Path('/opt/paws-runner/current/src/index.ts').read_bytes();assert Path('/opt/paws-runner/bin/claude-agent-acp').read_bytes();assert Path('/opt/paws-runner/agents/claude/current/package.json').read_bytes()"], preexec_fn=agent_identity, capture_output=True, check=False)
         if accessible.returncode != 0:
             raise RuntimeError("Private installer umask prevented service UID package access")
         final = json.loads(state_path.read_bytes())
@@ -317,11 +317,12 @@ module.main()
             path = pathlib.Path("/etc/systemd/system") / name
             if path.stat().st_uid != 0 or path.stat().st_mode & 0o7777 != 0o644:
                 raise RuntimeError("Fixed unit has unsafe ownership or mode")
-        for name in ("claude-agent-acp", "codex-acp", "grok"):
-            path = pathlib.Path("/opt/paws-runner/current/node_modules/.bin") / name
-            content = path.read_text()
-            if path.is_symlink() or "exec /opt/paws-runner/bin/bun --no-env-file '/opt/paws-runner/current/node_modules/" not in content:
-                raise RuntimeError("Adapter launcher does not preserve its trusted package path")
+        for name in installer.release.PROVIDER_EXECUTABLES:
+            path = pathlib.Path("/opt/paws-runner/bin") / name
+            if path.is_symlink() or path.stat().st_uid != 0 or path.stat().st_mode & 0o7777 != 0o755 or path.read_bytes() != installer.release.agent_launcher(name):
+                raise RuntimeError("Agent launcher is not the fixed root-owned launcher")
+            if (pathlib.Path("/opt/paws-runner/current/node_modules/.bin") / name).exists():
+                raise RuntimeError("The release still carries a bundled agent")
         runtime_path = pathlib.Path("/opt/paws-runner/bin/bun")
         if not runtime_path.is_symlink() or os.readlink(runtime_path) != "../current/bin/bun" or hashlib.sha256(runtime_path.read_bytes()).hexdigest() != candidate_runtime_sha or run([str(runtime_path), "--version"]).strip() != "1.4.2":
             raise RuntimeError("Fixed runtime path does not select the verified release runtime")
@@ -341,19 +342,10 @@ module.main()
             raise RuntimeError("Rejected runner pointer changed release trust state")
         runner_path.unlink()
         runner_path.symlink_to("../current/bin/paws-runner")
-        for provider in ("claude", "codex"):
-            pointer = pathlib.Path("/opt/paws-runner/bin") / provider
-            pointer.unlink()
-            pointer.symlink_to("../releases/0.1.1/node_modules/.bin/" + provider)
-            install(False)
-            if state_path.read_bytes() != installed_state:
-                raise RuntimeError("Rejected provider pointer changed release trust state")
-            pointer.unlink()
-            pointer.symlink_to("../current/node_modules/.bin/" + provider)
         commands = [json.loads(line) for line in (ROOT / "systemctl-commands.jsonl").read_text().splitlines()]
         if any(command[0] == "start" for command in commands):
             raise RuntimeError("Installer started an unconfigured daemon")
-        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "bundledProviderPointersRecovered": True, "changedProviderPointersRejected": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
+        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "agentLaunchersRecovered": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
         print(json.dumps(observations))
 
 
