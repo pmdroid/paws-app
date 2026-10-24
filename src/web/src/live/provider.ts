@@ -31,6 +31,7 @@ import type {
   AgentCloseoutEvent,
   Job,
   StoredRun,
+  ItemHold,
   OpenQuestionRecord,
   OutboxRow,
   MergeQueuePosition,
@@ -55,6 +56,7 @@ import {
   listEvidence,
   linearRequestsByItem,
   listIntakeQueue,
+  listItemHolds,
   listJobs,
   listLinearTurnsForItem,
   listOpenQuestions,
@@ -90,6 +92,7 @@ import {
   type StatusEvent,
   type StatusEvidence,
   type StatusGitHubQueue,
+  type StatusHeld,
   type StatusItem,
   type StatusMergeQueue,
   type StatusMergeEntry,
@@ -276,6 +279,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     }),
   );
   const linearRequests = linearRequestsByItem(db);
+  const holds = new Map(listItemHolds(db).map((hold) => [hold.itemId, hold]));
   const storedRuns = new Map<string, StoredRun[]>();
   for (const run of listRuns(db))
     storedRuns.set(run.itemId, [...(storedRuns.get(run.itemId) ?? []), run]);
@@ -293,6 +297,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
       jobs,
     ),
     linearRequests: linearRequests.get(record.id) ?? 0,
+    ...heldOf(record, holds),
     ...sessionAttempt(db, record, records, itemsByIssue, storedRuns, facts),
   }));
   const progress = listCloseoutProgress(db);
@@ -508,6 +513,14 @@ function toItem(
     ...(githubQueue ? { githubQueue } : {}),
     ...visualReviewsOf(db, record),
   };
+}
+
+function heldOf(
+  record: WorkItemRecord,
+  holds: ReadonlyMap<string, ItemHold>,
+): { held?: StatusHeld } {
+  const hold = record.state === "queued" ? holds.get(record.id) : undefined;
+  return hold ? { held: { reason: hold.reason, blockers: hold.blockers } } : {};
 }
 
 function visualReviewsOf(
