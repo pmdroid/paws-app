@@ -37,6 +37,7 @@ type State = {
 };
 
 const VERSIONED: readonly RunnerSkillAgent[] = ["claude", "codex"];
+const VERSIONS = ".paws-skills/versions";
 
 /** A refused bundle is not downloaded again for this long unless Paws pins another one. */
 const REFUSED_RETRY_MS = 10 * 60_000;
@@ -187,10 +188,10 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       .filter(([, , agents]) => agents.length);
     return createHash("sha256").update(JSON.stringify(versioned)).digest("hex").slice(0, 32);
   }
-  const foldersOf = (home: string) => join(home, ".paws-skills", "versions");
+  const foldersOf = (home: string) => join(home, VERSIONS);
   function buildFolder(home: string): void {
     const id = folderId();
-    const target = join(ownedDirectory(home, ".paws-skills/versions"), id);
+    const target = join(ownedDirectory(home, VERSIONS), id);
     if (!existsSync(target)) {
       const name = `${id}.${randomUUID()}`;
       const staging = ownedDirectory(home, ".paws-skills");
