@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 import type { AgentsConfig } from "../config";
 import {
+  adapterBinPath,
   GROK_AGENT_ARGS,
   pawsPackageRoot,
   resolveAdapter,
@@ -92,4 +93,27 @@ test("selects cached_token unless the api key is allowed", () => {
     selectGrokAuthMethod([{ id: "xai.api_key" }], { apiKeyPresent: true, allowApiKey: false }),
   ).toBeNull();
   expect(selectGrokAuthMethod([], { apiKeyPresent: false, allowApiKey: false })).toBeNull();
+});
+
+test("a runner release without bundled agents runs the installed agent launchers", () => {
+  const base = mkdtempSync(join(tmpdir(), "paws-runner-base-"));
+  const release = join(base, "releases", "1.2.3");
+  mkdirSync(join(release, "node_modules"), { recursive: true });
+  mkdirSync(join(base, "bin"));
+  for (const name of ["claude-agent-acp", "codex-acp", "grok"])
+    writeFileSync(join(base, "bin", name), "#!/bin/sh\n");
+  expect(adapterBinPath("implementer", release, base)).toBe(join(base, "bin", "claude-agent-acp"));
+  expect(adapterBinPath("reviewer", join(base, "current"), base)).toBe(
+    join(base, "bin", "codex-acp"),
+  );
+  expect(resolveGrokCommand(grok, release, base)).toEqual({
+    command: join(base, "bin", "grok"),
+    args: [...GROK_AGENT_ARGS],
+    error: null,
+  });
+  // A checkout keeps its own node_modules/.bin even on a host with installed launchers.
+  const checkout = mkdtempSync(join(tmpdir(), "paws-checkout-"));
+  expect(adapterBinPath("implementer", checkout, base)).toBe(
+    join(checkout, "node_modules", ".bin", "claude-agent-acp"),
+  );
 });
