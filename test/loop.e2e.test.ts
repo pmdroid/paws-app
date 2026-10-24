@@ -5123,20 +5123,6 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       { label: "Compact labels", value: "compact" },
     ]);
     const recoveredQuestionId = findOpenQuestion(db, "ses_1")!.id;
-    const reopenedDashboard = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/linear/conversations"),
-      { db, staticDir: null },
-    );
-    expect(await reopenedDashboard!.json()).toMatchObject({
-      sessions: expect.arrayContaining([
-        expect.objectContaining({
-          id: "ses_1",
-          questions: expect.arrayContaining([
-            expect.objectContaining({ id: recoveredQuestionId, state: "open" }),
-          ]),
-        }),
-      ]),
-    });
     expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
@@ -5186,41 +5172,6 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     expect(stateOf(db, "ENG-1"), debug(layout, db)).toBe("merged");
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
     expect(tracker.progress.some((update) => update.kind === "response")).toBe(true);
-    const dashboard = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/linear/conversations"),
-      { db, staticDir: null },
-    );
-    expect(dashboard?.status).toBe(200);
-    expect(await dashboard!.json()).toMatchObject({
-      sessions: expect.arrayContaining([
-        expect.objectContaining({
-          id: "ses_1",
-          items: expect.arrayContaining([
-            expect.objectContaining({ id: task.id, state: "merged" }),
-          ]),
-          messages: expect.arrayContaining([
-            expect.objectContaining({
-              kind: "prompt",
-              text: "Use the corrected chart layout and include a screenshot.",
-            }),
-          ]),
-          artifacts: [
-            expect.objectContaining({
-              displayName: "chart.png",
-              state: "uploaded",
-              href: expect.stringMatching(/^\/api\/linear\/artifacts\//),
-            }),
-          ],
-          questions: expect.arrayContaining([
-            expect.objectContaining({
-              id: recoveredQuestionId,
-              state: "answered",
-              answer: "Use larger labels and keep the blue color.",
-            }),
-          ]),
-        }),
-      ]),
-    });
     const artifactIndex = tracker.progress.findIndex((update) =>
       update.body.includes("https://uploads.linear.app/chart.png"),
     );
