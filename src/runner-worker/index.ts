@@ -73,6 +73,7 @@ import {
   RUNNER_SKILL_FOLDERS,
   type RunnerArtifact,
   type RunnerEvent,
+  type RunnerInstalledRuntime,
 } from "../runner-protocol";
 
 import { compactAcpEvent } from "./compact";
@@ -189,6 +190,28 @@ function outputFile(directory: string, name: string, resultsGid: number): number
   } catch (error) {
     closeSync(fd);
     throw error;
+  }
+}
+
+/** Write `name` in the output directory through a staging file, replacing an earlier copy. */
+function replaceOutputFile(
+  options: { outputDirectory: string; resultsGid: number },
+  name: string,
+  contents: string,
+): void {
+  const stagingName = `.${name}-${randomUUID()}.tmp`;
+  const stagingPath = join(options.outputDirectory, stagingName);
+  try {
+    const fd = outputFile(options.outputDirectory, stagingName, options.resultsGid);
+    try {
+      writeFileSync(fd, contents);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(stagingPath, join(options.outputDirectory, name));
+  } finally {
+    rmSync(stagingPath, { force: true });
   }
 }
 
@@ -924,6 +947,36 @@ async function installCommandRuntimes(
           }),
     }),
   );
+  // Installs run in order and stop at the first failure, so the ones before it are installed.
+  const report: RunnerInstalledRuntime[] = result.ok
+    ? runtimes.map((runtime) => ({ ...runtime, status: "installed" }))
+    : [
+        ...runtimes
+          .slice(
+            0,
+            Math.max(
+              0,
+              runtimes.findIndex(
+                (runtime) =>
+                  runtime.tool === result.runtime.tool &&
+                  runtime.version === result.runtime.version,
+              ),
+            ),
+          )
+          .map((runtime) => ({ ...runtime, status: "installed" as const })),
+        { ...result.runtime, status: "failed", error: result.message.slice(0, 500) },
+      ];
+  try {
+    replaceOutputFile(options, "runtimes.json", JSON.stringify(report));
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "runtime_report_failed",
+        executionId,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
   if (!result.ok) return result.message.slice(0, 500);
   const text = `Installed runtimes ${labels.join(", ")} in ${(result.durationMs / 1000).toFixed(1)} s.`;
   emit({

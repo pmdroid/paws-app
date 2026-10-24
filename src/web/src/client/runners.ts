@@ -53,6 +53,15 @@ export type Runner = {
   /** Sessions with a live work lease on this runner, oldest first. */
   running?: RunningSession[];
   skills?: RunnerSkill[];
+  /** Runtimes mise installed for tasks on this runner; older Paws releases do not list them. */
+  runtimes?: RunnerRuntime[];
+};
+export type RunnerRuntime = {
+  tool: string;
+  version: string;
+  status: "installed" | "failed";
+  error: string | null;
+  reportedAt: number;
 };
 export type RunnerSkill = {
   name: string;
@@ -305,6 +314,21 @@ export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: strin
   return `<ul class="runner-skill-list" role="list" aria-label="Installed skills">${rows}</ul>`;
 }
 
+export function runnerRuntimesMarkup(runtimes: readonly RunnerRuntime[]): string {
+  if (!runtimes.length)
+    return '<p class="muted">No runtimes installed yet. The runner installs a repository\'s mise runtimes when a task starts.</p>';
+  const rows = runtimes
+    .map((runtime) => {
+      const failed = runtime.status === "failed";
+      const error = failed
+        ? `<p class="runner-skill-error" role="note">${esc(runtime.error ?? "The runner did not report why.")}</p>`
+        : "";
+      return `<li class="runner-skill" data-runtime-status="${failed ? "failed" : "installed"}"><span class="runner-skill-name"><b>${esc(runtime.tool)}</b><span class="mono">${esc(runtime.version)}</span></span><span class="tag ${failed ? "bad" : "ok"}">${failed ? "Install failed" : "Installed"}</span>${error}</li>`;
+    })
+    .join("");
+  return `<ul class="runner-skill-list" role="list" aria-label="Installed runtimes">${rows}</ul>`;
+}
+
 const PHASES: Record<RunningSession["phase"], [string, string]> = {
   working: ["running", "Working"],
   closeout: ["verifying", "Closeout"],
@@ -543,6 +567,12 @@ function statusLine(runner: Runner, view: { now: number; serverVersion: string |
   return `<p class="runner-status"><span class="tag ${tone}">${esc(state)}</span>${notes.map((note) => `<span>${esc(note)}</span>`).join("")}</p>`;
 }
 
+function runtimeCountLabel(runtimes: readonly RunnerRuntime[]): string {
+  const failed = runtimes.filter((runtime) => runtime.status === "failed").length;
+  const installed = runtimes.length - failed;
+  return [`${installed} installed`, failed ? `${failed} failed` : ""].filter(Boolean).join(", ");
+}
+
 export function runnerDetailMarkup(
   runner: Runner,
   view: {
@@ -616,6 +646,17 @@ export function runnerDetailMarkup(
             ? `<span class="muted">${runner.skills.filter((skill) => skill.state === "up_to_date").length} of ${runner.skills.length} up to date</span>`
             : "",
           runnerSkillsMarkup(runner.skills, runner.name),
+        )
+  }${
+    revoked || runner.runtimes === undefined
+      ? ""
+      : block(
+          "runtimes",
+          "Runtimes",
+          runner.runtimes.length
+            ? `<span class="muted">${runtimeCountLabel(runner.runtimes)}</span>`
+            : "",
+          runnerRuntimesMarkup(runner.runtimes),
         )
   }${block("host", "Host", "", runnerMetricsMarkup(metrics, view.now))}${
     metrics?.strayProcesses?.length

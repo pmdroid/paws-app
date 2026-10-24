@@ -139,7 +139,11 @@ async function runTask(name: string, runtimes: Array<{ tool: string; version: st
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as { type: string; text?: string });
-  return { result, events, worktree, agentStarted: existsSync(recorded) };
+  const reportPath = join(outputDirectory, "runtimes.json");
+  const report = existsSync(reportPath)
+    ? (JSON.parse(readFileSync(reportPath, "utf8")) as unknown)
+    : undefined;
+  return { result, events, worktree, report, agentStarted: existsSync(recorded) };
 }
 
 test("the runner installs a task's runtimes before the agent starts, then reuses them", async () => {
@@ -157,6 +161,10 @@ test("the runner installs a task's runtimes before the agent starts, then reuses
   );
   expect(installed).toBeGreaterThanOrEqual(0);
   expect(first.events.findIndex((event) => event.type === "acp")).toBeGreaterThan(installed);
+  expect(first.report).toEqual([
+    { tool: "node", version: "22", status: "installed" },
+    { tool: "python", version: "3.12", status: "installed" },
+  ]);
 
   const calls = log().filter((line) => line.startsWith("call "));
   expect(calls).toHaveLength(2);
@@ -195,6 +203,16 @@ test("a failed install fails the task with one line naming the runtime", async (
     "Paws could not install the runtime python@3.99: mise exited with code 1: mise ERROR no version of python matches 3.99",
   );
   expect(failed.result.run.errorMessage).not.toContain("\n");
+  // The runner reports what it has, and the failed install with the same line.
+  expect(failed.report).toEqual([
+    { tool: "node", version: "22", status: "installed" },
+    {
+      tool: "python",
+      version: "3.99",
+      status: "failed",
+      error: failed.result.run.errorMessage,
+    },
+  ]);
   expect(failed.events.some((event) => event.type === "acp")).toBe(false);
 }, 30_000);
 
