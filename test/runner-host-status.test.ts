@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,7 +17,7 @@ import {
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerHostSampler } from "../src/runner-daemon";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { releaseVersionFromPath } from "../src/runner-protocol";
+import { miseVersionFromOutput, releaseVersionFromPath } from "../src/runner-protocol";
 import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
 import {
   issueWorkspaceBootstrap,
@@ -126,6 +126,7 @@ const sample = {
   osId: "ubuntu",
   osVersion: "24.04",
   runnerVersion: "1.4.0",
+  miseVersion: "2026.10.18",
 };
 
 test("a heartbeat stores host metrics and the runner list returns them", async () => {
@@ -160,6 +161,17 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
   expect(runner.db.query("SELECT COUNT(*) AS count FROM runner_host_status").get()).toEqual({
     count: 1,
   });
+  expect(
+    runner.db
+      .query(
+        "SELECT runner_version AS runnerVersion,mise_version AS miseVersion FROM runner_host_status",
+      )
+      .get(),
+  ).toEqual({ runnerVersion: "1.4.0", miseVersion: "2026.10.18" });
+  expect((await runner.heartbeat({ runnerVersion: "1.4.0" }))!.status).toBe(200);
+  expect(
+    runner.db.query("SELECT mise_version AS miseVersion FROM runner_host_status").get(),
+  ).toEqual({ miseVersion: null });
 });
 
 test("a heartbeat without host fields is still accepted", async () => {
@@ -183,6 +195,9 @@ test("out-of-range or unknown heartbeat fields are rejected", async () => {
     { memoryTotalBytes: -1 },
     { osId: "ubuntu; rm -rf /" },
     { runnerVersion: "1.2" },
+    { miseVersion: "2026.10" },
+    { miseVersion: "v2026.10.18" },
+    { miseVersion: "2026.10.18 linux-x64" },
     { hostname: "leak" },
   ])
     expect((await runner.heartbeat(body))!.status).toBe(403);
@@ -242,6 +257,69 @@ test("the host sampler reads /proc, statfs, os-release and the release path", ()
 
   writeFileSync(join(proc, "stat"), stat(400, 1600));
   expect(sampleHost().cpuPercent).toBe(30);
+});
+
+test("the host sampler reports the version of the mise next to the runner binary", async () => {
+  const root = temporary();
+  const release = join(root, "releases", "1.4.0", "bin");
+  mkdirSync(release, { recursive: true });
+  writeFileSync(join(release, "paws-runner"), "");
+  const mise = join(release, "mise");
+  writeFileSync(
+    mise,
+    `#!/bin/sh\n[ "$1" = --version ] && [ "$PWD" = / ] && [ -z "$PAWS_SECRET" ] || exit 3\necho '2026.10.18 linux-x64 (2026-10-23)'\necho 'warning on stderr' >&2\n`,
+  );
+  chmodSync(mise, 0o755);
+  symlinkSync(join(release, "paws-runner"), join(root, "paws-runner"));
+  process.env.PAWS_SECRET = "must not reach mise";
+  try {
+    const sampleHost = createRunnerHostSampler({
+      workRoot: root,
+      procRoot: join(root, "missing"),
+      executable: join(root, "paws-runner"),
+    });
+    expect(sampleHost().miseVersion).toBeUndefined();
+    let reported: string | undefined;
+    for (let attempt = 0; attempt < 200 && !reported; attempt += 1) {
+      await Bun.sleep(10);
+      reported = sampleHost().miseVersion;
+    }
+    expect(reported).toBe("2026.10.18");
+    expect(sampleHost()).toMatchObject({ runnerVersion: "1.4.0", miseVersion: "2026.10.18" });
+  } finally {
+    delete process.env.PAWS_SECRET;
+  }
+});
+
+test("a failed mise probe reports nothing and is tried again", async () => {
+  const root = temporary();
+  const mise = join(root, "mise");
+  writeFileSync(mise, "#!/bin/sh\nexit 1\n");
+  chmodSync(mise, 0o755);
+  const sampleHost = createRunnerHostSampler({
+    workRoot: root,
+    procRoot: join(root, "missing"),
+    executable: join(root, "missing"),
+    mise,
+  });
+  expect(sampleHost().miseVersion).toBeUndefined();
+  await Bun.sleep(100);
+  expect(sampleHost().miseVersion).toBeUndefined();
+  writeFileSync(mise, "#!/bin/sh\necho 2026.1.0 linux-arm64\n");
+  let reported: string | undefined;
+  for (let attempt = 0; attempt < 200 && !reported; attempt += 1) {
+    await Bun.sleep(10);
+    reported = sampleHost().miseVersion;
+  }
+  expect(reported).toBe("2026.1.0");
+});
+
+test("mise versions come only from calendar version output", () => {
+  expect(miseVersionFromOutput("2026.10.18 linux-x64 (2026-10-23)\n")).toBe("2026.10.18");
+  expect(miseVersionFromOutput("2026.1.0")).toBe("2026.1.0");
+  expect(miseVersionFromOutput("mise 2026.10.18")).toBeNull();
+  expect(miseVersionFromOutput("2026.10")).toBeNull();
+  expect(miseVersionFromOutput("")).toBeNull();
 });
 
 test("the host sampler omits fields it cannot read", () => {
