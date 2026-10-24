@@ -191,6 +191,91 @@ describe("agent version catalog", () => {
     expect(status("demo", "1.0.0")).toBe("ineligible");
   });
 
+  test("a failed read never lets a waiting version pass on stored metadata", async () => {
+    const { db, npm, catalog, errors, status, row } = setup();
+    npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 47 * HOUR, integrity: sha(1) });
+    await catalog.refresh();
+    expect(status("demo", "1.0.0")).toBe("waiting");
+    // npm pulls the version, but the next read fails, so only the old document is at hand.
+    npm.unpublish("demo-agent", "1.0.0");
+    const failing = createAgentCatalog({
+      db,
+      agents: DEMO,
+      now: () => NOW + 24 * HOUR,
+      registry: {
+        fetchPackage: async () => {
+          throw new Error("offline");
+        },
+      },
+      onError: (error) => errors.push(error),
+    });
+    await failing.refresh();
+    expect(status("demo", "1.0.0")).toBe("waiting");
+    expect(row("demo", "1.0.0")?.reason).toContain("less than 48 hours");
+  });
+
+  test("a version first seen during a failed platform read waits for a fresh read", async () => {
+    const { db, npm, catalog, errors, status, row } = setup();
+    const old = NOW - 72 * HOUR;
+    npm.publish("demo-agent-linux-x64", "3.0.0", { publishedAt: old, integrity: sha(1) });
+    npm.publish("demo-agent-linux-x64", "2.9.0", { publishedAt: old, integrity: sha(3) });
+    npm.publish("demo-agent", "2.9.0", {
+      publishedAt: old,
+      integrity: sha(4),
+      optionalDependencies: { "demo-agent-linux-x64": "2.9.0" },
+    });
+    await catalog.refresh();
+    expect(status("demo", "2.9.0")).toBe("eligible");
+    npm.publish("demo-agent", "3.0.0", {
+      publishedAt: old,
+      integrity: sha(2),
+      optionalDependencies: { "demo-agent-linux-x64": "3.0.0" },
+    });
+    const flaky = createAgentCatalog({
+      db,
+      agents: DEMO,
+      now: () => NOW + HOUR,
+      registry: {
+        fetchPackage: (name, etag, signal) =>
+          name === "demo-agent-linux-x64"
+            ? Promise.reject(new Error("offline"))
+            : npm.registry.fetchPackage(name, etag, signal),
+      },
+      onError: (error) => errors.push(error),
+    });
+    await flaky.refresh();
+    expect(status("demo", "3.0.0")).toBe("waiting");
+    expect(row("demo", "3.0.0")?.reason).toContain("could not read npm");
+    await catalog.refresh();
+    expect(status("demo", "3.0.0")).toBe("eligible");
+  });
+
+  test("a prerelease platform pin is not a platform build", async () => {
+    const agents = { core: { package: "core-cli", native: "core-cli" } };
+    const { npm, catalog, status, row } = setup(agents);
+    const old = NOW - 72 * HOUR;
+    npm.publish("core-cli", "2.0.0", {
+      publishedAt: old,
+      integrity: sha(1),
+      optionalDependencies: {
+        "core-cli-linux-x64": "2.0.0-beta.1",
+        "core-cli-linux-arm64": "npm:core-cli@2.0.0-rc.1",
+      },
+    });
+    npm.publish("core-cli-linux-x64", "2.0.0-beta.1", { publishedAt: old, integrity: sha(2) });
+    npm.publish("core-cli", "2.0.0-rc.1", { publishedAt: old, integrity: sha(3) });
+    npm.publish("core-cli", "2.1.0", {
+      publishedAt: old,
+      integrity: sha(4),
+      optionalDependencies: { "core-cli-linux-x64": "npm:core-cli@2.1.0-linux-x64-musl" },
+    });
+    npm.publish("core-cli", "2.1.0-linux-x64-musl", { publishedAt: old, integrity: sha(5) });
+    await catalog.refresh();
+    expect(status("core", "2.0.0")).toBe("ineligible");
+    expect(row("core", "2.0.0")?.reason).toContain("pins core-cli-linux-x64 at 2.0.0-beta.1");
+    expect(status("core", "2.1.0")).toBe("eligible");
+  });
+
   test("a failed read keeps the last catalog and reports the error", async () => {
     const { db, npm, catalog, errors } = setup();
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 72 * HOUR, integrity: sha(1) });

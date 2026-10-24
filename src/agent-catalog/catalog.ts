@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
   lastAgentCatalogCheck,
   listAgentVersions,
+  readAgentVersion,
   readNpmIntegrity,
   readNpmPackage,
   saveAgentVersions,
@@ -31,6 +32,8 @@ export const AGENT_VERSION_MIN_AGE_MS = 48 * 60 * 60 * 1000;
 /** The registry is read once a day. */
 export const AGENT_CATALOG_REFRESH_MS = 24 * 60 * 60 * 1000;
 
+const PLATFORM_SUFFIX =
+  /^(?:linux|darwin|win32|freebsd|openbsd|sunos|aix|android)-(?:x64|arm64|arm|ia32|ppc64|s390x|riscv64|loong64)(?:-(?:musl|gnu|msvc))?$/;
 const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const EXACT = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 const RANK: Record<AgentVersionStatus, number> = {
@@ -64,9 +67,14 @@ export function createAgentCatalog(options: {
   const now = options.now ?? Date.now;
   const onError = options.onError ?? ((error) => console.error(`agent catalog: ${message(error)}`));
   let running: Promise<void> | null = null;
+  /** Packages whose read failed in the current refresh; their stored document may be out of date. */
+  let staleReads = new Set<string>();
+  /** Set when the version being evaluated consulted a stale package. */
+  let usedStale = false;
 
   async function run(signal?: AbortSignal): Promise<void> {
     const at = now();
+    staleReads = new Set();
     const loaded = new Map<string, Promise<Versions | null>>();
     const load = (name: string): Promise<Versions | null> => {
       let pending = loaded.get(name);
@@ -101,9 +109,11 @@ export function createAgentCatalog(options: {
         saveNpmPackage(db, name, null, {}, at);
         return {};
       }
+      staleReads.add(name);
       return stored?.versions ?? null;
     } catch (error) {
       onError(new Error(`reading ${name} from npm failed: ${message(error)}`));
+      staleReads.add(name);
       return stored?.versions ?? null;
     }
   }
@@ -117,6 +127,7 @@ export function createAgentCatalog(options: {
     at: number,
   ): Verdict {
     const label = `${name}@${version}`;
+    if (staleReads.has(name)) usedStale = true;
     if (versions === null)
       return { status: "ineligible", reason: `Paws could not read ${name} from npm.` };
     const record = readNpmIntegrity(db, name, version);
@@ -158,7 +169,7 @@ export function createAgentCatalog(options: {
     const metadata = versions?.[version];
     for (const [alias, pin] of Object.entries(metadata?.optionalDependencies ?? {})) {
       const target = platformPin(alias, pin);
-      if (!EXACT.test(target.version) || !sameVersion(target.version, version)) {
+      if (!EXACT.test(target.version) || !platformBuild(target, name, version)) {
         verdicts.push({
           status: "ineligible",
           reason: `${name}@${version} pins ${alias} at ${pin}, not at ${version}.`,
@@ -179,9 +190,13 @@ export function createAgentCatalog(options: {
   ): Promise<AgentVersionRow[]> {
     const rows: AgentVersionRow[] = [];
     for (const [version, metadata] of Object.entries(versions)) {
+      usedStale = false;
       const own = check(spec.package, version, versions, true, at);
       const native = await resolveNative(spec, version, metadata, load, at);
-      const verdict = worst([own, native.verdict]);
+      let verdict = worst([own, native.verdict]);
+      // Stored metadata cannot clear a version: a version removed or deprecated while npm was
+      // unreachable must not pass its quarantine on the old document.
+      if (usedStale) verdict = noLooserThanBefore(agent, spec, version, verdict);
       const record = readNpmIntegrity(db, spec.package, version);
       const integrity = record?.integrity ?? metadata.integrity;
       if (integrity === null) continue;
@@ -209,6 +224,23 @@ export function createAgentCatalog(options: {
         });
       }
     return rows;
+  }
+
+  /** The previous verdict when it is stricter; with none, the version waits for a fresh read. */
+  function noLooserThanBefore(
+    agent: string,
+    spec: AgentPackage,
+    version: string,
+    verdict: Verdict,
+  ): Verdict {
+    const previous = readAgentVersion(db, agent, version);
+    const floor: Verdict = previous
+      ? { status: previous.status, reason: previous.reason }
+      : {
+          status: "waiting",
+          reason: `Paws could not read npm to confirm ${spec.package}@${version}; it waits for the next successful read.`,
+        };
+    return RANK[verdict.status] < RANK[floor.status] ? floor : verdict;
   }
 
   async function resolveNative(
@@ -286,8 +318,19 @@ function platformPin(alias: string, pin: string): { name: string; version: strin
 }
 
 /** `1.2.3` matches `1.2.3`, and a platform build such as `1.2.3-linux-x64` of the same package. */
-function sameVersion(pinned: string, version: string): boolean {
-  return pinned === version || pinned.startsWith(`${version}-`);
+function platformBuild(
+  pinned: { name: string; version: string },
+  carrier: string,
+  version: string,
+): boolean {
+  if (pinned.version === version) return true;
+  // Only an npm alias back to the carrier itself may carry a platform suffix, and only an
+  // os-arch suffix: a beta or release candidate of the same version is not a platform build.
+  return (
+    pinned.name === carrier &&
+    pinned.version.startsWith(`${version}-`) &&
+    PLATFORM_SUFFIX.test(pinned.version.slice(version.length + 1))
+  );
 }
 
 function satisfies(version: string, range: string): boolean {
