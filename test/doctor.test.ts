@@ -83,6 +83,16 @@ test("doctor fails while no Linear workspace admin has signed in", () => {
   expect(workspace?.detail).toContain("signed in");
 });
 
+test("doctor fails when comment mode is configured and says how to move off it", () => {
+  const configured = probe(true);
+  configured.facts.linearMode = "comments";
+  const mode = doctorChecks(configured).find((item) => item.name === "linear-mode");
+  expect(mode?.ok).toBe(false);
+  expect(mode?.fix).toContain("comment mode");
+  expect(mode?.fix).toContain("docs/workspace-access.md");
+  expect(formatDoctor(doctorChecks(configured))).toContain("missing linear-mode:");
+});
+
 test("comment mode requires the paws label", () => {
   const ready = probe(true);
   ready.facts.linear.labelFound = false;
