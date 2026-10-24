@@ -3,7 +3,14 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getEvidence, insertQueuedItem, migrate, openDatabase } from "../src/db";
+import {
+  getEvidence,
+  insertQueuedItem,
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+} from "../src/db";
 import {
   createEvidenceStore,
   EvidenceRejectedError,
@@ -15,7 +22,6 @@ import {
 } from "../src/evidence";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { createProjectFixture } from "./local/project-fixture";
 
 const HEAD = "a".repeat(40);
 const text = (value: string) => [...new TextEncoder().encode(value)];
@@ -239,7 +245,7 @@ describe("GET /api/evidence/:id", () => {
 });
 
 test("the server refuses evidence without a session and hides it from members without access", async () => {
-  const f = createProjectFixture();
+  const f = memberWorkspace();
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-server-"));
   roots.push(home);
   const evidenceDir = join(home, "evidence");
@@ -296,3 +302,27 @@ test("the server refuses evidence without a session and hides it from members wi
     f.db.close();
   }
 });
+
+/** A database with one workspace member who has no access to other sessions' evidence. */
+function memberWorkspace() {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  db.run(
+    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  );
+  putWorkspaceUser(db, {
+    id: "actor",
+    linearUserId: "actor",
+    name: "actor",
+    email: "actor@example.test",
+  });
+  syncWorkspaceMember(db, {
+    workspaceId: "workspace",
+    userId: "actor",
+    role: "member",
+    active: true,
+    teamIds: ["team"],
+    now: Date.now(),
+  });
+  return { db, actor: { workspaceId: "workspace", userId: "actor" } };
+}
