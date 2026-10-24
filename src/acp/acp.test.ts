@@ -2093,6 +2093,86 @@ test("Codex refuses finish through a trusted stop hook in a session home", async
   expect(await readFile(join(source, "auth.json"), "utf8")).toBe('{"token":"keep"}\n');
 });
 
+async function versionedSkills(root: string) {
+  const claude = join(root, "skill-set");
+  const codex = join(claude, ".codex/skills");
+  await mkdir(join(codex, "impeccable"), { recursive: true });
+  await writeFile(join(codex, "impeccable/SKILL.md"), "v2");
+  return { claude, codex };
+}
+
+for (const readOnly of [false, true])
+  test(`Claude reads versioned skills from its own folder${readOnly ? " in a read-only session" : ""}`, async () => {
+    const layout = await layoutRepo();
+    const skills = await versionedSkills(layout.root);
+    const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+    await runAgent({
+      role: readOnly ? "reviewer" : "implementer",
+      profile: { agent: "claude", model: null },
+      itemId: "ENG-1",
+      runId: "claude-skills",
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+      checkpoint: false,
+      readOnly,
+      agentSkills: skills,
+      updatePlan: { update: async () => undefined },
+    });
+    const trace = await readResult(files.resultPath);
+    const options = (
+      trace.sessionMeta as {
+        claudeCode: { options: { additionalDirectories: string[]; settingSources?: string[] } };
+      }
+    ).claudeCode.options;
+    expect(options.additionalDirectories).toEqual([skills.claude]);
+    if (!readOnly) expect(options.settingSources).toContain("project");
+    expect(trace.codexHome).toBe(process.env.CODEX_HOME);
+  });
+
+for (const readOnly of [false, true])
+  test(`Codex reads versioned skills next to its own${readOnly ? " in a read-only session" : ""}`, async () => {
+    const layout = await layoutRepo();
+    const skills = await versionedSkills(layout.root);
+    const source = join(layout.root, "codex-source");
+    for (const name of ["own", "impeccable"]) {
+      await mkdir(join(source, "skills", name), { recursive: true });
+      await writeFile(join(source, "skills", name, "SKILL.md"), "v1");
+    }
+    await writeFile(join(source, "auth.json"), '{"token":"keep"}\n');
+    await writeFile(join(source, "config.toml"), 'model = "gpt"\n');
+    const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+    await runAgent({
+      role: readOnly ? "reviewer" : "implementer",
+      profile: { agent: "codex", model: null },
+      itemId: "ENG-1",
+      runId: "codex-skills",
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: { ...agentEnv(), CODEX_HOME: source },
+      checkpoint: false,
+      readOnly,
+      agentSkills: skills,
+      updatePlan: { update: async () => undefined },
+    });
+    const trace = await readResult(files.resultPath);
+    const overlay = join(layout.pawsRoot, "runs", "codex-skills", "codex-home");
+    expect(trace.codexHome).toBe(overlay);
+    expect(await readlink(join(overlay, "skills/impeccable"))).toBe(
+      join(skills.codex, "impeccable"),
+    );
+    expect(await readlink(join(overlay, "skills/own"))).toBe(join(source, "skills/own"));
+    expect(await readlink(join(overlay, "auth.json"))).toBe(join(source, "auth.json"));
+    expect(await readFile(join(overlay, "config.toml"), "utf8")).toContain('model = "gpt"');
+    expect(await readFile(join(source, "skills/impeccable/SKILL.md"), "utf8")).toBe("v1");
+  });
+
 test("a read-only session does not install a closeout stop hook", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, { steps: [{ type: "end" }] });

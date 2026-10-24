@@ -217,6 +217,7 @@ export async function installCloseoutStopHook(input: {
   sourceEnv: NodeJS.ProcessEnv;
   /** Registered workspace hooks. Each one runs after Closeout's, never in its place. */
   workspaceHooks?: readonly WorkspaceHook[];
+  codexSkills?: string;
 }): Promise<InstalledCloseoutStopHook | undefined> {
   if (input.agent === "grok") return undefined;
   const pythonPath = Bun.which("python3");
@@ -240,7 +241,11 @@ export async function installCloseoutStopHook(input: {
   }
   const overlay = join(input.runDirectory, "codex-home");
   const hooksPath = join(overlay, "hooks.json");
-  const sourceConfig = await linkCodexHome(codexSourceHome(input.sourceEnv), overlay);
+  const sourceConfig = await linkCodexHome(
+    codexSourceHome(input.sourceEnv),
+    overlay,
+    input.codexSkills,
+  );
   const document = codexHooksDocument(scriptPath, workspace);
   await writeFile(hooksPath, `${JSON.stringify(document)}\n`, {
     mode: 0o600,
@@ -319,11 +324,26 @@ function codexSourceHome(env: NodeJS.ProcessEnv): string | undefined {
   return undefined;
 }
 
+export async function installCodexSkillsHome(input: {
+  runDirectory: string;
+  sourceEnv: NodeJS.ProcessEnv;
+  codexSkills: string;
+}): Promise<Record<string, string>> {
+  await mkdir(input.runDirectory, { recursive: true, mode: 0o700 });
+  const overlay = join(input.runDirectory, "codex-home");
+  await linkCodexHome(codexSourceHome(input.sourceEnv), overlay, input.codexSkills, []);
+  await chmod(overlay, 0o700);
+  return { CODEX_HOME: overlay };
+}
+
 async function linkCodexHome(
   source: string | undefined,
   overlay: string,
+  skills?: string,
+  replaced: readonly string[] = ["config.toml", "hooks.json"],
 ): Promise<string | undefined> {
   await mkdir(overlay, { recursive: true, mode: 0o700 });
+  if (skills) await linkCodexSkills(source, overlay, skills);
   if (!source) return undefined;
   let entries;
   try {
@@ -333,7 +353,7 @@ async function linkCodexHome(
     throw error;
   }
   for (const entry of entries) {
-    if (entry.name === "config.toml" || entry.name === "hooks.json") continue;
+    if (replaced.includes(entry.name) || (skills && entry.name === "skills")) continue;
     await symlink(join(source, entry.name), join(overlay, entry.name));
   }
   const configPath = join(source, "config.toml");
@@ -344,6 +364,30 @@ async function linkCodexHome(
     throw error;
   }
   return readFile(configPath, "utf8");
+}
+
+async function linkCodexSkills(
+  source: string | undefined,
+  overlay: string,
+  skills: string,
+): Promise<void> {
+  const folder = join(overlay, "skills");
+  await mkdir(folder, { recursive: true, mode: 0o700 });
+  const versioned = await names(skills);
+  if (source)
+    for (const name of await names(join(source, "skills")))
+      if (!versioned.includes(name))
+        await symlink(join(source, "skills", name), join(folder, name));
+  for (const name of versioned) await symlink(join(skills, name), join(folder, name));
+}
+
+async function names(directory: string): Promise<string[]> {
+  try {
+    return await readdir(directory);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return [];
+    throw error;
+  }
 }
 
 function errorCode(error: unknown): string | undefined {
