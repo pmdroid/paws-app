@@ -17,7 +17,14 @@ import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from ".
 import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
 import { approvalsAtHead, publishedAtHead } from "./published";
-import { loadPolicy, loadPolicyFiles, treeFiles, type PolicyFilesLoad } from "./policy/load";
+import {
+  loadOriginMainRootFiles,
+  loadPolicy,
+  loadPolicyFiles,
+  treeFiles,
+  type PolicyFilesLoad,
+  type RootFilesLoad,
+} from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
@@ -203,6 +210,14 @@ export function trustedPolicyFiles(
     ...(home !== undefined ? { home } : {}),
     ...(policyRoot !== undefined ? { policyRoot } : {}),
   });
+}
+
+/**
+ * Read the named repository-root files from `origin/main` on the trusted path
+ * that serves `.agents/closeout.yaml`. The work tree is never read.
+ */
+export function trustedRootFiles(repo: string, names: readonly string[]): RootFilesLoad {
+  return loadOriginMainRootFiles({ repo, git: gitReader }, names);
 }
 
 export function workspacePolicyFiles(root: string): PolicyFilesLoad {
