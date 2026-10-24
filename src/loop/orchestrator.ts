@@ -260,7 +260,9 @@ import {
 import {
   answerVisualReview,
   askForVisualReview,
+  carryVisualReview,
   dueVisualReview,
+  planVisualReviewCarry,
   postNote,
   remindVisualReview,
   visualReviewApprovals,
@@ -2726,7 +2728,12 @@ export class Orchestrator {
       accepted: true,
       evidence: [
         summary,
-        visualReviewPullRequestNote(this.db, item, this.options.evidence?.publicUrl ?? null),
+        visualReviewPullRequestNote(
+          this.db,
+          item,
+          this.options.evidence?.publicUrl ?? null,
+          this.now(),
+        ),
         policy ? policyPullRequestCredit(policy) : "",
       ]
         .filter(Boolean)
@@ -4713,30 +4720,73 @@ export class Orchestrator {
       undefined,
       base,
     );
-    const asked = immediate(this.db, () => {
+    let carriedOver = false;
+    // A check whose screens all carried an approval over passes; the next check may still be due.
+    for (let pass = 0; pass <= requirements.length; pass++) {
       const due = dueVisualReview(this.db, item.id, requirements, approvals);
-      if (due === null) return false;
-      const current = getWorkItem(this.db, item.id);
-      const runId = current?.currentRunId ?? null;
-      if (
-        !askForVisualReview(this.db, {
-          item,
-          runId,
-          sessionId,
-          checkId: due.requirement.id,
-          evidenceIds: due.evidenceIds,
-          base,
-          head,
-          publicUrl: evidence.publicUrl,
-          now: this.now(),
-        })
-      )
-        return false;
-      if (runId) releaseRunCapacity(this.db, runId, this.now());
-      return true;
-    });
-    if (asked) await this.flush();
-    return asked;
+      if (due === null) break;
+      const plan = await planVisualReviewCarry(
+        this.db,
+        item.id,
+        due.requirement.id,
+        due.evidenceIds,
+        evidence.root,
+      );
+      const outcome = immediate(this.db, () => {
+        const now = dueVisualReview(this.db, item.id, requirements, approvals);
+        if (now === null) return "none" as const;
+        if (now.requirement.id !== due.requirement.id) return "again" as const;
+        const current = getWorkItem(this.db, item.id);
+        if (current?.state !== "running" || current.cancelRequested) return "none" as const;
+        const carried = plan.carried.filter((entry) => now.evidenceIds.includes(entry.evidenceId));
+        if (carried.length === now.evidenceIds.length) {
+          const review = carryVisualReview(this.db, {
+            item: current,
+            sessionId,
+            checkId: now.requirement.id,
+            evidenceIds: now.evidenceIds,
+            carried,
+            head,
+            now: this.now(),
+          });
+          approvals.push(
+            ...visualReviewApprovals(this.db, item.id, itemPathId(item)).filter(
+              (approval) =>
+                approval.checkId === review.checkId &&
+                approval.commit === head &&
+                review.evidenceIds.every((id) => approval.evidenceIds.includes(id)),
+            ),
+          );
+          return "carried" as const;
+        }
+        const runId = current.currentRunId ?? null;
+        if (
+          !askForVisualReview(this.db, {
+            item,
+            runId,
+            sessionId,
+            checkId: now.requirement.id,
+            evidenceIds: now.evidenceIds,
+            carried,
+            approved: plan.approved,
+            base,
+            head,
+            publicUrl: evidence.publicUrl,
+            now: this.now(),
+          })
+        )
+          return "none" as const;
+        if (runId) releaseRunCapacity(this.db, runId, this.now());
+        return "asked" as const;
+      });
+      if (outcome === "carried") carriedOver = true;
+      else if (outcome === "asked") {
+        await this.flush();
+        return true;
+      } else if (outcome === "none") break;
+    }
+    if (carriedOver) await this.flush();
+    return false;
   }
 
   async requestVisualReviewChanges(input: {
