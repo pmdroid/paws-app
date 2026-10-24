@@ -12,7 +12,7 @@ import type {
   SessionReceipt,
 } from "./types";
 import type { LinearRepositoryAdapter } from "./repositories";
-import type { LinearProjectSnapshot, ProjectOverview } from "./project-scope";
+import type { ProjectOverview } from "./project-scope";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearMergeChoices, LinearMergeContext } from "./merge-context";
 
@@ -27,13 +27,11 @@ export type TrackerRequestOptions = {
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
 export interface TrackerAdapter {
-  loadProject?(id: string, options?: TrackerRequestOptions): Promise<LinearProjectSnapshot>;
   listIssuePullRequests?(id: string, options?: TrackerRequestOptions): Promise<IssuePullRequest[]>;
   getIssueAttribution?(
     id: string,
     options?: TrackerRequestOptions,
   ): Promise<LinearAttributionContext>;
-  listProjectMembers?(id: string, options?: TrackerRequestOptions): Promise<readonly string[]>;
   getIssueContext?(id: string, options?: TrackerRequestOptions): Promise<LinearIssueContext>;
   createIssueAttachment?(input: IssueAttachment, options?: TrackerRequestOptions): Promise<void>;
   getSession?(id: string, options?: TrackerRequestOptions): Promise<LinearSessionSnapshot>;

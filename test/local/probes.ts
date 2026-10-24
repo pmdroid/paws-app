@@ -12,7 +12,6 @@ import { probeRunnerPolicyBrowser } from "./runner-policy-browser";
 import { probeExecutionControls } from "./execution-controls";
 import { probeExecutionStopStates } from "./execution-stop-states";
 import { probeLinearActivityBudget } from "./linear-activity-budget";
-import { probeLinearProjectMembers } from "./linear-project-members";
 import { probeRunnerJournal } from "./runner-journal";
 import { probeRunnerDaemonHealth } from "./runner-daemon-health";
 import { probeRunnerControlStartup } from "./runner-control-startup";
@@ -84,7 +83,6 @@ export async function probeBoundaries(
   for (const result of await probeExecutionStopStates(join(root, "execution-stop-states")))
     observe(result.name, result.passed, result.observed);
   await probeLinearActivityBudget(join(root, "linear-activity-budget"), observe);
-  await probeLinearProjectMembers(observe);
   await probeRunnerOrchestration(join(root, "runner-orchestration"), observe);
   await probeHostAcp(root, observe);
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
