@@ -28,7 +28,7 @@ function git(args: string[], cwd: string) {
 async function fixture(
   rejection: string | null,
   handover?: { expiresIn: number },
-  faults: { postFailures?: number; sealRefused?: boolean } = {},
+  faults: { postFailures?: number; sealRefused?: boolean; sealUnavailable?: boolean } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-push-"));
   const now = Date.now();
@@ -91,6 +91,11 @@ async function fixture(
   const pushes: number[] = [];
   const resumes: string[] = [];
   const seals: { handedOver?: true; sizeBytes: number; sha256: string }[] = [];
+  const uploads: { offset: number; size: number }[] = [];
+  // Paws refuses only handover seals, as it does after the handover deadline.
+  let refuseHandovers = faults.sealRefused ?? false;
+  // Paws cannot be reached for handover seals, so the runner cannot tell if one landed.
+  let sealUnavailable = faults.sealUnavailable ?? false;
   // A worker's event journal: the agent's ACP events next to its progress, as a real run writes.
   const events = handover
     ? [
@@ -190,10 +195,12 @@ async function fixture(
           return { ok: true };
         },
         async uploadTranscript(_runId, chunk) {
+          uploads.push({ offset: chunk.offset, size: Buffer.from(chunk.data, "base64").length });
           return { offset: chunk.offset, duplicate: false };
         },
         async finishTranscript(_runId, finish) {
-          if (faults.sealRefused) throw new RunnerRequestError(409);
+          if (finish.handedOver && sealUnavailable) throw new RunnerRequestError(503);
+          if (finish.handedOver && refuseHandovers) throw new RunnerRequestError(409);
           seals.push({
             ...(finish.handedOver ? { handedOver: finish.handedOver } : {}),
             sizeBytes: finish.sizeBytes,
@@ -239,10 +246,13 @@ async function fixture(
     resumes,
     seals,
     events,
+    uploads,
     /** Stops the runtime and opens a new one on the same journal, with Paws reachable again. */
-    async restart() {
+    async restart(options: { refuseHandovers?: boolean } = {}) {
       await runtime.stop();
       postFailures = 0;
+      refuseHandovers = options.refuseHandovers ?? false;
+      sealUnavailable = false;
       runtime = await open();
     },
     async run(minutes: number) {
@@ -389,6 +399,31 @@ test.skipIf(linuxUser)(
       expect(f.pushes).toEqual([0]);
       expect(f.posted).toEqual([]);
       expect(f.resumes).toHaveLength(1);
+      // The partial transcript rode with the refused seal, so no partial chunk was stored and
+      // the continued session can still append to its transcript.
+      expect(f.uploads).toEqual([]);
+      expect(f.seals).toEqual([]);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(linuxUser)(
+  "a runner that restarts before Paws accepts the handover seal keeps the WIP commit on the failed run",
+  async () => {
+    const f = await fixture(null, { expiresIn: 60_000 }, { sealUnavailable: true });
+    try {
+      await f.run(1);
+      expect(f.posted).toEqual([]);
+      await f.restart({ refuseHandovers: true });
+      await f.run(1);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]).toMatchObject({ stopReason: "error", cancelled: false });
+      expect(f.posted[0]!.handedOver).toBeUndefined();
+      expect(f.posted[0]!.candidateSha).toMatch(/^[a-f0-9]{40}$/);
+      expect(f.posted[0]!.errorMessage).toContain("restarted before the handover finished");
     } finally {
       await f.cleanup();
     }

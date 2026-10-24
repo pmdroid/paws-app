@@ -242,6 +242,7 @@ export async function openRunnerRuntime(options: {
     reason: string,
     sealed = false,
     pushFailure?: PushFailure,
+    candidateSha?: string,
   ) {
     const { command } = execution;
     if (command.type !== "run" && command.type !== "review" && command.type !== "task") return;
@@ -309,6 +310,7 @@ export async function openRunnerRuntime(options: {
               16_384,
             ),
           ...(pushFailure ? { pushFailure } : {}),
+          ...(candidateSha && command.type === "run" ? { candidateSha } : {}),
         }),
         token,
       );
@@ -329,9 +331,11 @@ export async function openRunnerRuntime(options: {
    * which Paws repeats when it is already sealed, and posts the handed-over result. Returns
    * false when Paws refuses the seal, so the execution is reported as failed instead.
    */
-  async function recoverHandover(execution: Execution): Promise<boolean> {
+  async function recoverHandover(
+    execution: Execution,
+  ): Promise<{ committed: boolean; candidateSha?: string }> {
     const { command } = execution;
-    if (command.type !== "run") return false;
+    if (command.type !== "run") return { committed: false };
     const worker = workerResult.parse(
       JSON.parse(
         readRunnerResultFile(options.results, execution.id, HANDOVER_RESULT).toString("utf8"),
@@ -355,59 +359,105 @@ export async function openRunnerRuntime(options: {
     // The same bytes drainTranscript sealed: the worker exited, so they no longer change.
     const raw = transcriptSource(execution.id);
     journal.ingest(execution.id, raw);
-    let { offset, consumed } = journal.transcriptCursor(execution.id);
-    if (offset > consumed || consumed !== raw.length)
-      throw new Error("Runner transcript is incomplete");
     try {
-      while (offset < raw.length) {
-        const bytes = raw.subarray(
-          offset,
-          Math.min(offset + RUNNER_TRANSCRIPT_CHUNK_BYTES, raw.length),
-        );
-        await remote(() =>
-          options.daemon.uploadTranscript(
-            command.runId,
-            {
-              generation: command.generation,
-              executionId: execution.id,
-              offset,
-              sha256: createHash("sha256").update(bytes).digest("hex"),
-              data: bytes.toString("base64"),
-            },
-            token,
-          ),
-        );
-        journal.transcriptUploaded(execution.id, offset, offset + bytes.length);
-        offset += bytes.length;
-      }
+      await sealHandover(execution, raw, async () => token);
+    } catch (error) {
+      if (error instanceof RemoteFailure) throw error;
+      report(error);
+      return {
+        committed: false,
+        ...(result.candidateSha ? { candidateSha: result.candidateSha } : {}),
+      };
+    }
+    await remote(() => options.daemon.postResult(command.runId, command.generation, result, token));
+    return { committed: true };
+  }
+  /**
+   * Uploads a handed-over transcript's whole chunks, then asks Paws to seal it with the last
+   * partial chunk. Paws stores that tail only with the seal, so a refused seal leaves whole
+   * chunks and a session that continues on this runner can keep appending to its transcript.
+   */
+  async function sealHandover(
+    execution: Execution,
+    raw: Buffer,
+    token: () => Promise<string>,
+    guard: () => void = () => undefined,
+  ) {
+    const { command } = execution;
+    let { offset, consumed } = journal.transcriptCursor(execution.id);
+    // A transcript uploaded to its end was sealed before; the seal is only repeated.
+    const repeat = offset === raw.length;
+    if (
+      offset > consumed ||
+      consumed !== raw.length ||
+      (!repeat && offset % RUNNER_TRANSCRIPT_CHUNK_BYTES)
+    )
+      throw new Error("Runner transcript is incomplete");
+    const whole =
+      Math.floor(raw.length / RUNNER_TRANSCRIPT_CHUNK_BYTES) * RUNNER_TRANSCRIPT_CHUNK_BYTES;
+    while (offset < whole) {
+      const bytes = raw.subarray(offset, offset + RUNNER_TRANSCRIPT_CHUNK_BYTES);
+      const authorization = await token();
       await remote(() =>
-        options.daemon.finishTranscript(
+        options.daemon.uploadTranscript(
           command.runId,
           {
             generation: command.generation,
             executionId: execution.id,
-            offset: raw.length,
-            sizeBytes: raw.length,
-            sha256: createHash("sha256").update(raw).digest("hex"),
-            handedOver: true,
+            offset,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            data: bytes.toString("base64"),
           },
-          token,
+          authorization,
         ),
       );
-    } catch (error) {
-      if (error instanceof RemoteFailure) throw error;
-      report(error);
-      return false;
+      guard();
+      journal.transcriptUploaded(execution.id, offset, offset + bytes.length);
+      offset += bytes.length;
     }
-    await remote(() => options.daemon.postResult(command.runId, command.generation, result, token));
-    return true;
+    const rest = repeat ? Buffer.alloc(0) : raw.subarray(whole);
+    const authorization = await token();
+    await remote(() =>
+      options.daemon.finishTranscript(
+        command.runId,
+        {
+          generation: command.generation,
+          executionId: execution.id,
+          offset: raw.length,
+          sizeBytes: raw.length,
+          sha256: createHash("sha256").update(raw).digest("hex"),
+          handedOver: true,
+          ...(rest.length
+            ? {
+                tail: {
+                  offset: whole,
+                  sha256: createHash("sha256").update(rest).digest("hex"),
+                  data: rest.toString("base64"),
+                },
+              }
+            : {}),
+        },
+        authorization,
+      ),
+    );
+    guard();
+    if (raw.length > offset) journal.transcriptUploaded(execution.id, offset, raw.length);
   }
   async function recoverHandovers() {
     for (const execution of [...recovering]) {
       try {
-        if (await recoverHandover(execution)) journal.phase(execution.id, "complete");
+        const recovered = await recoverHandover(execution);
+        if (recovered.committed) journal.phase(execution.id, "complete");
         else {
-          await fail(execution, "the runner restarted before the handover finished");
+          // The worker stopped with the restart, so the session cannot continue here. The
+          // failed run still carries the pushed WIP commit, which Paws keeps as the checkpoint.
+          await fail(
+            execution,
+            "the runner restarted before the handover finished",
+            false,
+            undefined,
+            recovered.candidateSha,
+          );
           journal.phase(execution.id, "interrupted");
         }
         recovering.splice(recovering.indexOf(execution), 1);
@@ -608,6 +658,16 @@ export async function openRunnerRuntime(options: {
       throw error;
     }
     journal.ingest(entry.execution.id, raw);
+    if (final && handedOver && !entry.transcriptSealed) {
+      await sealHandover(
+        entry.execution,
+        raw,
+        () => grant(entry),
+        () => check(entry),
+      );
+      entry.transcriptSealed = true;
+      return;
+    }
     let { offset, consumed } = journal.transcriptCursor(entry.execution.id);
     if (offset > consumed || (final && consumed !== raw.length))
       throw new Error("Runner transcript is incomplete");

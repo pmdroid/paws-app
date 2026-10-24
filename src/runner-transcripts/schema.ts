@@ -19,6 +19,11 @@ export const RunnerTranscriptFinishSchema = RunnerTranscriptChunkSchema.omit({ d
     sizeBytes: z.number().int().nonnegative().max(RUNNER_TRANSCRIPT_MAX_BYTES),
     /** The transcript ends a handover; the seal commits it. */
     handedOver: z.literal(true).optional(),
+    /**
+     * The last partial chunk, stored only together with the seal. A refused seal then leaves
+     * nothing but whole chunks, so a session that continues can still append to its transcript.
+     */
+    tail: RunnerTranscriptChunkSchema.pick({ offset: true, sha256: true, data: true }).optional(),
   },
 );
 export type RunnerTranscriptChunk = z.infer<typeof RunnerTranscriptChunkSchema>;

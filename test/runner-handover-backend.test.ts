@@ -279,13 +279,7 @@ test("a fake runner handover leaves its WIP commit and full transcript with Paws
   );
   const access = { runnerId: f.runnerId, runId: assigned.runId, token: grant.token };
   const sha256 = createHash("sha256").update(transcript).digest("hex");
-  await f.transcripts.upload(access, {
-    generation: assigned.generation,
-    executionId,
-    offset: 0,
-    sha256,
-    data: transcript.toString("base64"),
-  });
+  // The runner seals a handover with its last partial chunk, as one request.
   await f.transcripts.finish(access, {
     generation: assigned.generation,
     executionId,
@@ -293,6 +287,7 @@ test("a fake runner handover leaves its WIP commit and full transcript with Paws
     sizeBytes: transcript.length,
     sha256,
     handedOver: true,
+    tail: { offset: 0, sha256, data: transcript.toString("base64") },
   });
   // The seal commits the handover, so Paws waits for the result past the deadline.
   await delay(800);
@@ -408,24 +403,38 @@ test("a handed-over transcript sealed after the deadline is refused and the sess
   const transcript = Buffer.from(`${JSON.stringify({ event: { type: "cancelled" } })}\n`);
   const sha256 = createHash("sha256").update(transcript).digest("hex");
   const access = { runnerId: f.runnerId, runId: assigned.runId, token: grant.token };
+  f.clock.skew = 60_000;
+  await expect(
+    f.transcripts.finish(access, {
+      generation: assigned.generation,
+      executionId,
+      offset: transcript.length,
+      sizeBytes: transcript.length,
+      sha256,
+      handedOver: true,
+      tail: { offset: 0, sha256, data: transcript.toString("base64") },
+    }),
+  ).rejects.toThrow("denied");
+  // The refused seal stored no partial chunk, so the continued session appends from the start.
+  const continued = Buffer.concat([
+    transcript,
+    Buffer.from(`${JSON.stringify({ event: { type: "session_update" } })}\n`),
+  ]);
+  const continuedSha = createHash("sha256").update(continued).digest("hex");
   await f.transcripts.upload(access, {
     generation: assigned.generation,
     executionId,
     offset: 0,
-    sha256,
-    data: transcript.toString("base64"),
+    sha256: continuedSha,
+    data: continued.toString("base64"),
   });
   const seal = {
     generation: assigned.generation,
     executionId,
-    offset: transcript.length,
-    sizeBytes: transcript.length,
-    sha256,
+    offset: continued.length,
+    sizeBytes: continued.length,
+    sha256: continuedSha,
   };
-  f.clock.skew = 60_000;
-  await expect(f.transcripts.finish(access, { ...seal, handedOver: true })).rejects.toThrow(
-    "denied",
-  );
   const outcome = await handing;
   expect(outcome.handedOver).toBe(false);
   expect(outcome.handedOver ? "" : outcome.reason).toContain("stays on the runner");
