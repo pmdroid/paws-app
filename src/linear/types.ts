@@ -1,6 +1,8 @@
 export type LinearSchedulingMetadata = {
   teamId?: string;
   projectId?: string | null;
+  /** The Linear user who leads the issue's project, when the read included it. */
+  projectLeadId?: string | null;
   assigneeId?: string | null;
   priority?: number;
 };

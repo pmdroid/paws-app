@@ -2449,4 +2449,8 @@ ALTER TABLE item_hold_next RENAME TO item_hold;
     id: "125_runner_host_mise_version",
     sql: `ALTER TABLE runner_host_status ADD COLUMN mise_version TEXT;`,
   },
+  {
+    id: "126_work_item_project_lead",
+    sql: `ALTER TABLE work_item_scheduling ADD COLUMN project_lead_id TEXT;`,
+  },
 ];

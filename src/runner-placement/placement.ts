@@ -124,11 +124,24 @@ export function createRunnerPlacement(options: {
     const issueId = item?.linearIssueId ?? session.issueId;
     if (!issueId) throw new Error("Runner issue authority is unavailable");
     const placement = item
-      ? (db
-          .query<{ ownerUserId: string | null; projectApprovalId: string | null }, [string]>(
-            "SELECT owner_user_id AS ownerUserId,project_approval_id AS projectApprovalId FROM work_item WHERE id=?",
-          )
-          .get(item.id) ?? { ownerUserId: null, projectApprovalId: null })
+      ? {
+          ownerUserId:
+            db
+              .query<{ ownerUserId: string | null }, [string]>(
+                "SELECT owner_user_id AS ownerUserId FROM work_item WHERE id=?",
+              )
+              .get(item.id)?.ownerUserId ?? null,
+          // The leads of the Linear projects across the item's delegation lend their shared runners.
+          leadUserIds: db
+            .query<{ id: string }, [string]>(
+              `SELECT DISTINCT u.id FROM work_item i
+               JOIN work_item_scheduling c ON c.item_id=i.id
+               JOIN workspace_user u ON u.linear_user_id=c.project_lead_id
+               WHERE i.delegation_id=? ORDER BY u.id`,
+            )
+            .all(item.delegationId)
+            .map((row) => row.id),
+        }
       : null;
     const ownership = item
       ? delegatedLinearUserId(db, item.id)
@@ -148,7 +161,7 @@ export function createRunnerPlacement(options: {
             version: item.version,
             cancelRequested: item.cancelRequested,
             ownerUserId: current.placement?.ownerUserId ?? null,
-            projectApprovalId: current.placement?.projectApprovalId ?? null,
+            leadUserIds: current.placement?.leadUserIds ?? [],
           }
         : null,
       session: current.session,
@@ -247,15 +260,6 @@ export function createRunnerPlacement(options: {
          AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL))`,
         )
         .all(input.profile?.agent ?? "", current.workspace.id, at - 60_000);
-      const projectMembers = current.placement?.projectApprovalId
-        ? db
-            .query<{ id: string }, [string]>(
-              `SELECT actor_id AS id FROM project_approval WHERE id=?1 UNION SELECT lead_user_id FROM project_approval WHERE id=?1
-               UNION SELECT u.id FROM project_approval_member m JOIN workspace_user u ON u.linear_user_id=m.linear_user_id WHERE m.approval_id=?1`,
-            )
-            .all(current.placement.projectApprovalId)
-            .map((row) => row.id)
-        : [];
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(
@@ -283,9 +287,13 @@ export function createRunnerPlacement(options: {
           (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(teamId))
         )
           return [];
+        // A task runs on the runners of the person who delegated it, then on the shared runners
+        // of its Linear project leads.
         const own = runner.ownerId === (current.placement?.ownerUserId ?? requester);
-        const shared = runner.sharing === 1 && projectMembers.includes(runner.ownerId);
-        if (!own && !shared) return [];
+        const lead =
+          runner.sharing === 1 &&
+          (current.placement?.leadUserIds.includes(runner.ownerId) ?? false);
+        if (!own && !lead) return [];
         if (
           input.profile &&
           input.purpose !== "prepare" &&
