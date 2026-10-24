@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   enqueueJob,
   getWorkItem,
