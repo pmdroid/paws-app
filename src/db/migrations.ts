@@ -2405,4 +2405,14 @@ WHERE id IN (SELECT question_id FROM linear_github_auth)
    OR id IN (SELECT question_id FROM github_integration_hold);
 `,
   },
+  {
+    id: "121_item_hold",
+    sql: `
+CREATE TABLE item_hold (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  reason TEXT NOT NULL CHECK (reason IN ('blocked','project','reconciling','snapshot','cap','slot')),
+  blockers TEXT NOT NULL CHECK (json_valid(blockers))
+) STRICT;
+`,
+  },
 ];
