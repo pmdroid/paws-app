@@ -176,6 +176,10 @@ export function carryVisualReview(
   return review;
 }
 
+export function reviewable(item: WorkItemRecord | null): item is WorkItemRecord {
+  return (item?.state === "running" || item?.state === "verifying") && !item.cancelRequested;
+}
+
 export function askForVisualReview(
   db: Database,
   input: {
@@ -197,7 +201,7 @@ export function askForVisualReview(
   const { item, sessionId } = input;
   const carried = input.carried ?? [];
   const current = getWorkItem(db, item.id);
-  if (current?.state !== "running" || current.cancelRequested) return false;
+  if (!reviewable(current)) return false;
   if (findOpenQuestion(db, sessionId) !== null) return false;
   const base = input.publicUrl.replace(/\/+$/, "");
   const link = (id: string) => `${base}/evidence/${encodeURIComponent(id)}`;

@@ -12,16 +12,11 @@ import {
   worktreePath,
 } from "./acp";
 import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
-import {
-  createCommentMode,
-  createLinearCommentBoard,
-  createPersonalLinearClient,
-  withCommentActivities,
-  type CommentMode,
-} from "./comments";
+import { withCommentActivities, type CommentMode } from "./comments";
 import {
   closeoutPolicyRoot,
   ensureLayout,
+  LINEAR_COMMENT_MODE_REMOVED,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
   loadEnv,
@@ -114,14 +109,11 @@ import {
   checkRedelegation,
   createInboxStore,
   REDELEGATION_CHECK_DELAY_MS,
-  createIntakePollSource,
-  createLinearTracker,
   linearCaller,
   linearCallerFor,
   linearItem,
   openLinear,
   readStoredToken,
-  startCatchUpPoller,
   parseLinearAdministration,
   parseLinearIssueClosed,
   parseLinearUndelegation,
@@ -253,8 +245,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       origin.hash !== ""
     )
       throw new Error("Public dashboard requires an HTTPS origin in PAWS_PUBLIC_URL.");
-    if (runtime.linearMode !== "agent-session")
-      throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
   const placeOnRunner = remotePlacementReady;
   const transcriptObjects =
@@ -355,8 +345,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   skillUpdateTimer.unref?.();
   abort.signal.addEventListener("abort", () => clearInterval(skillUpdateTimer));
   const webhooks = runtime.webhooks;
-  const channel: "comments" | "agent-session" =
-    runtime.linearMode === "agent-session" ? "agent-session" : "comments";
   const inbox = createInboxStore(db);
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void | boolean> => {
@@ -409,145 +397,132 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       submit({ type: "cancel", source: "linear", itemId: item.id, requestedAt: Date.now() });
     }
   };
-  const linear =
-    channel === "agent-session"
-      ? openLinear({
-          db,
-          signal: abort.signal,
-          countItemRequest: (itemId, caller) => countLinearRequest(db, itemId, caller),
-          secretsDir: paths.secretsDir,
-          isAuthorized: () =>
-            !isLinearAppRevoked(db, {
-              oauthClientId: runtime.linearClientId,
-              appUserId: runtime.linearViewerId,
-            }),
-          beforeEvent: async (event, request) => {
-            const userChange = parseLinearUserChange(event);
-            if (userChange) {
-              members?.forget();
-              if (applyLinearUserChange(db, { ...userChange, now: Date.now() }))
-                invalidateAuthorization();
-              return false;
-            }
-            const issueEvent = acceptedIssueChange(event);
-            if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
-            const undelegation = parseLinearUndelegation(event, runtime.linearViewerId);
-            if (undelegation)
-              await stopUndelegatedIssue(db, undelegation, {
-                notify: (command) => {
-                  if (orchestrator === null) throw new Error("The loop is not attached.");
-                  orchestrator.bus.emit(command);
-                },
-                interrupt: async (sessionId) => {
-                  if (orchestrator === null) throw new Error("The loop is not attached.");
-                  await orchestrator.interruptLinearSession(sessionId);
-                },
-              });
-            const closedIssue = parseLinearIssueClosed(event);
-            if (closedIssue) {
-              await closeClosedIssueTasks(db, closedIssue, {
-                notify: (command) => {
-                  if (orchestrator === null) throw new Error("The loop is not attached.");
-                  orchestrator.bus.emit(command);
-                },
-                interrupt: async (sessionId) => {
-                  if (orchestrator === null) throw new Error("The loop is not attached.");
-                  await orchestrator.interruptLinearSession(sessionId);
-                },
-              });
-              if (event.source === "poll") return false;
-            }
-            if (issueEvent && reconciler) {
-              const targets = await reconciler.issueChanged(issueEvent);
-              if (targets.length > 0) orchestrator?.reconcileExecution();
-              return false;
-            }
-            if (
-              await handleLinearAdministration(db, event, {
-                oauthClientId: runtime.linearClientId,
-                appUserId: runtime.linearViewerId,
-                interrupt: async (sessionId) => {
-                  if (orchestrator === null) throw new Error("The loop is not attached.");
-                  await orchestrator.interruptLinearSession(sessionId);
-                },
-                revalidate: async (sessionIds) => {
-                  if (linearTaskAccess === null) throw new Error("Linear is not connected.");
-                  for (const sessionId of sessionIds) invalidateAuthorization({ sessionId });
-                  await linearTaskAccess.revalidateSessions(sessionIds);
-                },
-                reconcile: (notification) =>
-                  linearCaller("notifications", async () => {
-                    if (notification.action === "issueAssignedToYou") {
-                      inbox.setCursor(
-                        `delegated:${notification.issueId}`,
-                        notification.createdAtMs,
-                      );
-                      enqueueJobOnce(db, {
-                        queue: "linear.redelegation",
-                        jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
-                        payload: {
-                          issueId: notification.issueId,
-                          delegatedAtMs: notification.createdAtMs,
-                        },
-                        runAt: Date.now() + REDELEGATION_CHECK_DELAY_MS,
-                        now: Date.now(),
-                      });
-                    }
-                    if (linearTaskAccess === null) throw new Error("Linear is not connected.");
-                    if (reconciler)
-                      await reconciler.issueChanged({
-                        issueId: notification.issueId,
-                        organizationId: notification.organizationId,
-                      });
-                    invalidateAuthorization({ issueId: notification.issueId });
-                    await linearTaskAccess.reconcile(notification.issueId);
-                    orchestrator?.reconcileExecution();
-                    await refreshLinearNotificationContext(
-                      db,
-                      linear?.tracker ?? null,
-                      notification,
-                    );
-                  }),
-                notify: (command) => {
-                  if (orchestrator === null) throw new Error("The loop is not attached.");
-                  orchestrator.bus.emit(command);
-                },
-              })
-            ) {
-              const administration = parseLinearAdministration(event);
-              if (administration?.kind === "revoked" || administration?.kind === "teams")
-                invalidateAuthorization();
-              if (
-                workspace !== undefined &&
-                administration?.kind === "teams" &&
-                administration.oauthClientId === runtime.linearClientId &&
-                (runtime.linearViewerId === null ||
-                  administration.appUserId === runtime.linearViewerId) &&
-                administration.organizationId === (await workspace.access).organizationId
-              )
-                await workspace.refresh();
-              return false;
-            }
-            if (
-              event.sessionId !== null &&
-              getLinearSessionAccess(db, event.sessionId) === "revoked"
-            )
-              return false;
+  const linear = openLinear({
+    db,
+    signal: abort.signal,
+    countItemRequest: (itemId, caller) => countLinearRequest(db, itemId, caller),
+    secretsDir: paths.secretsDir,
+    isAuthorized: () =>
+      !isLinearAppRevoked(db, {
+        oauthClientId: runtime.linearClientId,
+        appUserId: runtime.linearViewerId,
+      }),
+    beforeEvent: async (event, request) => {
+      const userChange = parseLinearUserChange(event);
+      if (userChange) {
+        members?.forget();
+        if (applyLinearUserChange(db, { ...userChange, now: Date.now() }))
+          invalidateAuthorization();
+        return false;
+      }
+      const issueEvent = acceptedIssueChange(event);
+      if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
+      const undelegation = parseLinearUndelegation(event, runtime.linearViewerId);
+      if (undelegation)
+        await stopUndelegatedIssue(db, undelegation, {
+          notify: (command) => {
+            if (orchestrator === null) throw new Error("The loop is not attached.");
+            orchestrator.bus.emit(command);
+          },
+          interrupt: async (sessionId) => {
+            if (orchestrator === null) throw new Error("The loop is not attached.");
+            await orchestrator.interruptLinearSession(sessionId);
+          },
+        });
+      const closedIssue = parseLinearIssueClosed(event);
+      if (closedIssue) {
+        await closeClosedIssueTasks(db, closedIssue, {
+          notify: (command) => {
+            if (orchestrator === null) throw new Error("The loop is not attached.");
+            orchestrator.bus.emit(command);
+          },
+          interrupt: async (sessionId) => {
+            if (orchestrator === null) throw new Error("The loop is not attached.");
+            await orchestrator.interruptLinearSession(sessionId);
+          },
+        });
+        if (event.source === "poll") return false;
+      }
+      if (issueEvent && reconciler) {
+        const targets = await reconciler.issueChanged(issueEvent);
+        if (targets.length > 0) orchestrator?.reconcileExecution();
+        return false;
+      }
+      if (
+        await handleLinearAdministration(db, event, {
+          oauthClientId: runtime.linearClientId,
+          appUserId: runtime.linearViewerId,
+          interrupt: async (sessionId) => {
+            if (orchestrator === null) throw new Error("The loop is not attached.");
+            await orchestrator.interruptLinearSession(sessionId);
+          },
+          revalidate: async (sessionIds) => {
             if (linearTaskAccess === null) throw new Error("Linear is not connected.");
-            return linearTaskAccess.accept(event, request);
+            for (const sessionId of sessionIds) invalidateAuthorization({ sessionId });
+            await linearTaskAccess.revalidateSessions(sessionIds);
           },
-          env: linearEnv(runtime, envSource),
-          publicUrl: runtime.publicUrl,
-          noTunnel: !webhooks || options?.noTunnel === true,
-          webhooks,
-          followUp,
-          progressReporter: (event) => {
-            if (orchestrator === null) throw new Error("loop is not attached");
-            return orchestrator.sessionProgressReporter(event);
+          reconcile: (notification) =>
+            linearCaller("notifications", async () => {
+              if (notification.action === "issueAssignedToYou") {
+                inbox.setCursor(`delegated:${notification.issueId}`, notification.createdAtMs);
+                enqueueJobOnce(db, {
+                  queue: "linear.redelegation",
+                  jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
+                  payload: {
+                    issueId: notification.issueId,
+                    delegatedAtMs: notification.createdAtMs,
+                  },
+                  runAt: Date.now() + REDELEGATION_CHECK_DELAY_MS,
+                  now: Date.now(),
+                });
+              }
+              if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+              if (reconciler)
+                await reconciler.issueChanged({
+                  issueId: notification.issueId,
+                  organizationId: notification.organizationId,
+                });
+              invalidateAuthorization({ issueId: notification.issueId });
+              await linearTaskAccess.reconcile(notification.issueId);
+              orchestrator?.reconcileExecution();
+              await refreshLinearNotificationContext(db, linear?.tracker ?? null, notification);
+            }),
+          notify: (command) => {
+            if (orchestrator === null) throw new Error("The loop is not attached.");
+            orchestrator.bus.emit(command);
           },
-          submitCommand: submit,
         })
-      : null;
+      ) {
+        const administration = parseLinearAdministration(event);
+        if (administration?.kind === "revoked" || administration?.kind === "teams")
+          invalidateAuthorization();
+        if (
+          workspace !== undefined &&
+          administration?.kind === "teams" &&
+          administration.oauthClientId === runtime.linearClientId &&
+          (runtime.linearViewerId === null ||
+            administration.appUserId === runtime.linearViewerId) &&
+          administration.organizationId === (await workspace.access).organizationId
+        )
+          await workspace.refresh();
+        return false;
+      }
+      if (event.sessionId !== null && getLinearSessionAccess(db, event.sessionId) === "revoked")
+        return false;
+      if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+      return linearTaskAccess.accept(event, request);
+    },
+    env: linearEnv(runtime, envSource),
+    publicUrl: runtime.publicUrl,
+    noTunnel: !webhooks || options?.noTunnel === true,
+    webhooks,
+    followUp,
+    progressReporter: (event) => {
+      if (orchestrator === null) throw new Error("loop is not attached");
+      return orchestrator.sessionProgressReporter(event);
+    },
+    submitCommand: submit,
+  });
 
   if (linear !== null)
     linearTaskAccess = new LinearTaskAccess(db, {
@@ -829,11 +804,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();
 
-  const comment = channel === "comments" ? openComments(runtime) : null;
-  const tracker =
-    comment !== null
-      ? commentTracker(db, comment.tracker, comment.mode)
-      : (linear?.tracker ?? null);
+  const tracker = linear?.tracker ?? null;
+  if (runtime.linearCommentMode) journal(LINEAR_COMMENT_MODE_REMOVED);
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
   const admission = createAdmission({
@@ -892,7 +864,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           : {}),
         linearAccess: linearTaskAccess ?? undefined,
         admission,
-        journal: (line) => console.error(line),
+        journal,
         authorizeLinearIntake: workspace
           ? (sessionId, spec) =>
               projectExecution.authorizeIntake(sessionId, spec) &&
@@ -922,140 +894,129 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         publicationReady: (
           ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
         ) => Promise.resolve(publication?.publicationReady(...args) ?? false),
-        githubAuth:
-          channel === "agent-session"
-            ? createLinearGitHubAuth({
-                runtime,
-                env: envSource,
-                resolveApp,
-                repositoryForItem: (item) => {
-                  const bound = getWorkItemRepository(db, item.id);
-                  if (bound) return bound;
-                  const answer = getWorkItemRepositoryAnswer(db, item.id);
-                  const selected =
-                    getWorkItemRepositoryChoice(db, item.id) ??
-                    (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
-                  const configured = listRepositoryCandidates(db, item.sessionKey, repositories);
-                  return selected
-                    ? (configured.find(
-                        (candidate) =>
-                          candidate.owner === selected.owner &&
-                          candidate.repo === selected.repo &&
-                          candidate.remoteUrl === selected.remoteUrl,
-                      ) ?? null)
-                    : configured.length === 1
-                      ? configured[0]!
-                      : null;
-                },
-                accessForItem: (item) =>
-                  getTaskMode(db, item.id) !== "code" && taskRequiresRepository(db, item.id)
-                    ? "read"
-                    : "write",
-                actorForItem: (item) => delegatedLinearUserId(db, item.id),
-                attributionReady: async (item, selected) => {
-                  if (getTaskMode(db, item.id) === "code")
-                    await commitPolicyForItem(item, selected);
-                  return true;
-                },
-                authorizeItem: async (item, signal, selectedRepository) => {
-                  if (
-                    linearTaskAccess &&
-                    !(await authorizeLinearTask(linearTaskAccess, item, signal))
+        githubAuth: createLinearGitHubAuth({
+          runtime,
+          env: envSource,
+          resolveApp,
+          repositoryForItem: (item) => {
+            const bound = getWorkItemRepository(db, item.id);
+            if (bound) return bound;
+            const answer = getWorkItemRepositoryAnswer(db, item.id);
+            const selected =
+              getWorkItemRepositoryChoice(db, item.id) ??
+              (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
+            const configured = listRepositoryCandidates(db, item.sessionKey, repositories);
+            return selected
+              ? (configured.find(
+                  (candidate) =>
+                    candidate.owner === selected.owner &&
+                    candidate.repo === selected.repo &&
+                    candidate.remoteUrl === selected.remoteUrl,
+                ) ?? null)
+              : configured.length === 1
+                ? configured[0]!
+                : null;
+          },
+          accessForItem: (item) =>
+            getTaskMode(db, item.id) !== "code" && taskRequiresRepository(db, item.id)
+              ? "read"
+              : "write",
+          actorForItem: (item) => delegatedLinearUserId(db, item.id),
+          attributionReady: async (item, selected) => {
+            if (getTaskMode(db, item.id) === "code") await commitPolicyForItem(item, selected);
+            return true;
+          },
+          authorizeItem: async (item, signal, selectedRepository) => {
+            if (linearTaskAccess && !(await authorizeLinearTask(linearTaskAccess, item, signal)))
+              return false;
+            if (!workspace) return true;
+            const session = item.sessionKey
+              ? getLinearSessionInstallation(db, item.sessionKey)
+              : null;
+            const currentWorkspace = session?.organizationId
+              ? workspaceForOrganization(db, session.organizationId)
+              : null;
+            const actorId = delegatedLinearUserId(db, item.id);
+            if (!currentWorkspace || !actorId || !session?.teamId || !members) return false;
+            const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
+            const identity = await members.member(currentWorkspace.organizationId, actorId, signal);
+            const latest = workspaceLinearMember(db, currentWorkspace.id, actorId);
+            const currentSession = item.sessionKey
+              ? getLinearSessionInstallation(db, item.sessionKey)
+              : null;
+            return (
+              currentSession !== null &&
+              currentSession.organizationId === session.organizationId &&
+              currentSession.oauthClientId === session.oauthClientId &&
+              currentSession.appUserId === session.appUserId &&
+              currentSession.teamId === session.teamId &&
+              identity.organizationId === currentWorkspace.organizationId &&
+              identity.userId === actorId &&
+              identity.active &&
+              !identity.guest &&
+              identity.teamIds.includes(session.teamId) &&
+              member !== null &&
+              member.active &&
+              member.role !== "observer" &&
+              member.teamIds.includes(session.teamId) &&
+              latest !== null &&
+              latest.active &&
+              latest.role !== "observer" &&
+              latest.teamIds.includes(session.teamId) &&
+              listWorkspaceRepositories(db, currentWorkspace.id).some(
+                (entry) =>
+                  entry.teamId === session.teamId &&
+                  entry.repository.toLowerCase() ===
+                    `${selectedRepository.owner}/${selectedRepository.repo}`.toLowerCase(),
+              )
+            );
+          },
+          currentIntegrationItem: (item) => {
+            if (!workspace) return true;
+            const session = item.sessionKey
+              ? getLinearSessionInstallation(db, item.sessionKey)
+              : null;
+            const currentWorkspace = session?.organizationId
+              ? workspaceForOrganization(db, session.organizationId)
+              : null;
+            const actorId = delegatedLinearUserId(db, item.id);
+            if (!currentWorkspace || !actorId || !session?.teamId) return false;
+            const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
+            return (
+              member !== null &&
+              member.active &&
+              member.role !== "observer" &&
+              member.teamIds.includes(session.teamId)
+            );
+          },
+          integrationIdentity: (item) =>
+            JSON.stringify([
+              delegatedLinearUserId(db, item.id),
+              getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id),
+              db
+                .query(
+                  "SELECT id,head,base,policy_digest,decision FROM closeout_progress WHERE item_id=? ORDER BY updated_at DESC,id DESC LIMIT 1",
+                )
+                .get(item.id),
+            ]),
+          administratorsForItem: (item) => {
+            const session = item.sessionKey ? getLinearSession(db, item.sessionKey) : null;
+            const currentWorkspace = session?.organizationId
+              ? workspaceForOrganization(db, session.organizationId)
+              : null;
+            if (!currentWorkspace) return [];
+            return listWorkspaceMembers(db, currentWorkspace.id)
+              .filter((member) => member.active && ["owner", "admin"].includes(member.role))
+              .flatMap((member) => {
+                const linked = db
+                  .query<{ id: string }, [string]>(
+                    "SELECT linear_user_id AS id FROM workspace_user WHERE id=?",
                   )
-                    return false;
-                  if (!workspace) return true;
-                  const session = item.sessionKey
-                    ? getLinearSessionInstallation(db, item.sessionKey)
-                    : null;
-                  const currentWorkspace = session?.organizationId
-                    ? workspaceForOrganization(db, session.organizationId)
-                    : null;
-                  const actorId = delegatedLinearUserId(db, item.id);
-                  if (!currentWorkspace || !actorId || !session?.teamId || !members) return false;
-                  const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
-                  const identity = await members.member(
-                    currentWorkspace.organizationId,
-                    actorId,
-                    signal,
-                  );
-                  const latest = workspaceLinearMember(db, currentWorkspace.id, actorId);
-                  const currentSession = item.sessionKey
-                    ? getLinearSessionInstallation(db, item.sessionKey)
-                    : null;
-                  return (
-                    currentSession !== null &&
-                    currentSession.organizationId === session.organizationId &&
-                    currentSession.oauthClientId === session.oauthClientId &&
-                    currentSession.appUserId === session.appUserId &&
-                    currentSession.teamId === session.teamId &&
-                    identity.organizationId === currentWorkspace.organizationId &&
-                    identity.userId === actorId &&
-                    identity.active &&
-                    !identity.guest &&
-                    identity.teamIds.includes(session.teamId) &&
-                    member !== null &&
-                    member.active &&
-                    member.role !== "observer" &&
-                    member.teamIds.includes(session.teamId) &&
-                    latest !== null &&
-                    latest.active &&
-                    latest.role !== "observer" &&
-                    latest.teamIds.includes(session.teamId) &&
-                    listWorkspaceRepositories(db, currentWorkspace.id).some(
-                      (entry) =>
-                        entry.teamId === session.teamId &&
-                        entry.repository.toLowerCase() ===
-                          `${selectedRepository.owner}/${selectedRepository.repo}`.toLowerCase(),
-                    )
-                  );
-                },
-                currentIntegrationItem: (item) => {
-                  if (!workspace) return true;
-                  const session = item.sessionKey
-                    ? getLinearSessionInstallation(db, item.sessionKey)
-                    : null;
-                  const currentWorkspace = session?.organizationId
-                    ? workspaceForOrganization(db, session.organizationId)
-                    : null;
-                  const actorId = delegatedLinearUserId(db, item.id);
-                  if (!currentWorkspace || !actorId || !session?.teamId) return false;
-                  const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
-                  return (
-                    member !== null &&
-                    member.active &&
-                    member.role !== "observer" &&
-                    member.teamIds.includes(session.teamId)
-                  );
-                },
-                integrationIdentity: (item) =>
-                  JSON.stringify([
-                    delegatedLinearUserId(db, item.id),
-                    getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id),
-                    db
-                      .query(
-                        "SELECT id,head,base,policy_digest,decision FROM closeout_progress WHERE item_id=? ORDER BY updated_at DESC,id DESC LIMIT 1",
-                      )
-                      .get(item.id),
-                  ]),
-                administratorsForItem: (item) => {
-                  const session = item.sessionKey ? getLinearSession(db, item.sessionKey) : null;
-                  const currentWorkspace = session?.organizationId
-                    ? workspaceForOrganization(db, session.organizationId)
-                    : null;
-                  if (!currentWorkspace) return [];
-                  return listWorkspaceMembers(db, currentWorkspace.id)
-                    .filter((member) => member.active && ["owner", "admin"].includes(member.role))
-                    .flatMap((member) => {
-                      const linked = db
-                        .query<{ id: string }, [string]>(
-                          "SELECT linear_user_id AS id FROM workspace_user WHERE id=?",
-                        )
-                        .get(member.id);
-                      return linked ? [linked.id] : [];
-                    });
-                },
-              })
-            : undefined,
+                  .get(member.id);
+                return linked ? [linked.id] : [];
+              });
+          },
+        }),
         commitPolicyForItem: runtime.githubAuth === "app" ? commitPolicyForItem : undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
@@ -1107,7 +1068,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         github,
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
-        channel,
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
       });
       orchestrator = attached;
@@ -1246,45 +1206,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: 3_600_000,
         now: Date.now(),
       });
-      if (channel === "agent-session") {
-        created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
-        enqueueJobOnce(db, {
-          queue: "github.auth.recover",
-          jobKey: "github.auth.recover",
-          recurringEveryMs: 30_000,
-          priority: 0,
-          now: Date.now(),
-        });
-      }
+      created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
+      enqueueJobOnce(db, {
+        queue: "github.auth.recover",
+        jobKey: "github.auth.recover",
+        recurringEveryMs: 30_000,
+        priority: 0,
+        now: Date.now(),
+      });
     },
   });
-
-  if (comment !== null && comment.poll !== null) {
-    const poller = startCatchUpPoller({
-      source: comment.poll.source,
-      store: inbox,
-      db,
-      onEvent: followUp,
-      submitCommand: submit,
-      beforeDelay: async () => {
-        const current = orchestrator;
-        if (current === null) return;
-        try {
-          await syncComments(db, comment.mode, current);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "comment sync failed";
-          console.error(`linear comment sync failed: ${message}`);
-        }
-      },
-    });
-    running = {
-      catchUp: () => poller.pollNow(),
-      tunnelUp: () => false,
-      tunnelRequested: false,
-      tunnelUrl: null,
-      stop: () => poller.stop(),
-    };
-  }
 
   const host = startHost({
     db,
@@ -1370,39 +1301,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
 }
 
-type CommentRuntime = {
-  tracker: TrackerAdapter;
-  mode: CommentMode;
-  poll: {
-    source: ReturnType<typeof createIntakePollSource>;
-  } | null;
-};
-
-function openComments(runtime: RuntimeConfig): CommentRuntime | null {
-  const credential = runtime.linearApiKey;
-  if (credential === null) return null;
-  const personal = createPersonalLinearClient({ apiKey: credential });
-  const tracker = createLinearTracker(personal);
-  const mode = createCommentMode({
-    board: createLinearCommentBoard(personal),
-    selfUserId: runtime.linearViewerId ?? "paws",
-  });
-  const team = runtime.linearTeamId ?? runtime.linearTeam;
-  return {
-    tracker,
-    mode,
-    poll:
-      team === null
-        ? null
-        : {
-            source: createIntakePollSource(personal, {
-              teamId: team,
-              appUserId: runtime.linearViewerId,
-            }),
-          },
-  };
-}
-
 export function commentTracker(
   db: Database,
   base: TrackerAdapter,
@@ -1469,7 +1367,7 @@ export async function syncComments(
   }
 }
 
-function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {
+export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {
   const required = () => Promise.reject(new Error("A remote runner is required."));
   return {
     cancelItem: async () => {},

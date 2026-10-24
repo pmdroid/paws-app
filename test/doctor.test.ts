@@ -28,7 +28,6 @@ const NAMES = [
   "linear-mode",
   "linear-workspace",
   "linear-team",
-  "linear-label",
   "gh-login",
   "gh-push",
   "claude-acp",
@@ -55,15 +54,6 @@ test("doctor reports the local prerequisites and skips tunnel checks", () => {
   expect(text).not.toContain("\n  fix:");
 });
 
-test("agent mode is ready without a paws label", () => {
-  const ready = probe(true);
-  ready.facts.linearMode = "agent-session";
-  ready.facts.linear.labelFound = false;
-  const checks = doctorChecks(ready);
-  expect(checks.every((item) => item.ok)).toBe(true);
-  expect(checks.map((item) => item.name)).not.toContain("linear-label");
-});
-
 test("doctor fails without a Linear workspace and says how to configure one", () => {
   const unconfigured = probe(true);
   delete unconfigured.env.PAWS_PUBLIC_DASHBOARD;
@@ -83,10 +73,14 @@ test("doctor fails while no Linear workspace admin has signed in", () => {
   expect(workspace?.detail).toContain("signed in");
 });
 
-test("comment mode requires the paws label", () => {
-  const ready = probe(true);
-  ready.facts.linear.labelFound = false;
-  expect(doctorChecks(ready).find((item) => item.name === "linear-label")?.ok).toBe(false);
+test("doctor fails when comment mode is configured and says how to move off it", () => {
+  const configured = probe(true);
+  configured.facts.linearCommentMode = true;
+  const mode = doctorChecks(configured).find((item) => item.name === "linear-mode");
+  expect(mode?.ok).toBe(false);
+  expect(mode?.fix).toContain("comment mode");
+  expect(mode?.fix).toContain("docs/workspace-access.md");
+  expect(formatDoctor(doctorChecks(configured))).toContain("missing linear-mode:");
 });
 
 test("doctor names what is missing and does not print secret values", () => {
@@ -357,7 +351,6 @@ test("doctor requires Linear credentials even with GitHub OAuth", () => {
       viewerId: null,
       viewerMatches: false,
       teamFound: false,
-      labelFound: false,
       error: null,
     },
     githubDoctor: githubReady(),
@@ -373,7 +366,6 @@ test("doctor requires Linear credentials even with GitHub OAuth", () => {
   expect(names).toContain("linear");
   expect(names).toContain("linear-mode");
   expect(names).toContain("linear-team");
-  expect(names).toContain("linear-label");
   expect(names).not.toContain("gh-login");
   expect(names).not.toContain("gh-push");
   const text = formatDoctor(checks);
@@ -445,7 +437,6 @@ test("Linear tracking keeps independent GitHub OAuth checks", () => {
   };
   const names = doctorChecks(ready).map((item) => item.name);
   expect(names).toContain("linear");
-  expect(names).toContain("linear-label");
   expect(names).toContain("github-auth");
   expect(names).not.toContain("github-label");
   expect(names).not.toContain("gh-login");
@@ -524,7 +515,7 @@ function greenFacts(): ProbeFacts {
   return {
     configError: null,
     configured: true,
-    linearMode: "comments",
+    linearCommentMode: false,
     githubAuth: "gh",
     trackerKind: "linear",
     oauthClientId: null,
@@ -556,7 +547,6 @@ function greenFacts(): ProbeFacts {
       viewerId: "viewer_1",
       viewerMatches: true,
       teamFound: true,
-      labelFound: true,
       error: null,
     },
   };
@@ -566,7 +556,7 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
   return {
     configError: null,
     configured: false,
-    linearMode: "comments",
+    linearCommentMode: false,
     githubAuth: "gh",
     trackerKind: "linear",
     oauthClientId: null,
@@ -601,7 +591,6 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
       viewerId: null,
       viewerMatches: false,
       teamFound: false,
-      labelFound: false,
       error: null,
     },
     ...override,
