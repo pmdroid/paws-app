@@ -259,7 +259,7 @@ test.skipIf(process.platform !== "linux")(
     try {
       writeFileSync(
         script,
-        `const fs=require("node:fs"); process.on("SIGTERM", () => {}); let anchor=process.ppid; while(!fs.readFileSync("/proc/"+anchor+"/cmdline", "utf8").includes("process-anchor.ts")) { const stat=fs.readFileSync("/proc/"+anchor+"/stat", "utf8"); anchor=Number(stat.slice(stat.lastIndexOf(")")+2).split(" ")[1]); } fs.writeFileSync(process.argv[2], JSON.stringify({ pid:process.pid, anchor })); setInterval(() => {}, 1000);`,
+        `const fs=require("node:fs"); process.on("SIGTERM", () => {}); let anchor=process.ppid; while(!fs.readFileSync("/proc/"+anchor+"/cmdline", "utf8").includes("process-anchor.ts")) { const stat=fs.readFileSync("/proc/"+anchor+"/stat", "utf8"); anchor=Number(stat.slice(stat.lastIndexOf(")")+2).split(" ")[1]); } fs.writeFileSync(process.argv[2], ""); setTimeout(() => fs.writeFileSync(process.argv[2], JSON.stringify({ pid:process.pid, anchor })), 100); setInterval(() => {}, 1000);`,
       );
       pending = f.guarded
         .gitExec(
