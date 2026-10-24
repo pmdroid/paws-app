@@ -17,7 +17,6 @@ test("a session read naming the team fills a teamless webhook observed in the sa
     recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: null, observedAtMs: 5 });
     recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: "team", observedAtMs: 5 });
     expect(getLinearSessionInstallation(db, "s")?.teamId).toBe("team");
-    // The teamless observation does not erase a known team either.
     recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: null, observedAtMs: 5 });
     expect(getLinearSessionInstallation(db, "s")?.teamId).toBe("team");
   } finally {

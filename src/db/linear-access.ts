@@ -79,8 +79,6 @@ export function recordLinearInstallation(
     if (current.installation_observed_at !== null) {
       if (current.installation_observed_at > input.observedAtMs) return;
       if (current.installation_observed_at === input.observedAtMs) {
-        // A webhook without its team and the session read that names it can land in the same
-        // millisecond. An unknown team does not contradict a known one; only two teams do.
         if (input.teamId === null) return;
         if (current.team_id !== null && current.team_id !== input.teamId)
           throw new Error("Linear session team observations conflict");
