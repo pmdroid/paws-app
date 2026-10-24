@@ -1104,6 +1104,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               saveSchedulingContext(db, {
                 itemId,
                 ...("projectId" in issue ? { projectId: issue.projectId } : {}),
+                ...("projectLeadId" in issue ? { projectLeadId: issue.projectLeadId } : {}),
                 priority: issue.priority,
               });
             attached.applyDelegationChanges(changes);
