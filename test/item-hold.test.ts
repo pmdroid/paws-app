@@ -89,6 +89,27 @@ test("a project that holds an item is its held reason", () => {
   }
 });
 
+test("without a workspace nothing starts and earlier holds stay as they were", () => {
+  const db = tempDb();
+  try {
+    item(db, "PAS-7", "running");
+    item(db, "PAS-8", "queued", 1);
+    db.run("INSERT INTO task_block VALUES('issue-PAS-7','issue-PAS-8')");
+    const { lines, log } = journal();
+    expect(dispatch(db, { now: 1, log })).toEqual([]);
+    db.run("UPDATE work_item SET state='merged' WHERE id='PAS-7'");
+    item(db, "PAS-9", "queued", 2);
+    const admission = createAdmission({ db, workspace: false });
+    expect(dispatch(db, { now: 2, log, admission })).toEqual([]);
+    expect(listItemHolds(db)).toEqual([
+      { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
+    ]);
+    expect(lines).toEqual(["item PAS-8 held: blocked by PAS-7"]);
+  } finally {
+    db.close();
+  }
+});
+
 test("the status API carries the held reason of a queued item", () => {
   const db = tempDb();
   try {
