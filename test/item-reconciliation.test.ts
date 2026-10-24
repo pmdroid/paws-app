@@ -227,7 +227,7 @@ test("a reconcile handed the intake's reads writes the scheduler rows without re
     };
     const reconciler = createItemReconciler({
       db,
-      tracker: { loadEpic: unread, listDeps: unread, listIssuePullRequests: unread },
+      tracker: { loadEpic: unread, listDeps: unread },
       lifecycle: { inspect: unread },
       onChanges() {},
     });

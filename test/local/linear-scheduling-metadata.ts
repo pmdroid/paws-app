@@ -17,7 +17,7 @@ export async function probeLinearSchedulingMetadata(
       const body = (await request.json()) as (typeof requests)[number];
       requests.push(body);
       assert.match(body.query, /team \{ id \}/);
-      assert.match(body.query, /project \{ id \}/);
+      assert.match(body.query, /project \{ id lead \{ id \} \}/);
       assert.match(body.query, /assignee \{ id \}/);
       assert.match(body.query, /priority/);
       const second = body.variables["after"] !== null;

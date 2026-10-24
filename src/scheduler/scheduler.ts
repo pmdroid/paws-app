@@ -125,25 +125,33 @@ export function saveSchedulingContext(
   input: {
     itemId: string;
     projectId?: string | null;
+    /** Linear user id of the project lead. Unknown keeps the saved lead. */
+    projectLeadId?: string | null;
     priority?: number;
     paths?: readonly string[] | null;
   },
 ): void {
   if (input.projectId != null && !input.projectId.trim()) throw new Error("Invalid Linear project");
+  if (input.projectLeadId != null && !input.projectLeadId.trim())
+    throw new Error("Invalid Linear project lead");
   const priority = input.priority ?? 0;
   if (!Number.isInteger(priority) || priority < 0 || priority > 4)
     throw new Error("Invalid Linear priority");
   const paths = input.paths == null ? null : schedulerPaths(input.paths);
   db.run(
-    `INSERT INTO work_item_scheduling(item_id,project_id,project_known,priority,paths) VALUES(?,?,?,?,?)
+    `INSERT INTO work_item_scheduling(item_id,project_id,project_known,priority,paths,project_lead_id)
+    VALUES(?,?,?,?,?,?)
     ON CONFLICT(item_id) DO UPDATE SET project_id=excluded.project_id,project_known=excluded.project_known,
-    priority=excluded.priority,paths=excluded.paths`,
+    priority=excluded.priority,paths=excluded.paths,
+    project_lead_id=CASE WHEN ? THEN excluded.project_lead_id ELSE work_item_scheduling.project_lead_id END`,
     [
       input.itemId,
       input.projectId ?? null,
       Number(input.projectId !== undefined),
       priority,
       paths === null ? null : JSON.stringify(paths),
+      input.projectId === null ? null : (input.projectLeadId ?? null),
+      Number(input.projectLeadId !== undefined || input.projectId === null),
     ],
   );
 }
@@ -181,7 +189,7 @@ function allItems(db: Database, now: number): Item[] {
       AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>?)
       AND start.queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')) AS placing,
     w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo,
-    COALESCE('project:'||i.project_approval_id,'user:'||i.owner_user_id,'') AS turn
+    COALESCE('user:'||i.owner_user_id,'') AS turn
     FROM work_item i
     LEFT JOIN linear_session s ON s.session_id=i.session_key
     LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
