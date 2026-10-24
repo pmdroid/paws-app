@@ -18,7 +18,7 @@ The installer reads the host architecture, downloads the matching package from t
 curl -fsSL https://get.paws.boo | sudo sh -s -- 1.2.3
 ```
 
-Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages named `paws-runner_X.Y.Z_amd64.deb` and `paws-runner_X.Y.Z_arm64.deb`, each with a `.deb.sha256` file. The package includes one Bun runtime. `/opt/paws-runner/bin/paws-runner` is a small launcher that runs the runner source on it, and the agent programs use the same Bun. The host needs systemd.
+Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages named `paws-runner_X.Y.Z_amd64.deb` and `paws-runner_X.Y.Z_arm64.deb`, each with a `.deb.sha256` file. The package includes one Bun runtime. `/opt/paws-runner/bin/paws-runner` is a small launcher that runs the runner source on it, and the agent programs use the same Bun. The coding agents are installed from npm when the package installs, as described below. The host needs systemd.
 
 To verify and install a downloaded ARM64 package directly:
 
@@ -36,6 +36,14 @@ The release and installer modules in `deploy/linux` define a signed Linux packag
 Installer verification exercises interruption during release selection and recovery. The provider bootstrap adds fixed launchers for the agent programs, so operator commands and service execution resolve the same selected release.
 
 See the [signed Linux release](https://github.com/pmdroid/paws-app/pull/237), [validated installer](https://github.com/pmdroid/paws-app/pull/244), and [provider bootstrap](https://github.com/pmdroid/paws-app/pull/245). The [installation contract](https://github.com/pmdroid/paws-planning/issues/12) owns host prerequisites and packaging.
+
+### Coding agents
+
+The package does not contain the coding agents. It carries `deploy/linux/agents.json`, inside the signed archive, with each agent's package, exact version and lockfile, and the exact version and npm `sha512` integrity of every package that lockfile installs, including the native Linux packages. Installing the package installs Claude Code (`claude-agent-acp`), Codex (`codex-acp`) and Grok from the npm registry into `/opt/paws-runner/agents/<agent>/<version>`. The installer uses the package's Bun with `--frozen-lockfile` and `--ignore-scripts`, so a tarball whose integrity differs is refused and no install script runs. Codex's voice host and the musl copies of native packages are removed before the version folder is put in place. The host needs outbound HTTPS to `registry.npmjs.org` while the package installs.
+
+An installed version folder is never changed. A new version goes into its own folder, and `/opt/paws-runner/agents/<agent>/current` moves to it once no session holds the old one. The launchers in `/opt/paws-runner/bin` (`claude-agent-acp`, `claude`, `codex-acp`, `codex` and `grok`) run the current version and hold its folder with a shared `flock` for the whole session. If a session still holds the old version, the install reports that agent as `waiting`; `sudo python3 -I -B /usr/lib/paws-runner-package/install.py agents` finishes the switch later. If an agent fails to install, the package install fails with that agent's name, and the installed release and agents stay as they were.
+
+After changing an agent version in `package.json`, regenerate the manifest with `python3 -I -B deploy/linux/agent-manifest.py --bun "$(command -v bun)"`. It resolves each agent's lockfile from the repository `bun.lock`, so every package keeps its reviewed version. Packaging fails while the manifest and `package.json` disagree.
 
 ## Keep process identities separate
 
