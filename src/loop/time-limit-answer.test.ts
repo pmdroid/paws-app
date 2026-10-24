@@ -40,11 +40,16 @@ function askedAtTimeLimit() {
   return { clock, db, item };
 }
 
-function reply(db: ReturnType<typeof askedAtTimeLimit>["db"], body: string, now: number) {
+function reply(
+  db: ReturnType<typeof askedAtTimeLimit>["db"],
+  body: string,
+  now: number,
+  asking?: (runId: string) => boolean,
+) {
   return answer(
     db,
     { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
-    questionEffects(db, { now }),
+    questionEffects(db, { now, ...(asking ? { asking } : {}) }),
   );
 }
 
@@ -78,4 +83,15 @@ test("Stop at the time limit ends the task and names the accepted branch", () =>
       /^Stopped at the time limit, as asked in Linear\. The accepted work is on branch `.+`\.$/,
     ),
   });
+});
+
+test("Continue while the stopped run is still finishing leaves the resume to that run", () => {
+  const { clock, db, item } = askedAtTimeLimit();
+  const runId = getWorkItem(db, item.id)!.currentRunId!;
+  expect(reply(db, "Continue", clock.now(), (id) => id === runId).status).toBe("answered");
+  expect(getWorkItem(db, item.id)).toMatchObject({
+    state: "running",
+    maxAwakeMs: 31 * MINUTE + 60 * MINUTE,
+  });
+  expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(false);
 });

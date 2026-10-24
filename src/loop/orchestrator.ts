@@ -3768,6 +3768,9 @@ export class Orchestrator {
    * authorization and merge work stay, so accepted work keeps publishing and merging.
    */
   async stopAgent(itemId: string): Promise<void> {
+    // Like ask_team: an answer to the time-limit question does not enqueue the
+    // resume itself. The stopped run enqueues it when its operation finishes.
+    for (const [runId, live] of this.live) if (live.itemId === itemId) this.askedRuns.add(runId);
     this.abortItem(itemId);
     await this.options.remoteExecution?.cancelItem?.(itemId);
   }
