@@ -10,14 +10,7 @@ import {
 import { enqueueOutboxOnce, saveTaskBlocks } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
-import {
-  externalPolicyBinding,
-  inspectExternalBlockers,
-  managedBlockerSatisfied,
-  readExternalBlockerPolicies,
-  type BlockerEvidence,
-  type InspectBlockerMerge,
-} from "./blocker-policy";
+import { managedBlockerSatisfied } from "./blocker-policy";
 
 type Target = { itemId: string; workspaceId: string };
 type Item = {
@@ -30,7 +23,6 @@ type Item = {
   cancelRequested: number;
   mode: TaskMode | null;
   brief: string | null;
-  projectApprovalId: string | null;
 };
 type Identity = {
   delegationIssueId: string;
@@ -48,7 +40,6 @@ type Snapshot = {
   scope: string;
   linearStates: string;
   workspaceId: string;
-  externalEvidence: string;
 };
 type Scope = {
   item: Item;
@@ -61,7 +52,6 @@ export type DependencyReads = {
   edges: DependencyEdge[];
   states: Map<string, string>;
   identifiers: Map<string, string>;
-  evidence: Record<string, BlockerEvidence>;
 };
 
 export type DependencyReadiness = {
@@ -73,7 +63,7 @@ export type DependencyReadiness = {
 
 const itemColumns = `i.id,i.delegation_id AS delegationId,i.linear_issue_id AS linearIssueId,
   i.linear_identifier AS identifier,i.title,i.state,i.cancel_requested AS cancelRequested,
-  t.mode,i.brief,i.project_approval_id AS projectApprovalId`;
+  t.mode,i.brief`;
 
 function scope(db: Database, target: Target): Scope | null {
   const located = db
@@ -165,13 +155,7 @@ function scope(db: Database, target: Target): Scope | null {
         ownerActorId: identity.ownerActorId,
         creatorId: identity.creatorId,
       },
-      siblings.map((entry) => [
-        entry.id,
-        entry.linearIssueId,
-        entry.brief,
-        entry.projectApprovalId,
-      ]),
-      externalPolicyBinding(db, { itemId: item.id, workspaceId: target.workspaceId }),
+      siblings.map((entry) => [entry.id, entry.linearIssueId, entry.brief]),
     ]),
   };
 }
@@ -179,8 +163,7 @@ function scope(db: Database, target: Target): Scope | null {
 function snapshot(db: Database, target: Target): Snapshot | null {
   const saved = db
     .query<Snapshot, [string]>(
-      `SELECT generation,scope,linear_states AS linearStates,workspace_id AS workspaceId,
-       external_evidence AS externalEvidence
+      `SELECT generation,scope,linear_states AS linearStates,workspace_id AS workspaceId
        FROM item_dependency_snapshot WHERE item_id=?`,
     )
     .get(target.itemId);
@@ -264,35 +247,17 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
     ordered.ok ? [] : ordered.remaining.map((entry) => entry.linearIssueId),
   );
   const states = new Map<string, string>(JSON.parse(saved.linearStates));
-  const evidence = JSON.parse(saved.externalEvidence) as Record<string, BlockerEvidence>;
-  const policies = new Map(
-    readExternalBlockerPolicies(db, { itemId: item.id, workspaceId: target.workspaceId }).map(
-      (policy) => [policy.blockerLinearIssueId, policy],
-    ),
-  );
   const byId = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
   const satisfied = (id: string): boolean => {
     if (states.get(id) === "canceled") return false;
     const blocker = byId.get(id);
-    if (!blocker || blocker.state === "manual") {
-      const policy = policies.get(id);
-      if (policy) {
-        const proof = evidence[id];
-        if (
-          !proof?.satisfied ||
-          proof.checkedAt > Date.now() ||
-          Date.now() - proof.checkedAt >= 300_000
-        )
-          return false;
-        return policy.outcome === "merge" || states.get(id) === "completed";
-      }
-      if (!blocker)
-        return (
-          managedBlockerSatisfied(db, { itemId: item.id, workspaceId: target.workspaceId }, id) ??
-          states.get(id) === "completed"
-        );
-    }
-    if (!blocker || blocker.cancelRequested || blocker.state === "cancelled") return false;
+    // A blocker outside the delegation follows its Paws work, or its Linear state without any.
+    if (!blocker)
+      return (
+        managedBlockerSatisfied(db, { itemId: item.id, workspaceId: target.workspaceId }, id) ??
+        states.get(id) === "completed"
+      );
+    if (blocker.cancelRequested || blocker.state === "cancelled") return false;
     if (blocker.state === "manual") return states.get(id) === "completed";
     return isBlockerSatisfied(blocker);
   };
@@ -313,9 +278,8 @@ export async function syncItemDependencies(
   db: Database,
   input: Target & {
     expectedGeneration: number;
-    tracker: Pick<TrackerAdapter, "listDeps" | "listIssuePullRequests">;
+    tracker: Pick<TrackerAdapter, "listDeps">;
     lifecycle: Pick<LinearIssueLifecycle, "inspect">;
-    inspectMerge?: InspectBlockerMerge;
     signal?: AbortSignal;
   },
 ): Promise<DependencyReadiness> {
@@ -361,19 +325,10 @@ export async function syncItemDependencies(
     identifiers.set(id, issue.identifier ?? id);
   }
   signal?.throwIfAborted();
-  const evidence = await inspectExternalBlockers(db, {
-    itemId: initial.item.id,
-    workspaceId,
-    issues: [...states.keys()],
-    inspectMerge: input.inspectMerge,
-    tracker,
-    signal,
-  });
-  signal?.throwIfAborted();
   return writeItemDependencies(
     db,
     { ...target, expectedGeneration },
-    { edges: [...edges.values()], states, identifiers, evidence },
+    { edges: [...edges.values()], states, identifiers },
     initial.token,
   );
 }
@@ -403,7 +358,7 @@ function writeItemDependencies(
 ): DependencyReadiness {
   const { itemId, workspaceId, expectedGeneration } = input;
   const target = { itemId, workspaceId };
-  const { edges, states, identifiers, evidence } = reads;
+  const { edges, states, identifiers } = reads;
   return db
     .transaction(() => {
       const current = scope(db, target);
@@ -426,11 +381,11 @@ function writeItemDependencies(
           expectedGeneration + 1,
           current.token,
           JSON.stringify([...states]),
-          JSON.stringify(evidence),
+          "{}",
         ],
       );
       const waiting = [...states]
-        .filter(([id, state]) => state !== "completed" && !evidence[id]?.satisfied)
+        .filter(([, state]) => state !== "completed")
         .map(([id]) => identifiers.get(id) ?? id)
         .sort();
       if (waiting.length && current.item.state === "queued")

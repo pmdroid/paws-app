@@ -16,7 +16,6 @@ import type {
 } from "../linear";
 import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
-import type { InspectBlockerMerge } from "./blocker-policy";
 
 export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
 
@@ -114,9 +113,8 @@ function specHash(value: WorkBrief): string {
 
 export function createItemReconciler(input: {
   db: Database;
-  tracker: Pick<TrackerAdapter, "loadEpic" | "listDeps" | "listIssuePullRequests">;
+  tracker: Pick<TrackerAdapter, "loadEpic" | "listDeps">;
   lifecycle: Pick<LinearIssueLifecycle, "inspect">;
-  inspectMerge?: InspectBlockerMerge;
   onChanges: (changes: ItemChanges) => void;
   afterChanges?: (changes: ItemChanges) => Promise<void>;
   scopeSnapshot?: (
@@ -315,7 +313,6 @@ export function createItemReconciler(input: {
             .generation,
           tracker,
           lifecycle,
-          inspectMerge: input.inspectMerge,
           signal: target.signal,
         });
     }
