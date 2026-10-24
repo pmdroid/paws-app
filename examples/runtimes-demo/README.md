@@ -4,4 +4,4 @@ Repository used to smoke-test runner runtimes. `mise.toml` asks for Node 22 and 
 
 The runner's own Bun is not on the task's `PATH`, and this repository does not declare Bun, so nothing here needs it.
 
-Push this directory to an empty GitHub repository as its `main`, connect it to Paws, and follow [Runtimes in the smoke test](../../docs/smoke-test.md#runtimes).
+Push this directory to an empty GitHub repository as its `main`, connect it to Paws, and follow [Runtimes in the smoke test](https://github.com/pmdroid/paws-app/blob/main/docs/smoke-test.md#runtimes) in the Paws repository.
