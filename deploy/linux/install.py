@@ -182,7 +182,7 @@ def extract_verified(artifact, destination):
                     remaining -= len(chunk)
                 outgoing.flush()
                 mode = member.mode
-                if member.name in ("bin/bun", "bin/paws-runner"):
+                if member.name in release.BINARIES:
                     mode = 0o755
                 elif member.name.startswith("deploy/linux/"):
                     mode = 0o644
@@ -196,8 +196,8 @@ def extract_verified(artifact, destination):
 def verify_selected_release(destination, unpacked):
     expected = {path.relative_to(unpacked / "app"): path for path in (unpacked / "app").rglob("*") if path.is_file()}
     expected.update({pathlib.Path("deploy/linux") / name: unpacked / "deploy/linux" / name for name in release.ASSETS})
-    expected[pathlib.Path("bin/bun")] = unpacked / "bin/bun"
-    expected[pathlib.Path("bin/paws-runner")] = unpacked / "bin/paws-runner"
+    for name in release.BINARIES:
+        expected[pathlib.Path(name)] = unpacked / name
     seen = set()
     directories = {pathlib.Path(".")}
     for path in expected:
@@ -232,7 +232,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             raise ValueError("Unsafe installation lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         accepted = admitted_release(manifest, fingerprint, reinstall)
-        pointers = {"bun": "../current/bin/bun", "paws-runner": "../current/bin/paws-runner", "claude": "../current/node_modules/.bin/claude", "codex": "../current/node_modules/.bin/codex"}
+        pointers = {"bun": "../current/bin/bun", "mise": "../current/bin/mise", "paws-runner": "../current/bin/paws-runner", "claude": "../current/node_modules/.bin/claude", "codex": "../current/node_modules/.bin/codex"}
         for name, target in pointers.items():
             pointer = BASE / "bin" / name
             if pointer.is_symlink():
@@ -252,6 +252,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
                     raise ValueError("Packaged runner is not a native executable")
             if release.command([str(bun), "--version"]).decode().strip() != release.BUN_VERSION:
                 raise ValueError("Packaged Bun does not match the pinned runtime")
+            release.verify_mise(release.read_regular(unpacked / "bin/mise", release.MISE_LIMIT), manifest["platform"])
             stop_for_install()
             write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "pending"}).encode(), 0o600)
             destination = BASE / "releases" / manifest["version"]
@@ -268,8 +269,8 @@ def install(manifest, artifact, fingerprint, reinstall=False):
                     shutil.rmtree(destination)
             if not selected:
                 staged = unpacked / "app"
-                write_atomic(staged / "bin/bun", bun.read_bytes(), 0o755)
-                write_atomic(staged / "bin/paws-runner", runner_binary.read_bytes(), 0o755)
+                for name in release.BINARIES:
+                    write_atomic(staged / name, (unpacked / name).read_bytes(), 0o755)
                 for name in sorted(release.ASSETS):
                     write_atomic(staged / "deploy/linux" / name, (unpacked / "deploy/linux" / name).read_bytes(), 0o644)
                 os.rename(staged, destination)

@@ -2445,4 +2445,8 @@ DROP TABLE item_hold;
 ALTER TABLE item_hold_next RENAME TO item_hold;
 `,
   },
+  {
+    id: "125_runner_host_mise_version",
+    sql: `ALTER TABLE runner_host_status ADD COLUMN mise_version TEXT;`,
+  },
 ];

@@ -6,6 +6,11 @@ const releaseVersion = z
   .string()
   .max(32)
   .regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/);
+/** mise uses calendar versions such as `2026.10.18`. */
+const miseVersion = z
+  .string()
+  .max(32)
+  .regex(/^[0-9]{4}\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]{0,3})$/);
 const osField = z
   .string()
   .min(1)
@@ -47,10 +52,18 @@ export const RunnerHostStatusSchema = z.strictObject({
   osId: osField.optional(),
   osVersion: osField.optional(),
   runnerVersion: releaseVersion.optional(),
+  /** Version of the mise binary shipped next to the runner. */
+  miseVersion: miseVersion.optional(),
   strayProcesses: z.array(RunnerStrayProcessSchema).max(20).optional(),
 });
 
 export type RunnerHostStatus = z.infer<typeof RunnerHostStatusSchema>;
+
+/** The version from `mise --version` output such as `2026.10.18 linux-x64 (2026-10-23)`. */
+export function miseVersionFromOutput(output: string): string | null {
+  const parsed = miseVersion.safeParse(output.trim().split(/\s+/, 1)[0]);
+  return parsed.success ? parsed.data : null;
+}
 
 /** Release version from an installed path such as `/opt/paws-runner/releases/1.2.3/bin/paws-runner`. */
 export function releaseVersionFromPath(path: string): string | null {
