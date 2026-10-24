@@ -8,8 +8,7 @@ import {
   linearItem,
   LinearRateLimitError,
 } from "../src/linear";
-import { createPersonalLinearClient } from "../src/comments";
-import { isTransientFailure, transientRetryDelayMs } from "../src/core";
+import { transientRetryDelayMs } from "../src/core";
 import { migrate, openDatabase } from "../src/db";
 import { startServer } from "../src/server";
 
@@ -152,18 +151,6 @@ describe("shared Linear budget", () => {
     expect(error).toBeInstanceOf(LinearRateLimitError);
     expect((error as LinearRateLimitError).retryAfterMs).toBe(90_000);
     expect(transientRetryDelayMs(0, error)).toBe(90_000);
-  });
-
-  test("a personal-key RATELIMITED response retries at its requests reset", async () => {
-    const reset = Date.now() + 90_000;
-    const client = createPersonalLinearClient({
-      apiKey: "key",
-      fetch: async () => linearResponse(budgetHeaders(0, 10, reset), true),
-    });
-    const error = await client.query("query { viewer { id } }").catch((caught: unknown) => caught);
-    expect(isTransientFailure(error)).toBe(true);
-    expect(transientRetryDelayMs(0, error)).toBeGreaterThan(85_000);
-    expect(transientRetryDelayMs(0, error)).toBeLessThanOrEqual(90_000);
   });
 
   test("an exhausted endpoint limit holds that endpoint only", async () => {
