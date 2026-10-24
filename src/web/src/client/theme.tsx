@@ -361,17 +361,6 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("grid grid-cols-2 gap-3 self-stretch sm:flex sm:shrink-0 sm:self-auto");
   if (has("issue-head")) return styled("space-y-3");
   if (has("issue-filters")) return styled("flex flex-wrap gap-2");
-  if (has("run-filters")) return styled("flex min-w-0 flex-wrap items-start gap-2");
-  if (has("run-filter"))
-    return styled("relative min-w-0 open:basis-full sm:open:basis-auto [&>summary]:w-full");
-  if (has("run-filter-menu"))
-    return styled(
-      "mt-2 flex min-w-0 flex-col gap-1 rounded-base border-2 border-border bg-secondary-background p-3 shadow-shadow sm:absolute sm:left-0 sm:top-full sm:z-20 sm:w-max sm:min-w-56 sm:max-w-80 [&>label]:min-h-control",
-    );
-  if (has("run-empty"))
-    return styled(
-      "flex flex-col items-start gap-3 rounded-base border-2 border-border bg-secondary-background p-4 text-sm",
-    );
   if (name === "ul" && has("issue-list", "issue-items"))
     return styled(
       "m-0 list-none divide-y-2 divide-border rounded-base border-2 border-border bg-secondary-background p-0 [&>li]:px-4 [&>li]:py-4",
