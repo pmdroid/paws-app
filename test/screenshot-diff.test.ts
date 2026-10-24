@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { screenshotPng } from "../../test/png";
-import { compareScreenshots } from "./screenshot-diff";
+import { screenshotPng } from "./png";
+import { compareScreenshots } from "../src/loop/screenshot-diff";
 
 const SCREEN = [
   { x: 20, y: 20, width: 300, height: 40, rgb: 0x111111 },
