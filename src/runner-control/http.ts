@@ -56,6 +56,7 @@ export function createRunnerHttp(
                   : runner,
               ),
             serverVersion: control.serverVersion(),
+            agentVersions: control.agentVersions(),
           });
         if (path === "/api/runners/pairings/inspect" && request.method === "POST")
           return json(control.inspectPairing(principal, code.parse(await readJson(request)).code));

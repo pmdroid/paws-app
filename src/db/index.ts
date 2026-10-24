@@ -468,6 +468,7 @@ export {
   type LinearWebhookWarning,
 } from "./linear-webhook";
 export {
+  agentCatalogSummary,
   lastAgentCatalogCheck,
   listAgentVersions,
   readAgentVersion,
@@ -478,6 +479,7 @@ export {
   touchNpmPackage,
 } from "./agent-versions";
 export type {
+  AgentCatalogSummary,
   AgentVersionRow,
   AgentVersionStatus,
   NpmIntegrityRecord,

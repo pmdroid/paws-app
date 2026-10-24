@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 import {
+  agentCatalogSummary,
   approveRunnerPairing,
   createRunnerPairing,
   expireRunnerPairings,
@@ -176,6 +177,10 @@ export function createRunnerControl(options: {
     },
     serverVersion() {
       return serverVersion;
+    },
+    /** The coding agent versions Paws offers, and the ones it refused. */
+    agentVersions() {
+      return agentCatalogSummary(db);
     },
     setStatus(principal: WorkspacePrincipal, runnerId: string, status: RunnerRecord["status"]) {
       const fingerprints = immediate(db, () => {

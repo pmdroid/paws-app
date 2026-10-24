@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  agentCatalogMarkup,
   compareVersions,
   livePoll,
   RUNNER_POLL_MS,
@@ -744,5 +745,39 @@ describe("live polling", () => {
     stop();
     expect(fake.running()).toBe(false);
     expect(fake.listeners.size).toBe(0);
+  });
+});
+
+describe("coding agent versions", () => {
+  test("shows the offered version and why a version was refused", () => {
+    const at = Date.parse("2026-10-24T12:00:00Z");
+    const html = agentCatalogMarkup(
+      [
+        {
+          agent: "claude",
+          offered: "0.88.0",
+          refused: [
+            {
+              version: "0.89.0",
+              reason:
+                "The integrity of @agentclientprotocol/claude-agent-acp@0.89.0 changed <after>.",
+            },
+          ],
+          checkedAt: at - 2 * 60 * 60 * 1000,
+        },
+        { agent: "grok", offered: null, refused: [], checkedAt: at },
+      ],
+      at,
+    );
+    expect(html).toContain("Coding agent versions");
+    expect(html).toContain('<span class="mono">0.88.0</span>');
+    expect(html).toContain('Refused <span class="mono">0.89.0</span>');
+    expect(html).toContain("claude-agent-acp@0.89.0 changed &lt;after&gt;.");
+    expect(html).toContain("Checked 2 h ago");
+    expect(html).toContain("No version is eligible yet");
+  });
+
+  test("is left out before the first catalog refresh", () => {
+    expect(agentCatalogMarkup([], 0)).toBe("");
   });
 });

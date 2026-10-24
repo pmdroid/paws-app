@@ -150,6 +150,7 @@ import { createAdmission, registerScheduler, saveSchedulingContext } from "./sch
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
+import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import {
   issueVerifiedWorkspaceBootstrap,
@@ -204,6 +205,8 @@ export type StartOptions = {
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
   runnerTranscriptObjects?: RunnerTranscriptObjects;
   refreshRepositories?: boolean;
+  /** Read npm once a day for the coding agent version catalog. Off in tests. */
+  refreshAgentCatalog?: boolean;
 };
 
 const LOOPBACK = "127.0.0.1";
@@ -327,6 +330,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     const catalogTimer = setInterval(() => void refreshRepositoryCatalog(db, listCatalog), 600_000);
     catalogTimer.unref?.();
     abort.signal.addEventListener("abort", () => clearInterval(catalogTimer));
+  }
+  if (options?.refreshAgentCatalog) {
+    const agentCatalog = createAgentCatalog({ db, registry: createNpmRegistry() });
+    const check = () => void agentCatalog.refreshIfDue(abort.signal).catch(() => {});
+    check();
+    // Hourly checks keep the daily read on schedule across sleep and restarts.
+    const agentCatalogTimer = setInterval(check, 60 * 60 * 1000);
+    agentCatalogTimer.unref?.();
+    abort.signal.addEventListener("abort", () => clearInterval(agentCatalogTimer));
   }
   const skillUpdates = createSkillUpdates();
   const skillUpdateTimer = setInterval(
@@ -1654,6 +1666,7 @@ if (import.meta.main) {
   }
   const paws = startPaws(process.env, {
     refreshRepositories: true,
+    refreshAgentCatalog: true,
     noTunnel: argv.includes("--no-tunnel"),
   });
   let exiting = false;
