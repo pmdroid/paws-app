@@ -35,6 +35,9 @@ export const ALLOWED_AGENT_ENV: readonly string[] = [
   "npm_config_cache",
   "NODE_COMPILE_CACHE",
   "NODE_EXTRA_CA_CERTS",
+  // The runner's shared mise installs, which Paws sets in the runner worker's agent env.
+  "MISE_DATA_DIR",
+  "MISE_CACHE_DIR",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "HTTP_PROXY",
