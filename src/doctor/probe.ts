@@ -11,7 +11,6 @@ import {
   scopesGrantRepoAndOrg,
   type GitHubTokenProvider,
 } from "../auth";
-import { createPersonalLinearClient, type CommentFetch } from "../comments";
 import {
   closeoutPolicyRoot,
   loadRuntime,
@@ -26,6 +25,7 @@ import { validate } from "../closeout-spec";
 import { latestGitHubDelivery, linearWebhookWarning, type LinearWebhookWarning } from "../db";
 import { checkGhAuthStatus, ghDoctorChecks } from "../github";
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
+import { createLinearClient } from "../linear";
 import { doctorAgentProfiles } from "./agents";
 
 /** Core REST calls left after a signed-in doctor check. Below this, doctor reports no headroom. */
@@ -281,11 +281,12 @@ async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<Prob
   };
   const credential = runtime.linearAccessToken;
   if (credential === null) return empty;
-  const header = `Bearer ${credential}`;
-  const fetchImpl: CommentFetch = (input, init) =>
-    fetch(input, { ...init, signal: AbortSignal.timeout(8_000) });
+  const token = async () => credential;
   try {
-    const client = createPersonalLinearClient({ apiKey: header, fetch: fetchImpl });
+    const client = createLinearClient({
+      auth: { hasToken: () => true, ensureFresh: token, forceRefresh: token },
+      fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(8_000) }),
+    });
     const teamId = runtime.linearTeamId;
     const data =
       teamId === null
