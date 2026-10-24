@@ -128,7 +128,6 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
       { issue_id: "child-a", identifier: "PAR-2", position: 0 },
       { issue_id: "child-b", identifier: "PAR-3", position: 1 },
     ]);
-    expect(db.query("SELECT id FROM project_approval").all()).toEqual([]);
     expect(
       db
         .query<{ action: string; user_id: string }, []>(
@@ -158,19 +157,17 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
       .query<
         {
           linear_issue_id: string;
-          project_approval_id: string | null;
           owner_user_id: string;
           delegation_id: string;
         },
         []
       >(
-        "SELECT linear_issue_id,project_approval_id,owner_user_id,delegation_id FROM work_item ORDER BY linear_issue_id",
+        "SELECT linear_issue_id,owner_user_id,delegation_id FROM work_item ORDER BY linear_issue_id",
       )
       .all();
     expect(items).toHaveLength(2);
     expect(items.map((item) => item.linear_issue_id)).toEqual(["child-a", "child-b"]);
     for (const item of items) {
-      expect(item.project_approval_id).toBeNull();
       expect(item.owner_user_id).toBe("lead");
       expect(item.delegation_id).not.toBe(admitted.delegation.id);
       expect(

@@ -64,16 +64,7 @@ export async function probeRunnerPlacement(
     "fixture/repository",
     "team",
   ]);
-  db.run(
-    `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at)
-     VALUES('approval',?,'project',?,?,'placement','{}',?,?,?)`,
-    [workspace.id, owner, owner, now, now, now],
-  );
-  db.run("UPDATE work_item SET owner_user_id=?, project_approval_id='approval' WHERE id=?", [
-    owner,
-    item.id,
-  ]);
-  const users: Record<string, string> = { owner };
+  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, item.id]);
   for (const [id, user] of [
     ["own", "owner"],
     ["second", "owner"],
@@ -89,7 +80,6 @@ export async function probeRunnerPlacement(
             name: user!,
             email: `${user}@example.invalid`,
           });
-    users[user!] = userId;
     if (user !== "owner")
       syncWorkspaceMember(db, {
         workspaceId: workspace.id,
@@ -109,9 +99,6 @@ export async function probeRunnerPlacement(
     ]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id!]);
   }
-  const lead = (user: string) =>
-    db.run("UPDATE project_approval SET lead_user_id=? WHERE id='approval'", [users[user]!]);
-  lead("colleague");
   let installationObservation = now;
   const observeInstallation = (teamId: string) =>
     recordLinearInstallation(db, {
@@ -182,18 +169,10 @@ export async function probeRunnerPlacement(
     observe("A changed installation team still fences selection", true, {
       teamChangeRejected: true,
     });
-    lead("owner");
     assert.deepEqual(await ids(), ["own", "second"]);
-    lead("colleague");
-    observe("A Paws project start does not offer another member's shared runner", true, {
+    observe("An item does not offer another member's shared runner", true, {
       offered: ["own", "second"],
       sharedExcluded: true,
-    });
-    lead("pool");
-    assert.deepEqual(await ids(), ["own", "second"]);
-    lead("colleague");
-    observe("Placement follows the owner whoever leads the Paws project", true, {
-      offered: ["own", "second"],
     });
     await placement.candidates(request);
     saveCheckpoint(db, item.id, {

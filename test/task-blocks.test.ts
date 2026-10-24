@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   enqueueJob,
   getWorkItem,
@@ -15,23 +14,6 @@ import { tempDb } from "./helpers";
 
 function edge(blockerLinearIssueId: string, blockedLinearIssueId: string): TaskBlock {
   return { blockerLinearIssueId, blockedLinearIssueId };
-}
-
-function insertApproval(db: Database, id: string, generation: string, source?: string): void {
-  const values = [id, "ws", "project", "user", "user", generation, "{}", 0, 1];
-  if (source === undefined) {
-    db.run(
-      `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at)
-       VALUES(?,?,?,?,?,?,?,?,?)`,
-      values,
-    );
-    return;
-  }
-  db.run(
-    `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,source)
-     VALUES(?,?,?,?,?,?,?,?,?,?)`,
-    [...values, source],
-  );
 }
 
 describe("task blocks", () => {
@@ -77,30 +59,6 @@ describe("task blocks", () => {
     db.close();
   });
 
-  test("project approval source defaults to project and rejects other values", () => {
-    const db = tempDb();
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
-    );
-    db.run(
-      "INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES('user','linear-user','User','user@example.test')",
-    );
-    insertApproval(db, "default", "1");
-    insertApproval(db, "parent", "2", "parent");
-    expect(
-      db
-        .query<{ source: string }, [string]>("SELECT source FROM project_approval WHERE id=?")
-        .get("default")?.source,
-    ).toBe("project");
-    expect(
-      db
-        .query<{ source: string }, [string]>("SELECT source FROM project_approval WHERE id=?")
-        .get("parent")?.source,
-    ).toBe("parent");
-    expect(() => insertApproval(db, "other", "3", "epic")).toThrow(/CHECK/);
-    db.close();
-  });
-
   test("migration 058 keeps the newer active item and rejects a second", () => {
     const db = openDatabase(":memory:");
     db.run(
@@ -113,7 +71,9 @@ describe("task blocks", () => {
         migration.id === "064_work_item_without_epic_fk" ||
         migration.id === "065_drop_epic" ||
         // Copies project_approval_issue.delegation_id, which 065 renames from epic_id.
-        migration.id === "129_parent_delegation"
+        migration.id === "129_parent_delegation" ||
+        // Rebuilds work_item with delegation_id, which 065 adds.
+        migration.id === "130_drop_project_start"
       )
         continue;
       if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
@@ -161,7 +121,7 @@ describe("task blocks", () => {
       "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('older-run','m-older','work','claude','active',1,1)",
     );
     const job = enqueueJob(db, { queue: "item.start", payload: { itemId: "m-older" }, now: 1 });
-    migrate(db);
+    migrate(db, { until: "129_parent_delegation" });
     expect(listTaskBlockers(db, "shared-issue")).toEqual(["inside-blocker", "outside-blocker"]);
     expect(
       db.query<{ status: string }, []>("SELECT status FROM run WHERE id='older-run'").get()?.status,
@@ -197,26 +157,19 @@ describe("task blocks", () => {
     db.close();
   });
 
-  test("work item has owner and project columns", () => {
+  test("work item has an owner column and no project start column", () => {
     const db = tempDb();
     const names = db
       .query<{ name: string }, []>("PRAGMA table_info(work_item)")
       .all()
       .map((column) => column.name);
     expect(names).toContain("owner_user_id");
-    expect(names).toContain("project_approval_id");
+    expect(names).not.toContain("project_approval_id");
     const foreignKeys = db
       .query<{ from: string; table: string; to: string }, []>("PRAGMA foreign_key_list(work_item)")
       .all();
     expect(foreignKeys).toContainEqual(
       expect.objectContaining({ from: "owner_user_id", table: "workspace_user", to: "id" }),
-    );
-    expect(foreignKeys).toContainEqual(
-      expect.objectContaining({
-        from: "project_approval_id",
-        table: "project_approval",
-        to: "id",
-      }),
     );
     db.close();
   });
