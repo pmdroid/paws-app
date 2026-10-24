@@ -1,6 +1,6 @@
 # GitHub sign-in
 
-Paws supports GitHub App browser sign-in with repository work performed by the App bot, and OAuth App device sign-in with work performed as your account. Linear intake and questions are described in [Linear modes](linear-modes.md).
+Paws supports GitHub App browser sign-in with repository work performed by the App bot, and OAuth App device sign-in with work performed as your account. Linear intake and questions are described in [Linear agent sessions](linear-agent-sessions.md).
 
 ## GitHub App sign-in
 
