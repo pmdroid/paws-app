@@ -60,11 +60,11 @@ def main():
                 raise RuntimeError(version.stderr + help_result.stderr)
             versions[provider] = version.stdout.strip()
             login_help[provider] = help_result.stdout
-            launcher = pathlib.Path('/opt/paws-runner/current/node_modules/.bin') / provider
-            if launcher.is_symlink() or launcher.stat().st_mode & 0o7777 != 0o755:
-                raise RuntimeError('Provider launcher is not a regular executable')
-            if os.readlink('/opt/paws-runner/bin/' + provider) != '../current/node_modules/.bin/' + provider:
-                raise RuntimeError('Provider pointer does not select current')
+            launcher = pathlib.Path('/opt/paws-runner/bin') / provider
+            if launcher.is_symlink() or launcher.stat().st_mode & 0o7777 != 0o755 or launcher.read_bytes() != fixture.installer.release.agent_launcher(provider):
+                raise RuntimeError('Provider launcher is not the fixed installed-agent launcher')
+            if not (pathlib.Path('/opt/paws-runner/agents') / provider / 'current').is_dir():
+                raise RuntimeError('Provider agent is not installed')
         script = ROOT / 'scripted-login.py'
         script.write_text("import os,pathlib,pwd,sys\nrunner=pwd.getpwnam('paws-runner')\nassert os.getuid()==runner.pw_uid and os.getgid()==runner.pw_gid\nassert set(os.environ)<= {'HOME','PATH','LANG','LC_CTYPE'}\nassert os.environ['HOME']=='/var/lib/paws-agent' and os.getcwd()=='/var/lib/paws-agent'\nprovider=sys.argv[1]\ncredential=pathlib.Path('/var/lib/paws-agent')/('.'+provider)/'synthetic-credential'\ncredential.parent.mkdir(mode=0o700,exist_ok=True)\ncredential.write_text('synthetic-runner-login')\ncredential.chmod(0o600)\n")
         script.chmod(0o644)
@@ -86,7 +86,7 @@ def main():
             if info.st_uid != runner.pw_uid or info.st_mode & 0o7777 != 0o600 or readable.returncode != 0 or denied.returncode == 0:
                 raise RuntimeError('Runner credential ownership failed')
             isolation[provider] = {'uid': info.st_uid, 'mode': oct(info.st_mode & 0o7777), 'workerRead': True, 'outsiderReadDenied': True}
-        observations = {'verified': True, 'installerSha256': hashlib.sha256((ROOT / 'install.py').read_bytes()).hexdigest(), 'packageManifest': json.loads((ROOT / 'package/manifest.json').read_text()), 'agentUid': agent.pw_uid, 'runnerUid': runner.pw_uid, 'actualStatusChecks': checks, 'versions': versions, 'operatorLoginCommands': installed['providerLoginCommands'], 'loginHelp': login_help, 'scriptedCredentialIsolation': isolation, 'vendorLoginInvoked': False, 'network': 'none', 'systemctlBackend': 'recording fixture'}
+        observations = {'verified': True, 'installerSha256': hashlib.sha256((ROOT / 'install.py').read_bytes()).hexdigest(), 'packageManifest': json.loads((ROOT / 'package/manifest.json').read_text()), 'agentUid': agent.pw_uid, 'runnerUid': runner.pw_uid, 'actualStatusChecks': checks, 'versions': versions, 'operatorLoginCommands': installed['providerLoginCommands'], 'loginHelp': login_help, 'scriptedCredentialIsolation': isolation, 'vendorLoginInvoked': False, 'network': 'npm registry for the pinned agents', 'systemctlBackend': 'recording fixture'}
         (ROOT / 'observations.json').write_text(json.dumps(observations, indent=2) + '\n')
         print(json.dumps(observations))
 

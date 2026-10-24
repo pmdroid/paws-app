@@ -88,8 +88,7 @@ const observation = await run(
     "--rm",
     "--user",
     "0",
-    "--network",
-    "none",
+    // The installer installs the pinned coding agents from the npm registry.
     "--cap-drop",
     "ALL",
     ...["CHOWN", "FOWNER", "DAC_OVERRIDE", "SETUID", "SETGID", "FSETID"].flatMap((cap) => [
