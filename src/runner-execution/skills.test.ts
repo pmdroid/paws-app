@@ -1,9 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunnerSkill } from "../runner-protocol";
+import { withTarModes, type RunnerSkill } from "../runner-protocol";
 import { createRunnerSkillInstaller } from "./skills";
 
 const roots: string[] = [];
@@ -14,12 +24,20 @@ afterEach(() => {
 const owner = { uid: process.getuid!(), gid: process.getgid!() };
 const homeA = "agent-a";
 const homeB = "agent-b";
+const mode = (path: string) => statSync(path).mode & 0o7777;
 
-async function bundle(name: string, version: string, body: string, agents = ["claude", "codex"]) {
-  const bytes = await new Bun.Archive(
-    { "SKILL.md": `---\nname: ${name}\n---\n${body}\n`, "scripts/run.sh": "echo hi\n" },
-    { compress: "gzip" },
-  ).bytes();
+async function bundle(
+  name: string,
+  version: string,
+  body: string,
+  agents = ["claude", "codex"],
+  modes = new Map<string, number>(),
+) {
+  const tar = await new Bun.Archive({
+    "SKILL.md": `---\nname: ${name}\n---\n${body}\n`,
+    "scripts/run.sh": "echo hi\n",
+  }).bytes();
+  const bytes = Bun.gzipSync(withTarModes(tar, modes));
   const skill = {
     name,
     version,
@@ -39,20 +57,23 @@ function setup(homes: string[] = [homeA, homeB], created: string[] = homes) {
   const served = new Map<string, Uint8Array>();
   const downloads: string[] = [];
   const errors: string[] = [];
-  const installer = createRunnerSkillInstaller({
-    root: join(root, "state"),
-    homes: homes.map((home) => join(base, home)),
-    owner,
-    async download(skill) {
-      downloads.push(`${skill.name}@${skill.version}`);
-      const bytes = served.get(`${skill.name}@${skill.version}`);
-      if (!bytes) throw new Error("not found");
-      return bytes;
-    },
-    onError: (error) => errors.push(error.message),
-  });
+  const state = join(root, "state");
+  const open = () =>
+    createRunnerSkillInstaller({
+      root: state,
+      homes: homes.map((home) => join(base, home)),
+      owner,
+      async download(skill) {
+        downloads.push(`${skill.name}@${skill.version}`);
+        const bytes = served.get(`${skill.name}@${skill.version}`);
+        if (!bytes) throw new Error("not found");
+        return bytes;
+      },
+      onError: (error) => errors.push(error.message),
+    });
+  const installer = open();
   const home = (id: string) => join(base, id);
-  return { installer, served, downloads, errors, home };
+  return { installer, open, served, downloads, errors, home, state };
 }
 
 describe("runner skill installer", () => {
@@ -186,5 +207,78 @@ describe("runner skill installer", () => {
       error: "Skill escape has a file outside its folder.",
     });
     expect(errors).toEqual(["Skill escape has a file outside its folder."]);
+  });
+
+  test("keeps a script executable and every other file private, in bundles and the agent home", async () => {
+    const { installer, served, home, state } = setup([homeA]);
+    const { skill, bytes } = await bundle(
+      "impeccable",
+      "2.4.1",
+      "v1",
+      ["claude"],
+      new Map([["scripts/run.sh", 0o755]]),
+    );
+    served.set("impeccable@2.4.1", bytes);
+    await installer.sync([skill]);
+    const unpacked = readdirSync(join(state, "bundles")).map((entry) =>
+      join(state, "bundles", entry),
+    );
+    expect(unpacked).toHaveLength(1);
+    for (const dir of [...unpacked, join(home(homeA), ".claude/skills/impeccable")]) {
+      expect(mode(join(dir, "scripts/run.sh"))).toBe(0o700);
+      expect(mode(join(dir, "SKILL.md"))).toBe(0o600);
+    }
+  });
+
+  test("drops group, world, setuid and setgid bits", async () => {
+    const { installer, served, home } = setup([homeA]);
+    const { skill, bytes } = await bundle(
+      "impeccable",
+      "2.4.1",
+      "v1",
+      ["claude"],
+      new Map([
+        ["scripts/run.sh", 0o6777],
+        ["SKILL.md", 0o6666],
+      ]),
+    );
+    served.set("impeccable@2.4.1", bytes);
+    await installer.sync([skill]);
+    const dir = join(home(homeA), ".claude/skills/impeccable");
+    expect(mode(join(dir, "scripts/run.sh"))).toBe(0o700);
+    expect(mode(join(dir, "SKILL.md"))).toBe(0o600);
+  });
+
+  test("an install that lost a script's executable bit is fixed on the next sync", async () => {
+    const { open, served, home, state } = setup([homeA]);
+    const { skill, bytes } = await bundle(
+      "impeccable",
+      "2.4.1",
+      "v1",
+      ["claude"],
+      new Map([["scripts/run.sh", 0o755]]),
+    );
+    served.set("impeccable@2.4.1", bytes);
+    const installed = join(home(homeA), ".claude/skills/impeccable");
+    for (const dir of [join(state, "bundles", skill.sha256), installed]) {
+      mkdirSync(join(dir, "scripts"), { recursive: true });
+      writeFileSync(join(dir, "SKILL.md"), "---\nname: impeccable\n---\nv1\n");
+      writeFileSync(join(dir, "scripts/run.sh"), "echo hi\n");
+      chmodSync(join(dir, "scripts/run.sh"), 0o600);
+    }
+    writeFileSync(
+      join(state, "state.json"),
+      JSON.stringify({
+        desired: [skill],
+        refused: [],
+        homes: {
+          [home(homeA)]: {
+            impeccable: { version: skill.version, sha256: skill.sha256, agents: skill.agents },
+          },
+        },
+      }),
+    );
+    await open().sync([skill]);
+    expect(mode(join(installed, "scripts/run.sh"))).toBe(0o700);
   });
 });
