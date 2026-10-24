@@ -249,7 +249,7 @@ test("the migration classifies questions with a Closeout recovery as Closeout he
   const db = openDatabase(":memory:");
   db.run("CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT");
   const cutoff = migrations.findIndex(
-    (migration) => migration.id === "115_question_closeout_help_kind",
+    (migration) => migration.id === "118_question_closeout_help_kind",
   );
   for (const migration of migrations.slice(0, cutoff)) {
     if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");

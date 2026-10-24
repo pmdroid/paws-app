@@ -138,7 +138,6 @@ export type RunnerSession = {
   startedAt: number;
 };
 
-/** Live sessions per runner, counted like `slots.used` counts work leases. */
 function listRunnerSessions(
   db: Database,
   workspaceId: string,
@@ -156,7 +155,8 @@ function listRunnerSessions(
     END AS phase,
     r.created_at AS startedAt
     FROM runner_work w JOIN run r ON r.id=w.run_id JOIN work_item i ON i.id=r.item_id
-    WHERE w.ended_at IS NULL AND w.lease_until>? AND w.workspace_id=?
+    WHERE ((w.ended_at IS NULL AND w.lease_until>?) OR r.status IN ('active','provisioning'))
+    AND w.workspace_id=?
     ORDER BY r.created_at,w.run_id`,
     )
     .all(now, workspaceId);
@@ -279,7 +279,8 @@ export function listRunnerOverview(
     (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL)
      OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id
        AND c.acknowledged_at IS NULL AND c.expires_at>?)) AS busy,
-    (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) +
+    (SELECT count(*) FROM runner_work w JOIN run u ON u.id=w.run_id WHERE w.runner_id=r.id
+     AND ((w.ended_at IS NULL AND w.lease_until>?) OR u.status IN ('active','provisioning'))) +
     (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used,
     COALESCE(MIN(c.capacity,COALESCE(c.desired,16)),1) AS total,
     c.capacity AS applied,c.ceiling,c.desired

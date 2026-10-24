@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { insertRun, listRunnerOverview, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import {
+  insertRun,
+  listRunnerOverview,
+  markRun,
+  putWorkspaceUser,
+  releaseRunCapacity,
+  syncWorkspaceMember,
+} from "../src/db";
 import { tempDb } from "./helpers";
 
 function fixture(now: number) {
@@ -61,8 +68,10 @@ test("the runner overview reports used and total slots like placement counts the
   expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 0, total: 1 });
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,3)", ["runner-1"]);
   work(0, now + 60_000);
-  work(1, now - 1);
+  markRun(db, work(1, now - 1), "ended", now);
   expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 1, total: 3 });
+  work(2, now - 1);
+  expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 2, total: 3 });
 });
 
 test("the runner overview lists each live session with its issue and phase", () => {
@@ -78,9 +87,8 @@ test("the runner overview lists each live session with its issue and phase", () 
     [now - 20_000, now - 20_000, now - 20_000],
   );
   const merging = work(3, lease, { state: "merge_queue", startedAt: now - 20_000 });
-  work(4, now - 1, { startedAt: now - 10_000 });
-  const ended = work(5, lease, { startedAt: now - 5_000 });
-  db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, ended]);
+  markRun(db, work(4, now - 1, { startedAt: now - 10_000 }), "ended", now);
+  releaseRunCapacity(db, work(5, lease, { startedAt: now - 5_000 }), now);
 
   expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([
     {
@@ -106,4 +114,29 @@ test("the runner overview lists each live session with its issue and phase", () 
       startedAt: now - 20_000,
     },
   ]);
+});
+
+test("a run placed on a runner stays in its list through Closeout and leaves when it ends", () => {
+  const now = Date.now();
+  const { db, work } = fixture(now);
+  const runId = work(0, now + 60_000, { startedAt: now - 30_000, title: "Write the parser" });
+  const session = {
+    runId,
+    identifier: "ENG-0",
+    title: "Write the parser",
+    phase: "working" as const,
+    startedAt: now - 30_000,
+  };
+  expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([session]);
+
+  db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, runId]);
+  db.run("UPDATE work_item SET state='verifying' WHERE id='item-0'");
+  const [held] = listRunnerOverview(db, "ws-1", now + 120_000);
+  expect(held?.running).toEqual([{ ...session, phase: "closeout" }]);
+  expect(held?.slots.used).toBe(1);
+
+  releaseRunCapacity(db, runId, now + 130_000);
+  const [after] = listRunnerOverview(db, "ws-1", now + 130_000);
+  expect(after?.running).toEqual([]);
+  expect(after?.slots.used).toBe(0);
 });

@@ -23,10 +23,15 @@ export {
   TransitionRejectedError,
   accrueAwake,
   applyWorkItemEvent,
+  awakeBreakdown,
   clearProgress,
   configureWorkItem,
   deferWorkItem,
+  extendAwakeCap,
+  markCloseoutAccepted,
+  resetAwakeTime,
   runnerCapacityWait,
+  type CapOutcome,
   type RunnerCapacityWaitState,
   completeMergedItem,
   failWorkItem,
@@ -197,7 +202,13 @@ export {
   type CiRound,
   type CiRoundCheck,
 } from "./ci-rounds";
-export { countRebaseReturns, recordRebaseReturn, type RebaseReturn } from "./rebase-returns";
+export {
+  countRebaseReturns,
+  listRebaseReturns,
+  recordRebaseReturn,
+  type RebaseReturn,
+  type RebaseReturnRecord,
+} from "./rebase-returns";
 export {
   recordGitHubDelivery,
   latestGitHubDelivery,
@@ -271,6 +282,7 @@ export {
   listVisualReviews,
   openVisualReviewFiles,
   saveVisualReviewMarks,
+  type VisualReviewCarriedFile,
   type VisualReviewMark,
   type VisualReviewRecord,
 } from "./visual-reviews";

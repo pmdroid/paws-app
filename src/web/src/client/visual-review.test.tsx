@@ -129,6 +129,47 @@ const accepted = () =>
     "verifying",
   );
 const changes = () => fixture([CHANGES], "running");
+const APPROVED = round({
+  state: "stale",
+  answeredBy: "Ada Reviewer",
+  answeredAt: "2026-10-23T09:10:00.000Z",
+});
+const FROM_ROUND_1 = {
+  fromEvidenceId: "shot-1",
+  approvalId: "q-1",
+  approvedBy: "Ada Reviewer",
+  approvedAt: "2026-10-23T09:10:00.000Z",
+};
+const carried = () =>
+  fixture(
+    [
+      APPROVED,
+      round({
+        questionId: "carry_1",
+        state: "accepted",
+        evidenceIds: ["shot-2"],
+        commit: "b".repeat(40),
+        askedAt: "2026-10-23T09:50:00.000Z",
+        answeredBy: "Ada Reviewer",
+        answeredAt: "2026-10-23T09:50:00.000Z",
+        carried: [{ ...FROM_ROUND_1, evidenceId: "shot-2", match: "similar" }],
+      }),
+    ],
+    "verifying",
+  );
+const partlyCarried = () =>
+  fixture(
+    [
+      APPROVED,
+      round({
+        questionId: "q-2",
+        round: 2,
+        evidenceIds: ["shot-1", "shot-2"],
+        carried: [{ ...FROM_ROUND_1, evidenceId: "shot-1", match: "identical" }],
+      }),
+    ],
+    "awaiting_input",
+  );
 
 describe("visual review on the run page", () => {
   test("desktop, waiting: a Visual review step with its round, the pill and an Answer in Linear link", () => {
@@ -221,6 +262,26 @@ describe("visual review on the run page", () => {
     expect(html).not.toContain('href="/evidence/shot-1"');
   });
 
+  test("carried over: the review passes and names the approval it came from", () => {
+    const { snapshot, runId } = carried();
+    const html = runPage(snapshot, runId);
+    expect(steps(html)).toContain("done ✓ Visual review");
+    expect(html).toContain("Carried over from Ada Reviewer's approval in round 1 · 50m ago");
+    expect(html).toContain("look the same as the ones Ada Reviewer accepted");
+    expect(html).toContain("<b>Carried over</b>");
+    expect(html).toContain("Approved by Ada Reviewer · 50m ago");
+    expect(html).toContain("shot-2.png · Looks the same since Ada Reviewer&#39;s approval");
+    expect(html).not.toContain("Waiting for visual review");
+  });
+
+  test("partly carried over: only the changed screen waits, the unchanged one says why", () => {
+    const { snapshot, runId } = partlyCarried();
+    const html = runPage(snapshot, runId);
+    expect(html).toContain("Waiting for Ada Reviewer or the project lead · round 2");
+    expect(html).toContain("shot-1.png · Unchanged since Ada Reviewer&#39;s approval");
+    expect(html).toContain("shot-2.png · Sent to Linear");
+  });
+
   test("a run without a visual review keeps its four steps", () => {
     const { snapshot, runId } = fixture([], "running");
     const html = runPage(snapshot, runId);
@@ -229,7 +290,7 @@ describe("visual review on the run page", () => {
   });
 
   test("390 px: every state wraps and breaks instead of widening the page", () => {
-    for (const { snapshot, runId } of [waiting(), accepted(), changes()]) {
+    for (const { snapshot, runId } of [waiting(), accepted(), changes(), carried()]) {
       const html = renderToStaticMarkup(<>{themedMarkup(runPage(snapshot, runId))}</>);
       expect(classNames(html, "visual-review")[0]).toContain("min-w-0");
       expect(classNames(html, "visual-review-round").length).toBeGreaterThan(0);

@@ -175,6 +175,58 @@ describe("live status provider", () => {
     expect(parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot))).ok).toBe(true);
   });
 
+  test("a carried-over review names the approval and approver each screen came from", () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
+    const { run } = beginImplementRun(db, item.id, 1_000);
+    putWorkspaceUser(db, {
+      id: "user-ada",
+      linearUserId: "lin-ada",
+      name: "Ada Reviewer",
+      email: "ada@example.invalid",
+    });
+    for (const id of ["shot-1", "shot-2"])
+      saveEvidence(db, {
+        id,
+        itemId: item.id,
+        runId: run.id,
+        checkId: "visual-proof",
+        attempt: 1,
+        mediaType: "image/png",
+        sizeBytes: 4,
+        sha256: "0".repeat(64),
+        displayName: "Settings.png",
+        headCommit: "a".repeat(40),
+        createdAt: 1_000,
+      });
+    const carried = [
+      {
+        evidenceId: "shot-2",
+        fromEvidenceId: "shot-1",
+        approvalId: "q-1",
+        approvedBy: "lin-ada",
+        approvedAt: 3000,
+        match: "identical" as const,
+      },
+    ];
+    db.run(
+      `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, outcome, answered_by, answered_at, carried)
+       VALUES ('q-1', ?, 'visual-proof', '["shot-1"]', 2000, 'stale', 'lin-ada', 3000, NULL),
+              ('carry_1', ?, 'visual-proof', '["shot-2"]', 5000, 'accepted', 'lin-ada', 5000, ?)`,
+      [item.id, item.id, JSON.stringify(carried)],
+    );
+    const snapshot = createLiveStatusProvider(db).snapshot();
+    const reviews = snapshot.items[0]?.visualReviews;
+    expect(reviews?.map((review) => [review.questionId, review.round, review.state])).toEqual([
+      ["q-1", 1, "stale"],
+      ["carry_1", 1, "accepted"],
+    ]);
+    expect(reviews?.[1]?.carried).toEqual([
+      { ...carried[0]!, approvedBy: "Ada Reviewer", approvedAt: new Date(3000).toISOString() },
+    ]);
+    expect(parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot))).ok).toBe(true);
+  });
+
   test("HTTP status reads each run's pinned reviewer independently of current settings", async () => {
     const db = database();
     const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));

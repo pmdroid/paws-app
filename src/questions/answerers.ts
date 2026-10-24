@@ -5,6 +5,7 @@ export type AnswerableQuestion =
   | { kind: "clarification" }
   | { kind: "repository" }
   | { kind: "runner-wait" }
+  | { kind: "time-limit" }
   | { kind: "closeout-bypass" }
   | { kind: "ci-help" }
   | { kind: "visual-review"; delegatorId: string | null; leadId: string | null }
@@ -22,6 +23,7 @@ export const ANSWER_POLICY: Policy = {
   clarification: () => true,
   repository: () => true,
   "runner-wait": () => true,
+  "time-limit": () => true,
   "closeout-bypass": () => true,
   "ci-help": () => true,
   "visual-review": (question, user) =>

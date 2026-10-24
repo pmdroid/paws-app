@@ -8,7 +8,8 @@ export type QuestionKind =
   | "repository"
   | "runner-wait"
   | "closeout-help"
-  | "ci-help";
+  | "ci-help"
+  | "time-limit";
 
 export type StoredQuestion = {
   id: string;

@@ -46,6 +46,7 @@ const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
   "runner-wait": "session",
   "closeout-help": "item",
   "ci-help": "item",
+  "time-limit": null,
 };
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);

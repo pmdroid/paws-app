@@ -93,7 +93,6 @@ import {
   assertLinearSessionCleanup,
   cancelOpenJobs,
   getLinearSessionAccess,
-  recordConfirmedRemoteMerge,
   getConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getTaskModeGeneration,
@@ -142,9 +141,6 @@ import {
   listInFlightItems,
   listCloseoutRecoveries,
   listCloseoutRounds,
-  recordCiRound,
-  type CiRound,
-  type CiRoundCheck,
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
@@ -190,18 +186,18 @@ import {
   markLinearActivitiesListed,
   keepTaskMergeSettings,
   type TaskMergeSettings,
-  leaveMergeQueue,
   delegatedLinearUserId,
+  resetAwakeTime,
 } from "../db";
 import {
   publishAccepted,
   closeStoppedPull,
   fetchUpstreamMain,
   mergedPullHeads,
-  serialMerge,
   UPSTREAM_MAIN_REF,
   type GitHubBinding,
   type GitHubTokenProvider,
+  type ReverifyInput,
 } from "../github";
 import { intakeDelegatedIssue, stopAdoptedParent, type IntakeResult } from "../intake";
 import { createAdmission, dispatch, type ItemAdmission, type SchedulerOptions } from "../scheduler";
@@ -256,7 +252,9 @@ import {
 import {
   answerVisualReview,
   askForVisualReview,
+  carryVisualReview,
   dueVisualReview,
+  planVisualReviewCarry,
   postNote,
   remindVisualReview,
   visualReviewApprovals,
@@ -272,27 +270,18 @@ import {
   type VerificationOwner,
 } from "./merge-jobs";
 import {
-  MAX_REBASE_RETURNS,
   REBASE_CONFLICT_INSTRUCTION,
-  REBASE_CONFLICT_THOUGHT,
-  mergeQueueTurn,
-  mergeThroughGitHubQueue,
-  ciFixHandoff,
-  ciFixQuestion,
-  ciFixRoundLine,
+  advanceMerge,
   ciWaitVerification,
   parkMerge,
-  serialMergeStep,
+  rebaseBudgetFor,
   wakeMergesBehind,
-  askMergeHelp,
-  ciFixes,
-  rebaseReturns,
-  returnToAgent,
-  type MergeContext,
-  type MergeReturnReason,
+  type MergePublication,
   type MergeStep,
+  type MergeVerdict,
   type MergeWait,
   type OrderCapabilities,
+  type RebaseConflict,
 } from "../merge";
 import {
   createAcpActivityReporter,
@@ -433,6 +422,15 @@ export type ExecutionChanges = {
 };
 
 class LinearReconciliationPendingError extends Error {}
+
+type MergeRun = {
+  payload: unknown;
+  closeoutFailure: CloseoutVerdict | null;
+  publicationCandidate?: { sha: string; baseSha: string };
+  candidate?: CandidateIdentity;
+  verifying?: WorkItemRecord;
+  signal?: AbortSignal;
+};
 
 const LINEAR_ACCESS_CHANGED: IntakeDecision = {
   outcome: "refused",
@@ -1995,7 +1993,7 @@ export class Orchestrator {
   ): Promise<void> {
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state !== "running") return;
-    if (await this.visualReviewOutdated(current, worktree, head)) return;
+    if (await this.visualReviewOutdated(current, worktree, base, head)) return;
     if (await this.askVisualReview(current, worktree, base, head)) return;
     applyWorkItemEvent(this.db, item.id, "turn_ended");
     const verifying = getWorkItem(this.db, item.id);
@@ -2590,18 +2588,38 @@ export class Orchestrator {
   private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
-    const item = getWorkItem(this.db, itemId);
-    if (
-      item === null ||
-      item.state === "cancelled" ||
-      item.state === "merged" ||
-      item.state === "completed"
-    )
-      return { kind: "obsolete" };
-    if (getConfirmedRemoteMerge(this.db, item.id)) {
-      if (completeMergedItem(this.db, { itemId: item.id, now: this.now() })) this.dispatch();
-      return { kind: "obsolete" };
-    }
+    const run: MergeRun = { payload, closeoutFailure: null };
+    return advanceMerge(
+      this.db,
+      { itemId, payload, jobId },
+      {
+        ...this.orderCapabilities(itemId),
+        publish: (item) => this.publishForMerge(item, run),
+        settings: (item, signal) => this.mergeSettingsFor(item, signal),
+        accept: (candidate) => {
+          run.publicationCandidate = candidate;
+        },
+        verify: (input) => this.verifyForMerge(run, input),
+        assertReady: (item) =>
+          this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
+        askCloseoutHelp: async (item) => {
+          if (run.closeoutFailure)
+            await this.askCloseoutHelp(
+              item,
+              run.closeoutFailure.result,
+              run.closeoutFailure.summary,
+            );
+        },
+        packages: (repository) => this.repositoryPackages(repository),
+        completed: () => this.dispatch(),
+      },
+    );
+  }
+
+  private async publishForMerge(
+    item: WorkItemRecord,
+    run: MergeRun,
+  ): Promise<MergePublication | MergeStep> {
     this.assertReconciled(item);
     const repository = this.repositoryForItem(item);
     const configuredGitHub = repository === null ? null : this.githubForRepository(repository);
@@ -2631,13 +2649,12 @@ export class Orchestrator {
     });
     const live = this.live.get(`operation:${item.id}`);
     if (!live) throw new Error("GitHub publication has no owned operation.");
-    let publicationCandidate =
-      item.checkpoint?.wipCommit && item.checkpoint.baseSha
+    const priorVerification = ciWaitVerification(run.payload);
+    run.publicationCandidate = priorVerification
+      ? { sha: priorVerification.head, baseSha: priorVerification.base }
+      : item.checkpoint?.wipCommit && item.checkpoint.baseSha
         ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
         : undefined;
-    const priorVerification = ciWaitVerification(payload);
-    if (priorVerification)
-      publicationCandidate = { sha: priorVerification.head, baseSha: priorVerification.base };
     const freshReads = new Set<string>();
     const github = guardGitHubPublication({
       github: configuredGitHub,
@@ -2658,7 +2675,7 @@ export class Orchestrator {
           current,
           purpose === "merge" ? "merge" : "publish",
           live.controller.signal,
-          publicationCandidate,
+          run.publicationCandidate,
         );
         const fresh = (purpose === "pr" || purpose === "merge") && !freshReads.has(purpose);
         await this.taskAccess()?.assert(current, live.controller.signal, { fresh });
@@ -2671,7 +2688,7 @@ export class Orchestrator {
     const candidate = await this.candidateForItem(item);
     if (!candidate) return { kind: "obsolete" };
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
-    const summary = readString(payload, "summary") ?? "Closeout accepted.";
+    const summary = readString(run.payload, "summary") ?? "Closeout accepted.";
     const policy = await this.commitPolicy(item);
     if (this.stopped(item.id)) return { kind: "obsolete" };
     if (!artifactPublicationReady(this.db, item.id))
@@ -2686,7 +2703,12 @@ export class Orchestrator {
       accepted: true,
       evidence: [
         summary,
-        visualReviewPullRequestNote(this.db, item, this.options.evidence?.publicUrl ?? null),
+        visualReviewPullRequestNote(
+          this.db,
+          item,
+          this.options.evidence?.publicUrl ?? null,
+          this.now(),
+        ),
         policy ? policyPullRequestCredit(policy) : "",
       ]
         .filter(Boolean)
@@ -2707,7 +2729,7 @@ export class Orchestrator {
       item,
       "publish",
       live.controller.signal,
-      publicationCandidate,
+      run.publicationCandidate,
     );
     if (this.stopped(item.id)) return { kind: "obsolete" };
     if (getWorkItem(this.db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
@@ -2725,233 +2747,60 @@ export class Orchestrator {
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
     sessionProgress?.phase("merging");
     await this.flush(live.controller.signal);
-    let closeoutFailure = null as CloseoutVerdict | null;
-    let verifying = item;
-    const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
-    const mergeSettings = await this.mergeSettingsFor(item, live.controller.signal);
-    const context: MergeContext = { db: this.db, item, caps: this.orderCapabilities(item.id) };
-    if (mergeSettings.order === "github-queue") {
-      const handed = await mergeThroughGitHubQueue(context, payload, {
-        repository,
-        github,
-        pull: published.pull,
-        head: published.head,
-        signal: live.controller.signal,
-      });
-      if (handed !== "no_queue") return handed;
-    }
-    const closeoutAfterUpdate = mergeSettings.mainMoved === "closeout";
-    // Under "Add to the GitHub merge queue", a base branch without one merges each on its own.
-    const queued = mergeSettings.order === "queue";
-    if (queued) {
-      const wait = await mergeQueueTurn(context, repository, github, {
-        number: published.pull.number,
-        head: priorVerification?.head ?? acceptedHead ?? "",
-      });
-      if (wait) return { kind: "wait", ...wait };
-      if (this.stopped(item.id)) return { kind: "obsolete" };
-    }
-    const repositoryName = `${repository.owner}/${repository.repo}`;
-    const merged = await serialMerge({
+    run.candidate = candidate;
+    run.verifying = item;
+    run.signal = live.controller.signal;
+    return {
+      github,
+      repository,
+      pull: published.pull,
+      head: published.head,
       worktree,
-      issue: item.linearIdentifier,
       branchKey: taskBranchKey(item),
-      owner: repository.owner,
-      repo: repository.repo,
-      prNumber: published.pull.number,
-      commitTitle: `${draft?.title ?? item.title} (#${published.pull.number})`,
-      commitMessage: policy ? commitPolicyMessage(summary, policy) : undefined,
-      commitEnv: policy ? commitIdentityEnv(appBotCommitIdentity(policy.bot)) : undefined,
-      appId: github.appId,
-      installationId: github.installationId,
-      privateKeyPem: github.privateKeyPem,
-      client: github.client,
-      gitExec: github.gitExec,
-      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
-      remoteUrl: repository.remoteUrl,
-      isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
-      releaseWhilePending: true,
-      ...(priorVerification === undefined ? {} : { priorVerification }),
-      ...(mergeSettings.mainMoved === "overlap"
-        ? {
-            updateOnOverlap: {
-              packages: this.repositoryPackages(repositoryName),
-              onUpToDateRule: async () => {
-                this.postAfterPullRequest(
-                  item,
-                  upToDateRuleMessage(repositoryName),
-                  `${item.id}:up-to-date-rule`,
-                );
-                await this.flush();
-              },
-            },
-          }
-        : {}),
-      onWait: async (message) => {
-        this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
-        await this.flush();
+      summary,
+      commit: {
+        title: `${draft?.title ?? item.title} (#${published.pull.number})`,
+        ...(policy
+          ? {
+              message: commitPolicyMessage(summary, policy),
+              env: commitIdentityEnv(appBotCommitIdentity(policy.bot)),
+            }
+          : {}),
       },
-      reverify: async (input) => {
-        const updated = acceptedHead !== null && input.head !== acceptedHead;
-        if (input.kept || (updated && !closeoutAfterUpdate)) {
-          publicationCandidate = { sha: input.head, baseSha: input.base };
-          if (!input.kept) {
-            this.postBranchUpdate(
-              item,
-              input.head,
-              branchUpdatedMessage(input.base, mergeSettings.mainMoved, input.overlap),
-            );
-            await this.flush();
-          }
-          const filesReady = artifactPublicationReady(this.db, item.id);
-          return {
-            accepted: filesReady,
-            outcome: filesReady ? "merged" : "blocked",
-            summary: filesReady ? summary : "A requested artifact has not been uploaded.",
-          };
-        }
-        if (updated)
-          this.postBranchUpdate(item, input.head, "Branch updated, running Closeout again.");
-        await this.startCloseoutRound(verifying, input.head);
-        const verdict = await this.runVerification(
-          verifying,
-          input.worktree,
-          input.base,
-          input.head,
-          candidate,
-        );
-        if (verdict.decision === "accepted" && !verdict.exhausted)
-          applyCloseoutAcceptance(this.db, item.id, verdict.owner);
-        verifying = getWorkItem(this.db, item.id) ?? verifying;
-        if (verdict.decision === "accepted")
-          publicationCandidate = { sha: input.head, baseSha: input.base };
-        if (verdict.decision !== "accepted") closeoutFailure = verdict;
-        const filesReady = artifactPublicationReady(this.db, item.id);
-        return {
-          accepted: verdict.decision === "accepted" && filesReady,
-          outcome:
-            verdict.decision === "accepted"
-              ? filesReady
-                ? "merged"
-                : "blocked"
-              : verdict.exhausted
-                ? "exhausted"
-                : verdict.decision,
-          summary: filesReady ? verdict.summary : "A requested artifact has not been uploaded.",
-        };
-      },
-    });
-    const ciFixLimit = this.ciFixAttempts();
-    const { step, leaveQueue } = serialMergeStep({
-      result: merged,
-      queued,
-      closeoutAfterUpdate,
-      closeoutFailed: closeoutFailure !== null,
-      rebaseReturns: rebaseReturns(this.db, item.id),
-      ciFixes: ciFixes(this.db, item.id),
-      ciFixLimit,
-    });
-    if (leaveQueue) {
-      leaveMergeQueue(this.db, item.id);
-      wakeMergesBehind(this.db, this.now());
-    }
-    if (step.kind === "wait" && step.reason === "ci")
-      return this.stopped(item.id) ? { kind: "obsolete" } : step;
-    if (merged.merged)
-      recordConfirmedRemoteMerge(this.db, {
-        itemId: item.id,
-        repositoryOwner: repository.owner,
-        repositoryName: repository.repo,
-        pullNumber: published.pull.number,
-        pullUrl: published.pull.url,
-        mergeSha: merged.sha ?? null,
-        confirmedAt: this.now(),
-      });
-    if (this.stopped(item.id)) {
-      if (merged.merged) completeMergedItem(this.db, { itemId: item.id, now: this.now() });
-      return { kind: "obsolete" };
-    }
-    if (!merged.merged)
-      await this.assertPublicationReady(
-        item,
-        "merge",
-        live.controller.signal,
-        publicationCandidate,
-      );
-    if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input")
-      return { kind: "obsolete" };
-    if (!merged.merged) {
-      if (step.kind === "unreadable") throw new Error(step.message);
-      if (step.kind === "ask_closeout" && closeoutFailure) {
-        await this.askCloseoutHelp(item, closeoutFailure.result, closeoutFailure.summary);
-        return { kind: "asked" };
-      }
-      if (
-        step.kind === "return" &&
-        step.reason === "rebase-conflict" &&
-        this.returnToAgent(
-          item,
-          "rebase-conflict",
-          MAX_REBASE_RETURNS,
-          REBASE_CONFLICT_INSTRUCTION,
-          () => REBASE_CONFLICT_THOUGHT,
-          (returnJobId) =>
-            recordRebaseReturn(this.db, {
-              itemId: item.id,
-              jobId: returnJobId,
-              candidate: merged.head ?? null,
-              reason: "merge",
-            }),
-        )
-      )
-        return { kind: "returned" };
-      if (merged.outcome === "ci_failed") {
-        const checks = merged.failedChecks ?? [];
-        const round = (next: CiRound["next"], fix: number | null = null) =>
-          this.recordCiRound(item, merged.head ?? "", merged.checks, next, ciFixLimit, fix);
-        if (
-          step.kind === "return" &&
-          this.returnToAgent(
-            item,
-            "ci-failed",
-            ciFixLimit,
-            ciFixHandoff(checks),
-            (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
-            (_, attempt) => round("agent", attempt),
-          )
-        )
-          return { kind: "returned" };
-        if (this.askCiHelp(item, ciFixQuestion(checks, ciFixLimit, published.pull.url))) {
-          round("asked");
-          await this.flush();
-          return { kind: "asked" };
-        }
-        round("failed");
-      }
-      this.post(
-        item,
-        "thought",
-        merged.message ?? merged.outcome,
-        `${item.id}:merge:${merged.outcome}`,
-      );
-      if (step.kind === "wait") return step;
-      if (step.kind === "reverify") {
-        applyWorkItemEvent(this.db, item.id, "main_moved");
-        enqueueJobOnce(this.db, {
-          queue: JOB_KIND.reverify,
-          jobKey: `reverify:${item.id}:${merged.head ?? "again"}:merge:${jobId}`,
-          payload: { itemId: item.id },
-          now: this.now(),
-        });
-        return { kind: "returned" };
-      }
-      return {
-        kind: "failed",
-        reason: "merge",
-        message: step.kind === "failed" ? step.message : (merged.message ?? merged.outcome),
-      };
-    }
-    return { kind: "merged" };
+      signal: live.controller.signal,
+    };
+  }
+
+  private async verifyForMerge(run: MergeRun, input: ReverifyInput): Promise<MergeVerdict> {
+    const verifying = run.verifying!;
+    await this.startCloseoutRound(verifying, input.head);
+    const verdict = await this.runVerification(
+      verifying,
+      input.worktree,
+      input.base,
+      input.head,
+      run.candidate!,
+    );
+    if (verdict.decision === "accepted" && !verdict.exhausted)
+      applyCloseoutAcceptance(this.db, verifying.id, verdict.owner);
+    run.verifying = getWorkItem(this.db, verifying.id) ?? verifying;
+    if (verdict.decision === "accepted")
+      run.publicationCandidate = { sha: input.head, baseSha: input.base };
+    if (verdict.decision !== "accepted") run.closeoutFailure = verdict;
+    const filesReady = artifactPublicationReady(this.db, verifying.id);
+    return {
+      accepted: verdict.decision === "accepted" && filesReady,
+      outcome:
+        verdict.decision === "accepted"
+          ? filesReady
+            ? "merged"
+            : "blocked"
+          : verdict.exhausted
+            ? "exhausted"
+            : verdict.decision,
+      summary: filesReady ? verdict.summary : "A requested artifact has not been uploaded.",
+      rejected: verdict.decision !== "accepted",
+    };
   }
 
   private async settleMerge(payload: unknown, step: MergeStep): Promise<void> {
@@ -3009,10 +2858,6 @@ export class Orchestrator {
     };
   }
 
-  private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {
-    this.statusAfterPullRequest(item, body, `${item.id}:branch-updated:${head}`);
-  }
-
   private statusAfterPullRequest(item: WorkItemRecord, body: string, key: string): void {
     if (this.options.channel === "comments") {
       this.post(item, "thought", body, key);
@@ -3061,15 +2906,6 @@ export class Orchestrator {
   private ciFixAttempts(): number {
     return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
       .ciFixAttempts;
-  }
-
-  private askCiHelp(item: WorkItemRecord, body: string): boolean {
-    return askMergeHelp(this.db, {
-      itemId: item.id,
-      body,
-      now: this.now(),
-      session: (current) => this.activitySession(current),
-    });
   }
 
   /**
@@ -3121,49 +2957,6 @@ export class Orchestrator {
     };
     if (context !== null) keepTaskMergeSettings(this.db, item.id, settings, this.now());
     return settings;
-  }
-
-  private returnToAgent(
-    item: WorkItemRecord,
-    reason: MergeReturnReason,
-    limit: number,
-    handoff: string,
-    thought: (attempt: number) => string,
-    record: (jobId: number, attempt: number) => void,
-  ): boolean {
-    return returnToAgent(this.db, {
-      itemId: item.id,
-      reason,
-      limit,
-      handoff,
-      now: this.now(),
-      record,
-      announce: (running, attempt, key) => {
-        if (reason === "ci-failed") this.statusAfterPullRequest(running, thought(attempt), key);
-        else this.post(running, "thought", thought(attempt), key);
-      },
-    });
-  }
-
-  /** The checks of a failed CI read and what Paws did next, for the run page. */
-  private recordCiRound(
-    item: WorkItemRecord,
-    head: string,
-    checks: readonly CiRoundCheck[] | undefined,
-    next: CiRound["next"],
-    limit: number,
-    fix: number | null,
-  ): void {
-    recordCiRound(this.db, {
-      itemId: item.id,
-      head,
-      runId: getWorkItem(this.db, item.id)?.currentRunId ?? item.currentRunId,
-      next,
-      fix,
-      fixLimit: limit,
-      checks: [...(checks ?? [])],
-      recordedAt: this.now(),
-    });
   }
 
   private askHook(item: WorkItemRecord, runId: string): AskTeamHook {
@@ -3574,9 +3367,10 @@ export class Orchestrator {
         setCurrentRun(this.db, itemId, null);
         if (item.state === "failed" || item.state === "exhausted") {
           this.db.run(
-            "UPDATE work_item SET cancel_requested=0,awake_ms=0,last_mono_ms=NULL,turn_count=0,recovery_attempts=0 WHERE id=?",
+            "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
             [itemId],
           );
+          resetAwakeTime(this.db, itemId);
           applyWorkItemEvent(this.db, itemId, "requeue");
         } else if (
           [
@@ -3661,6 +3455,18 @@ export class Orchestrator {
 
   async interruptItem(itemId: string): Promise<void> {
     await this.joinChangedItems([itemId]);
+  }
+
+  /**
+   * Stops the item's live agent and its runner work, and nothing else. Its GitHub
+   * authorization and merge work stay, so accepted work keeps publishing and merging.
+   */
+  async stopAgent(itemId: string): Promise<void> {
+    // Like ask_team: an answer to the time-limit question does not enqueue the
+    // resume itself. The stopped run enqueues it when its operation finishes.
+    for (const [runId, live] of this.live) if (live.itemId === itemId) this.askedRuns.add(runId);
+    this.abortItem(itemId);
+    await this.options.remoteExecution?.cancelItem?.(itemId);
   }
 
   private async joinChangedItems(itemIds: readonly string[]): Promise<void> {
@@ -4244,20 +4050,24 @@ export class Orchestrator {
         "Prior ACP process cleanup could not be verified; user update remains pending",
       );
     // Linear's "Fix merge conflicts" on the open pull request is a rebase-conflict return.
-    const rebase =
+    const upstream =
       item.id === routed?.id &&
       this.hasOpenedPullRequest(item.id) &&
-      turns.some((turn) => isMergeConflictRequest(turn.body)) &&
-      rebaseReturns(this.db, item.id) < MAX_REBASE_RETURNS &&
-      (await this.fetchUpstreamMain(item));
+      turns.some((turn) => isMergeConflictRequest(turn.body))
+        ? await this.fetchUpstreamMain(item)
+        : null;
+    const conflict: RebaseConflict = { base: upstream, files: null };
+    const rebase =
+      upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
     immediate(this.db, () => {
       if (item!.cancelRequested || item!.state === "failed" || item!.state === "exhausted") {
         this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, awake_ms = 0, last_mono_ms = NULL, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
+          "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
           [item!.id],
         );
+        resetAwakeTime(this.db, item!.id);
         if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
       }
       if (item!.currentRunId) markRun(this.db, item!.currentRunId!, "ended", this.now());
@@ -4286,18 +4096,23 @@ export class Orchestrator {
           jobId,
           candidate: null,
           reason: "linear",
+          ...conflict,
+          recordedAt: this.now(),
         });
     });
     await this.flush();
   }
 
-  /** Fetch main into the item's worktree, as a merge pass does before a rebase-conflict return. */
-  private async fetchUpstreamMain(item: WorkItemRecord): Promise<boolean> {
+  /**
+   * Fetch main into the item's worktree, as a merge pass does before a
+   * rebase-conflict return. Returns main's commit, or null without a worktree.
+   */
+  private async fetchUpstreamMain(item: WorkItemRecord): Promise<string | null> {
     const repository = this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
-    if (!repository || !github || !existsSync(worktree)) return false;
-    await fetchUpstreamMain({
+    if (!repository || !github || !existsSync(worktree)) return null;
+    return fetchUpstreamMain({
       worktree,
       owner: repository.owner,
       repo: repository.repo,
@@ -4305,7 +4120,6 @@ export class Orchestrator {
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
-    return true;
   }
 
   private async forwardFollowUp(
@@ -4605,31 +4419,76 @@ export class Orchestrator {
       head,
       visualReviewApprovals(this.db, item.id, itemPathId(item)),
       requirements,
+      undefined,
+      base,
     );
-    const asked = immediate(this.db, () => {
+    let carriedOver = false;
+    // A check whose screens all carried an approval over passes; the next check may still be due.
+    for (let pass = 0; pass <= requirements.length; pass++) {
       const due = dueVisualReview(this.db, item.id, requirements, approvals);
-      if (due === null) return false;
-      const current = getWorkItem(this.db, item.id);
-      const runId = current?.currentRunId ?? null;
-      if (
-        !askForVisualReview(this.db, {
-          item,
-          runId,
-          sessionId,
-          checkId: due.requirement.id,
-          evidenceIds: due.evidenceIds,
-          base,
-          head,
-          publicUrl: evidence.publicUrl,
-          now: this.now(),
-        })
-      )
-        return false;
-      if (runId) releaseRunCapacity(this.db, runId, this.now());
-      return true;
-    });
-    if (asked) await this.flush();
-    return asked;
+      if (due === null) break;
+      const plan = await planVisualReviewCarry(
+        this.db,
+        item.id,
+        due.requirement.id,
+        due.evidenceIds,
+        evidence.root,
+      );
+      const outcome = immediate(this.db, () => {
+        const now = dueVisualReview(this.db, item.id, requirements, approvals);
+        if (now === null) return "none" as const;
+        if (now.requirement.id !== due.requirement.id) return "again" as const;
+        const current = getWorkItem(this.db, item.id);
+        if (current?.state !== "running" || current.cancelRequested) return "none" as const;
+        const carried = plan.carried.filter((entry) => now.evidenceIds.includes(entry.evidenceId));
+        if (carried.length === now.evidenceIds.length) {
+          const review = carryVisualReview(this.db, {
+            item: current,
+            sessionId,
+            checkId: now.requirement.id,
+            evidenceIds: now.evidenceIds,
+            carried,
+            head,
+            now: this.now(),
+          });
+          approvals.push(
+            ...visualReviewApprovals(this.db, item.id, itemPathId(item)).filter(
+              (approval) =>
+                approval.checkId === review.checkId &&
+                approval.commit === head &&
+                review.evidenceIds.every((id) => approval.evidenceIds.includes(id)),
+            ),
+          );
+          return "carried" as const;
+        }
+        const runId = current.currentRunId ?? null;
+        if (
+          !askForVisualReview(this.db, {
+            item,
+            runId,
+            sessionId,
+            checkId: now.requirement.id,
+            evidenceIds: now.evidenceIds,
+            carried,
+            approved: plan.approved,
+            base,
+            head,
+            publicUrl: evidence.publicUrl,
+            now: this.now(),
+          })
+        )
+          return "none" as const;
+        if (runId) releaseRunCapacity(this.db, runId, this.now());
+        return "asked" as const;
+      });
+      if (outcome === "carried") carriedOver = true;
+      else if (outcome === "asked") {
+        await this.flush();
+        return true;
+      } else if (outcome === "none") break;
+    }
+    if (carriedOver) await this.flush();
+    return false;
   }
 
   async requestVisualReviewChanges(input: {
@@ -4710,6 +4569,7 @@ export class Orchestrator {
   private async visualReviewOutdated(
     item: WorkItemRecord,
     worktree: string,
+    base: string,
     head: string,
   ): Promise<boolean> {
     const reviews = acceptedVisualReviews(this.db, item.id);
@@ -4718,7 +4578,9 @@ export class Orchestrator {
     if (requirements.length === 0) return false;
     const checks = new Set(requirements.map((entry) => entry.id));
     const approvals = visualReviewApprovals(this.db, item.id, itemPathId(item));
-    const valid = new Set(await approvalsAtHead(worktree, head, approvals, requirements));
+    const valid = new Set(
+      await approvalsAtHead(worktree, head, approvals, requirements, undefined, base),
+    );
     const outdated = reviews.filter(
       (review, index) => checks.has(review.checkId) && !valid.has(approvals[index]!),
     );
@@ -5479,19 +5341,6 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
 function withAcceptedBranch(text: string, item: WorkItemRecord): string {
   const sentence = /[.!?]$/.test(text) ? text : `${text}.`;
   return `${sentence} The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`;
-}
-
-function branchUpdatedMessage(base: string, mainMoved: string, overlap?: string[]): string {
-  const updated = `Branch updated onto main ${base.slice(0, 7)}, waiting for CI.`;
-  if (mainMoved !== "overlap")
-    return `${updated} Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
-  if (!overlap?.length) return updated;
-  const listed = overlap.slice(0, 5).join(", ") + (overlap.length > 5 ? ", …" : "");
-  return `Main changed ${listed}, which this pull request changes too. ${updated}`;
-}
-
-function upToDateRuleMessage(repository: string): string {
-  return `GitHub requires branches to be up to date before merging in ${repository}, so Paws updates the branch and waits for CI even when main changed other files. Turn off "Require branches to be up to date before merging" for the base branch to merge without an update.`;
 }
 
 function retryCount(payload: unknown): number {

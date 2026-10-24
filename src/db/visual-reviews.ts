@@ -11,19 +11,54 @@ export type VisualReviewRecord = {
   answeredAt: number | null;
   feedback: string | null;
   headCommit: string | null;
+  /** Files that carried an earlier approval over. `approvedBy` is the approver's name when known. */
+  carried: VisualReviewCarriedFile[];
+};
+
+export type VisualReviewCarriedFile = {
+  evidenceId: string;
+  fromEvidenceId: string;
+  /** Question id of the review a person accepted. */
+  approvalId: string;
+  approvedBy: string;
+  approvedAt: number;
+  match: "identical" | "similar";
 };
 
 export function listVisualReviews(db: Database, itemId: string): VisualReviewRecord[] {
   return db
-    .query<Omit<VisualReviewRecord, "evidenceIds"> & { evidenceIds: string }, [string]>(
+    .query<
+      Omit<VisualReviewRecord, "evidenceIds" | "carried"> & {
+        evidenceIds: string;
+        carried: string | null;
+      },
+      [string]
+    >(
       `SELECT v.question_id AS questionId, v.check_id AS checkId, v.evidence_ids AS evidenceIds,
          v.created_at AS createdAt, v.outcome, COALESCE(u.name, v.answered_by) AS answeredBy,
-         v.answered_at AS answeredAt, v.feedback, v.head_commit AS headCommit
+         v.answered_at AS answeredAt, v.feedback, v.head_commit AS headCommit, v.carried
        FROM visual_review v LEFT JOIN workspace_user u ON u.linear_user_id = v.answered_by
        WHERE v.item_id = ? AND v.kind = 'review' ORDER BY v.created_at, v.rowid`,
     )
     .all(itemId)
-    .map((row) => ({ ...row, evidenceIds: JSON.parse(row.evidenceIds) as string[] }));
+    .map((row) => ({
+      ...row,
+      evidenceIds: JSON.parse(row.evidenceIds) as string[],
+      carried: carriedFiles(db, row.carried),
+    }));
+}
+
+function carriedFiles(db: Database, value: string | null): VisualReviewCarriedFile[] {
+  if (!value) return [];
+  return (JSON.parse(value) as VisualReviewCarriedFile[]).map((entry) => ({
+    ...entry,
+    approvedBy:
+      db
+        .query<{ name: string }, [string]>(
+          "SELECT name FROM workspace_user WHERE linear_user_id = ? AND name <> ''",
+        )
+        .get(entry.approvedBy)?.name ?? entry.approvedBy,
+  }));
 }
 
 export function linearConversationUrl(
@@ -87,13 +122,19 @@ export function openVisualReviewFiles(
   questionId: string,
 ): { itemId: string; evidenceIds: string[] } | null {
   const row = db
-    .query<{ itemId: string; evidenceIds: string }, [string]>(
-      `SELECT v.item_id AS itemId, v.evidence_ids AS evidenceIds
+    .query<{ itemId: string; evidenceIds: string; carried: string | null }, [string]>(
+      `SELECT v.item_id AS itemId, v.evidence_ids AS evidenceIds, v.carried
        FROM visual_review v JOIN question q ON q.id = v.question_id
        WHERE v.question_id = ? AND v.kind = 'review' AND q.status = 'open' AND q.cancelled_at IS NULL`,
     )
     .get(questionId);
-  return row === null
-    ? null
-    : { itemId: row.itemId, evidenceIds: JSON.parse(row.evidenceIds) as string[] };
+  if (row === null) return null;
+  // Screens that carried an approval over were not asked about.
+  const carried = new Set(
+    (JSON.parse(row.carried ?? "[]") as { evidenceId: string }[]).map((entry) => entry.evidenceId),
+  );
+  return {
+    itemId: row.itemId,
+    evidenceIds: (JSON.parse(row.evidenceIds) as string[]).filter((id) => !carried.has(id)),
+  };
 }

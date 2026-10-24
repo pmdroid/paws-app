@@ -28,7 +28,7 @@ function sendBack(db: ReturnType<typeof queued>, limit = 3) {
   const sent = returnToAgent(db, {
     itemId: "eng-1",
     reason: "rebase-conflict",
-    limit,
+    admit: (returns) => returns < limit,
     handoff: "rebase",
     now: 2,
     record: (jobId) =>
