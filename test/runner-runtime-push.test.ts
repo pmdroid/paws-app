@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -89,7 +90,27 @@ async function fixture(
   const posted: RunnerResult[] = [];
   const pushes: number[] = [];
   const resumes: string[] = [];
-  const seals: { handedOver?: true }[] = [];
+  const seals: { handedOver?: true; sizeBytes: number; sha256: string }[] = [];
+  // A worker's event journal: the agent's ACP events next to its progress, as a real run writes.
+  const events = handover
+    ? [
+        {
+          type: "acp",
+          event: {
+            type: "session_update",
+            sessionId: "session",
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "Half done." },
+            },
+          },
+        },
+        { type: "progress", text: "Handing over" },
+        { type: "acp", event: { type: "cancelled", reason: "cancel" } },
+      ]
+        .map((event) => `${JSON.stringify(event)}\n`)
+        .join("")
+    : "";
   let postFailures = faults.postFailures ?? 0;
   // A worker that wrote a handover result has exited; a resumed worker runs again.
   let alive = !handover;
@@ -117,7 +138,7 @@ async function fixture(
           const directory = join(results.root, id);
           mkdirSync(directory);
           chmodSync(directory, 0o750);
-          writeFileSync(join(directory, "events.jsonl"), "");
+          writeFileSync(join(directory, "events.jsonl"), events);
           chmodSync(join(directory, "events.jsonl"), 0o640);
           return { alreadyAdmitted: false };
         },
@@ -173,7 +194,11 @@ async function fixture(
         },
         async finishTranscript(_runId, finish) {
           if (faults.sealRefused) throw new RunnerRequestError(409);
-          seals.push({ ...(finish.handedOver ? { handedOver: finish.handedOver } : {}) });
+          seals.push({
+            ...(finish.handedOver ? { handedOver: finish.handedOver } : {}),
+            sizeBytes: finish.sizeBytes,
+            sha256: finish.sha256,
+          });
           return { uri: "transcript" };
         },
       },
@@ -213,6 +238,7 @@ async function fixture(
     pushes,
     resumes,
     seals,
+    events,
     /** Stops the runtime and opens a new one on the same journal, with Paws reachable again. */
     async restart() {
       await runtime.stop();
@@ -290,7 +316,7 @@ test.skipIf(linuxUser)(
       await f.run(1);
       expect(f.pushes).toEqual([0]);
       expect(f.resumes).toEqual([]);
-      expect(f.seals).toEqual([{ handedOver: true }]);
+      expect(f.seals.map((seal) => seal.handedOver)).toEqual([true]);
       expect(f.posted).toHaveLength(1);
       expect(f.posted[0]).toMatchObject({ handedOver: true, cancelled: true });
       expect(f.posted[0]!.candidateSha).toMatch(/^[a-f0-9]{40}$/);
@@ -343,7 +369,7 @@ test.skipIf(linuxUser)(
     try {
       await f.run(3);
       expect(f.pushes).toEqual([0]);
-      expect(f.seals).toEqual([{ handedOver: true }]);
+      expect(f.seals.map((seal) => seal.handedOver)).toEqual([true]);
       expect(f.resumes).toEqual([]);
       expect(f.posted).toHaveLength(1);
       expect(f.posted[0]).toMatchObject({ handedOver: true });
@@ -376,13 +402,20 @@ test.skipIf(linuxUser)(
     const f = await fixture(null, { expiresIn: 60_000 }, { postFailures: 1_000 });
     try {
       await f.run(1);
-      expect(f.seals).toEqual([{ handedOver: true }]);
+      expect(f.seals.map((seal) => seal.handedOver)).toEqual([true]);
       expect(f.posted).toEqual([]);
       await f.restart();
       await f.run(1);
       expect(f.resumes).toEqual([]);
       expect(f.pushes).toEqual([0]);
-      expect(f.seals).toEqual([{ handedOver: true }, { handedOver: true }]);
+      // The repeated seal covers exactly the transcript the first seal covered.
+      const transcript = {
+        handedOver: true as const,
+        sizeBytes: Buffer.byteLength(f.events),
+        sha256: createHash("sha256").update(f.events).digest("hex"),
+      };
+      expect(f.events.length).toBeGreaterThan(0);
+      expect(f.seals).toEqual([transcript, transcript]);
       expect(f.posted).toHaveLength(1);
       expect(f.posted[0]).toMatchObject({ handedOver: true, cancelled: true });
       expect(f.posted[0]!.candidateSha).toMatch(/^[a-f0-9]{40}$/);
