@@ -177,19 +177,16 @@ describe("Linear code issue delegation", () => {
     expect(f.mutations).toEqual([]);
   });
 
-  test.each(["cancellation", "delegation"])(
-    "rechecks authoritative %s after loading workflow pages",
-    async (change) => {
-      const f = fixture();
-      f.beforeRead((count) => {
-        if (count !== 2) return;
-        if (change === "cancellation") f.issue.state.type = "canceled";
-        else f.issue.delegate = { id: "other-agent" };
-      });
-      expect((await f.lifecycle.startCodeIssue(input)).eligible).toBe(false);
-      expect(f.mutations).toEqual([]);
-    },
-  );
+  test("starts from the ownership it read first, without rereading before the mutation", async () => {
+    const f = fixture();
+    let reads = 0;
+    f.beforeRead(() => {
+      reads += 1;
+    });
+    expect((await f.lifecycle.startCodeIssue(input)).eligible).toBe(true);
+    expect(reads).toBe(1);
+    expect(f.mutations).toEqual([{ stateId: "implementation", delegateId: "paws-app" }]);
+  });
 
   test("checks mutation success and refuses missing started states", async () => {
     const f = fixture();

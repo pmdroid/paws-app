@@ -167,7 +167,7 @@ function fixture() {
     outbox,
     jobs: new JobLoop(db, systemClock),
   });
-  const payload = {
+  const payload: Record<string, unknown> = {
     ...scope,
     type: "AgentSessionEvent",
     action: "created",
@@ -242,6 +242,7 @@ function fixture() {
     },
     delayTeam() {
       delayTeam = true;
+      payload["agentSession"] = { ...scope, id: "session", creatorId: "human", issueId: "issue" };
     },
     delayActivity() {
       delayActivity = true;

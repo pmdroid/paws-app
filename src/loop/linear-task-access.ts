@@ -108,6 +108,7 @@ export class LinearTaskAccess {
       return false;
     if (access.issueId !== event.issueId)
       throw new Error("Linear session issue ownership changed.");
+    if (installation?.teamId) this.teams.add(access.teamId);
     if (!(await this.teamAccess(access, generation, request))) return false;
     return this.allowed(event.sessionId);
   }
@@ -167,11 +168,12 @@ export class LinearTaskAccess {
     if (this.options.access === null) throw new Error("Linear is not connected.");
     const request = { ...options, signal: options?.signal ?? AbortSignal.timeout(10_000) };
     request.signal.throwIfAborted();
-    const allowed = await this.team(access.teamId, request);
+    const allowed =
+      getLinearTeamAccess(this.db, access) !== "removed" &&
+      (await this.team(access.teamId, request));
     request.signal.throwIfAborted();
     if (getLinearSessionGeneration(this.db, access.sessionId) !== generation) return false;
-    if (!this.allowed(access.sessionId)) return false;
-    if (allowed) return true;
+    if (allowed) return this.allowed(access.sessionId);
     advanceLinearSessionGeneration(this.db, access.sessionId, {
       stop: true,
       now: (this.options.now ?? Date.now)(),

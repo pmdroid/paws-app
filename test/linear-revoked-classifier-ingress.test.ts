@@ -152,6 +152,22 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
       });
     };
     try {
+      if (mode === "initial-denied")
+        expect(
+          (
+            await post(
+              {
+                type: "PermissionChange",
+                action: "teamAccessChanged",
+                createdAt: new Date().toISOString(),
+                canAccessAllPublicTeams: false,
+                addedTeamIds: [],
+                removedTeamIds: ["team"],
+              },
+              "initial-denial",
+            )
+          ).status,
+        ).toBe(200);
       expect(
         (
           await post(
