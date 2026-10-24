@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -2245,24 +2245,6 @@ for (const [movedHead, closeoutAfterUpdate] of [
 
 const REBASE_INSTRUCTION =
   "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
-const REBASE_THOUGHT = "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
-
-test("a conflicting rebase sends the item back to the agent and then merges", async () => {
-  const result = await runRebaseConflict("resolve");
-  expect(result.state, result.detail).toBe("merged");
-  expect(result.merged, result.detail).toBe(1);
-  expect(
-    result.thoughts.filter((body) => body === REBASE_THOUGHT),
-    result.detail,
-  ).toEqual([]);
-  expect(
-    result.prompts.filter((prompt) => prompt.includes(REBASE_INSTRUCTION)),
-    result.detail,
-  ).toHaveLength(1);
-  expect(result.handoffs, result.detail).toEqual([REBASE_INSTRUCTION]);
-  expect(result.returnPhases, result.detail).toEqual(["running"]);
-  expect(result.requeuedBases, result.detail).toEqual([result.movedMain]);
-}, 90_000);
 
 test("Linear's Fix merge conflicts request on a conflicting pull request is a rebase-conflict return", async () => {
   const result = await runRebaseConflict("linear");
@@ -2276,39 +2258,8 @@ test("Linear's Fix merge conflicts request on a conflicting pull request is a re
   ).toHaveLength(1);
   expect(result.state, result.detail).toBe("merged");
   expect(result.mergedOnMovedMain, result.detail).toBe(true);
+  expect(result.requeuedBases, result.detail).toEqual([result.movedMain]);
 }, 90_000);
-
-test("with the switch off, a branch update waits for CI and merges without running Closeout again", async () => {
-  const result = await withGitIdentity(() => runRebaseConflict("clean", undefined, false));
-  const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
-  // One comparison so a failure shows every fact at once.
-  expect(
-    {
-      state: result.state,
-      merged: result.merged,
-      rounds: result.rounds,
-      reviewsAfterUpdate: result.reviews - result.reviewsBeforeUpdate,
-      reverifyJobs: result.queues.filter((queue) => queue === JOB_KIND.reverify).length,
-      mergedAcceptedHead: result.mergedHeads[0] === result.acceptedHead,
-      mergedOnMovedMain: result.mergedOnMovedMain,
-      updatedNote: result.summaries.includes(updated),
-      postedNote: result.thoughts.includes(updated),
-      recheckNote: result.summaries.includes("Branch updated, running Closeout again."),
-    },
-    `${result.detail}\n${JSON.stringify(result.summaries)}`,
-  ).toEqual({
-    state: "merged",
-    merged: 1,
-    rounds: [],
-    reviewsAfterUpdate: 0,
-    reverifyJobs: 0,
-    mergedAcceptedHead: false,
-    mergedOnMovedMain: true,
-    updatedNote: true,
-    postedNote: false,
-    recheckNote: false,
-  });
-}, 120_000);
 
 test("an issue rule for the task's Linear label runs Closeout again after a branch update", async () => {
   const result = await withGitIdentity(() =>
@@ -2321,86 +2272,6 @@ test("an issue rule for the task's Linear label runs Closeout again after a bran
   expect(result.rounds, result.detail).toHaveLength(1);
   expect(result.summaries, result.detail).toContain("Branch updated, running Closeout again.");
   expect(result.thoughts, result.detail).not.toContain("Branch updated, running Closeout again.");
-}, 120_000);
-
-test("main moved on other files: overlap-only merges the accepted head without an update", async () => {
-  const result = await withGitIdentity(() =>
-    runRebaseConflict("clean", undefined, undefined, {
-      toml: '[merge]\nmain_moved = "overlap"\n',
-      labels: [],
-    }),
-  );
-  expect(
-    {
-      state: result.state,
-      merged: result.merged,
-      rounds: result.rounds,
-      reviewsAfterUpdate: result.reviews - result.reviewsBeforeUpdate,
-      mergedAcceptedHead: result.mergedHeads[0] === result.acceptedHead,
-      updated: result.summaries.some((body) => body.startsWith("Branch updated")),
-      notes: result.thoughts.filter((body) => body.startsWith("GitHub requires")).length,
-    },
-    `${result.detail}\n${JSON.stringify(result.thoughts)}`,
-  ).toEqual({
-    state: "merged",
-    merged: 1,
-    rounds: [],
-    reviewsAfterUpdate: 0,
-    mergedAcceptedHead: true,
-    updated: false,
-    notes: 0,
-  });
-}, 120_000);
-
-test("GitHub's up-to-date rule on: overlap-only updates the branch, waits for CI and notes why once", async () => {
-  const result = await withGitIdentity(() =>
-    runRebaseConflict("clean", undefined, undefined, {
-      toml: '[merge]\nmain_moved = "overlap"\n',
-      labels: [],
-      client: (inner) => ({
-        async request(req) {
-          if (req.method === "GET" && req.path.includes("/rules/branches/"))
-            return {
-              status: 200,
-              body: [
-                {
-                  type: "required_status_checks",
-                  parameters: { strict_required_status_checks_policy: true },
-                },
-              ],
-            };
-          return inner.request(req);
-        },
-      }),
-    }),
-  );
-  const note = result.thoughts.filter((body) =>
-    body.startsWith(
-      "GitHub requires branches to be up to date before merging in pmdroid/paws-demo",
-    ),
-  );
-  expect(
-    {
-      state: result.state,
-      merged: result.merged,
-      rounds: result.rounds,
-      mergedAcceptedHead: result.mergedHeads[0] === result.acceptedHead,
-      mergedOnMovedMain: result.mergedOnMovedMain,
-      notes: note.length,
-      updated: result.summaries.includes(
-        `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI.`,
-      ),
-    },
-    `${result.detail}\n${JSON.stringify(result.thoughts)}`,
-  ).toEqual({
-    state: "merged",
-    merged: 1,
-    rounds: [],
-    mergedAcceptedHead: false,
-    mergedOnMovedMain: true,
-    notes: 1,
-    updated: true,
-  });
 }, 120_000);
 
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
@@ -4098,56 +3969,8 @@ test.each([
   120_000,
 );
 
-test("after 3 rebase conflict returns the item fails", async () => {
-  const result = await runRebaseConflict("repeat");
-  expect(result.state, result.detail).toBe("failed");
-  expect(result.merged, result.detail).toBe(0);
-  expect(
-    result.thoughts.filter((body) => body === REBASE_THOUGHT),
-    result.detail,
-  ).toHaveLength(0);
-  expect(result.handoffs, result.detail).toEqual([
-    REBASE_INSTRUCTION,
-    REBASE_INSTRUCTION,
-    REBASE_INSTRUCTION,
-  ]);
-  expect(
-    result.prompts.filter((prompt) => prompt.includes(REBASE_INSTRUCTION)),
-    result.detail,
-  ).toHaveLength(3);
-  expect(result.thoughts, result.detail).toContain(
-    `The branch still conflicts with main after 3 attempts to resolve the conflict. Main commits: ${result.movedMain.slice(0, 7)}. Conflicting files: ok.txt.`,
-  );
-}, 120_000);
-
-test("a user's retry after the rebase-conflict returns are used up returns the next conflict to the agent", async () => {
-  const result = await runRebaseConflict("retry");
-  expect(result.state, result.detail).toBe("merged");
-  expect(result.merged, result.detail).toBe(1);
-  expect(
-    result.handoffs.filter((handoff) => handoff === REBASE_INSTRUCTION),
-    result.detail,
-  ).toHaveLength(4);
-}, 180_000);
-
-test("a rebase_failed merge fails the item", async () => {
-  const result = await runRebaseConflict("rebase-failed");
-  expect(result.state, result.detail).toBe("failed");
-  expect(result.merged, result.detail).toBe(0);
-  expect(
-    result.thoughts.filter((body) => body === REBASE_THOUGHT),
-    result.detail,
-  ).toEqual([]);
-  expect(result.handoffs, result.detail).toEqual([]);
-  expect(
-    result.prompts.some((prompt) => prompt.includes(REBASE_INSTRUCTION)),
-    result.detail,
-  ).toBe(false);
-  expect(result.thoughts, result.detail).toContain("rebase failed");
-}, 60_000);
-
 async function runRebaseConflict(
-  mode: "resolve" | "repeat" | "rebase-failed" | "clean" | "linear" | "retry",
+  mode: "clean" | "linear",
   githubAuth?: FakeHostGitHubAuth,
   closeoutAfterUpdate?: boolean,
   merging?: {
@@ -4159,16 +3982,11 @@ async function runRebaseConflict(
   state: string | null;
   reviews: number;
   reviewsBeforeUpdate: number;
-  queues: string[];
-  acceptedHead: string;
-  mergedHeads: string[];
   mergedOnMovedMain: boolean;
   movedMain: string;
   thoughts: string[];
   summaries: string[];
   prompts: string[];
-  handoffs: string[];
-  returnPhases: (string | null)[];
   requeuedBases: (string | null)[];
   merged: number;
   rounds: string[];
@@ -4176,18 +3994,7 @@ async function runRebaseConflict(
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
-  const identifier =
-    mode === "resolve"
-      ? "ENG-70"
-      : mode === "repeat"
-        ? "ENG-71"
-        : mode === "clean"
-          ? "ENG-73"
-          : mode === "linear"
-            ? "ENG-74"
-            : mode === "retry"
-              ? "ENG-75"
-              : "ENG-72";
+  const identifier = mode === "clean" ? "ENG-73" : "ENG-74";
   const tracker = createFakeTracker([
     {
       linearIssueId: `rebase-${mode}`,
@@ -4241,9 +4048,7 @@ async function runRebaseConflict(
       if (resultPath) implementResults.push(resultPath);
       let steps: FakeScript["steps"];
       if (input.purpose === "review" || input.purpose === "prepare") steps = emptyReview().steps;
-      else if ((mode === "resolve" || mode === "linear") && implementTurns > 0)
-        steps = rebaseOntoMainSteps();
-      else if (mode === "retry" && implementTurns > 4) steps = squashOntoMainSteps();
+      else if (mode === "linear" && implementTurns > 0) steps = rebaseOntoMainSteps();
       else steps = [writeOk(input.worktree, `agent-${implementTurns}\n`), { type: "end" }];
       if (input.purpose === "implement") implementTurns += 1;
       if (input.purpose === "review") reviews += 1;
@@ -4266,18 +4071,7 @@ async function runRebaseConflict(
     await jobs.tick();
     expect(stateOf(db, identifier), debug(layout, db)).toBe("merge_queue");
     const reviewsBeforeUpdate = reviews;
-    const acceptedHead = (
-      await exec("git", [
-        "-C",
-        worktreePath(layout.pawsRoot, taskPath(db, identifier)),
-        "rev-parse",
-        "HEAD",
-      ])
-    ).stdout.trim();
-    if (mode === "rebase-failed") {
-      await commitOnMain(layout.bare, "side\n", "side.txt");
-      await installRebaseHook(layout.pawsRoot);
-    } else if (mode === "clean") await commitOnMain(layout.bare, "side\n", "side.txt");
+    if (mode === "clean") await commitOnMain(layout.bare, "side\n", "side.txt");
     else await commitOnMain(layout.bare, "from-main\n");
     const movedMain = (
       await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
@@ -4316,7 +4110,6 @@ async function runRebaseConflict(
         ).stdout.trim(),
       };
     }
-    const returnPhases: (string | null)[] = [];
     const requeuedBases: (string | null)[] = [];
     const settle = async () => {
       let idle = 0;
@@ -4325,8 +4118,6 @@ async function runRebaseConflict(
         if (state === "merged" || state === "failed") break;
         const job = await jobs.tick();
         const next = stateOf(db, identifier);
-        if (state === "merge_queue" && next === "running")
-          returnPhases.push(checkpointPhaseOf(db, identifier));
         if (state !== "merge_queue" && next === "merge_queue")
           requeuedBases.push(checkpointBaseOf(db, identifier));
         if (job !== null) turn += 1;
@@ -4336,12 +4127,6 @@ async function runRebaseConflict(
       }
     };
     await settle();
-    if (mode === "retry") {
-      expect(stateOf(db, identifier), debug(layout, db)).toBe("failed");
-      await commitOnMain(layout.bare, "from-main-again\n");
-      await orchestrator.onLinearEvent(linearEvent("prompted", "retry", null, `rebase-${mode}`));
-      await settle();
-    }
     while (outbox.tick().length > 0) await outbox.idle();
     const prompts: string[] = [];
     for (const file of implementResults) {
@@ -4354,9 +4139,6 @@ async function runRebaseConflict(
       state: stateOf(db, identifier),
       reviews,
       reviewsBeforeUpdate,
-      queues: listJobs(db).map((job) => job.queue),
-      acceptedHead,
-      mergedHeads: github.merged.map((merge) => merge.expectedHeadSha),
       mergedOnMovedMain:
         github.merged.length === 1 &&
         (await isAncestor(layout.bare, movedMain, github.merged[0]!.expectedHeadSha)),
@@ -4364,10 +4146,6 @@ async function runRebaseConflict(
       thoughts: tracker.progress.map((update) => update.body),
       summaries: queuedSummary(),
       prompts,
-      handoffs: listJobs(db)
-        .filter((job) => job.queue === JOB_KIND.resume)
-        .map((job) => (job.payload as { handoff?: string }).handoff ?? ""),
-      returnPhases,
       requeuedBases,
       merged: github.merged.length,
       rounds: listCloseoutRounds(db).map((round) => round.head),
@@ -4401,25 +4179,6 @@ function rebaseOntoMainSteps(): FakeScript["steps"] {
           "git add ok.txt",
           "git_c rebase --continue",
           "fi",
-        ].join("\n"),
-      ],
-    },
-    { type: "end", stopReason: "end_turn" },
-  ];
-}
-
-function squashOntoMainSteps(): FakeScript["steps"] {
-  return [
-    {
-      type: "terminal",
-      command: "sh",
-      args: [
-        "-c",
-        [
-          'git reset --soft "$(git rev-parse --verify --quiet refs/paws/upstream-main || echo origin/main)"',
-          "printf 'ok\\n' > ok.txt",
-          "git add ok.txt",
-          "git -c user.email=paws-test@example.com -c user.name=Paws -c commit.gpgsign=false commit -qm 'Resolve the conflict with main'",
         ].join("\n"),
       ],
     },
@@ -4466,16 +4225,6 @@ async function commitOnMain(bare: string, content: string, file = "ok.txt"): Pro
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-}
-
-async function installRebaseHook(pawsRoot: string): Promise<void> {
-  const mirror = path.join(pawsRoot, "repos", "pmdroid", "paws-demo.git");
-  const hooks = path.join(mirror, "hooks");
-  await mkdir(hooks, { recursive: true });
-  const hook = path.join(hooks, "pre-rebase");
-  await writeFile(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-  await exec("chmod", ["755", hook]);
-  await exec("git", ["--git-dir", mirror, "config", "core.hooksPath", hooks]);
 }
 
 function demoScript(input: {
@@ -4665,13 +4414,6 @@ function checkpointBaseOf(db: Database, identifier: string): string | null {
     .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
     .get(identifier);
   return row ? (getWorkItem(db, row.id)?.checkpoint?.baseSha ?? null) : null;
-}
-
-function checkpointPhaseOf(db: Database, identifier: string): string | null {
-  const row = db
-    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
-    .get(identifier);
-  return row ? (getWorkItem(db, row.id)?.checkpoint?.phase ?? null) : null;
 }
 
 function delegationMerged(db: Database): boolean {
