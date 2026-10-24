@@ -65,6 +65,7 @@ const MODULES = [
   "evidence",
   "skills",
   "runtimes",
+  "runner-mise",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -170,7 +171,9 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-answers",
     "install",
     "runner-protocol",
+    "runner-mise",
   ],
+  "runner-mise": [],
   "runner-answers": ["runner-execution"],
   "runner-control": ["db", "workspace", "runner-identity", "runner-protocol"],
   "runner-daemon": [
