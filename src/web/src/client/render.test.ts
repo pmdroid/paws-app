@@ -35,8 +35,8 @@ describe("status views", () => {
     snapshot.verdicts = [];
     snapshot.mergeQueue = [];
     const running = render(model({ snapshot })).content;
-    expect(running).toContain('href="/runs/current-run"');
-    expect(running).not.toContain('href="/runs/old-run"');
+    expect(running).toContain(`href="/issues/${item.id}"`);
+    expect(running).not.toContain('href="/runs/');
     expect(running).toContain('class="st running"');
     item.state = "queued";
     item.runId = null;
@@ -101,7 +101,7 @@ describe("status views", () => {
     expect(view.content).toContain("Answer question");
     expect(view.content).toContain("Closeout requirement unit exhausted (3/3)");
     expect(view.content).toContain("2 need you · 1 working · 1 queued · 1 waiting to merge");
-    expect(view.content).toContain('href="/runs/r-102"');
+    expect(view.content).toContain('href="/issues/ENG-102"');
     expect(view.content).toContain("All issues");
     expect(view.content).not.toContain("Delivery");
     expect(view.content).not.toContain("Recent events");
@@ -198,7 +198,7 @@ describe("status views", () => {
     const detail = render(model({ route: { view: "issues", id: "ENG-101" } })).content;
     expect(detail).toContain("Jonas Berg");
     expect(detail).toContain("Audit log export");
-    expect(detail).toContain('href="/runs/r-101"');
+    expect(detail).toContain('id="activity-heading">Timeline</h2>');
     expect(detail).toContain("PR #479");
     expect(detail).toContain('href="/issues/ENG-99"');
     expect(detail).toContain('href="/issues/ENG-104"');
@@ -227,18 +227,14 @@ describe("status views", () => {
     );
   });
 
-  test("the run page shows how many Linear requests the task made", () => {
+  test("the issue page shows how many Linear requests the task made", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
     item.linearRequests = 12;
     const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
-    expect(page).toContain(" · 12 Linear requests</p>");
-    item.linearRequests = 1;
-    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).toContain(
-      " · 1 Linear request</p>",
-    );
+    expect(page).toContain("<dt>Linear requests</dt><dd>12</dd>");
   });
 
   test("a task in the merge queue shows its place on the run and issue pages", () => {
@@ -313,7 +309,7 @@ describe("status views", () => {
       const section = activitySection(html);
       expect(html).not.toContain('<details class="run-activity"');
       expect(section).toContain("<h2");
-      expect(section).toContain("Task activity and agent transcript");
+      expect(section).toContain(">Timeline</h2>");
       expect(section).not.toContain(esc(run.summary));
       expect(section).toContain("bun test");
       expect(section).toContain("data-follow");
@@ -394,13 +390,14 @@ describe("status views", () => {
     expect(parseRoute("")).toEqual({ view: "overview" });
     expect(parseRoute("/issues/ENG-104")).toEqual({ view: "issues", id: "ENG-104" });
     expect(parseRoute("/runs/r-102")).toEqual({ view: "runs", id: "r-102" });
+    expect(parseRoute("/runs/r-102", snapshot)).toEqual({ view: "issues", id: "ENG-102" });
     expect(parseRoute("/questions/Q-41")).toEqual({ view: "questions", id: "Q-41" });
     expect(parseRoute("/epics/x")).toEqual({ view: "issues", id: null });
     expect(parseRoute("/epics/ENG-98", snapshot)).toEqual({ view: "issues", id: null });
     expect(parseRoute("/queue")).toEqual({ view: "overview" });
-    expect(parseRoute("/verdicts/ENG-101", snapshot)).toEqual({ view: "runs", id: "r-101" });
-    expect(parseRoute("/verdicts/missing", snapshot)).toEqual({ view: "runs", id: "missing" });
-    expect(parseRoute("/verdicts/ENG-101")).toEqual({ view: "runs", id: null });
+    expect(parseRoute("/verdicts/ENG-101", snapshot)).toEqual({ view: "issues", id: "ENG-101" });
+    expect(parseRoute("/verdicts/missing", snapshot)).toEqual({ view: "issues", id: "missing" });
+    expect(parseRoute("/verdicts/ENG-101")).toEqual({ view: "issues", id: "ENG-101" });
   });
 });
 

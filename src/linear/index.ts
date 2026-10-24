@@ -157,11 +157,17 @@ export type {
 export {
   parseLinearAdministration,
   parseLinearUndelegation,
+  parseLinearIssueClosed,
   parseLinearUserChange,
   parseLinearSessionInstallation,
   matchesLinearInstallation,
 } from "./administration";
-export type { LinearAdministration, LinearInstallation } from "./administration";
+export type {
+  LinearAdministration,
+  LinearInstallation,
+  LinearIssueClosed,
+  LinearIssueClosedState,
+} from "./administration";
 export { createLinearIssueLifecycle } from "./issue-lifecycle";
 export { createFakeLinearIssueLifecycle } from "./fake-issue-lifecycle";
 export type {
@@ -175,7 +181,7 @@ export { createFakeLinearAccessReads } from "./fake-access";
 export type { LinearAccessReads, LinearSessionInstallation } from "./access";
 
 export { createLinearIssueContextReads, type LinearIssueContext } from "./issue-context";
-export { createLinearMembershipReads } from "./membership";
+export { cacheLinearMemberships, createLinearMembershipReads } from "./membership";
 export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
 
 export { createLinearAttributionReads } from "./attribution";

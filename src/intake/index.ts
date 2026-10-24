@@ -15,7 +15,7 @@ export type { DependencyReadiness } from "./dependencies";
 export { delegationReadiness, itemReadiness } from "./readiness";
 export type { ReadinessHold, ReadinessPhase } from "./readiness";
 export { createItemReconciler, SWEEP_FULL_REFRESH_MS } from "./reconciliation";
-export type { ItemChanges } from "./reconciliation";
+export type { IntakeReads, ItemChanges } from "./reconciliation";
 export { createPublicationReadiness } from "./publication";
 export type { PublicationCandidate, PublicationPhase } from "./publication";
 export {

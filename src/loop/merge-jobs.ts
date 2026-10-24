@@ -12,6 +12,7 @@ import {
   retryLeasedJob,
   type Job,
   type RunnerCapacityWaitState,
+  markCloseoutAccepted,
 } from "../db";
 import { githubQueueWatch } from "../merge";
 import { worktreeBranch } from "./sources";
@@ -191,6 +192,7 @@ export function acceptCloseout(
 ): number | null {
   return immediate(db, () => {
     if (!applyCloseoutAcceptance(db, input.itemId, input.expected)) return null;
+    markCloseoutAccepted(db, input.itemId, input.head);
     saveCheckpoint(db, input.itemId, {
       phase: "merge_queue",
       baseSha: input.base,

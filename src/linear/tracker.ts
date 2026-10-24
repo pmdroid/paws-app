@@ -8,6 +8,7 @@ import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
 import type { LinearClient } from "./graphql";
 import { linearDefaultCallers } from "./budget";
+import { takeIssueStart, type IssueStartReads } from "./issue-start";
 import { createLinearMergeReads } from "./merge-context";
 import { createLinearRepositoryMethods, type LinearRepositoryAdapter } from "./repositories";
 import { isRecord, readNumber, readString } from "./read";
@@ -24,6 +25,7 @@ const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
     project { id }
     assignee { id }
     priority
+    state { type }
     children(first: 50, after: $after) {
       nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id } assignee { id } priority }
       pageInfo { hasNextPage endCursor }
@@ -100,15 +102,16 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   loadEpic: "issue-snapshot",
   listDeps: "issue-relations",
   postProgress: "activity-post",
+  postProgressWithSession: "activity-post",
   askQuestion: "elicitation-post",
   setStatus: "issue-status",
 };
 
-export function createLinearTracker(client: LinearClient): LinearTracker {
-  return linearDefaultCallers(createUnlabelledTracker(client), TRACKER_CALLERS);
+export function createLinearTracker(client: LinearClient, starts?: IssueStartReads): LinearTracker {
+  return linearDefaultCallers(createUnlabelledTracker(client, starts), TRACKER_CALLERS);
 }
 
-function createUnlabelledTracker(client: LinearClient): LinearTracker {
+function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads): LinearTracker {
   const sessions = createLinearSessionMethods(client);
   return {
     supportsActivityReconciliation: true,
@@ -117,7 +120,7 @@ function createUnlabelledTracker(client: LinearClient): LinearTracker {
     ...createLinearProjectScopeReads(client),
     ...createLinearAttributionReads(client),
     ...createLinearRepositoryMethods(client),
-    ...createLinearMergeReads(client),
+    ...createLinearMergeReads(client, starts),
     ...createLinearAttachmentMethods(client),
     listIssuePullRequests: createIssuePullRequestReads(client),
     async loadEpic(linearIssueId) {
@@ -129,7 +132,9 @@ function createUnlabelledTracker(client: LinearClient): LinearTracker {
       for (let page = 0; ; page++) {
         if (page >= MAX_GRAPH_PAGES)
           throw new Error("Linear graph pagination exceeded its page limit");
-        const data = await client.query(CHILDREN_QUERY, { id: linearIssueId, after });
+        const data =
+          (page === 0 ? takeIssueStart(starts, linearIssueId, "epic") : undefined) ??
+          (await client.query(CHILDREN_QUERY, { id: linearIssueId, after }));
         const issue = dig(data, ["issue"]);
         if (
           issue === null ||
@@ -147,11 +152,13 @@ function createUnlabelledTracker(client: LinearClient): LinearTracker {
             throw new Error("Linear issue snapshot was missing id, identifier, or title");
           }
           const description = issue["description"];
+          const stateType = readString(dig(issue, ["state"]) ?? {}, "type");
           snapshot = {
             linearIssueId: id,
             identifier,
             title,
             description: typeof description === "string" ? description : null,
+            ...(stateType === null ? {} : { stateType }),
             subIssues: [],
             ...schedulingMetadata(issue),
           };
@@ -202,13 +209,15 @@ function createUnlabelledTracker(client: LinearClient): LinearTracker {
       for (let page = 0; !relationsDone || !inverseDone; page++) {
         if (page >= MAX_GRAPH_PAGES)
           throw new Error("Linear graph pagination exceeded its page limit");
-        const data = await client.query(RELATIONS_QUERY, {
-          id: linearIssueId,
-          relationsAfter,
-          inverseAfter,
-          includeRelations: !relationsDone,
-          includeInverse: !inverseDone,
-        });
+        const data =
+          (page === 0 ? takeIssueStart(starts, linearIssueId, "deps") : undefined) ??
+          (await client.query(RELATIONS_QUERY, {
+            id: linearIssueId,
+            relationsAfter,
+            inverseAfter,
+            includeRelations: !relationsDone,
+            includeInverse: !inverseDone,
+          }));
         const issue = dig(data, ["issue"]);
         const id = issue === null ? null : readString(issue, "id");
         if (issue === null || id === null || (canonicalId !== null && id !== canonicalId))
@@ -233,6 +242,9 @@ function createUnlabelledTracker(client: LinearClient): LinearTracker {
     },
     async postProgress(update, options) {
       await sessions.createActivity(update, options);
+    },
+    async postProgressWithSession(update, session, options) {
+      await sessions.createActivity(update, options, session);
     },
     async askQuestion(question, options) {
       await sessions.createElicitation(question, options);

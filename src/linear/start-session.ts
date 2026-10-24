@@ -67,7 +67,10 @@ export function createSessionStarter(options: {
             externalUrls: [
               {
                 label: "Paws",
-                url: new URL(`sessions/${encodeURIComponent(id)}`, dashboardUrl).href,
+                url: new URL(
+                  `issues/${encodeURIComponent(readString(issue!, "identifier") ?? issueId)}`,
+                  dashboardUrl,
+                ).href,
               },
             ],
           },

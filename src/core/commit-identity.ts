@@ -17,7 +17,7 @@ export function appBotCommitIdentity(bot: AppBotIdentity): GitCommitIdentity {
     bot.id <= 0
   )
     throw new Error("Invalid GitHub App bot identity");
-  return { name: bot.login, email: `${bot.id}+${bot.login}@users.noreply.github.com` };
+  return { name: "Paws", email: `${bot.id}+${bot.login}@users.noreply.github.com` };
 }
 
 export function commitIdentityEnv(identity: GitCommitIdentity): Record<string, string> {

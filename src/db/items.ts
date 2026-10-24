@@ -1,8 +1,15 @@
 import type { Database } from "bun:sqlite";
 import {
+  awakeCategory,
   capActivityText,
   capReason,
   countsAwakeTime,
+  formatAwakeBreakdown,
+  timeLimitQuestion,
+  TIME_LIMIT_EXTENSION_MS,
+  TIME_LIMIT_OPTIONS,
+  type AwakeBreakdown,
+  type AwakeCategory,
   IN_FLIGHT_ITEM_STATES,
   isTerminalWorkItemState,
   JOB_KIND,
@@ -39,6 +46,12 @@ export type WorkItemRecord = {
   turnCount: number;
   maxTurns: number;
   maxAwakeMs: number;
+  /** The head Closeout last accepted. Set until the task restarts from fresh main. */
+  acceptedHead: string | null;
+  agentMs: number;
+  closeoutMs: number;
+  waitingMs: number;
+  recheckMs: number;
   cancelRequested: boolean;
   sessionKey: string | null;
   currentRunId: string | null;
@@ -64,6 +77,11 @@ type ItemSql = {
   turn_count: number;
   max_turns: number;
   max_awake_ms: number;
+  accepted_head: string | null;
+  agent_ms: number;
+  closeout_ms: number;
+  waiting_ms: number;
+  recheck_ms: number;
   cancel_requested: number;
   session_key: string | null;
   current_run_id: string | null;
@@ -176,6 +194,11 @@ export function clearProgress(db: Database, id: string): void {
      SET checkpoint = NULL,
          recovery_attempts = 0,
          awake_ms = 0,
+         agent_ms = 0,
+         closeout_ms = 0,
+         waiting_ms = 0,
+         recheck_ms = 0,
+         accepted_head = NULL,
          last_mono_ms = NULL,
          turn_count = 0,
          cancel_requested = 0,
@@ -189,11 +212,17 @@ export function syncClock(db: Database, id: string, mono: number): void {
   db.run("UPDATE work_item SET last_mono_ms = ? WHERE id = ?", [mono, id]);
 }
 
-export function recordTurn(
-  db: Database,
-  id: string,
-  now = Date.now(),
-): { capped: boolean; item: WorkItemRecord } {
+export type CapOutcome = {
+  /** The task failed on its cap. */
+  capped: boolean;
+  /** Closeout had accepted the work, so the cap asked in Linear instead of failing. */
+  asked?: boolean;
+  /** The agent's run ended at the time limit: the caller must stop the live agent. */
+  stopAgent?: boolean;
+  item: WorkItemRecord;
+};
+
+export function recordTurn(db: Database, id: string, now = Date.now()): CapOutcome {
   return immediate(db, () => {
     const current = getWorkItem(db, id);
     if (current === null) throw new Error(`work item ${id} not found`);
@@ -206,50 +235,202 @@ export function recordTurn(
       return { capped: current.cancelRequested, item: current };
     }
     db.run("UPDATE work_item SET turn_count = turn_count + 1 WHERE id = ?", [id]);
-    const updated = getWorkItem(db, id);
-    if (updated === null) throw new Error(`work item ${id} not found`);
-    const reason = capReason({
-      turnCount: updated.turnCount,
-      maxTurns: updated.maxTurns,
-      awakeMs: updated.awakeMs,
-      maxAwakeMs: updated.maxAwakeMs,
-    });
-    if (reason === null) return { capped: false, item: updated };
-    failForCap(db, updated, reason, now);
-    const failed = getWorkItem(db, id);
-    if (failed === null) throw new Error(`work item ${id} not found`);
-    return { capped: true, item: failed };
+    return enforceCaps(db, id, now, { stopsAgent: false });
   });
 }
 
-export function accrueAwake(
-  db: Database,
-  id: string,
-  mono: number,
-  now = Date.now(),
-): { capped: boolean; item: WorkItemRecord } {
+const BREAKDOWN_COLUMN: Record<AwakeCategory, string> = {
+  agent: "agent_ms",
+  closeout: "closeout_ms",
+  waiting: "waiting_ms",
+  recheck: "recheck_ms",
+};
+
+export function accrueAwake(db: Database, id: string, mono: number, now = Date.now()): CapOutcome {
   return immediate(db, () => {
     const current = getWorkItem(db, id);
     if (current === null) throw new Error(`work item ${id} not found`);
     const delta = current.lastMonoMs === null ? 0 : Math.max(0, mono - current.lastMonoMs);
-    const awake = countsAwakeTime(current.state, current.checkpoint);
+    const category = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
+    const awake = countsAwakeTime(current.state, current.checkpoint, current.acceptedHead);
     const awakeMs = current.awakeMs + (awake ? delta : 0);
     db.run("UPDATE work_item SET awake_ms = ?, last_mono_ms = ? WHERE id = ?", [awakeMs, mono, id]);
-    const updated = getWorkItem(db, id);
-    if (updated === null) throw new Error(`work item ${id} not found`);
-    if (!awake) return { capped: false, item: updated };
-    const reason = capReason({
-      turnCount: updated.turnCount,
-      maxTurns: updated.maxTurns,
-      awakeMs: updated.awakeMs,
-      maxAwakeMs: updated.maxAwakeMs,
-    });
-    if (reason === null) return { capped: false, item: updated };
-    failForCap(db, updated, reason, now);
-    const failed = getWorkItem(db, id);
-    if (failed === null) throw new Error(`work item ${id} not found`);
-    return { capped: true, item: failed };
+    if (category !== null && delta > 0) {
+      const column = BREAKDOWN_COLUMN[category];
+      db.run(`UPDATE work_item SET ${column} = ${column} + ? WHERE id = ?`, [delta, id]);
+    }
+    if (!awake) {
+      const updated = getWorkItem(db, id);
+      if (updated === null) throw new Error(`work item ${id} not found`);
+      return { capped: false, item: updated };
+    }
+    return enforceCaps(db, id, now);
   });
+}
+
+/**
+ * Fails an item past a cap. Work Closeout already accepted never fails on the time
+ * cap: Paws keeps publishing and merging it, and a resumed agent asks in Linear.
+ */
+function enforceCaps(
+  db: Database,
+  id: string,
+  now: number,
+  options: { stopsAgent: boolean } = { stopsAgent: true },
+): CapOutcome {
+  const updated = getWorkItem(db, id);
+  if (updated === null) throw new Error(`work item ${id} not found`);
+  const reason = capReason({
+    turnCount: updated.turnCount,
+    maxTurns: updated.maxTurns,
+    awakeMs: updated.awakeMs,
+    maxAwakeMs: updated.maxAwakeMs,
+  });
+  if (reason === null) return { capped: false, item: updated };
+  if (reason === "time" && updated.acceptedHead !== null) {
+    if (updated.state !== "running") return { capped: false, item: updated };
+    // Asking or pausing ends the run, so only a caller that stops the live agent
+    // (the host supervisor, through accrueAwake) may do it. It asks on its next tick.
+    if (!options.stopsAgent) return { capped: false, item: updated };
+    if (askTimeLimit(db, updated, now))
+      return { capped: false, asked: true, stopAgent: true, item: refetch() };
+    pauseAtTimeLimit(db, updated, now);
+    return { capped: false, stopAgent: true, item: refetch() };
+  }
+  failForCap(db, updated, reason, now);
+  return { capped: true, item: refetch() };
+
+  function refetch(): WorkItemRecord {
+    const item = getWorkItem(db, id);
+    if (item === null) throw new Error(`work item ${id} not found`);
+    return item;
+  }
+}
+
+export function awakeBreakdown(item: WorkItemRecord): AwakeBreakdown {
+  return {
+    agentMs: item.agentMs,
+    closeoutMs: item.closeoutMs,
+    waitingMs: item.waitingMs,
+    recheckMs: item.recheckMs,
+  };
+}
+
+/** Closeout accepted `head`. The time cap no longer fails this task. */
+export function markCloseoutAccepted(db: Database, id: string, head: string): void {
+  db.run("UPDATE work_item SET accepted_head = ? WHERE id = ?", [head, id]);
+}
+
+/** A Continue answer to the time-limit question gives the agent more awake time. */
+export function extendAwakeCap(db: Database, id: string, extraMs = TIME_LIMIT_EXTENSION_MS): void {
+  db.run("UPDATE work_item SET max_awake_ms = MAX(max_awake_ms, awake_ms) + ? WHERE id = ?", [
+    extraMs,
+    id,
+  ]);
+}
+
+/** Zeroes the awake clock and its breakdown when a stopped task is started again. */
+export function resetAwakeTime(db: Database, id: string): void {
+  db.run(
+    `UPDATE work_item
+     SET awake_ms = 0, agent_ms = 0, closeout_ms = 0, waiting_ms = 0, recheck_ms = 0,
+         last_mono_ms = NULL
+     WHERE id = ?`,
+    [id],
+  );
+}
+
+/**
+ * Cancels the agent's pending start and resume jobs at the time limit. Merge jobs
+ * stay: Closeout accepted this work, so Paws keeps publishing and merging it.
+ */
+function cancelAgentJobs(db: Database, itemId: string, now: number): void {
+  db.run(
+    `UPDATE job
+     SET status = 'cancelled', last_error = 'time_limit', locked_by = NULL,
+         locked_until = NULL, finished_at = ?
+     WHERE status IN ('pending', 'running') AND queue IN (?, ?)
+       AND json_extract(payload, '$.itemId') = ?`,
+    [now, JOB_KIND.start, JOB_KIND.resume, itemId],
+  );
+}
+
+/**
+ * Without a Linear session to ask in, accepted work pauses at the time limit
+ * instead of failing. The cap already allows another hour, so resuming it from
+ * the run page keeps going.
+ */
+function pauseAtTimeLimit(db: Database, item: WorkItemRecord, now: number): void {
+  applyWorkItemEvent(db, item.id, "pause");
+  cancelAgentJobs(db, item.id, now);
+  if (item.currentRunId !== null) {
+    const run = getRun(db, item.currentRunId);
+    if (run?.status === "active") markRun(db, run.id, "ended", now);
+  }
+  extendAwakeCap(db, item.id);
+  journal(`item ${item.linearIdentifier} reached its time cap after acceptance; paused`);
+  enqueueOutboxOnce(db, {
+    target: OUTBOX_ACTIVITY.target,
+    op: OUTBOX_ACTIVITY.op,
+    orderingKey: item.id,
+    idempotencyKey: `time-limit-pause:${item.id}:${item.version}`,
+    payload: { sessionId: item.id, kind: "thought", body: timeLimitPausedNote(item) },
+    now,
+  });
+}
+
+function timeLimitPausedNote(item: WorkItemRecord): string {
+  return `Paused at the time limit. Closeout already accepted this task's work, so Paws did not fail it. ${formatAwakeBreakdown(awakeBreakdown(item))} Resume it from the run page to give the agent another hour.`;
+}
+
+/**
+ * Stops the resumed agent's run and asks "continue or stop?" in Linear.
+ * Returns false when the task has no Linear session to ask in.
+ */
+function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean {
+  const sessionId = item.sessionKey;
+  if (sessionId === null) return false;
+  const waits =
+    db
+      .query(
+        "SELECT 1 FROM question WHERE session_id = ? AND status = 'open' AND cancelled_at IS NULL",
+      )
+      .get(sessionId) !== null;
+  cancelAgentJobs(db, item.id, now);
+  applyWorkItemEvent(db, item.id, "blocking_question");
+  if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "awaiting_input" });
+  if (item.currentRunId !== null) {
+    const run = getRun(db, item.currentRunId);
+    if (run?.status === "active") markRun(db, run.id, "ended", now);
+  }
+  const questionId = crypto.randomUUID();
+  const body = timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item));
+  const options = [...TIME_LIMIT_OPTIONS];
+  db.run(
+    `INSERT INTO question (id, item_id, run_id, session_id, kind, body, options, status, created_at)
+     VALUES (?, ?, ?, ?, 'time-limit', ?, ?, ?, ?)`,
+    [
+      questionId,
+      item.id,
+      item.currentRunId,
+      sessionId,
+      body,
+      JSON.stringify(options),
+      waits ? "queued" : "open",
+      now,
+    ],
+  );
+  journal(`item ${item.linearIdentifier} reached its time cap after acceptance; asked in Linear`);
+  if (!waits)
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "elicitation",
+      orderingKey: sessionId,
+      idempotencyKey: `question:${questionId}`,
+      payload: { id: questionId, sessionId, questionId, body, options },
+      now,
+    });
+  return true;
 }
 
 export function failWorkItem(
@@ -416,7 +597,7 @@ function failForCap(
     db,
     item,
     `cap:${reason}`,
-    capActivityText(reason, item.maxTurns, item.maxAwakeMs),
+    capActivityText(reason, item.maxTurns, item.maxAwakeMs, awakeBreakdown(item)),
     now,
     (version) => `cap:${item.id}:${version}:${reason}`,
   );
@@ -493,6 +674,11 @@ function mapItem(row: ItemSql): WorkItemRecord {
     turnCount: row.turn_count,
     maxTurns: row.max_turns,
     maxAwakeMs: row.max_awake_ms,
+    acceptedHead: row.accepted_head ?? null,
+    agentMs: row.agent_ms ?? 0,
+    closeoutMs: row.closeout_ms ?? 0,
+    waitingMs: row.waiting_ms ?? 0,
+    recheckMs: row.recheck_ms ?? 0,
     cancelRequested: row.cancel_requested === 1,
     sessionKey: row.session_key,
     currentRunId: row.current_run_id,

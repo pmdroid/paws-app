@@ -306,15 +306,18 @@ async function pushRebased(
           gitExec(args, { ...options, env: { ...options.env, ...input.commitEnv } })
       : gitExec;
     const rebase = await rebaseOnto(input.worktree, UPSTREAM_MAIN_REF, commitExec);
-    if (rebase !== "ok") {
+    if (rebase.kind !== "ok") {
       return {
         ok: false,
         result: {
           merged: false,
-          outcome: rebase === "conflict" ? "conflict" : "rebase_failed",
+          outcome: rebase.kind === "conflict" ? "conflict" : "rebase_failed",
           branch,
           base,
-          message: rebase === "conflict" ? "rebase conflict" : "rebase failed",
+          message: rebase.kind === "conflict" ? "rebase conflict" : "rebase failed",
+          ...(rebase.kind === "conflict" && rebase.files.length > 0
+            ? { conflictFiles: rebase.files }
+            : {}),
         },
       };
     }
@@ -386,10 +389,10 @@ async function rebaseOnto(
   worktree: string,
   onto: string,
   gitExec: GitExec,
-): Promise<"ok" | "conflict" | "failed"> {
+): Promise<{ kind: "ok" } | { kind: "conflict"; files: string[] } | { kind: "failed" }> {
   try {
     await git(worktree, ["rebase", onto], gitExec);
-    return "ok";
+    return { kind: "ok" };
   } catch {
     const gitPath = await git(worktree, ["rev-parse", "--git-path", "rebase-merge"], gitExec).catch(
       () => "",
@@ -397,10 +400,15 @@ async function rebaseOnto(
     const resolved =
       gitPath === "" ? "" : path.isAbsolute(gitPath) ? gitPath : path.resolve(worktree, gitPath);
     if (resolved !== "" && existsSync(resolved)) {
+      const unmerged = await git(
+        worktree,
+        ["diff", "--name-only", "--diff-filter=U"],
+        gitExec,
+      ).catch(() => "");
       await git(worktree, ["rebase", "--abort"], gitExec).catch(() => "");
-      return "conflict";
+      return { kind: "conflict", files: unmerged.split("\n").filter((file) => file !== "") };
     }
-    return "failed";
+    return { kind: "failed" };
   }
 }
 

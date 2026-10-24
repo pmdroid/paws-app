@@ -425,6 +425,33 @@ export function coalesceOutbox(
   });
 }
 
+export function attachSessionUpdates(db: Database, id: number, now = Date.now()): void {
+  immediate(db, () => {
+    const row = getOutbox(db, id);
+    if (row === null || row.status !== "pending" || row.orderingKey === null) return;
+    const sessions = db
+      .query<OutboxSqlRow, [string, number, number, number]>(
+        `SELECT * FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
+          AND op LIKE 'linear.session.%' AND status = 'pending' AND not_before <= ?
+          AND (locked_until IS NULL OR locked_until <= ?) ORDER BY id`,
+      )
+      .all(row.orderingKey, row.generation ?? 0, now, now)
+      .map(mapOutbox)
+      .filter(mergeableSession);
+    if (sessions.length === 0) return;
+    const updated = db.run(
+      `UPDATE outbox SET payload = json_set(payload, '$.session', json(?)) WHERE id = ?
+        AND status = 'pending' AND (locked_until IS NULL OR locked_until <= ?)`,
+      [JSON.stringify(mergeSessionPayloads(sessions)), id, now],
+    );
+    if (updated.changes !== 1) return;
+    db.run(
+      `UPDATE outbox SET status = 'dropped', error = ? WHERE id IN (SELECT value FROM json_each(?))`,
+      [`Sending with outbox ${id}.`, JSON.stringify(sessions.map((session) => session.id))],
+    );
+  });
+}
+
 const SESSION_FIELDS = new Set([
   "sessionId",
   "plan",
@@ -524,6 +551,13 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
         blocked ? "dropped" : "pending",
         blocked ? "Rejected by the persisted session fence." : null,
         (row.payload as { itemId?: string } | undefined)?.itemId ?? null,
+      );
+    if (inserted && !blocked && row.orderingKey && !row.op.startsWith("linear.session."))
+      db.run(
+        `UPDATE outbox SET not_before = 0 WHERE target = ? AND ordering_key = ? AND id <> ?
+          AND status = 'pending' AND attempts = 0 AND delivery_kind = 'critical'
+          AND op IN ('activity', 'linear.activity') AND not_before > ?`,
+        [row.target, row.orderingKey, inserted.id, now],
       );
     if (inserted && !blocked && row.target === "linear" && delivery === "progress") {
       db.run(

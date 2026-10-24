@@ -190,14 +190,14 @@ async function runWithFault(fault: {
       return { command: process.execPath, args: [fakeAgent, "", script], env: process.env };
     },
   });
-  const session = access.adapter.session;
+  const startCodeIssue = lifecycle.startCodeIssue;
   let remaining = fault.times;
-  access.adapter.session = async (id, options) => {
+  lifecycle.startCodeIssue = async (input, options) => {
     if (remaining > 0 && stateOf(db, "ENG-7") === "running") {
       remaining -= 1;
       throw fault.error();
     }
-    return session(id, options);
+    return startCodeIssue(input, options);
   };
   try {
     const event = parseAgentEvent(

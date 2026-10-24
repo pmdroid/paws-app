@@ -93,8 +93,10 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       error: null,
       engineUrl: null,
     });
-    expect(page.content).toContain(`Run ${first.id}`);
+    // A run link opens the issue page, which names the task only as ENG-7.
+    expect(page.content).toContain('<span class="lin-id">ENG-7</span> Runs list filters</h1>');
     expect(page.content).not.toContain("Run not found");
+    expect(page.content.replace(/<[^>]*>/g, " ")).not.toContain(first.id);
   } finally {
     db.close();
   }
@@ -146,6 +148,7 @@ test("a reply in the Linear session shows in the run's timeline with its author,
     if (!parsed.ok) return;
     const lines = parsed.snapshot.runs.find((entry) => entry.itemId === "ENG-8")!.activity;
     expect(lines.map((line) => [line.kind, line.text])).toEqual([
+      ["system", "Implementation started with Cursor."],
       ["thought", "Closeout needs your help."],
       ["prompt", "Pascal replied."],
       ["thought", "Running Closeout again."],

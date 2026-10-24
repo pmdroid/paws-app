@@ -177,19 +177,16 @@ describe("Linear code issue delegation", () => {
     expect(f.mutations).toEqual([]);
   });
 
-  test.each(["cancellation", "delegation"])(
-    "rechecks authoritative %s after loading workflow pages",
-    async (change) => {
-      const f = fixture();
-      f.beforeRead((count) => {
-        if (count !== 2) return;
-        if (change === "cancellation") f.issue.state.type = "canceled";
-        else f.issue.delegate = { id: "other-agent" };
-      });
-      expect((await f.lifecycle.startCodeIssue(input)).eligible).toBe(false);
-      expect(f.mutations).toEqual([]);
-    },
-  );
+  test("starts from the ownership it read first, without rereading before the mutation", async () => {
+    const f = fixture();
+    let reads = 0;
+    f.beforeRead(() => {
+      reads += 1;
+    });
+    expect((await f.lifecycle.startCodeIssue(input)).eligible).toBe(true);
+    expect(reads).toBe(1);
+    expect(f.mutations).toEqual([{ stateId: "implementation", delegateId: "paws-app" }]);
+  });
 
   test("checks mutation success and refuses missing started states", async () => {
     const f = fixture();
@@ -199,6 +196,31 @@ describe("Linear code issue delegation", () => {
     f.states[1] = [];
     await expect(f.lifecycle.startCodeIssue(input)).rejects.toThrow("no started");
     expect(f.mutations).toHaveLength(1);
+  });
+
+  test("a known issue for a verified actor and team starts with the mutation alone", async () => {
+    const f = fixture();
+    await f.lifecycle.startCodeIssue(input);
+    f.beforeRead(() => {
+      throw new Error("The known issue must not be reread");
+    });
+    f.readActor(async () => {
+      throw new Error("The verified actor must not be reread");
+    });
+    f.cursors.length = 0;
+    const known = {
+      id: "issue",
+      teamId: "team",
+      stateType: "unstarted",
+      assigneeId: "human-assignee",
+      delegateId: null,
+    };
+    expect((await f.lifecycle.startCodeIssue(input, { issue: known })).eligible).toBe(true);
+    expect(f.cursors).toEqual([]);
+    expect(f.mutations).toEqual([
+      { stateId: "implementation", delegateId: "paws-app" },
+      { stateId: "implementation", delegateId: "paws-app" },
+    ]);
   });
 
   test("honors cancellation before any provider request", async () => {
