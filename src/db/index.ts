@@ -93,6 +93,7 @@ export { journal, setJournalSink } from "./journal";
 export { assertLinearQueue } from "./legacy-tracker";
 export {
   advanceOutboxSession,
+  attachSessionUpdates,
   stopOutboxSession,
   isOutboxCurrent,
   claimOutboxHeads,
