@@ -1,7 +1,11 @@
+import type { Database } from "bun:sqlite";
+
 export type Migration = {
   id: string;
   sql: string;
   foreignKeys?: false;
+  /** Runs in the migration's transaction before `sql`. Throw to stop the migration. */
+  guard?: (db: Database) => void;
 };
 
 const HEX = "[0-9a-f]";
@@ -2536,4 +2540,102 @@ FROM project_approval_issue c
 WHERE c.approval_id IN (SELECT delegation_id FROM parent_delegation);
 `,
   },
+  {
+    id: "130_drop_project_start",
+    foreignKeys: false,
+    guard: requireFinishedProjectItems,
+    sql: `
+DROP TABLE item_blocker_policy;
+CREATE TABLE work_item_next (
+  id TEXT PRIMARY KEY,
+  delegation_id TEXT NOT NULL,
+  linear_issue_id TEXT NOT NULL,
+  linear_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'planning',
+    'queued',
+    'running',
+    'paused',
+    'awaiting_input',
+    'recovering',
+    'verifying',
+    'exhausted',
+    'failed',
+    'awaiting_signoff',
+    'merge_queue',
+    'manual',
+    'completed',
+    'merged',
+    'cancelled'
+  )),
+  branch_name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  task_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL,
+  checkpoint TEXT CHECK (checkpoint IS NULL OR json_valid(checkpoint)),
+  recovery_attempts INTEGER NOT NULL DEFAULT 0,
+  awake_ms INTEGER NOT NULL DEFAULT 0,
+  last_mono_ms INTEGER,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  max_turns INTEGER NOT NULL DEFAULT 80,
+  max_awake_ms INTEGER NOT NULL DEFAULT 2700000,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  session_key TEXT,
+  current_run_id TEXT,
+  brief TEXT CHECK (brief IS NULL OR json_valid(brief)),
+  owner_user_id TEXT REFERENCES workspace_user(id),
+  delegated_by TEXT,
+  resumed_at INTEGER,
+  accepted_head TEXT,
+  agent_ms INTEGER NOT NULL DEFAULT 0,
+  closeout_ms INTEGER NOT NULL DEFAULT 0,
+  waiting_ms INTEGER NOT NULL DEFAULT 0,
+  recheck_ms INTEGER NOT NULL DEFAULT 0,
+  linear_project_id TEXT,
+  linear_project_name TEXT
+) STRICT;
+INSERT INTO work_item_next (
+  id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version,
+  task_key, created_at, checkpoint, recovery_attempts, awake_ms, last_mono_ms, turn_count,
+  max_turns, max_awake_ms, cancel_requested, session_key, current_run_id, brief, owner_user_id,
+  delegated_by, resumed_at, accepted_head, agent_ms, closeout_ms, waiting_ms, recheck_ms,
+  linear_project_id, linear_project_name
+)
+SELECT
+  id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version,
+  task_key, created_at, checkpoint, recovery_attempts, awake_ms, last_mono_ms, turn_count,
+  max_turns, max_awake_ms, cancel_requested, session_key, current_run_id, brief, owner_user_id,
+  delegated_by, resumed_at, accepted_head, agent_ms, closeout_ms, waiting_ms, recheck_ms,
+  linear_project_id, linear_project_name
+FROM work_item;
+DROP TABLE work_item;
+ALTER TABLE work_item_next RENAME TO work_item;
+CREATE UNIQUE INDEX work_item_active_issue ON work_item(linear_issue_id) WHERE state NOT IN ('completed','merged','cancelled');
+CREATE INDEX work_item_delegation_position ON work_item (delegation_id, position);
+DROP TABLE project_approval_member;
+DROP TABLE project_approval_issue;
+DROP TABLE project_approval;
+`,
+  },
 ];
+
+/**
+ * 130 drops the Paws project start. An item still running under a project start
+ * would lose its approval, so the migration stops and names the item until a
+ * person finishes or cancels it.
+ */
+function requireFinishedProjectItems(db: Database): void {
+  const item = db
+    .query<{ id: string; identifier: string; state: string }, []>(
+      `SELECT id, linear_identifier AS identifier, state FROM work_item
+       WHERE project_approval_id IS NOT NULL AND state NOT IN ('completed','merged','cancelled')
+       ORDER BY created_at, id LIMIT 1`,
+    )
+    .get();
+  if (item)
+    throw new Error(
+      `Work item ${item.id} (${item.identifier}, ${item.state}) still belongs to a Paws project start. Finish or cancel it, then start Paws again.`,
+    );
+}

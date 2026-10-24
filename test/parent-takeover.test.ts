@@ -137,7 +137,7 @@ test("a sub-issue still waiting for its blockers refuses a session of its own", 
 test("the migration carries an active parent adoption over from project_approval", () => {
   const db = openDatabase(":memory:");
   try {
-    migrate(db);
+    migrate(db, { until: "129_parent_delegation" });
     db.run("DROP TABLE parent_delegation_issue");
     db.run("DROP TABLE parent_delegation");
     db.run("DELETE FROM schema_migration WHERE id='129_parent_delegation'");
@@ -178,7 +178,7 @@ test("the migration carries an active parent adoption over from project_approval
       `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,project_approval_id)
        VALUES('item-a','child-delegation','a','CH-1','First','running','paws/ch-1',0,0,'approval')`,
     );
-    migrate(db);
+    migrate(db, { until: "129_parent_delegation" });
     expect(db.query("SELECT * FROM parent_delegation").all()).toEqual([
       {
         delegation_id: "approval",

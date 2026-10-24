@@ -72,7 +72,7 @@ test("migration 063 copies a request, an effect and a policy onto the non-termin
     db.run(
       "INSERT INTO external_blocker_policy(workspace_id,epic_id,blocker_issue_id,policy,user_id,revision) VALUES('workspace','epic','blocker','{\"blockerLinearIssueId\":\"blocker\",\"outcome\":\"completion\"}','person',3)",
     );
-    migrate(db);
+    migrate(db, { until: "129_parent_delegation" });
     expect(
       db
         .query<{ itemId: string; workspaceId: string; token: string }, []>(
