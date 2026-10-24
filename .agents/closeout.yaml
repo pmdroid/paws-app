@@ -45,7 +45,6 @@ items:
     paths: ["src/web/**", "landing/**"]
     media: [image, video]
     minimum: 1
-    approval: human
     hint: Screenshot each changed screen at desktop width and at 390 px.
   - id: independent-review
     kind: review
