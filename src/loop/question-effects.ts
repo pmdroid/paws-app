@@ -5,9 +5,12 @@ import {
   applyLinearTurns,
   applyWorkItemEvent,
   enqueueJobOnce,
+  extendAwakeCap,
+  failWorkItem,
   getWorkItem,
 } from "../db";
 import { handoffNote, type AnswerEffects, type StoredQuestion } from "../questions";
+import { worktreeBranch } from "./sources";
 
 export function questionEffects(
   db: Database,
@@ -45,8 +48,26 @@ export function questionEffects(
       now: input.now,
     });
   };
+  /** Continue gives the resumed agent more awake time. Stop ends the task; the accepted work stays. */
+  const timeLimit = (question: StoredQuestion) => {
+    if (!/^\s*stop\b/i.test(question.answer ?? "")) {
+      extendAwakeCap(db, question.itemId);
+      resume(question);
+      return;
+    }
+    consumeTurn(question);
+    const item = applyWorkItemEvent(db, question.itemId, "answer_received");
+    failWorkItem(
+      db,
+      item,
+      "cap:time",
+      `Stopped at the time limit, as asked in Linear. The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+      input.now,
+    );
+  };
   return {
     "runner-wait": consumeTurn,
+    "time-limit": timeLimit,
     agent: resume,
     clarification: resume,
     repository: resume,
