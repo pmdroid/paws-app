@@ -11,6 +11,19 @@ export function recordLinearSessionEvent(
   if (!event.sessionId) return null;
   const raw: unknown = JSON.parse(event.payload);
   const payload = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return ensureLinearSession(db, {
+    sessionId: event.sessionId,
+    issueId: event.issueId,
+    organizationId: typeof payload.organizationId === "string" ? payload.organizationId : null,
+    appUserId: typeof payload.appUserId === "string" ? payload.appUserId : null,
+    creatorId: linearSessionCreatorId(event),
+    now,
+  });
+}
+
+export function linearSessionCreatorId(event: AcceptedLinearEvent): string | null {
+  const raw: unknown = JSON.parse(event.payload);
+  const payload = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const session =
     payload["agentSession"] && typeof payload["agentSession"] === "object"
       ? (payload["agentSession"] as Record<string, unknown>)
@@ -19,19 +32,11 @@ export function recordLinearSessionEvent(
     session["creator"] && typeof session["creator"] === "object"
       ? (session["creator"] as Record<string, unknown>)
       : {};
-  return ensureLinearSession(db, {
-    sessionId: event.sessionId,
-    issueId: event.issueId,
-    organizationId: typeof payload.organizationId === "string" ? payload.organizationId : null,
-    appUserId: typeof payload.appUserId === "string" ? payload.appUserId : null,
-    creatorId:
-      typeof session["creatorId"] === "string"
-        ? session["creatorId"]
-        : typeof creator["id"] === "string"
-          ? creator["id"]
-          : null,
-    now,
-  });
+  return typeof session["creatorId"] === "string"
+    ? session["creatorId"]
+    : typeof creator["id"] === "string"
+      ? creator["id"]
+      : null;
 }
 
 export function sessionTaskKey(db: Database, session: StoredLinearSession): string {

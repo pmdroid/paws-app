@@ -359,6 +359,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const followUp = async (event: AcceptedLinearEvent): Promise<void | boolean> => {
     if (orchestrator === null) throw new Error("loop is not attached");
     const accepted = await orchestrator.onLinearEvent(event);
+    const known = event.sessionId ? orchestrator.takeIntakeReads(event.sessionId) : undefined;
     if (accepted !== false && reconciler && event.sessionId) {
       const session = getLinearSession(db, event.sessionId);
       const linked = workItemForSession(db, event.sessionId);
@@ -373,6 +374,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             itemId: linked.id,
             workspaceId: workspace.id,
             signal: abort.signal,
+            known: event.action === "created" ? known : undefined,
           });
         orchestrator.reconcileExecution();
       }

@@ -22,6 +22,7 @@ export type EpicSnapshot = LinearSchedulingMetadata & {
   title: string;
   description: string | null;
   acceptanceCriteria?: string | null;
+  stateType?: string | null;
   subIssues: readonly LinearSubIssue[];
 };
 
