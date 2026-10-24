@@ -189,6 +189,7 @@ import {
   keepTaskMergeSettings,
   type TaskMergeSettings,
   delegatedLinearUserId,
+  resetAwakeTime,
 } from "../db";
 import {
   publishAccepted,
@@ -255,7 +256,9 @@ import {
 import {
   answerVisualReview,
   askForVisualReview,
+  carryVisualReview,
   dueVisualReview,
+  planVisualReviewCarry,
   postNote,
   remindVisualReview,
   visualReviewApprovals,
@@ -271,18 +274,18 @@ import {
   type VerificationOwner,
 } from "./merge-jobs";
 import {
-  MAX_REBASE_RETURNS,
   REBASE_CONFLICT_INSTRUCTION,
   advanceMerge,
   ciWaitVerification,
   parkMerge,
-  rebaseReturns,
+  rebaseBudgetFor,
   wakeMergesBehind,
   type MergePublication,
   type MergeStep,
   type MergeVerdict,
   type MergeWait,
   type OrderCapabilities,
+  type RebaseConflict,
 } from "../merge";
 import {
   createAcpActivityReporter,
@@ -1993,7 +1996,7 @@ export class Orchestrator {
   ): Promise<void> {
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state !== "running") return;
-    if (await this.visualReviewOutdated(current, worktree, head)) return;
+    if (await this.visualReviewOutdated(current, worktree, base, head)) return;
     if (await this.askVisualReview(current, worktree, base, head)) return;
     applyWorkItemEvent(this.db, item.id, "turn_ended");
     const verifying = getWorkItem(this.db, item.id);
@@ -2740,7 +2743,12 @@ export class Orchestrator {
       accepted: true,
       evidence: [
         summary,
-        visualReviewPullRequestNote(this.db, item, this.options.evidence?.publicUrl ?? null),
+        visualReviewPullRequestNote(
+          this.db,
+          item,
+          this.options.evidence?.publicUrl ?? null,
+          this.now(),
+        ),
         policy ? policyPullRequestCredit(policy) : "",
       ]
         .filter(Boolean)
@@ -3451,9 +3459,10 @@ export class Orchestrator {
         setCurrentRun(this.db, itemId, null);
         if (item.state === "failed" || item.state === "exhausted") {
           this.db.run(
-            "UPDATE work_item SET cancel_requested=0,awake_ms=0,last_mono_ms=NULL,turn_count=0,recovery_attempts=0 WHERE id=?",
+            "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
             [itemId],
           );
+          resetAwakeTime(this.db, itemId);
           applyWorkItemEvent(this.db, itemId, "requeue");
         } else if (
           [
@@ -3538,6 +3547,18 @@ export class Orchestrator {
 
   async interruptItem(itemId: string): Promise<void> {
     await this.joinChangedItems([itemId]);
+  }
+
+  /**
+   * Stops the item's live agent and its runner work, and nothing else. Its GitHub
+   * authorization and merge work stay, so accepted work keeps publishing and merging.
+   */
+  async stopAgent(itemId: string): Promise<void> {
+    // Like ask_team: an answer to the time-limit question does not enqueue the
+    // resume itself. The stopped run enqueues it when its operation finishes.
+    for (const [runId, live] of this.live) if (live.itemId === itemId) this.askedRuns.add(runId);
+    this.abortItem(itemId);
+    await this.options.remoteExecution?.cancelItem?.(itemId);
   }
 
   private async joinChangedItems(itemIds: readonly string[]): Promise<void> {
@@ -4121,20 +4142,24 @@ export class Orchestrator {
         "Prior ACP process cleanup could not be verified; user update remains pending",
       );
     // Linear's "Fix merge conflicts" on the open pull request is a rebase-conflict return.
-    const rebase =
+    const upstream =
       item.id === routed?.id &&
       this.hasOpenedPullRequest(item.id) &&
-      turns.some((turn) => isMergeConflictRequest(turn.body)) &&
-      rebaseReturns(this.db, item.id) < MAX_REBASE_RETURNS &&
-      (await this.fetchUpstreamMain(item));
+      turns.some((turn) => isMergeConflictRequest(turn.body))
+        ? await this.fetchUpstreamMain(item)
+        : null;
+    const conflict: RebaseConflict = { base: upstream, files: null };
+    const rebase =
+      upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
     immediate(this.db, () => {
       if (item!.cancelRequested || item!.state === "failed" || item!.state === "exhausted") {
         this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, awake_ms = 0, last_mono_ms = NULL, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
+          "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
           [item!.id],
         );
+        resetAwakeTime(this.db, item!.id);
         if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
       }
       if (item!.currentRunId) markRun(this.db, item!.currentRunId!, "ended", this.now());
@@ -4163,18 +4188,23 @@ export class Orchestrator {
           jobId,
           candidate: null,
           reason: "linear",
+          ...conflict,
+          recordedAt: this.now(),
         });
     });
     await this.flush();
   }
 
-  /** Fetch main into the item's worktree, as a merge pass does before a rebase-conflict return. */
-  private async fetchUpstreamMain(item: WorkItemRecord): Promise<boolean> {
+  /**
+   * Fetch main into the item's worktree, as a merge pass does before a
+   * rebase-conflict return. Returns main's commit, or null without a worktree.
+   */
+  private async fetchUpstreamMain(item: WorkItemRecord): Promise<string | null> {
     const repository = this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
-    if (!repository || !github || !existsSync(worktree)) return false;
-    await fetchUpstreamMain({
+    if (!repository || !github || !existsSync(worktree)) return null;
+    return fetchUpstreamMain({
       worktree,
       owner: repository.owner,
       repo: repository.repo,
@@ -4182,7 +4212,6 @@ export class Orchestrator {
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
-    return true;
   }
 
   private async forwardFollowUp(
@@ -4482,31 +4511,76 @@ export class Orchestrator {
       head,
       visualReviewApprovals(this.db, item.id, itemPathId(item)),
       requirements,
+      undefined,
+      base,
     );
-    const asked = immediate(this.db, () => {
+    let carriedOver = false;
+    // A check whose screens all carried an approval over passes; the next check may still be due.
+    for (let pass = 0; pass <= requirements.length; pass++) {
       const due = dueVisualReview(this.db, item.id, requirements, approvals);
-      if (due === null) return false;
-      const current = getWorkItem(this.db, item.id);
-      const runId = current?.currentRunId ?? null;
-      if (
-        !askForVisualReview(this.db, {
-          item,
-          runId,
-          sessionId,
-          checkId: due.requirement.id,
-          evidenceIds: due.evidenceIds,
-          base,
-          head,
-          publicUrl: evidence.publicUrl,
-          now: this.now(),
-        })
-      )
-        return false;
-      if (runId) releaseRunCapacity(this.db, runId, this.now());
-      return true;
-    });
-    if (asked) await this.flush();
-    return asked;
+      if (due === null) break;
+      const plan = await planVisualReviewCarry(
+        this.db,
+        item.id,
+        due.requirement.id,
+        due.evidenceIds,
+        evidence.root,
+      );
+      const outcome = immediate(this.db, () => {
+        const now = dueVisualReview(this.db, item.id, requirements, approvals);
+        if (now === null) return "none" as const;
+        if (now.requirement.id !== due.requirement.id) return "again" as const;
+        const current = getWorkItem(this.db, item.id);
+        if (current?.state !== "running" || current.cancelRequested) return "none" as const;
+        const carried = plan.carried.filter((entry) => now.evidenceIds.includes(entry.evidenceId));
+        if (carried.length === now.evidenceIds.length) {
+          const review = carryVisualReview(this.db, {
+            item: current,
+            sessionId,
+            checkId: now.requirement.id,
+            evidenceIds: now.evidenceIds,
+            carried,
+            head,
+            now: this.now(),
+          });
+          approvals.push(
+            ...visualReviewApprovals(this.db, item.id, itemPathId(item)).filter(
+              (approval) =>
+                approval.checkId === review.checkId &&
+                approval.commit === head &&
+                review.evidenceIds.every((id) => approval.evidenceIds.includes(id)),
+            ),
+          );
+          return "carried" as const;
+        }
+        const runId = current.currentRunId ?? null;
+        if (
+          !askForVisualReview(this.db, {
+            item,
+            runId,
+            sessionId,
+            checkId: now.requirement.id,
+            evidenceIds: now.evidenceIds,
+            carried,
+            approved: plan.approved,
+            base,
+            head,
+            publicUrl: evidence.publicUrl,
+            now: this.now(),
+          })
+        )
+          return "none" as const;
+        if (runId) releaseRunCapacity(this.db, runId, this.now());
+        return "asked" as const;
+      });
+      if (outcome === "carried") carriedOver = true;
+      else if (outcome === "asked") {
+        await this.flush();
+        return true;
+      } else if (outcome === "none") break;
+    }
+    if (carriedOver) await this.flush();
+    return false;
   }
 
   async requestVisualReviewChanges(input: {
@@ -4587,6 +4661,7 @@ export class Orchestrator {
   private async visualReviewOutdated(
     item: WorkItemRecord,
     worktree: string,
+    base: string,
     head: string,
   ): Promise<boolean> {
     const reviews = acceptedVisualReviews(this.db, item.id);
@@ -4595,7 +4670,9 @@ export class Orchestrator {
     if (requirements.length === 0) return false;
     const checks = new Set(requirements.map((entry) => entry.id));
     const approvals = visualReviewApprovals(this.db, item.id, itemPathId(item));
-    const valid = new Set(await approvalsAtHead(worktree, head, approvals, requirements));
+    const valid = new Set(
+      await approvalsAtHead(worktree, head, approvals, requirements, undefined, base),
+    );
     const outdated = reviews.filter(
       (review, index) => checks.has(review.checkId) && !valid.has(approvals[index]!),
     );

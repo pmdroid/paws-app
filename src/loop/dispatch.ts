@@ -193,7 +193,7 @@ async function postElicitation(
   const sessionId = readString(payload, "sessionId");
   const body =
     payload["evidence"] !== undefined && db
-      ? reviewBody(payload["evidence"], db)
+      ? reviewBody(payload["evidence"], payload["carried"], db)
       : readString(payload, "body");
   if (sessionId === null || body === null)
     throw new Error("elicitation is missing session or body");
@@ -218,20 +218,28 @@ async function postElicitation(
  * A visual review runs after the session's `linear.evidence` rows, so the files it shows have
  * their Linear uploads by now. A file without one is shown as its Paws link.
  */
-function reviewBody(value: unknown, db: Database): string {
+function reviewBody(value: unknown, carried: unknown, db: Database): string {
   if (!Array.isArray(value)) throw new Error("visual review evidence must be an array");
+  const file = (entry: unknown) => {
+    const id = isRecord(entry) ? readString(entry, "id") : null;
+    const link = isRecord(entry) ? readString(entry, "link") : null;
+    if (id === null || link === null) throw new Error("visual review evidence needs id and link");
+    const row = getEvidence(db, id);
+    if (row === null) throw new Error("Visual review has no evidence row");
+    return {
+      displayName: row.displayName,
+      link,
+      ...(row.assetUrl ? { assetUrl: row.assetUrl } : {}),
+    };
+  };
   return visualReviewBody(
     value.map((entry) => {
-      const id = isRecord(entry) ? readString(entry, "id") : null;
-      const link = isRecord(entry) ? readString(entry, "link") : null;
-      if (id === null || link === null) throw new Error("visual review evidence needs id and link");
-      const row = getEvidence(db, id);
-      if (row === null) throw new Error("Visual review has no evidence row");
-      return {
-        displayName: row.displayName,
-        link,
-        ...(row.assetUrl ? { assetUrl: row.assetUrl } : {}),
-      };
+      const approved = isRecord(entry) ? entry["approved"] : undefined;
+      return { ...file(entry), ...(approved === undefined ? {} : { approved: file(approved) }) };
+    }),
+    (Array.isArray(carried) ? carried : []).flatMap((id) => {
+      const row = typeof id === "string" ? getEvidence(db, id) : null;
+      return row ? [row.displayName] : [];
     }),
   );
 }

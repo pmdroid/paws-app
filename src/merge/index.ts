@@ -19,12 +19,21 @@ export {
   askMergeHelp,
   ciFixes,
   latestUserTurn,
+  rebaseBudgetFor,
   rebaseReturns,
   returnToAgent,
   type MergeReturnReason,
 } from "./returns";
 export {
   MAX_REBASE_RETURNS,
+  MAX_REBASE_RETURNS_PER_HOUR,
+  REBASE_RETURN_WINDOW_MS,
+  rebaseBudget,
+  type RebaseBudget,
+  type RebaseConflict,
+  type SpentRebaseReturn,
+} from "./budget";
+export {
   serialMergeStep,
   type MergeStep,
   type SerialMergeFacts,

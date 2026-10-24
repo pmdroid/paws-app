@@ -34,8 +34,9 @@ import {
   type MergePull,
   type OrderCapabilities,
 } from "./orders";
-import { ciFixes, rebaseReturns } from "./returns";
-import { MAX_REBASE_RETURNS, serialMergeStep, type MergeStep } from "./step";
+import type { RebaseConflict } from "./budget";
+import { ciFixes, rebaseBudgetFor } from "./returns";
+import { serialMergeStep, type MergeStep } from "./step";
 import { ciWaitVerification, wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
@@ -170,12 +171,16 @@ export async function advanceMerge(
     },
   });
   const ciFixLimit = caps.ciFixAttempts();
+  const conflict: RebaseConflict = {
+    base: merged.base ?? null,
+    files: merged.conflictFiles ?? null,
+  };
   const { step, leaveQueue } = serialMergeStep({
     result: merged,
     queued,
     closeoutAfterUpdate,
     closeoutFailed,
-    rebaseReturns: rebaseReturns(db, item.id),
+    rebaseBudget: rebaseBudgetFor(db, item.id, conflict, caps.now()),
     ciFixes: ciFixes(db, item.id),
     ciFixLimit,
   });
@@ -210,16 +215,24 @@ export async function advanceMerge(
   if (
     step.kind === "return" &&
     step.reason === "rebase-conflict" &&
-    sendBack(merge, "rebase-conflict", MAX_REBASE_RETURNS, REBASE_CONFLICT_INSTRUCTION, {
-      thought: () => REBASE_CONFLICT_THOUGHT,
-      record: (jobId) =>
-        recordRebaseReturn(db, {
-          itemId: item.id,
-          jobId,
-          candidate: merged.head ?? null,
-          reason: "merge",
-        }),
-    })
+    sendBack(
+      merge,
+      "rebase-conflict",
+      () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+      REBASE_CONFLICT_INSTRUCTION,
+      {
+        thought: () => REBASE_CONFLICT_THOUGHT,
+        record: (jobId) =>
+          recordRebaseReturn(db, {
+            itemId: item.id,
+            jobId,
+            candidate: merged.head ?? null,
+            reason: "merge",
+            ...conflict,
+            recordedAt: caps.now(),
+          }),
+      },
+    )
   )
     return { kind: "returned" };
   if (merged.outcome === "ci_failed") {
@@ -228,7 +241,7 @@ export async function advanceMerge(
       ciRound(merge, merged.head ?? "", merged.checks, next, ciFixLimit, fix);
     if (
       step.kind === "return" &&
-      sendBack(merge, "ci-failed", ciFixLimit, ciFixHandoff(checks), {
+      sendBack(merge, "ci-failed", (fixes) => fixes < ciFixLimit, ciFixHandoff(checks), {
         thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
         record: (_, attempt) => round("agent", attempt),
       })

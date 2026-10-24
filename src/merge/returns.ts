@@ -5,12 +5,14 @@ import {
   countCiFixes,
   countRebaseReturns,
   enqueueJobOnce,
+  listRebaseReturns,
   getWorkItem,
   immediate,
   saveCheckpoint,
   type WorkItemRecord,
 } from "../db";
 import { ask, findOpenQuestion } from "../questions";
+import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
 
 export type MergeReturnReason = "rebase-conflict" | "ci-failed";
 
@@ -29,6 +31,16 @@ export function rebaseReturns(db: Database, itemId: string): number {
   return countRebaseReturns(db, itemId, latestUserTurn(db, itemId));
 }
 
+/** Whether a conflict on this main may go back to the agent; see {@link rebaseBudget}. */
+export function rebaseBudgetFor(
+  db: Database,
+  itemId: string,
+  conflict: RebaseConflict,
+  now: number,
+): RebaseBudget {
+  return rebaseBudget(listRebaseReturns(db, itemId, latestUserTurn(db, itemId)), conflict, now);
+}
+
 export function ciFixes(db: Database, itemId: string): number {
   return countCiFixes(db, itemId, latestUserTurn(db, itemId));
 }
@@ -38,7 +50,8 @@ export function returnToAgent(
   input: {
     itemId: string;
     reason: MergeReturnReason;
-    limit: number;
+    /** Whether one more return is allowed, given the returns already spent. */
+    admit: (returns: number) => boolean;
     handoff: string;
     now: number;
     record: (jobId: number, attempt: number) => void;
@@ -50,7 +63,7 @@ export function returnToAgent(
     if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
     const returns =
       input.reason === "rebase-conflict" ? rebaseReturns(db, current.id) : ciFixes(db, current.id);
-    if (returns >= input.limit) return false;
+    if (!input.admit(returns)) return false;
     const round = `${latestUserTurn(db, current.id)}:${returns}`;
     const running = applyWorkItemEvent(db, current.id, "ejected");
     if (current.checkpoint)

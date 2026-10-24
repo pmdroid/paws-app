@@ -2349,4 +2349,37 @@ CREATE INDEX inbox_event_issue ON inbox_event(json_extract(payload,'$.data.id'),
   WHERE json_extract(payload,'$.type')='Issue';
 `,
   },
+  {
+    id: "115_rebase_return_conflict",
+    sql: `
+ALTER TABLE rebase_return ADD COLUMN base TEXT;
+ALTER TABLE rebase_return ADD COLUMN files TEXT CHECK(files IS NULL OR json_valid(files));
+ALTER TABLE rebase_return ADD COLUMN recorded_at INTEGER;
+UPDATE rebase_return SET recorded_at = (SELECT created_at FROM job WHERE job.id = rebase_return.job_id);
+`,
+  },
+  {
+    id: "116_visual_review_carried",
+    sql: `
+ALTER TABLE visual_review ADD COLUMN carried TEXT CHECK(carried IS NULL OR json_valid(carried));
+`,
+  },
+  {
+    id: "117_work_item_awake_breakdown",
+    sql: `
+ALTER TABLE work_item ADD COLUMN accepted_head TEXT;
+ALTER TABLE work_item ADD COLUMN agent_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN closeout_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN waiting_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN recheck_ms INTEGER NOT NULL DEFAULT 0;
+UPDATE work_item SET accepted_head = json_extract(checkpoint, '$.wipCommit')
+WHERE checkpoint IS NOT NULL AND json_valid(checkpoint)
+  AND json_extract(checkpoint, '$.wipCommit') IS NOT NULL
+  AND (state = 'merge_queue' OR json_extract(checkpoint, '$.phase') = 'merge_queue'
+    OR (state = 'verifying' AND EXISTS (
+      SELECT 1 FROM job WHERE job.queue = 'run.reverify' AND job.job_key LIKE 'reverify:%'
+        AND job.status IN ('pending', 'running')
+        AND json_extract(job.payload, '$.itemId') = work_item.id)));
+`,
+  },
 ];
