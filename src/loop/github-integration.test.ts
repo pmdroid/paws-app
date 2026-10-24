@@ -15,6 +15,7 @@ import {
   saveCheckpoint,
 } from "../db";
 import { LinearRateLimitError } from "../linear";
+import { getQuestion } from "../questions";
 import { FakeHostGitHubAuth } from "./fake-auth";
 import { GitHubAuthQuestions } from "./github-auth";
 
@@ -82,6 +83,29 @@ test("two members use one App without personal GitHub sign-in", async () => {
       expect(await f.auth.ensure(f.item(id), "initial", f.signal)).toBe(true);
     expect(listJobs(f.db)).toHaveLength(0);
     expect(f.db.query("SELECT * FROM linear_github_task_account").all()).toHaveLength(0);
+  } finally {
+    f.auth.close();
+    f.db.close();
+  }
+});
+
+test("an App hold is asked as the github-auth kind and posts no question of its own", async () => {
+  const f = fixture();
+  try {
+    expect(await f.auth.ensure(f.item("member"), "initial", f.signal)).toBe(false);
+    const hold = f.db
+      .query<{ question_id: string }, []>("SELECT question_id FROM github_integration_hold")
+      .get()!;
+    expect(getQuestion(f.db, hold.question_id)).toMatchObject({ kind: "github-auth" });
+    expect(
+      listOutbox(f.db)
+        .map((row) => row.idempotencyKey)
+        .sort(),
+    ).toEqual([
+      `github-integration:admin:${hold.question_id}:admin`,
+      `github-integration:admin:${hold.question_id}:owner`,
+      `github-integration:waiting:${hold.question_id}`,
+    ]);
   } finally {
     f.auth.close();
     f.db.close();
