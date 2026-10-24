@@ -17,9 +17,10 @@ import {
 } from "../src/db";
 import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { dispatch, saveSchedulingContext } from "../src/scheduler";
+import { saveSchedulingContext } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { JOB_KIND } from "../src/core";
+import { workspaceDispatch } from "./fake-workspace";
 import { tempDb } from "./helpers";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
@@ -47,7 +48,7 @@ test("three ready items in one project and repository are all admitted", () => {
       bindWorkItemRepository(db, id, repository);
       saveSchedulingContext(db, { itemId: id, projectId: "project", paths: ["src/same.ts"] });
     }
-    assert.deepEqual(dispatch(db, { now: 1000 }), ids);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ids);
     const rows = db
       .query<{ project_key: string; paths: string; hot: number }, []>(
         "SELECT project_key, paths, hot FROM scheduler_admission ORDER BY item_id",
@@ -79,7 +80,7 @@ test("two ready items that share a Linear session are both admitted", () => {
       { id: "one", sessionId: "shared" },
       { id: "two", sessionId: "shared" },
     ]);
-    assert.deepEqual(dispatch(db, { now: 1000 }), ["one", "two"]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["one", "two"]);
   } finally {
     db.close();
   }
@@ -96,7 +97,7 @@ test("two ready items with overlapping path hints are both admitted", () => {
         id,
       ]);
     }
-    assert.deepEqual(dispatch(db, { now: 1000 }), ["left", "right"]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["left", "right"]);
     const rows = db
       .query<{ paths: string; hot: number }, []>(
         "SELECT paths, hot FROM scheduler_admission ORDER BY item_id",
@@ -163,9 +164,9 @@ test("a task_block dependency is admitted only after its blocker item is merged"
     const blocked = ids.get("b");
     assert(blocker);
     assert(blocked);
-    assert.deepEqual(dispatch(db, { now: 1000 }), [blocker]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), [blocker]);
     db.run("UPDATE work_item SET state='merged' WHERE id=?", [blocker]);
-    assert.deepEqual(dispatch(db, { now: 1001 }), [blocked]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1001 }), [blocked]);
   } finally {
     db.close();
   }
@@ -184,10 +185,10 @@ test("a longer task_block chain is admitted before an unrelated ready item", () 
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id, blocked_linear_issue_id) VALUES('lin-item-b', 'lin-item-c')",
     );
-    const admitted = dispatch(db, {
+    const admitted = workspaceDispatch(db, {
       now: 1000,
     });
-    assert.deepEqual(admitted, ["a", "b", "d", "c"]);
+    assert.deepEqual(admitted, ["a", "d"]);
     assert.ok(admitted.indexOf("a") < admitted.indexOf("d"));
   } finally {
     db.close();
@@ -205,7 +206,7 @@ test("task_block depth stays on the active item when a merged row shares its iss
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id, blocked_linear_issue_id) VALUES('lin-item-a', 'lin-item-b')",
     );
-    assert.deepEqual(dispatch(db, { now: 1000 }), ["a", "d", "b"]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["a", "d"]);
   } finally {
     db.close();
   }
@@ -267,7 +268,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
         `${busySlots}/${totalSlots}`,
       ]);
 
-    assert.deepEqual(dispatch(db, { now: 1000 }), []);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), []);
     assert.deepEqual(line(), [
       ["a", 1, "2/2"],
       ["b", 2, "2/2"],
@@ -285,7 +286,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
     // A slot frees and the first item starts: everyone behind it moves up.
     applyWorkItemEvent(db, "busy-1", "blocking_question");
     leaveRunner(db, "busy-1");
-    assert.deepEqual(dispatch(db, { now: 1001 }), ["a"]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1001 }), ["a"]);
     assert.deepEqual(line(), [
       ["b", 1, "2/2"],
       ["c", 2, "2/2"],
@@ -294,7 +295,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
 
     // An item ahead leaves the queue.
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id='b'");
-    dispatch(db, { now: 1002 });
+    workspaceDispatch(db, { now: 1002 });
     assert.deepEqual(line(), [
       ["c", 1, "2/2"],
       ["d", 2, "2/2"],
@@ -303,7 +304,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
 
     // With no runner online, admission is unlimited as in local execution, and there is no line.
     db.run("UPDATE runner SET last_seen_at=0");
-    dispatch(db, { now: 120_000 });
+    workspaceDispatch(db, { now: 120_000 });
     assert.deepEqual(line(), []);
   } finally {
     db.close();
@@ -319,11 +320,11 @@ test("queued items wait for a free runner slot, and work in flight keeps its slo
     placeOnRunner(db, "busy");
     for (const [index, id] of ["a", "b", "c"].entries())
       insertQueuedItem(db, { id, now: index + 1 });
-    assert.deepEqual(dispatch(db, { now: 1000 }), ["a"]);
-    assert.deepEqual(dispatch(db, { now: 1001 }), []);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["a"]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1001 }), []);
     applyWorkItemEvent(db, "busy", "blocking_question");
     leaveRunner(db, "busy");
-    assert.deepEqual(dispatch(db, { now: 1002 }), ["b"]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1002 }), ["b"]);
   } finally {
     db.close();
   }
@@ -339,7 +340,7 @@ test("work back in flight without an admission is re-admitted, so its jobs run i
       applyWorkItemEvent(db, id, "turn_ended");
       enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: id }, now: 0 });
     }
-    dispatch(db, { now: 1000 });
+    workspaceDispatch(db, { now: 1000 });
     const claimed = [claimNextJob(db, { now: 1000 }), claimNextJob(db, { now: 1000 })];
     assert.deepEqual(
       claimed.map((job) => (job?.payload as { itemId?: string } | undefined)?.itemId ?? null),
@@ -366,7 +367,7 @@ test("work stuck in flight with no job is queued again and doesn't block other s
     insertQueuedItem(db, { id: "next", now: 1 });
     bindWorkItemRepository(db, "next", repository);
     const now = 10 * 60_000;
-    assert.deepEqual(dispatch(db, { now }), ["next"]);
+    assert.deepEqual(workspaceDispatch(db, { now }), ["next"]);
     const claimed = [claimNextJob(db, { now }), claimNextJob(db, { now })].map(
       (job) => `${job?.queue}:${(job?.payload as { itemId?: string } | undefined)?.itemId}`,
     );

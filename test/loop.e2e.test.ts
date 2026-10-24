@@ -79,6 +79,7 @@ import {
   stateOf,
   writeOk,
 } from "./e2e-harness";
+import { workspaceAdmission } from "./fake-workspace";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -119,6 +120,7 @@ test.each([false, true, "cap"] as const)(
     }) as typeof setInterval);
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -301,6 +303,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
   const release = path.join(layout.root, "release");
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -395,6 +398,7 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
   const prompts = new Map<string, string>();
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -562,6 +566,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
   });
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -785,6 +790,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
   };
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -910,6 +916,7 @@ test.each(["claude", "codex", "grok"])(
     };
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -1035,6 +1042,7 @@ test.each([false, true])(
     });
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -1100,7 +1108,14 @@ test("an unconfigured repository halts with an error and never completes the ses
   ]);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
-  const orchestrator = attachOrchestrator({ db, tracker, jobs, outbox, pawsRoot: "/unused" });
+  const orchestrator = attachOrchestrator({
+    db,
+    admission: workspaceAdmission(db),
+    tracker,
+    jobs,
+    outbox,
+    pawsRoot: "/unused",
+  });
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "failure"));
     await jobs.tick();
@@ -1152,6 +1167,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
   };
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -1213,6 +1229,7 @@ test("a failed implementer preparation names the implementer in its question", a
   };
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -1313,6 +1330,7 @@ for (const recovery of [
       const outbox = new OutboxDispatcher(db, systemClock);
       const orchestrator = attachOrchestrator({
         db,
+        admission: workspaceAdmission(db),
         jobs,
         outbox,
         pawsRoot: layout.pawsRoot,
@@ -1489,6 +1507,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
   };
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -1649,6 +1668,7 @@ for (const review of invalidReviews) {
     let launches = 0;
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -1902,6 +1922,7 @@ for (const sameModel of [true, false]) {
     let sequence = 0;
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -1985,6 +2006,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
     let sequence = 0;
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -2097,6 +2119,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
       const jobs = new JobLoop(db, systemClock);
       const orchestrator = attachOrchestrator({
         db,
+        admission: workspaceAdmission(db),
         jobs,
         outbox: new OutboxDispatcher(db, systemClock),
         pawsRoot: layout.pawsRoot,
@@ -2263,6 +2286,7 @@ test("the active task merges while a later task in its session also waits to mer
   let sequence = 0;
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -2359,6 +2383,7 @@ test.each(["pending", "merged"] as const)(
     const attach = () =>
       attachOrchestrator({
         db,
+        admission: workspaceAdmission(db),
         jobs,
         outbox,
         pawsRoot: layout.pawsRoot,
@@ -2543,6 +2568,7 @@ test("post_update posts one Linear thought and refuses a second update within a 
   let sequence = 0;
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -2633,6 +2659,7 @@ test.each([false, true])(
     let implementRuns = 0;
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -2885,6 +2912,7 @@ async function runGitHubQueue(
   let implementRuns = 0;
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -3051,7 +3079,7 @@ async function runCiFix(options: {
             updatedAt: "2026-01-01T00:00:00.000Z",
             endedAt: null,
             dismissedAt: null,
-            appUserId: "agent",
+            appUserId: "app",
             creatorId: "human",
             issue: {
               id: "ci-rounds",
@@ -3098,6 +3126,7 @@ async function runCiFix(options: {
   let reviewerLaunches = 0;
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -3243,6 +3272,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
   let sequence = 0;
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -3353,6 +3383,7 @@ test("an unreadable CI read retries the merge job and fails the task with the re
   ) => realSetTimeout(handler, ms === 10_000 ? 1 : ms)) as unknown as typeof setTimeout);
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -3455,6 +3486,7 @@ test.each([
     });
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -3585,6 +3617,7 @@ async function runRebaseConflict(
   let reviews = 0;
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
@@ -4049,6 +4082,7 @@ for (const race of ["token", "merge", "followup"] as const) {
     let sequence = 0;
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
@@ -4309,6 +4343,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     });
     return attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       tracker,

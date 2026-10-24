@@ -10,8 +10,8 @@ import {
   runnerSlotFree,
   syncWorkspaceMember,
 } from "../src/db";
-import { dispatch } from "../src/scheduler";
 import { tempDb } from "./helpers";
+import { workspaceDispatch } from "./fake-workspace";
 
 const NOW = 1_000;
 const READY = ["next-1", "next-2", "next-3", "next-4"];
@@ -73,11 +73,11 @@ function fixture() {
 test("work running without a runner placement leaves its slot free for the next task", () => {
   const { db, second } = fixture();
   try {
-    expect(dispatch(db, { now: NOW })).toEqual(["next-1", "next-2", "next-3"]);
-    expect(dispatch(db, { now: NOW + 1 })).toEqual([]);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["next-1", "next-2", "next-3"]);
+    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [NOW + 2, second]);
     db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
-    expect(dispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
+    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
   } finally {
     db.close();
   }
@@ -86,13 +86,13 @@ test("work running without a runner placement leaves its slot free for the next 
 test("a task between its run and Closeout keeps its runner slot until the run ends", () => {
   const { db, second } = fixture();
   try {
-    expect(dispatch(db, { now: NOW })).toHaveLength(3);
+    expect(workspaceDispatch(db, { now: NOW })).toHaveLength(3);
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [NOW + 2, second]);
-    expect(dispatch(db, { now: NOW + 2 })).toEqual([]);
+    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
     expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(false);
     db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
     expect(runnerSlotFree(db, ["goldbox"], NOW + 3)).toBe(true);
-    expect(dispatch(db, { now: NOW + 3 })).toEqual(["next-4"]);
+    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual(["next-4"]);
   } finally {
     db.close();
   }
@@ -105,7 +105,7 @@ test("a placement in progress holds a slot until its run reaches a runner", () =
       NOW + 60_000,
       stuck[0]!,
     ]);
-    expect(dispatch(db, { now: NOW })).toEqual(["next-1", "next-2"]);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["next-1", "next-2"]);
   } finally {
     db.close();
   }
@@ -114,7 +114,7 @@ test("a placement in progress holds a slot until its run reaches a runner", () =
 test("the queue line reports the slots the scheduler counts as busy", () => {
   const { db } = fixture();
   try {
-    const admitted = dispatch(db, { now: NOW });
+    const admitted = workspaceDispatch(db, { now: NOW });
     const position = getQueuePosition(db, "next-4");
     expect(position).toMatchObject({ busySlots: 2 + admitted.length, totalSlots: 5 });
     expect(queueLine(position!)).toBe("Queued, 1st in line. 5 of 5 runner slots are busy.");

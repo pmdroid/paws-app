@@ -12,6 +12,7 @@ import {
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 const created: AcceptedLinearEvent = {
   dedupeKey: "session:session:created",
@@ -74,7 +75,7 @@ function setup(epic: EpicSnapshot) {
         updatedAt: "2026-01-01T00:00:00.000Z",
         endedAt: null,
         dismissedAt: null,
-        appUserId: "agent",
+        appUserId: "app",
         creatorId: "human",
         issue: {
           id: epic.linearIssueId,
@@ -109,6 +110,7 @@ function setup(epic: EpicSnapshot) {
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: root,

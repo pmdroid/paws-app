@@ -1,3 +1,4 @@
+import { workspaceDispatch } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
@@ -11,7 +12,6 @@ import {
   migrations,
   openDatabase,
 } from "../src/db";
-import { dispatch } from "../src/scheduler";
 import { handleStatusRequest } from "../src/web";
 import { tempDb } from "./helpers";
 
@@ -152,7 +152,7 @@ test("the scheduler resolves a session item through session_key alone", () => {
   try {
     const item = insertQueuedItem(db, { id: "sched-item", sessionKey: "sched-session", now: 1 });
     ensureLinearSession(db, { sessionId: "sched-session", issueId: item.linearIssueId, now: 1 });
-    expect(dispatch(db, { now: 2 })).toEqual([item.id]);
+    expect(workspaceDispatch(db, { now: 2 })).toEqual([item.id]);
     expect(
       db
         .query<{ session_id: string | null }, []>("SELECT session_id FROM scheduler_admission")

@@ -1,3 +1,4 @@
+import { workspaceAdmission } from "./fake-workspace";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -193,6 +194,7 @@ function fixture(
   };
   const options = () => ({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     tracker,

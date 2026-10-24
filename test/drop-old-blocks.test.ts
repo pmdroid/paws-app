@@ -18,12 +18,14 @@ import { createItemReconciler, intakeDelegatedIssue, readyItems } from "../src/i
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 test("migration 059 drops the old block tables and task_block holds each dependent", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,
@@ -139,7 +141,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
     const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
-    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
+    db.run("INSERT OR IGNORE INTO workspace VALUES('workspace','org','Workspace',1000)");
     recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "client",

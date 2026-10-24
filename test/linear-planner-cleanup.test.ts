@@ -1,3 +1,4 @@
+import { workspaceAdmission } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -153,6 +154,7 @@ test.skipIf(process.platform !== "linux")(
     const jobs = new JobLoop(db, systemClock);
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox: new OutboxDispatcher(db, systemClock),
       home,
@@ -254,6 +256,7 @@ for (const operation of ["shutdown", "interrupt"] as const)
       const jobs = new JobLoop(db, systemClock);
       const orchestrator = attachOrchestrator({
         db,
+        admission: workspaceAdmission(db),
         jobs,
         outbox: new OutboxDispatcher(db, systemClock),
         home,
