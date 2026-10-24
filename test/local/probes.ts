@@ -37,8 +37,7 @@ import {
   PAWS_GITHUB_OAUTH_CLIENT_ID,
   type GitHubTokenStore,
 } from "../../src/auth";
-import { createCommentMode, createFakeCommentBoard } from "../../src/comments";
-import { CommandBus, FakeClock, JOB_KIND } from "../../src/core";
+import { FakeClock, JOB_KIND } from "../../src/core";
 import {
   applyWorkItemEvent,
   claimNextJob,
@@ -52,10 +51,7 @@ import {
   openDatabase,
   recoverOnStartup,
 } from "../../src/db";
-import { commentTracker, syncComments } from "../../src/index";
-import { createFakeTracker } from "../../src/linear";
 import { enqueueVerifiedMerge } from "../../src/loop";
-import { probeLinearQuestionRestart } from "./linear-question-restart";
 import { probeHostAcp } from "./host-acp";
 import { probePublicTls } from "./public-tls";
 import { probeRunnerPairing } from "./runner-pairing";
@@ -237,73 +233,9 @@ export async function probeBoundaries(
     { backend: brokenStore.backend, storeError, mode, dirMode, reloaded: saved !== null },
   );
   const clock = new FakeClock(1000);
-  const binding = { itemId: "item", linearIssueId: "issue", sessionId: "issue" };
-  const restart = await probeLinearQuestionRestart(join(root, "linear-question-restart"));
-  observe(
-    "threaded question reply survives owned process restart and ignores unrelated replies",
-    restart.question.status === "answered" &&
-      restart.question.answeredBy === "human-owner" &&
-      restart.jobs.filter((job) => job.queue === JOB_KIND.resume).length === 1 &&
-      restart.duplicates.length === 0 &&
-      restart.ignored.length === 0,
-    restart,
-  );
-  const personalBoard = createFakeCommentBoard({ clock, selfUserId: "personal-token-owner" });
-  const personal = createCommentMode({
-    board: personalBoard,
-    clock,
-    selfUserId: "personal-token-owner",
-  });
-  personal.bind(binding);
-  await personal.ask({ itemId: "item", title: "Proceed?", body: "Choose yes or no." });
-  clock.advance(1000);
-  personalBoard.post({
-    issueId: "issue",
-    parentId: personalBoard.comments[0]!.id,
-    userId: "personal-token-owner",
-    body: "yes",
-  });
-  const ownReply = await personal.sync("issue");
-  observe(
-    "Linear personal-token owner can answer their own question",
-    ownReply.resumed.length === 1,
-    { ownReply, phase: personal.phase("item") },
-  );
   const db = openDatabase(":memory:");
   migrate(db);
   try {
-    const issue = "issue-1";
-    const item = insertQueuedItem(db, {
-      id: "durable-item",
-      now: clock.now(),
-      sessionKey: issue,
-    });
-    beginImplementRun(db, item.id, clock.now());
-    const comments = createFakeCommentBoard({ clock, selfUserId: "local-user" });
-    const stopMode = createCommentMode({ board: comments, clock, selfUserId: "local-user" });
-    db.run("UPDATE work_item SET linear_issue_id = ?, linear_identifier = ? WHERE id = ?", [
-      issue,
-      "LOCAL-1",
-      item.id,
-    ]);
-    const tracker = commentTracker(db, createFakeTracker(), stopMode);
-    await tracker.postProgress({ sessionId: issue, kind: "thought", body: "Working" });
-    clock.advance(1000);
-    comments.post({ issueId: issue, body: "/paws stop", userId: "teammate" });
-    const commands = new CommandBus();
-    await syncComments(db, stopMode, {
-      bus: commands,
-      onLinearEvent: async () => {},
-    });
-    observe(
-      "Linear stop targets the durable work item",
-      getWorkItem(db, item.id)?.state === "cancelled",
-      {
-        durableId: item.id,
-        state: getWorkItem(db, item.id)?.state,
-        commentPhase: stopMode.phase(item.id),
-      },
-    );
     const checkpoint = {
       phase: "merge_queue" as const,
       baseSha: "a".repeat(40),

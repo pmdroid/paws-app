@@ -381,7 +381,6 @@ test("a merged item settles its delegation without a delegation summary", async 
     db,
     pawsRoot: tempHome(),
     tracker,
-    channel: "comments",
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
   });

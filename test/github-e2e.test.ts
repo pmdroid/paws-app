@@ -7,9 +7,8 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import type { FakeScript } from "../src/acp/testing/script";
-import { FakeClock, systemClock } from "../src/core";
+import { systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
-import { createCommentMode, createFakeCommentBoard } from "../src/comments";
 import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
@@ -18,9 +17,8 @@ import {
   type GitHubClient,
   type GitHubResponse,
 } from "../src/github";
-import { commentTracker, syncComments } from "../src/index";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+import { attachOrchestrator, itemPathId, type AgentLaunch } from "../src/loop";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -30,9 +28,6 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     await readFile(new URL("../examples/paws-demo/epic/epic.json", import.meta.url), "utf8"),
   ) as DemoSeed;
   const layout = await repoLayout();
-  const clock = new FakeClock(Date.now());
-  const comments = createFakeCommentBoard({ clock, selfUserId: "octocat" });
-  const mode = createCommentMode({ board: comments, clock, selfUserId: "octocat" });
   const linear = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -85,7 +80,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     outbox,
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    tracker: commentTracker(db, linear, mode),
+    tracker: linear,
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
     github: {
       appId: "",
@@ -95,7 +90,6 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
       tokenProvider: { mode: "oauth", tokenFor: async () => "synthetic-delivery-token" },
     },
     launch,
-    channel: "comments",
   });
   await orchestrator.onLinearEvent(created("parent"));
   let delivered = false;
@@ -104,22 +98,15 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
   const answerer = (async () => {
     for (;;) {
       if (stop) return;
-      const question = comments.comments.find((comment) =>
-        comment.body.includes("Include archived rows?"),
+      const question = linear.questions.find((asked) =>
+        asked.body.includes("Include archived rows?"),
       );
       if (question && !delivered) {
         delivered = true;
         whileAsking = ["DEMO-2", "DEMO-3", "DEMO-4"]
           .map((identifier) => stateOf(db, identifier) ?? "missing")
           .join("/");
-        clock.advance(6_000);
-        comments.post({
-          issueId: question.issueId,
-          parentId: question.id,
-          body: "yes",
-          userId: "octocat",
-        });
-        await syncComments(db, mode, orchestrator);
+        await orchestrator.onLinearEvent(reply(question.sessionId, "yes"));
       }
       await Bun.sleep(20);
     }
@@ -168,23 +155,15 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     expect(github.opened[0]?.body).toContain("Fix attempts: 1");
     expect(prompts.some((prompt) => prompt.includes("P1") && prompt.includes("failOn"))).toBe(true);
     const history = await readFile(
-      path.join(layout.pawsRoot, "runs", "DEMO-2", "closeout-history.jsonl"),
+      path.join(layout.pawsRoot, "runs", runDirectory(db, "DEMO-2"), "closeout-history.jsonl"),
       "utf8",
     );
     expect(history).toContain("failOn P1");
     expect(github.merged).toHaveLength(3);
-    const question = comments.comments.find((comment) => comment.body.includes("<!-- paws:q:"));
-    expect(question?.body).toContain("Include archived rows?");
-    expect(question?.userId).toBe("octocat");
-    const reply = comments.comments.find((comment) => comment.body === "yes");
-    expect(reply?.userId).toBe("octocat");
-    expect(reply?.issueId).toBe(question?.issueId);
-    expect(reply?.body).not.toContain("<!--");
-    expect(reply?.body.startsWith("Paws:")).toBe(false);
-    expect(comments.comments.some((comment) => comment.body.includes("Epic complete."))).toBe(
-      false,
+    expect(linear.questions.some((asked) => asked.body.includes("Include archived rows?"))).toBe(
+      true,
     );
-    expect(comments.comments.some((comment) => comment.body.includes("Picked up 3"))).toBe(true);
+    expect(linear.progress.some((update) => update.body.includes("Epic complete."))).toBe(false);
     expect(apiPaths.some((apiPath) => apiPath.endsWith("/access_tokens"))).toBe(false);
     expect(apiPaths.some((apiPath) => apiPath.includes("webhook"))).toBe(false);
     expect(github.minted).toHaveLength(0);
@@ -236,7 +215,7 @@ function demoScript(input: {
   prompt: string;
 }): FakeScript {
   if (input.purpose === "review") {
-    return reviewScript(reviewText(input.worktree, input.itemId.endsWith("-2")));
+    return reviewScript(reviewText(input.worktree, /^DEMO-2(-|$)/.test(input.itemId)));
   }
   if (input.purpose === "fix") {
     return {
@@ -255,7 +234,7 @@ function demoScript(input: {
       ],
     };
   }
-  if (input.itemId.endsWith("-4")) {
+  if (/^DEMO-4(-|$)/.test(input.itemId)) {
     if (input.prompt.includes("Handoff from the previous session.")) {
       return {
         steps: [
@@ -299,6 +278,30 @@ function demoScript(input: {
       { type: "end", stopReason: "end_turn" },
     ],
   };
+}
+
+function reply(sessionId: string, body: string): AcceptedLinearEvent {
+  return {
+    dedupeKey: `prompted:${sessionId}:${body}`,
+    deliveryId: null,
+    source: "webhook",
+    action: "prompted",
+    sessionId,
+    issueId: null,
+    activityId: "reply-1",
+    actorId: "octocat",
+    body,
+    signal: null,
+    updatedAtMs: Date.now(),
+    payload: "{}",
+  };
+}
+
+function runDirectory(db: Database, identifier: string): string {
+  const row = db
+    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .get(identifier)!;
+  return itemPathId(getWorkItem(db, row.id)!);
 }
 
 function created(issueId: string): AcceptedLinearEvent {
