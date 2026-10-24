@@ -65,7 +65,7 @@ export function miseVersionFromOutput(output: string): string | null {
   return parsed.success ? parsed.data : null;
 }
 
-/** Release version from an installed path such as `/opt/paws-runner/releases/1.2.3/bin/paws-runner`. */
+/** Release version from an installed path such as `/opt/paws-runner/releases/1.2.3/bin/bun`. */
 export function releaseVersionFromPath(path: string): string | null {
   const match = /\/releases\/([^/]+)\//.exec(path.endsWith("/") ? path : `${path}/`);
   const parsed = releaseVersion.safeParse(match?.[1]);
