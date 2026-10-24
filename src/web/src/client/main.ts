@@ -24,7 +24,7 @@ import {
 } from "./closeout";
 import { captureLogs, restoreLogs } from "./log-scroll";
 import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
-import { render, type RenderModel } from "./render";
+import { issueRowMatches, render, type RenderModel } from "./render";
 import {
   issueRedirect,
   matchRoute,
@@ -88,6 +88,8 @@ let shownSearch = router.state.location.search;
 
 const sourceDialog = createSourceDialog(applyChoice);
 let issueFilter: "all" | "active" | "needs" | "done" = "all";
+/** A Linear project id, `none` for issues without one, or empty for any project. */
+let issueProject = "";
 
 document.addEventListener("click", onClick);
 router.subscribe((state) => {
@@ -105,6 +107,11 @@ router.subscribe((state) => {
 });
 document.addEventListener("change", (event) => {
   const target = event.target;
+  if (target instanceof HTMLSelectElement && target.dataset.issueProjectFilter !== undefined) {
+    issueProject = target.value;
+    applyIssueFilter();
+    return;
+  }
   if (!(target instanceof HTMLSelectElement) || target.dataset.routePicker === undefined) return;
   const path = appPath(target.value);
   if (path !== null && ["issues", "runs"].includes(parseRoute(path).view))
@@ -666,9 +673,17 @@ function applyIssueFilter(): void {
   if (!root) return;
   const rows = [...root.querySelectorAll<HTMLElement>("[data-issue-state]")];
   if (!rows.length) return;
+  const picker = root.querySelector<HTMLSelectElement>("select[data-issue-project-filter]");
+  if (picker) {
+    if (![...picker.options].some((option) => option.value === issueProject)) issueProject = "";
+    picker.value = issueProject;
+  } else issueProject = "";
   let visible = 0;
   for (const row of rows) {
-    const show = issueFilter === "all" || row.dataset.issueState === issueFilter;
+    const show = issueRowMatches(
+      { state: row.dataset.issueState, project: row.dataset.issueProject },
+      { state: issueFilter, project: issueProject },
+    );
     row.hidden = !show;
     if (show) visible += 1;
   }
