@@ -386,6 +386,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         },
         commandGuard: guard,
         ...(options.closeoutPolicy ? { closeoutPolicy: options.closeoutPolicy } : {}),
+        ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
         allowCloseoutRun: options.readOnly !== true,
         signal: runAbort.signal,
         onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),

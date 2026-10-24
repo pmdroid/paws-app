@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 
 import { LockWaitTimeoutError, withFileLock } from "./lock";
 
@@ -23,7 +23,13 @@ export function runnerMiseDirectories(home: string): { dataDir: string; cacheDir
 }
 
 export type RuntimeInstallResult =
-  | { ok: true; durationMs: number; installed: InstallRuntime[] }
+  | {
+      ok: true;
+      durationMs: number;
+      installed: InstallRuntime[];
+      /** Each installed runtime's pinned bin dir, in `runtimes` order, from `mise where`. */
+      binPaths: string[];
+    }
   | { ok: false; durationMs: number; runtime: InstallRuntime; message: string };
 
 export interface InstallRuntimesOptions {
@@ -46,7 +52,8 @@ const OUTPUT_TAIL = 4_096;
  * `MISE_CONFIG_DIR`, no trusted config paths, and a ceiling at that directory. A `flock` on
  * the data dir serializes installs across tasks, and mise skips versions it already has, so a
  * version is installed once per runner and reused. Each runtime is its own `mise install` so a
- * failure names the runtime that broke.
+ * failure names the runtime that broke. After each install, `mise where` gives the version's
+ * install dir, and its `bin` goes in `binPaths` so tasks run pinned binaries instead of shims.
  */
 export async function installRuntimes(
   options: InstallRuntimesOptions,
@@ -54,7 +61,7 @@ export async function installRuntimes(
   const started = Date.now();
   const timeoutMs = options.timeoutMs ?? RUNTIME_INSTALL_TIMEOUT_MS;
   const first = options.runtimes[0];
-  if (!first) return { ok: true, durationMs: 0, installed: [] };
+  if (!first) return { ok: true, durationMs: 0, installed: [], binPaths: [] };
   const { dataDir, cacheDir } = runnerMiseDirectories(options.home);
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
@@ -107,14 +114,17 @@ async function installLocked(
     const installStarted = Date.now();
     const deadline = installStarted + context.timeoutMs;
     const installed: InstallRuntime[] = [];
-    for (const runtime of options.runtimes) {
-      options.signal?.throwIfAborted();
-      const outcome = await runMise(options.mise ?? RUNNER_MISE_PATH, ["install", label(runtime)], {
+    const binPaths: string[] = [];
+    const mise = (args: string[]) =>
+      runMise(options.mise ?? RUNNER_MISE_PATH, args, {
         env,
         cwd: scratch,
         timeoutMs: Math.max(0, deadline - Date.now()),
         signal: options.signal,
       });
+    for (const runtime of options.runtimes) {
+      options.signal?.throwIfAborted();
+      const outcome = await mise(["install", label(runtime)]);
       if (outcome.kind !== "ok")
         return {
           ok: false,
@@ -125,15 +135,33 @@ async function installLocked(
               ? `Paws stopped installing the runtime ${label(runtime)}: the install ran for more than ${duration(context.timeoutMs)}.`
               : `Paws could not install the runtime ${label(runtime)}: ${outcome.detail}`,
         };
+      const where = await mise(["where", label(runtime)]);
+      const dir = where.kind === "ok" ? where.stdout.trim() : "";
+      if (where.kind !== "ok" || !isAbsolute(dir) || dir.includes("\n") || dir.includes(delimiter))
+        return {
+          ok: false,
+          durationMs: Date.now() - context.started,
+          runtime,
+          message:
+            where.kind === "timeout"
+              ? `Paws stopped installing the runtime ${label(runtime)}: the install ran for more than ${duration(context.timeoutMs)}.`
+              : `Paws could not find the installed runtime ${label(runtime)}: ${
+                  where.kind === "failed" ? where.detail : "mise where printed no usable path."
+                }`,
+        };
       installed.push(runtime);
+      binPaths.push(join(dir, "bin"));
     }
-    return { ok: true, durationMs: Date.now() - context.started, installed };
+    return { ok: true, durationMs: Date.now() - context.started, installed, binPaths };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
 
-type MiseOutcome = { kind: "ok" } | { kind: "timeout" } | { kind: "failed"; detail: string };
+type MiseOutcome =
+  | { kind: "ok"; stdout: string }
+  | { kind: "timeout" }
+  | { kind: "failed"; detail: string };
 
 function runMise(
   command: string,
@@ -142,6 +170,7 @@ function runMise(
 ): Promise<MiseOutcome> {
   return new Promise((resolve, reject) => {
     let output = "";
+    let stdout = "";
     let timedOut = false;
     let settled = false;
     const child = spawn(command, args, {
@@ -153,7 +182,10 @@ function runMise(
     const collect = (chunk: Buffer) => {
       output = (output + chunk.toString("utf8")).slice(-OUTPUT_TAIL);
     };
-    child.stdout.on("data", collect);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout = (stdout + chunk.toString("utf8")).slice(-OUTPUT_TAIL);
+      collect(chunk);
+    });
     child.stderr.on("data", collect);
     const killGroup = () => {
       try {
@@ -180,7 +212,7 @@ function runMise(
     );
     child.once("close", (code, signal) => {
       if (timedOut) return finish({ kind: "timeout" });
-      if (code === 0) return finish({ kind: "ok" });
+      if (code === 0) return finish({ kind: "ok", stdout });
       const last = lastLine(output);
       finish({
         kind: "failed",
@@ -209,4 +241,13 @@ function duration(ms: number): string {
   if (ms >= 60_000 && ms % 60_000 === 0) return `${ms / 60_000} minutes`;
   if (ms >= 1_000 && ms % 1_000 === 0) return `${ms / 1_000} seconds`;
   return `${ms} ms`;
+}
+
+/**
+ * `path` with `binPaths` in front, so a runtime the task asked for wins over the system one.
+ * With no bin paths, `path` comes back unchanged.
+ */
+export function prependRuntimePath(binPaths: readonly string[], path: string | undefined): string {
+  if (!binPaths.length) return path ?? "";
+  return [...binPaths, ...(path ? [path] : [])].join(delimiter);
 }

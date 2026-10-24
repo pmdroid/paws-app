@@ -56,7 +56,7 @@ import {
   type RunnerSpool,
 } from "../runner-execution";
 import { readRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
-import { installRuntimes } from "../runner-mise";
+import { installRuntimes, prependRuntimePath, runnerMiseDirectories } from "../runner-mise";
 import {
   checkDeveloperLogin,
   claudeLimits,
@@ -498,18 +498,25 @@ export async function executeRunnerCommand(
         writeFileSync(join(worktree, file.path), file.bytes, { flag: "wx", mode: 0o600 });
       }
     }
-    const installFailure = await installCommandRuntimes(command, job.executionId, options, emit);
+    const installed = await installCommandRuntimes(command, job.executionId, options, emit);
+    const installFailure = installed.failure;
     let reviewText = "";
     let agentLimits: AgentLimit[] = [];
     let tokens = 0;
     let eventFailure: Error | undefined;
+    const mise = runnerMiseDirectories(options.home);
     const agentEnv = minimalAgentEnv({
       PATH: "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,
       HOME: options.home,
       CODEX_HOME: join(options.home, ".codex"),
       CLAUDE_CONFIG_DIR: join(options.home, ".claude"),
+      MISE_DATA_DIR: mise.dataDir,
+      MISE_CACHE_DIR: mise.cacheDir,
     });
+    // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
+    if (installed.binPaths.length)
+      agentEnv.PATH = prependRuntimePath(installed.binPaths, agentEnv.PATH);
     const prompt =
       repository || task || command.type === "helper"
         ? (options.inputs?.prompt ?? command.prompt)
@@ -530,6 +537,7 @@ export async function executeRunnerCommand(
         : {}),
       ...(command.type === "run" && command.hooks?.length ? { workspaceHooks: command.hooks } : {}),
       env: agentEnv,
+      ...(installed.binPaths.length ? { runtimeBinPaths: installed.binPaths } : {}),
       checkpointEnv: env,
       commitPolicy: command.type === "run" ? command.commitPolicy : undefined,
       ...(command.type === "run" && command.repository.mainSha
@@ -909,7 +917,8 @@ export async function executeRunnerCommand(
 
 /**
  * Install the command's runtimes with mise before the agent starts. Returns the one line
- * that fails the task when an install fails or runs past its cap, and nothing otherwise.
+ * that fails the task when an install fails or runs past its cap, and otherwise each
+ * runtime's pinned bin dir for the agent's and Closeout's `PATH`.
  * The install time goes to the runner's log and, as a notice, to the issue page.
  */
 async function installCommandRuntimes(
@@ -917,12 +926,12 @@ async function installCommandRuntimes(
   executionId: string,
   options: RunnerWorkerOptions,
   emit: (event: RunnerWorkerEvent) => void,
-): Promise<string | undefined> {
+): Promise<{ failure?: string; binPaths: string[] }> {
   const runtimes =
     command.type === "run" || command.type === "review" || command.type === "task"
       ? (command.runtimes ?? [])
       : [];
-  if (!runtimes.length) return undefined;
+  if (!runtimes.length) return { binPaths: [] };
   const result = await installRuntimes({
     runtimes,
     home: options.home,
@@ -977,14 +986,14 @@ async function installCommandRuntimes(
       }),
     );
   }
-  if (!result.ok) return result.message.slice(0, 500);
+  if (!result.ok) return { failure: result.message.slice(0, 500), binPaths: [] };
   const text = `Installed runtimes ${labels.join(", ")} in ${(result.durationMs / 1000).toFixed(1)} s.`;
   emit({
     type: "progress",
     text: text.length > 500 ? `${text.slice(0, 499)}…` : text,
     notice: true,
   });
-  return undefined;
+  return { binPaths: result.binPaths };
 }
 
 export async function runRunnerWorker(options: {

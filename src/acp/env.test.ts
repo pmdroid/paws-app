@@ -53,6 +53,9 @@ const injection = Object.fromEntries(
   [
     "NODE_OPTIONS",
     "NODE_PATH",
+    "MISE_CONFIG_DIR",
+    "MISE_TRUSTED_CONFIG_PATHS",
+    "MISE_ENV",
     "BUN_OPTIONS",
     "BUN_ENV_FILE",
     "LD_PRELOAD",
@@ -115,6 +118,8 @@ const benign = {
   ALL_PROXY: "socks5h://127.0.0.1:1080",
   NO_PROXY: "localhost,127.0.0.1,.example.test",
   NODE_EXTRA_CA_CERTS: "/tmp/synthetic-ca.pem",
+  MISE_DATA_DIR: "/tmp/synthetic-mise-data",
+  MISE_CACHE_DIR: "/tmp/synthetic-mise-cache",
   SystemRoot: "C:\\Windows",
   ComSpec: "C:\\Windows\\System32\\cmd.exe",
   PATHEXT: ".COM;.EXE;.BAT;.CMD",
