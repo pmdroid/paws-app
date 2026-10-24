@@ -16,10 +16,13 @@ export {
 } from "./git";
 export {
   GLOBAL_POLICY_CODE,
+  loadOriginMainRootFiles,
   loadPolicy,
   NO_CLOSEOUT_POLICY,
+  ROOT_FILE_MAX_BYTES,
   type LoadPolicyInput,
   type PolicyLoadOutcome,
+  type RootFilesLoad,
 } from "./load";
 export { anyPathMatches, pathsMatch } from "./paths";
 export { PUBLIC_POLICY_PATH } from "./resolve";

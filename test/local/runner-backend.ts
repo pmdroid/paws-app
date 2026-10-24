@@ -576,6 +576,53 @@ export async function probeRunnerBackend(
         continued.tooLong === null,
       continued,
     );
+    const runtimeCommands: Record<string, unknown> = {};
+    const runtimeLines: string[] = [];
+    for (const version of ["0.1.26", "0.1.25"]) {
+      db.run(
+        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+        [runnerId, version, Date.now()],
+      );
+      const record = item();
+      const stop = new AbortController();
+      const sent = backend.forItem(record.id)(
+        input(record, {
+          signal: stop.signal,
+          runtimes: async () => ({
+            runtimes: [
+              { tool: "node", version: "22" },
+              { tool: "aqua:cli/cli", version: "2.40.0" },
+            ],
+            notices: ["Paws refused the mise tool `cargo:ripgrep` in mise.toml."],
+          }),
+          onEvent: (event) => {
+            if (event.type === "progress") runtimeLines.push(`${version} ${event.text.trim()}`);
+          },
+        }),
+      );
+      void sent.catch(() => undefined);
+      let command = await next();
+      while (command.type !== "run" || command.itemId !== record.id) command = await next();
+      stop.abort();
+      await sent.catch(() => undefined);
+      runtimeCommands[version] = command.runtimes ?? null;
+    }
+    while (work.commands(runnerId).length) await next();
+    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    observe(
+      "a run carries the repository's runtime list to a runner that accepts it and posts its notices",
+      JSON.stringify(runtimeCommands["0.1.26"]) ===
+        JSON.stringify([
+          { tool: "node", version: "22" },
+          { tool: "aqua:cli/cli", version: "2.40.0" },
+        ]) &&
+        runtimeCommands["0.1.25"] === null &&
+        runtimeLines.includes("0.1.26 Paws refused the mise tool `cargo:ripgrep` in mise.toml.") &&
+        runtimeLines.some(
+          (line) => line.startsWith("0.1.25 ") && line.includes("needs runner 0.1.26 or later"),
+        ),
+      { runtimeCommands, runtimeLines },
+    );
     await git(["-C", source, "reset", "--hard", base]);
     const detached = item();
     const shutdown = new AbortController();

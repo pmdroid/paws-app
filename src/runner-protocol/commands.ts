@@ -107,6 +107,22 @@ export const RunnerHookSchema = z
   })
   .refine((hook) => hook.matcher === null || hook.event === "before_tool");
 
+/**
+ * A runtime from the task repository's mise config on origin/main, installed by the runner
+ * before the agent starts. Only mise core tools and the `aqua:` backend are carried.
+ */
+export const RunnerRuntimeSchema = z.strictObject({
+  tool: z
+    .string()
+    .max(256)
+    .regex(
+      /^(?:node|python|go|java|ruby|rust|bun|deno|aqua:[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,3})$/,
+    ),
+  version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/),
+});
+
+export const RunnerRuntimesSchema = z.array(RunnerRuntimeSchema).max(32);
+
 const common = {
   id,
   runnerId: id,
@@ -125,6 +141,7 @@ const work = {
   prompt: z.string().min(1).max(65_536),
   inputFiles: RunnerInputFilesSchema.optional(),
   promptContext: RunnerPromptContextSchema.optional(),
+  runtimes: RunnerRuntimesSchema.optional(),
 };
 
 export const RunnerCommandSchema = z
@@ -156,6 +173,7 @@ export const RunnerCommandSchema = z
       prompt: work.prompt,
       inputFiles: work.inputFiles,
       promptContext: work.promptContext,
+      runtimes: work.runtimes,
     }),
     z.strictObject({
       ...common,
@@ -218,4 +236,5 @@ export type RunnerCommand = z.infer<typeof RunnerCommandSchema>;
 export type RunnerRepository = z.infer<typeof RunnerRepositorySchema>;
 export type RunnerProfile = z.infer<typeof RunnerProfileSchema>;
 export type RunnerHook = z.infer<typeof RunnerHookSchema>;
+export type RunnerRuntime = z.infer<typeof RunnerRuntimeSchema>;
 export type SignedRunnerCommand = z.infer<typeof SignedRunnerCommandSchema>;
