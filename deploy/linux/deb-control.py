@@ -45,7 +45,12 @@ def configure():
         manifest, artifact, fingerprint = installer.release.verify_release(arguments, pathlib.Path(temporary))
         if not RESTART.exists():
             installer.write_atomic(RESTART, json.dumps(active_services()).encode(), 0o600)
+        # The agents install beside the current ones first; a failure stops here, naming the agent,
+        # with the installed release and agents unchanged.
+        installer.prerequisites()
+        agents = installer.prepare_agents(artifact)
         installed = installer.install(manifest, artifact, fingerprint, reinstall=True)
+        installed["agents"] = installer.finish_agents(agents)
     restore()
     print(json.dumps(installed))
 

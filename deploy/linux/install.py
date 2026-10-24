@@ -8,6 +8,8 @@ import pwd
 import grp
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 
 
@@ -16,6 +18,7 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 BASE = pathlib.Path("/opt/paws-runner")
 STATE = pathlib.Path("/var/lib/paws-runner-install")
+DEFAULT_REGISTRY = "https://registry.npmjs.org/"
 
 
 def sync_directory(path):
@@ -232,7 +235,8 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             raise ValueError("Unsafe installation lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         accepted = admitted_release(manifest, fingerprint, reinstall)
-        pointers = {"bun": "../current/bin/bun", "mise": "../current/bin/mise", "paws-runner": "../current/bin/paws-runner", "claude": "../current/node_modules/.bin/claude", "codex": "../current/node_modules/.bin/codex"}
+        # The provider launchers (claude, codex, ...) are written by activate_agents, not linked to the release.
+        pointers = {"bun": "../current/bin/bun", "mise": "../current/bin/mise", "paws-runner": "../current/bin/paws-runner"}
         for name, target in pointers.items():
             pointer = BASE / "bin" / name
             if pointer.is_symlink():
@@ -337,14 +341,286 @@ def install(manifest, artifact, fingerprint, reinstall=False):
         os.close(lock)
 
 
+class AgentInstallError(ValueError):
+    def __init__(self, agent, version, detail):
+        super().__init__(f"Coding agent {agent} {version} was not installed: {detail}")
+        self.agent = agent
+
+
+def read_member(artifact, members, name, limit):
+    member = members[name]
+    if member.size > limit:
+        raise ValueError("Release member exceeds size limit")
+    with artifact.open("rb") as incoming:
+        incoming.seek(member.offset_data)
+        content = incoming.read(member.size)
+    if len(content) != member.size:
+        raise ValueError("Truncated verified artifact")
+    return content
+
+
+def lock_agents():
+    root_directory(STATE, 0o700)
+    lock = os.open(STATE / "agents.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(lock)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o7777 != 0o600:
+        os.close(lock)
+        raise ValueError("Unsafe agent installation lock")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    return lock
+
+
+def installed_package_path(relative):
+    """node_modules path of a package root -> its bun.lock key: a/node_modules/@b/c -> a/@b/c."""
+    return "/".join(release.package_names(relative.split("/")))
+
+
+def package_root(parts):
+    """True for node_modules-relative parts naming a package folder: a, @s/a, a/node_modules/b."""
+    if parts[-1] in ("node_modules", ".bin") or parts[-1].startswith("@"):
+        return False
+    if len(parts) >= 2 and parts[-2].startswith("@"):
+        return len(parts) == 2 or parts[-3] == "node_modules"
+    return len(parts) == 1 or parts[-2] == "node_modules"
+
+
+def check_agent_tree(agent, entry, root):
+    """The staged install holds exactly the pinned packages, nothing links out, and every launcher target is the expected kind."""
+    pinned = {item["path"]: item for item in entry["packages"]}
+    modules = root / "node_modules"
+    for current, directories, files in os.walk(root, followlinks=False):
+        current = pathlib.Path(current)
+        for name in [*directories, *files]:
+            path = current / name
+            if path.is_symlink():
+                target = (path.parent / os.readlink(path)).resolve(strict=False)
+                if not target.is_relative_to(root.resolve()):
+                    raise AgentInstallError(agent, entry["version"], f"{path.relative_to(root)} links outside the agent folder")
+            elif not (path.is_dir() or path.is_file()):
+                raise AgentInstallError(agent, entry["version"], f"{path.relative_to(root)} is not a regular file")
+        if current.is_relative_to(modules) and current != modules and package_root(current.relative_to(modules).parts):
+            key = installed_package_path(current.relative_to(modules).as_posix())
+            item = pinned.get(key)
+            try:
+                version = json.loads(release.read_regular(current / "package.json", 16_777_216)).get("version")
+            except (OSError, ValueError, AttributeError):
+                version = None
+            if item is None or version != item["version"]:
+                raise AgentInstallError(agent, entry["version"], f"{key} is not a pinned package")
+    for name, (owner, target, script) in release.PROVIDER_EXECUTABLES.items():
+        if owner != agent:
+            continue
+        path = root / target
+        if path.is_symlink() or not path.is_file():
+            raise AgentInstallError(agent, entry["version"], f"{target} is missing")
+        first = release.read_regular(path, 536_870_912).split(b"\n", 1)[0]
+        node = first.startswith(b"#!") and b"node" in first
+        if node != script or not script and not path.stat().st_mode & 0o111:
+            raise AgentInstallError(agent, entry["version"], f"{target} is not the expected {'node script' if script else 'executable'}")
+    for target in release.AGENT_NATIVE[agent]:
+        path = root / target
+        if path.is_symlink() or not path.is_file() or not path.stat().st_mode & 0o111:
+            raise AgentInstallError(agent, entry["version"], f"{target} is missing or not executable")
+
+
+def trim_agent_tree(agent, root):
+    """Remove what no runner session uses: Codex's voice host and the musl builds a glibc host never loads."""
+    for target in release.AGENT_DROPPED[agent]:
+        shutil.rmtree(root / target, ignore_errors=True)
+    modules = root / "node_modules"
+    for current, directories, _ in os.walk(modules, followlinks=False):
+        for name in list(directories):
+            path = pathlib.Path(current) / name
+            # Only whole packages: Codex keeps its own native build under vendor/<triple>-linux-musl.
+            if name.endswith("-musl") and not path.is_symlink() and package_root(path.relative_to(modules).parts):
+                shutil.rmtree(pathlib.Path(current) / name)
+                directories.remove(name)
+    for link in (modules / ".bin").glob("*") if (modules / ".bin").is_dir() else ():
+        if link.is_symlink() and not link.exists():
+            link.unlink()
+
+
+def normalize_modes(root):
+    for current, directories, files in os.walk(root, followlinks=False):
+        os.chmod(current, 0o755)
+        for name in files:
+            path = pathlib.Path(current) / name
+            if not path.is_symlink():
+                os.chmod(path, 0o755 if path.stat().st_mode & 0o111 else 0o644)
+    for current, _, _ in os.walk(root, topdown=False, followlinks=False):
+        sync_directory(current)
+
+
+def install_agent_version(agent, entry, bun, base=BASE, registry=DEFAULT_REGISTRY):
+    """Install one agent version into base/agents/<agent>/<version>. An installed version is never changed."""
+    version = entry["version"]
+    folder = base / "agents" / agent
+    root_directory(folder)
+    destination = folder / version
+    if destination.is_symlink() or destination.exists() and not destination.is_dir():
+        raise AgentInstallError(agent, version, "the version folder is not a directory")
+    if destination.is_dir():
+        return destination
+    # Callers hold the agent lock, so a staging folder left here is from an install that was killed.
+    for stale in [*folder.glob(".install-*"), *folder.glob(".home-*")]:
+        if stale.is_dir() and not stale.is_symlink():
+            shutil.rmtree(stale)
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=f".install-{version}-", dir=folder))
+    home = pathlib.Path(tempfile.mkdtemp(prefix=".home-", dir=folder))
+    try:
+        (staging / "package.json").write_text(json.dumps(release.agent_package_json(agent, version)))
+        (staging / "bun.lock").write_text(json.dumps(entry["lockfile"], indent=2) + "\n")
+        completed = subprocess.run(
+            [str(bun), "install", "--frozen-lockfile", "--ignore-scripts", "--production", "--linker=hoisted", "--backend=copyfile", "--no-progress"],
+            cwd=staging,
+            env={**release.COMMAND_ENV, "HOME": str(home), "BUN_INSTALL_CACHE_DIR": str(home / "cache"), "BUN_CONFIG_REGISTRY": registry},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=1800,
+        )
+        if completed.returncode != 0:
+            detail = " ".join(completed.stderr.decode(errors="replace").splitlines()[-6:])[:600] or f"bun install exited {completed.returncode}"
+            raise AgentInstallError(agent, version, detail)
+        check_agent_tree(agent, entry, staging)
+        trim_agent_tree(agent, staging)
+        normalize_modes(staging)
+        os.rename(staging, destination)
+        sync_directory(folder)
+        return destination
+    except subprocess.TimeoutExpired as error:
+        raise AgentInstallError(agent, version, "bun install timed out") from error
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def install_agents(manifest, bun, base=BASE, registry=DEFAULT_REGISTRY):
+    """Install every pinned agent version beside the ones already there. Nothing switches until all succeed."""
+    for agent in sorted(manifest["agents"]):
+        install_agent_version(agent, manifest["agents"][agent], bun, base, registry)
+    return manifest
+
+
+def held(path):
+    """True while a launcher's shared lock on the version folder is open."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(descriptor)
+
+
+def switch_current(folder, version):
+    """Point folder/current at version once no session holds the version it points at now."""
+    current = folder / "current"
+    if current.exists() and not current.is_symlink():
+        raise ValueError(f"Unsafe agent pointer: {current}")
+    if current.is_symlink():
+        previous = os.readlink(current)
+        if previous == version:
+            return "installed"
+        if "/" in previous or previous in ("", ".", ".."):
+            raise ValueError(f"Unsafe agent pointer: {current}")
+        old = folder / previous
+        try:
+            descriptor = os.open(old, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            descriptor = None
+        try:
+            if descriptor is not None:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return "waiting"
+            replace_link(current, version)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    else:
+        replace_link(current, version)
+    return "installed"
+
+
+def replace_link(path, target):
+    pending = path.with_name(".current-pending")
+    pending.unlink(missing_ok=True)
+    pending.symlink_to(target)
+    os.replace(pending, path)
+    sync_directory(path.parent)
+
+
+def activate_agents(manifest, base=BASE):
+    """Write the provider launchers and move each agent's current pointer to its pinned version."""
+    statuses = {}
+    for name in sorted(release.PROVIDER_EXECUTABLES):
+        write_atomic(base / "bin" / name, release.agent_launcher(name, str(base)), 0o755)
+    for agent, entry in sorted(manifest["agents"].items()):
+        folder = base / "agents" / agent
+        if not (folder / entry["version"]).is_dir():
+            raise AgentInstallError(agent, entry["version"], "the version folder is missing")
+        statuses[agent] = {"version": entry["version"], "status": switch_current(folder, entry["version"])}
+    return statuses
+
+
+def prepare_agents(artifact, base=BASE, registry=DEFAULT_REGISTRY):
+    """Install the release's pinned agents with the release's own Bun, before the release is put in place."""
+    members = release.inspect_archive(artifact)
+    manifest = release.parse_agent_manifest(read_member(artifact, members, "deploy/linux/agents.json", release.AGENT_MANIFEST_LIMIT))
+    lock = lock_agents()
+    try:
+        with tempfile.TemporaryDirectory(prefix="agents-bun-", dir=STATE) as temporary:
+            bun = pathlib.Path(temporary) / "bun"
+            with bun.open("xb") as stream:
+                stream.write(read_member(artifact, members, "bin/bun", 536_870_912))
+            bun.chmod(0o700)
+            if release.command([str(bun), "--version"]).decode().strip() != release.BUN_VERSION:
+                raise ValueError("Packaged Bun does not match the pinned runtime")
+            return install_agents(manifest, bun, base, registry)
+    finally:
+        os.close(lock)
+
+
+def finish_agents(manifest, base=BASE):
+    lock = lock_agents()
+    try:
+        return activate_agents(manifest, base)
+    finally:
+        os.close(lock)
+
+
+def agents_from_current(base=BASE):
+    """Install and activate the agents pinned by the installed release, for example after a waiting switch."""
+    prerequisites()
+    manifest = release.parse_agent_manifest(release.read_regular(base / "current/deploy/linux/agents.json", release.AGENT_MANIFEST_LIMIT))
+    lock = lock_agents()
+    try:
+        install_agents(manifest, base / "bin/bun", base)
+        return activate_agents(manifest, base)
+    finally:
+        os.close(lock)
+
+
 def main():
+    if sys.argv[1:] == ["agents"]:
+        print(json.dumps({"agents": agents_from_current()}))
+        return
     parser = argparse.ArgumentParser()
     for name in ("manifest", "signature", "artifact", "release-key"):
         parser.add_argument("--" + name, required=True)
     arguments = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="paws-release-") as temporary:
         manifest, artifact, fingerprint = release.verify_release(arguments, pathlib.Path(temporary))
-        print(json.dumps(install(manifest, artifact, fingerprint)))
+        prerequisites()
+        agents = prepare_agents(artifact)
+        installed = install(manifest, artifact, fingerprint)
+        installed["agents"] = finish_agents(agents)
+        print(json.dumps(installed))
 
 
 if __name__ == "__main__":
