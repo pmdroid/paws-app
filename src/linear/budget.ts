@@ -165,7 +165,7 @@ export function createLinearLedger(
     now?: () => number;
     random?: () => number;
     log?: (line: string) => void;
-    countItem?: (itemId: string) => void;
+    countItem?: (itemId: string, caller: string) => void;
   } = {},
 ): LinearLedger {
   const now = options.now ?? Date.now;
@@ -252,7 +252,7 @@ export function createLinearLedger(
     },
     observe(caller, seen, item, itemId, operation) {
       record(caller, { requests: 1, complexity: seen.complexity ?? 0 }, item);
-      if (itemId !== undefined) options.countItem?.(itemId);
+      if (itemId !== undefined) options.countItem?.(itemId, caller);
       const { endpoint, ...limits } = seen;
       if (endpoint !== undefined) {
         endpoints.set(endpoint.name, endpoint);

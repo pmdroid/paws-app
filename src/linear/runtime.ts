@@ -77,7 +77,7 @@ export function openLinear(options: {
   progressReporter?: (event: AcceptedLinearEvent) => TrackerAdapter["postProgress"];
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
   submitCommand?: (command: LinearCommand) => void;
-  countItemRequest?: (itemId: string) => void;
+  countItemRequest?: (itemId: string, caller: string) => void;
   fetch?: FetchLike;
   spawn?: SpawnFn;
 }): OpenLinear {
