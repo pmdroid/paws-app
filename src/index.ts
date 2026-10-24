@@ -73,6 +73,7 @@ import {
   submitCommand,
   type WorkItemRecord,
   runnerHasCapacity,
+  applyLinearIssueProject,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import {
@@ -112,6 +113,7 @@ import {
   readStoredToken,
   parseLinearAdministration,
   parseLinearIssueClosed,
+  parseLinearIssueProjectChange,
   parseLinearUndelegation,
   parseLinearUserChange,
   cacheLinearMemberships,
@@ -411,6 +413,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       }
       const issueEvent = acceptedIssueChange(event);
       if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
+      const projectChange = parseLinearIssueProjectChange(event);
+      if (projectChange) applyLinearIssueProject(db, projectChange.issueId, projectChange.project);
       const undelegation = parseLinearUndelegation(event, runtime.linearViewerId);
       if (undelegation)
         await stopUndelegatedIssue(db, undelegation, {
