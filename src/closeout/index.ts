@@ -3,8 +3,10 @@ export {
   approvalsAtHead,
   reviewRequirements,
   trustedPolicyFiles,
+  trustedRootFiles,
   visualReviewRequirements,
 } from "../closeout-spec";
+export type { RootFilesLoad } from "../closeout-spec";
 export { createFakeCloseoutGate } from "./fake";
 export type { FakeCloseoutGate } from "./fake";
 export { awaitsVisualReview, createCloseoutGate } from "./gate";
