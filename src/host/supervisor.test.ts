@@ -18,9 +18,11 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
+  markCloseoutAccepted,
   migrate,
   openDatabase,
   prepareShutdown,
+  recordTurn,
 } from "../db";
 import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
@@ -277,7 +279,7 @@ describe("laptop sleep and wake", () => {
       expect(getWorkItem(db, "eng-9")?.state).toBe("failed");
       expect(activities(db).at(-1)?.payload).toMatchObject({
         kind: "error",
-        body: "Run hit the awake time cap (180 min).",
+        body: "Run hit the awake time cap (180 min). Counted: agent turns 45 min, Closeout 2 h 15 min.",
       });
     } finally {
       host.stop();
@@ -346,4 +348,67 @@ describe("laptop sleep and wake", () => {
     expect(getWorkItem(db, "eng-9")?.state).toBe("recovering");
     host.tick();
   });
+});
+
+test("the supervisor stops the live agent when the time limit asks instead of failing", () => {
+  const clock = new FakeClock(1_000_000);
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const stopped: string[] = [];
+  const host = new HostSupervisor(
+    db,
+    clock,
+    new WakeDetector(clock),
+    () => true,
+    250,
+    undefined,
+    undefined,
+    (itemId) => stopped.push(itemId),
+  );
+  insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
+  const { run } = beginImplementRun(db, "eng-9", clock.now(), checkpoint);
+  markCloseoutAccepted(db, "eng-9", "wip");
+  host.tick();
+  clock.advance(500);
+  host.tick();
+  expect(stopped).toEqual([]);
+  clock.advance(600);
+  host.tick();
+  expect(stopped).toEqual(["eng-9"]);
+  expect(getWorkItem(db, "eng-9")?.state).toBe("awaiting_input");
+  expect(getRun(db, run.id)?.status).toBe("ended");
+  host.tick();
+  expect(stopped).toEqual(["eng-9"]);
+});
+
+test("a turn recorded past the time limit leaves the ask and the stop to the supervisor", () => {
+  const clock = new FakeClock(1_000_000);
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const stopped: string[] = [];
+  const host = new HostSupervisor(
+    db,
+    clock,
+    new WakeDetector(clock),
+    () => true,
+    250,
+    undefined,
+    undefined,
+    (itemId) => stopped.push(itemId),
+  );
+  insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
+  const { run } = beginImplementRun(db, "eng-9", clock.now(), checkpoint);
+  markCloseoutAccepted(db, "eng-9", "wip");
+  db.run("UPDATE work_item SET awake_ms = 2000 WHERE id = 'eng-9'");
+
+  const turn = recordTurn(db, "eng-9", clock.now());
+  expect(turn).toMatchObject({ capped: false, item: { state: "running" } });
+  expect(turn.stopAgent).toBeUndefined();
+  expect(getRun(db, run.id)?.status).toBe("active");
+  expect(stopped).toEqual([]);
+
+  host.tick();
+  expect(stopped).toEqual(["eng-9"]);
+  expect(getWorkItem(db, "eng-9")?.state).toBe("awaiting_input");
+  expect(getRun(db, run.id)?.status).toBe("ended");
 });
