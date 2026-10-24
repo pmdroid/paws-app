@@ -16,6 +16,8 @@ spec = importlib.util.spec_from_file_location("paws_release", pathlib.Path(__fil
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 SAFE_NAME = re.compile(r"[A-Za-z0-9@._+-]+")
+# Source directories only the control plane runs. The dashboard is built and served there, never on a runner.
+CONTROL_PLANE_ONLY = frozenset({("web",)})
 
 
 def read_package_file(path, limit):
@@ -186,7 +188,7 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules, p
                     name
                     for name in directories
                     if (not name.startswith(".") or name == ".bin")
-                    and (directory == "src" or SAFE_NAME.fullmatch(name) and not left_out((current / name).relative_to(base).parts, development))
+                    and (directory == "src" and (current / name).relative_to(base).parts not in CONTROL_PLANE_ONLY or directory == "node_modules" and SAFE_NAME.fullmatch(name) and not left_out((current / name).relative_to(base).parts, development))
                 )
                 for name in directories:
                     if (current / name).is_symlink():
@@ -226,6 +228,8 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules, p
         for name in sorted(release.ASSETS):
             add_content(archive, f"deploy/linux/{name}", read_package_file(source / "deploy/linux" / name, 1_048_576))
     members = release.inspect_archive(artifact)
+    if any(name.startswith("app/src/web/") for name in members):
+        raise ValueError("The dashboard must not ship in the runner package")
     if not launcher_targets <= members.keys():
         raise ValueError("Adapter launcher target is missing from the release")
     with artifact.open("rb") as completed:
