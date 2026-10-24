@@ -106,7 +106,7 @@ print(json.dumps({"version": release.MISE_VERSION, "digests": release.MISE_SHA25
   });
 });
 
-test("a packed runner artifact has no musl package and no devDependency, and keeps every required file", async () => {
+test("a packed runner artifact has no musl package, no devDependency and no dashboard, and keeps every required file", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-pack-"));
   const deploy = new URL("../deploy/linux/", import.meta.url).pathname;
   const script = `
@@ -139,6 +139,8 @@ for name in development:
 for name in (f"@anthropic-ai/claude-agent-sdk-linux-{arch}-musl", f"@oxlint/binding-linux-{arch}-musl", f"lightningcss-linux-{arch}-musl", "left-pad/node_modules/helper-linux-musl"):
     write(modules / name / "index.js")
 write(modules / "left-pad/index.js")
+for name in ("src/web/index.ts", "src/web/src/client/main.ts", "src/web/dist/index.html", "src/webhooks/keep.ts"):
+    write(source / name)
 write(root / "bun")
 installs = []
 def install(bun, checkout, workspace):
@@ -181,6 +183,10 @@ print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "dev
     expect(result.development).toContain("typescript");
     for (const name of result.required) expect(result.members).toContain(name);
     expect(result.members).toContain("app/node_modules/left-pad/index.js");
+    expect(result.members.filter((name) => name.startsWith("app/src/web/"))).toEqual([]);
+    expect(result.members).toContain("app/src/webhooks/keep.ts");
+    const dashboard = ["@base-ui/react", "lucide-react", "react", "react-dom", "video.js"];
+    for (const name of dashboard) expect(result.development).toContain(name);
     const packages = result.members
       .filter((name) => name.startsWith("app/node_modules/"))
       .flatMap((name) =>
