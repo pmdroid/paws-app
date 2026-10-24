@@ -25,6 +25,7 @@ jobs:
             platform: linux-arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    environment: runner-release
     steps:
       - uses: actions/checkout@v4
         with:
