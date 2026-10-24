@@ -208,7 +208,7 @@ test.skipIf(process.platform !== "linux")(
     try {
       writeFileSync(
         script,
-        `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000);`,
+        `const fs=require("node:fs"); process.on("SIGTERM", () => {}); fs.writeFileSync(process.argv[2], ""); setTimeout(() => fs.writeFileSync(process.argv[2], String(process.pid)), 100); setInterval(() => {}, 1000);`,
       );
       const pending = f.guarded
         .gitExec(
@@ -219,6 +219,7 @@ test.skipIf(process.platform !== "linux")(
       for (let i = 0; i < 200 && !existsSync(marker); i++) await Bun.sleep(5);
       expect(existsSync(marker)).toBe(true);
       pid = Number(readFileSync(marker, "utf8"));
+      expect(pid).toBeGreaterThan(0);
       f.controller.abort();
       expect(await pending).toMatchObject({ name: "AbortError" });
       const running = () => {
