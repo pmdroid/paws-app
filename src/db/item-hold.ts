@@ -1,6 +1,13 @@
 import type { Database } from "bun:sqlite";
 
-export type ItemHoldReason = "blocked" | "project" | "reconciling" | "snapshot" | "cap" | "slot";
+export type ItemHoldReason =
+  | "blocked"
+  | "project"
+  | "reconciling"
+  | "snapshot"
+  | "cap"
+  | "slot"
+  | "workspace";
 export type ItemHold = { itemId: string; reason: ItemHoldReason; blockers: string[] };
 export type ItemHoldChange = { itemId: string; held: ItemHold | null };
 
