@@ -51,10 +51,10 @@ const START = `query IssueStart($id: String!, $actor: String!, $hasActor: Boolea
   issue(id: $id) {
     id identifier title description url priority
     team { id states(first: 50, filter: { type: { eq: "started" } }) { nodes { id position } ${PAGE} } }
-    project { id name content } assignee { id } delegate { id } state { type }
+    project { id name content lead { id } } assignee { id } delegate { id } state { type }
     labels(first: 100) { nodes { name } }
     children(first: 50) {
-      nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id } assignee { id } priority }
+      nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id lead { id } } assignee { id } priority }
       ${PAGE}
     }
     relations(first: 50) { ${RELATION} ${PAGE} }

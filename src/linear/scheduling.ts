@@ -18,6 +18,13 @@ export function schedulingMetadata(issue: Record<string, unknown>): LinearSchedu
     if (!id?.trim()) throw new Error(`Linear returned invalid scheduling ${field}`);
     result[target] = id;
   }
+  const project = issue["project"];
+  if (isRecord(project) && "lead" in project) {
+    const lead = project["lead"];
+    const id = isRecord(lead) ? readString(lead, "id") : null;
+    if (lead !== null && !id?.trim()) throw new Error("Linear returned an invalid project lead");
+    result.projectLeadId = id;
+  } else if (project === null) result.projectLeadId = null;
   if ("priority" in issue) {
     const priority = issue["priority"];
     if (typeof priority !== "number" || !Number.isInteger(priority) || priority < 0 || priority > 4)
