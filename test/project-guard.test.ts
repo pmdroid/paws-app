@@ -79,7 +79,7 @@ try {
       actorDenied: true,
       ordinary: true,
       items: 2,
-      mergeFailure: "Linear dependencies are still running",
+      mergeFailure: "Linear execution changes are still being reconciled",
       composedHold: false,
     });
   } finally {

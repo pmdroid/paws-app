@@ -1,6 +1,4 @@
 import type { Database } from "bun:sqlite";
-import { isBlockerSatisfied, type WorkItemState } from "../core";
-import { getTaskMode } from "../db";
 import {
   canAdvanceItem,
   delegationSnapshotsComplete,
@@ -32,7 +30,7 @@ export function itemReadiness(
       `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN work_item i ON i.session_key=s.session_id WHERE i.delegation_id=? LIMIT 1`,
     )
     .get(item.delegationId)?.id;
-  if (workspaceId === undefined) return legacyBlocksClear(db, item) ? null : "blocked";
+  if (workspaceId === undefined) return "blocked";
   const target = { itemId, workspaceId };
   try {
     const ready =
@@ -43,31 +41,4 @@ export function itemReadiness(
   } catch {
     return "blocked";
   }
-}
-
-function legacyBlocksClear(db: Database, item: { delegationId: string; issueId: string }) {
-  const blockers = db
-    .query<{ id: string }, [string, string]>(
-      `SELECT blocker_linear_issue_id AS id FROM task_block
-       WHERE blocked_linear_issue_id = ?
-       AND EXISTS (
-         SELECT 1 FROM work_item
-         WHERE delegation_id = ? AND linear_issue_id = task_block.blocker_linear_issue_id
-       )`,
-    )
-    .all(item.issueId, item.delegationId);
-  const latest = new Map(
-    db
-      .query<{ id: string; issueId: string; state: WorkItemState }, [string]>(
-        `SELECT i.id,i.linear_issue_id AS issueId,i.state FROM work_item i WHERE i.delegation_id=?
-         AND NOT EXISTS(SELECT 1 FROM work_item_specification s WHERE s.item_id=i.id AND s.present=0)
-         ORDER BY i.position,i.rowid`,
-      )
-      .all(item.delegationId)
-      .map((entry) => [entry.issueId, entry]),
-  );
-  return blockers.every(({ id }) => {
-    const blocker = latest.get(id);
-    return !!blocker && isBlockerSatisfied({ ...blocker, mode: getTaskMode(db, blocker.id) });
-  });
 }

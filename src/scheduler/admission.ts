@@ -13,16 +13,11 @@ export type ItemAdmission = ReturnType<typeof createAdmission>;
 export function createAdmission(input: {
   db: Database;
   authority?: (delegationId: string) => boolean;
-  managed?: boolean;
   workspace?: boolean;
 }) {
   const { db } = input;
   const delegationHeld = (delegationId: string): HeldReason | null =>
-    input.authority?.(delegationId) === false
-      ? "project"
-      : input.managed
-        ? delegationReadiness(db, delegationId)
-        : null;
+    input.authority?.(delegationId) === false ? "project" : delegationReadiness(db, delegationId);
   const decide = (itemId: string, phase: ReadinessPhase): Admission => {
     const delegationId = db
       .query<{ id: string }, [string]>("SELECT delegation_id AS id FROM work_item WHERE id=?")
