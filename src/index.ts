@@ -1222,15 +1222,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           attached.reconcileExecution();
         });
         registerScheduler(created.jobs, () => attached.reconcileExecution());
-        created.jobs.register("execution.reconcile", () => {
-          attached.reconcileExecution();
-        });
-        enqueueJobOnce(db, {
-          queue: "execution.reconcile",
-          jobKey: "execution.reconcile",
-          recurringEveryMs: 30_000,
-          now: Date.now(),
-        });
         created.jobs.register("linear.epics.reconcile", async () => {
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
           attached.reconcileExecution();
