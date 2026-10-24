@@ -33,7 +33,12 @@ export {
 } from "./store";
 export {
   acceptedVisualReviews,
+  approvalTime,
+  carriedInFull,
   getVisualReview,
+  humanApprovedScreens,
+  recordCarriedVisualReview,
+  visualReviewCarriedNote,
   lastVisualReviewFeedback,
   markVisualReviewStale,
   openVisualReview,
@@ -57,6 +62,7 @@ export {
   VISUAL_REVIEW_REMINDER_MS,
   type StoredVisualReview,
   type VisualReviewAnswer,
+  type VisualReviewCarry,
   type VisualReviewKind,
   type VisualReviewOutcome,
 } from "./visual-review";

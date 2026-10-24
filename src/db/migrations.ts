@@ -2358,4 +2358,10 @@ ALTER TABLE rebase_return ADD COLUMN recorded_at INTEGER;
 UPDATE rebase_return SET recorded_at = (SELECT created_at FROM job WHERE job.id = rebase_return.job_id);
 `,
   },
+  {
+    id: "116_visual_review_carried",
+    sql: `
+ALTER TABLE visual_review ADD COLUMN carried TEXT CHECK(carried IS NULL OR json_valid(carried));
+`,
+  },
 ];
