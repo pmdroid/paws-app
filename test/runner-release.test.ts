@@ -53,3 +53,55 @@ test("the actual release-version step accepts numeric release tags and rejects e
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the runner package pins mise for both architectures and a wrong checksum fails the build", async () => {
+  const release = new URL("../deploy/linux/release.py", import.meta.url).pathname;
+  const script = `
+import importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("release", sys.argv[1])
+release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release)
+class Response(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *_): return False
+requested = []
+def opener(url, timeout):
+    requested.append(url)
+    return Response(b"tampered mise")
+rejected = {}
+for name in ("linux-x64", "linux-arm64"):
+    try:
+        release.download_mise(name, opener)
+        rejected[name] = None
+    except ValueError as error:
+        rejected[name] = str(error)
+print(json.dumps({"version": release.MISE_VERSION, "digests": release.MISE_SHA256, "required": "bin/mise" in release.REQUIRED, "requested": requested, "rejected": rejected}))
+`;
+  const child = Bun.spawn(["python3", "-I", "-B", "-c", script, release], {
+    env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  expect(stderr).toBe("");
+  expect(code).toBe(0);
+  const result = JSON.parse(stdout);
+  expect(result.version).toMatch(/^\d{4}\.\d{1,2}\.\d{1,4}$/);
+  expect(Object.keys(result.digests).sort()).toEqual(["linux-arm64", "linux-x64"]);
+  for (const digest of Object.values(result.digests)) expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  expect(result.required).toBe(true);
+  expect(result.requested).toEqual(
+    ["linux-x64", "linux-arm64"].map(
+      (name) =>
+        `https://github.com/jdx/mise/releases/download/v${result.version}/mise-v${result.version}-${name}`,
+    ),
+  );
+  expect(result.rejected).toEqual({
+    "linux-x64": `mise ${result.version} linux-x64 checksum mismatch`,
+    "linux-arm64": `mise ${result.version} linux-arm64 checksum mismatch`,
+  });
+});
