@@ -126,7 +126,9 @@ export async function probeRunnerDaemon(
       }
       if (path === "/v1/commands") return deliver({ commands });
       if (path === "/v1/heartbeat") {
-        heartbeatBodies.push(await request.json());
+        const body = await request.json();
+        heartbeatBodies.push(body);
+        if (JSON.stringify(body).includes('"waiting"')) return Response.json({}, { status: 403 });
         return deliver(heartbeatResponse);
       }
       if (path === "/v1/runs/run-one/grant") {
@@ -468,6 +470,15 @@ export async function probeRunnerDaemon(
       await configured.heartbeat();
       assert.equal((heartbeatBodies.at(-1) as { capacity: number }).capacity, 2);
       assert.equal(configured.capacity(), 4);
+      const pending = {
+        name: "impeccable",
+        version: "2.5.0",
+        sha256: "a".repeat(64),
+        status: "pending" as const,
+      };
+      const reported = { ...pending, waiting: 2 };
+      await configured.heartbeat([reported]);
+      assert.deepEqual((heartbeatBodies.at(-1) as { skills?: unknown }).skills, [pending]);
     } finally {
       heartbeatResponse = { leases: [], fenced: [] };
       configured.close();
