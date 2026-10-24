@@ -474,7 +474,11 @@ function visualReviewsOf(
   const rounds = new Map<string, number>();
   return {
     visualReviews: reviews.map((review) => {
-      const round = (rounds.get(review.checkId) ?? 0) + 1;
+      // Nobody was asked when every screen carried over, so it is not a new round.
+      const full =
+        review.carried.length > 0 &&
+        review.evidenceIds.every((id) => review.carried.some((entry) => entry.evidenceId === id));
+      const round = Math.max(1, (rounds.get(review.checkId) ?? 0) + (full ? 0 : 1));
       rounds.set(review.checkId, round);
       const marks = listVisualReviewMarks(db, review.questionId).map((mark) => ({
         id: mark.id,
@@ -495,6 +499,14 @@ function visualReviewsOf(
         answeredAt: review.answeredAt === null ? null : iso(review.answeredAt),
         feedback: review.feedback?.trim() || null,
         ...(marks.length ? { marks } : {}),
+        ...(review.carried.length
+          ? {
+              carried: review.carried.map((entry) => ({
+                ...entry,
+                approvedAt: iso(entry.approvedAt),
+              })),
+            }
+          : {}),
       };
     }),
   };
@@ -1488,8 +1500,9 @@ function verdictKey(itemId: string, key: string): { head: string; outcome: strin
 }
 
 function questionId(key: string): string | null {
-  if (!key.startsWith("ask:")) return null;
-  const id = key.slice("ask:".length).trim();
+  const prefix = ["ask:", "question:"].find((candidate) => key.startsWith(candidate));
+  if (prefix === undefined) return null;
+  const id = key.slice(prefix.length).trim();
   return id || null;
 }
 

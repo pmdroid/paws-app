@@ -74,7 +74,9 @@ test.skipIf(process.platform === "win32")(
       await Bun.sleep(30);
       const kill = spyOn(process, "kill");
       try {
+        const started = performance.now();
         expect(await stopChild(child, 50)).toBe(false);
+        expect(performance.now() - started).toBeLessThan(1_000);
         killTree(child, "SIGKILL");
         expect(kill).not.toHaveBeenCalled();
         expect(running(descendant)).toBe(true);
@@ -86,6 +88,9 @@ test.skipIf(process.platform === "win32")(
       if (running(descendant)) process.kill(descendant, "SIGKILL");
     }
   },
+  // With its anchor killed, stop() waits the full 5 s kill confirmation before it reports
+  // false, so this test needs more than Bun's default 5 s.
+  15_000,
 );
 
 test.skipIf(process.platform === "win32")(

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, parentIssueIdSql, type LinearCommand } from "../core";
+import { CLOSED_ISSUE_EVENT } from "./administration";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
 import { LinearEntityNotFoundError } from "./graphql";
 import type {
@@ -206,8 +207,18 @@ export function startCatchUpPoller(options: {
     const issueEvents = sighting.issues
       .map((issue) => issueEvent(issue, sessionByIssue, options.store, sessionHasTask))
       .filter((event): event is AcceptedLinearEvent => event !== null);
+    const issueHasOpenTask = (issueId: string) =>
+      options.db
+        ?.query(
+          "SELECT 1 FROM work_item WHERE linear_issue_id=? AND state NOT IN ('completed','merged','cancelled') LIMIT 1",
+        )
+        .get(issueId) != null;
+    const closedEvents = sighting.issues
+      .filter((issue) => issue.closed && issueHasOpenTask(issue.id))
+      .map((issue) => closedIssueEvent(issue, sessionByIssue.get(issue.id) ?? null));
     const events = [
       ...issueEvents,
+      ...closedEvents,
       ...sighting.sessions
         .filter(
           (session) =>
@@ -464,6 +475,26 @@ function issueEvent(
     signal: "stop",
     updatedAtMs: issue.updatedAtMs,
     payload: { kind: "stop", reason },
+  });
+}
+
+/** A closed issue the poll saw. Paws closes the issue's open tasks, as for the webhook. */
+function closedIssueEvent(issue: PolledIssue, sessionId: string | null): AcceptedLinearEvent {
+  const closed = issue.closed!;
+  return inboxEvent({
+    dedupeKey: `issue:${issue.id}:${CLOSED_ISSUE_EVENT}:${closed.stateType}:${closed.closedAtMs}`,
+    action: "other",
+    sessionId,
+    issueId: issue.id,
+    body: null,
+    signal: null,
+    updatedAtMs: issue.updatedAtMs,
+    payload: {
+      kind: CLOSED_ISSUE_EVENT,
+      stateType: closed.stateType,
+      closedAtMs: closed.closedAtMs,
+      identifier: issue.identifier,
+    },
   });
 }
 
