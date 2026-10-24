@@ -64,5 +64,6 @@ export {
   type VisualReviewAnswer,
   type VisualReviewCarry,
   type VisualReviewKind,
+  type VisualReviewShown,
   type VisualReviewOutcome,
 } from "./visual-review";

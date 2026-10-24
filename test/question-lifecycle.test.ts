@@ -273,3 +273,45 @@ test("the migration classifies questions with a Closeout recovery as Closeout he
     { id: "help", kind: "closeout-help" },
   ]);
 });
+
+test("the migration classifies visual reviews and GitHub sign-in holds by kind", () => {
+  const db = openDatabase(":memory:");
+  db.run("CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT");
+  const cutoff = migrations.findIndex(
+    (migration) => migration.id === "120_question_visual_review_github_auth_kind",
+  );
+  expect(cutoff).toBeGreaterThan(0);
+  for (const migration of migrations.slice(0, cutoff)) {
+    if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
+    db.transaction(() => db.run(migration.sql)).immediate();
+    db.run("PRAGMA foreign_keys = ON");
+  }
+  db.run("PRAGMA foreign_keys = OFF");
+  const insert = db.prepare(
+    `INSERT INTO question (id, item_id, session_id, body, status, created_at)
+     VALUES (?, 'ENG-7', ?, 'Body', 'open', 1)`,
+  );
+  insert.run("agent", "ses_1");
+  insert.run("review", "ses_2");
+  insert.run("sign-in", "ses_3");
+  insert.run("hold", "ses_4");
+  db.run(
+    `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at)
+     VALUES ('review', 'ENG-7', 'visual-proof', '[]', 1)`,
+  );
+  db.run(
+    `INSERT INTO linear_github_auth (question_id, item_id, actor_id, phase, expires_at)
+     VALUES ('sign-in', 'ENG-7', 'owner', 'initial', 1)`,
+  );
+  db.run(
+    `INSERT INTO github_integration_hold (question_id, item_id, phase, item_version, session_generation, checkpoint, authority)
+     VALUES ('hold', 'ENG-7', 'initial', 1, 0, 'null', 'authority')`,
+  );
+  db.transaction(() => db.run(migrations[cutoff]!.sql)).immediate();
+  expect(db.query("SELECT id, kind FROM question ORDER BY id").all() as unknown[]).toEqual([
+    { id: "agent", kind: "agent" },
+    { id: "hold", kind: "github-auth" },
+    { id: "review", kind: "visual-review" },
+    { id: "sign-in", kind: "github-auth" },
+  ]);
+});

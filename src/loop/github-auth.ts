@@ -11,11 +11,12 @@ import {
   type WorkItemRecord,
 } from "../db";
 import {
-  answerQuestion,
+  answer,
+  ask,
   canAnswer,
   findOpenQuestion,
   getQuestion,
-  openQuestion,
+  type StoredQuestion,
 } from "../questions";
 
 export type GitHubAuthPhase = "initial" | "publication";
@@ -68,10 +69,6 @@ export class GitHubAuthQuestions {
     this.integration?.invalidate(scope);
   }
 
-  owns(questionId: string): boolean {
-    return !this.closed && (this.integration?.owns(questionId) || this.read(questionId) !== null);
-  }
-
   async ensure(
     item: WorkItemRecord,
     phase: GitHubAuthPhase,
@@ -119,12 +116,13 @@ export class GitHubAuthQuestions {
       if (current === null || current.cancelRequested || current.state !== item.state) return null;
       const existing = findOpenQuestion(this.db, sessionId);
       if (existing !== null) return this.read(existing.id);
-      const question = openQuestion(this.db, {
-        itemId: item.id,
-        sessionId,
-        body: "Sign in to GitHub to continue.",
-        now: this.now(),
-      });
+      const { question } = ask(
+        this.db,
+        { itemId: item.id, runId: null, sessionId },
+        "github-auth",
+        "Sign in to GitHub to continue.",
+        { now: this.now() },
+      );
       applyWorkItemEvent(this.db, item.id, "blocking_question");
       this.db.run(
         "INSERT INTO linear_github_auth (question_id,item_id,actor_id,github_account_id,phase,expires_at,session_generation) VALUES (?,?,?,?,?,?,?)",
@@ -365,45 +363,51 @@ export class GitHubAuthQuestions {
       if (account.id !== request.github_account_id || !this.valid(request)) return;
       this.bindAccount(request.item_id, account);
       const question = getQuestion(this.db, request.question_id)!;
-      if (
-        answerQuestion(this.db, question.id, {
-          answer: `GitHub account ${account.login} verified by Paws.`,
-          answeredBy: request.actor_id,
-          eventKey: `github-auth:${question.id}:${request.generation}`,
-          now: this.now(),
-        }) === null
-      )
-        return;
-      this.db.run(
-        "UPDATE linear_github_auth SET status = 'verified',verified_at = ? WHERE question_id = ?",
-        [this.now(), question.id],
-      );
-      applyWorkItemEvent(this.db, request.item_id, "answer_received");
-      if (request.phase === "publication")
-        applyWorkItemEvent(this.db, request.item_id, "turn_ended");
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "activity",
-        orderingKey: question.sessionId,
-        idempotencyKey: `github-auth:verified:${question.id}`,
-        payload: {
+      answer(
+        this.db,
+        {
           sessionId: question.sessionId,
-          kind: "thought",
-          body: "GitHub account connected. Continuing your task.",
+          deliveryId: `github-auth:${question.id}:${request.generation}`,
+          body: `GitHub account ${account.login} verified by Paws.`,
+          answeredBy: request.actor_id,
+          now: this.now(),
         },
-        now: this.now(),
-      });
-      enqueueJobOnce(this.db, {
-        queue: request.phase === "initial" ? JOB_KIND.resume : JOB_KIND.reverify,
-        jobKey: `github-auth:${question.id}`,
-        payload: { itemId: request.item_id, reason: "github-auth" },
-        now: this.now(),
-      });
+        { "github-auth": (answered) => this.resume(request, answered) },
+      );
     });
     if (this.read(request.question_id)?.status === "verified") {
       this.active.get(request.question_id)?.abort();
       this.active.delete(request.question_id);
     }
+  }
+
+  private resume(request: AuthRequest, question: StoredQuestion): void {
+    if (question.id !== request.question_id)
+      throw new Error("A GitHub sign-in answer reached another question.");
+    this.db.run(
+      "UPDATE linear_github_auth SET status = 'verified',verified_at = ? WHERE question_id = ?",
+      [this.now(), question.id],
+    );
+    applyWorkItemEvent(this.db, request.item_id, "answer_received");
+    if (request.phase === "publication") applyWorkItemEvent(this.db, request.item_id, "turn_ended");
+    enqueueOutboxOnce(this.db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: question.sessionId,
+      idempotencyKey: `github-auth:verified:${question.id}`,
+      payload: {
+        sessionId: question.sessionId,
+        kind: "thought",
+        body: "GitHub account connected. Continuing your task.",
+      },
+      now: this.now(),
+    });
+    enqueueJobOnce(this.db, {
+      queue: request.phase === "initial" ? JOB_KIND.resume : JOB_KIND.reverify,
+      jobKey: `github-auth:${question.id}`,
+      payload: { itemId: request.item_id, reason: "github-auth" },
+      now: this.now(),
+    });
   }
 
   private pause(request: AuthRequest): void {
