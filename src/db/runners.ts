@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 import { listSkills, runnerSkillStates, type RunnerSkillView } from "./skills";
+import { listRunnerRuntimes, type RunnerRuntimeStatus } from "./runner-runtimes";
 
 export type RunnerRecord = {
   id: string;
@@ -128,6 +129,8 @@ export type RunnerOverview = RunnerRecord & {
   /** Sessions holding a live work lease on this runner, oldest first. */
   running: RunnerSession[];
   skills: RunnerSkillView[];
+  /** Runtimes mise installed for tasks on this runner, and failed installs, as last reported. */
+  runtimes: RunnerRuntimeStatus[];
 };
 
 export type RunnerSessionPhase = "working" | "closeout" | "fixing" | "merging";
@@ -330,6 +333,7 @@ export function listRunnerOverview(
           : { desired: row.desired, applied: row.applied, ceiling: row.ceiling },
       running: sessions.get(row.id) ?? [],
       skills: runnerSkillStates(db, row.id, pins),
+      runtimes: listRunnerRuntimes(db, row.id),
     }));
 }
 
