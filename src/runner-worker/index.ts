@@ -56,6 +56,7 @@ import {
   type RunnerSpool,
 } from "../runner-execution";
 import { readRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
+import { installRuntimes } from "../runner-mise";
 import {
   checkDeveloperLogin,
   claudeLimits,
@@ -95,6 +96,8 @@ export interface RunnerWorkerOptions {
   codexRateLimits?: CodexRateLimitReader;
   resume?: boolean;
   skills?: string;
+  /** The mise binary and install cap. Tests point these at a fake. */
+  mise?: { path?: string; timeoutMs?: number };
 }
 
 export const RESUME_PROMPT =
@@ -472,6 +475,7 @@ export async function executeRunnerCommand(
         writeFileSync(join(worktree, file.path), file.bytes, { flag: "wx", mode: 0o600 });
       }
     }
+    const installFailure = await installCommandRuntimes(command, job.executionId, options, emit);
     let reviewText = "";
     let agentLimits: AgentLimit[] = [];
     let tokens = 0;
@@ -722,10 +726,20 @@ export async function executeRunnerCommand(
                 ),
             })
         : runAgent;
-    const run =
-      command.type === "run" && options.followUp
-        ? await runWithFollowUps(agent, options.followUp, runner)
-        : await runner(agent);
+    const run: RunAgentResult =
+      installFailure !== undefined
+        ? {
+            role: agent.role,
+            stopReason: "error",
+            errorMessage: installFailure,
+            cancelled: false,
+            timedOut: false,
+            authRequired: false,
+            agentExited: false,
+          }
+        : command.type === "run" && options.followUp
+          ? await runWithFollowUps(agent, options.followUp, runner)
+          : await runner(agent);
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
@@ -868,6 +882,56 @@ export async function executeRunnerCommand(
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
     closeSync(eventJournal);
   }
+}
+
+/**
+ * Install the command's runtimes with mise before the agent starts. Returns the one line
+ * that fails the task when an install fails or runs past its cap, and nothing otherwise.
+ * The install time goes to the runner's log and, as a notice, to the issue page.
+ */
+async function installCommandRuntimes(
+  command: RunnerJob["command"],
+  executionId: string,
+  options: RunnerWorkerOptions,
+  emit: (event: RunnerWorkerEvent) => void,
+): Promise<string | undefined> {
+  const runtimes =
+    command.type === "run" || command.type === "review" || command.type === "task"
+      ? (command.runtimes ?? [])
+      : [];
+  if (!runtimes.length) return undefined;
+  const result = await installRuntimes({
+    runtimes,
+    home: options.home,
+    ...(options.mise?.path ? { mise: options.mise.path } : {}),
+    ...(options.mise?.timeoutMs !== undefined ? { timeoutMs: options.mise.timeoutMs } : {}),
+    signal: options.signal,
+    notice: (text) => emit({ type: "progress", text, notice: true }),
+  });
+  const labels = runtimes.map((runtime) => `${runtime.tool}@${runtime.version}`);
+  console.warn(
+    JSON.stringify({
+      event: "runtime_install",
+      executionId,
+      runtimes: labels,
+      durationMs: result.durationMs,
+      ok: result.ok,
+      ...(result.ok
+        ? {}
+        : {
+            runtime: `${result.runtime.tool}@${result.runtime.version}`,
+            message: result.message,
+          }),
+    }),
+  );
+  if (!result.ok) return result.message.slice(0, 500);
+  const text = `Installed runtimes ${labels.join(", ")} in ${(result.durationMs / 1000).toFixed(1)} s.`;
+  emit({
+    type: "progress",
+    text: text.length > 500 ? `${text.slice(0, 499)}…` : text,
+    notice: true,
+  });
+  return undefined;
 }
 
 export async function runRunnerWorker(options: {
