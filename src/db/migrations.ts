@@ -2382,4 +2382,11 @@ WHERE checkpoint IS NOT NULL AND json_valid(checkpoint)
         AND json_extract(job.payload, '$.itemId') = work_item.id)));
 `,
   },
+  {
+    id: "118_question_closeout_help_kind",
+    sql: `
+UPDATE question SET kind = 'closeout-help'
+WHERE id IN (SELECT question_id FROM closeout_recovery);
+`,
+  },
 ];
