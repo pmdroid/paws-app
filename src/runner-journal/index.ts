@@ -106,7 +106,8 @@ export function openExecutionJournal(root: string) {
       ]);
       return { id, command: parsed, phase: "preparing" };
     },
-    phase(id: string, phase: "running" | "publishing" | "complete" | "interrupted") {
+    /** `handover` marks a committed handover whose result the runtime still has to post. */
+    phase(id: string, phase: "running" | "publishing" | "handover" | "complete" | "interrupted") {
       const changed = db.run(
         "UPDATE execution SET phase=? WHERE id=? AND phase NOT IN ('complete','interrupted')",
         [phase, id],
