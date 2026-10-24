@@ -159,7 +159,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "accepted" });
     for (const column of ["accepted_head", "agent_ms", "closeout_ms", "waiting_ms", "recheck_ms"])
       db.run(`ALTER TABLE work_item DROP COLUMN ${column}`);
-    db.run("DELETE FROM schema_migration WHERE id = '116_work_item_awake_breakdown'");
+    db.run("DELETE FROM schema_migration WHERE id = '117_work_item_awake_breakdown'");
     db.run("UPDATE work_item SET awake_ms = ? WHERE id = ?", [29 * MINUTE, item.id]);
 
     migrate(db);
@@ -208,7 +208,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     });
     for (const column of ["accepted_head", "agent_ms", "closeout_ms", "waiting_ms", "recheck_ms"])
       db.run(`ALTER TABLE work_item DROP COLUMN ${column}`);
-    db.run("DELETE FROM schema_migration WHERE id = '116_work_item_awake_breakdown'");
+    db.run("DELETE FROM schema_migration WHERE id = '117_work_item_awake_breakdown'");
     db.run("UPDATE work_item SET awake_ms = ? WHERE id = ?", [29 * MINUTE, accepted.id]);
 
     migrate(db);

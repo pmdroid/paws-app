@@ -281,6 +281,7 @@ export {
   listVisualReviews,
   openVisualReviewFiles,
   saveVisualReviewMarks,
+  type VisualReviewCarriedFile,
   type VisualReviewMark,
   type VisualReviewRecord,
 } from "./visual-reviews";
