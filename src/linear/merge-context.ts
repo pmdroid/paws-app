@@ -1,5 +1,6 @@
 import type { TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
+import { takeIssueStart, type IssueStartReads } from "./issue-start";
 import type { ProjectOverview } from "./project-scope";
 import { isRecord, readString } from "./read";
 
@@ -29,14 +30,16 @@ function nodes(connection: unknown): Record<string, unknown>[] {
     : [];
 }
 
-export function createLinearMergeReads(client: LinearClient) {
+export function createLinearMergeReads(client: LinearClient, starts?: IssueStartReads) {
   return {
     async issueMergeContext(
       issueId: string,
       options?: TrackerRequestOptions,
     ): Promise<LinearMergeContext> {
       options?.signal?.throwIfAborted();
-      const data = await client.query(ISSUE_QUERY, { id: issueId }, options);
+      const data =
+        takeIssueStart(starts, issueId, "merge") ??
+        (await client.query(ISSUE_QUERY, { id: issueId }, options));
       options?.signal?.throwIfAborted();
       const issue = isRecord(data) ? data["issue"] : null;
       if (!isRecord(issue)) throw new Error("Linear returned no issue for merge settings");

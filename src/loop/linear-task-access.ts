@@ -28,6 +28,7 @@ import {
   type LinearSessionInstallation,
   type TrackerRequestOptions,
 } from "../linear";
+import { linearSessionCreatorId } from "./linear-routing";
 
 export class LinearAccessRemovedError extends Error {}
 
@@ -68,7 +69,11 @@ export class LinearTaskAccess {
       !["created", "prompted"].includes(event.action)
     )
       return;
-    const issue = await this.inspect(event.issueId, { signal: AbortSignal.timeout(10_000) });
+    const signal = AbortSignal.timeout(10_000);
+    const issue =
+      event.action === "created"
+        ? await this.inspect(event.issueId, { signal }, false, linearSessionCreatorId(event))
+        : await this.inspect(event.issueId, { signal });
     if (["completed", "canceled", "duplicate"].includes(issue.stateType))
       throw new LinearIssueClosedError(issue.identifier ?? "This issue");
   }
@@ -103,6 +108,10 @@ export class LinearTaskAccess {
         : await this.options.access.session(event.sessionId, request);
     request.signal.throwIfAborted();
     this.record(access);
+    ensureLinearSession(this.db, {
+      sessionId: event.sessionId,
+      creatorId: linearSessionCreatorId(event),
+    });
     if (getLinearSessionGeneration(this.db, event.sessionId) !== generation) return false;
     if (event.action === "created" && getLinearSession(this.db, event.sessionId)?.stoppedAt != null)
       return false;
@@ -264,7 +273,12 @@ export class LinearTaskAccess {
     if (options.issueId) issueIds.push(options.issueId);
     if (item) issueIds.push(item.linearIssueId);
     for (const issueId of new Set(issueIds)) {
-      const issue = await this.inspect(issueId, { signal }, options.fresh);
+      const issue = await this.inspect(
+        issueId,
+        { signal },
+        options.fresh,
+        item ? undefined : (getLinearSession(this.db, sessionId)?.creatorId ?? null),
+      );
       current();
       if (
         issue.id !== issueId ||
@@ -448,12 +462,17 @@ export class LinearTaskAccess {
     issueId: string,
     options: TrackerRequestOptions,
     fresh = false,
+    startedBy?: string | null,
   ): Promise<LinearIssueOwnership> {
-    if (this.options.lifecycle === null) throw new Error("Linear is not connected.");
+    const lifecycle = this.options.lifecycle;
+    if (lifecycle === null) throw new Error("Linear is not connected.");
     const cached = fresh ? undefined : this.issues.get(issueId);
     if (cached !== undefined) return { ...cached };
     const invalidations = this.invalidations;
-    const issue = await this.options.lifecycle.inspect(issueId, options);
+    const issue =
+      startedBy !== undefined && lifecycle.inspectStart
+        ? await lifecycle.inspectStart(issueId, startedBy, options)
+        : await lifecycle.inspect(issueId, options);
     if (this.invalidations === invalidations && issue.id === issueId)
       this.issues.set(issueId, issue);
     return issue;

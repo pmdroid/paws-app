@@ -464,6 +464,10 @@ export class Orchestrator {
   >();
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
+  private readonly intakeReads = new Map<
+    string,
+    { snapshot: EpicSnapshot; edges: DependencyEdge[] }
+  >();
   private readonly conversations = new Map<
     string,
     (options: RunAgentOptions) => Promise<RunAgentResult>
@@ -529,6 +533,14 @@ export class Orchestrator {
   }
 
   agentAlive = (runId: string): boolean => this.live.has(runId);
+
+  takeIntakeReads(
+    sessionId: string,
+  ): { snapshot: EpicSnapshot; edges: DependencyEdge[] } | undefined {
+    const reads = this.intakeReads.get(sessionId);
+    this.intakeReads.delete(sessionId);
+    return reads;
+  }
 
   async onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
@@ -853,7 +865,15 @@ export class Orchestrator {
           }
         : tracker;
     let authorizedSnapshot: EpicSnapshot | null = null;
+    let loadedSnapshot: EpicSnapshot | null = null;
+    const edges: DependencyEdge[] = [];
+    const listDeps = async (id: string) => {
+      const found = await progressTracker.listDeps(id);
+      edges.push(...found);
+      return found;
+    };
     const authorizeSnapshot = (snapshot: EpicSnapshot) => {
+      loadedSnapshot = snapshot;
       if (sessionId && this.options.authorizeLinearIntake?.(sessionId, snapshot) === false)
         throw new Error("The Linear assignment changed before intake.");
       authorizedSnapshot = snapshot;
@@ -863,6 +883,7 @@ export class Orchestrator {
     };
     let intakeTracker = {
       ...progressTracker,
+      listDeps,
       loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
     };
     const deferred = !savedRequest && this.options.remoteExecution?.slotFree?.() === false;
@@ -874,7 +895,7 @@ export class Orchestrator {
       !deferred
         ? authorizeSnapshot(await tracker.loadEpic(issueId))
         : null;
-    if (snapshot) intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
+    if (snapshot) intakeTracker = { ...progressTracker, listDeps, loadEpic: async () => snapshot };
     const openSubIssues = snapshot?.subIssues.some(
       (issue) => !["completed", "canceled"].includes(issue.stateType ?? ""),
     );
@@ -963,6 +984,8 @@ export class Orchestrator {
       adoptParent: this.options.adoptLinearParent,
     });
     if (!isCurrent()) throw new Error("The Linear request changed during intake");
+    if (sessionId && loadedSnapshot && !result.alreadyExisted)
+      this.intakeReads.set(sessionId, { snapshot: loadedSnapshot, edges });
     if (result.ok && classification && classification.mode !== "clarify") {
       for (const item of result.items) {
         if (!getTaskMode(this.db, item.id))
