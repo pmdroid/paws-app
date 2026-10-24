@@ -13,7 +13,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunnerCommand } from "../src/runner-protocol";
-import { installRuntimes, prependRuntimePath, runnerMiseDirectories } from "../src/runner-mise";
+import {
+  installRuntimes,
+  prependRuntimePath,
+  RUNNER_BIN_DIR,
+  runnerMiseDirectories,
+  withoutRunnerBin,
+} from "../src/runner-mise";
 import { executeRunnerCommand } from "../src/runner-worker";
 
 /**
@@ -269,10 +275,16 @@ test("concurrent tasks on one runner wait on the data dir lock", async () => {
 });
 
 /**
- * Run a task whose agent records `PATH` and the `node` it finds, then runs a Closeout check
- * that records the same. A fake system node sits on both the agent's and the worker's `PATH`.
+ * Run a task whose agent records `PATH`, the `node` it finds and the `bun` it resolves, then
+ * runs a Closeout check that records the same. A fake system node sits on both the agent's and
+ * the worker's `PATH`. `base` replaces the agent's `PATH` after that node, and `workerExtra`
+ * goes in front of the worker's own `PATH`.
  */
-async function runPathTask(name: string, runtimes: Array<{ tool: string; version: string }>) {
+async function runPathTask(
+  name: string,
+  runtimes: Array<{ tool: string; version: string }>,
+  paths: { base?: string; workerExtra?: string } = {},
+) {
   const task = join(root, name);
   const workRoot = join(task, "work");
   const worktree = join(workRoot, executionId);
@@ -308,7 +320,7 @@ async function runPathTask(name: string, runtimes: Array<{ tool: string; version
       "  - id: which-node",
       "    kind: command",
       "    gate: beforePR",
-      `    exec: ["sh", "-c", "printf '%s\\\\n' \\"$PATH\\" > closeout-path.txt; node > closeout-node.txt"]`,
+      `    exec: ["sh", "-c", "printf '%s\\\\n' \\"$PATH\\" > closeout-path.txt; node > closeout-node.txt; command -v bun > closeout-bun.txt || true"]`,
       "    timeoutSeconds: 30",
       "",
     ].join("\n"),
@@ -323,16 +335,19 @@ async function runPathTask(name: string, runtimes: Array<{ tool: string; version
         {
           type: "terminal",
           command: "sh",
-          args: ["-c", `printf '%s\\n' "$PATH" > agent-path.txt; node > agent-node.txt`],
+          args: [
+            "-c",
+            `printf '%s\\n' "$PATH" > agent-path.txt; node > agent-node.txt; command -v bun > agent-bun.txt || true`,
+          ],
         },
         { type: "run_closeout", id: "which-node" },
         { type: "end" },
       ],
     }),
   );
-  const agentPath = `${system}:${dirname(process.execPath)}:/usr/bin:/bin`;
+  const agentPath = `${system}:${paths.base ?? `${dirname(process.execPath)}:/usr/bin:/bin`}`;
   const workerPath = process.env.PATH;
-  process.env.PATH = `${system}:${workerPath ?? ""}`;
+  process.env.PATH = [system, paths.workerExtra, workerPath ?? ""].filter(Boolean).join(":");
   try {
     const result = await executeRunnerCommand({
       job: { executionId, command: command(runtimes) },
@@ -365,6 +380,7 @@ async function runPathTask(name: string, runtimes: Array<{ tool: string; version
       system: join(system, "node"),
       agent: { path: read("agent-path.txt"), node: read("agent-node.txt") },
       closeout: { path: read("closeout-path.txt"), node: read("closeout-node.txt") },
+      bun: { agent: read("agent-bun.txt"), closeout: read("closeout-bun.txt") },
     };
   } finally {
     if (workerPath === undefined) delete process.env.PATH;
@@ -380,7 +396,7 @@ test("the agent and a Closeout check find the task's node before the system one"
   expect(run.agent.node).toBe(join(bin, "node"));
   expect(run.agent.path).toBe(`${bin}:${run.agentPath}`);
   expect(run.closeout.node).toBe(join(bin, "node"));
-  expect(run.closeout.path).toBe(`${bin}:${run.workerPath}`);
+  expect(run.closeout.path).toBe(`${bin}:${withoutRunnerBin(run.workerPath)}`);
   expect(log()).toContain("where node@22");
 }, 30_000);
 
@@ -389,9 +405,46 @@ test("with no runtimes, the agent's and a Closeout check's PATH are unchanged", 
   expect(run.result.run.stopReason).toBe("end_turn");
   expect(run.closeouts).toEqual(["which-node passed."]);
   expect(run.agent).toEqual({ path: run.agentPath, node: run.system });
-  expect(run.closeout).toEqual({ path: run.workerPath!, node: run.system });
+  expect(run.closeout).toEqual({ path: withoutRunnerBin(run.workerPath), node: run.system });
   expect(log()).toEqual([]);
 }, 30_000);
+
+test("the agent's and a Closeout check's PATH never have the runner's bin folder", async () => {
+  const run = await runPathTask("runner-bin", [{ tool: "node", version: "22" }], {
+    base: `${RUNNER_BIN_DIR}:/usr/bin:/bin`,
+    workerExtra: RUNNER_BIN_DIR,
+  });
+  expect(run.result.run.stopReason).toBe("end_turn");
+  expect(run.closeouts).toEqual(["which-node passed."]);
+  for (const path of [run.agent.path, run.closeout.path])
+    expect(path.split(":")).not.toContain(RUNNER_BIN_DIR);
+  expect(run.workerPath!.split(":")).toContain(RUNNER_BIN_DIR);
+}, 30_000);
+
+test("bun resolves for the agent and a Closeout check only when the job's runtimes include it", async () => {
+  // No Bun on this PATH but the runner's own, which tasks must not see.
+  const base = `${RUNNER_BIN_DIR}:/usr/bin:/bin`;
+  const without = await runPathTask("no-bun", [{ tool: "node", version: "22" }], {
+    base,
+    workerExtra: RUNNER_BIN_DIR,
+  });
+  for (const found of [without.bun.agent, without.bun.closeout])
+    expect(found.startsWith(`${RUNNER_BIN_DIR}/`)).toBe(false);
+  const runtime = join(runnerMiseDirectories(home).dataDir, "installs", "bun", "1.4.2", "bin");
+  const withBun = await runPathTask("bun", [{ tool: "bun", version: "1.4.2" }], {
+    base,
+    workerExtra: RUNNER_BIN_DIR,
+  });
+  expect(withBun.result.run.stopReason).toBe("end_turn");
+  expect(withBun.bun).toEqual({ agent: join(runtime, "bun"), closeout: join(runtime, "bun") });
+}, 60_000);
+
+test("withoutRunnerBin drops only the runner's bin folder", () => {
+  expect(withoutRunnerBin(`/a:${RUNNER_BIN_DIR}:/b:${RUNNER_BIN_DIR}/:/opt/paws-runner/bin2`)).toBe(
+    "/a:/b:/opt/paws-runner/bin2",
+  );
+  expect(withoutRunnerBin(undefined)).toBe("");
+});
 
 test("installRuntimes returns each runtime's pinned bin dir in order", async () => {
   const result = await installRuntimes({

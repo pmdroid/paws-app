@@ -43,6 +43,11 @@ export type CloseoutSessionOptions = {
    * those runtimes before the system ones. Without them the check inherits `PATH` unchanged.
    */
   runtimeBinPaths?: readonly string[];
+  /**
+   * `PATH` a check starts from, before the runtime bin dirs. Without it the check inherits the
+   * parent's `PATH`. The runner passes its own `PATH` minus the folder that holds its Bun.
+   */
+  basePath?: string;
   allowCommand?: (argv: readonly string[]) => void;
   onProgress?: (event: CloseoutSessionEvent) => void;
 };
@@ -418,13 +423,10 @@ async function execute(
   notify(options, { type: "started", ...progress });
   const started = Date.now();
   const timeoutSeconds = item.timeoutSeconds ?? 30;
-  const result = await runCommand(
-    workspace,
-    argv,
-    timeoutSeconds,
-    options.signal,
-    options.runtimeBinPaths,
-  );
+  const result = await runCommand(workspace, argv, timeoutSeconds, options.signal, {
+    runtimeBinPaths: options.runtimeBinPaths,
+    basePath: options.basePath,
+  });
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   if (result.cancelled) {
     notify(options, {
@@ -654,13 +656,16 @@ function killCommand(pid: number | undefined): void {
   }
 }
 
-function commandEnv(runtimeBinPaths: readonly string[] = []): Record<string, string> {
+type CheckPath = { runtimeBinPaths?: readonly string[]; basePath?: string };
+
+function commandEnv({ runtimeBinPaths = [], basePath }: CheckPath = {}): Record<string, string> {
   const env: Record<string, string> = {
     ...scrubCommandEnv(),
     GIT_CONFIG_COUNT: "0",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
   };
+  if (basePath !== undefined) env.PATH = basePath;
   if (runtimeBinPaths.length)
     env.PATH = [...runtimeBinPaths, ...(env.PATH ? [env.PATH] : [])].join(delimiter);
   return env;
@@ -671,7 +676,7 @@ function runCommand(
   argv: readonly string[],
   timeoutSeconds: number,
   signal?: AbortSignal,
-  runtimeBinPaths?: readonly string[],
+  path?: CheckPath,
 ): Promise<{
   code: number;
   timedOut: boolean;
@@ -710,7 +715,7 @@ function runCommand(
   return new Promise((resolve) => {
     const child = spawn(command, argv.slice(1), {
       cwd: workspace,
-      env: commandEnv(runtimeBinPaths),
+      env: commandEnv(path),
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });

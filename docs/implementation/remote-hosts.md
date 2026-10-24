@@ -18,7 +18,7 @@ The installer reads the host architecture, downloads the matching package from t
 curl -fsSL https://get.paws.boo | sudo sh -s -- 1.2.3
 ```
 
-Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages named `paws-runner_X.Y.Z_amd64.deb` and `paws-runner_X.Y.Z_arm64.deb`, each with a `.deb.sha256` file. The package includes one Bun runtime. `/opt/paws-runner/bin/paws-runner` is a small launcher that runs the runner source on it, and the agent programs use the same Bun. The coding agents are installed from npm when the package installs, as described below. The host needs systemd.
+Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages named `paws-runner_X.Y.Z_amd64.deb` and `paws-runner_X.Y.Z_arm64.deb`, each with a `.deb.sha256` file. The package includes one Bun runtime. `/opt/paws-runner/bin/paws-runner` is a small launcher that runs the runner source on it, and the agent programs use the same Bun. That Bun is for Paws's own processes, which start it by absolute path. `/opt/paws-runner/bin` is not on the agent's or a Closeout check's `PATH`, so a repository that needs Bun declares it in `mise.toml` like any other runtime. The coding agents are installed from npm when the package installs, as described below. The host needs systemd.
 
 To verify and install a downloaded ARM64 package directly:
 
