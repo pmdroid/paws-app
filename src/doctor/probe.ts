@@ -19,7 +19,6 @@ import {
   type AgentProfiles,
   type EnvSource,
   type GitHubConfigAuth,
-  type LinearConfigMode,
   type RuntimeConfig,
   type TrackerKind,
 } from "../config";
@@ -48,7 +47,7 @@ export type ProbeFacts = {
   agentProfiles?: AgentProfiles[];
   grokLogin?: GrokLoginStatus | null;
   configured: boolean;
-  linearMode: LinearConfigMode;
+  linearCommentMode: boolean;
   githubAuth: GitHubConfigAuth;
   trackerKind: TrackerKind;
   oauthClientId: string | null;
@@ -79,7 +78,6 @@ export type ProbeFacts = {
     viewerId: string | null;
     viewerMatches: boolean;
     teamFound: boolean;
-    labelFound: boolean;
     error: string | null;
   };
 };
@@ -109,7 +107,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     agentProfiles,
     grokLogin,
     configured: runtime.configured,
-    linearMode: runtime.linearMode,
+    linearCommentMode: runtime.linearCommentMode,
     githubAuth: runtime.githubAuth,
     trackerKind: runtime.trackerKind,
     oauthClientId: runtime.oauthClientId,
@@ -279,13 +277,11 @@ async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<Prob
     viewerId: null,
     viewerMatches: false,
     teamFound: false,
-    labelFound: false,
     error: null,
   };
-  const credential =
-    runtime.linearMode === "comments" ? runtime.linearApiKey : runtime.linearAccessToken;
+  const credential = runtime.linearAccessToken;
   if (credential === null) return empty;
-  const header = runtime.linearMode === "comments" ? credential : `Bearer ${credential}`;
+  const header = `Bearer ${credential}`;
   const fetchImpl: CommentFetch = (input, init) =>
     fetch(input, { ...init, signal: AbortSignal.timeout(8_000) });
   try {
@@ -297,14 +293,13 @@ async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<Prob
         : await client.query(
             `query ViewerTeam($id: String!) {
               viewer { id }
-              team(id: $id) { id key labels(first: 50) { nodes { name } } }
+              team(id: $id) { id key }
             }`,
             { id: teamId },
           );
     const root = isRecord(data) ? data : {};
     const viewer = isRecord(root["viewer"]) ? readString(root["viewer"], "id") : null;
     const team = isRecord(root["team"]) ? root["team"] : null;
-    const labels = team === null ? [] : labelNames(team["labels"]);
     const viewerMatches =
       viewer !== null && (runtime.linearViewerId === null || runtime.linearViewerId === viewer);
     return {
@@ -313,24 +308,12 @@ async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<Prob
       viewerId: viewer,
       viewerMatches,
       teamFound: teamId !== null && team !== null,
-      labelFound: labels.some((name) => name.toLowerCase() === "paws"),
       error: viewer === null ? "Linear viewer id was missing" : null,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Linear could not be reached";
     return { ...empty, attempted: true, error: message };
   }
-}
-
-function labelNames(value: unknown): string[] {
-  if (!isRecord(value) || !Array.isArray(value["nodes"])) return [];
-  const names: string[] = [];
-  for (const node of value["nodes"]) {
-    if (!isRecord(node)) continue;
-    const name = readString(node, "name");
-    if (name !== null) names.push(name);
-  }
-  return names;
 }
 
 function splitRepo(value: string | null): { owner: string; repo: string } | null {
