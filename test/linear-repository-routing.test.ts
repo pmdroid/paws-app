@@ -22,7 +22,6 @@ import {
   repositoryAnswer,
 } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
-import { withCommentActivities } from "../src/comments";
 import { tempDb, tempHome } from "./helpers";
 
 const repositories: RepositoryBinding[] = ["one", "two", "private"].map((repo) => ({
@@ -73,7 +72,6 @@ function event(body: string | null = null): AcceptedLinearEvent {
 
 function fixture(
   options: {
-    channel?: "comments" | "agent-session";
     issueId?: string;
     defaultRepository?: boolean;
     auth?: FakeHostGitHubAuth;
@@ -116,7 +114,6 @@ function fixture(
       pawsRoot,
       clock,
       githubAuth: options.auth,
-      channel: options.channel,
       repository: options.defaultRepository ? repositories[0] : undefined,
       repositories: [...repositories, repositories[0]!],
       repositoryAccess: async (repository) => {
@@ -359,18 +356,6 @@ test.each(["acme/elsewhere", "acme/two"])(
     }
   },
 );
-
-test("comment-mode repository suggestions omit synthetic agent-session IDs", async () => {
-  const f = fixture({ channel: "comments" });
-  try {
-    await f.attach().onLinearEvent(event());
-    await f.jobs.tick();
-    expect(f.tracker.repositorySuggestionRequests[0]?.agentSessionId).toBeUndefined();
-    expect(withCommentActivities(f.tracker, f.tracker).issueRepositorySuggestions).toBeDefined();
-  } finally {
-    f.db.close();
-  }
-});
 
 test.each([
   { output: '{"repositoryFullName":"acme/one"}', selected: true },

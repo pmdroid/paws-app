@@ -38,7 +38,6 @@ export async function probeLinearSessionStop(root: string) {
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
     home: root,
-    channel: "agent-session",
     launch: () => {
       throw new Error("No agent should launch during Stop");
     },

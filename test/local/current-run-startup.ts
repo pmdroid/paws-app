@@ -93,7 +93,6 @@ export async function probeCurrentRunStartup(root: string) {
           }
         : {}),
       linearTaskModes: true,
-      channel: "agent-session",
       launch: () => {
         launches++;
         throw new Error("An unavailable installation must prevent agent launch");
