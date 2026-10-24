@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getLinearConversationSource } from "./conversations";
+import { getLinearConversationSource } from "./linear-session-url";
 
 export type VisualReviewRecord = {
   questionId: string;
