@@ -9,7 +9,9 @@ export type QuestionKind =
   | "runner-wait"
   | "closeout-help"
   | "ci-help"
-  | "time-limit";
+  | "time-limit"
+  | "visual-review"
+  | "github-auth";
 
 export type StoredQuestion = {
   id: string;

@@ -338,6 +338,16 @@ describe("verified GitHub authentication questions", () => {
     expect(listJobs(f.db)).toHaveLength(0);
   });
 
+  test("a sign-in question is asked as the github-auth kind with only its sign-in link", async () => {
+    const f = fixture();
+    expect(await f.auth.ensure(f.item, "initial", f.signal)).toBe(false);
+    const question = findOpenQuestion(f.db, "session")!;
+    expect(question).toMatchObject({ kind: "github-auth", body: "Sign in to GitHub to continue." });
+    expect(listOutbox(f.db).map((row) => row.idempotencyKey)).toEqual([
+      `github-auth:${question.id}:1`,
+    ]);
+  });
+
   test("verified provider completion resumes once", async () => {
     const f = fixture();
     await f.auth.ensure(f.item, "initial", f.signal);

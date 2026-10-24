@@ -22,7 +22,6 @@ import { reviewMarkPath } from "./input-files";
 import { compareScreenshots } from "./screenshot-diff";
 import {
   acceptedVisualReviews,
-  answerQuestion,
   approvalTime,
   carriedInFull,
   humanApprovedScreens,
@@ -41,12 +40,10 @@ import {
   visualReviewAcceptedHandoff,
   visualReviewChangesHandoff,
   visualReviewRounds,
-  VISUAL_REVIEW_CONTINUE_OPTIONS,
   VISUAL_REVIEW_ROUNDS,
   type StoredQuestion,
   type StoredVisualReview,
   VISUAL_REVIEW_OPTIONS,
-  VISUAL_REVIEW_QUESTION,
   VISUAL_REVIEW_REMINDER,
   VISUAL_REVIEW_REMINDER_MS,
 } from "../questions";
@@ -202,22 +199,6 @@ export function askForVisualReview(
   const current = getWorkItem(db, item.id);
   if (current?.state !== "running" || current.cancelRequested) return false;
   if (findOpenQuestion(db, sessionId) !== null) return false;
-  const { question } = openVisualReview(db, {
-    itemId: item.id,
-    runId: input.runId,
-    sessionId,
-    checkId: input.checkId,
-    evidenceIds: input.evidenceIds,
-    headCommit: input.head,
-    now: input.now,
-    carried,
-  });
-  applyWorkItemEvent(db, item.id, "blocking_question");
-  saveCheckpoint(db, item.id, {
-    phase: "awaiting_input",
-    wipCommit: input.head,
-    baseSha: input.base,
-  });
   const base = input.publicUrl.replace(/\/+$/, "");
   const link = (id: string) => `${base}/evidence/${encodeURIComponent(id)}`;
   const skipped = new Set(carried.map((entry) => entry.evidenceId));
@@ -231,21 +212,25 @@ export function askForVisualReview(
         ...(approved ? { approved: { id: approved, link: link(approved) } } : {}),
       };
     });
-  enqueueOutboxOnce(db, {
-    target: "linear",
-    op: "elicitation",
-    orderingKey: sessionId,
-    idempotencyKey: `visual-review:${question.id}`,
-    payload: {
-      id: question.id,
-      sessionId,
-      questionId: question.id,
-      body: VISUAL_REVIEW_QUESTION,
-      options: [...VISUAL_REVIEW_OPTIONS],
+  const { question } = openVisualReview(db, {
+    itemId: item.id,
+    runId: input.runId,
+    sessionId,
+    checkId: input.checkId,
+    evidenceIds: input.evidenceIds,
+    headCommit: input.head,
+    now: input.now,
+    carried,
+    shown: {
       evidence,
       ...(carried.length ? { carried: carried.map((entry) => entry.evidenceId) } : {}),
     },
-    now: input.now,
+  });
+  applyWorkItemEvent(db, item.id, "blocking_question");
+  saveCheckpoint(db, item.id, {
+    phase: "awaiting_input",
+    wipCommit: input.head,
+    baseSha: input.base,
   });
   enqueueJobOnce(db, {
     queue: JOB_KIND.visualReviewReminder,
@@ -308,80 +293,52 @@ export function postNote(
   });
 }
 
-export function answerVisualReview(
+export function recordVisualReviewOutcome(
   db: Database,
-  input: {
-    question: StoredQuestion;
-    review: StoredVisualReview;
-    answer: string;
-    answeredBy: string;
-    eventKey: string;
-    now: number;
-  },
-): "answered" | "asked" | "describe" | "rejected" {
-  const { question, review, answeredBy, now } = input;
-  const item = getWorkItem(db, question.itemId);
-  if (item === null || item.state !== "awaiting_input" || item.cancelRequested) return "rejected";
-  const parsed = parseVisualReviewAnswer(input.answer);
-  if (review.kind === "review" && parsed.kind === "describe") return "describe";
-  const answered = answerQuestion(db, question.id, {
-    answer: input.answer,
-    answeredBy,
-    eventKey: input.eventKey,
-    now,
-  });
-  if (answered === null) return "rejected";
+  question: StoredQuestion,
+  review: StoredVisualReview,
+  now: number,
+): "answered" | "asked" {
+  const answer = question.answer ?? "";
+  const answeredBy = question.answeredBy ?? "";
   if (review.kind === "continue") {
-    const extra = /^keep going[.!]?$/i.test(input.answer.trim()) ? undefined : input.answer.trim();
+    const extra = /^keep going[.!]?$/i.test(answer.trim()) ? undefined : answer.trim();
     recordVisualReviewAnswer(db, question.id, {
       outcome: "continued",
       answeredBy,
       now,
       ...(extra ? { feedback: extra } : {}),
     });
-    applyWorkItemEvent(db, item.id, "answer_received");
+    applyWorkItemEvent(db, question.itemId, "answer_received");
     return "answered";
   }
+  const parsed = parseVisualReviewAnswer(answer);
   if (parsed.kind === "accept") {
-    const headCommit = review.headCommit ?? reviewedHead(db, item.id, review);
+    const headCommit = review.headCommit ?? reviewedHead(db, question.itemId, review);
     recordVisualReviewAnswer(db, question.id, {
       outcome: "accepted",
       answeredBy,
       now,
       ...(headCommit ? { headCommit } : {}),
     });
-    applyWorkItemEvent(db, item.id, "answer_received");
+    applyWorkItemEvent(db, question.itemId, "answer_received");
     return "answered";
   }
   recordVisualReviewAnswer(db, question.id, {
     outcome: "changes_requested",
     answeredBy,
     now,
-    feedback: parsed.kind === "changes" ? parsed.feedback : input.answer.trim(),
+    feedback: parsed.kind === "changes" ? parsed.feedback : answer.trim(),
   });
-  if (visualReviewRounds(db, item.id, review.checkId) < VISUAL_REVIEW_ROUNDS) {
-    applyWorkItemEvent(db, item.id, "answer_received");
+  if (visualReviewRounds(db, question.itemId, review.checkId) < VISUAL_REVIEW_ROUNDS) {
+    applyWorkItemEvent(db, question.itemId, "answer_received");
     return "answered";
   }
-  const asked = openVisualReviewContinue(db, {
-    itemId: item.id,
+  openVisualReviewContinue(db, {
+    itemId: question.itemId,
     runId: question.runId,
     sessionId: question.sessionId,
     checkId: review.checkId,
-    now,
-  });
-  enqueueOutboxOnce(db, {
-    target: "linear",
-    op: "elicitation",
-    orderingKey: question.sessionId,
-    idempotencyKey: `visual-review-continue:${asked.id}`,
-    payload: {
-      id: asked.id,
-      sessionId: question.sessionId,
-      questionId: asked.id,
-      body: asked.body,
-      options: [...VISUAL_REVIEW_CONTINUE_OPTIONS],
-    },
     now,
   });
   return "asked";
