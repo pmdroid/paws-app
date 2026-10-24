@@ -86,8 +86,9 @@ function* tarFiles(tar: Uint8Array): Generator<{ path: string; header: number; m
   }
 }
 
-export function tarModes(archive: Uint8Array<ArrayBuffer>): Map<string, number> {
-  const tar = archive[0] === 0x1f && archive[1] === 0x8b ? Bun.gunzipSync(archive) : archive;
+export function tarModes(archive: Uint8Array): Map<string, number> {
+  const tar =
+    archive[0] === 0x1f && archive[1] === 0x8b ? Bun.gunzipSync(new Uint8Array(archive)) : archive;
   return new Map([...tarFiles(tar)].map(({ path, mode }) => [path, mode]));
 }
 
