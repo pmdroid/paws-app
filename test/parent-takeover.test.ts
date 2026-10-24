@@ -140,7 +140,7 @@ test("the migration carries an active parent adoption over from project_approval
     migrate(db);
     db.run("DROP TABLE parent_delegation_issue");
     db.run("DROP TABLE parent_delegation");
-    db.run("DELETE FROM schema_migration WHERE id='128_parent_delegation'");
+    db.run("DELETE FROM schema_migration WHERE id='129_parent_delegation'");
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
     );
