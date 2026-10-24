@@ -216,10 +216,13 @@ test.skipIf(process.platform !== "linux")(
           { cwd: root, env: process.env },
         )
         .catch((error: unknown) => error);
-      for (let i = 0; i < 200 && !existsSync(marker); i++) await Bun.sleep(5);
-      expect(existsSync(marker)).toBe(true);
-      pid = Number(readFileSync(marker, "utf8"));
-      expect(pid).toBeGreaterThan(0);
+      const readPid = () => (existsSync(marker) ? Number(readFileSync(marker, "utf8")) : 0);
+      for (let i = 0; i < 200 && !(Number.isInteger(pid) && pid > 0); i++) {
+        if (i > 0) await Bun.sleep(5);
+        pid = readPid();
+      }
+      if (!(Number.isInteger(pid) && pid > 0))
+        throw new Error("The pid file never held the child's pid");
       f.controller.abort();
       expect(await pending).toMatchObject({ name: "AbortError" });
       const running = () => {
