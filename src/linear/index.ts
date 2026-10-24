@@ -158,6 +158,7 @@ export {
   parseLinearAdministration,
   parseLinearUndelegation,
   parseLinearIssueClosed,
+  parseLinearIssueProjectChange,
   parseLinearUserChange,
   parseLinearSessionInstallation,
   matchesLinearInstallation,
@@ -167,6 +168,7 @@ export type {
   LinearInstallation,
   LinearIssueClosed,
   LinearIssueClosedState,
+  LinearIssueProjectChange,
 } from "./administration";
 export { createLinearIssueLifecycle } from "./issue-lifecycle";
 export { createFakeLinearIssueLifecycle } from "./fake-issue-lifecycle";
