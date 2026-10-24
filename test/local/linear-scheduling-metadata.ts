@@ -17,13 +17,13 @@ export async function probeLinearSchedulingMetadata(
       const body = (await request.json()) as (typeof requests)[number];
       requests.push(body);
       assert.match(body.query, /team \{ id \}/);
-      assert.match(body.query, /project \{ id lead \{ id \} \}/);
+      assert.match(body.query, /project \{ id name lead \{ id \} \}/);
       assert.match(body.query, /assignee \{ id \}/);
       assert.match(body.query, /priority/);
       const second = body.variables["after"] !== null;
       const metadata = {
         team: { id: "team" },
-        project: scenario === "unassigned" ? null : { id: "project" },
+        project: scenario === "unassigned" ? null : { id: "project", name: "Exports" },
         assignee: scenario === "unassigned" ? null : { id: "assignee" },
         priority: scenario === "unassigned" ? 0 : 2,
       };
@@ -68,12 +68,14 @@ export async function probeLinearSchedulingMetadata(
   try {
     const epic = await tracker.loadEpic("parent");
     assert.equal(epic.projectId, "project");
+    assert.equal(epic.projectName, "Exports");
     assert.equal(epic.teamId, "team");
     assert.equal(epic.assigneeId, "assignee");
     assert.equal(epic.priority, 2);
     assert.equal(epic.subIssues.length, 2);
     assert(epic.subIssues.every((item) => item.assigneeId === "child-assignee"));
     assert(epic.subIssues.every((item) => item.projectId === "project" && item.teamId === "team"));
+    assert(epic.subIssues.every((item) => item.projectName === "Exports"));
     observe("Real HTTP pagination preserves canonical project, team, assignee and priority", true, {
       pages: requests.length,
       parent: epic.assigneeId,
@@ -83,6 +85,7 @@ export async function probeLinearSchedulingMetadata(
     const unassigned = await tracker.loadEpic("parent");
     assert.equal(unassigned.assigneeId, null);
     assert.equal(unassigned.projectId, null);
+    assert.equal(unassigned.projectName, null);
     assert.equal(unassigned.priority, 0);
     assert(
       unassigned.subIssues.every((item) => item.assigneeId === null && item.projectId === null),

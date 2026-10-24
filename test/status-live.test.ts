@@ -14,6 +14,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   saveTaskBlocks,
+  saveWorkItemLinearProject,
 } from "../src/db";
 import { elicitationBody, openQuestion } from "../src/questions";
 import { parseStatusSnapshot, statusIntegrity } from "../src/web/src/contract";
@@ -53,16 +54,8 @@ test("fake e2e rows show up on /api/status as live work", async () => {
       name: "Ada Owner",
       email: "ada@example.test",
     });
-    db.run(
-      `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at)
-       VALUES('approval','ws','proj',?,?,'g1',?,0,1)`,
-      [userId, userId, JSON.stringify({ project: { name: "Exports" } })],
-    );
-    db.run("UPDATE work_item SET owner_user_id = ?, project_approval_id = ? WHERE id = ?", [
-      userId,
-      "approval",
-      waiting.id,
-    ]);
+    db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, waiting.id]);
+    saveWorkItemLinearProject(db, waiting.id, { id: "linear-exports", name: "Exports" });
     saveTaskBlocks(
       db,
       [merging.linearIssueId],
@@ -193,7 +186,7 @@ test("fake e2e rows show up on /api/status as live work", async () => {
       item.project,
     ]);
     expect(rows).toEqual([
-      ["ENG-2", "awaiting_input", "Ada Owner", { id: "approval", name: "Exports" }],
+      ["ENG-2", "awaiting_input", "Ada Owner", { id: "linear-exports", name: "Exports" }],
       ["ENG-3", "merge_queue", null, null],
     ]);
     expect(parsed.snapshot.items.find((item) => item.id === "ENG-2")?.blockers).toEqual([]);

@@ -16,6 +16,8 @@ import type {
 } from "../linear";
 import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
+import { snapshotProject } from "./project";
+import { saveWorkItemLinearProject } from "../db";
 
 export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
 
@@ -245,6 +247,8 @@ export function createItemReconciler(input: {
              revision=work_item_specification.revision+(work_item_specification.hash<>excluded.hash),present=1`,
             [id, hash],
           );
+          const project = snapshotProject(issue);
+          if (project !== undefined) saveWorkItemLinearProject(db, id, project);
           change.issues.push({ itemId: id, issue });
           if (change.parentCanceled || statuses.get(issue.linearIssueId) === "canceled")
             change.canceledItemIds.push(id);
