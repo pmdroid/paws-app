@@ -21,6 +21,10 @@ import {
 
 const MINUTE = 60_000;
 
+function jobStatuses(db: ReturnType<typeof openDatabase>): Record<string, string> {
+  return Object.fromEntries(listJobs(db).map((job) => [job.queue, job.status]));
+}
+
 function acceptedItem(maxAwakeMs: number) {
   const clock = new FakeClock(20_000);
   const db = openDatabase(":memory:");
@@ -94,9 +98,10 @@ describe("awake-time cap after Closeout accepted the work", () => {
     clock.advance(20 * MINUTE);
 
     enqueueJob(db, { queue: "run.resume", payload: { itemId: item.id }, now: clock.now() });
+    enqueueJob(db, { queue: "github.merge", payload: { itemId: item.id }, now: clock.now() });
     const result = accrueAwake(db, item.id, clock.mono(), clock.now());
     expect(result).toMatchObject({ capped: false, asked: true, stopAgent: true });
-    expect(listJobs(db).filter((job) => job.status === "pending")).toEqual([]);
+    expect(jobStatuses(db)).toEqual({ "github.merge": "pending", "run.resume": "cancelled" });
     expect(result.item).toMatchObject({ state: "awaiting_input", cancelRequested: false });
     expect(getRun(db, run.id)?.status).toBe("ended");
     const question = db
@@ -176,9 +181,12 @@ describe("awake-time cap after Closeout accepted the work", () => {
     saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
     accrueAwake(db, item.id, clock.mono(), clock.now());
     clock.advance(20 * MINUTE);
+    enqueueJob(db, { queue: "run.resume", payload: { itemId: item.id }, now: clock.now() });
+    enqueueJob(db, { queue: "github.merge", payload: { itemId: item.id }, now: clock.now() });
 
     const result = accrueAwake(db, item.id, clock.mono(), clock.now());
-    expect(result.capped).toBe(false);
+    expect(result).toMatchObject({ capped: false, stopAgent: true });
+    expect(jobStatuses(db)).toEqual({ "github.merge": "pending", "run.resume": "cancelled" });
     expect(result.item).toMatchObject({
       state: "paused",
       cancelRequested: false,

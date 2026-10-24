@@ -333,13 +333,28 @@ export function resetAwakeTime(db: Database, id: string): void {
 }
 
 /**
+ * Cancels the agent's pending start and resume jobs at the time limit. Merge jobs
+ * stay: Closeout accepted this work, so Paws keeps publishing and merging it.
+ */
+function cancelAgentJobs(db: Database, itemId: string, now: number): void {
+  db.run(
+    `UPDATE job
+     SET status = 'cancelled', last_error = 'time_limit', locked_by = NULL,
+         locked_until = NULL, finished_at = ?
+     WHERE status IN ('pending', 'running') AND queue IN (?, ?)
+       AND json_extract(payload, '$.itemId') = ?`,
+    [now, JOB_KIND.start, JOB_KIND.resume, itemId],
+  );
+}
+
+/**
  * Without a Linear session to ask in, accepted work pauses at the time limit
  * instead of failing. The cap already allows another hour, so resuming it from
  * the run page keeps going.
  */
 function pauseAtTimeLimit(db: Database, item: WorkItemRecord, now: number): void {
   applyWorkItemEvent(db, item.id, "pause");
-  cancelOpenJobs(db, { itemId: item.id, reason: "time_limit", now });
+  cancelAgentJobs(db, item.id, now);
   if (item.currentRunId !== null) {
     const run = getRun(db, item.currentRunId);
     if (run?.status === "active") markRun(db, run.id, "ended", now);
@@ -373,7 +388,7 @@ function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean 
         "SELECT 1 FROM question WHERE session_id = ? AND status = 'open' AND cancelled_at IS NULL",
       )
       .get(sessionId) !== null;
-  cancelOpenJobs(db, { itemId: item.id, reason: "time_limit", now });
+  cancelAgentJobs(db, item.id, now);
   applyWorkItemEvent(db, item.id, "blocking_question");
   if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "awaiting_input" });
   if (item.currentRunId !== null) {

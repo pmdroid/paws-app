@@ -3763,6 +3763,15 @@ export class Orchestrator {
     await this.joinChangedItems([itemId]);
   }
 
+  /**
+   * Stops the item's live agent and its runner work, and nothing else. Its GitHub
+   * authorization and merge work stay, so accepted work keeps publishing and merging.
+   */
+  async stopAgent(itemId: string): Promise<void> {
+    this.abortItem(itemId);
+    await this.options.remoteExecution?.cancelItem?.(itemId);
+  }
+
   private async joinChangedItems(itemIds: readonly string[]): Promise<void> {
     const affected = new Set(itemIds);
     const owned = [...this.live.values()].filter((live) => affected.has(live.itemId));
