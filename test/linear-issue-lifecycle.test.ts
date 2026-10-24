@@ -201,6 +201,31 @@ describe("Linear code issue delegation", () => {
     expect(f.mutations).toHaveLength(1);
   });
 
+  test("a known issue for a verified actor and team starts with the mutation alone", async () => {
+    const f = fixture();
+    await f.lifecycle.startCodeIssue(input);
+    f.beforeRead(() => {
+      throw new Error("The known issue must not be reread");
+    });
+    f.readActor(async () => {
+      throw new Error("The verified actor must not be reread");
+    });
+    f.cursors.length = 0;
+    const known = {
+      id: "issue",
+      teamId: "team",
+      stateType: "unstarted",
+      assigneeId: "human-assignee",
+      delegateId: null,
+    };
+    expect((await f.lifecycle.startCodeIssue(input, { issue: known })).eligible).toBe(true);
+    expect(f.cursors).toEqual([]);
+    expect(f.mutations).toEqual([
+      { stateId: "implementation", delegateId: "paws-app" },
+      { stateId: "implementation", delegateId: "paws-app" },
+    ]);
+  });
+
   test("honors cancellation before any provider request", async () => {
     const f = fixture();
     const controller = new AbortController();

@@ -23,6 +23,7 @@ export type StartLinearCodeIssue = {
 };
 
 export type StartLinearCodeIssueOptions = TrackerRequestOptions & {
+  issue?: LinearIssueOwnership;
   beforeStart?: (issue: LinearIssueOwnership) => void;
 };
 
@@ -63,6 +64,9 @@ export function createLinearIssueLifecycle(client: LinearClient): LinearIssueLif
 }
 
 function createUnlabelledLifecycle(client: LinearClient): LinearIssueLifecycle {
+  const humans = new Set<string>();
+  const startedStates = new Map<string, string>();
+
   async function inspect(issueId: string, options?: TrackerRequestOptions) {
     options?.signal?.throwIfAborted();
     const data = await client.query(ISSUE, { id: issueId }, options);
@@ -89,15 +93,30 @@ function createUnlabelledLifecycle(client: LinearClient): LinearIssueLifecycle {
     inspect,
     async startCodeIssue(input, options) {
       if (input.appUserId.trim() === "") throw new Error("The Linear app user is not configured.");
-      const first = await inspect(input.issueId, options);
+      const first =
+        options?.issue?.id === input.issueId
+          ? options.issue
+          : await inspect(input.issueId, options);
       if (!humanCodeOwnership(first, input)) return { issue: first, eligible: false };
-      const actor = child(await client.query(ACTOR, { id: input.actorId }, options), "user");
-      options?.signal?.throwIfAborted();
-      if (actor?.["id"] !== input.actorId || actor["app"] !== false)
-        return { issue: first, eligible: false };
+      let read = false;
+      if (!humans.has(input.actorId!)) {
+        read = true;
+        const actor = child(await client.query(ACTOR, { id: input.actorId }, options), "user");
+        options?.signal?.throwIfAborted();
+        if (actor?.["id"] !== input.actorId || actor["app"] !== false)
+          return { issue: first, eligible: false };
+        humans.add(input.actorId!);
+      }
       let stateId: string | null = null;
-      if (first.stateType !== "started") stateId = await startedState(first.teamId, options);
-      const issue = await inspect(input.issueId, options);
+      if (first.stateType !== "started") {
+        stateId = startedStates.get(first.teamId) ?? null;
+        if (stateId === null) {
+          read = true;
+          stateId = await startedState(first.teamId, options);
+          startedStates.set(first.teamId, stateId);
+        }
+      }
+      const issue = read ? await inspect(input.issueId, options) : first;
       if (!humanCodeOwnership(issue, input)) return { issue, eligible: false };
       if (issue.teamId !== first.teamId) throw new Error("The Linear issue changed teams.");
       if (issue.stateType !== "started" && stateId === null)
@@ -109,10 +128,17 @@ function createUnlabelledLifecycle(client: LinearClient): LinearIssueLifecycle {
       if (issue.stateType !== "started" && stateId !== null) change.stateId = stateId;
       if (issue.delegateId === null) change.delegateId = input.appUserId;
       if (Object.keys(change).length > 0) {
-        const result = await client.query(UPDATE, { id: issue.id, input: change }, options);
+        const result = await client
+          .query(UPDATE, { id: issue.id, input: change }, options)
+          .catch((error: unknown) => {
+            startedStates.delete(issue.teamId);
+            throw error;
+          });
         options?.signal?.throwIfAborted();
-        if (child(result, "issueUpdate")?.["success"] !== true)
+        if (child(result, "issueUpdate")?.["success"] !== true) {
+          startedStates.delete(issue.teamId);
           throw new Error("Linear did not accept the issue delegation update.");
+        }
       }
       return {
         issue: { ...issue, delegateId: issue.delegateId ?? input.appUserId, stateType: "started" },

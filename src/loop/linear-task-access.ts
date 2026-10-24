@@ -43,6 +43,8 @@ function verdictKey(item: WorkItemRecord, sessionId: string, generation: number)
 
 export class LinearTaskAccess {
   private readonly verdicts = new Map<string, AccessVerdict>();
+  private readonly teams = new Set<string>();
+  private readonly issues = new Map<string, LinearIssueOwnership>();
   private invalidations = 0;
 
   constructor(
@@ -66,9 +68,7 @@ export class LinearTaskAccess {
       !["created", "prompted"].includes(event.action)
     )
       return;
-    const issue = await this.options.lifecycle.inspect(event.issueId, {
-      signal: AbortSignal.timeout(10_000),
-    });
+    const issue = await this.inspect(event.issueId, { signal: AbortSignal.timeout(10_000) });
     if (["completed", "canceled", "duplicate"].includes(issue.stateType))
       throw new LinearIssueClosedError(issue.identifier ?? "This issue");
   }
@@ -97,7 +97,10 @@ export class LinearTaskAccess {
     if (this.options.access === null) throw new Error("Linear is not connected.");
     const request = { ...options, signal: options?.signal ?? AbortSignal.timeout(10_000) };
     request.signal.throwIfAborted();
-    const access = await this.options.access.session(event.sessionId, request);
+    const access =
+      installation?.teamId && event.issueId
+        ? { ...installation, issueId: event.issueId, teamId: installation.teamId }
+        : await this.options.access.session(event.sessionId, request);
     request.signal.throwIfAborted();
     this.record(access);
     if (getLinearSessionGeneration(this.db, event.sessionId) !== generation) return false;
@@ -111,6 +114,9 @@ export class LinearTaskAccess {
 
   invalidate(scope: { sessionId?: string; issueId?: string } = {}): void {
     this.invalidations += 1;
+    if (scope.issueId === undefined) this.teams.clear();
+    if (scope.issueId !== undefined) this.issues.delete(scope.issueId);
+    else if (scope.sessionId === undefined) this.issues.clear();
     for (const [key, verdict] of this.verdicts)
       if (
         (scope.sessionId === undefined || verdict.sessionId === scope.sessionId) &&
@@ -161,7 +167,7 @@ export class LinearTaskAccess {
     if (this.options.access === null) throw new Error("Linear is not connected.");
     const request = { ...options, signal: options?.signal ?? AbortSignal.timeout(10_000) };
     request.signal.throwIfAborted();
-    const allowed = await this.options.access.team(access.teamId, request);
+    const allowed = await this.team(access.teamId, request);
     request.signal.throwIfAborted();
     if (getLinearSessionGeneration(this.db, access.sessionId) !== generation) return false;
     if (!this.allowed(access.sessionId)) return false;
@@ -213,7 +219,13 @@ export class LinearTaskAccess {
   async assertDelivery(
     sessionId: string,
     signal: AbortSignal,
-    options: { itemId?: string; issueId?: string; stop?: boolean; isCurrent(): boolean },
+    options: {
+      itemId?: string;
+      issueId?: string;
+      stop?: boolean;
+      fresh?: boolean;
+      isCurrent(): boolean;
+    },
   ): Promise<void> {
     if (this.options.access === null || this.options.lifecycle === null)
       throw new Error("Linear is not connected.");
@@ -241,20 +253,21 @@ export class LinearTaskAccess {
       verdict.issues.every((issue) => this.permits(item, verdict.access, issue, true))
     )
       return;
-    const access = await this.options.access.session(sessionId, { signal });
+    const stored = options.fresh ? null : this.stored(sessionId);
+    const access = stored ?? (await this.options.access.session(sessionId, { signal }));
     current();
-    this.record(access);
+    if (stored === null) this.record(access);
     current();
     const issueIds = [access.issueId];
     if (options.issueId) issueIds.push(options.issueId);
     if (item) issueIds.push(item.linearIssueId);
     for (const issueId of new Set(issueIds)) {
-      const issue = await this.options.lifecycle.inspect(issueId, { signal });
+      const issue = await this.inspect(issueId, { signal }, options.fresh);
       current();
       if (
         issue.id !== issueId ||
         getLinearTeamAccess(this.db, { ...access, teamId: issue.teamId }) === "removed" ||
-        !(await this.options.access.team(issue.teamId, { signal }))
+        !(await this.team(issue.teamId, { signal }, options.fresh))
       )
         throw new LinearAccessRemovedError("Linear delivery team access was removed.");
       current();
@@ -305,7 +318,7 @@ export class LinearTaskAccess {
       cached !== undefined &&
       cached.issues.every((issue) => this.permits(item, cached.access, issue, allowTerminalIssue))
         ? cached
-        : await this.read(item, sessionId, signal, allowTerminalIssue, current);
+        : await this.read(item, sessionId, signal, allowTerminalIssue, fresh, current);
     if (this.invalidations === invalidations) this.verdicts.set(key, verdict);
     if (!prepare) return [];
     const { access } = verdict;
@@ -318,6 +331,7 @@ export class LinearTaskAccess {
         { issueId: issue.id, appUserId: access.appUserId, actorId },
         {
           signal,
+          issue,
           beforeStart: (verifiedIssue) => {
             current();
             this.ownership(item, sessionId, access, verifiedIssue);
@@ -333,6 +347,7 @@ export class LinearTaskAccess {
       );
       current();
       this.ownership(item, sessionId, access, result.issue);
+      if (this.invalidations === invalidations) this.issues.set(issue.id, result.issue);
       started.set(issue.id, result.issue);
       if (result.eligible) eligible.push(issue.id);
     }
@@ -349,21 +364,23 @@ export class LinearTaskAccess {
     sessionId: string,
     signal: AbortSignal,
     allowTerminalIssue: boolean,
+    fresh: boolean,
     current: (allowUnknown?: boolean) => void,
   ): Promise<AccessVerdict> {
     if (this.options.access === null || this.options.lifecycle === null)
       throw new Error("Linear is not connected.");
-    const access = await this.options.access.session(sessionId, { signal });
+    const stored = fresh ? null : this.stored(sessionId);
+    const access = stored ?? (await this.options.access.session(sessionId, { signal }));
     current(true);
-    this.record(access);
+    if (stored === null) this.record(access);
     current();
     const issues: LinearIssueOwnership[] = [];
     for (const issueId of new Set([access.issueId, item.linearIssueId])) {
-      const issue = await this.options.lifecycle.inspect(issueId, { signal });
+      const issue = await this.inspect(issueId, { signal }, fresh);
       current();
       if (issue.id !== issueId) throw new Error("Linear returned another task issue.");
       this.ownership(item, sessionId, access, issue, allowTerminalIssue);
-      if (!(await this.options.access.team(issue.teamId, { signal }))) {
+      if (!(await this.team(issue.teamId, { signal }, fresh))) {
         this.invalidate({ sessionId });
         this.options.stopSession(sessionId);
         throw new LinearAccessRemovedError("Linear task team access was removed.");
@@ -409,6 +426,45 @@ export class LinearTaskAccess {
       (required !== null &&
         (required.appUserId !== access.appUserId || issue.delegateId !== access.appUserId))
     );
+  }
+
+  private stored(sessionId: string): LinearSessionInstallation | null {
+    const installation = getLinearSessionInstallation(this.db, sessionId);
+    const issueId = getLinearSession(this.db, sessionId)?.issueId;
+    if (!installation?.teamId || !issueId) return null;
+    return {
+      organizationId: installation.organizationId,
+      oauthClientId: installation.oauthClientId,
+      appUserId: installation.appUserId,
+      sessionId,
+      issueId,
+      teamId: installation.teamId,
+    };
+  }
+
+  private async inspect(
+    issueId: string,
+    options: TrackerRequestOptions,
+    fresh = false,
+  ): Promise<LinearIssueOwnership> {
+    if (this.options.lifecycle === null) throw new Error("Linear is not connected.");
+    const cached = fresh ? undefined : this.issues.get(issueId);
+    if (cached !== undefined) return { ...cached };
+    const invalidations = this.invalidations;
+    const issue = await this.options.lifecycle.inspect(issueId, options);
+    if (this.invalidations === invalidations && issue.id === issueId)
+      this.issues.set(issueId, issue);
+    return issue;
+  }
+
+  private async team(teamId: string, options: TrackerRequestOptions, fresh = false) {
+    if (this.options.access === null) throw new Error("Linear is not connected.");
+    if (!fresh && this.teams.has(teamId)) return true;
+    const invalidations = this.invalidations;
+    const allowed = await this.options.access.team(teamId, options);
+    if (allowed && this.invalidations === invalidations) this.teams.add(teamId);
+    if (!allowed) this.teams.delete(teamId);
+    return allowed;
   }
 
   private allowed(sessionId: string): boolean {

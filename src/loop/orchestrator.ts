@@ -1264,6 +1264,7 @@ export class Orchestrator {
         itemId,
         issueId,
         stop: message.delivery === "stop",
+        fresh: message.op === "status" || message.delivery === "terminal",
         isCurrent: context.isCurrent,
       });
     }

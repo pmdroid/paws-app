@@ -319,12 +319,8 @@ function fixture() {
 test("one initial deadline spans authoritative reads and timeout leaves the inbox retryable", async () => {
   const f = fixture();
   try {
-    f.delaySession();
     f.delayTeam();
     expect((await f.deliver()).status).toBe(200);
-    await f.sessionStarted.promise;
-    expect(f.deadlines).toHaveLength(1);
-    f.sessionRelease.resolve();
     await f.teamStarted.promise;
     expect(f.deadlines).toHaveLength(1);
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
