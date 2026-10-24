@@ -10,18 +10,31 @@ import {
   getWorkItem,
   listCloseoutRecoveries,
   saveCheckpoint,
+  saveVisualReviewMarks,
+  type VisualReviewMark,
 } from "../db";
-import { handoffNote, type AnswerEffects, type StoredQuestion } from "../questions";
+import {
+  getVisualReview,
+  handoffNote,
+  type AnswerEffects,
+  type StoredQuestion,
+} from "../questions";
 import { askCloseoutHelp } from "./closeout-help";
 import { parseRecoveryAnswer } from "./closeout-recovery";
 import { worktreeBranch } from "./sources";
+import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
 
 const CLOSEOUT_HELP_RETRY =
   "Use /paws bypass check-id -- your reason from an identifiable trusted account, or reply with guidance.";
 
 export function questionEffects(
   db: Database,
-  input: { now: number; asking?: (runId: string) => boolean; redirect?: boolean },
+  input: {
+    now: number;
+    asking?: (runId: string) => boolean;
+    redirect?: boolean;
+    marks?: readonly VisualReviewMark[];
+  },
 ): AnswerEffects {
   const consumeTurn = (question: StoredQuestion) => {
     if (
@@ -114,7 +127,27 @@ export function questionEffects(
       input.now,
     );
   };
+  const visualReview = (question: StoredQuestion) => {
+    const review = getVisualReview(db, question.id);
+    if (review === null) return;
+    if (input.marks) saveVisualReviewMarks(db, input.marks);
+    const outcome = recordVisualReviewOutcome(db, question, review, input.now);
+    if (!input.marks) consumeTurn(question);
+    if (outcome === "asked" || (question.runId !== null && input.asking?.(question.runId))) return;
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.resume,
+      jobKey: `resume:answer:${question.id}`,
+      payload: {
+        itemId: question.itemId,
+        freshSession: true,
+        handoff: visualReviewHandoff(db, question.id),
+        reason: "visual-review",
+      },
+      now: input.now,
+    });
+  };
   return {
+    "visual-review": visualReview,
     "runner-wait": consumeTurn,
     "time-limit": timeLimit,
     agent: resume,

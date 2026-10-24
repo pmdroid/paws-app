@@ -10,6 +10,7 @@ import {
 } from "../db";
 import type { QuestionOption } from "./channel";
 import { elicitationBody } from "./note";
+import type { VisualReviewShown } from "./visual-review";
 import {
   findOpenQuestion,
   getQuestion,
@@ -47,6 +48,8 @@ const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
   "closeout-help": "item",
   "ci-help": "item",
   "time-limit": null,
+  "visual-review": null,
+  "github-auth": null,
 };
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);
@@ -217,6 +220,7 @@ function closeoutCandidateMoved(
 }
 
 function deliver(db: Database, question: StoredQuestion, now: number): void {
+  if (question.kind === "github-auth") return;
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "elicitation",
@@ -226,8 +230,12 @@ function deliver(db: Database, question: StoredQuestion, now: number): void {
       id: question.id,
       sessionId: question.sessionId,
       questionId: question.id,
-      body: elicitationBody(question.body, question.context ?? undefined, question.options),
       options: question.options,
+      ...(question.kind === "visual-review"
+        ? { body: question.body, ...(JSON.parse(question.context ?? "{}") as VisualReviewShown) }
+        : {
+            body: elicitationBody(question.body, question.context ?? undefined, question.options),
+          }),
     },
     now,
   });

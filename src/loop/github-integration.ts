@@ -12,7 +12,7 @@ import {
   immediate,
   type WorkItemRecord,
 } from "../db";
-import { answerQuestion, findOpenQuestion, getQuestion, openQuestion } from "../questions";
+import { answer, ask, findOpenQuestion, getQuestion, type StoredQuestion } from "../questions";
 
 export const TASK_ACCESS_TTL_MS = 5 * 60_000;
 
@@ -153,12 +153,13 @@ export class GitHubIntegrationHolds {
       }
       if (findOpenQuestion(this.db, latest.sessionKey) !== null) return;
       const body = waitingMessage(result);
-      const question = openQuestion(this.db, {
-        itemId: latest.id,
-        sessionId: latest.sessionKey,
+      const { question } = ask(
+        this.db,
+        { itemId: latest.id, runId: null, sessionId: latest.sessionKey },
+        "github-auth",
         body,
-        now: this.now(),
-      });
+        { now: this.now() },
+      );
       const held = applyWorkItemEvent(this.db, latest.id, "blocking_question");
       this.db.run(
         "INSERT INTO github_integration_hold(question_id,item_id,phase,item_version,session_generation,current_run_id,checkpoint,authority) VALUES(?,?,?,?,?,?,?,?)",
@@ -234,41 +235,48 @@ export class GitHubIntegrationHolds {
       immediate(this.db, () => {
         if (!this.current(hold)) return;
         const question = getQuestion(this.db, hold.question_id)!;
-        if (
-          answerQuestion(this.db, question.id, {
-            answer: "Workspace GitHub App repository access revalidated by Paws.",
-            answeredBy: "paws",
-            eventKey: `github-integration:${question.id}`,
-            now: this.now(),
-          }) === null
-        )
-          return;
-        this.db.run(
-          "UPDATE github_integration_hold SET status='verified' WHERE question_id=? AND status='pending'",
-          [question.id],
-        );
-        applyWorkItemEvent(this.db, item.id, "answer_received");
-        if (hold.phase === "publication") applyWorkItemEvent(this.db, item.id, "turn_ended");
-        enqueueJobOnce(this.db, {
-          queue: hold.phase === "initial" ? JOB_KIND.resume : JOB_KIND.reverify,
-          jobKey: `github-integration:${question.id}`,
-          payload: { itemId: item.id, reason: "github-integration" },
-          now: this.now(),
-        });
-        enqueueOutboxOnce(this.db, {
-          target: "linear",
-          op: "activity",
-          orderingKey: question.sessionId,
-          idempotencyKey: `github-integration:verified:${question.id}`,
-          payload: {
+        answer(
+          this.db,
+          {
             sessionId: question.sessionId,
-            kind: "thought",
-            body: "Workspace GitHub App access restored. Revalidating your task before continuing.",
+            deliveryId: `github-integration:${question.id}`,
+            body: "Workspace GitHub App repository access revalidated by Paws.",
+            answeredBy: "paws",
+            now: this.now(),
           },
-          now: this.now(),
-        });
+          { "github-auth": (answered) => this.resume(hold, answered) },
+        );
       });
     }
+  }
+
+  private resume(hold: Hold, question: StoredQuestion): void {
+    if (question.id !== hold.question_id)
+      throw new Error("A GitHub App hold answer reached another question.");
+    this.db.run(
+      "UPDATE github_integration_hold SET status='verified' WHERE question_id=? AND status='pending'",
+      [question.id],
+    );
+    applyWorkItemEvent(this.db, hold.item_id, "answer_received");
+    if (hold.phase === "publication") applyWorkItemEvent(this.db, hold.item_id, "turn_ended");
+    enqueueJobOnce(this.db, {
+      queue: hold.phase === "initial" ? JOB_KIND.resume : JOB_KIND.reverify,
+      jobKey: `github-integration:${question.id}`,
+      payload: { itemId: hold.item_id, reason: "github-integration" },
+      now: this.now(),
+    });
+    enqueueOutboxOnce(this.db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: question.sessionId,
+      idempotencyKey: `github-integration:verified:${question.id}`,
+      payload: {
+        sessionId: question.sessionId,
+        kind: "thought",
+        body: "Workspace GitHub App access restored. Revalidating your task before continuing.",
+      },
+      now: this.now(),
+    });
   }
 
   private async probe(

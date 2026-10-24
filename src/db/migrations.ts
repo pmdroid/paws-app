@@ -2395,4 +2395,14 @@ WHERE id IN (SELECT question_id FROM closeout_recovery);
 ALTER TABLE runner_skill ADD COLUMN waiting INTEGER;
 `,
   },
+  {
+    id: "120_question_visual_review_github_auth_kind",
+    sql: `
+UPDATE question SET kind = 'visual-review'
+WHERE id IN (SELECT question_id FROM visual_review);
+UPDATE question SET kind = 'github-auth'
+WHERE id IN (SELECT question_id FROM linear_github_auth)
+   OR id IN (SELECT question_id FROM github_integration_hold);
+`,
+  },
 ];

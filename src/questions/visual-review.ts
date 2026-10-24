@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { openQuestion, type StoredQuestion } from "./store";
+import { ask } from "./lifecycle";
+import type { StoredQuestion } from "./store";
 
 /** The question Paws asks when an `approval: human` check has its files. */
 export const VISUAL_REVIEW_QUESTION = "Visual review: accept, or describe the changes you want.";
@@ -64,6 +65,13 @@ export type StoredVisualReview = {
   carried: VisualReviewCarry[];
 };
 
+export type VisualReviewFile = { id: string; link: string };
+
+export type VisualReviewShown = {
+  evidence: (VisualReviewFile & { approved?: VisualReviewFile })[];
+  carried?: string[];
+};
+
 type VisualReviewRow = {
   question_id: string;
   item_id: string;
@@ -92,16 +100,20 @@ export function openVisualReview(
     now: number;
     /** Files among `evidenceIds` that are not asked about again. */
     carried?: readonly VisualReviewCarry[];
+    shown?: VisualReviewShown;
   },
 ): { question: StoredQuestion; review: StoredVisualReview } {
-  const question = openQuestion(db, {
-    itemId: input.itemId,
-    runId: input.runId,
-    sessionId: input.sessionId,
-    body: VISUAL_REVIEW_QUESTION,
-    options: [...VISUAL_REVIEW_OPTIONS],
-    now: input.now,
-  });
+  const { question } = ask(
+    db,
+    { itemId: input.itemId, runId: input.runId, sessionId: input.sessionId },
+    "visual-review",
+    VISUAL_REVIEW_QUESTION,
+    {
+      options: [...VISUAL_REVIEW_OPTIONS],
+      ...(input.shown ? { context: JSON.stringify(input.shown) } : {}),
+      now: input.now,
+    },
+  );
   db.run(
     "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, head_commit, carried) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [
@@ -218,14 +230,13 @@ export function openVisualReviewContinue(
   db: Database,
   input: { itemId: string; runId: string | null; sessionId: string; checkId: string; now: number },
 ): StoredQuestion {
-  const question = openQuestion(db, {
-    itemId: input.itemId,
-    runId: input.runId,
-    sessionId: input.sessionId,
-    body: visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS),
-    options: [...VISUAL_REVIEW_CONTINUE_OPTIONS],
-    now: input.now,
-  });
+  const { question } = ask(
+    db,
+    { itemId: input.itemId, runId: input.runId, sessionId: input.sessionId },
+    "visual-review",
+    visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS),
+    { options: [...VISUAL_REVIEW_CONTINUE_OPTIONS], now: input.now },
+  );
   db.run(
     "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, kind) VALUES (?, ?, ?, '[]', ?, 'continue')",
     [question.id, input.itemId, input.checkId, input.now],

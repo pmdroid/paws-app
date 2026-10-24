@@ -243,6 +243,7 @@ import {
   acceptedVisualReviews,
   getQuestion,
   getVisualReview,
+  parseVisualReviewAnswer,
   markVisualReviewStale,
   questionReplyConsumed,
   visualReviewStaleHandoff,
@@ -252,7 +253,6 @@ import {
   type StoredVisualReview,
 } from "../questions";
 import {
-  answerVisualReview,
   askForVisualReview,
   carryVisualReview,
   dueVisualReview,
@@ -3187,7 +3187,7 @@ export class Orchestrator {
     } catch {}
     const user = answerer(answeredBy);
     if (user === null) return "rejected";
-    const review = getVisualReview(this.db, open.id);
+    const review = open.kind === "visual-review" ? getVisualReview(this.db, open.id) : null;
     if (review) {
       const item = getWorkItem(this.db, open.itemId);
       if (item === null) return "rejected";
@@ -3205,11 +3205,13 @@ export class Orchestrator {
       }
       return this.answerVisualReview(open, review, event.dedupeKey, answer, answeredBy);
     }
-    if (this.githubAuth?.owns(open.id)) {
-      const accepted = await this.githubAuth.retry(open.id, answeredBy, () => {
-        if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
-          applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
-      });
+    if (open.kind === "visual-review") return "rejected";
+    if (open.kind === "github-auth") {
+      const accepted =
+        (await this.githubAuth?.retry(open.id, answeredBy, () => {
+          if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
+            applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
+        })) ?? false;
       await this.flush();
       return accepted ? "answered" : "rejected";
     }
@@ -4583,18 +4585,16 @@ export class Orchestrator {
   ): Promise<"answered" | "rejected"> {
     const sessionId = open.sessionId;
     const outcome = immediate(this.db, () => {
-      const result = answerVisualReview(this.db, {
-        question: open,
-        review,
-        answer,
-        answeredBy,
-        eventKey,
-        now: this.now(),
-      });
       const item = getWorkItem(this.db, open.itemId);
-      if (item === null || result === "rejected") return "rejected" as const;
-      if (marks) saveVisualReviewMarks(this.db, marks);
-      if (result === "describe") {
+      if (
+        item === null ||
+        item.state !== "awaiting_input" ||
+        item.cancelRequested ||
+        getQuestion(this.db, open.id)?.status !== "open"
+      )
+        return "rejected" as const;
+      if (review.kind === "review" && parseVisualReviewAnswer(answer).kind === "describe") {
+        if (marks) saveVisualReviewMarks(this.db, marks);
         postNote(
           this.db,
           sessionId,
@@ -4605,22 +4605,16 @@ export class Orchestrator {
         );
         return "rejected" as const;
       }
-      if (!marks && item.sessionKey === sessionId)
-        applyLinearTurns(this.db, sessionId, [eventKey], item.id);
-      if (result === "asked" || (open.runId !== null && this.askedRuns.has(open.runId)))
-        return "answered" as const;
-      enqueueJobOnce(this.db, {
-        queue: JOB_KIND.resume,
-        jobKey: `resume:answer:${open.id}`,
-        payload: {
-          itemId: item.id,
-          freshSession: true,
-          handoff: visualReviewHandoff(this.db, open.id),
-          reason: "visual-review",
-        },
-        now: this.now(),
-      });
-      return "answered" as const;
+      const answered = answerAsked(
+        this.db,
+        { sessionId, deliveryId: eventKey, body: answer, answeredBy, now: this.now() },
+        questionEffects(this.db, {
+          now: this.now(),
+          asking: (runId) => this.askedRuns.has(runId),
+          ...(marks ? { marks } : {}),
+        }),
+      );
+      return answered.status === "answered" ? ("answered" as const) : ("rejected" as const);
     });
     await this.flush();
     return outcome;
