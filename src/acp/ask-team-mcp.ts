@@ -16,13 +16,14 @@ const TOOL = {
       question: { type: "string", description: "Question for the team." },
       options: {
         type: "array",
+        maxItems: 3,
         items: {
           anyOf: [
-            { type: "string", minLength: 1 },
+            { type: "string", minLength: 1, maxLength: 24 },
             {
               type: "object",
               properties: {
-                label: { type: "string", minLength: 1 },
+                label: { type: "string", minLength: 1, maxLength: 24 },
                 value: { type: "string", minLength: 1 },
               },
               required: ["value"],
@@ -30,7 +31,8 @@ const TOOL = {
             },
           ],
         },
-        description: "Optional strings or choices with a display label and a stable value.",
+        description:
+          'Optional answer buttons: at most 3, each label at most 24 characters, like "Retry" or "Open the PR". Explain each option in context.',
       },
       context: { type: "string", description: "Extra context the team should see." },
     },
