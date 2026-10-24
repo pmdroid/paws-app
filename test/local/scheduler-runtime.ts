@@ -18,7 +18,8 @@ import {
   openDatabase,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
-import { dispatch, registerScheduler, saveSchedulingContext } from "../../src/scheduler";
+import { registerScheduler, saveSchedulingContext } from "../../src/scheduler";
+import { workspaceAdmission, workspaceDispatch } from "../fake-workspace";
 
 export async function probeSchedulerRuntime(
   root: string,
@@ -82,6 +83,7 @@ export async function probeSchedulerRuntime(
   const events: string[] = [];
   const orchestrator = new Orchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     clock,
     outbox: new OutboxDispatcher(db, clock),
@@ -143,7 +145,7 @@ export async function probeSchedulerRuntime(
       paths: ["src/default"],
     });
     const loop = new JobLoop(defaults, clock);
-    const run = () => dispatch(defaults, { now: clock.now() });
+    const run = () => workspaceDispatch(defaults, { now: clock.now() });
     registerScheduler(loop, () => void run(), clock.now());
     const tick = await loop.tick();
     const count = defaults

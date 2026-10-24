@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { listItemHolds } from "../src/db";
 import { createAdmission, dispatch } from "../src/scheduler";
 import { createLiveStatusProvider } from "../src/web";
+import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { tempDb } from "./helpers";
 
 function item(db: Database, id: string, state = "queued", position = 0) {
@@ -37,14 +38,14 @@ test("a blocked item names its blocker once in the journal and once more when it
     item(db, "PAS-368", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-367','issue-PAS-368')");
     const { lines, log } = journal();
-    expect(dispatch(db, { now: 1, log })).toEqual([]);
-    expect(dispatch(db, { now: 2, log })).toEqual([]);
+    expect(workspaceDispatch(db, { now: 1, log })).toEqual([]);
+    expect(workspaceDispatch(db, { now: 2, log })).toEqual([]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "PAS-368", reason: "blocked", blockers: ["PAS-367"] },
     ]);
     expect(lines).toEqual(["item PAS-368 held: blocked by PAS-367"]);
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-367'");
-    expect(dispatch(db, { now: 3, log })).toEqual(["PAS-368"]);
+    expect(workspaceDispatch(db, { now: 3, log })).toEqual(["PAS-368"]);
     expect(listItemHolds(db)).toEqual([]);
     expect(lines).toEqual(["item PAS-368 held: blocked by PAS-367", "item PAS-368 no longer held"]);
   } finally {
@@ -60,11 +61,11 @@ test("a ready item without a free slot, then over its owner cap, journals each n
     const { lines, log } = journal();
     fullRunner(db);
     const now = Date.now();
-    dispatch(db, { now, log });
+    workspaceDispatch(db, { now, log });
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-2", reason: "slot", blockers: [] }]);
-    dispatch(db, { now: now + 1, log });
+    workspaceDispatch(db, { now: now + 1, log });
     db.run("DELETE FROM runner_work");
-    dispatch(db, { now: now + 2, log, ownerCap: 1 });
+    workspaceDispatch(db, { now: now + 2, log, ownerCap: 1 });
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-2", reason: "cap", blockers: [] }]);
     expect(lines).toEqual([
       "item PAS-2 held: no free slot on any runner",
@@ -80,7 +81,7 @@ test("a project that holds an item is its held reason", () => {
   try {
     item(db, "PAS-5");
     const { lines, log } = journal();
-    const admission = createAdmission({ db, authority: () => false });
+    const admission = workspaceAdmission(db, { authority: () => false });
     expect(dispatch(db, { now: 1, log, admission })).toEqual([]);
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-5", reason: "project", blockers: [] }]);
     expect(lines).toEqual(["item PAS-5 held: its project has not released it yet"]);
@@ -96,7 +97,7 @@ test("without a workspace nothing starts and earlier holds stay as they were", (
     item(db, "PAS-8", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-7','issue-PAS-8')");
     const { lines, log } = journal();
-    expect(dispatch(db, { now: 1, log })).toEqual([]);
+    expect(workspaceDispatch(db, { now: 1, log })).toEqual([]);
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-7'");
     item(db, "PAS-9", "queued", 2);
     const admission = createAdmission({ db, workspace: false });
@@ -116,7 +117,7 @@ test("the status API carries the held reason of a queued item", () => {
     item(db, "PAS-367", "running");
     item(db, "PAS-368", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-367','issue-PAS-368')");
-    dispatch(db, { now: 1 });
+    workspaceDispatch(db, { now: 1 });
     const items = createLiveStatusProvider(db).snapshot().items;
     expect(items.find((entry) => entry.id === "PAS-368")?.held).toEqual({
       reason: "blocked",

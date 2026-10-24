@@ -7,8 +7,8 @@ import {
   syncItemDependencies,
 } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { dispatch } from "../src/scheduler";
 import { tempDb } from "./helpers";
+import { workspaceDispatch } from "./fake-workspace";
 
 const issue = {
   linearIssueId: "only",
@@ -135,7 +135,7 @@ test("the scheduler admits an item without reading the epic table", async () => 
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
     ).toBeNull();
     expect(
-      dispatch(db, {
+      workspaceDispatch(db, {
         now: 2,
       }),
     ).toEqual([intake.items[0]!.id]);

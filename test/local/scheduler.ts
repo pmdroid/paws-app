@@ -21,12 +21,8 @@ import {
 import { JOB_KIND } from "../../src/core";
 import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
-import {
-  createAdmission,
-  dispatch,
-  registerScheduler,
-  saveSchedulingContext,
-} from "../../src/scheduler";
+import { dispatch, registerScheduler, saveSchedulingContext } from "../../src/scheduler";
+import { workspaceAdmission, workspaceDispatch } from "../fake-workspace";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -41,7 +37,7 @@ if (process.argv[2] === "--contender") {
     if (Date.now() > deadline) throw new Error("Scheduler contender gate timed out");
     await pause(5);
   }
-  const admitted = dispatch(db, { now: 1000 });
+  const admitted = workspaceDispatch(db, { now: 1000 });
   writeFileSync(join(root, `result-${contender}.json`), JSON.stringify(admitted));
   db.close();
 }
@@ -53,7 +49,7 @@ export async function probeScheduler(
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const observed = (name: string, value: unknown) => observe(name, true, value);
   const onlyStarts = (db: Database, only: string) => ({
-    ...createAdmission({ db }),
+    ...workspaceAdmission(db),
     canStart: (itemId: string) =>
       itemId === only ? ({ ok: true } as const) : ({ ok: false, held: "blocked" } as const),
   });
@@ -134,7 +130,7 @@ export async function probeScheduler(
       secondDb.close();
       db.close();
       const reopened = openDatabase(join(directory, "paws.sqlite"));
-      assert.deepEqual(dispatch(reopened, { now: 1001 }), []);
+      assert.deepEqual(workspaceDispatch(reopened, { now: 1001 }), []);
       assert.equal(count(reopened, "scheduler_admission"), 20);
       observed("Restart retains queued or active reservations", {
         admissions: count(reopened, "scheduler_admission"),
@@ -151,14 +147,14 @@ export async function probeScheduler(
     ["unknown", () => []],
   ] as const) {
     const { db, ids } = setup(name, 2, paths);
-    assert.equal(dispatch(db, { now: 1000 }).length, 2);
+    assert.equal(workspaceDispatch(db, { now: 1000 }).length, 2);
     const first = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     const second = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     assert.notEqual(first.id, second.id);
     const id = (first.payload as { itemId: string }).itemId;
     db.run("UPDATE work_item SET state='merged' WHERE id=?", [id]);
     assert(completeJob(db, first, 1001));
-    assert.equal(dispatch(db, { now: 1001 }).length, 0);
+    assert.equal(workspaceDispatch(db, { now: 1001 }).length, 0);
     observed(`${name} footprints execute independently in separate task workspaces`, { ids });
     db.close();
   }
@@ -167,7 +163,7 @@ export async function probeScheduler(
       const { db } = setup(`root-glob-${glob.replaceAll("*", "")}`, 2, (index) => [
         index ? glob.replace("*", "concrete") : glob,
       ]);
-      assert.equal(dispatch(db, { now: 1000 }).length, 2);
+      assert.equal(workspaceDispatch(db, { now: 1000 }).length, 2);
       db.close();
     }
     observed("Root-segment globs do not serialize private task workspaces", {
@@ -176,14 +172,14 @@ export async function probeScheduler(
   }
   {
     const { db, ids } = setup("claimed-retraction", 2, () => ["src/shared"]);
-    assert.deepEqual(dispatch(db, { now: 1000 }), ids);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ids);
     const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     const first = (claimed.payload as { itemId: string }).itemId;
     const canDispatchDelegation = (delegationId: string) => delegationId !== `epic-${first}`;
     assert.deepEqual(
       dispatch(db, {
         now: 1001,
-        admission: createAdmission({ db, authority: canDispatchDelegation }),
+        admission: workspaceAdmission(db, { authority: canDispatchDelegation }),
       }),
       [],
     );
@@ -194,7 +190,7 @@ export async function probeScheduler(
     assert.deepEqual(
       dispatch(db, {
         now: 1002,
-        admission: createAdmission({ db, authority: canDispatchDelegation }),
+        admission: workspaceAdmission(db, { authority: canDispatchDelegation }),
       }),
       [],
     );
@@ -207,10 +203,10 @@ export async function probeScheduler(
   {
     for (const running of [false, true]) {
       const { db, ids } = setup(`stale-start-${running}`, 1);
-      dispatch(db, { now: 1000 });
+      workspaceDispatch(db, { now: 1000 });
       if (running) assert(claimNextJob(db, { now: 1000, leaseMs: 10, queues: [JOB_KIND.start] }));
       db.run("UPDATE work_item SET state='failed' WHERE id=?", [ids[0]!]);
-      dispatch(db, { now: 1011 });
+      workspaceDispatch(db, { now: 1011 });
       assert.equal(count(db, "scheduler_admission"), 0);
       db.run("UPDATE work_item SET state='queued' WHERE id=?", [ids[0]!]);
       assert.equal(claimNextJob(db, { now: 1011, queues: [JOB_KIND.start] }), null);
@@ -251,10 +247,10 @@ export async function probeScheduler(
     });
     const merge = claimNextJob(db, { now: 1001, queues: [`${JOB_KIND.merge}.deferred`] })!;
     assert.equal(merge.id, mergeId);
-    assert.deepEqual(dispatch(db, { now: 1002 }), [ids[1]!]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1002 }), [ids[1]!]);
     assert.equal(count(db, "scheduler_admission"), 2);
     assert(completeJob(db, merge, 1003));
-    assert.deepEqual(dispatch(db, { now: 1003 }), []);
+    assert.deepEqual(workspaceDispatch(db, { now: 1003 }), []);
     const blocker = claimNextJob(db, { now: 1003, queues: [JOB_KIND.start] })!;
     assert.equal((blocker.payload as { itemId: string }).itemId, ids[1]!);
     observed("A live merge admits a same-session sibling with an overlapping footprint", {
@@ -272,9 +268,9 @@ export async function probeScheduler(
       assert(completeJob(db, start, 1001));
       db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
       const run = insertRun(db, { itemId: ids[0]!, now: 1001, status });
-      assert.deepEqual(dispatch(db, { now: 1002 }), [ids[1]!]);
+      assert.deepEqual(workspaceDispatch(db, { now: 1002 }), [ids[1]!]);
       db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
-      assert.deepEqual(dispatch(db, { now: 1003 }), []);
+      assert.deepEqual(workspaceDispatch(db, { now: 1003 }), []);
       db.close();
     }
     observed("Active or provisioning runs do not block another ready item", {
@@ -284,7 +280,7 @@ export async function probeScheduler(
   {
     const { db, ids } = setup("waiting-independent", 3, () => []);
     db.run("UPDATE work_item SET state='awaiting_input' WHERE id=?", [ids[0]!]);
-    assert.deepEqual(dispatch(db, { now: 1000 }), ids.slice(1));
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ids.slice(1));
     observed("A waiting task without live work releases capacity for two independent tasks", {
       ids,
     });
@@ -308,7 +304,7 @@ export async function probeScheduler(
     db.run(
       "CREATE TRIGGER fail_admission BEFORE INSERT ON scheduler_admission BEGIN SELECT RAISE(ABORT,'injected crash'); END",
     );
-    assert.throws(() => dispatch(db, { now: 1000 }), /injected crash/);
+    assert.throws(() => workspaceDispatch(db, { now: 1000 }), /injected crash/);
     assert.equal(count(db, "job"), 0);
     assert.equal(count(db, "scheduler_admission"), 0);
     observed("Failure after job insertion rolls back the whole dispatch", {
@@ -326,7 +322,7 @@ export async function probeScheduler(
       issue(ids[2]!),
       issue(ids[3]!),
     ]);
-    const admitted = dispatch(db, { now: 1000 });
+    const admitted = workspaceDispatch(db, { now: 1000 });
     assert.deepEqual(admitted, [ids[2], ids[0], ids[1]]);
     observed("Critical path wins before age with deterministic ties", { admitted });
     db.close();
@@ -467,16 +463,16 @@ export async function probeScheduler(
     assert.deepEqual(
       dispatch(db, {
         now: 1000,
-        admission: createAdmission({ db, authority: () => false }),
+        admission: workspaceAdmission(db, { authority: () => false }),
       }),
       [],
     );
     assert.equal(count(db, "job"), 0);
-    assert.equal(dispatch(db, { now: 1001 }).length, 2);
+    assert.equal(workspaceDispatch(db, { now: 1001 }).length, 2);
     assert.deepEqual(
       dispatch(db, {
         now: 1002,
-        admission: createAdmission({ db, authority: () => false }),
+        admission: workspaceAdmission(db, { authority: () => false }),
       }),
       [],
     );
@@ -490,7 +486,7 @@ export async function probeScheduler(
     const { db, ids } = setup("unknown-project", 3);
     for (const id of ids) saveSchedulingContext(db, { itemId: id, paths: ["src/a"] });
     db.run("UPDATE work_item_repository SET repo=item_id");
-    assert.equal(dispatch(db, { now: 1000 }).length, 3);
+    assert.equal(workspaceDispatch(db, { now: 1000 }).length, 3);
     observed("Unknown project identity does not cap ready items across repositories", {
       admissions: count(db, "scheduler_admission"),
     });
@@ -498,7 +494,7 @@ export async function probeScheduler(
   }
   {
     const { db, ids } = setup("draining", 2);
-    dispatch(db, { now: 1000 });
+    workspaceDispatch(db, { now: 1000 });
     insertRun(db, { itemId: ids[0]!, now: 1000, status: "active" });
     const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] });
     assert(claimed);
@@ -513,7 +509,7 @@ export async function probeScheduler(
     const { db } = setup("tick", 1);
     let now = 1000;
     const loop = new JobLoop(db, { now: () => now, mono: () => now });
-    registerScheduler(loop, () => dispatch(db, { now }), now);
+    registerScheduler(loop, () => workspaceDispatch(db, { now }), now);
     const first = await loop.tick();
     assert(first);
     assert.equal(getJob(db, first.id)!.runAt, 31_000);
@@ -531,7 +527,7 @@ export async function probeScheduler(
   }
   {
     const { db } = setup("workers", 2);
-    dispatch(db, { now: 1000 });
+    workspaceDispatch(db, { now: 1000 });
     const controller = new AbortController();
     const entered: string[] = [];
     let release!: () => void;
