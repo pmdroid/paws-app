@@ -11,7 +11,7 @@ import {
   saveCheckpoint,
   type WorkItemRecord,
 } from "../db";
-import { ask, findOpenQuestion } from "../questions";
+import { ask } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
 
 export type MergeReturnReason = "rebase-conflict" | "ci-failed";
@@ -93,8 +93,8 @@ export function askMergeHelp(
     const current = getWorkItem(db, input.itemId);
     if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
     const sessionId = input.session(current);
-    if (sessionId === null || findOpenQuestion(db, sessionId) !== null) return false;
-    ask(db, { itemId: current.id, runId: current.currentRunId, sessionId }, "agent", input.body, {
+    if (sessionId === null) return false;
+    ask(db, { itemId: current.id, runId: current.currentRunId, sessionId }, "ci-help", input.body, {
       now: input.now,
     });
     applyWorkItemEvent(db, current.id, "blocking_question");

@@ -1,6 +1,7 @@
 import { linearDefaultCallers } from "./budget";
 import type { TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
+import { keepIssueStart, type IssueStartReads } from "./issue-start";
 import { isRecord, readNumber, readString } from "./read";
 import { schedulingMetadata } from "./scheduling";
 
@@ -23,11 +24,17 @@ export type StartLinearCodeIssue = {
 };
 
 export type StartLinearCodeIssueOptions = TrackerRequestOptions & {
+  issue?: LinearIssueOwnership;
   beforeStart?: (issue: LinearIssueOwnership) => void;
 };
 
 export interface LinearIssueLifecycle {
   inspect(issueId: string, options?: TrackerRequestOptions): Promise<LinearIssueOwnership>;
+  inspectStart?(
+    issueId: string,
+    actorId: string | null,
+    options?: TrackerRequestOptions,
+  ): Promise<LinearIssueOwnership>;
   startCodeIssue(
     input: StartLinearCodeIssue,
     options?: StartLinearCodeIssueOptions,
@@ -36,6 +43,24 @@ export interface LinearIssueLifecycle {
 
 const ISSUE = `query IssueOwnership($id: String!) {
   issue(id: $id) { id identifier url team { id } state { type } assignee { id } delegate { id } project { id } }
+}`;
+
+const PAGE = "pageInfo { hasNextPage endCursor }";
+const RELATION = "nodes { type issue { id } relatedIssue { id } }";
+const START = `query IssueStart($id: String!, $actor: String!, $hasActor: Boolean!) {
+  issue(id: $id) {
+    id identifier title description url priority
+    team { id states(first: 50, filter: { type: { eq: "started" } }) { nodes { id position } ${PAGE} } }
+    project { id name content } assignee { id } delegate { id } state { type }
+    labels(first: 100) { nodes { name } }
+    children(first: 50) {
+      nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id } assignee { id } priority }
+      ${PAGE}
+    }
+    relations(first: 50) { ${RELATION} ${PAGE} }
+    inverseRelations(first: 50) { ${RELATION} ${PAGE} }
+  }
+  user(id: $actor) @include(if: $hasActor) { id app }
 }`;
 
 const ACTOR = `query CodeTaskActor($id: String!) {
@@ -55,18 +80,32 @@ const UPDATE = `mutation StartDelegatedIssue($id: String!, $input: IssueUpdateIn
   issueUpdate(id: $id, input: $input) { success }
 }`;
 
-export function createLinearIssueLifecycle(client: LinearClient): LinearIssueLifecycle {
-  return linearDefaultCallers(createUnlabelledLifecycle(client), {
+export function createLinearIssueLifecycle(
+  client: LinearClient,
+  starts?: IssueStartReads,
+): LinearIssueLifecycle {
+  return linearDefaultCallers(createUnlabelledLifecycle(client, starts), {
     inspect: "issue-inspect",
+    inspectStart: "issue-inspect",
     startCodeIssue: "issue-start",
   });
 }
 
-function createUnlabelledLifecycle(client: LinearClient): LinearIssueLifecycle {
+function createUnlabelledLifecycle(
+  client: LinearClient,
+  starts?: IssueStartReads,
+): LinearIssueLifecycle {
+  const humans = new Set<string>();
+  const startedStates = new Map<string, string>();
+
   async function inspect(issueId: string, options?: TrackerRequestOptions) {
     options?.signal?.throwIfAborted();
     const data = await client.query(ISSUE, { id: issueId }, options);
     options?.signal?.throwIfAborted();
+    return ownership(data, issueId);
+  }
+
+  function ownership(data: unknown, issueId: string): LinearIssueOwnership {
     const issue = child(data, "issue");
     const id = issue === null ? null : readString(issue, "id");
     const teamId = readString(child(issue, "team") ?? {}, "id");
@@ -87,21 +126,56 @@ function createUnlabelledLifecycle(client: LinearClient): LinearIssueLifecycle {
 
   return {
     inspect,
+    async inspectStart(issueId, actorId, options) {
+      options?.signal?.throwIfAborted();
+      const data = await client.query(
+        START,
+        { id: issueId, actor: actorId ?? "", hasActor: actorId !== null },
+        options,
+      );
+      options?.signal?.throwIfAborted();
+      const issue = ownership(data, issueId);
+      const actor = child(data, "user");
+      if (actorId !== null && actor?.["id"] === actorId && actor["app"] === false)
+        humans.add(actorId);
+      const states = child(child(child(data, "issue"), "team"), "states");
+      const started = Array.isArray(states?.["nodes"])
+        ? states["nodes"]
+            .filter(isRecord)
+            .flatMap((node) => {
+              const id = readString(node, "id");
+              const position = readNumber(node, "position");
+              return id === null || position === null ? [] : [{ id, position }];
+            })
+            .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id))
+        : [];
+      if (child(states, "pageInfo")?.["hasNextPage"] === false && started[0])
+        startedStates.set(issue.teamId, started[0].id);
+      if (starts) keepIssueStart(starts, issueId, data);
+      return issue;
+    },
     async startCodeIssue(input, options) {
       if (input.appUserId.trim() === "") throw new Error("The Linear app user is not configured.");
-      const first = await inspect(input.issueId, options);
-      if (!humanCodeOwnership(first, input)) return { issue: first, eligible: false };
-      const actor = child(await client.query(ACTOR, { id: input.actorId }, options), "user");
-      options?.signal?.throwIfAborted();
-      if (actor?.["id"] !== input.actorId || actor["app"] !== false)
-        return { issue: first, eligible: false };
-      let stateId: string | null = null;
-      if (first.stateType !== "started") stateId = await startedState(first.teamId, options);
-      const issue = await inspect(input.issueId, options);
+      const issue =
+        options?.issue?.id === input.issueId
+          ? options.issue
+          : await inspect(input.issueId, options);
       if (!humanCodeOwnership(issue, input)) return { issue, eligible: false };
-      if (issue.teamId !== first.teamId) throw new Error("The Linear issue changed teams.");
-      if (issue.stateType !== "started" && stateId === null)
-        throw new Error("The Linear issue changed workflow state.");
+      if (!humans.has(input.actorId!)) {
+        const actor = child(await client.query(ACTOR, { id: input.actorId }, options), "user");
+        options?.signal?.throwIfAborted();
+        if (actor?.["id"] !== input.actorId || actor["app"] !== false)
+          return { issue, eligible: false };
+        humans.add(input.actorId!);
+      }
+      let stateId: string | null = null;
+      if (issue.stateType !== "started") {
+        stateId = startedStates.get(issue.teamId) ?? null;
+        if (stateId === null) {
+          stateId = await startedState(issue.teamId, options);
+          startedStates.set(issue.teamId, stateId);
+        }
+      }
       options?.signal?.throwIfAborted();
       options?.beforeStart?.(issue);
       options?.signal?.throwIfAborted();
@@ -109,10 +183,17 @@ function createUnlabelledLifecycle(client: LinearClient): LinearIssueLifecycle {
       if (issue.stateType !== "started" && stateId !== null) change.stateId = stateId;
       if (issue.delegateId === null) change.delegateId = input.appUserId;
       if (Object.keys(change).length > 0) {
-        const result = await client.query(UPDATE, { id: issue.id, input: change }, options);
+        const result = await client
+          .query(UPDATE, { id: issue.id, input: change }, options)
+          .catch((error: unknown) => {
+            startedStates.delete(issue.teamId);
+            throw error;
+          });
         options?.signal?.throwIfAborted();
-        if (child(result, "issueUpdate")?.["success"] !== true)
+        if (child(result, "issueUpdate")?.["success"] !== true) {
+          startedStates.delete(issue.teamId);
           throw new Error("Linear did not accept the issue delegation update.");
+        }
       }
       return {
         issue: { ...issue, delegateId: issue.delegateId ?? input.appUserId, stateType: "started" },

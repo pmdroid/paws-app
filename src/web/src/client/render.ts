@@ -15,6 +15,7 @@ import {
   ago,
   avatar,
   clock,
+  clock24,
   esc,
   itemLabel,
   linkButtons,
@@ -116,14 +117,19 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "overview":
       return viewOverview(snapshot);
     case "issues":
-      return viewIssues(snapshot, model.route.id);
-    case "runs":
-      return viewRuns(
+      return viewIssues(
         snapshot,
         model.route.id,
         model.closeout ?? emptyCloseoutView(),
         model.engineUrl,
+      );
+    case "runs":
+      return viewRuns(
+        snapshot,
+        model.route.id,
         model.search ?? "",
+        model.closeout ?? emptyCloseoutView(),
+        model.engineUrl,
       );
     case "mergeQueue":
       return `${pageHeading("mergeQueue")}${renderMergeQueue(snapshot)}`;
@@ -231,10 +237,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
           ? `<ul class="overview-work" role="list">${work
               .slice(0, 6)
               .map((item) => {
-                const run = item.runId ? runs.get(item.runId) : undefined;
-                const href = routeHref(
-                  run ? { view: "runs", id: run.id } : { view: "issues", id: item.id },
-                );
+                const href = routeHref({ view: "issues", id: item.id });
                 return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}</li>`;
               })
               .join(
@@ -247,7 +250,12 @@ function viewOverview(snapshot: StatusSnapshot): string {
 
 const EMPTY_ISSUES = "No issues yet. Delegate an issue to Paws in Linear.";
 
-function viewIssues(snapshot: StatusSnapshot, id: string | null): string {
+function viewIssues(
+  snapshot: StatusSnapshot,
+  id: string | null,
+  closeout: CloseoutView,
+  engineUrl: string | null,
+): string {
   const selected = id ? findItem(snapshot, id) : undefined;
   if (id && !selected)
     return `${pageHeading("issues")}<div class="empty">Issue not found. Choose an issue from the list.</div>${entityPicker(
@@ -258,7 +266,7 @@ function viewIssues(snapshot: StatusSnapshot, id: string | null): string {
       })),
       "",
     )}`;
-  if (selected) return issueDetail(snapshot, selected);
+  if (selected) return issuePage(snapshot, selected.id, closeout, engineUrl);
   if (!snapshot.items.length)
     return `${pageHeading("issues")}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   return `${pageHeading("issues")}
@@ -270,30 +278,6 @@ function viewIssues(snapshot: StatusSnapshot, id: string | null): string {
     </div>
     <ul class="issue-list" role="list">${snapshot.items.map((item) => issueRow(snapshot, item)).join("")}</ul>
     <p class="empty issue-filter-empty" hidden>No issues match this filter.</p>`;
-}
-
-function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
-  const runs = itemRuns(snapshot, item.id);
-  const blocked = snapshot.items.filter(
-    (entry) => entry.id !== item.id && entry.blockers.includes(item.id),
-  );
-  return `${pageHeading("issues")}
-    <a href="${routeHref({ view: "issues", id: null })}">All issues</a>
-    <div class="issue-head">
-      <span class="lin-id">${esc(item.id)}</span>
-      <div class="issue-title"><h2>${esc(item.title)}</h2>${statePill(item.state, itemLabel(item.state))}</div>
-      <div class="issue-facts">${issueMeta(item)}</div>
-      <div class="row">${linkList(item.links)}</div>
-    </div>
-    ${queueNotice(item)}
-    ${mergeQueueNotice(item)}
-    ${githubQueueNotice(item)}
-    <h3>Runs</h3>
-    ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><div class="between"><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a>${statePill(run.state, runLabel(run.state))}</div></li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
-    <h3>Blocked by</h3>
-    ${relatedIssues(item.blockers)}
-    <h3>Blocks</h3>
-    ${relatedIssues(blocked.map((entry) => entry.id))}`;
 }
 
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
@@ -320,81 +304,257 @@ function relatedIssues(ids: readonly string[]): string {
   return `<div class="row wrap">${ids.map((id) => `<a href="${routeHref({ view: "issues", id })}">${esc(id)}</a>`).join("")}</div>`;
 }
 
-function itemRuns(snapshot: StatusSnapshot, itemId: string): StatusRun[] {
-  return snapshot.runs
-    .filter((run) => run.itemId === itemId)
-    .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
-}
-
 function viewRuns(
   snapshot: StatusSnapshot,
   id: string | null,
+  search: string,
   closeout: CloseoutView,
   engineUrl: string | null,
-  search: string,
 ): string {
   const runs = [...snapshot.runs].sort(
     (a, b) => rankRun(a) - rankRun(b) || b.startedAt.localeCompare(a.startedAt),
   );
   if (id === null && runs.length)
     return `${pageHeading("runs")}${renderRunsList(snapshot, runs, search)}`;
-  const selected = runs.find((run) => run.id === id || (id !== null && run.attempts?.includes(id)));
+  // The address moves to the issue page; until then the run's issue page shows here.
+  const run = id === null ? undefined : runs.find((entry) => inRun(entry, id));
+  if (run && findItem(snapshot, run.itemId))
+    return issuePage(snapshot, run.itemId, closeout, engineUrl);
   const picker = entityPicker(
-    "Run",
-    runs.map((run) => ({
-      value: routeHref({ view: "runs", id: run.id }),
-      label: `${run.id} · ${run.itemId} · ${runLabel(run.state)}`,
+    "Issue",
+    snapshot.items.map((item) => ({
+      value: routeHref({ view: "issues", id: item.id }),
+      label: `${item.id} · ${item.title}`,
     })),
-    selected ? routeHref({ view: "runs", id: selected.id }) : "",
+    "",
   );
-  if (!selected)
-    return `${pageHeading("runs")}${picker}<div class="empty">${id ? "Run not found. Choose another run." : "No runs yet. Agent activity appears here when delegated work starts."}</div>`;
-  const item = findItem(snapshot, selected.itemId);
-  const title = item?.title ?? selected.itemId;
-  const verdict = itemVerdict(snapshot, selected.itemId);
-  const agent = findAgentCloseout(
-    snapshot.agentCloseout,
-    id !== null && selected.attempts?.includes(id) ? id : selected.id,
-  );
+  return `${pageHeading("runs")}${id ? picker : ""}<div class="empty">${id ? "Run not found. Choose an issue instead." : "No runs yet. Agent activity appears here when delegated work starts."}</div>`;
+}
+
+/**
+ * Everything about one issue: its state, the timeline of every engine run, Closeout, reviews,
+ * questions, fix rounds, the pull request and merge, and earlier Linear sessions further down.
+ */
+function issuePage(
+  snapshot: StatusSnapshot,
+  id: string,
+  closeout: CloseoutView,
+  engineUrl: string | null,
+): string {
+  const attempts = snapshot.items.filter((entry) => entry.id === id);
+  const item = attempts.find((entry) => !entry.endedAt) ?? attempts[0]!;
+  const earlier = attempts
+    .filter((entry) => entry !== item)
+    .sort((left, right) => (right.endedAt ?? "").localeCompare(left.endedAt ?? ""));
+  const run = itemRun(snapshot, item, earlier);
+  const verdict = attemptVerdict(snapshot, item, run);
+  const engineRun = run?.attempts?.at(-1) ?? run?.id;
+  const agent =
+    run === undefined
+      ? undefined
+      : (findAgentCloseout(snapshot.agentCloseout, engineRun ?? run.id) ??
+        findAgentCloseout(snapshot.agentCloseout, run.id));
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
-  const transcriptPath = `/status/runs/${encodeURIComponent(selected.id)}/transcript`;
-  const transcriptHref = engine === null ? transcriptPath : new URL(transcriptPath, engine).href;
-  return `<article class="run-page">
-    <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "runs", id: null })}">Runs</a><span>/</span>${itemLink(item)}<span>/</span><span class="mono">${esc(selected.id)}</span></nav>
-    <header class="run-heading"><div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}<span class="mono muted">${esc(snapshot.project.repo)}${item?.branch ? ` · ${esc(item.branch)}` : ""}</span></div>
-      <h1>${esc(title)}</h1>
-      <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}${item?.linearRequests === undefined ? "" : ` · ${item.linearRequests} Linear request${item.linearRequests === 1 ? "" : "s"}`}</p>
+  const transcriptPath =
+    run === undefined ? null : `/status/runs/${encodeURIComponent(run.id)}/transcript`;
+  const transcriptHref =
+    transcriptPath === null || snapshot.source !== "live"
+      ? null
+      : engine === null
+        ? transcriptPath
+        : new URL(transcriptPath, engine).href;
+  const blocked = snapshot.items.filter(
+    (entry) => entry.id !== item.id && entry.blockers.includes(item.id),
+  );
+  return `${pageHeading("issues")}<article class="run-page issue-page">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
+    <header class="run-heading"><div class="row wrap">${run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
+      <h1><span class="lin-id">${esc(item.id)}</span> ${esc(item.title)}</h1>
+      ${issueFacts(snapshot, item, run)}
+      ${item.links.length ? `<div class="row wrap">${linkButtons(item.links)}</div>` : ""}
     </header>
-    ${phaseStrip(item, selected, verdict, agent)}
-    ${agent?.continuesIn ? continuesNotice(agent.continuesIn) : ""}
-    ${item ? queueNotice(item) : ""}
-    ${item ? mergeQueueNotice(item) : ""}
-    ${item ? githubQueueNotice(item) : ""}
-    ${selected.usagePause ? usagePauseSection(selected, selected.usagePause) : executionControls(selected)}
+    ${run ? phaseStrip(item, run, verdict, agent) : ""}
+    ${queueNotice(item)}
+    ${run ? (run.usagePause ? usagePauseSection(run, run.usagePause) : executionControls(run)) : ""}
     ${snapshot.questions
       .filter(
         (question) =>
-          question.itemId === selected.itemId &&
-          !item?.visualReviews?.some((review) => review.questionId === question.id),
+          question.itemId === item.id &&
+          (run === undefined || question.runId === null || inRun(run, question.runId)) &&
+          !item.visualReviews?.some((review) => review.questionId === question.id),
       )
       .map(
         (question) =>
-          `<section class="closeout-result blocked"><div><h2>${esc(question.title)}</h2><p>${esc(question.body)}</p><div class="row">${linkList(question.links)}</div></div></section>`,
+          `<section class="closeout-result blocked"><div class="min-w-0"><h2>${esc(question.title)}</h2><p>${esc(plainTask(question.body))}</p><div class="row wrap">${linkList(question.links)}</div></div></section>`,
       )
       .join("")}
-    ${item ? visualReviewSection(snapshot, item, engineUrl) : ""}
-    ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
-    ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item?.state ?? "running")) : ""}
-    ${evidenceSlot(snapshot, selected.id)}
-    ${selected.setup ? runSetupSection(selected.setup) : ""}
-    <section class="run-activity" aria-labelledby="activity-heading"><h2 id="activity-heading">Task activity${snapshot.source === "live" ? " and agent transcript" : ""}</h2>
-      ${activityActions(snapshot.source === "live" ? transcriptHref : null, selected.links)}
-      <div class="log" data-log="activity-${esc(selected.id)}" data-follow="">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
-    </section></article>`;
+    ${visualReviewSection(snapshot, item, engineUrl)}
+    ${verdict ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>` : ""}
+    ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item.state)) : ""}
+    ${run ? evidenceSlot(snapshot, run.id) : ""}
+    ${fixRounds(snapshot, item, run)}
+    ${pullRequestSection(snapshot, item)}
+    ${run?.setup ? runSetupSection(run.setup) : ""}
+    ${
+      run
+        ? `<section class="run-activity" aria-labelledby="activity-heading"><h2 id="activity-heading">Timeline</h2>
+      ${activityActions(transcriptHref, run.links)}
+      ${activityLog(`activity-${run.id}`, run)}
+    </section>`
+        : `<p class="muted">No agent activity yet.</p>`
+    }
+    <section class="issue-relations" aria-label="Related issues"><h2>Blocked by</h2>${relatedIssues(item.blockers)}<h2>Blocks</h2>${relatedIssues(blocked.map((entry) => entry.id))}</section>
+    ${earlier.map((entry, index) => earlierAttempt(snapshot, entry, index, attempts)).join("")}
+  </article>`;
 }
 
-function continuesNotice(runId: string): string {
-  return `<section class="closeout-result run-continues" aria-label="Current run"><span class="result-icon" aria-hidden="true">→</span><p>This task continues in run <a class="mono" href="${routeHref({ view: "runs", id: runId })}">${esc(runId.slice(0, 8))}</a>.</p></section>`;
+/** State, project, runner and agent, and the Linear session it belongs to. */
+function issueFacts(
+  snapshot: StatusSnapshot,
+  item: StatusItem,
+  run: StatusRun | undefined,
+): string {
+  const facts: Array<[string, string]> = [
+    ["State", esc(itemLabel(item.state))],
+    ["Project", esc(item.project?.name ?? "No project")],
+    ["Runner", esc(run?.runner ?? "Not placed yet")],
+    ["Agent", esc(run?.agent ?? item.agent)],
+  ];
+  if (item.owner) facts.push(["Delegated by", esc(item.owner)]);
+  if (run) facts.push(["Started", esc(ago(run.startedAt, snapshot.generatedAt))]);
+  if (item.linearRequests !== undefined)
+    facts.push(["Linear requests", String(item.linearRequests)]);
+  if (item.session) {
+    const link = `<a href="${esc(item.session.url)}" target="_blank" rel="noopener noreferrer">Linear session</a>`;
+    facts.push([
+      "Session",
+      item.session.shared.length
+        ? `${link} shared with ${item.session.shared.map((other) => `<a class="lin-id" href="${routeHref({ view: "issues", id: other })}">${esc(other)}</a>`).join(", ")}`
+        : link,
+    ]);
+  }
+  return `<dl class="issue-facts-grid">${facts.map(([term, value]) => `<div><dt>${term}</dt><dd>${value}</dd></div>`).join("")}</dl>`;
+}
+
+/** The pull request and where its merge stands. */
+function pullRequestSection(snapshot: StatusSnapshot, item: StatusItem): string {
+  const entry = snapshot.mergeQueue.find((candidate) => candidate.itemId === item.id);
+  const outcome = snapshot.mergeHistory?.findLast((candidate) => candidate.itemId === item.id);
+  const state =
+    item.state === "merged"
+      ? "Merged."
+      : outcome?.outcome === "merged"
+        ? `Merged at ${clock24(outcome.at)}.`
+        : outcome?.outcome === "back_with_agent" && item.state !== "merge_queue"
+          ? `Back with the agent after ${outcome.reason === "conflict" ? "a branch update conflicted" : "CI failed"}.`
+          : item.state === "merge_queue"
+            ? "Waiting to merge."
+            : item.pr
+              ? "Not in the merge queue yet."
+              : "";
+  const pr = item.pr
+    ? `<a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">Pull request #${item.pr.number}</a>`
+    : "";
+  const steps = entry?.steps.length
+    ? `<ol class="merge-steps" role="list">${entry.steps.map((step) => `<li>${statePill(step.state, step.name)}${step.detail ? `<span class="muted">${esc(step.detail)}</span>` : ""}</li>`).join("")}</ol>`
+    : "";
+  return `<section class="issue-merge" aria-labelledby="merge-heading"><h2 id="merge-heading">Pull request and merge</h2>
+    ${pr || state ? `<p>${pr}${pr && state ? " · " : ""}${esc(state)}</p>` : '<p class="muted">No pull request yet.</p>'}
+    ${mergeQueueNotice(item)}${githubQueueNotice(item)}${steps}</section>`;
+}
+
+/** CI reads that failed on the pull request, and what Paws did next. */
+function fixRounds(snapshot: StatusSnapshot, item: StatusItem, run: StatusRun | undefined): string {
+  const rounds = (snapshot.ciRounds ?? []).filter(
+    (round) =>
+      round.itemId === item.id &&
+      (round.runId === null || run === undefined || inRun(run, round.runId)),
+  );
+  if (!rounds.length) return "";
+  const next = (round: (typeof rounds)[number]) =>
+    round.next === "agent"
+      ? `fix ${round.fix ?? "?"} of ${round.fixLimit} sent to the agent`
+      : round.next === "asked"
+        ? "asked in Linear"
+        : "stopped";
+  return `<section class="fix-rounds" aria-labelledby="fix-rounds-heading"><h2 id="fix-rounds-heading">Fix rounds</h2><ol class="issue-items" role="list">${rounds
+    .map((round) => {
+      const failed = round.checks.filter((check) => check.state === "failed");
+      return `<li><div><b>CI round ${round.round}</b> on <span class="mono">${esc(round.head.slice(0, 7))}</span> · ${esc(next(round))} · <span class="muted">${esc(clock24(round.recordedAt))}</span></div>${failed.length ? `<div class="row wrap">${failed.map((check) => (check.url ? `<a href="${esc(check.url)}" target="_blank" rel="noopener noreferrer">${esc(check.name)}</a>` : `<span>${esc(check.name)}</span>`)).join("")}</div>` : ""}</li>`;
+    })
+    .join("")}</ol></section>`;
+}
+
+/** A Linear session on this issue that a newer one replaced (re-delegation). */
+function earlierAttempt(
+  snapshot: StatusSnapshot,
+  item: StatusItem,
+  index: number,
+  attempts: readonly StatusItem[],
+): string {
+  const run = itemRun(
+    snapshot,
+    item,
+    attempts.filter((entry) => entry !== item),
+  );
+  const verdict = attemptVerdict(snapshot, item, run);
+  const heading = `earlier-${index}`;
+  const evidence = run ? (snapshot.evidence ?? []).filter((entry) => inRun(run, entry.runId)) : [];
+  const facts = [
+    itemLabel(item.state),
+    ...(run ? [`${run.agent}${run.runner ? ` on runner ${run.runner}` : ""}`] : []),
+    ...(verdict
+      ? [`Closeout ${verdict.decision}, attempt ${verdict.attempt} of ${verdict.maxAttempts}`]
+      : []),
+  ];
+  return `<section class="earlier-attempt" aria-labelledby="${heading}"><h2 id="${heading}">Earlier attempt${item.endedAt ? `, ended ${esc(clock24(item.endedAt))}` : ""}</h2>
+    <p class="muted">${esc(facts.join(" · "))}</p>
+    ${item.session ? `<p><a href="${esc(item.session.url)}" target="_blank" rel="noopener noreferrer">Linear session</a></p>` : ""}
+    ${item.pr ? `<p><a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">Pull request #${item.pr.number}</a></p>` : ""}
+    ${evidence.length ? `<ul class="issue-items" role="list">${evidence.map((entry) => `<li><a href="${esc(routeHref({ view: "evidence", id: entry.id }))}">${esc(entry.displayName)}</a> <span class="muted">${esc(entry.checkId)} · attempt ${entry.attempt}</span></li>`).join("")}</ul>` : ""}
+    ${run ? activityLog(`${heading}-${run.id}`, run) : ""}
+  </section>`;
+}
+
+function activityLog(key: string, run: StatusRun): string {
+  return `<div class="log" data-log="${esc(key)}" data-follow="">${run.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(plainTask(line.text))}</span></div>`).join("")}</div>`;
+}
+
+/** The run of this attempt. An issue delegated twice has one run per Linear session. */
+function itemRun(
+  snapshot: StatusSnapshot,
+  item: StatusItem,
+  others: readonly StatusItem[],
+): StatusRun | undefined {
+  if (item.runId) {
+    const linked = snapshot.runs.find((run) => run.id === item.runId || inRun(run, item.runId!));
+    if (linked) return linked;
+  }
+  const claimed = new Set(others.flatMap((other) => (other.runId ? [other.runId] : [])));
+  return snapshot.runs
+    .filter((run) => run.itemId === item.id && !claimed.has(run.id))
+    .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+}
+
+function attemptVerdict(
+  snapshot: StatusSnapshot,
+  item: StatusItem,
+  run: StatusRun | undefined,
+): StatusVerdict | undefined {
+  const verdicts = snapshot.verdicts.filter((entry) => entry.itemId === item.id);
+  if (run === undefined) return verdicts.find((entry) => entry.runId === undefined);
+  return verdicts.find((entry) =>
+    entry.runId === undefined ? true : entry.runId === run.id || inRun(run, entry.runId),
+  );
+}
+
+function inRun(run: StatusRun, id: string): boolean {
+  return run.id === id || (run.attempts?.includes(id) ?? false);
+}
+
+/** `PAS-367-01M5…` is Paws's internal path id. People only see `PAS-367`. */
+export function plainTask(text: string): string {
+  return text.replace(/\b([A-Z][A-Z0-9]*-\d+)-[0-9A-HJKMNP-TV-Z]{26}\b/g, "$1");
 }
 
 const HOOK_EVENTS: Record<string, string> = {
@@ -585,17 +745,6 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   if (item?.state === "verifying" || run.state === "verifying")
     return statePill("verifying", "Closeout");
   return statePill(run.state, runLabel(run.state));
-}
-
-function closeoutSection(
-  snapshot: StatusSnapshot,
-  itemId: string,
-  closeout: CloseoutView,
-  engineUrl: string | null,
-): string {
-  const selected = snapshot.verdicts.find((verdict) => verdict.itemId === itemId);
-  if (!selected) return "";
-  return `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(selected, closeout, engineUrl, findItem(snapshot, itemId)?.pr ?? null, findItem(snapshot, itemId)?.state)}</section>`;
 }
 
 function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdict | undefined {

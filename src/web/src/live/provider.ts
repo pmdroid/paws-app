@@ -276,6 +276,9 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     }),
   );
   const linearRequests = linearRequestsByItem(db);
+  const storedRuns = new Map<string, StoredRun[]>();
+  for (const run of listRuns(db))
+    storedRuns.set(run.itemId, [...(storedRuns.get(run.itemId) ?? []), run]);
   const items = records.map((record) => ({
     ...toItem(
       db,
@@ -290,6 +293,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
       jobs,
     ),
     linearRequests: linearRequests.get(record.id) ?? 0,
+    ...sessionAttempt(db, record, records, itemsByIssue, storedRuns, facts),
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -301,9 +305,12 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     items,
     runs,
     questions: questionsFor(db, records, rows, runs, openQuestions),
-    verdicts: records.flatMap((record) =>
-      verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env),
-    ),
+    verdicts: records.flatMap((record) => {
+      const runId = storedRuns.get(record.id)?.[0]?.id;
+      return verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((verdict) =>
+        runId === undefined ? verdict : { ...verdict, runId },
+      );
+    }),
     ...mergeQueueFor(db, {
       records,
       items,
@@ -318,6 +325,45 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
     ciRounds: ciRoundsFor(db, records, env),
   };
+}
+
+/**
+ * The item's Linear session and, for an attempt a newer session on the same issue replaced,
+ * when it ended. The issue page shows that attempt as an earlier section.
+ */
+function sessionAttempt(
+  db: Database,
+  record: WorkItemRecord,
+  records: readonly WorkItemRecord[],
+  itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
+  storedRuns: ReadonlyMap<string, readonly StoredRun[]>,
+  facts: ReadonlyMap<string, WorkItemFact>,
+): Pick<StatusItem, "session" | "endedAt"> {
+  const sessionId = record.sessionKey;
+  const session =
+    sessionId === null
+      ? {}
+      : {
+          session: {
+            id: sessionId,
+            url: linearConversationUrl(db, sessionId, publicId(record)),
+            shared: [
+              ...new Set(
+                records
+                  .filter(
+                    (other) =>
+                      other.sessionKey === sessionId &&
+                      other.linearIssueId !== record.linearIssueId,
+                  )
+                  .map(publicId),
+              ),
+            ],
+          },
+        };
+  if (itemsByIssue.get(record.linearIssueId) === record) return session;
+  const last = storedRuns.get(record.id)?.at(-1);
+  const endedAt = last?.updatedAt ?? facts.get(record.id)?.createdAt;
+  return endedAt === undefined ? session : { ...session, endedAt: iso(endedAt) };
 }
 
 function agentCloseoutFor(
@@ -474,7 +520,11 @@ function visualReviewsOf(
   const rounds = new Map<string, number>();
   return {
     visualReviews: reviews.map((review) => {
-      const round = (rounds.get(review.checkId) ?? 0) + 1;
+      // Nobody was asked when every screen carried over, so it is not a new round.
+      const full =
+        review.carried.length > 0 &&
+        review.evidenceIds.every((id) => review.carried.some((entry) => entry.evidenceId === id));
+      const round = Math.max(1, (rounds.get(review.checkId) ?? 0) + (full ? 0 : 1));
       rounds.set(review.checkId, round);
       const marks = listVisualReviewMarks(db, review.questionId).map((mark) => ({
         id: mark.id,
@@ -495,6 +545,14 @@ function visualReviewsOf(
         answeredAt: review.answeredAt === null ? null : iso(review.answeredAt),
         feedback: review.feedback?.trim() || null,
         ...(marks.length ? { marks } : {}),
+        ...(review.carried.length
+          ? {
+              carried: review.carried.map((entry) => ({
+                ...entry,
+                approvedAt: iso(entry.approvedAt),
+              })),
+            }
+          : {}),
       };
     }),
   };
@@ -1292,7 +1350,7 @@ function activityFor(
         text: `${turnAuthor(turn.payload)} replied.`,
       },
     });
-  for (const run of stored.slice(1))
+  for (const run of stored)
     lines.push({
       at: run.createdAt,
       line: {
@@ -1488,8 +1546,9 @@ function verdictKey(itemId: string, key: string): { head: string; outcome: strin
 }
 
 function questionId(key: string): string | null {
-  if (!key.startsWith("ask:")) return null;
-  const id = key.slice("ask:".length).trim();
+  const prefix = ["ask:", "question:"].find((candidate) => key.startsWith(candidate));
+  if (prefix === undefined) return null;
+  const id = key.slice(prefix.length).trim();
   return id || null;
 }
 

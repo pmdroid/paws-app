@@ -187,6 +187,32 @@ describe("runner skill installer", () => {
     expect(installer.installed()[0]).toMatchObject({ version: "2.5.0", status: "installed" });
   });
 
+  test("reports how many running tasks hold a home on the earlier version", async () => {
+    const { installer, served, home } = setup([homeA]);
+    const first = await bundle("impeccable", "2.4.1", "v1");
+    const second = await bundle("impeccable", "2.5.0", "v2");
+    served.set("impeccable@2.4.1", first.bytes);
+    served.set("impeccable@2.5.0", second.bytes);
+    await installer.sync([first.skill]);
+    installer.hold(home(homeA), "execution-1");
+    installer.hold(home(homeA), "execution-2");
+    await installer.sync([second.skill]);
+    expect(installer.installed() as unknown[]).toEqual([
+      {
+        name: "impeccable",
+        version: "2.5.0",
+        sha256: second.skill.sha256,
+        status: "pending",
+        waiting: 2,
+      },
+    ]);
+    installer.release("execution-1");
+    expect(installer.installed()[0]).toMatchObject({ status: "pending", waiting: 1 });
+    installer.release("execution-2");
+    installer.prepareHome(home(homeA));
+    expect(installer.installed()[0]).not.toHaveProperty("waiting");
+  });
+
   test("refuses a bundle with a path outside the skill folder", async () => {
     const { installer, served, errors } = setup([homeA]);
     const bytes = await new Bun.Archive(

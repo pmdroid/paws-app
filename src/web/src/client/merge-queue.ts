@@ -146,9 +146,7 @@ function outcome(snapshot: StatusSnapshot, entry: StatusMergeOutcome): string {
 }
 
 function issueLink(item: StatusItem | undefined, id: string): string {
-  const href = item?.runId
-    ? routeHref({ view: "runs", id: item.runId })
-    : routeHref({ view: "issues", id });
+  const href = routeHref({ view: "issues", id });
   return `<a class="work-title" href="${href}"><span class="lin-id">${esc(id)}</span> ${esc(item?.title ?? "")}</a>`;
 }
 

@@ -22,13 +22,25 @@ import {
 import { tempDb } from "./helpers";
 
 test("elicitation keeps select options and a free-text reply", () => {
-  const body = elicitationBody("Include archived rows?", "The export is empty today.");
+  const body = elicitationBody("Include archived rows?", "The export is empty today.", ["yes"]);
   expect(body).toContain("Include archived rows?");
   expect(body).toContain("answer in your own words");
   expect(body).not.toContain("- yes");
 });
 
 const NOW = 1_700_000_000_000;
+
+test.each([
+  [[], "Which outcome?\n\nContext."],
+  [
+    ["Code"],
+    "Which outcome?\n\nContext.\n\nReply with one of the options, or answer in your own words.",
+  ],
+])("only a question with options asks to reply with one of them", (options, body) => {
+  const { db, asker } = parked();
+  ask(db, asker, "clarification", "Which outcome?", { options, context: "Context.", now: NOW });
+  expect(listOutbox(db)[0]?.payload).toMatchObject({ body });
+});
 
 function parked() {
   const db = tempDb();
@@ -151,7 +163,9 @@ test("an amended question delivers and keeps the added context and options", () 
     options: ["yes", { label: "Use saved decision", value: "/paws decision 1" }],
   });
   expect(listOutbox(db)[0]?.payload).toMatchObject({
-    body: elicitationBody("Include archived rows?", "Saved decision: archive rows stay out"),
+    body: elicitationBody("Include archived rows?", "Saved decision: archive rows stay out", [
+      "yes",
+    ]),
     options: ["yes", { label: "Use saved decision", value: "/paws decision 1" }],
   });
 });

@@ -93,7 +93,6 @@ import {
   assertLinearSessionCleanup,
   cancelOpenJobs,
   getLinearSessionAccess,
-  recordConfirmedRemoteMerge,
   getConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getTaskModeGeneration,
@@ -116,6 +115,8 @@ import {
   enqueueJobOnce,
   recordRebaseReturn,
   enqueueOutboxOnce,
+  attachSessionUpdates,
+  getOutbox,
   failWorkItem,
   getQueuePosition,
   queueWaitSince,
@@ -141,15 +142,10 @@ import {
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
-  saveCloseoutRecovery,
   listCloseoutRounds,
-  recordCiRound,
-  type CiRound,
-  type CiRoundCheck,
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
-  type CloseoutRecovery,
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
@@ -192,18 +188,18 @@ import {
   markLinearActivitiesListed,
   keepTaskMergeSettings,
   type TaskMergeSettings,
-  leaveMergeQueue,
   delegatedLinearUserId,
+  resetAwakeTime,
 } from "../db";
 import {
   publishAccepted,
   closeStoppedPull,
   fetchUpstreamMain,
   mergedPullHeads,
-  serialMerge,
   UPSTREAM_MAIN_REF,
   type GitHubBinding,
   type GitHubTokenProvider,
+  type ReverifyInput,
 } from "../github";
 import { intakeDelegatedIssue, stopAdoptedParent, type IntakeResult } from "../intake";
 import { createAdmission, dispatch, type ItemAdmission, type SchedulerOptions } from "../scheduler";
@@ -237,7 +233,6 @@ import {
 import {
   answer as answerAsked,
   answerer,
-  answerQuestion,
   ask,
   canAnswer,
   cancelItemQuestions,
@@ -249,7 +244,6 @@ import {
   getQuestion,
   getVisualReview,
   markVisualReviewStale,
-  openQuestion,
   questionReplyConsumed,
   visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
@@ -260,7 +254,9 @@ import {
 import {
   answerVisualReview,
   askForVisualReview,
+  carryVisualReview,
   dueVisualReview,
+  planVisualReviewCarry,
   postNote,
   remindVisualReview,
   visualReviewApprovals,
@@ -277,23 +273,14 @@ import {
 } from "./merge-jobs";
 import {
   REBASE_CONFLICT_INSTRUCTION,
-  REBASE_CONFLICT_THOUGHT,
-  mergeQueueTurn,
-  mergeThroughGitHubQueue,
-  ciFixHandoff,
-  ciFixQuestion,
-  ciFixRoundLine,
+  advanceMerge,
   ciWaitVerification,
   parkMerge,
   rebaseBudgetFor,
-  serialMergeStep,
   wakeMergesBehind,
-  askMergeHelp,
-  ciFixes,
-  returnToAgent,
-  type MergeContext,
-  type MergeReturnReason,
+  type MergePublication,
   type MergeStep,
+  type MergeVerdict,
   type MergeWait,
   type OrderCapabilities,
   type RebaseConflict,
@@ -304,7 +291,8 @@ import {
   KEEPALIVE_MS,
   publicToolText,
 } from "./activity";
-import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
+import { parseRecoveryAnswer, recoveryOptions } from "./closeout-recovery";
+import { askCloseoutHelp } from "./closeout-help";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
@@ -437,6 +425,15 @@ export type ExecutionChanges = {
 
 class LinearReconciliationPendingError extends Error {}
 
+type MergeRun = {
+  payload: unknown;
+  closeoutFailure: CloseoutVerdict | null;
+  publicationCandidate?: { sha: string; baseSha: string };
+  candidate?: CandidateIdentity;
+  verifying?: WorkItemRecord;
+  signal?: AbortSignal;
+};
+
 const LINEAR_ACCESS_CHANGED: IntakeDecision = {
   outcome: "refused",
   reason: "Access to this session changed while Paws waited to start it.",
@@ -464,6 +461,10 @@ export class Orchestrator {
   >();
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
+  private readonly intakeReads = new Map<
+    string,
+    { snapshot: EpicSnapshot; edges: DependencyEdge[] }
+  >();
   private readonly conversations = new Map<
     string,
     (options: RunAgentOptions) => Promise<RunAgentResult>
@@ -529,6 +530,14 @@ export class Orchestrator {
   }
 
   agentAlive = (runId: string): boolean => this.live.has(runId);
+
+  takeIntakeReads(
+    sessionId: string,
+  ): { snapshot: EpicSnapshot; edges: DependencyEdge[] } | undefined {
+    const reads = this.intakeReads.get(sessionId);
+    this.intakeReads.delete(sessionId);
+    return reads;
+  }
 
   async onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
@@ -790,6 +799,18 @@ export class Orchestrator {
       );
   }
 
+  private startPost(id: number): void {
+    const row = getOutbox(this.db, id);
+    if (row?.orderingKey == null) return;
+    attachSessionUpdates(this.db, id, this.now());
+    this.db.run(
+      `UPDATE outbox SET status = 'dropped', error = ? WHERE target = 'linear' AND ordering_key = ?
+        AND op = 'activity' AND status = 'pending' AND attempts = 0
+        AND (locked_until IS NULL OR locked_until <= ?) AND json_extract(payload, '$.body') = ?`,
+      [`Sent as outbox ${id}.`, row.orderingKey, this.now(), FIRST_ACTIVITY_BODY],
+    );
+  }
+
   private async enqueueSessionProgress(
     update: ProgressUpdate,
     idempotencyKey: string,
@@ -804,11 +825,27 @@ export class Orchestrator {
       orderingKey: update.sessionId,
       idempotencyKey,
       payload: { ...update, id: update.id ?? crypto.randomUUID() },
-      ...(initialActivity ? { delivery: "critical" } : {}),
+      ...(initialActivity
+        ? { delivery: "critical", notBefore: this.now() + FIRST_ACTIVITY_HOLD_MS }
+        : {}),
       ...(generation === undefined ? {} : { generation }),
       now: this.now(),
     });
     if (request?.signal) this.activityRequests.set(id, request.signal);
+    if (initialActivity) {
+      const forget = () => {
+        if (this.activityRequests.get(id) === request?.signal) this.activityRequests.delete(id);
+      };
+      request?.signal?.addEventListener("abort", forget, { once: true });
+      const held = setTimeout(() => {
+        if (!this.shuttingDown)
+          void this.flush(request?.signal, update.sessionId)
+            .catch(() => undefined)
+            .finally(forget);
+      }, FIRST_ACTIVITY_HOLD_MS);
+      held.unref?.();
+      return;
+    }
     try {
       await this.flush(request?.signal, update.sessionId);
       request?.signal?.throwIfAborted();
@@ -853,7 +890,15 @@ export class Orchestrator {
           }
         : tracker;
     let authorizedSnapshot: EpicSnapshot | null = null;
+    let loadedSnapshot: EpicSnapshot | null = null;
+    const edges: DependencyEdge[] = [];
+    const listDeps = async (id: string) => {
+      const found = await progressTracker.listDeps(id);
+      edges.push(...found);
+      return found;
+    };
     const authorizeSnapshot = (snapshot: EpicSnapshot) => {
+      loadedSnapshot = snapshot;
       if (sessionId && this.options.authorizeLinearIntake?.(sessionId, snapshot) === false)
         throw new Error("The Linear assignment changed before intake.");
       authorizedSnapshot = snapshot;
@@ -863,6 +908,7 @@ export class Orchestrator {
     };
     let intakeTracker = {
       ...progressTracker,
+      listDeps,
       loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
     };
     const deferred = !savedRequest && this.options.remoteExecution?.slotFree?.() === false;
@@ -874,7 +920,7 @@ export class Orchestrator {
       !deferred
         ? authorizeSnapshot(await tracker.loadEpic(issueId))
         : null;
-    if (snapshot) intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
+    if (snapshot) intakeTracker = { ...progressTracker, listDeps, loadEpic: async () => snapshot };
     const openSubIssues = snapshot?.subIssues.some(
       (issue) => !["completed", "canceled"].includes(issue.stateType ?? ""),
     );
@@ -963,6 +1009,8 @@ export class Orchestrator {
       adoptParent: this.options.adoptLinearParent,
     });
     if (!isCurrent()) throw new Error("The Linear request changed during intake");
+    if (sessionId && loadedSnapshot && !result.alreadyExisted)
+      this.intakeReads.set(sessionId, { snapshot: loadedSnapshot, edges });
     if (result.ok && classification && classification.mode !== "clarify") {
       for (const item of result.items) {
         if (!getTaskMode(this.db, item.id))
@@ -1269,6 +1317,7 @@ export class Orchestrator {
         itemId,
         issueId,
         stop: message.delivery === "stop",
+        fresh: message.op === "status" || message.delivery === "terminal",
         isCurrent: context.isCurrent,
       });
     }
@@ -1841,10 +1890,15 @@ export class Orchestrator {
       const auth = this.authorization(item);
       if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
       await this.taskAccess()?.prepare(item, controller.signal);
-      this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`, {
-        ephemeral: true,
-      });
+      const working = this.post(
+        item,
+        "action",
+        `Working on ${item.linearIdentifier}.`,
+        `${run.id}:working`,
+        { ephemeral: true },
+      );
       sessionProgress?.phase("implementing");
+      if (working !== undefined) this.startPost(working);
       if (!this.taskAccess()) this.postStatus(item, "started");
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
@@ -2301,6 +2355,7 @@ export class Orchestrator {
     try {
       return await gate.run({
         taskId: itemPathId(item),
+        taskLabel: item.linearIdentifier,
         worktree,
         baseSha: base,
         headSha: head,
@@ -2530,45 +2585,8 @@ export class Orchestrator {
       retryBaseline,
       summary,
     };
-    this.openCloseoutQuestion(item, sessionId, context);
+    askCloseoutHelp(this.db, sessionId, context, { now: this.now() });
     await this.flush();
-  }
-
-  private openCloseoutQuestion(
-    item: WorkItemRecord,
-    sessionId: string,
-    context: Omit<CloseoutRecovery, "questionId" | "answer" | "answeredBy">,
-    error?: string,
-  ): void {
-    immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
-      if (!current || current.state === "cancelled") return;
-      if (findOpenQuestion(this.db, sessionId) !== null) return;
-      const body = recoveryQuestion(context, error);
-      const question = openQuestion(this.db, {
-        itemId: item.id,
-        runId: item.currentRunId,
-        sessionId,
-        body,
-        now: this.now(),
-      });
-      saveCloseoutRecovery(this.db, { ...context, questionId: question.id });
-      if (current.state !== "awaiting_input")
-        applyWorkItemEvent(this.db, item.id, "blocking_question");
-      saveCheckpoint(this.db, item.id, {
-        phase: "awaiting_input",
-        baseSha: context.base,
-        wipCommit: context.head,
-      });
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "elicitation",
-        orderingKey: sessionId,
-        idempotencyKey: `closeout-help:${question.id}`,
-        payload: { sessionId, questionId: question.id, body },
-        now: this.now(),
-      });
-    });
   }
 
   private async reverify(payload: unknown, jobId: number): Promise<void> {
@@ -2630,18 +2648,38 @@ export class Orchestrator {
   private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
-    const item = getWorkItem(this.db, itemId);
-    if (
-      item === null ||
-      item.state === "cancelled" ||
-      item.state === "merged" ||
-      item.state === "completed"
-    )
-      return { kind: "obsolete" };
-    if (getConfirmedRemoteMerge(this.db, item.id)) {
-      if (completeMergedItem(this.db, { itemId: item.id, now: this.now() })) this.dispatch();
-      return { kind: "obsolete" };
-    }
+    const run: MergeRun = { payload, closeoutFailure: null };
+    return advanceMerge(
+      this.db,
+      { itemId, payload, jobId },
+      {
+        ...this.orderCapabilities(itemId),
+        publish: (item) => this.publishForMerge(item, run),
+        settings: (item, signal) => this.mergeSettingsFor(item, signal),
+        accept: (candidate) => {
+          run.publicationCandidate = candidate;
+        },
+        verify: (input) => this.verifyForMerge(run, input),
+        assertReady: (item) =>
+          this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
+        askCloseoutHelp: async (item) => {
+          if (run.closeoutFailure)
+            await this.askCloseoutHelp(
+              item,
+              run.closeoutFailure.result,
+              run.closeoutFailure.summary,
+            );
+        },
+        packages: (repository) => this.repositoryPackages(repository),
+        completed: () => this.dispatch(),
+      },
+    );
+  }
+
+  private async publishForMerge(
+    item: WorkItemRecord,
+    run: MergeRun,
+  ): Promise<MergePublication | MergeStep> {
     this.assertReconciled(item);
     const repository = this.repositoryForItem(item);
     const configuredGitHub = repository === null ? null : this.githubForRepository(repository);
@@ -2671,13 +2709,12 @@ export class Orchestrator {
     });
     const live = this.live.get(`operation:${item.id}`);
     if (!live) throw new Error("GitHub publication has no owned operation.");
-    let publicationCandidate =
-      item.checkpoint?.wipCommit && item.checkpoint.baseSha
+    const priorVerification = ciWaitVerification(run.payload);
+    run.publicationCandidate = priorVerification
+      ? { sha: priorVerification.head, baseSha: priorVerification.base }
+      : item.checkpoint?.wipCommit && item.checkpoint.baseSha
         ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
         : undefined;
-    const priorVerification = ciWaitVerification(payload);
-    if (priorVerification)
-      publicationCandidate = { sha: priorVerification.head, baseSha: priorVerification.base };
     const freshReads = new Set<string>();
     const github = guardGitHubPublication({
       github: configuredGitHub,
@@ -2698,7 +2735,7 @@ export class Orchestrator {
           current,
           purpose === "merge" ? "merge" : "publish",
           live.controller.signal,
-          publicationCandidate,
+          run.publicationCandidate,
         );
         const fresh = (purpose === "pr" || purpose === "merge") && !freshReads.has(purpose);
         await this.taskAccess()?.assert(current, live.controller.signal, { fresh });
@@ -2711,7 +2748,7 @@ export class Orchestrator {
     const candidate = await this.candidateForItem(item);
     if (!candidate) return { kind: "obsolete" };
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
-    const summary = readString(payload, "summary") ?? "Closeout accepted.";
+    const summary = readString(run.payload, "summary") ?? "Closeout accepted.";
     const policy = await this.commitPolicy(item);
     if (this.stopped(item.id)) return { kind: "obsolete" };
     if (!artifactPublicationReady(this.db, item.id))
@@ -2726,7 +2763,12 @@ export class Orchestrator {
       accepted: true,
       evidence: [
         summary,
-        visualReviewPullRequestNote(this.db, item, this.options.evidence?.publicUrl ?? null),
+        visualReviewPullRequestNote(
+          this.db,
+          item,
+          this.options.evidence?.publicUrl ?? null,
+          this.now(),
+        ),
         policy ? policyPullRequestCredit(policy) : "",
       ]
         .filter(Boolean)
@@ -2747,7 +2789,7 @@ export class Orchestrator {
       item,
       "publish",
       live.controller.signal,
-      publicationCandidate,
+      run.publicationCandidate,
     );
     if (this.stopped(item.id)) return { kind: "obsolete" };
     if (getWorkItem(this.db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
@@ -2765,239 +2807,60 @@ export class Orchestrator {
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
     sessionProgress?.phase("merging");
     await this.flush(live.controller.signal);
-    let closeoutFailure = null as CloseoutVerdict | null;
-    let verifying = item;
-    const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
-    const mergeSettings = await this.mergeSettingsFor(item, live.controller.signal);
-    const context: MergeContext = { db: this.db, item, caps: this.orderCapabilities(item.id) };
-    if (mergeSettings.order === "github-queue") {
-      const handed = await mergeThroughGitHubQueue(context, payload, {
-        repository,
-        github,
-        pull: published.pull,
-        head: published.head,
-        signal: live.controller.signal,
-      });
-      if (handed !== "no_queue") return handed;
-    }
-    const closeoutAfterUpdate = mergeSettings.mainMoved === "closeout";
-    // Under "Add to the GitHub merge queue", a base branch without one merges each on its own.
-    const queued = mergeSettings.order === "queue";
-    if (queued) {
-      const wait = await mergeQueueTurn(context, repository, github, {
-        number: published.pull.number,
-        head: priorVerification?.head ?? acceptedHead ?? "",
-      });
-      if (wait) return { kind: "wait", ...wait };
-      if (this.stopped(item.id)) return { kind: "obsolete" };
-    }
-    const repositoryName = `${repository.owner}/${repository.repo}`;
-    const merged = await serialMerge({
+    run.candidate = candidate;
+    run.verifying = item;
+    run.signal = live.controller.signal;
+    return {
+      github,
+      repository,
+      pull: published.pull,
+      head: published.head,
       worktree,
-      issue: item.linearIdentifier,
       branchKey: taskBranchKey(item),
-      owner: repository.owner,
-      repo: repository.repo,
-      prNumber: published.pull.number,
-      commitTitle: `${draft?.title ?? item.title} (#${published.pull.number})`,
-      commitMessage: policy ? commitPolicyMessage(summary, policy) : undefined,
-      commitEnv: policy ? commitIdentityEnv(appBotCommitIdentity(policy.bot)) : undefined,
-      appId: github.appId,
-      installationId: github.installationId,
-      privateKeyPem: github.privateKeyPem,
-      client: github.client,
-      gitExec: github.gitExec,
-      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
-      remoteUrl: repository.remoteUrl,
-      isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
-      releaseWhilePending: true,
-      ...(priorVerification === undefined ? {} : { priorVerification }),
-      ...(mergeSettings.mainMoved === "overlap"
-        ? {
-            updateOnOverlap: {
-              packages: this.repositoryPackages(repositoryName),
-              onUpToDateRule: async () => {
-                this.postAfterPullRequest(
-                  item,
-                  upToDateRuleMessage(repositoryName),
-                  `${item.id}:up-to-date-rule`,
-                );
-                await this.flush();
-              },
-            },
-          }
-        : {}),
-      onWait: async (message) => {
-        this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
-        await this.flush();
+      summary,
+      commit: {
+        title: `${draft?.title ?? item.title} (#${published.pull.number})`,
+        ...(policy
+          ? {
+              message: commitPolicyMessage(summary, policy),
+              env: commitIdentityEnv(appBotCommitIdentity(policy.bot)),
+            }
+          : {}),
       },
-      reverify: async (input) => {
-        const updated = acceptedHead !== null && input.head !== acceptedHead;
-        if (input.kept || (updated && !closeoutAfterUpdate)) {
-          publicationCandidate = { sha: input.head, baseSha: input.base };
-          if (!input.kept) {
-            this.postBranchUpdate(
-              item,
-              input.head,
-              branchUpdatedMessage(input.base, mergeSettings.mainMoved, input.overlap),
-            );
-            await this.flush();
-          }
-          const filesReady = artifactPublicationReady(this.db, item.id);
-          return {
-            accepted: filesReady,
-            outcome: filesReady ? "merged" : "blocked",
-            summary: filesReady ? summary : "A requested artifact has not been uploaded.",
-          };
-        }
-        if (updated)
-          this.postBranchUpdate(item, input.head, "Branch updated, running Closeout again.");
-        await this.startCloseoutRound(verifying, input.head);
-        const verdict = await this.runVerification(
-          verifying,
-          input.worktree,
-          input.base,
-          input.head,
-          candidate,
-        );
-        if (verdict.decision === "accepted" && !verdict.exhausted)
-          applyCloseoutAcceptance(this.db, item.id, verdict.owner);
-        verifying = getWorkItem(this.db, item.id) ?? verifying;
-        if (verdict.decision === "accepted")
-          publicationCandidate = { sha: input.head, baseSha: input.base };
-        if (verdict.decision !== "accepted") closeoutFailure = verdict;
-        const filesReady = artifactPublicationReady(this.db, item.id);
-        return {
-          accepted: verdict.decision === "accepted" && filesReady,
-          outcome:
-            verdict.decision === "accepted"
-              ? filesReady
-                ? "merged"
-                : "blocked"
-              : verdict.exhausted
-                ? "exhausted"
-                : verdict.decision,
-          summary: filesReady ? verdict.summary : "A requested artifact has not been uploaded.",
-        };
-      },
-    });
-    const ciFixLimit = this.ciFixAttempts();
-    const conflict: RebaseConflict = {
-      base: merged.base ?? null,
-      files: merged.conflictFiles ?? null,
+      signal: live.controller.signal,
     };
-    const { step, leaveQueue } = serialMergeStep({
-      result: merged,
-      queued,
-      closeoutAfterUpdate,
-      closeoutFailed: closeoutFailure !== null,
-      rebaseBudget: rebaseBudgetFor(this.db, item.id, conflict, this.now()),
-      ciFixes: ciFixes(this.db, item.id),
-      ciFixLimit,
-    });
-    if (leaveQueue) {
-      leaveMergeQueue(this.db, item.id);
-      wakeMergesBehind(this.db, this.now());
-    }
-    if (step.kind === "wait" && step.reason === "ci")
-      return this.stopped(item.id) ? { kind: "obsolete" } : step;
-    if (merged.merged)
-      recordConfirmedRemoteMerge(this.db, {
-        itemId: item.id,
-        repositoryOwner: repository.owner,
-        repositoryName: repository.repo,
-        pullNumber: published.pull.number,
-        pullUrl: published.pull.url,
-        mergeSha: merged.sha ?? null,
-        confirmedAt: this.now(),
-      });
-    if (this.stopped(item.id)) {
-      if (merged.merged) completeMergedItem(this.db, { itemId: item.id, now: this.now() });
-      return { kind: "obsolete" };
-    }
-    if (!merged.merged)
-      await this.assertPublicationReady(
-        item,
-        "merge",
-        live.controller.signal,
-        publicationCandidate,
-      );
-    if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input")
-      return { kind: "obsolete" };
-    if (!merged.merged) {
-      if (step.kind === "unreadable") throw new Error(step.message);
-      if (step.kind === "ask_closeout" && closeoutFailure) {
-        await this.askCloseoutHelp(item, closeoutFailure.result, closeoutFailure.summary);
-        return { kind: "asked" };
-      }
-      if (
-        step.kind === "return" &&
-        step.reason === "rebase-conflict" &&
-        this.returnToAgent(
-          item,
-          "rebase-conflict",
-          () => rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed,
-          REBASE_CONFLICT_INSTRUCTION,
-          () => REBASE_CONFLICT_THOUGHT,
-          (returnJobId) =>
-            recordRebaseReturn(this.db, {
-              itemId: item.id,
-              jobId: returnJobId,
-              candidate: merged.head ?? null,
-              reason: "merge",
-              ...conflict,
-              recordedAt: this.now(),
-            }),
-        )
-      )
-        return { kind: "returned" };
-      if (merged.outcome === "ci_failed") {
-        const checks = merged.failedChecks ?? [];
-        const round = (next: CiRound["next"], fix: number | null = null) =>
-          this.recordCiRound(item, merged.head ?? "", merged.checks, next, ciFixLimit, fix);
-        if (
-          step.kind === "return" &&
-          this.returnToAgent(
-            item,
-            "ci-failed",
-            (fixes) => fixes < ciFixLimit,
-            ciFixHandoff(checks),
-            (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
-            (_, attempt) => round("agent", attempt),
-          )
-        )
-          return { kind: "returned" };
-        if (this.askCiHelp(item, ciFixQuestion(checks, ciFixLimit, published.pull.url))) {
-          round("asked");
-          await this.flush();
-          return { kind: "asked" };
-        }
-        round("failed");
-      }
-      this.post(
-        item,
-        "thought",
-        merged.message ?? merged.outcome,
-        `${item.id}:merge:${merged.outcome}`,
-      );
-      if (step.kind === "wait") return step;
-      if (step.kind === "reverify") {
-        applyWorkItemEvent(this.db, item.id, "main_moved");
-        enqueueJobOnce(this.db, {
-          queue: JOB_KIND.reverify,
-          jobKey: `reverify:${item.id}:${merged.head ?? "again"}:merge:${jobId}`,
-          payload: { itemId: item.id },
-          now: this.now(),
-        });
-        return { kind: "returned" };
-      }
-      return {
-        kind: "failed",
-        reason: "merge",
-        message: step.kind === "failed" ? step.message : (merged.message ?? merged.outcome),
-      };
-    }
-    return { kind: "merged" };
+  }
+
+  private async verifyForMerge(run: MergeRun, input: ReverifyInput): Promise<MergeVerdict> {
+    const verifying = run.verifying!;
+    await this.startCloseoutRound(verifying, input.head);
+    const verdict = await this.runVerification(
+      verifying,
+      input.worktree,
+      input.base,
+      input.head,
+      run.candidate!,
+    );
+    if (verdict.decision === "accepted" && !verdict.exhausted)
+      applyCloseoutAcceptance(this.db, verifying.id, verdict.owner);
+    run.verifying = getWorkItem(this.db, verifying.id) ?? verifying;
+    if (verdict.decision === "accepted")
+      run.publicationCandidate = { sha: input.head, baseSha: input.base };
+    if (verdict.decision !== "accepted") run.closeoutFailure = verdict;
+    const filesReady = artifactPublicationReady(this.db, verifying.id);
+    return {
+      accepted: verdict.decision === "accepted" && filesReady,
+      outcome:
+        verdict.decision === "accepted"
+          ? filesReady
+            ? "merged"
+            : "blocked"
+          : verdict.exhausted
+            ? "exhausted"
+            : verdict.decision,
+      summary: filesReady ? verdict.summary : "A requested artifact has not been uploaded.",
+      rejected: verdict.decision !== "accepted",
+    };
   }
 
   private async settleMerge(payload: unknown, step: MergeStep): Promise<void> {
@@ -3055,10 +2918,6 @@ export class Orchestrator {
     };
   }
 
-  private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {
-    this.statusAfterPullRequest(item, body, `${item.id}:branch-updated:${head}`);
-  }
-
   private statusAfterPullRequest(item: WorkItemRecord, body: string, key: string): void {
     if (this.options.channel === "comments") {
       this.post(item, "thought", body, key);
@@ -3107,15 +2966,6 @@ export class Orchestrator {
   private ciFixAttempts(): number {
     return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
       .ciFixAttempts;
-  }
-
-  private askCiHelp(item: WorkItemRecord, body: string): boolean {
-    return askMergeHelp(this.db, {
-      itemId: item.id,
-      body,
-      now: this.now(),
-      session: (current) => this.activitySession(current),
-    });
   }
 
   /**
@@ -3167,49 +3017,6 @@ export class Orchestrator {
     };
     if (context !== null) keepTaskMergeSettings(this.db, item.id, settings, this.now());
     return settings;
-  }
-
-  private returnToAgent(
-    item: WorkItemRecord,
-    reason: MergeReturnReason,
-    admit: (returns: number) => boolean,
-    handoff: string,
-    thought: (attempt: number) => string,
-    record: (jobId: number, attempt: number) => void,
-  ): boolean {
-    return returnToAgent(this.db, {
-      itemId: item.id,
-      reason,
-      admit,
-      handoff,
-      now: this.now(),
-      record,
-      announce: (running, attempt, key) => {
-        if (reason === "ci-failed") this.statusAfterPullRequest(running, thought(attempt), key);
-        else this.post(running, "thought", thought(attempt), key);
-      },
-    });
-  }
-
-  /** The checks of a failed CI read and what Paws did next, for the run page. */
-  private recordCiRound(
-    item: WorkItemRecord,
-    head: string,
-    checks: readonly CiRoundCheck[] | undefined,
-    next: CiRound["next"],
-    limit: number,
-    fix: number | null,
-  ): void {
-    recordCiRound(this.db, {
-      itemId: item.id,
-      head,
-      runId: getWorkItem(this.db, item.id)?.currentRunId ?? item.currentRunId,
-      next,
-      fix,
-      fixLimit: limit,
-      checks: [...(checks ?? [])],
-      recordedAt: this.now(),
-    });
   }
 
   private askHook(item: WorkItemRecord, runId: string): AskTeamHook {
@@ -3361,9 +3168,6 @@ export class Orchestrator {
     const createdAt =
       event.activityCreatedAtMs === undefined ? event.updatedAtMs : event.activityCreatedAtMs;
     if (createdAt === null || createdAt <= open.createdAt) return "rejected";
-    const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
-      (entry) => entry.questionId === open.id,
-    );
     let answeredBy = event.actorId ?? "unknown";
     try {
       const payload = JSON.parse(event.payload) as {
@@ -3409,72 +3213,23 @@ export class Orchestrator {
       await this.flush();
       return accepted ? "answered" : "rejected";
     }
-    if (!canAnswer({ kind: recovery ? "closeout-bypass" : open.kind }, user)) return "rejected";
-    if (open.kind === "runner-wait") {
+    if (!canAnswer({ kind: open.kind === "closeout-help" ? "closeout-bypass" : open.kind }, user))
+      return "rejected";
+    if (open.kind === "runner-wait" || open.kind === "closeout-help") {
+      const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
+        (entry) => entry.questionId === open.id,
+      );
+      if (recovery && getWorkItem(this.db, open.itemId)?.state !== "awaiting_input")
+        return "rejected";
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
         questionEffects(this.db, { now: this.now() }),
       );
       await this.flush();
+      if (recovery && parseRecoveryAnswer(answer, recovery.failedChecks) === null)
+        return "rejected";
       return outcome.status === "answered" ? "answered" : "rejected";
-    }
-    if (recovery) {
-      const parsed = parseRecoveryAnswer(answer, recovery.failedChecks);
-      const item = getWorkItem(this.db, open.itemId);
-      if (item === null || item.state !== "awaiting_input") return "rejected";
-      const outcome = immediate(this.db, () => {
-        if (
-          answerQuestion(this.db, open.id, {
-            answer,
-            answeredBy,
-            eventKey: event.dedupeKey,
-            now: this.now(),
-          }) === null
-        )
-          return "rejected";
-        if (parsed === null) {
-          this.openCloseoutQuestion(
-            item,
-            sessionId,
-            recovery,
-            "Use /paws bypass check-id -- your reason from an identifiable trusted account, or reply with guidance.",
-          );
-          return "rejected";
-        }
-        if (item.sessionKey === sessionId)
-          applyLinearTurns(this.db, sessionId, [event.dedupeKey], item.id);
-        applyWorkItemEvent(this.db, item.id, "answer_received");
-        if (parsed.kind === "bypass") {
-          applyWorkItemEvent(this.db, item.id, "turn_ended");
-          saveCheckpoint(this.db, item.id, {
-            phase: "verifying",
-            baseSha: recovery.base,
-            wipCommit: recovery.head,
-          });
-          enqueueJobOnce(this.db, {
-            queue: JOB_KIND.reverify,
-            jobKey: `closeout-bypass:${open.id}`,
-            payload: { itemId: item.id },
-            now: this.now(),
-          });
-        } else {
-          enqueueJobOnce(this.db, {
-            queue: JOB_KIND.resume,
-            jobKey: `closeout-guidance:${open.id}`,
-            payload: {
-              itemId: item.id,
-              freshSession: true,
-              handoff: handoffNote({ question: recovery.summary, answer: parsed.body }),
-              reason: "closeout-guidance",
-            },
-            now: this.now(),
-          });
-        }
-        return "answered" as const;
-      });
-      await this.flush();
-      return outcome;
     }
     const outcome = immediate(this.db, () => {
       const item = getWorkItem(this.db, open.itemId);
@@ -3672,9 +3427,10 @@ export class Orchestrator {
         setCurrentRun(this.db, itemId, null);
         if (item.state === "failed" || item.state === "exhausted") {
           this.db.run(
-            "UPDATE work_item SET cancel_requested=0,awake_ms=0,last_mono_ms=NULL,turn_count=0,recovery_attempts=0 WHERE id=?",
+            "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
             [itemId],
           );
+          resetAwakeTime(this.db, itemId);
           applyWorkItemEvent(this.db, itemId, "requeue");
         } else if (
           [
@@ -3759,6 +3515,18 @@ export class Orchestrator {
 
   async interruptItem(itemId: string): Promise<void> {
     await this.joinChangedItems([itemId]);
+  }
+
+  /**
+   * Stops the item's live agent and its runner work, and nothing else. Its GitHub
+   * authorization and merge work stay, so accepted work keeps publishing and merging.
+   */
+  async stopAgent(itemId: string): Promise<void> {
+    // Like ask_team: an answer to the time-limit question does not enqueue the
+    // resume itself. The stopped run enqueues it when its operation finishes.
+    for (const [runId, live] of this.live) if (live.itemId === itemId) this.askedRuns.add(runId);
+    this.abortItem(itemId);
+    await this.options.remoteExecution?.cancelItem?.(itemId);
   }
 
   private async joinChangedItems(itemIds: readonly string[]): Promise<void> {
@@ -4040,14 +3808,14 @@ export class Orchestrator {
     key: string,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
     delivery?: "critical" | "ordered",
-  ): void {
+  ): number | undefined {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state === "cancelled") return;
     if ((kind === "thought" || kind === "action") && !this.canReportProgress(item.id)) return;
     const sessionId = this.activitySession(current);
     if (sessionId === null || body.trim() === "") return;
-    enqueueOutboxOnce(this.db, {
+    return enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "activity",
       orderingKey: sessionId,
@@ -4356,9 +4124,10 @@ export class Orchestrator {
     immediate(this.db, () => {
       if (item!.cancelRequested || item!.state === "failed" || item!.state === "exhausted") {
         this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, awake_ms = 0, last_mono_ms = NULL, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
+          "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
           [item!.id],
         );
+        resetAwakeTime(this.db, item!.id);
         if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
       }
       if (item!.currentRunId) markRun(this.db, item!.currentRunId!, "ended", this.now());
@@ -4713,30 +4482,73 @@ export class Orchestrator {
       undefined,
       base,
     );
-    const asked = immediate(this.db, () => {
+    let carriedOver = false;
+    // A check whose screens all carried an approval over passes; the next check may still be due.
+    for (let pass = 0; pass <= requirements.length; pass++) {
       const due = dueVisualReview(this.db, item.id, requirements, approvals);
-      if (due === null) return false;
-      const current = getWorkItem(this.db, item.id);
-      const runId = current?.currentRunId ?? null;
-      if (
-        !askForVisualReview(this.db, {
-          item,
-          runId,
-          sessionId,
-          checkId: due.requirement.id,
-          evidenceIds: due.evidenceIds,
-          base,
-          head,
-          publicUrl: evidence.publicUrl,
-          now: this.now(),
-        })
-      )
-        return false;
-      if (runId) releaseRunCapacity(this.db, runId, this.now());
-      return true;
-    });
-    if (asked) await this.flush();
-    return asked;
+      if (due === null) break;
+      const plan = await planVisualReviewCarry(
+        this.db,
+        item.id,
+        due.requirement.id,
+        due.evidenceIds,
+        evidence.root,
+      );
+      const outcome = immediate(this.db, () => {
+        const now = dueVisualReview(this.db, item.id, requirements, approvals);
+        if (now === null) return "none" as const;
+        if (now.requirement.id !== due.requirement.id) return "again" as const;
+        const current = getWorkItem(this.db, item.id);
+        if (current?.state !== "running" || current.cancelRequested) return "none" as const;
+        const carried = plan.carried.filter((entry) => now.evidenceIds.includes(entry.evidenceId));
+        if (carried.length === now.evidenceIds.length) {
+          const review = carryVisualReview(this.db, {
+            item: current,
+            sessionId,
+            checkId: now.requirement.id,
+            evidenceIds: now.evidenceIds,
+            carried,
+            head,
+            now: this.now(),
+          });
+          approvals.push(
+            ...visualReviewApprovals(this.db, item.id, itemPathId(item)).filter(
+              (approval) =>
+                approval.checkId === review.checkId &&
+                approval.commit === head &&
+                review.evidenceIds.every((id) => approval.evidenceIds.includes(id)),
+            ),
+          );
+          return "carried" as const;
+        }
+        const runId = current.currentRunId ?? null;
+        if (
+          !askForVisualReview(this.db, {
+            item,
+            runId,
+            sessionId,
+            checkId: now.requirement.id,
+            evidenceIds: now.evidenceIds,
+            carried,
+            approved: plan.approved,
+            base,
+            head,
+            publicUrl: evidence.publicUrl,
+            now: this.now(),
+          })
+        )
+          return "none" as const;
+        if (runId) releaseRunCapacity(this.db, runId, this.now());
+        return "asked" as const;
+      });
+      if (outcome === "carried") carriedOver = true;
+      else if (outcome === "asked") {
+        await this.flush();
+        return true;
+      } else if (outcome === "none") break;
+    }
+    if (carriedOver) await this.flush();
+    return false;
   }
 
   async requestVisualReviewChanges(input: {
@@ -5554,6 +5366,7 @@ export class Orchestrator {
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
 const OUTBOX_WAIT_MS = 30_000;
+const FIRST_ACTIVITY_HOLD_MS = 5_000;
 const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
 const CHECKS_RATE_LIMIT_WAIT_MS = 60 * 60_000;
 
@@ -5589,19 +5402,6 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
 function withAcceptedBranch(text: string, item: WorkItemRecord): string {
   const sentence = /[.!?]$/.test(text) ? text : `${text}.`;
   return `${sentence} The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`;
-}
-
-function branchUpdatedMessage(base: string, mainMoved: string, overlap?: string[]): string {
-  const updated = `Branch updated onto main ${base.slice(0, 7)}, waiting for CI.`;
-  if (mainMoved !== "overlap")
-    return `${updated} Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
-  if (!overlap?.length) return updated;
-  const listed = overlap.slice(0, 5).join(", ") + (overlap.length > 5 ? ", …" : "");
-  return `Main changed ${listed}, which this pull request changes too. ${updated}`;
-}
-
-function upToDateRuleMessage(repository: string): string {
-  return `GitHub requires branches to be up to date before merging in ${repository}, so Paws updates the branch and waits for CI even when main changed other files. Turn off "Require branches to be up to date before merging" for the base branch to merge without an update.`;
 }
 
 function retryCount(payload: unknown): number {

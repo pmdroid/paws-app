@@ -308,14 +308,17 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       );
       for (const skill of state.desired) {
         if (reported.some((entry) => entry.name === skill.name)) continue;
-        const behind = Object.values(state.homes).some(
-          (home) => home[skill.name]?.sha256 !== skill.sha256 || !home[skill.name]?.modes,
-        );
+        const behind = (home: string) => {
+          const entry = state.homes[home]?.[skill.name];
+          return entry?.sha256 !== skill.sha256 || !entry?.modes;
+        };
+        const waiting = [...holds.values()].filter(behind).length;
         reported.push({
           name: skill.name,
           version: skill.version,
           sha256: skill.sha256,
-          status: behind ? "pending" : "installed",
+          status: Object.keys(state.homes).some(behind) ? "pending" : "installed",
+          ...(waiting ? { waiting } : {}),
         });
       }
       return reported;

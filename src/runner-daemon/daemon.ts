@@ -380,20 +380,28 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         ...options.sampleHost?.(),
         ...(options.concurrency === undefined ? {} : { capacity: applied, ceiling }),
       };
+      const reported = skills && RunnerInstalledSkillsSchema.parse(skills);
+      const withoutWaiting = reported?.some((skill) => skill.waiting)
+        ? { ...body, skills: reported.map(({ waiting: _, ...skill }) => skill) }
+        : undefined;
       let reply: unknown;
       try {
         reply = await authenticated(
           "/v1/heartbeat",
           "POST",
-          skills === undefined
-            ? body
-            : { ...body, skills: RunnerInstalledSkillsSchema.parse(skills) },
+          reported === undefined ? body : { ...body, skills: reported },
         );
       } catch (error) {
         // A Paws release without skills refuses the unknown field; renew the leases without it.
         if (skills === undefined || !(error instanceof RunnerRequestError) || error.status !== 403)
           throw error;
-        reply = await authenticated("/v1/heartbeat", "POST", body);
+        reply = await authenticated("/v1/heartbeat", "POST", withoutWaiting ?? body).catch(
+          (retry: unknown) => {
+            if (!withoutWaiting || !(retry instanceof RunnerRequestError) || retry.status !== 403)
+              throw retry;
+            return authenticated("/v1/heartbeat", "POST", body);
+          },
+        );
       }
       const response = RunnerHeartbeatSchema.parse(reply);
       if (options.concurrency !== undefined && response.concurrency !== undefined)

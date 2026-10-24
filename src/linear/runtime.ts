@@ -28,6 +28,7 @@ import { downTunnel, startNgrokTunnel, type SpawnFn, type Tunnel } from "./tunne
 import type { LinearWebhookDeps } from "./webhook";
 import { createLinearAccessReads, type LinearAccessReads } from "./access";
 import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-lifecycle";
+import type { IssueStartReads } from "./issue-start";
 import { createLinearMembershipReads, type LinearMembershipReads } from "./membership";
 
 export type LinearRunning = {
@@ -101,7 +102,8 @@ export function openLinear(options: {
   const client = auth.hasToken()
     ? createLinearClient({ auth, fetch: options.fetch, ledger })
     : null;
-  const tracker = client === null ? null : createLinearTracker(client);
+  const starts: IssueStartReads = new Map();
+  const tracker = client === null ? null : createLinearTracker(client, starts);
   const files =
     client === null
       ? null
@@ -144,7 +146,7 @@ export function openLinear(options: {
       client === null
         ? null
         : createLinearAccessReads(callerClient(client, "task-access"), settings.clientId),
-    issueLifecycle: client === null ? null : createLinearIssueLifecycle(client),
+    issueLifecycle: client === null ? null : createLinearIssueLifecycle(client, starts),
     usage: () => ({ ...ledger.usage(), lastCatchUpMs: store.getCursor(CATCH_UP_CURSOR) }),
     start(port) {
       if (running !== null) return running;

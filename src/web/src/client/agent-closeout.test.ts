@@ -142,7 +142,7 @@ describe("Agent Closeout", () => {
     expect(pawsOnly).toContain('id="agent-check-2-test-out"');
   });
 
-  test("desktop: an ended run shows its unfinished check as stopped at the run's end and links the task's current run", () => {
+  test("desktop: an ended engine run shows its unfinished check as stopped at the run's end, on the issue page", () => {
     for (const generatedAt of ["2026-10-22T05:06:00.000Z", "2026-10-22T06:30:00.000Z"]) {
       const snapshot = endedRun();
       snapshot.generatedAt = generatedAt;
@@ -152,22 +152,19 @@ describe("Agent Closeout", () => {
       expect(html).toContain('<span class="ico stopped" aria-label="stopped">■</span>');
       expect(html).toContain("attempt 2 of 3 · 9m 25s");
       expect(html).not.toContain("is running");
-      expect(html).toContain(
-        `This task continues in run <a class="mono" href="${routeHref({ view: "runs", id: CURRENT })}">c1b566d1</a>.`,
-      );
+      // The issue page holds every engine run, so it does not send the reader to another page.
+      expect(html).not.toContain("This task continues in run");
+      expect(html).not.toContain(routeHref({ view: "runs", id: CURRENT }));
     }
   });
 
-  test("390 px: the stopped check and the link to the current run wrap instead of widening the page", () => {
+  test("390 px: the stopped check wraps instead of widening the page", () => {
     const html = renderToStaticMarkup(
       createElement(Fragment, null, themedMarkup(runPage(endedRun()))),
     );
     expect(html).toContain("Stopped: the run ended before this check finished");
-    expect(html).toContain(">c1b566d1</a>");
-    expect(html).not.toContain(`>${CURRENT}<`);
-    const notice = classNames(html, "run-continues");
-    expect(notice).toHaveLength(1);
-    expect(notice[0]).toContain("closeout-result");
+    expect(html).not.toContain(CURRENT);
+    expect(classNames(html, "run-continues")).toHaveLength(0);
     expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   });
 

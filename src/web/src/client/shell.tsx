@@ -269,12 +269,12 @@ export function mountShell(): {
                 </Sheet>
               )}
               <span className="text-sm font-semibold">
-                {authenticated && detail && route.view === "runs" ? (
+                {authenticated && detail && (route.view === "runs" || route.view === "issues") ? (
                   <Link
-                    to={routePath({ view: "runs", id: null })}
+                    to={routePath({ view: route.view, id: null })}
                     className="underline underline-offset-4"
                   >
-                    Runs
+                    {PAGES[route.view].title}
                   </Link>
                 ) : authenticated ? (
                   route.view === "settings" ? (

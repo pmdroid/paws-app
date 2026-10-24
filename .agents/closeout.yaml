@@ -27,7 +27,7 @@ items:
   - id: test
     kind: command
     gate: beforePR
-    exec: ["bun", "test", "--parallel=4"]
+    exec: ["bun", "run", "test"]
     timeoutSeconds: 1800
   - id: build-status
     kind: command

@@ -293,3 +293,14 @@ export function queueLine(queue: StatusQueuePosition): string {
 export function skillVersionLabel(version: string): string {
   return /^[0-9a-f]{40}$/.test(version) ? version.slice(0, 7) : version;
 }
+
+/** Hours and minutes on a 24-hour clock in local time, such as 22:40. */
+export function clock24(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}

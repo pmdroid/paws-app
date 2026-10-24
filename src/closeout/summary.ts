@@ -5,11 +5,14 @@ export function formatEvidenceSummary(
   result: Pick<
     GateResult,
     "outcome" | "taskId" | "base" | "head" | "fixAttempts" | "evaluations" | "exitCode" | "decision"
-  >,
+  > & {
+    /** The Linear identifier, such as `PAS-367`. People read this; `taskId` stays the internal path id. */
+    taskLabel?: string;
+  },
 ): string {
   const lines = [
     `Closeout: ${result.outcome}`,
-    `Task: ${result.taskId}`,
+    `Task: ${result.taskLabel ?? result.taskId}`,
     `Base: ${result.base}`,
     `Head: ${result.head}`,
     `Fix attempts: ${result.fixAttempts}`,

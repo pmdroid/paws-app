@@ -113,6 +113,18 @@ export interface StatusItem {
   githubQueue?: StatusGitHubQueue;
   linearRequests?: number;
   visualReviews?: StatusVisualReview[];
+  /** The Linear session this work belongs to. Sub-issues delegated together share one. */
+  session?: StatusItemSession;
+  /** Set on an earlier attempt that a newer Linear session on the same issue replaced. */
+  endedAt?: string;
+}
+
+export interface StatusItemSession {
+  id: string;
+  /** The session in Linear. */
+  url: string;
+  /** The other issues worked in the same Linear session. */
+  shared: string[];
 }
 
 export const VISUAL_REVIEW_STATES = ["waiting", "accepted", "changes_requested", "stale"] as const;
@@ -130,6 +142,21 @@ export interface StatusVisualReview {
   answeredAt: string | null;
   feedback: string | null;
   marks?: { id: string; evidenceId: string }[];
+  /** Files that carried an earlier approval over instead of being asked about. */
+  carried?: StatusVisualReviewCarry[];
+}
+
+/** A screenshot that looks the same as one a person accepted, so it wasn't asked again. */
+export interface StatusVisualReviewCarry {
+  evidenceId: string;
+  /** The file the person accepted. */
+  fromEvidenceId: string;
+  /** The `questionId` of the accepted review. */
+  approvalId: string;
+  approvedBy: string;
+  approvedAt: string;
+  /** `identical` bytes, or `similar` pixels within tolerance. */
+  match: "identical" | "similar";
 }
 
 export interface StatusMergeQueue {
@@ -234,6 +261,8 @@ export interface StatusCheck {
 
 export interface StatusVerdict {
   itemId: string;
+  /** The `StatusRun.id` of the attempt this verdict belongs to, when the issue had several. */
+  runId?: string;
   decision: VerdictDecision;
   attempt: number;
   maxAttempts: number;
@@ -476,11 +505,13 @@ export function parseStatusSnapshot(input: unknown): ParseResult {
 
 export function statusIntegrity(snapshot: StatusSnapshot): string[] {
   const problems: string[] = [];
+  // An earlier attempt (a replaced Linear session) shares its issue's id with the current one.
   const items = ids(
-    snapshot.items.map((item) => item.id),
+    snapshot.items.filter((item) => item.endedAt === undefined).map((item) => item.id),
     "item",
     problems,
   );
+  for (const item of snapshot.items) if (item.endedAt !== undefined) items.add(item.id);
   const runs = ids(
     snapshot.runs.map((run) => run.id),
     "run",
@@ -773,6 +804,19 @@ function readItem(input: unknown, index: number): StatusItem {
             readVisualReview(entry, `${path}.visualReviews[${at}]`),
           ),
         }),
+    ...(body.session === undefined
+      ? {}
+      : { session: readItemSession(body.session, `${path}.session`) }),
+    ...(body.endedAt === undefined ? {} : { endedAt: dateString(body, "endedAt", path) }),
+  };
+}
+
+function readItemSession(input: unknown, path: string): StatusItemSession {
+  const body = object(input, path);
+  return {
+    id: text(body, "id", path),
+    url: text(body, "url", path),
+    shared: stringArray(body, "shared", path),
   };
 }
 
@@ -800,8 +844,26 @@ function readVisualReview(input: unknown, path: string): StatusVisualReview {
             };
           }),
         }),
+    ...(body.carried === undefined
+      ? {}
+      : {
+          carried: array(body, "carried", path).map((entry, at) => {
+            const where = `${path}.carried[${at}]`;
+            const carry = object(entry, where);
+            return {
+              evidenceId: text(carry, "evidenceId", where),
+              fromEvidenceId: text(carry, "fromEvidenceId", where),
+              approvalId: text(carry, "approvalId", where),
+              approvedBy: text(carry, "approvedBy", where),
+              approvedAt: dateString(carry, "approvedAt", where),
+              match: oneOf(string(carry, "match", where), CARRY_MATCHES, `${where}.match`),
+            };
+          }),
+        }),
   };
 }
+
+const CARRY_MATCHES = ["identical", "similar"] as const;
 
 function readMergeQueue(input: unknown, path: string): StatusMergeQueue {
   const body = object(input, path);
@@ -942,6 +1004,7 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
   }
   return {
     itemId: text(body, "itemId", path),
+    ...(body.runId === undefined ? {} : { runId: text(body, "runId", path) }),
     decision: oneOf(string(body, "decision", path), VERDICT_DECISIONS, `${path}.decision`),
     attempt: count(body, "attempt", path),
     maxAttempts,

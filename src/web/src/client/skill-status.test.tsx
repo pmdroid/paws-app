@@ -71,7 +71,7 @@ function expectNoFixedWidths(html: string) {
 }
 
 describe("runner page skills", () => {
-  const html = runnerSkillsMarkup(skills);
+  const html = runnerSkillsMarkup(skills, "goldbox");
 
   test("lists each skill with its pinned version and state", () => {
     expect(html).toContain(
@@ -90,7 +90,7 @@ describe("runner page skills", () => {
     expect(html).toContain(
       '<p class="runner-skill-error" role="note">Skill a-skill-with-a-rather-long-name-for-a-phone-screen 0.9.0 failed its checksum and was not installed.</p>',
     );
-    expect(runnerSkillsMarkup([{ ...skills[3]!, error: null }])).toContain(
+    expect(runnerSkillsMarkup([{ ...skills[3]!, error: null }], "goldbox")).toContain(
       "The runner did not report why.",
     );
     expect(html.match(/runner-skill-error/g)).toHaveLength(1);
@@ -121,7 +121,7 @@ describe("runner page skills", () => {
         busy: false,
       }),
     ).not.toContain("-skills");
-    expect(runnerSkillsMarkup([])).toContain("No skills registered.");
+    expect(runnerSkillsMarkup([], "goldbox")).toContain("No skills registered.");
   });
 
   test("fits a 390 px phone without horizontal scroll", () => {
@@ -135,6 +135,41 @@ describe("runner page skills", () => {
     expect(classNames(themed, "runner-skill-list")[0]).toContain("min-w-0");
     expect(themed).toMatch(/class="runner-skill[^"]*\[&amp;&gt;p\]:col-span-full/);
     expectNoFixedWidths(themed);
+  });
+});
+
+describe("skills waiting on running tasks", () => {
+  const waiting = { ...skills[1]!, installedVersion: "1.0.0", reportedAt: now, waiting: 2 };
+  const detail = (entry: typeof waiting) =>
+    runnerDetailMarkup(
+      { ...runner, skills: [entry] },
+      { now, serverVersion: "1.2.0", policy: null, userId: null, role: null, busy: false },
+    );
+
+  test("the runner card says how many running tasks hold the earlier version", () => {
+    expect(detail(waiting)).toContain('<span class="tag running">Waiting</span>');
+    expect(detail(waiting)).toContain(
+      '<p class="muted">Waiting for 2 running tasks on goldbox. Has 1.0.0 until they end.</p>',
+    );
+    expect(detail(waiting)).not.toContain(">Installing</span>");
+    expect(detail({ ...waiting, waiting: 1 })).toContain("Waiting for 1 running task on goldbox.");
+  });
+
+  test("the skill settings name the runner and the count instead of installing", () => {
+    const rollout = {
+      name: "review-paws",
+      total: 2,
+      upToDate: 1,
+      installing: [],
+      waiting: [{ runner: "goldbox", tasks: 3 }],
+      outOfDate: [],
+      failed: [],
+    };
+    const html = skillRolloutMarkup(rollout);
+    expect(html).toContain(
+      '<span class="tag running wrap">Waiting for 3 running tasks on goldbox</span>',
+    );
+    expect(html).not.toContain("installing");
   });
 });
 

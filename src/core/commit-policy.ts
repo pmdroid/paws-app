@@ -53,9 +53,14 @@ export function validateCommitAttribution(
   trailers: readonly string[],
 ): void {
   const identity = appBotCommitIdentity(policy.bot);
+  const names = [identity.name, policy.bot.login];
+  const [author, authorEmail, committer, committerEmail] = metadata;
   if (
-    metadata.join("\n") !==
-    [identity.name, identity.email, identity.name, identity.email].join("\n")
+    metadata.length !== 4 ||
+    !names.includes(author!) ||
+    !names.includes(committer!) ||
+    authorEmail !== identity.email ||
+    committerEmail !== identity.email
   )
     throw new Error(
       "Candidate attribution rejected: every new commit must use the authorized App bot as author and committer. Repair metadata before verification; no candidate was rewritten.",
