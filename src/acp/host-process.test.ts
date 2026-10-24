@@ -74,7 +74,9 @@ test.skipIf(process.platform === "win32")(
       await Bun.sleep(30);
       const kill = spyOn(process, "kill");
       try {
+        const started = performance.now();
         expect(await stopChild(child, 50)).toBe(false);
+        expect(performance.now() - started).toBeLessThan(1_000);
         killTree(child, "SIGKILL");
         expect(kill).not.toHaveBeenCalled();
         expect(running(descendant)).toBe(true);
