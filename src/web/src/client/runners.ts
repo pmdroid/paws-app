@@ -72,6 +72,13 @@ export type RunnerSkill = {
   waiting?: number | null;
   reportedAt: number | null;
 };
+/** Per agent: the newest version Paws offers runners, and each version it refused with why. */
+export type AgentCatalogEntry = {
+  agent: string;
+  offered: string | null;
+  refused: { version: string; reason: string }[];
+  checkedAt: number;
+};
 export type StrayProcess = { pid: number; name: string; ageSeconds: number; cpuPercent: number };
 export type RunningSession = {
   runId: string;
@@ -194,6 +201,29 @@ function availability(runner: Runner, now: number): [string, string] {
   const running = runner.running?.length ?? 0;
   if (running) return ["running", `Running ${running}`];
   return runner.idle ? ["ok", "Idle"] : ["running", "Busy"];
+}
+
+const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
+
+/** The agent versions Paws offers: published on npm at least 48 hours ago, integrity unchanged. */
+export function agentCatalogMarkup(entries: readonly AgentCatalogEntry[], now: number): string {
+  if (!entries.length) return "";
+  const rows = entries
+    .map((entry) => {
+      const name = AGENT_NAMES[entry.agent] ?? entry.agent;
+      const offered = entry.offered
+        ? `<span class="mono">${esc(entry.offered)}</span>`
+        : '<span class="muted">No version is eligible yet</span>';
+      const refused = entry.refused
+        .map(
+          (item) =>
+            `<p class="runner-skill-error" role="note"><b>Refused <span class="mono">${esc(item.version)}</span>.</b> ${esc(item.reason)}</p>`,
+        )
+        .join("");
+      return `<li class="runner-skill" data-agent-catalog="${esc(entry.agent)}"><span class="runner-skill-name"><b>${esc(name)}</b>${offered}</span><span class="muted">Checked ${esc(updatedLabel(entry.checkedAt, now))}</span>${refused}</li>`;
+    })
+    .join("");
+  return `<section class="runner-section" aria-labelledby="agent-catalog-heading"><h2 id="agent-catalog-heading">Coding agent versions</h2><p class="muted">Paws offers a version once it has been on npm for 2 days, is not deprecated or a prerelease, and its integrity has not changed.</p><ul class="runner-skill-list" role="list" aria-label="Coding agent versions">${rows}</ul></section>`;
 }
 
 export function runnerRowMarkup(
@@ -689,6 +719,7 @@ export function createRunners() {
   let loaded = false;
   let runners: Runner[] = [];
   let serverVersion: string | null = null;
+  let agentCatalog: AgentCatalogEntry[] = [];
   let policies = new Map<string, HostPolicy>();
   let session: Session | null = null;
   let setupRequired = false;
@@ -719,6 +750,7 @@ export function createRunners() {
     runners = [];
     policies = new Map();
     serverVersion = null;
+    agentCatalog = [];
     usage = [];
     usageRunner = null;
     inspection = null;
@@ -759,6 +791,7 @@ export function createRunners() {
       const list = await api<{
         runners: Runner[];
         serverVersion?: string | null;
+        agentVersions?: AgentCatalogEntry[];
         setupRequired?: boolean;
         workspaceReady?: boolean;
       }>("/api/runners");
@@ -789,6 +822,7 @@ export function createRunners() {
       runners = list.runners;
       loaded = true;
       serverVersion = list.serverVersion ?? null;
+      agentCatalog = list.agentVersions ?? [];
       policies = new Map(hosts.filter((entry) => entry !== null));
       session = identity;
       usage = activity.usage;
@@ -850,7 +884,7 @@ export function createRunners() {
     const empty = manages()
       ? "<p>No runners are paired. Select <b>Pair a host</b> to connect a Linux host.</p>"
       : "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair">Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${dialog}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair">Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now)}${dialog}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });

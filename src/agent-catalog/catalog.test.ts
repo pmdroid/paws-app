@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { listAgentVersions, migrate, openDatabase, readAgentVersion } from "../db";
+import {
+  agentCatalogSummary,
+  listAgentVersions,
+  migrate,
+  openDatabase,
+  readAgentVersion,
+} from "../db";
 import {
   AGENT_CATALOG_REFRESH_MS,
   createAgentCatalog,
@@ -248,5 +254,26 @@ describe("agent version catalog", () => {
         optionalDependencies: { z: "1.0.1" },
       },
     });
+  });
+});
+
+describe("agent catalog summary", () => {
+  test("lists the newest eligible version and each refusal", async () => {
+    const { db, npm, catalog } = setup();
+    const old = NOW - 72 * HOUR;
+    npm.publish("demo-agent", "1.2.0", { publishedAt: old, integrity: sha(1) });
+    npm.publish("demo-agent", "1.10.0", { publishedAt: old, integrity: sha(2) });
+    npm.publish("demo-agent", "1.11.0", { publishedAt: NOW - HOUR, integrity: sha(3) });
+    await catalog.refresh();
+    npm.replaceIntegrity("demo-agent", "1.2.0", sha(4));
+    await catalog.refresh();
+    expect(agentCatalogSummary(db)).toEqual([
+      {
+        agent: "demo",
+        offered: "1.10.0",
+        refused: [{ version: "1.2.0", reason: expect.stringContaining("integrity") }],
+        checkedAt: NOW,
+      },
+    ]);
   });
 });

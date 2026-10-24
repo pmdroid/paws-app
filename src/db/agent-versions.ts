@@ -166,3 +166,36 @@ export function lastAgentCatalogCheck(db: Database): number | null {
 const SELECT_AGENT_VERSION = `SELECT agent, version, published_at AS publishedAt, integrity, status,
   first_seen_at AS firstSeenAt, reason, native_version AS nativeVersion, checked_at AS checkedAt
   FROM agent_version`;
+
+/** What the Runners page shows per agent: the newest version on offer and each refusal with its reason. */
+export type AgentCatalogSummary = {
+  agent: string;
+  /** The newest eligible version, or null when none is eligible yet. */
+  offered: string | null;
+  refused: { version: string; reason: string }[];
+  checkedAt: number;
+};
+
+export function agentCatalogSummary(db: Database): AgentCatalogSummary[] {
+  const byAgent = new Map<string, AgentCatalogSummary>();
+  for (const row of listAgentVersions(db)) {
+    let entry = byAgent.get(row.agent);
+    if (!entry)
+      byAgent.set(
+        row.agent,
+        (entry = { agent: row.agent, offered: null, refused: [], checkedAt: row.checkedAt }),
+      );
+    entry.checkedAt = Math.max(entry.checkedAt, row.checkedAt);
+    if (
+      row.status === "eligible" &&
+      (entry.offered === null || Bun.semver.order(row.version, entry.offered) > 0)
+    )
+      entry.offered = row.version;
+    if (row.status === "refused" && entry.refused.length < 10)
+      entry.refused.push({
+        version: row.version,
+        reason: row.reason ?? "Its integrity changed after Paws first saw it.",
+      });
+  }
+  return [...byAgent.values()];
+}
