@@ -75,6 +75,8 @@ const NO_FREE_CAPACITY = ": no free capacity";
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
 const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
+/** First runner release whose command schema accepts `runtimes`. Older runners reject the field. */
+export const RUNTIMES_RUNNER_VERSION = [0, 1, 26];
 
 type SessionHolder = { runnerId: string; agent: string; sessionId: string };
 
@@ -717,6 +719,34 @@ export function createRemoteAgentRunner(options: {
                 )
                   ? earlierSession(db, itemId, selected.id, profile.agent)
                   : undefined;
+              const runtimeList =
+                input.runtimes && (!taskScope || taskScope.repository)
+                  ? await input.runtimes().catch((error: unknown) => ({
+                      runtimes: [],
+                      notices: [
+                        `Paws could not read the repository's runtime list: ${error instanceof Error ? error.message : String(error)}.`,
+                      ],
+                    }))
+                  : undefined;
+              signal.throwIfAborted();
+              const acceptsRuntimes = versionAtLeast(
+                db
+                  .query<{ version: string | null }, [string]>(
+                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                  )
+                  .get(selected.id)?.version,
+                RUNTIMES_RUNNER_VERSION,
+              );
+              const runtimes =
+                runtimeList?.runtimes.length && acceptsRuntimes ? runtimeList.runtimes : undefined;
+              const runtimeNotices = [
+                ...(runtimeList?.notices ?? []),
+                ...(runtimeList?.runtimes.length && !acceptsRuntimes
+                  ? [
+                      `Paws did not send the repository's runtimes to this runner because it needs runner ${RUNTIMES_RUNNER_VERSION.join(".")} or later.`,
+                    ]
+                  : []),
+              ];
               const assigned: WorkCommand = {
                 id: commandId,
                 runnerId: selected.id,
@@ -732,6 +762,7 @@ export function createRemoteAgentRunner(options: {
                   : prepared.prompt,
                 inputFiles,
                 promptContext,
+                ...(runtimes ? { runtimes } : {}),
                 ...(taskScope
                   ? {
                       type: "task" as const,
@@ -796,6 +827,8 @@ export function createRemoteAgentRunner(options: {
                   startedAt: issuedAt,
                 });
               });
+              for (const notice of runtimeNotices)
+                await emit({ type: "progress", text: `${notice}\n` });
               if (session) {
                 const name = (id: string) =>
                   db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
