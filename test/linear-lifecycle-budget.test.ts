@@ -534,6 +534,6 @@ test("Linear requests while CI is pending and main moves before the merge", asyn
     context: 1,
     outbox: 9,
     "session-read": 1,
-    "task-access": 19,
+    "task-access": 7,
   });
 });
