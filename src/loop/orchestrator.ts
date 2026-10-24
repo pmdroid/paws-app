@@ -448,6 +448,7 @@ export class Orchestrator {
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
   private readonly askedRuns = new Set<string>();
+  private readonly pullRequestReads = new Set<string>();
   private readonly live = new Map<
     string,
     {
@@ -2729,7 +2730,7 @@ export class Orchestrator {
         !this.stopped(item.id) &&
         (live.sessionId === null ||
           getLinearSessionGeneration(this.db, live.sessionId) === live.generation),
-      assert: async (purpose) => {
+      assert: async (purpose, merging) => {
         const current = getWorkItem(this.db, item.id);
         if (!current) throw new Error("The published task no longer exists.");
         await this.assertPublicationReady(
@@ -2739,7 +2740,11 @@ export class Orchestrator {
           run.publicationCandidate,
         );
         const fresh = (purpose === "pr" || purpose === "merge") && !freshReads.has(purpose);
-        await this.taskAccess()?.assert(current, live.controller.signal, { fresh });
+        const firstPullRequest = purpose === "pr" && !this.pullRequestReads.has(item.id);
+        await this.taskAccess()?.assert(current, live.controller.signal, {
+          fresh: merging === true || firstPullRequest,
+        });
+        if (firstPullRequest) this.pullRequestReads.add(item.id);
         if (fresh) freshReads.add(purpose);
         const auth = this.authorization(current);
         if (auth && !(await auth.ensure(current, "publication", live.controller.signal, { fresh })))
