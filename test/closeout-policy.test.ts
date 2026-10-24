@@ -561,6 +561,47 @@ describe("policy errors", () => {
     );
   });
 
+  test("an absolute link into the repository resolves in the commit, one outside it on disk", () => {
+    const repo = tempDir();
+    const git = createFakeGitReader({
+      ".agents/policy.yaml": reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+    });
+    git.put(PUBLIC_POLICY_PATH, join(repo, ".agents/policy.yaml"), "120000");
+    writeRepoFile(repo, ".agents/policy.yaml", commandPolicy("checkout"));
+    const policy = present(loadPolicy({ repo, git, env: {} }));
+    expect(policy.items.map((item) => item.id)).toEqual(["look"]);
+    expect(policy.files[0]?.sha256).toBe(sha256(reviewPolicy(".agents/skills/look/SKILL.md")));
+
+    const outside = tempDir();
+    writeRepoFile(outside, "policy.yaml", commandPolicy("disk"));
+    const away = createFakeGitReader({ ".agents/skills/look/SKILL.md": "look\n" });
+    away.put(PUBLIC_POLICY_PATH, join(outside, "policy.yaml"), "120000");
+    const fromDisk = present(loadPolicy({ repo: tempDir(), git: away, env: {} }));
+    expect(fromDisk.items.map((item) => item.id)).toEqual(["disk"]);
+  });
+
+  test("a dot-dot after a linked directory climbs from the directory the link resolves to", () => {
+    const git = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+      "shared/rubric.md": "shared rubric\n",
+      "shared/sub/note.md": "note\n",
+    });
+    git.put(".agents/skills/look/ref", "../../../shared/sub", "120000");
+    git.put(".agents/skills/look/example.md", "ref/../rubric.md", "120000");
+    const repo = tempDir();
+    writeRepoFile(repo, ".agents/skills/look/rubric.md", "checkout rubric\n");
+    const policy = present(loadPolicy({ repo, git, env: {} }));
+    expect(policy.files.map((file) => file.path)).toEqual([
+      ".agents/closeout.yaml",
+      ".agents/skills/look/SKILL.md",
+      ".agents/skills/look/example.md",
+      ".agents/skills/look/ref/note.md",
+    ]);
+    expect(policy.files[2]?.sha256).toBe(sha256("shared rubric\n"));
+  });
+
   test("a skill reached through a linked directory loads from the commit", () => {
     const git = createFakeGitReader({
       [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),

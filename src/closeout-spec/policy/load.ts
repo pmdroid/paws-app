@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import type {
   DecisionWarning,
   PolicyLoadResult,
@@ -290,6 +290,8 @@ function resolveTarget(
   return { kind: "directory", entries };
 }
 
+type Location = { kind: "tree"; path: string } | { kind: "disk"; path: string };
+
 function followLink(
   git: GitReader,
   repo: string,
@@ -300,18 +302,14 @@ function followLink(
 ): Resolved | { ok: false; message: string } {
   if (target.length === 0 || target.includes("\0"))
     return { ok: false, message: `skill link is broken: ${linkPath}` };
-  if (!target.startsWith("/")) {
-    const joined = normalizeJoin(parentOf(linkPath), target);
-    if (joined === "") return { ok: false, message: `skill path is not a file: ${linkPath}` };
-    if (joined !== undefined && repoPath(joined) !== undefined) {
-      const inTree = resolveTarget(git, repo, commit, joined, depth);
-      if (!("ok" in inTree) && inTree.kind === "missing")
-        return { ok: false, message: `skill link is broken: ${linkPath}` };
-      return inTree;
-    }
-  }
-  const onDisk = target.startsWith("/") ? target : join(repo, parentOf(linkPath), target);
-  return readDisk(onDisk, linkPath, depth);
+  const where = locate(git, repo, commit, linkPath, target, depth);
+  if ("ok" in where) return where;
+  if (where.kind === "disk") return readDisk(where.path, linkPath, depth);
+  if (where.path === "") return { ok: false, message: `skill path is not a file: ${linkPath}` };
+  const inTree = resolveTarget(git, repo, commit, where.path, depth);
+  if (!("ok" in inTree) && inTree.kind === "missing")
+    return { ok: false, message: `skill link is broken: ${linkPath}` };
+  return inTree;
 }
 
 function throughAncestors(
@@ -325,56 +323,117 @@ function throughAncestors(
   for (let cut = parts.length - 1; cut >= 1; cut -= 1) {
     const prefix = parts.slice(0, cut).join("/");
     const remainder = parts.slice(cut).join("/");
-    const listed = git.listBlobs(repo, commit, prefix);
-    if (!listed.ok) return { ok: false, message: "could not read the policy file" };
-    const exact = listed.blobs.find((entry) => entry.path === prefix);
-    if (exact === undefined) continue;
-    if (exact.mode !== "120000") return { kind: "missing" };
-    const read = git.readBlob(repo, exact.object);
-    if (!read.ok) return { ok: false, message: "could not read the policy file" };
-    const target = decodeUtf8(read.bytes) ?? "";
-    if (target.length === 0 || target.includes("\0"))
+    const entry = entryAt(git, repo, commit, prefix);
+    if ("ok" in entry) return entry;
+    if (entry.kind === "absent") continue;
+    if (entry.kind === "file") return { kind: "missing" };
+    if (entry.target.length === 0 || entry.target.includes("\0"))
       return { ok: false, message: `skill link is broken: ${prefix}` };
-    if (!target.startsWith("/")) {
-      const joined = normalizeJoin(parentOf(prefix), target);
-      if (joined !== undefined && (joined === "" || repoPath(joined) !== undefined)) {
-        const inTree = resolveTarget(
-          git,
-          repo,
-          commit,
-          joined === "" ? remainder : `${joined}/${remainder}`,
-          depth + 1,
-        );
-        if (!("ok" in inTree) && inTree.kind === "missing")
-          return { ok: false, message: `skill link is broken: ${prefix}` };
-        return inTree;
-      }
-    }
-    const onDisk = target.startsWith("/")
-      ? join(target, ...remainder.split("/"))
-      : join(repo, parentOf(prefix), target, ...remainder.split("/"));
-    return readDisk(onDisk, path, depth + 1);
+    const where = locate(git, repo, commit, prefix, entry.target, depth);
+    if ("ok" in where) return where;
+    if (where.kind === "disk") return readDisk(`${where.path}/${remainder}`, path, depth + 1);
+    const inTree = resolveTarget(
+      git,
+      repo,
+      commit,
+      where.path === "" ? remainder : `${where.path}/${remainder}`,
+      depth + 1,
+    );
+    if (!("ok" in inTree) && inTree.kind === "missing")
+      return { ok: false, message: `skill link is broken: ${prefix}` };
+    return inTree;
   }
   return { kind: "missing" };
+}
+
+type Entry =
+  | { kind: "absent" }
+  | { kind: "file" }
+  | { kind: "link"; target: string }
+  | { ok: false; message: string };
+
+function entryAt(git: GitReader, repo: string, commit: string, path: string): Entry {
+  const listed = git.listBlobs(repo, commit, path);
+  if (!listed.ok) return { ok: false, message: "could not read the policy file" };
+  const exact = listed.blobs.find((entry) => entry.path === path);
+  if (exact === undefined) return { kind: "absent" };
+  if (exact.mode !== "120000") return { kind: "file" };
+  const read = git.readBlob(repo, exact.object);
+  if (!read.ok) return { ok: false, message: "could not read the policy file" };
+  return { kind: "link", target: decodeUtf8(read.bytes) ?? "" };
+}
+
+function locate(
+  git: GitReader,
+  repo: string,
+  commit: string,
+  linkPath: string,
+  target: string,
+  depth: number,
+): Location | { ok: false; message: string } {
+  if (!target.startsWith("/"))
+    return walk(git, repo, commit, linkPath, parentOf(linkPath), target, depth);
+  const inside = insideRepo(repo, target);
+  if (inside === undefined) return { kind: "disk", path: target };
+  return walk(git, repo, commit, linkPath, "", inside, depth);
+}
+
+function walk(
+  git: GitReader,
+  repo: string,
+  commit: string,
+  linkPath: string,
+  start: string,
+  target: string,
+  depth: number,
+): Location | { ok: false; message: string } {
+  const parts = target.split("/").filter((part) => part !== "" && part !== ".");
+  let current = start;
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index] as string;
+    if (part === "..") {
+      if (current === "") return { kind: "disk", path: `${repo}/${parts.slice(index).join("/")}` };
+      current = parentOf(current);
+      continue;
+    }
+    current = current === "" ? part : `${current}/${part}`;
+    if (index === parts.length - 1) break;
+    const entry = entryAt(git, repo, commit, current);
+    if ("ok" in entry) return entry;
+    if (entry.kind !== "link") continue;
+    if (entry.target.length === 0 || entry.target.includes("\0"))
+      return { ok: false, message: `skill link is broken: ${current}` };
+    if (depth >= LINK_DEPTH) return { ok: false, message: `skill link loops: ${current}` };
+    const where = locate(git, repo, commit, current, entry.target, depth + 1);
+    if ("ok" in where) return where;
+    const rest = parts.slice(index + 1).join("/");
+    if (where.kind === "disk") return { kind: "disk", path: `${where.path}/${rest}` };
+    current = where.path;
+  }
+  return { kind: "tree", path: current };
+}
+
+function insideRepo(repo: string, target: string): string | undefined {
+  const absolute = resolve(target);
+  for (const root of [resolve(repo), realRoot(repo)]) {
+    if (root === undefined) continue;
+    if (absolute === root) return "";
+    if (absolute.startsWith(`${root}/`)) return absolute.slice(root.length + 1);
+  }
+  return undefined;
+}
+
+function realRoot(repo: string): string | undefined {
+  try {
+    return realpathSync(repo);
+  } catch {
+    return undefined;
+  }
 }
 
 function parentOf(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash);
-}
-
-function normalizeJoin(dir: string, target: string): string | undefined {
-  const segments: string[] = dir.length ? dir.split("/") : [];
-  for (const part of target.split("/")) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") {
-      if (segments.length === 0) return undefined;
-      segments.pop();
-      continue;
-    }
-    segments.push(part);
-  }
-  return segments.join("/");
 }
 
 function readDisk(
