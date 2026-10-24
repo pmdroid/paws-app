@@ -106,7 +106,9 @@ function workerLaunch(
     executionId,
     ...(resume ? ["--resume"] : []),
   ];
-  const args = script && /\.(ts|js|mjs|cjs)$/.test(script) ? [script, ...worker] : worker;
+  // The packaged launcher passes `--no-env-file --config=/dev/null`; the worker keeps the same Bun flags.
+  const args =
+    script && /\.(ts|js|mjs|cjs)$/.test(script) ? [...process.execArgv, script, ...worker] : worker;
   const env: NodeJS.ProcessEnv = {
     HOME: home,
     PATH: "/opt/paws-runner/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",

@@ -125,16 +125,18 @@ export interface AskTeamBridge {
   close(): Promise<void>;
 }
 
+/**
+ * The MCP server runs on the same Bun as Paws. The agent starts it in the task worktree, so Bun
+ * must not read that directory's `.env` or `bunfig.toml`.
+ */
 export function askTeamMcpEntry(): { command: string; args: string[] } {
-  if (!process.execPath.endsWith("/bun")) {
-    return {
-      command: "/opt/paws-runner/bin/bun",
-      args: ["--no-env-file", "/opt/paws-runner/current/src/acp/ask-team-mcp.ts"],
-    };
-  }
   return {
     command: process.execPath,
-    args: [fileURLToPath(new URL("./ask-team-mcp.ts", import.meta.url))],
+    args: [
+      "--no-env-file",
+      "--config=/dev/null",
+      fileURLToPath(new URL("./ask-team-mcp.ts", import.meta.url)),
+    ],
   };
 }
 
