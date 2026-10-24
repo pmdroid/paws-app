@@ -38,7 +38,10 @@ export function reviewShots(
   const review = snapshot.items
     .flatMap((item) => item.visualReviews ?? [])
     .find((entry) => entry.questionId === questionId);
+  // Screens that carried an approval over were not asked about.
+  const carried = new Set((review?.carried ?? []).map((entry) => entry.evidenceId));
   return (review?.evidenceIds ?? []).flatMap((id) => {
+    if (carried.has(id)) return [];
     const entry = snapshot.evidence?.find((row) => row.id === id && row.kind === "image");
     return entry ? [{ id, name: entry.displayName, src: evidenceFileUrl(id, engineUrl) }] : [];
   });

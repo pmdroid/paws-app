@@ -130,6 +130,21 @@ export interface StatusVisualReview {
   answeredAt: string | null;
   feedback: string | null;
   marks?: { id: string; evidenceId: string }[];
+  /** Files that carried an earlier approval over instead of being asked about. */
+  carried?: StatusVisualReviewCarry[];
+}
+
+/** A screenshot that looks the same as one a person accepted, so it wasn't asked again. */
+export interface StatusVisualReviewCarry {
+  evidenceId: string;
+  /** The file the person accepted. */
+  fromEvidenceId: string;
+  /** The `questionId` of the accepted review. */
+  approvalId: string;
+  approvedBy: string;
+  approvedAt: string;
+  /** `identical` bytes, or `similar` pixels within tolerance. */
+  match: "identical" | "similar";
 }
 
 export interface StatusMergeQueue {
@@ -800,8 +815,26 @@ function readVisualReview(input: unknown, path: string): StatusVisualReview {
             };
           }),
         }),
+    ...(body.carried === undefined
+      ? {}
+      : {
+          carried: array(body, "carried", path).map((entry, at) => {
+            const where = `${path}.carried[${at}]`;
+            const carry = object(entry, where);
+            return {
+              evidenceId: text(carry, "evidenceId", where),
+              fromEvidenceId: text(carry, "fromEvidenceId", where),
+              approvalId: text(carry, "approvalId", where),
+              approvedBy: text(carry, "approvedBy", where),
+              approvedAt: dateString(carry, "approvedAt", where),
+              match: oneOf(string(carry, "match", where), CARRY_MATCHES, `${where}.match`),
+            };
+          }),
+        }),
   };
 }
+
+const CARRY_MATCHES = ["identical", "similar"] as const;
 
 function readMergeQueue(input: unknown, path: string): StatusMergeQueue {
   const body = object(input, path);
