@@ -123,6 +123,7 @@ import {
   parseLinearAdministration,
   parseLinearUndelegation,
   parseLinearUserChange,
+  cacheLinearMemberships,
   sessionCreatedKey,
   type AcceptedLinearEvent,
   type IntakeDecision,
@@ -396,6 +397,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
+  let members: ReturnType<typeof cacheLinearMemberships> | null = null;
   const stopLinearSession = (sessionId: string): void => {
     for (const item of listWorkItems(db)) {
       if (item.sessionKey !== sessionId) continue;
@@ -418,6 +420,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           beforeEvent: async (event, request) => {
             const userChange = parseLinearUserChange(event);
             if (userChange) {
+              members?.forget();
               if (applyLinearUserChange(db, { ...userChange, now: Date.now() }))
                 invalidateAuthorization();
               return false;
@@ -541,6 +544,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       },
     });
 
+  if (linear?.memberships) members = cacheLinearMemberships(linear.memberships);
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
       db.close();
@@ -554,7 +558,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           db,
           origin: runtime.publicUrl!,
           clientId: runtime.linearClientId!,
-          memberships: linear.memberships,
+          memberships: members!,
           lifecycle: linear.issueLifecycle,
           tracker: linear.tracker,
           accept: (event, signal) => linearTaskAccess!.accept(event, { signal }),
@@ -599,13 +603,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
     const policy = options?.commitPolicyForItem
       ? await options.commitPolicyForItem(item)
-      : issueAttribution && linear?.memberships && runtime.linearClientId
+      : issueAttribution && members && runtime.linearClientId
         ? await createCommitPolicyForItem({
             db,
             bot,
             clientId: runtime.linearClientId,
             tracker: issueAttribution.tracker(item),
-            memberships: linear.memberships,
+            memberships: members,
           })(item)
         : undefined;
     if (!policy) throw new Error("Verified workspace attribution is unavailable");
@@ -946,10 +950,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     ? workspaceForOrganization(db, session.organizationId)
                     : null;
                   const actorId = delegatedLinearUserId(db, item.id);
-                  if (!currentWorkspace || !actorId || !session?.teamId || !linear?.memberships)
-                    return false;
+                  if (!currentWorkspace || !actorId || !session?.teamId || !members) return false;
                   const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
-                  const identity = await linear.memberships.member(
+                  const identity = await members.member(
                     currentWorkspace.organizationId,
                     actorId,
                     signal,
