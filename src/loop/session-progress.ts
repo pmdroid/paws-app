@@ -24,7 +24,9 @@ export function createLinearSessionProgress(
   identifier: string,
   now: () => number = Date.now,
   mode: TaskMode = "code",
+  itemId?: string,
 ) {
+  const owner = itemId === undefined ? {} : { itemId };
   const generation =
     db
       .query<{ generation: number }, [string]>(
@@ -53,7 +55,7 @@ export function createLinearSessionProgress(
   function publish(op: string, update: SessionUpdate, final = false) {
     immediate(db, () => {
       const at = now();
-      const payload = JSON.stringify({ ...update, identifier, mode });
+      const payload = JSON.stringify({ ...update, identifier, mode, ...owner });
       const pending = db
         .query<{ id: number }, [string, number, string, number]>(
           `SELECT id FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
@@ -105,7 +107,7 @@ export function createLinearSessionProgress(
         priority: 6,
         generation,
         idempotencyKey: `${op}:${sessionId}:${randomUUID()}`,
-        payload: { ...update, identifier, mode },
+        payload: { ...update, identifier, mode, ...owner },
         notBefore: final || last == null ? 0 : last + METADATA_INTERVAL_MS,
         now: at,
       });
@@ -181,7 +183,7 @@ export function createLinearSessionProgress(
         priority: 5,
         generation,
         idempotencyKey: `linear.session.links:${sessionId}:${randomUUID()}`,
-        payload: { sessionId, addedExternalUrls: [{ label, url }], identifier, mode },
+        payload: { sessionId, addedExternalUrls: [{ label, url }], identifier, mode, ...owner },
         now: now(),
       });
     },
