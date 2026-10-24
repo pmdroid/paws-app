@@ -18,6 +18,7 @@ import {
 import { Orchestrator } from "../src/loop";
 import { createLiveStatusProvider } from "../src/web";
 import { tempDb, tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -51,6 +52,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,
@@ -93,6 +95,7 @@ test("the queued thought shows the place in line, and the start timeout comes fr
   writeFileSync(join(pawsRoot, "config.toml"), "[queue]\nstart_timeout_hours = 2\n");
   const orchestrator = new Orchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,

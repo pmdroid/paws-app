@@ -57,6 +57,13 @@ type Scope = {
   token: string;
 };
 
+export type DependencyReads = {
+  edges: DependencyEdge[];
+  states: Map<string, string>;
+  identifiers: Map<string, string>;
+  evidence: Record<string, BlockerEvidence>;
+};
+
 export type DependencyReadiness = {
   generation: number;
   readyItemIds: string[];
@@ -363,16 +370,50 @@ export async function syncItemDependencies(
     signal,
   });
   signal?.throwIfAborted();
+  return writeItemDependencies(
+    db,
+    { ...target, expectedGeneration },
+    { edges: [...edges.values()], states, identifiers, evidence },
+    initial.token,
+  );
+}
+
+export function recordItemDependencies(
+  db: Database,
+  input: Target & { expectedGeneration: number },
+  reads: DependencyReads,
+): DependencyReadiness {
+  return writeItemDependencies(db, input, reads, null);
+}
+
+export function itemDependenciesCurrent(db: Database, target: Target): boolean {
+  try {
+    const current = scope(db, target);
+    return current !== null && snapshot(db, target)?.scope === current.token;
+  } catch {
+    return false;
+  }
+}
+
+function writeItemDependencies(
+  db: Database,
+  input: Target & { expectedGeneration: number },
+  reads: DependencyReads,
+  token: string | null,
+): DependencyReadiness {
+  const { itemId, workspaceId, expectedGeneration } = input;
+  const target = { itemId, workspaceId };
+  const { edges, states, identifiers, evidence } = reads;
   return db
     .transaction(() => {
       const current = scope(db, target);
       if (
         !current ||
-        current.token !== initial.token ||
+        (token !== null && current.token !== token) ||
         (snapshot(db, target)?.generation ?? 0) !== expectedGeneration
       )
         throw new Error("Dependency snapshot changed");
-      saveTaskBlocks(db, [initial.item.linearIssueId], [...edges.values()]);
+      saveTaskBlocks(db, [current.item.linearIssueId], edges);
       db.run(
         `INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,external_evidence)
          VALUES(?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
@@ -383,7 +424,7 @@ export async function syncItemDependencies(
           itemId,
           workspaceId,
           expectedGeneration + 1,
-          initial.token,
+          current.token,
           JSON.stringify([...states]),
           JSON.stringify(evidence),
         ],
@@ -392,14 +433,14 @@ export async function syncItemDependencies(
         .filter(([id, state]) => state !== "completed" && !evidence[id]?.satisfied)
         .map(([id]) => identifiers.get(id) ?? id)
         .sort();
-      if (waiting.length && initial.item.state === "queued")
+      if (waiting.length && current.item.state === "queued")
         enqueueOutboxOnce(db, {
           target: "linear",
           op: "activity",
-          orderingKey: initial.identity.sessionId,
+          orderingKey: current.identity.sessionId,
           idempotencyKey: `waiting:${itemId}:${waiting.join(",")}`,
           payload: {
-            sessionId: initial.identity.sessionId,
+            sessionId: current.identity.sessionId,
             kind: "thought",
             body: `Waiting for ${waiting.join(", ")} before starting.`,
           },

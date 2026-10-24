@@ -25,7 +25,7 @@ import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 import { readyItems, syncItemDependencies } from "../../src/intake";
 import { Orchestrator, type OrchestratorOptions } from "../../src/loop";
-import { createAdmission } from "../../src/scheduler";
+import { workspaceAdmission } from "../fake-workspace";
 import { runDir } from "../../src/acp";
 import { guardGitHubPublication } from "../../src/loop/publication";
 
@@ -108,8 +108,7 @@ export async function probePublicationStop(
       tracker: createFakeTracker(),
       repository,
       github,
-      admission: createAdmission({
-        db,
+      admission: workspaceAdmission(db, {
         authority: (delegationId) => !pendingEpics.has(delegationId),
       }),
       publicationReady: (...args) => freshness?.(...args) ?? true,

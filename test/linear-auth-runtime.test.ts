@@ -19,6 +19,7 @@ import { createFakeTracker, parseAgentEvent } from "../src/linear";
 import { FakeHostGitHubAuth, attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import { tempDb, tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 const settled = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const turns = (db: ReturnType<typeof tempDb>) =>
@@ -37,6 +38,7 @@ function fixture(launch?: AgentLaunch) {
   const tracker = createFakeTracker();
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: home,

@@ -25,6 +25,7 @@ import {
   parseAgentEvent,
 } from "../src/linear";
 import { LinearTaskAccess, attachOrchestrator } from "../src/loop";
+import { workspaceAdmission } from "./fake-workspace";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -77,6 +78,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     });
     orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox: new OutboxDispatcher(db, systemClock),
       tracker,

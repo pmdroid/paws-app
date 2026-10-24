@@ -20,6 +20,7 @@ import {
   type LinearClient,
 } from "../src/linear";
 import { attachOrchestrator, itemPathId } from "../src/loop";
+import { workspaceAdmission } from "./fake-workspace";
 
 const agent = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
 const childDescription =
@@ -119,6 +120,7 @@ test("linear intake delivers a persisted body-only requirement to real implement
   let outbox = new OutboxDispatcher(db, systemClock);
   let orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     tracker,
@@ -156,6 +158,7 @@ test("linear intake delivers a persisted body-only requirement to real implement
     outbox = new OutboxDispatcher(db, systemClock);
     orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       tracker,

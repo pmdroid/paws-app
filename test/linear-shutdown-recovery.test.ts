@@ -10,6 +10,7 @@ import {
   type AcceptedLinearEvent,
 } from "../src/linear";
 import { tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 for (const shutdown of ["application", "linear"] as const) {
   test.each(["throw", "false", "return"])(
@@ -45,6 +46,7 @@ for (const shutdown of ["application", "linear"] as const) {
       const makeOrchestrator = () =>
         attachOrchestrator({
           db,
+          admission: workspaceAdmission(db),
           tracker,
           pawsRoot: home,
           jobs,

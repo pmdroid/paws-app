@@ -26,6 +26,7 @@ import {
   isMergeReadiness,
   repoLayout,
 } from "./e2e-harness";
+import { workspaceAdmission } from "./fake-workspace";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -370,6 +371,7 @@ async function runTask(input: {
   };
   orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     clock,

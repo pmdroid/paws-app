@@ -21,6 +21,7 @@ import {
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 const scenarios = [
   "answer",
@@ -172,6 +173,7 @@ test.each(
       const outbox = new OutboxDispatcher(db, systemClock);
       const orchestrator = attachOrchestrator({
         db,
+        admission: workspaceAdmission(db),
         jobs,
         outbox,
         home,
