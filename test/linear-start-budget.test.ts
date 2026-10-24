@@ -141,6 +141,13 @@ function linearServer() {
           agentActivityCreate: { success: true, agentActivity: { id: input.id ?? "activity" } },
         };
       }
+      case "AgentActivityWithSessionUpdate": {
+        const input = variables["input"] as { id?: string };
+        return {
+          agentActivityCreate: { success: true, agentActivity: { id: input.id ?? "activity" } },
+          agentSessionUpdate: { success: true, agentSession: { id: variables["id"] } },
+        };
+      }
       case "AgentSessionUpdate":
         return { agentSessionUpdate: { success: true, agentSession: { id: variables["id"] } } };
       default:
@@ -283,9 +290,10 @@ test("a delegated task reads each Linear fact once before the agent's first prom
         throw new Error(`No first prompt after ${server.operations.join(", ")}`);
       }),
     ]);
+    expect(server.operations).toContain("AgentActivityWithSessionUpdate");
     expect(counts, server.operations.join(", ")).toEqual({
       "task-access": 2,
-      outbox: 3,
+      outbox: 1,
       "session-read": 1,
       context: 1,
     });

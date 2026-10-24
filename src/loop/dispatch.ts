@@ -106,17 +106,19 @@ async function postActivity(
   if (ephemeral && kind !== "thought" && kind !== "action")
     throw new Error("Only thought and action activities can be ephemeral");
   if (action && kind !== "action") throw new Error("Structured details require an action");
-  await tracker.postProgress(
-    {
-      sessionId,
-      kind,
-      body,
-      ...(id === undefined ? {} : { id }),
-      ...(action === undefined ? {} : { action }),
-      ...(ephemeral === undefined ? {} : { ephemeral }),
-    },
-    options,
-  );
+  const update = {
+    sessionId,
+    kind,
+    body,
+    ...(id === undefined ? {} : { id }),
+    ...(action === undefined ? {} : { action }),
+    ...(ephemeral === undefined ? {} : { ephemeral }),
+  };
+  const session = isRecord(payload["session"]) ? readSessionUpdate(payload["session"]) : null;
+  if (session && tracker.postProgressWithSession)
+    return tracker.postProgressWithSession(update, session, options);
+  await tracker.postProgress(update, options);
+  if (session) await sendSessionUpdate(session, tracker, options);
 }
 
 /**
@@ -249,7 +251,23 @@ async function postSession(
   tracker: TrackerAdapter,
   options?: TrackerRequestOptions,
 ): Promise<void> {
+  await sendSessionUpdate(readSessionUpdate(payload), tracker, options);
+}
+
+async function sendSessionUpdate(
+  update: SessionUpdate,
+  tracker: TrackerAdapter,
+  options?: TrackerRequestOptions,
+): Promise<void> {
   if (!tracker.updateSession) throw new Error("Tracker does not support session updates");
+  const signal = AbortSignal.any([
+    ...(options?.signal ? [options.signal] : []),
+    AbortSignal.timeout(5000),
+  ]);
+  await tracker.updateSession(update, { ...options, signal });
+}
+
+function readSessionUpdate(payload: Record<string, unknown>): SessionUpdate {
   const sessionId = readString(payload, "sessionId");
   if (sessionId === null) throw new Error("session update requires a session");
   const update: SessionUpdate = { sessionId };
@@ -288,11 +306,7 @@ async function postSession(
       throw new Error("removed session links must be an array of URLs");
     update.removedExternalUrls = [...payload.removedExternalUrls];
   }
-  const signal = AbortSignal.any([
-    ...(options?.signal ? [options.signal] : []),
-    AbortSignal.timeout(5000),
-  ]);
-  await tracker.updateSession(update, { ...options, signal });
+  return update;
 }
 
 async function postStatus(

@@ -247,6 +247,10 @@ function fixture() {
     delayActivity() {
       delayActivity = true;
     },
+    releaseHeld() {
+      db.run("UPDATE outbox SET not_before = 0 WHERE status = 'pending'");
+      outbox.tick();
+    },
     async deliver(action: "created" | "prompted" = "created") {
       const raw = JSON.stringify({
         ...payload,
@@ -310,6 +314,7 @@ function fixture() {
       teamRelease.resolve();
       activityRelease.resolve();
       await pending?.catch(() => {});
+      await orchestrator.shutdown();
       await outbox.idle();
       timeout.mockRestore();
       db.close();
@@ -333,6 +338,8 @@ test("one initial deadline spans authoritative reads and timeout leaves the inbo
     await Bun.sleep(0);
     await f.deliver();
     expect(await f.outcome()).toBeNull();
+    f.releaseHeld();
+    await f.outbox.idle();
     expect(f.sent).toHaveLength(1);
     expect(f.followedUp).toBe(1);
     expect(
@@ -343,29 +350,27 @@ test("one initial deadline spans authoritative reads and timeout leaves the inbo
   }
 });
 
-test("a deadline aborts the real acknowledgement transport and replay retains its durable UUID", async () => {
+test("a deadline aborts the held acknowledgement transport and its retry keeps the durable UUID", async () => {
   const f = fixture();
   try {
     f.delayActivity();
     await f.deliver();
+    expect(await f.outcome()).toBeNull();
+    expect(f.followedUp).toBe(1);
+    f.releaseHeld();
     const signal = await f.activityStarted.promise;
     const original = listOutbox(f.db)[0]!;
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
     expect(signal.aborted).toBe(true);
-    expect(await f.outcome()).toBeInstanceOf(Error);
     f.activityRelease.resolve();
-    expect(f.sent).toEqual([]);
-    expect(f.followedUp).toBe(0);
     await f.outbox.idle();
+    expect(f.sent).toEqual([]);
     expect(listOutbox(f.db)[0]?.status).toBe("pending");
-    f.db.run("UPDATE outbox SET not_before = 0");
-    await Bun.sleep(0);
-    await f.deliver();
-    expect(await f.outcome()).toBeNull();
+    f.releaseHeld();
+    await f.outbox.idle();
     expect(f.sent).toEqual([
       { id: (original.payload as { id: string }).id, body: "Picked up this issue." },
     ]);
-    expect(f.followedUp).toBe(1);
     expect(listOutbox(f.db)).toHaveLength(1);
   } finally {
     await f.close();
@@ -403,12 +408,11 @@ test("the first-activity deadline does not silence a later intake error", async 
     });
     await f.deliver();
     await started.promise;
-    expect(f.sent).toHaveLength(1);
+    expect(f.sent).toHaveLength(0);
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
     release.resolve();
     await f.outcome();
     expect(f.sent.map((activity) => activity.body)).toEqual([
-      "Picked up this issue.",
       "Paws could not start work on this issue. Please retry.",
     ]);
   } finally {
@@ -417,37 +421,29 @@ test("the first-activity deadline does not silence a later intake error", async 
   }
 });
 
-test("another session delivery cannot hold an expired first-acknowledgement attempt open", async () => {
+test("another session delivery cannot hold the first acknowledgement's intake open", async () => {
   const f = fixture();
   try {
     f.blockOtherSession();
     await f.otherStarted.promise;
-    const deadlineIndex = f.deadlines.length;
-    f.delayActivity();
-    await f.deliver();
-    await f.activityStarted.promise;
-    const original = listOutbox(f.db, "session")[0]!;
     let otherSettled = false;
     const others = f.outbox.idle().then(() => {
       otherSettled = true;
     });
-    f.deadlines[deadlineIndex]!.abort(new Error("Initial acknowledgement deadline expired"));
+    await f.deliver();
     const outcome = await Promise.race([f.outcome(), Bun.sleep(100).then(() => "still pending")]);
-    expect(outcome).toBeInstanceOf(Error);
+    expect(outcome).toBeNull();
     expect(otherSettled).toBe(false);
-    expect(f.sent).toEqual([]);
-    expect(f.followedUp).toBe(0);
-    f.activityRelease.resolve();
+    expect(f.followedUp).toBe(1);
+    const original = listOutbox(f.db, "session")[0]!;
+    expect(original.status).toBe("pending");
     f.otherRelease.resolve();
     await others;
-    f.db.run("UPDATE outbox SET not_before = 0");
-    await Bun.sleep(0);
-    await f.deliver();
-    expect(await f.outcome()).toBeNull();
+    f.releaseHeld();
+    await f.outbox.idle();
     expect(f.sent.filter((activity) => activity.body === "Picked up this issue.")).toEqual([
       { id: (original.payload as { id: string }).id, body: "Picked up this issue." },
     ]);
-    expect(f.followedUp).toBe(1);
   } finally {
     await f.close();
   }
@@ -471,6 +467,8 @@ test("a signed created acknowledgement bypasses and retains dead public history 
     expect(f.sent.map((activity) => activity.body)).toEqual(["Received your update."]);
     expect((await f.deliver()).status).toBe(200);
     expect(await f.outcome()).toBeNull();
+    f.releaseHeld();
+    await f.outbox.idle();
     expect(f.sent.map((activity) => activity.body)).toEqual([
       "Received your update.",
       "Picked up this issue.",
@@ -491,15 +489,18 @@ test("a signed created acknowledgement bypasses and retains dead public history 
 test("Stop aborts a critical first acknowledgement and prevents its later retry", async () => {
   const f = fixture();
   try {
-    f.followUp((event) => f.orchestrator.onLinearEvent(event));
     f.delayActivity();
     await f.deliver();
+    expect(await f.outcome()).toBeNull();
+    f.releaseHeld();
     const signal = await f.activityStarted.promise;
     expect(listOutbox(f.db, "session")[0]?.delivery).toBe("critical");
     await f.stop();
     expect(signal.aborted).toBe(true);
-    expect(await f.outcome()).toBeNull();
     f.activityRelease.resolve();
+    await f.outbox.idle();
+    f.outbox.tick();
+    await f.outbox.idle();
     expect(f.db.query("SELECT count(*) AS n FROM work_item").get()).toEqual({ n: 0 });
     expect(f.sent).toHaveLength(1);
     expect(f.sent[0]?.body).toMatch(/stopp/i);
