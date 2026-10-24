@@ -806,7 +806,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const admission = createAdmission({
     db,
     authority: projectExecution.canDispatch,
-    managed,
     workspace: managed,
   });
   const enqueueMissingSnapshots = () => {

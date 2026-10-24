@@ -4,7 +4,7 @@ import { bindLinearSessionTask, getTaskMode, recordLinearInstallation } from "..
 import { itemDependenciesCurrent, recordItemDependencies } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 
-type AdmissionOptions = Omit<Parameters<typeof createAdmission>[0], "db" | "managed">;
+type AdmissionOptions = Omit<Parameters<typeof createAdmission>[0], "db">;
 type Session = {
   sessionId: string;
   organizationId: string | null;
@@ -18,7 +18,7 @@ const PRESENT =
   "NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)";
 
 export function workspaceAdmission(db: Database, options: AdmissionOptions = {}): ItemAdmission {
-  const admission = createAdmission({ db, ...options, managed: true });
+  const admission = createAdmission({ db, ...options });
   const ofItem = (itemId: string) =>
     db
       .query<{ id: string }, [string]>("SELECT delegation_id AS id FROM work_item WHERE id=?")
