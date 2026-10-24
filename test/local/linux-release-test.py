@@ -132,13 +132,14 @@ class ReleaseVerification(unittest.TestCase):
                 runtime = self.root / ("bun-" + str(index))
                 runtime.write_bytes(b"synthetic Bun runtime")
                 output = self.root / ("package-" + str(index))
-                arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output)
-                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
+                arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None)
+                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
                     if index == 0:
                         packager.pack(arguments)
                         members = release.inspect_archive(output / "artifact.tar")
                         self.assertIn("app/node_modules/" + target, members)
                         self.assertEqual(members["bin/paws-runner"].mode, 0o755)
+                        self.assertEqual(members["bin/mise"].mode, 0o755)
                         with tarfile.open(output / "artifact.tar") as archive:
                             self.assertTrue(archive.extractfile("bin/paws-runner").read().startswith(b"\x7fELF"))
                             for provider in ("claude", "codex"):
@@ -174,14 +175,14 @@ class ReleaseVerification(unittest.TestCase):
         runtime = self.root / "bun-unsafe"
         runtime.write_bytes(b"synthetic Bun runtime")
         output = self.root / "package-unsafe"
-        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output)
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None)
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
             packager.pack(arguments)
         members = release.inspect_archive(output / "artifact.tar")
         self.assertIn("app/node_modules/media/index.js", members)
         self.assertFalse(any("av01" in name or "odd" in name for name in members))
         (source / "src/bad,name.ts").write_bytes(b"source")
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
             with self.assertRaises(ValueError):
                 packager.pack(argparse.Namespace(**{**vars(arguments), "output": self.root / "package-unsafe-src"}))
 
@@ -201,7 +202,7 @@ class ReleaseVerification(unittest.TestCase):
                 (source / missing).unlink()
                 runtime = self.root / ("missing-provider-bun-" + str(index))
                 runtime.write_bytes(b"synthetic Bun runtime")
-                arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / ("missing-provider-package-" + str(index)))
+                arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / ("missing-provider-package-" + str(index)), mise=None)
                 with self.assertRaises(FileNotFoundError):
                     packager.pack(arguments)
 
@@ -228,6 +229,61 @@ class ReleaseVerification(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "must be executable"):
                     release.inspect_archive(self.artifact)
 
+    def test_mise_is_pinned_for_both_architectures(self):
+        self.assertRegex(release.MISE_VERSION, r"\A[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,4}\Z")
+        self.assertEqual(set(release.MISE_SHA256), {"linux-x64", "linux-arm64"})
+        for platform_name, digest in release.MISE_SHA256.items():
+            self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
+            self.assertEqual(release.mise_url(platform_name), f"https://github.com/jdx/mise/releases/download/v{release.MISE_VERSION}/mise-v{release.MISE_VERSION}-{platform_name}")
+        with self.assertRaises(ValueError):
+            release.mise_url("linux-other")
+
+    def test_mise_with_a_wrong_checksum_fails_the_download(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+        requested = []
+        def opener(url, timeout):
+            requested.append(url)
+            return Response(b"not the pinned mise")
+        for platform_name in ("linux-x64", "linux-arm64"):
+            with self.subTest(platform=platform_name):
+                with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                    release.download_mise(platform_name, opener)
+        self.assertEqual(requested, [release.mise_url("linux-x64"), release.mise_url("linux-arm64")])
+
+    def test_mise_with_a_wrong_checksum_fails_the_package_build(self):
+        specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
+        packager = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(packager)
+        source = self.root / "source-mise"
+        for name in release.REQUIRED:
+            path = source / name.removeprefix("app/")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic package file")
+            if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
+                path.chmod(0o755)
+        runtime = self.root / "bun-mise"
+        runtime.write_bytes(b"synthetic Bun runtime")
+        mise = self.root / "mise-tampered"
+        mise.write_bytes(b"\x7fELFtampered mise")
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-mise", mise=mise)
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                packager.pack(arguments)
+        self.assertFalse((self.root / "package-mise/artifact.tar").exists())
+
+    def test_nonexecutable_bundled_mise_is_rejected(self):
+        with tarfile.open(self.artifact, "w") as archive:
+            for name in release.REQUIRED:
+                member = tarfile.TarInfo(name)
+                member.mode = 0o644 if name == "bin/mise" else 0o755
+                archive.addfile(member, io.BytesIO())
+        with self.assertRaisesRegex(ValueError, "mise must be executable"):
+            release.inspect_archive(self.artifact)
+
     def tearDown(self):
         self.temporary.cleanup()
 
@@ -240,7 +296,7 @@ class ReleaseVerification(unittest.TestCase):
                 member = tarfile.TarInfo(name)
                 content = b"synthetic reviewed release file"
                 member.size = len(content)
-                member.mode = 0o755 if name == "bin/bun" or name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values() or name in ("app/node_modules/.bin/claude", "app/node_modules/.bin/codex") else 0o644
+                member.mode = 0o755 if name in ("bin/bun", "bin/mise") or name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values() or name in ("app/node_modules/.bin/claude", "app/node_modules/.bin/codex") else 0o644
                 archive.addfile(member, io.BytesIO(content))
             if extra is not None:
                 archive.addfile(extra, io.BytesIO(b"x" * extra.size) if extra.isfile() else None)

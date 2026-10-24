@@ -91,6 +91,7 @@ export type RunnerHostSample = {
   osId?: string;
   osVersion?: string;
   runnerVersion?: string;
+  miseVersion?: string;
   /** Absent when the runner does not report them. */
   strayProcesses?: RunnerStrayProcess[];
 };
@@ -175,15 +176,15 @@ export function recordRunnerHostStatus(
 ): void {
   db.run(
     `INSERT INTO runner_host_status(runner_id,cpu_percent,cpu_count,memory_total_bytes,memory_available_bytes,
-    load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,stray_processes,
-    reported_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,mise_version,
+    stray_processes,reported_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(runner_id) DO UPDATE SET cpu_percent=excluded.cpu_percent,cpu_count=excluded.cpu_count,
     memory_total_bytes=excluded.memory_total_bytes,memory_available_bytes=excluded.memory_available_bytes,
     load_1=excluded.load_1,load_5=excluded.load_5,load_15=excluded.load_15,
     disk_total_bytes=excluded.disk_total_bytes,disk_free_bytes=excluded.disk_free_bytes,
     os_id=excluded.os_id,os_version=excluded.os_version,runner_version=excluded.runner_version,
-    stray_processes=excluded.stray_processes,reported_at=excluded.reported_at`,
+    mise_version=excluded.mise_version,stray_processes=excluded.stray_processes,reported_at=excluded.reported_at`,
     [
       runnerId,
       sample.cpuPercent ?? null,
@@ -198,6 +199,7 @@ export function recordRunnerHostStatus(
       sample.osId ?? null,
       sample.osVersion ?? null,
       sample.runnerVersion ?? null,
+      sample.miseVersion ?? null,
       sample.strayProcesses ? JSON.stringify(sample.strayProcesses) : null,
       reportedAt,
     ],

@@ -83,11 +83,13 @@ def pack(arguments):
     actual_version = subprocess.run([str(bun), "--version"], env=release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=10).stdout.decode().strip()
     if actual_version != release.BUN_VERSION:
         raise ValueError("Pinned Bun runtime is required")
+    mise = release.verify_mise(read_package_file(arguments.mise, release.MISE_LIMIT), arguments.platform) if arguments.mise else release.download_mise(arguments.platform)
     compiled = compile_runner(bun, source, output / "paws-runner")
     artifact = output / "artifact.tar"
     launcher_targets = set()
     with tarfile.open(artifact, "w", format=tarfile.USTAR_FORMAT) as archive:
         add_content(archive, "bin/bun", runtime, True)
+        add_content(archive, "bin/mise", mise, True)
         add_content(archive, "bin/paws-runner", compiled, True)
         for name in ("package.json", "bun.lock"):
             add_content(archive, f"app/{name}", read_package_file(source / name, 16_777_216))
@@ -148,6 +150,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
     parser.add_argument("--bun", required=True)
+    parser.add_argument("--mise", help="Local copy of the pinned mise binary; downloaded and checked when omitted")
     parser.add_argument("--version", required=True)
     parser.add_argument("--platform", required=True)
     parser.add_argument("--output", required=True)

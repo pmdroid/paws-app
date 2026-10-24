@@ -67,6 +67,7 @@ export { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 export {
   RunnerHostStatusSchema,
   RunnerStrayProcessSchema,
+  miseVersionFromOutput,
   releaseVersionFromPath,
   type RunnerHostStatus,
   type RunnerStrayProcess,

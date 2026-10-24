@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync, realpathSync, statfsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   RunnerHostStatusSchema,
+  miseVersionFromOutput,
   releaseVersionFromPath,
   type RunnerHostStatus,
   type RunnerStrayProcess,
@@ -13,6 +14,8 @@ export type RunnerHostSamplerOptions = {
   procRoot?: string;
   osRelease?: string;
   executable?: string;
+  /** The packaged mise. Defaults to `mise` next to the resolved runner executable. */
+  mise?: string;
   /** The runner process. Processes of its user outside its tree are reported as strays. */
   rootPid?: number;
   uid?: number;
@@ -29,6 +32,7 @@ export function createRunnerHostSampler(options: RunnerHostSamplerOptions) {
     options.rootPid ?? process.pid,
     options.uid ?? process.getuid?.() ?? -1,
   );
+  const mise = createMiseVersionProbe();
   return (): RunnerHostStatus => {
     const sample: Record<string, unknown> = {};
     const stat = attempt(() => readFileSync(join(proc, "stat"), "utf8"));
@@ -56,6 +60,10 @@ export function createRunnerHostSampler(options: RunnerHostSamplerOptions) {
       releaseVersionFromPath(realpathSync(options.executable ?? process.execPath)),
     );
     if (version) sample.runnerVersion = version;
+    sample.miseVersion = mise(
+      options.mise ??
+        attempt(() => join(dirname(realpathSync(options.executable ?? process.execPath)), "mise")),
+    );
     sample.strayProcesses = attempt(strays);
     const kept: Record<string, unknown> = {};
     for (const [name, value] of Object.entries(sample)) {
@@ -63,6 +71,41 @@ export function createRunnerHostSampler(options: RunnerHostSamplerOptions) {
       if (value !== undefined && field?.safeParse(value).success) kept[name] = value;
     }
     return kept as RunnerHostStatus;
+  };
+}
+
+/**
+ * Runs `mise --version` once per resolved binary, in the background so a heartbeat never waits
+ * on it. Until the answer arrives, and when there is no mise, the version is undefined. A failed
+ * run is tried again on the next sample. The run starts in `/` with a fixed environment so no repository or user mise config is read.
+ */
+export function createMiseVersionProbe(spawn: typeof Bun.spawn = Bun.spawn) {
+  let probed: string | undefined;
+  let version: string | undefined;
+  return (path: string | undefined): string | undefined => {
+    const binary = path && attempt(() => realpathSync(path));
+    if (!binary) return undefined;
+    if (binary === probed) return version;
+    probed = binary;
+    version = undefined;
+    void (async () => {
+      const child = spawn([binary, "--version"], {
+        cwd: "/",
+        env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent", LANG: "C" },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+        timeout: 10_000,
+      });
+      const [output, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      const parsed = code === 0 ? miseVersionFromOutput(output) : null;
+      if (probed !== binary) return;
+      if (parsed) version = parsed;
+      else probed = undefined;
+    })().catch(() => {
+      if (probed === binary) probed = undefined;
+    });
+    return undefined;
   };
 }
 
