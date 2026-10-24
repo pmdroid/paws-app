@@ -76,3 +76,19 @@ Expect these results:
 - On the dashboard, the runner's card under **Runners** lists node 22 and python 3.12 as **Installed**.
 
 Delegate a second issue to the same runner. The install line should take about a second, because the runner reuses both versions.
+
+### Recorded run
+
+On 2026-10-24, on a runner with `paws-runner` 0.1.37 and its shipped mise 2026.10.18:
+
+| Step                                                                 | Result                                          |
+| -------------------------------------------------------------------- | ----------------------------------------------- |
+| Paws's own task for this page, from `mise.toml` with `bun = "1.4.2"` | Bun 1.4.2 from mise on the agent's `PATH`       |
+| Runner bin folder on the agent's `PATH`                              | Absent                                          |
+| Runner runtime report for the card                                   | `bun 1.4.2 installed`                           |
+| Runner install of `node@22` and `python@3.12`                        | Installed 22.23.4 and 3.12.15 in 5.6 s          |
+| Second install of the same versions                                  | Reused, 0.05 s                                  |
+| Demo `node-version` and `python-version` checks with those runtimes  | Both pass, printing v22.23.4 and Python 3.12.15 |
+| The same checks with only the system `PATH`                          | Both fail                                       |
+
+The delegated `runtimes-demo` task and its card showing node 22 and python 3.12 are not recorded yet.
