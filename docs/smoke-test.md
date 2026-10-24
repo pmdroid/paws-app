@@ -35,14 +35,14 @@ The parent is **Export rows**. The three sub-issues merge in `blocks` order:
 2. **ENG-3** — add `exportWithHeader`. Stays queued until ENG-2 merges.
 3. **ENG-4** — calls `ask_team` with "Include archived rows?" and options `yes` and `no`.
 
-Delegate the parent issue to the Paws app.
+Delegate the parent issue to the Paws app. Delegation is the approval; there is no project to start in Paws.
 
-Watch the Paws agent session on the parent issue:
+Each sub-issue runs in its own Linear agent session and its own run. Paws opens a sub-issue's session once the issues that block it have merged. Watch the sessions:
 
-1. `Picked up 3 sub-issues; order: ENG-2 → ENG-3 → ENG-4`.
-2. ENG-2 fails Closeout once, the implementer commits a fix, Closeout accepts, a pull request opens (`Fixes ENG-2` on the first line, `Fix attempts: 1` in the body), and Paws squash-merges it.
-3. ENG-3 opens and merges after ENG-2.
-4. ENG-4 parks on a question in its agent session. Answer `yes` or `no`, or reply in your own words. The run continues with that answer.
+1. The parent's session ends with one response that names each sub-issue. ENG-2 says `started`, ENG-3 says it waits for ENG-2, and ENG-4 says it waits for ENG-3. A message in the parent's session gets a reply that points to the sub-issue sessions. Stopping the parent's session stops them all.
+2. In ENG-2's session, ENG-2 fails Closeout once, the implementer commits a fix, Closeout accepts, a pull request opens (`Fixes ENG-2` on the first line, `Fix attempts: 1` in the body), and Paws squash-merges it.
+3. ENG-3's session opens after ENG-2 merges, and its pull request merges.
+4. ENG-4's session opens after ENG-3 merges. ENG-4 parks on a question in its session. Answer `yes` or `no`, or reply in your own words. The run continues with that answer.
 5. ENG-4 merges.
 
 ### Linear agent sessions
