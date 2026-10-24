@@ -44,18 +44,22 @@ export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Rout
       return { view: "issues", id };
     case "epics":
       return { view: "issues", id: null };
-    case "runs":
-      return { view: "runs", id };
+    case "runs": {
+      const issue = id === null ? null : issueForRun(id, snapshot);
+      return issue ? { view: "issues", id: issue } : { view: "runs", id };
+    }
     case "merge-queue":
       return { view: "mergeQueue" };
     case "evidence":
       return { view: "evidence", id };
-    case "sessions":
-      return { view: "sessions", id };
+    case "sessions": {
+      const issue = id === null ? null : issueForSession(id, snapshot);
+      return issue ? { view: "issues", id: issue } : { view: "sessions", id };
+    }
     case "questions":
       return { view: "questions", id };
     case "verdicts":
-      return { view: "runs", id: runForVerdict(id, snapshot) ?? (snapshot ? id : null) };
+      return { view: "issues", id: id === null ? null : (issueForVerdict(id, snapshot) ?? id) };
     case "settings":
       return SETTINGS_PAGES.some((entry) => entry.id === id)
         ? { view: "settings", page: id as SettingsPage }
@@ -79,22 +83,44 @@ export function routeHref(route: Route): string {
 }
 
 export function needsSnapshot(route: Route): boolean {
+  if (route.view === "sessions") return route.id !== null;
   return ["overview", "issues", "runs", "mergeQueue", "questions", "evidence"].includes(route.view);
 }
 
-function runForVerdict(
-  id: string | null,
-  snapshot: StatusSnapshot | null | undefined,
-): string | null {
-  if (!id || !snapshot) return null;
-  const item = snapshot.items.find((entry) => entry.id === id);
-  if (item?.runId && snapshot.runs.some((run) => run.id === item.runId)) return item.runId;
-  let match: StatusSnapshot["runs"][number] | undefined;
-  for (const run of snapshot.runs) {
-    if (run.itemId !== id) continue;
-    if (!match || run.startedAt > match.startedAt) match = run;
-  }
-  return match?.id ?? null;
+const FOLDED = new Set(["runs", "sessions", "verdicts"]);
+
+/**
+ * The issue page a run, session or verdict link now opens, such as `/issues/PAS-367`.
+ * Null when the path is not one of those, or the snapshot does not know it yet.
+ */
+export function issueRedirect(path: string, snapshot: StatusSnapshot | null): string | null {
+  if (!snapshot) return null;
+  const head = path
+    .replace(/^#/, "")
+    .split("/")
+    .find((part) => part.length > 0);
+  if (head === undefined || !FOLDED.has(head)) return null;
+  const route = matchRoute(path, snapshot);
+  return route?.view === "issues" && route.id !== null ? routePath(route) : null;
+}
+
+/** Any of a task's engine run ids, or the run id the dashboard shows for it. */
+function issueForRun(id: string, snapshot: StatusSnapshot | null | undefined): string | null {
+  const run = snapshot?.runs.find((entry) => entry.id === id || entry.attempts?.includes(id));
+  return run?.itemId ?? null;
+}
+
+/** The Linear session's issue. Sub-issues that share a session open the first one. */
+function issueForSession(id: string, snapshot: StatusSnapshot | null | undefined): string | null {
+  return snapshot?.items.find((item) => item.session?.id === id)?.id ?? null;
+}
+
+function issueForVerdict(id: string, snapshot: StatusSnapshot | null | undefined): string | null {
+  if (!snapshot) return null;
+  if (snapshot.items.some((item) => item.id === id)) return id;
+  return (
+    snapshot.verdicts.find((verdict) => verdict.runId === id)?.itemId ?? issueForRun(id, snapshot)
+  );
 }
 
 function decodePart(part: string): string {
