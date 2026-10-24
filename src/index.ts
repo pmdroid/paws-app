@@ -1291,7 +1291,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     signal: abort.signal,
     agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
     stopAgent: (itemId) => {
-      void orchestrator?.interruptItem(itemId).catch(() => undefined);
+      void orchestrator?.stopAgent(itemId).catch(() => undefined);
     },
     restartFromMainBlocked:
       runtime.githubAuth === "app"
