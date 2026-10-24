@@ -191,3 +191,59 @@ test("a spec change on the item's issue is reconciled through the item", async (
     db.close();
   }
 });
+
+test("a reconcile handed the intake's reads writes the scheduler rows without reading Linear", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const snapshot = {
+      linearIssueId: "issue",
+      identifier: "ONE-1",
+      title: "Lone issue",
+      description: "Criteria",
+      teamId: "team",
+      stateType: "unstarted",
+      subIssues: [],
+    };
+    const intake = await intakeDelegatedIssue(db, createFakeTracker([snapshot]), {
+      linearIssueId: "issue",
+      now: 1000,
+    });
+    expect(intake.ok).toBe(true);
+    if (!intake.ok) return;
+    const itemId = intake.items[0]!.id;
+    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
+    recordLinearInstallation(db, {
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      sessionId: "session",
+      teamId: "team",
+      observedAtMs: 1000,
+    });
+    bindLinearSessionTask(db, "session", intake.delegation.id);
+    const unread = async (): Promise<never> => {
+      throw new Error("The intake's reads must not be repeated");
+    };
+    const reconciler = createItemReconciler({
+      db,
+      tracker: { loadEpic: unread, listDeps: unread, listIssuePullRequests: unread },
+      lifecycle: { inspect: unread },
+      onChanges() {},
+    });
+    await reconciler.reconcile({
+      itemId,
+      workspaceId: "workspace",
+      known: { snapshot, edges: [] },
+    });
+    expect(
+      db.query("SELECT present FROM work_item_specification WHERE item_id=?").get(itemId),
+    ).toEqual({ present: 1 });
+    expect(
+      db.query("SELECT generation FROM item_dependency_snapshot WHERE item_id=?").get(itemId),
+    ).toEqual({ generation: 1 });
+    await reconciler.close();
+  } finally {
+    db.close();
+  }
+});

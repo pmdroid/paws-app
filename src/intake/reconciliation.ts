@@ -7,7 +7,13 @@ import {
   type IssueBrief,
   type WorkBrief,
 } from "../core";
-import type { EpicSnapshot, LinearIssueLifecycle, LinearSubIssue, TrackerAdapter } from "../linear";
+import type {
+  DependencyEdge,
+  EpicSnapshot,
+  LinearIssueLifecycle,
+  LinearSubIssue,
+  TrackerAdapter,
+} from "../linear";
 import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
 import type { InspectBlockerMerge } from "./blocker-policy";
@@ -26,7 +32,8 @@ export type ItemChanges = {
   issues: { itemId: string; issue: LinearSubIssue }[];
 };
 
-type Target = { itemId: string; workspaceId: string; signal?: AbortSignal };
+export type IntakeReads = { snapshot: EpicSnapshot; edges: readonly DependencyEdge[] };
+type Target = { itemId: string; workspaceId: string; signal?: AbortSignal; known?: IntakeReads };
 type IssueChange = { issueId: string; organizationId: string; parentIssueId?: string | null };
 type Identity = {
   issueId: string;
@@ -119,7 +126,7 @@ export function createItemReconciler(input: {
   ) => Promise<EpicSnapshot>;
   now?: () => number;
 }) {
-  const { db, tracker, lifecycle } = input;
+  const { db } = input;
   const flights = new Map<string, { dirty: boolean; promise: Promise<void> }>();
   let sweepFlight: Promise<void> | null = null;
   const now = input.now ?? Date.now;
@@ -128,6 +135,7 @@ export function createItemReconciler(input: {
 
   async function refresh(target: Target, requestToken: string) {
     target.signal?.throwIfAborted();
+    const { tracker, lifecycle } = target.known ? knownReads(target.known) : input;
     const initial = authority(db, target);
     const captured = requestsFor(db, initial.delegationId);
     const startedAt = now();
@@ -332,6 +340,33 @@ export function createItemReconciler(input: {
     }).immediate();
   }
 
+  function knownReads(known: IntakeReads) {
+    const issues = new Map(
+      [known.snapshot, ...known.snapshot.subIssues].map((issue) => [issue.linearIssueId, issue]),
+    );
+    return {
+      tracker: {
+        ...input.tracker,
+        loadEpic: async () => known.snapshot,
+        listDeps: async () => known.edges,
+      },
+      lifecycle: {
+        inspect: async (id: string, options?: { signal?: AbortSignal }) => {
+          const issue = issues.get(id);
+          return issue?.teamId && issue.stateType
+            ? {
+                id,
+                teamId: issue.teamId,
+                stateType: issue.stateType,
+                assigneeId: issue.assigneeId ?? null,
+                delegateId: null,
+              }
+            : input.lifecycle.inspect(id, options);
+        },
+      },
+    };
+  }
+
   function waitForFlight(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
     if (!signal) return promise;
     if (signal.aborted) return Promise.reject(signal.reason);
@@ -386,8 +421,15 @@ export function createItemReconciler(input: {
           const pending = requestsFor(db, delegationId);
           const request = pending.find((row) => row.itemId === target.itemId) ?? pending[0];
           if (!request) throw new Error("Item reconciliation request changed");
+          const known = request.itemId === target.itemId ? target.known : undefined;
+          target = { ...target, known: undefined };
           await refresh(
-            { itemId: request.itemId, workspaceId: target.workspaceId, signal: shutdown.signal },
+            {
+              itemId: request.itemId,
+              workspaceId: target.workspaceId,
+              signal: shutdown.signal,
+              known,
+            },
             request.token,
           );
         } while (flight.dirty);

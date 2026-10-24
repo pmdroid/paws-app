@@ -30,6 +30,8 @@ export class HostSupervisor {
     readonly pollMs = 250,
     restartFromMain: (item: WorkItemRecord) => void = () => {},
     readonly restartFromMainBlocked?: (item: WorkItemRecord) => string | null,
+    /** Stops a live agent whose run ended at the time limit. */
+    readonly stopAgent?: (itemId: string) => void,
   ) {
     this.restartFromMain = restartFromMain;
   }
@@ -63,7 +65,7 @@ export class HostSupervisor {
     const now = this.clock.now();
     const mono = this.clock.mono();
     for (const item of listInFlightItems(this.db)) {
-      accrueAwake(this.db, item.id, mono, now);
+      if (accrueAwake(this.db, item.id, mono, now).stopAgent) this.stopAgent?.(item.id);
     }
   }
 

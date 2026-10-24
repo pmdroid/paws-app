@@ -5,9 +5,19 @@ import {
   applyLinearTurns,
   applyWorkItemEvent,
   enqueueJobOnce,
+  extendAwakeCap,
+  failWorkItem,
   getWorkItem,
+  listCloseoutRecoveries,
+  saveCheckpoint,
 } from "../db";
 import { handoffNote, type AnswerEffects, type StoredQuestion } from "../questions";
+import { askCloseoutHelp } from "./closeout-help";
+import { parseRecoveryAnswer } from "./closeout-recovery";
+import { worktreeBranch } from "./sources";
+
+const CLOSEOUT_HELP_RETRY =
+  "Use /paws bypass check-id -- your reason from an identifiable trusted account, or reply with guidance.";
 
 export function questionEffects(
   db: Database,
@@ -45,10 +55,72 @@ export function questionEffects(
       now: input.now,
     });
   };
+  const closeoutHelp = (question: StoredQuestion) => {
+    const recovery = listCloseoutRecoveries(db, question.itemId).find(
+      (entry) => entry.questionId === question.id,
+    );
+    if (recovery === undefined) return;
+    const parsed = parseRecoveryAnswer(question.answer ?? "", recovery.failedChecks);
+    if (parsed === null) {
+      askCloseoutHelp(db, question.sessionId, recovery, {
+        now: input.now,
+        error: CLOSEOUT_HELP_RETRY,
+      });
+      return;
+    }
+    consumeTurn(question);
+    applyWorkItemEvent(db, question.itemId, "answer_received");
+    if (parsed.kind === "bypass") {
+      applyWorkItemEvent(db, question.itemId, "turn_ended");
+      saveCheckpoint(db, question.itemId, {
+        phase: "verifying",
+        baseSha: recovery.base,
+        wipCommit: recovery.head,
+      });
+      enqueueJobOnce(db, {
+        queue: JOB_KIND.reverify,
+        jobKey: `closeout-bypass:${question.id}`,
+        payload: { itemId: question.itemId },
+        now: input.now,
+      });
+      return;
+    }
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.resume,
+      jobKey: `closeout-guidance:${question.id}`,
+      payload: {
+        itemId: question.itemId,
+        freshSession: true,
+        handoff: handoffNote({ question: recovery.summary, answer: parsed.body }),
+        reason: "closeout-guidance",
+      },
+      now: input.now,
+    });
+  };
+  /** Continue gives the resumed agent more awake time. Stop ends the task; the accepted work stays. */
+  const timeLimit = (question: StoredQuestion) => {
+    if (!/^\s*stop\b/i.test(question.answer ?? "")) {
+      extendAwakeCap(db, question.itemId);
+      resume(question);
+      return;
+    }
+    consumeTurn(question);
+    const item = applyWorkItemEvent(db, question.itemId, "answer_received");
+    failWorkItem(
+      db,
+      item,
+      "cap:time",
+      `Stopped at the time limit, as asked in Linear. The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+      input.now,
+    );
+  };
   return {
     "runner-wait": consumeTurn,
+    "time-limit": timeLimit,
     agent: resume,
     clarification: resume,
     repository: resume,
+    "ci-help": resume,
+    "closeout-help": closeoutHelp,
   };
 }

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { openQuestion, type StoredQuestion } from "./store";
 
 /** The question Paws asks when an `approval: human` check has its files. */
@@ -30,6 +31,23 @@ export type VisualReviewKind = "review" | "continue";
 
 export type VisualReviewOutcome = "accepted" | "changes_requested" | "stale" | "continued";
 
+/**
+ * A screen the reviewer was not asked about again: it matches one a person
+ * already accepted, by bytes or within the pixel tolerance.
+ */
+export type VisualReviewCarry = {
+  /** The new file the approval carries over to. */
+  evidenceId: string;
+  /** The file the person accepted. */
+  fromEvidenceId: string;
+  /** Question id of the accepted review. */
+  approvalId: string;
+  /** Linear user id of whoever accepted it. */
+  approvedBy: string;
+  approvedAt: number;
+  match: "identical" | "similar";
+};
+
 export type StoredVisualReview = {
   questionId: string;
   itemId: string;
@@ -42,6 +60,8 @@ export type StoredVisualReview = {
   answeredAt: number | null;
   feedback: string | null;
   headCommit: string | null;
+  /** Files of `evidenceIds` that carried an earlier approval and were not asked about. */
+  carried: VisualReviewCarry[];
 };
 
 type VisualReviewRow = {
@@ -56,6 +76,7 @@ type VisualReviewRow = {
   answered_at: number | null;
   feedback: string | null;
   head_commit: string | null;
+  carried: string | null;
 };
 
 /** Opens the review question and records the files it shows. Call inside a transaction. */
@@ -69,6 +90,8 @@ export function openVisualReview(
     evidenceIds: readonly string[];
     headCommit: string;
     now: number;
+    /** Files among `evidenceIds` that are not asked about again. */
+    carried?: readonly VisualReviewCarry[];
   },
 ): { question: StoredQuestion; review: StoredVisualReview } {
   const question = openQuestion(db, {
@@ -80,7 +103,7 @@ export function openVisualReview(
     now: input.now,
   });
   db.run(
-    "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, head_commit) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, head_commit, carried) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [
       question.id,
       input.itemId,
@@ -88,9 +111,100 @@ export function openVisualReview(
       JSON.stringify(input.evidenceIds),
       input.now,
       input.headCommit,
+      input.carried?.length ? JSON.stringify(input.carried) : null,
     ],
   );
   return { question, review: getVisualReview(db, question.id)! };
+}
+
+/**
+ * Records an accepted review without a question: every file carried an
+ * earlier approval. It names the latest original approver. Call inside a transaction.
+ */
+export function recordCarriedVisualReview(
+  db: Database,
+  input: {
+    itemId: string;
+    checkId: string;
+    evidenceIds: readonly string[];
+    carried: readonly VisualReviewCarry[];
+    headCommit: string;
+    now: number;
+  },
+): StoredVisualReview {
+  const latest = input.carried.reduce((last, entry) =>
+    entry.approvedAt > last.approvedAt ? entry : last,
+  );
+  const id = `carry_${randomUUID()}`;
+  db.run(
+    `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, head_commit, carried,
+       outcome, answered_by, answered_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)`,
+    [
+      id,
+      input.itemId,
+      input.checkId,
+      JSON.stringify(input.evidenceIds),
+      input.now,
+      input.headCommit,
+      JSON.stringify(input.carried),
+      latest.approvedBy,
+      input.now,
+    ],
+  );
+  return getVisualReview(db, id)!;
+}
+
+/** Every file of the review carried over, so nobody was asked. */
+export function carriedInFull(review: {
+  evidenceIds: readonly string[];
+  carried: readonly { evidenceId: string }[];
+}): boolean {
+  return (
+    review.carried.length > 0 &&
+    review.evidenceIds.every((id) => review.carried.some((entry) => entry.evidenceId === id))
+  );
+}
+
+/**
+ * Each file a person accepted for the check, oldest approval first, with the
+ * approval it came from. A carried file points at the file the person saw, so
+ * screens are always compared with what a person accepted. A review that went
+ * stale still counts: the person accepted those screens.
+ */
+export function humanApprovedScreens(
+  db: Database,
+  itemId: string,
+  checkId: string,
+): Omit<VisualReviewCarry, "evidenceId" | "match">[] {
+  const rows = db
+    .query<VisualReviewRow, [string, string]>(
+      `SELECT * FROM visual_review WHERE item_id = ? AND check_id = ? AND kind = 'review'
+       AND outcome IN ('accepted', 'stale') AND answered_by IS NOT NULL ORDER BY answered_at, rowid`,
+    )
+    .all(itemId, checkId);
+  const seen = new Map<string, Omit<VisualReviewCarry, "evidenceId" | "match">>();
+  for (const review of rows.map(mapVisualReview)) {
+    const carried = new Map(review.carried.map((entry) => [entry.evidenceId, entry]));
+    for (const id of review.evidenceIds) {
+      const from = carried.get(id);
+      const origin = from
+        ? {
+            fromEvidenceId: from.fromEvidenceId,
+            approvalId: from.approvalId,
+            approvedBy: from.approvedBy,
+            approvedAt: from.approvedAt,
+          }
+        : {
+            fromEvidenceId: id,
+            approvalId: review.questionId,
+            approvedBy: review.answeredBy!,
+            approvedAt: review.answeredAt ?? review.createdAt,
+          };
+      seen.delete(origin.fromEvidenceId);
+      seen.set(origin.fromEvidenceId, origin);
+    }
+  }
+  return [...seen.values()];
 }
 
 export function getVisualReview(db: Database, questionId: string): StoredVisualReview | null {
@@ -251,21 +365,59 @@ export function visualReviewStaleHandoff(checkId: string): string {
   ].join("\n");
 }
 
-/** The question text, then each file inline when Linear has it, or its Paws link. */
+type ReviewFile = { displayName: string; link: string; assetUrl?: string };
+
+/**
+ * The question text, then each file inline when Linear has it, or its Paws
+ * link. A changed screen shows the approved version first, beside the new one.
+ * Screens that carried an approval over are named, not shown.
+ */
 export function visualReviewBody(
-  files: readonly { displayName: string; link: string; assetUrl?: string }[],
+  files: readonly (ReviewFile & { approved?: ReviewFile })[],
+  carried: readonly string[] = [],
 ): string {
-  const shown = files.map((file) => {
-    const label = file.displayName.replace(/[\\[\]]/g, "\\$&");
-    return file.assetUrl === undefined
-      ? `[${label}](<${file.link}>)`
-      : `![${label}](<${file.assetUrl}>)`;
-  });
+  const shown = files.map((file) =>
+    file.approved === undefined
+      ? reviewImage(file)
+      : `${reviewImage(file.approved, "approved")} ${reviewImage(file, "new")}`,
+  );
+  const beside = files.some((file) => file.approved !== undefined);
   return [
     VISUAL_REVIEW_QUESTION,
+    ...(beside ? ["Changed screens show the approved version first, then the new one."] : []),
     ...shown,
+    ...(carried.length
+      ? [
+          `Unchanged since your approval, so not asked again: ${carried.map(escapeLabel).join(", ")}.`,
+        ]
+      : []),
     "Pick Accept, or reply with the changes you want.",
   ].join("\n\n");
+}
+
+function reviewImage(file: ReviewFile, version?: string): string {
+  const label = escapeLabel(version ? `${file.displayName}, ${version}` : file.displayName);
+  return file.assetUrl === undefined
+    ? `[${label}](<${file.link}>)`
+    : `![${label}](<${file.assetUrl}>)`;
+}
+
+function escapeLabel(text: string): string {
+  return text.replace(/[\\[\]]/g, "\\$&");
+}
+
+/** The one Linear line when every screen of a check carried its approval over. */
+export function visualReviewCarriedNote(approvedAt: number, now: number): string {
+  return `Visual review carried over: unchanged since your approval at ${approvalTime(approvedAt, now)}.`;
+}
+
+/** `21:57 UTC`, with the date in front when it was another day. */
+export function approvalTime(at: number, now: number): string {
+  const iso = new Date(at).toISOString();
+  const time = `${iso.slice(11, 16)} UTC`;
+  return iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10)
+    ? time
+    : `${iso.slice(0, 10)} ${time}`;
 }
 
 function mapVisualReview(row: VisualReviewRow): StoredVisualReview {
@@ -281,5 +433,6 @@ function mapVisualReview(row: VisualReviewRow): StoredVisualReview {
     answeredAt: row.answered_at,
     feedback: row.feedback,
     headCommit: row.head_commit,
+    carried: row.carried ? (JSON.parse(row.carried) as VisualReviewCarry[]) : [],
   };
 }

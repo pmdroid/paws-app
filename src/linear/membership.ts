@@ -27,6 +27,30 @@ const MEMBER_QUERY = `query PawsBrowserMembership($id: String!, $after: String) 
   }
 }`;
 
+const MEMBER_CACHE_MS = 15 * 60_000;
+
+export function cacheLinearMemberships(
+  reads: LinearMembershipReads,
+  now: () => number = Date.now,
+): LinearMembershipReads & { forget(): void } {
+  const members = new Map<string, { at: number; identity: LinearMemberIdentity }>();
+  return {
+    installation: (signal) => reads.installation(signal),
+    async member(organizationId, userId, signal) {
+      const key = JSON.stringify([organizationId, userId]);
+      const cached = members.get(key);
+      if (cached !== undefined && now() - cached.at < MEMBER_CACHE_MS) return cached.identity;
+      const at = now();
+      const identity = await reads.member(organizationId, userId, signal);
+      members.set(key, { at, identity });
+      return identity;
+    },
+    forget() {
+      members.clear();
+    },
+  };
+}
+
 export function createLinearMembershipReads(client: LinearClient): LinearMembershipReads {
   return {
     async installation(signal) {
