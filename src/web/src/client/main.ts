@@ -41,7 +41,6 @@ import { createMergeSettings } from "./merge-settings";
 import { createHookSettings } from "./hooks";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
-import { createProjects } from "./projects";
 import { createExecutionControls } from "./execution-controls";
 import { createReviewDraw } from "./review-draw";
 import { createEvidenceMedia } from "./evidence-media";
@@ -61,7 +60,6 @@ const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
-const projects = createProjects();
 const executionControls = createExecutionControls(reload);
 const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
@@ -331,8 +329,6 @@ function paint(): void {
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
   if (runnerRoot && model.route.view === "runners")
     runners.mount(runnerRoot, currentEngine(), source(), model.route.id);
-  const projectRoot = document.querySelector<HTMLElement>("#project-delivery");
-  if (projectRoot) projects.mount(projectRoot, currentEngine(), source());
 }
 
 function currentRoute(): Route {
@@ -504,7 +500,6 @@ function onClick(event: MouseEvent): void {
     void reload();
     if (settingsPage(currentRoute()) === "account") void paintGitHubAuth(null);
     if (currentRoute().view === "runners") void runners.refresh();
-    if (currentRoute().view === "projects") void projects.refresh();
   }
   if (action === "source") openDialog();
   if (action === "issue-filter") {

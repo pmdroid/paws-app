@@ -252,7 +252,7 @@ function pageResponse(request: Request, staticDir: string | null, csrfToken?: st
   const url = new URL(request.url);
   const relative =
     url.pathname === STATUS_PAGE_PATH ? "index.html" : relativePagePath(url.pathname);
-  if (!relative) return text("Not found", 404);
+  if (!relative || removedPage(relative)) return text("Not found", 404);
   if (/^runs\/[A-Za-z0-9_-]{1,128}\/transcript\/?$/.test(relative))
     return pageHtml(staticDir, "transcript.html", csrfToken);
   if (relative === "index.html" || !isPublicFile(relative)) return indexHtml(staticDir, csrfToken);
@@ -270,6 +270,14 @@ function pageResponse(request: Request, staticDir: string | null, csrfToken?: st
       "X-Content-Type-Options": "nosniff",
     },
   });
+}
+
+/** Pages the dashboard no longer has. They 404 instead of falling back to the app. */
+const REMOVED_PAGES = ["projects"];
+
+function removedPage(relative: string): boolean {
+  const head = relative.split("/")[0];
+  return head !== undefined && REMOVED_PAGES.includes(head);
 }
 
 function relativePagePath(pathname: string): string | null {
