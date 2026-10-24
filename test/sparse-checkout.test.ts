@@ -163,7 +163,6 @@ test("checkout config rejects unsafe folders and setup preserves project exclusi
   expect(() => parseConfigToml('[checkout.projects."acme/demo"]\nexclude = "large"')).toThrow();
   const f = await fixture();
   const setup = {
-    linearMode: "comments" as const,
     linearTeam: "ENG",
     linearTeamId: "team",
     linearViewerId: "viewer",
