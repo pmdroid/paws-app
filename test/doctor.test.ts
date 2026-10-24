@@ -26,6 +26,7 @@ const NAMES = [
   "home",
   "linear",
   "linear-mode",
+  "linear-workspace",
   "linear-team",
   "linear-label",
   "gh-login",
@@ -76,7 +77,7 @@ test("doctor fails without a Linear workspace and says how to configure one", ()
 
 test("doctor fails while no Linear workspace admin has signed in", () => {
   const pending = probe(true);
-  pending.env.PAWS_PUBLIC_DASHBOARD = "1";
+  pending.facts.workspace = null;
   const workspace = doctorChecks(pending).find((item) => item.name === "linear-workspace");
   expect(workspace?.ok).toBe(false);
   expect(workspace?.detail).toContain("signed in");
@@ -488,6 +489,7 @@ function probe(
   const ready = ok
     ? {
         PAWS_GITHUB_REPOSITORY: "pmdroid/paws-demo",
+        PAWS_PUBLIC_DASHBOARD: "1",
       }
     : env;
   return {
@@ -536,6 +538,7 @@ function greenFacts(): ProbeFacts {
       rate: { ok: true, detail: "not used" },
     },
     webhooks: false,
+    workspace: "Paws Demo",
     publicUrl: null,
     repo: "pmdroid/paws-demo",
     team: "ENG",

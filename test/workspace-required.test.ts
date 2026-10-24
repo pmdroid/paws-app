@@ -1,6 +1,6 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { insertQueuedItem, migrate, openDatabase } from "../src/db";
+import { insertQueuedItem, migrate, openDatabase, setJournalSink } from "../src/db";
 import { startPaws } from "../src/index";
 import { tempHome } from "./helpers";
 
@@ -10,7 +10,8 @@ test("startup without a Linear workspace says why and admits nothing", async () 
   migrate(seed);
   insertQueuedItem(seed, { id: "waiting", now: Date.now() });
   seed.close();
-  const errors = spyOn(console, "error").mockImplementation(() => {});
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
   const paws = startPaws({
     PAWS_HOME: home,
     PAWS_PORT: "0",
@@ -29,9 +30,9 @@ test("startup without a Linear workspace says why and admits nothing", async () 
     expect(
       paws.db.query("SELECT item_id FROM scheduler_admission WHERE item_id='waiting'").all(),
     ).toEqual([]);
-    expect(errors.mock.calls.flat().join("\n")).toContain("Linear workspace");
+    expect(lines.join("\n")).toContain("Linear workspace");
   } finally {
     await paws.stop();
-    errors.mockRestore();
+    restore();
   }
 });
