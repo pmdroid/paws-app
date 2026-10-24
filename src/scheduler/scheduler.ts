@@ -181,7 +181,7 @@ function allItems(db: Database, now: number): Item[] {
       AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>?)
       AND start.queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')) AS placing,
     w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo,
-    COALESCE('project:'||i.project_approval_id,'user:'||i.owner_user_id,'') AS turn
+    COALESCE('user:'||i.owner_user_id,'') AS turn
     FROM work_item i
     LEFT JOIN linear_session s ON s.session_id=i.session_key
     LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
