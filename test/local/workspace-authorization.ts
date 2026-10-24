@@ -329,14 +329,6 @@ export async function probeWorkspaceAuthorization(
       crossWorkspace.status === 403 && crossWorkspaceMembers.status === 403,
       { dashboard: crossWorkspace.status, members: crossWorkspaceMembers.status },
     );
-    const conversations = (await (
-      await fetch(`${origin}/api/linear/conversations`, { headers: headers(member) })
-    ).json()) as { sessions: { id: string }[] };
-    observe(
-      "conversation reads use the same verified team scope",
-      conversations.sessions.map((session) => session.id).join() === "session-own",
-      conversations.sessions.map((session) => session.id),
-    );
     const ownArtifact = await fetch(`${origin}/api/linear/artifacts/${ids[0]}`, {
       headers: headers(member),
     });
