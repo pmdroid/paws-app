@@ -168,7 +168,7 @@ function linearServer() {
   };
 }
 
-test("a delegated task reads each Linear fact once before the agent's first prompt", async () => {
+test("a delegated task spends at most five Linear requests before the agent's first prompt", async () => {
   const layout = await repoLayout("paws-start-budget-");
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
@@ -291,6 +291,7 @@ test("a delegated task reads each Linear fact once before the agent's first prom
       }),
     ]);
     expect(server.operations).toContain("AgentActivityWithSessionUpdate");
+    expect(Object.values(counts).reduce((total, count) => total + count, 0)).toBeLessThanOrEqual(5);
     expect(counts, server.operations.join(", ")).toEqual({
       "task-access": 2,
       outbox: 1,
