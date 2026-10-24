@@ -884,6 +884,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           : {}),
         linearAccess: linearTaskAccess ?? undefined,
         admission,
+        journal: (line) => console.error(line),
         authorizeLinearIntake: workspace
           ? (sessionId, spec) =>
               projectExecution.authorizeIntake(sessionId, spec) &&

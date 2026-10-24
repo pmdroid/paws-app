@@ -1,4 +1,5 @@
 import type {
+  HeldReason,
   ItemState,
   RunState,
   StatusLink,
@@ -270,11 +271,32 @@ export function unmergedBlockers(snapshot: StatusSnapshot, item: StatusItem): st
 
 export function waitReason(snapshot: StatusSnapshot, item: StatusItem): string | null {
   if (item.state !== "queued") return null;
+  const held = heldLine(item);
+  if (held) return held;
   const blockers = unmergedBlockers(snapshot, item);
   if (blockers.length) return `Blocked by ${blockers.join(", ")}`;
   return item.queue?.ownerCap
     ? `Waiting: ${capLine(item, item.queue.ownerCap)}`
     : "Waiting for a free runner";
+}
+
+const HELD_LINES: Record<HeldReason, string> = {
+  blocked: "blocked by another issue",
+  project: "its project has not released it yet",
+  reconciling: "Linear changes are still syncing",
+  snapshot: "reading its dependencies from Linear",
+  cap: "its owner already runs the most tasks at once",
+  slot: "no free slot on any runner",
+};
+
+export function heldLine(item: StatusItem): string | null {
+  const held = item.state === "queued" ? item.held : undefined;
+  if (!held) return null;
+  if (held.reason === "blocked" && held.blockers.length)
+    return `Waiting: blocked by ${held.blockers.join(", ")}`;
+  if (held.reason === "cap" && item.queue?.ownerCap)
+    return `Waiting: ${capLine(item, item.queue.ownerCap)}`;
+  return `Waiting: ${HELD_LINES[held.reason]}`;
 }
 
 export function capLine(item: StatusItem, cap: number): string {

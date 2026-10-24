@@ -107,6 +107,7 @@ export interface StatusItem {
   links: StatusLink[];
   /** A queued item's place among the items waiting for a runner slot. */
   queue?: StatusQueuePosition;
+  held?: StatusHeld;
   /** A task's place in its repository's merge queue. 1 merges next. */
   mergeQueue?: StatusMergeQueue;
   /** The item's pull request waits in its repository's GitHub merge queue. */
@@ -185,6 +186,21 @@ export interface StatusQueuePosition {
   totalSlots: number;
   /** Set while the task waits on its owner's cap of running tasks. */
   ownerCap?: number;
+}
+
+export const HELD_REASONS = [
+  "blocked",
+  "project",
+  "reconciling",
+  "snapshot",
+  "cap",
+  "slot",
+] as const;
+export type HeldReason = (typeof HELD_REASONS)[number];
+
+export interface StatusHeld {
+  reason: HeldReason;
+  blockers: string[];
 }
 
 export interface StatusActivity {
@@ -788,6 +804,7 @@ function readItem(input: unknown, index: number): StatusItem {
     pr: readPr(body.pr, `${path}.pr`),
     links: readLinks(body.links, `${path}.links`),
     ...(body.queue === undefined ? {} : { queue: readQueue(body.queue, `${path}.queue`) }),
+    ...(body.held === undefined ? {} : { held: readHeld(body.held, `${path}.held`) }),
     ...(body.mergeQueue === undefined
       ? {}
       : { mergeQueue: readMergeQueue(body.mergeQueue, `${path}.mergeQueue`) }),
@@ -891,6 +908,14 @@ function readQueue(input: unknown, path: string): StatusQueuePosition {
     busySlots: count(body, "busySlots", path),
     totalSlots: positiveInteger(body, "totalSlots", path),
     ...(body.ownerCap === undefined ? {} : { ownerCap: positiveInteger(body, "ownerCap", path) }),
+  };
+}
+
+function readHeld(input: unknown, path: string): StatusHeld {
+  const body = object(input, path);
+  return {
+    reason: oneOf(string(body, "reason", path), HELD_REASONS, `${path}.reason`),
+    blockers: stringArray(body, "blockers", path),
   };
 }
 
