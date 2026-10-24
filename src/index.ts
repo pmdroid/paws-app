@@ -96,7 +96,6 @@ import {
   listUserRepositories,
   readGhUserToken,
   createGitHubApp,
-  inspectPullRequestMerge,
   githubHttpsUrl,
   type GitHubBinding,
   type GitHubTokenProvider,
@@ -1100,18 +1099,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
           scopeSnapshot: projectExecution.scopeSnapshot,
-          inspectMerge: async (input) => {
-            input.signal?.throwIfAborted();
-            const [owner, repo] = input.repository.split("/") as [string, string];
-            const provider = authProvider(
-              runtime,
-              { owner, repo, remoteUrl: githubHttpsUrl(owner, repo) },
-              "read",
-              resolveApp,
-            );
-            if (!provider) throw new Error("Connect GitHub to verify the blocker pull request.");
-            return inspectPullRequestMerge({ ...input, token: await provider.token() });
-          },
           onChanges: (changes) => {
             for (const { itemId, issue } of changes.issues)
               saveSchedulingContext(db, {
