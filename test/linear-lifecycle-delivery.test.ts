@@ -118,7 +118,9 @@ for (const [body, existing] of [
       await outbox.idle();
       db.close();
     }
-  });
+    // The first activity is held for five seconds before it is sent, so Bun's default
+    // five-second limit is too short when the suite runs without `--timeout`.
+  }, 20_000);
 }
 
 test("acknowledgement retry and duplicate replay preserve one activity UUID", async () => {
