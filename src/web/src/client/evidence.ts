@@ -57,9 +57,9 @@ export function evidencePageHref(id: string): string {
   return routeHref({ view: "evidence", id });
 }
 
-/** The run page, opened on the check that published the evidence. */
+/** The issue page, opened on the check that published the evidence. */
 export function closeoutOutputHref(evidence: StatusEvidence): string {
-  return `${routeHref({ view: "runs", id: evidence.runId })}${checkHash(evidence.attempt, evidence.checkId)}`;
+  return `${routeHref({ view: "issues", id: evidence.itemId })}${checkHash(evidence.attempt, evidence.checkId)}`;
 }
 
 export function sizeLabel(bytes: number): string {
@@ -141,7 +141,7 @@ export function renderEvidencePage(
     <div class="evidence-layout"><div>
       <div id="evidence-player" data-evidence="${esc(evidence.id)}"></div>
 
-    </div><aside class="evidence-aside"><div class="card"><div class="row"><button type="button" class="primary" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div><div class="kv"><span class="k">Run</span><a class="mono" href="${esc(routeHref({ view: "runs", id: evidence.runId }))}">${esc(evidence.runId)}</a><span class="k">Check</span><span>${esc(evidence.checkId)} · attempt ${evidence.attempt}</span><span class="k">Published</span><span>${esc(evidence.publisher)} · ${esc(new Date(evidence.publishedAt).toLocaleString())}</span><span class="k">File</span><span>${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))}${measure ? ` · ${esc(measure)}` : ""}</span></div><p class="muted">Stored on this Paws host, never uploaded to Linear.</p></div><section class="card" aria-label="More from this run">
+    </div><aside class="evidence-aside"><div class="card"><div class="row"><button type="button" class="primary" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div><div class="kv"><span class="k">Issue</span><a class="lin-id" href="${esc(routeHref({ view: "issues", id: evidence.itemId }))}">${esc(evidence.itemId)}</a><span class="k">Check</span><span>${esc(evidence.checkId)} · attempt ${evidence.attempt}</span><span class="k">Published</span><span>${esc(evidence.publisher)} · ${esc(new Date(evidence.publishedAt).toLocaleString())}</span><span class="k">File</span><span>${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))}${measure ? ` · ${esc(measure)}` : ""}</span></div><p class="muted">Stored on this Paws host, never uploaded to Linear.</p></div><section class="card" aria-label="More from this run">
         <div class="between"><h3>More from this run</h3><a href="${esc(closeoutOutputHref(evidence))}">Closeout output</a></div>
         ${more}
       </section>

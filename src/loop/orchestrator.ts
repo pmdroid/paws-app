@@ -2355,6 +2355,7 @@ export class Orchestrator {
     try {
       return await gate.run({
         taskId: itemPathId(item),
+        taskLabel: item.linearIdentifier,
         worktree,
         baseSha: base,
         headSha: head,
