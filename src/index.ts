@@ -1296,7 +1296,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
 }
 
-function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {
+export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {
   const required = () => Promise.reject(new Error("A remote runner is required."));
   return {
     cancelItem: async () => {},
