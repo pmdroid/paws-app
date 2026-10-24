@@ -85,6 +85,7 @@ test("a crashed worker resumes its session in the same workspace", async () => {
         home,
         resultsGid: process.getgid!(),
         resume,
+        skills: join(home, ".paws-skills/sets/first"),
         launch: {
           command: process.execPath,
           args: [fake, join(root, `${name}-trace.json`), join(root, `${name}.json`)],
@@ -122,6 +123,9 @@ test("a crashed worker resumes its session in the same workspace", async () => {
     expect(trace("loaded").methods).toContain("session/load");
     expect(trace("loaded").methods).not.toContain("session/new");
     expect((trace("loaded").loaded as { sessionId: string }).sessionId).toBe("first-session");
+    expect(trace("first").sessionMeta).toMatchObject({
+      claudeCode: { options: { additionalDirectories: [join(home, ".paws-skills/sets/first")] } },
+    });
     expect(JSON.stringify(trace("loaded").prompts)).toContain("stopped unexpectedly");
     expect(JSON.stringify(trace("loaded").prompts)).not.toContain("WORKING ON IT");
     expect(readFileSync(join(worktree, "partial.txt"), "utf8")).toBe("partial");

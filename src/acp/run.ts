@@ -41,7 +41,7 @@ import {
   type AgentRole,
 } from "./adapters";
 import { startHostToolBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
-import { installCloseoutStopHook } from "./closeout-hook";
+import { installCloseoutStopHook, installCodexSkillsHome } from "./closeout-hook";
 import { watchHookFailures } from "./workspace-hooks";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
 import { sessionModel, selectSessionProfile, providerFor, standardWindowNotice } from "./model";
@@ -209,8 +209,21 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           socketPath,
           sourceEnv,
           ...(options.workspaceHooks ? { workspaceHooks: options.workspaceHooks } : {}),
+          ...(options.agentSkills ? { codexSkills: options.agentSkills.codex } : {}),
         })
       : undefined;
+  const codexSkillsHome =
+    !stopHook && profile.agent === "codex" && options.agentSkills
+      ? await installCodexSkillsHome({
+          runDirectory: directory,
+          sourceEnv,
+          codexSkills: options.agentSkills.codex,
+        })
+      : undefined;
+  const sessionMeta =
+    profile.agent === "claude" && options.agentSkills
+      ? claudeSkillsMeta(stopHook?.sessionMeta, options.agentSkills.claude)
+      : stopHook?.sessionMeta;
   const child = spawnAgent(
     adapter.command,
     adapter.args,
@@ -218,6 +231,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       ...minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
       ...attributionEnv,
       ...stopHook?.env,
+      ...codexSkillsHome,
     },
     {
       ...(grok ? { cwd: options.worktreePath } : {}),
@@ -451,7 +465,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           const session = {
             cwd: options.worktreePath,
             mcpServers: bridge ? [bridge.mcpServer] : [],
-            ...(stopHook?.sessionMeta ? { _meta: stopHook.sessionMeta } : {}),
+            ...(sessionMeta ? { _meta: sessionMeta } : {}),
           };
           let created: NewSessionResponse | undefined;
           if (
@@ -933,4 +947,18 @@ function leftoverMessage(reason: "timeout" | "error" | "prompt_complete"): strin
     prompt_complete: "the agent finished",
   }[reason];
   return `Save changes the agent left uncommitted (${why})`;
+}
+
+function claudeSkillsMeta(
+  meta: Record<string, unknown> | undefined,
+  directory: string,
+): Record<string, unknown> {
+  const claudeCode = (meta?.claudeCode ?? {}) as { options?: Record<string, unknown> };
+  return {
+    ...meta,
+    claudeCode: {
+      ...claudeCode,
+      options: { ...claudeCode.options, additionalDirectories: [directory] },
+    },
+  };
 }

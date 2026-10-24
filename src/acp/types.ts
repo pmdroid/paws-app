@@ -85,6 +85,7 @@ export type AgentIdentity = { session: string; model: string; provider: string }
 export interface RunAgentOptions {
   repository?: string;
   skillsRoot?: string;
+  agentSkills?: { claude: string; codex: string };
   /** Registered workspace hooks, injected next to Closeout's Stop hook. */
   workspaceHooks?: readonly WorkspaceHook[];
   checkoutExclusions?: readonly string[];
