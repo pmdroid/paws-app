@@ -45,6 +45,8 @@ An installed version folder is never changed. A new version goes into its own fo
 
 After changing an agent version in `package.json`, regenerate the manifest with `python3 -I -B deploy/linux/agent-manifest.py --bun "$(command -v bun)"`. It resolves each agent's lockfile from the repository `bun.lock`, so every package keeps its reviewed version. Packaging fails while the manifest and `package.json` disagree.
 
+Paws keeps a catalog of the agent versions it is willing to install, in the `agent_version` table (`src/agent-catalog`). Once a day it reads the npm document of each agent package with `If-None-Match`, so an unchanged package costs one 304. A version is eligible once it has been published for at least 48 hours, is not deprecated, is not a prerelease, and its `dist.integrity` matches what Paws first saw. The package that carries the native builds (`@anthropic-ai/claude-agent-sdk`, `@openai/codex`, or Grok itself) and every platform package it pins must pass the same checks at the same version. When an adapter pins that package with a range, the catalog takes the newest version that passes. A changed integrity marks the version refused for good, and the Runners page shows why under Coding agent versions.
+
 ## Keep process identities separate
 
 The host installation contract uses distinct non-root `paws-runner` and `paws-agent` accounts. The daemon runs agent work as `paws-runner`. Provider login state stays in `/var/lib/paws-agent`.
