@@ -310,6 +310,7 @@ async function runTask(input: {
   const github = createFakeGitHub();
   const client = githubClient(layout.bare, github);
   const heads = new Set<string>();
+  let pull: { number: number; html_url: string } | null = null;
   let polls = 0;
   let gate: LinearTaskAccess | undefined;
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
@@ -389,6 +390,16 @@ async function runTask(input: {
       privateKeyPem: privateKey as string,
       client: {
         async request(req) {
+          if (req.path.endsWith("/pulls") && req.method === "POST") {
+            if (pull !== null) return { status: 422, body: {} };
+            const created = await client.request(req);
+            pull = created.body as { number: number; html_url: string };
+            return created;
+          }
+          if (pull !== null && req.path.includes("/pulls?head="))
+            return { status: 200, body: [{ number: pull.number }] };
+          if (pull !== null && req.method === "PATCH" && req.path.endsWith(`/pulls/${pull.number}`))
+            return { status: 200, body: { ...pull, body: (req.body as { body: string }).body } };
           if (!isMergeReadiness(req)) return client.request(req);
           const head = (req.body as { variables: { head: string } }).variables.head;
           heads.add(head);
