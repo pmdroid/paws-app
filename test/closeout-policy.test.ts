@@ -687,6 +687,18 @@ describe("policy errors", () => {
       "repo",
       "skill link is broken: .agents/skills/look/CLAUDE.md",
     );
+
+    const trailing = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+      ".agents/skills/look/AGENTS.md": "rules\n",
+    });
+    trailing.put(".agents/skills/look/CLAUDE.md", "AGENTS.md/", "120000");
+    expectBlocked(
+      loadPolicy({ repo: tempDir(), git: trailing, env: {} }),
+      "repo",
+      "skill link is broken: .agents/skills/look/CLAUDE.md",
+    );
   });
 
   test("a skill reached through a linked directory loads from the commit", () => {

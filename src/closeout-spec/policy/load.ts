@@ -387,6 +387,7 @@ function walk(
   depth: number,
 ): Located {
   const parts = target.split("/").filter((part) => part !== "" && part !== ".");
+  const asDirectory = /\/\.?$/.test(target);
   let current = start;
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index] as string;
@@ -396,7 +397,7 @@ function walk(
       continue;
     }
     current = current === "" ? part : `${current}/${part}`;
-    if (index === parts.length - 1) break;
+    if (index === parts.length - 1 && !asDirectory) break;
     const directory = directoryAt(git, repo, commit, linkPath, current, depth);
     if (!directory.ok) return directory;
     current = directory.path;
