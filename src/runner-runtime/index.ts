@@ -20,6 +20,13 @@ import { publishRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers"
 import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
+import { openRunnerRuntimeInventory } from "./runtimes";
+
+export {
+  openRunnerRuntimeInventory,
+  RUNNER_RUNTIME_INVENTORY_LIMIT,
+  type RunnerRuntimeInventory,
+} from "./runtimes";
 
 class RemoteFailure extends Error {}
 class GitHubFailure extends RemoteFailure {}
@@ -78,6 +85,8 @@ type Active = {
   restarts?: number;
   pushTries?: number;
   pushAt?: number;
+  /** Set once the worker's runtime install report is in the inventory. */
+  runtimesRecorded?: boolean;
 };
 
 export async function openRunnerRuntime(options: {
@@ -133,6 +142,27 @@ export async function openRunnerRuntime(options: {
     options.onError?.(
       error instanceof Error ? error : new Error("Runner runtime operation failed"),
     );
+  const runtimes = openRunnerRuntimeInventory({ root: options.root, now, onError: report });
+  /** Move the worker's runtime install report into the inventory once it exists. */
+  function collectRuntimes(entry: Active) {
+    if (entry.runtimesRecorded) return;
+    let raw: Buffer;
+    try {
+      raw = readRunnerResultFile(options.results, entry.execution.id, "runtimes.json");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        entry.runtimesRecorded = true;
+        report(error);
+      }
+      return;
+    }
+    entry.runtimesRecorded = true;
+    try {
+      runtimes.record(JSON.parse(raw.toString("utf8")));
+    } catch {
+      report(new Error("Runner worker reported an invalid runtime list."));
+    }
+  }
   const deniedReported = new Set<string>();
   const settle = (
     work: readonly (Promise<unknown> | undefined)[],
@@ -335,7 +365,11 @@ export async function openRunnerRuntime(options: {
     if (closed) return Promise.resolve();
     pulsing = (async () => {
       const started = monotonic();
-      const response = await options.daemon.heartbeat(options.skills?.installed());
+      for (const entry of active.values()) collectRuntimes(entry);
+      const response = await options.daemon.heartbeat(
+        options.skills?.installed(),
+        runtimes.installed(),
+      );
       if (closed) return;
       // Downloads can take longer than a heartbeat, so they run beside the lease renewal.
       if (response.skills && options.skills)
@@ -655,6 +689,7 @@ export async function openRunnerRuntime(options: {
       return;
     }
     await quiesce(entry);
+    collectRuntimes(entry);
     check(entry);
     await deliver(entry);
     const worker = workerResult.parse(

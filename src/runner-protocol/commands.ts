@@ -123,6 +123,19 @@ export const RunnerRuntimeSchema = z.strictObject({
 
 export const RunnerRuntimesSchema = z.array(RunnerRuntimeSchema).max(32);
 
+/**
+ * A runtime as the runner reports it in its heartbeat. `installed`: mise installed it for a
+ * task and every later task reuses it. `failed`: the last install of that version failed, and
+ * `error` is the line the task failed with.
+ */
+export const RunnerInstalledRuntimeSchema = z.strictObject({
+  ...RunnerRuntimeSchema.shape,
+  status: z.enum(["installed", "failed"]),
+  error: z.string().min(1).max(500).optional(),
+});
+
+export const RunnerInstalledRuntimesSchema = z.array(RunnerInstalledRuntimeSchema).max(64);
+
 const common = {
   id,
   runnerId: id,
@@ -237,4 +250,5 @@ export type RunnerRepository = z.infer<typeof RunnerRepositorySchema>;
 export type RunnerProfile = z.infer<typeof RunnerProfileSchema>;
 export type RunnerHook = z.infer<typeof RunnerHookSchema>;
 export type RunnerRuntime = z.infer<typeof RunnerRuntimeSchema>;
+export type RunnerInstalledRuntime = z.infer<typeof RunnerInstalledRuntimeSchema>;
 export type SignedRunnerCommand = z.infer<typeof SignedRunnerCommandSchema>;

@@ -128,7 +128,8 @@ export async function probeRunnerDaemon(
       if (path === "/v1/heartbeat") {
         const body = await request.json();
         heartbeatBodies.push(body);
-        if (JSON.stringify(body).includes('"waiting"')) return Response.json({}, { status: 403 });
+        if (/"waiting"|"runtimes"/.test(JSON.stringify(body)))
+          return Response.json({}, { status: 403 });
         return deliver(heartbeatResponse);
       }
       if (path === "/v1/runs/run-one/grant") {
@@ -479,6 +480,19 @@ export async function probeRunnerDaemon(
       const reported = { ...pending, waiting: 2 };
       await configured.heartbeat([reported]);
       assert.deepEqual((heartbeatBodies.at(-1) as { skills?: unknown }).skills, [pending]);
+      // A Paws release without runtimes refuses them; the skills still go through.
+      const runtime = { tool: "node", version: "22", status: "installed" as const };
+      const sent = heartbeatBodies.length;
+      await configured.heartbeat([reported], [runtime]);
+      const attempts = heartbeatBodies.slice(sent) as { skills?: unknown; runtimes?: unknown }[];
+      assert.deepEqual(
+        attempts.map((body) => [body.skills, body.runtimes]),
+        [
+          [[reported], [runtime]],
+          [[reported], undefined],
+          [[pending], undefined],
+        ],
+      );
     } finally {
       heartbeatResponse = { leases: [], fenced: [] };
       configured.close();

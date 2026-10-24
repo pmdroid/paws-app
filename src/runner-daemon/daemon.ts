@@ -20,10 +20,12 @@ import {
   type RunnerHealthResult,
   type RunnerHelperResult,
   type RunnerHostStatus,
+  type RunnerInstalledRuntime,
   type RunnerInstalledSkill,
   type RunnerResult,
   type RunnerSkill,
   RUNNER_SKILL_BUNDLE_LIMIT,
+  RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
 } from "../runner-protocol";
@@ -374,34 +376,46 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       recovery = null;
       return status();
     },
-    /** `skills` is what this runner has installed; sending it asks Paws for the skill manifest. */
-    async heartbeat(skills?: readonly RunnerInstalledSkill[]) {
+    /**
+     * `skills` is what this runner has installed; sending it asks Paws for the skill manifest.
+     * `runtimes` is what mise installed for tasks on this runner, sent once there is any.
+     */
+    async heartbeat(
+      skills?: readonly RunnerInstalledSkill[],
+      runtimes?: readonly RunnerInstalledRuntime[],
+    ) {
       const body = {
         ...options.sampleHost?.(),
         ...(options.concurrency === undefined ? {} : { capacity: applied, ceiling }),
       };
       const reported = skills && RunnerInstalledSkillsSchema.parse(skills);
-      const withoutWaiting = reported?.some((skill) => skill.waiting)
-        ? { ...body, skills: reported.map(({ waiting: _, ...skill }) => skill) }
+      const installed = runtimes?.length
+        ? RunnerInstalledRuntimesSchema.parse(runtimes)
         : undefined;
+      const withSkills = reported === undefined ? body : { ...body, skills: reported };
+      // A Paws release without runtimes or skills refuses the unknown field with 403. Drop the
+      // newest fields one at a time so the leases still renew.
+      const attempts: unknown[] = [
+        installed === undefined ? withSkills : { ...withSkills, runtimes: installed },
+        ...(installed === undefined ? [] : [withSkills]),
+        ...(reported?.some((skill) => skill.waiting)
+          ? [{ ...body, skills: reported.map(({ waiting: _, ...skill }) => skill) }]
+          : []),
+        ...(reported === undefined ? [] : [body]),
+      ];
       let reply: unknown;
-      try {
-        reply = await authenticated(
-          "/v1/heartbeat",
-          "POST",
-          reported === undefined ? body : { ...body, skills: reported },
-        );
-      } catch (error) {
-        // A Paws release without skills refuses the unknown field; renew the leases without it.
-        if (skills === undefined || !(error instanceof RunnerRequestError) || error.status !== 403)
-          throw error;
-        reply = await authenticated("/v1/heartbeat", "POST", withoutWaiting ?? body).catch(
-          (retry: unknown) => {
-            if (!withoutWaiting || !(retry instanceof RunnerRequestError) || retry.status !== 403)
-              throw retry;
-            return authenticated("/v1/heartbeat", "POST", body);
-          },
-        );
+      for (const [index, attempt] of attempts.entries()) {
+        try {
+          reply = await authenticated("/v1/heartbeat", "POST", attempt);
+          break;
+        } catch (error) {
+          if (
+            index === attempts.length - 1 ||
+            !(error instanceof RunnerRequestError) ||
+            error.status !== 403
+          )
+            throw error;
+        }
       }
       const response = RunnerHeartbeatSchema.parse(reply);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
