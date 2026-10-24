@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import platform
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -19,6 +20,18 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("release", sys.argv[1])
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
+DEVELOPMENT = ("typescript", "oxlint", "@types/bun")
+
+
+def synthetic_source(source):
+    for name in release.REQUIRED:
+        path = source / name.removeprefix("app/")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic package file")
+        if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
+            path.chmod(0o755)
+    manifest = {"dependencies": {"@openai/codex": "1.0.0", "media": "1.0.0"}, "devDependencies": {name: "1.0.0" for name in DEVELOPMENT}}
+    (source / "package.json").write_text(json.dumps(manifest))
 
 
 class ReleaseVerification(unittest.TestCase):
@@ -117,12 +130,7 @@ class ReleaseVerification(unittest.TestCase):
         for index, target in enumerate(("adapter/dist/cli.js", "adapter/.hidden/cli.js", "adapter/dist/cli!.js")):
             with self.subTest(target=target):
                 source = self.root / ("source-" + str(index))
-                for name in release.REQUIRED:
-                    path = source / name.removeprefix("app/")
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(b"synthetic package file")
-                    if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
-                        path.chmod(0o755)
+                synthetic_source(source)
                 executable = source / "node_modules" / target
                 executable.parent.mkdir(parents=True, exist_ok=True)
                 executable.write_bytes(b"#!/usr/bin/env node\n")
@@ -133,7 +141,7 @@ class ReleaseVerification(unittest.TestCase):
                 runtime.write_bytes(b"synthetic Bun runtime")
                 output = self.root / ("package-" + str(index))
                 arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None)
-                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
+                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
                     if index == 0:
                         packager.pack(arguments)
                         members = release.inspect_archive(output / "artifact.tar")
@@ -160,12 +168,7 @@ class ReleaseVerification(unittest.TestCase):
         packager = importlib.util.module_from_spec(specification)
         specification.loader.exec_module(packager)
         source = self.root / "source-unsafe"
-        for name in release.REQUIRED:
-            path = source / name.removeprefix("app/")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"synthetic package file")
-            if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
-                path.chmod(0o755)
+        synthetic_source(source)
         fixture = source / "node_modules/media/test/fixtures/av01,aac.avi"
         fixture.parent.mkdir(parents=True, exist_ok=True)
         fixture.write_bytes(b"fixture")
@@ -176,15 +179,89 @@ class ReleaseVerification(unittest.TestCase):
         runtime.write_bytes(b"synthetic Bun runtime")
         output = self.root / "package-unsafe"
         arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None)
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
             packager.pack(arguments)
         members = release.inspect_archive(output / "artifact.tar")
         self.assertIn("app/node_modules/media/index.js", members)
         self.assertFalse(any("av01" in name or "odd" in name for name in members))
         (source / "src/bad,name.ts").write_bytes(b"source")
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
             with self.assertRaises(ValueError):
                 packager.pack(argparse.Namespace(**{**vars(arguments), "output": self.root / "package-unsafe-src"}))
+
+    def test_production_install_runs_the_pinned_bun_apart_from_the_checkout(self):
+        specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
+        packager = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(packager)
+        source = self.root / "source-install"
+        synthetic_source(source)
+        (source / "bun.lock").write_bytes(b"synthetic lockfile")
+        workspace = self.root / "install-workspace"
+        workspace.mkdir()
+        calls = []
+        def run(arguments, **options):
+            calls.append((arguments, options))
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with mock.patch.object(packager.subprocess, "run", side_effect=run):
+            self.assertEqual(packager.install_production(pathlib.Path("/pinned/bun"), source, workspace), workspace / "node_modules")
+        self.assertEqual(calls[0][0], ["/pinned/bun", "install", "--frozen-lockfile", "--production"])
+        self.assertEqual(calls[0][1]["cwd"], workspace)
+        self.assertNotEqual(calls[0][1]["cwd"], source)
+        self.assertEqual((workspace / "package.json").read_bytes(), (source / "package.json").read_bytes())
+        self.assertEqual((workspace / "bun.lock").read_bytes(), b"synthetic lockfile")
+        (self.root / "install-failed").mkdir()
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(returncode=1, stderr=b"lockfile had changes")):
+            with self.assertRaisesRegex(ValueError, "Production dependency install failed: lockfile had changes"):
+                packager.install_production(pathlib.Path("/pinned/bun"), source, self.root / "install-failed")
+
+    def test_packed_dependencies_are_production_glibc_packages_only(self):
+        specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
+        packager = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(packager)
+        source = self.root / "source-production"
+        synthetic_source(source)
+        (source / "node_modules/only-in-checkout").mkdir()
+        (source / "node_modules/only-in-checkout/index.js").write_bytes(b"tested checkout only")
+        production = self.root / "production/node_modules"
+        shutil.copytree(source / "node_modules", production, symlinks=True)
+        shutil.rmtree(production / "only-in-checkout")
+        arch = release.ARCHITECTURE[0]
+        for name in (
+            f"@anthropic-ai/claude-agent-sdk-linux-{arch}-musl/claude",
+            f"@oxlint/binding-linux-{arch}-musl/package.json",
+            f"lightningcss-linux-{arch}-musl/lightningcss.node",
+            "media/node_modules/helper-linux-musl/index.js",
+            "media/index.js",
+            "typescript/bin/tsc",
+            "oxlint/package.json",
+            "@types/bun/index.d.ts",
+        ):
+            (production / name).parent.mkdir(parents=True, exist_ok=True)
+            (production / name).write_bytes(b"#!/usr/bin/env node\n")
+        (production / "media/package.json").write_text(json.dumps({"name": "media", "dependencies": {"left-pad": "1.0.0"}, "devDependencies": {"typescript": "1.0.0"}}))
+        (production / ".bin/tsc").symlink_to("../typescript/bin/tsc")
+        runtime = self.root / "bun-production"
+        runtime.write_bytes(b"synthetic Bun runtime")
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-production", mise=None)
+        def patches():
+            return mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=production), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise")
+        first, second, third, fourth = patches()
+        with first, second, third, fourth:
+            packager.pack(arguments)
+        members = release.inspect_archive(self.root / "package-production/artifact.tar")
+        self.assertLessEqual(release.REQUIRED, members.keys())
+        self.assertIn("app/" + release.PROVIDER_EXECUTABLES["codex"], members)
+        self.assertIn("app/node_modules/media/index.js", members)
+        packages = {name for member in members if member.startswith("app/node_modules/") for name in packager.package_names(tuple(member.removeprefix("app/node_modules/").split("/")))}
+        self.assertEqual({name for name in packages if name.endswith("-musl")}, set())
+        self.assertEqual(packages & set(DEVELOPMENT), set())
+        self.assertNotIn("app/node_modules/.bin/tsc", members)
+        self.assertFalse(any("only-in-checkout" in name for name in members))
+        (production / "media/package.json").write_text(json.dumps({"name": "media", "dependencies": {"typescript": "1.0.0"}}))
+        first, second, third, fourth = patches()
+        with first, second, third, fourth:
+            with self.assertRaisesRegex(ValueError, "needs a development dependency: typescript"):
+                packager.pack(argparse.Namespace(**{**vars(arguments), "output": self.root / "package-production-hard"}))
 
     def test_missing_bundled_provider_targets_reject_packaging(self):
         specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
@@ -193,18 +270,14 @@ class ReleaseVerification(unittest.TestCase):
         for index, missing in enumerate(("node_modules/@openai/codex/bin/codex.js", *release.PROVIDER_EXECUTABLES.values(), release.CODEX_PLATFORM_PACKAGE)):
             with self.subTest(missing=missing):
                 source = self.root / ("missing-provider-" + str(index))
-                for name in release.REQUIRED:
-                    path = source / name.removeprefix("app/")
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(b"synthetic package file")
-                    if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
-                        path.chmod(0o755)
+                synthetic_source(source)
                 (source / missing).unlink()
                 runtime = self.root / ("missing-provider-bun-" + str(index))
                 runtime.write_bytes(b"synthetic Bun runtime")
                 arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / ("missing-provider-package-" + str(index)), mise=None)
-                with self.assertRaises(FileNotFoundError):
-                    packager.pack(arguments)
+                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
+                    with self.assertRaises(FileNotFoundError):
+                        packager.pack(arguments)
 
     def test_archive_missing_a_bundled_provider_target_is_rejected(self):
         for missing in (name for name in release.REQUIRED if name.endswith(("/claude", "/codex", "/codex.js"))):
@@ -259,18 +332,13 @@ class ReleaseVerification(unittest.TestCase):
         packager = importlib.util.module_from_spec(specification)
         specification.loader.exec_module(packager)
         source = self.root / "source-mise"
-        for name in release.REQUIRED:
-            path = source / name.removeprefix("app/")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"synthetic package file")
-            if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
-                path.chmod(0o755)
+        synthetic_source(source)
         runtime = self.root / "bun-mise"
         runtime.write_bytes(b"synthetic Bun runtime")
         mise = self.root / "mise-tampered"
         mise.write_bytes(b"\x7fELFtampered mise")
         arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-mise", mise=mise)
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 packager.pack(arguments)
         self.assertFalse((self.root / "package-mise/artifact.tar").exists())
