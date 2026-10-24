@@ -48,6 +48,11 @@ export {
   DEFAULT_MAX_TURNS,
   capActivityText,
   capReason,
+  formatAwakeBreakdown,
+  timeLimitQuestion,
+  TIME_LIMIT_EXTENSION_MS,
+  TIME_LIMIT_OPTIONS,
+  type AwakeBreakdown,
   type CapReason,
 } from "./caps";
 export {
@@ -64,7 +69,9 @@ export {
   decideWake,
   formatPauseNote,
   isAwakeItemState,
+  awakeCategory,
   countsAwakeTime,
+  type AwakeCategory,
   isInFlightItemState,
   pauseOutcome,
   type StartupDecision,

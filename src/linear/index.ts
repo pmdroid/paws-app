@@ -157,11 +157,17 @@ export type {
 export {
   parseLinearAdministration,
   parseLinearUndelegation,
+  parseLinearIssueClosed,
   parseLinearUserChange,
   parseLinearSessionInstallation,
   matchesLinearInstallation,
 } from "./administration";
-export type { LinearAdministration, LinearInstallation } from "./administration";
+export type {
+  LinearAdministration,
+  LinearInstallation,
+  LinearIssueClosed,
+  LinearIssueClosedState,
+} from "./administration";
 export { createLinearIssueLifecycle } from "./issue-lifecycle";
 export { createFakeLinearIssueLifecycle } from "./fake-issue-lifecycle";
 export type {

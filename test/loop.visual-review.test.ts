@@ -47,8 +47,10 @@ import {
   VISUAL_REVIEW_QUESTION,
   VISUAL_REVIEW_REMINDER,
   VISUAL_REVIEW_REMINDER_MS,
+  visualReviewCarriedNote,
 } from "../src/questions";
 import { githubClient } from "./e2e-harness";
+import { screenshotPng, type Rect } from "./png";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -427,7 +429,7 @@ test("a change under the check's paths after acceptance asks again", async () =>
   }
 }, 180_000);
 
-test("a review accepted for some of the files asks again with all of them instead of blocking Closeout", async () => {
+test("a review accepted for some of the files asks again about the rest instead of blocking Closeout", async () => {
   const f = await pausedForReview();
   try {
     const first = findOpenQuestion(f.db, "ses_1")!;
@@ -437,7 +439,7 @@ test("a review accepted for some of the files asks again with all of them instea
     await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
     await f.driveUntil(() => f.tracker.questions.length === 2);
 
-    expectReviewOfBothShots(f.tracker.questions[1]!);
+    expectReviewOfSecondShot(f.tracker.questions[1]!);
     expect(f.log.at(-1)?.kind).toBe("elicitation");
     expect(getVisualReview(f.db, first.id)?.outcome).toBe("accepted");
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
@@ -451,7 +453,7 @@ test("a review accepted for some of the files asks again with all of them instea
   }
 }, 120_000);
 
-test("retry on a task Closeout blocked for an uncovered file asks a new review round", async () => {
+test("retry on a task Closeout blocked for an uncovered file asks a new review round about it", async () => {
   const f = await pausedForReview();
   try {
     const first = findOpenQuestion(f.db, "ses_1")!;
@@ -481,7 +483,7 @@ test("retry on a task Closeout blocked for an uncovered file asks a new review r
     await f.orchestrator.onLinearEvent(prompted("retry", "delegator-1", "activity:retry"));
     await f.driveUntil(() => f.tracker.questions.length === 2);
 
-    expectReviewOfBothShots(f.tracker.questions[1]!);
+    expectReviewOfSecondShot(f.tracker.questions[1]!);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(f.github.opened).toHaveLength(0);
   } finally {
@@ -553,6 +555,180 @@ test("4 screens published 3 times ask one review of the 4 latest files, and Acce
   }
 }, 120_000);
 
+const DESKTOP: Rect[] = [
+  { x: 20, y: 20, width: 300, height: 40, rgb: 0x111111 },
+  { x: 20, y: 100, width: 200, height: 120, rgb: 0xff7a3d },
+];
+const NARROW: Rect[] = [
+  { x: 10, y: 20, width: 150, height: 40, rgb: 0x111111 },
+  { x: 10, y: 100, width: 120, height: 160, rgb: 0xff7a3d },
+];
+
+/** Publishes PNG screens under their display names at turn `n`. */
+function publishScreens(worktree: string, n: number, screens: Record<string, Buffer>): Step[] {
+  return Object.entries(screens).map(([displayName, png], index) => {
+    const file = `screen-${n}-${index}.png`;
+    writeFileSync(path.join(worktree, file), png);
+    return { type: "publish_artifact", path: file, displayName, checkId: "visual-proof" };
+  });
+}
+
+/**
+ * Turn 1 publishes the first screens and waits for Accept. Turn 2 changes
+ * web/settings.html, so the review goes stale, and turn 3 publishes `again`.
+ */
+async function republishedAfterAcceptance(again: Record<string, Buffer>) {
+  const f = await pausedForReview({
+    paths: ["web/**"],
+    implement(worktree, n) {
+      if (n <= 2) {
+        mkdirSync(path.join(worktree, "web"), { recursive: true });
+        writeFileSync(path.join(worktree, "web", "settings.html"), `<p>version ${n}</p>\n`);
+      }
+      if (n === 1)
+        return publishScreens(worktree, n, {
+          "Settings desktop": screenshotPng(400, 300, DESKTOP),
+          "Settings 390": screenshotPng(200, 300, NARROW),
+        });
+      return n === 3 ? publishScreens(worktree, n, again) : [];
+    },
+  });
+  putWorkspaceUser(f.db, {
+    id: "user-ada",
+    linearUserId: "delegator-1",
+    name: "Ada Reviewer",
+    email: "ada@example.invalid",
+  });
+  const first = findOpenQuestion(f.db, "ses_1")!;
+  await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+  await f.driveUntil(
+    () => f.prompts.length === 3 && f.github.opened.length + f.tracker.questions.length > 1,
+  );
+  expect(getVisualReview(f.db, first.id)?.outcome).toBe("stale");
+  return { f, first };
+}
+
+test("republished screenshots with identical bytes pass visual-proof with no question", async () => {
+  const { f, first } = await republishedAfterAcceptance({
+    "Settings desktop": screenshotPng(400, 300, DESKTOP),
+    "Settings 390": screenshotPng(200, 300, NARROW),
+  });
+  try {
+    await f.driveUntil(() => f.github.opened.length > 0);
+    expect(f.tracker.questions).toHaveLength(1);
+    const item = listWorkItems(f.db)[0]!;
+    const republished = listEvidence(f.db, item.id).slice(2);
+    const carried = f.db
+      .query<{ question_id: string }, [string]>(
+        "SELECT question_id FROM visual_review WHERE item_id = ? AND question_id LIKE 'carry_%'",
+      )
+      .all(item.id);
+    expect(carried).toHaveLength(1);
+    const review = getVisualReview(f.db, carried[0]!.question_id)!;
+    expect(review).toMatchObject({
+      outcome: "accepted",
+      answeredBy: "delegator-1",
+      evidenceIds: republished.map((row) => row.id),
+    });
+    const approvedAt = getVisualReview(f.db, first.id)!.answeredAt!;
+    expect(review.carried).toEqual(
+      republished.map((row, index) => ({
+        evidenceId: row.id,
+        fromEvidenceId: listEvidence(f.db, item.id)[index]!.id,
+        approvalId: first.id,
+        approvedBy: "delegator-1",
+        approvedAt,
+        match: "identical",
+      })),
+    );
+    const line = visualReviewCarriedNote(approvedAt, review.answeredAt!);
+    expect(line).toMatch(
+      /^Visual review carried over: unchanged since your approval at \d\d:\d\d UTC\.$/,
+    );
+    expect(f.notes(line)).toBe(1);
+    const body = f.github.opened[0]!.body;
+    expect(body).toContain(`Visual review carried over from the approval by Ada Reviewer at `);
+    expect(body).toContain(
+      `(approval ${first.id}), unchanged since: Settings desktop, Settings 390.`,
+    );
+  } finally {
+    await f.close();
+  }
+}, 180_000);
+
+test("a screen within tolerance carries over, and a visibly changed one is asked beside its approved version", async () => {
+  const { f, first } = await republishedAfterAcceptance({
+    // A clock in the corner moved: 80 of 120,000 pixels.
+    "Settings desktop": screenshotPng(400, 300, [
+      ...DESKTOP,
+      { x: 350, y: 280, width: 10, height: 8, rgb: 0x333333 },
+    ]),
+    // The button moved.
+    "Settings 390": screenshotPng(200, 300, [
+      NARROW[0]!,
+      { x: 60, y: 100, width: 120, height: 160, rgb: 0xff7a3d },
+    ]),
+  });
+  try {
+    expect(f.tracker.questions).toHaveLength(2);
+    const question = f.tracker.questions[1]!;
+    expect(question.options).toEqual(["Accept", "Request changes"]);
+    expect(question.body).toContain(
+      `![Settings 390, approved](<${ASSET}>) ![Settings 390, new](<${ASSET}>)`,
+    );
+    expect(question.body).not.toContain("![Settings desktop");
+    expect(question.body).toContain(
+      "Unchanged since your approval, so not asked again: Settings desktop.",
+    );
+    const item = listWorkItems(f.db)[0]!;
+    const [desktop, narrow] = listEvidence(f.db, item.id).slice(2);
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    const review = getVisualReview(f.db, open.id)!;
+    expect(review.evidenceIds).toEqual([desktop!.id, narrow!.id]);
+    expect(review.carried).toEqual([
+      {
+        evidenceId: desktop!.id,
+        fromEvidenceId: listEvidence(f.db, item.id)[0]!.id,
+        approvalId: first.id,
+        approvedBy: "delegator-1",
+        approvedAt: getVisualReview(f.db, first.id)!.answeredAt!,
+        match: "similar",
+      },
+    ]);
+
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:accept-2"));
+    await f.driveUntil(() => f.github.opened.length > 0);
+    expect(f.tracker.questions).toHaveLength(2);
+    const body = f.github.opened[0]!.body;
+    expect(body).toContain("Visual review accepted by Ada Reviewer");
+    expect(body).toContain(`Carried over from the approval by Ada Reviewer at `);
+    expect(body).toContain("unchanged since: Settings desktop.");
+  } finally {
+    await f.close();
+  }
+}, 180_000);
+
+test("a screen with a new name is always asked", async () => {
+  const { f } = await republishedAfterAcceptance({
+    "Settings desktop": screenshotPng(400, 300, DESKTOP),
+    "Settings dark": screenshotPng(200, 300, NARROW),
+  });
+  try {
+    expect(f.tracker.questions).toHaveLength(2);
+    const question = f.tracker.questions[1]!;
+    expect(question.body).toContain(`![Settings dark](<${ASSET}>)`);
+    expect(question.body).not.toContain("approved](");
+    expect(question.body).not.toContain("![Settings desktop");
+    expect(question.body).toContain(
+      "Unchanged since your approval, so not asked again: Settings desktop.",
+    );
+    expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
+    expect(f.github.opened).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+}, 180_000);
+
 function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): void {
   const [shot] = listEvidence(db, itemId);
   db.run("UPDATE visual_review SET evidence_ids = ? WHERE question_id = ?", [
@@ -561,11 +737,13 @@ function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): v
   ]);
 }
 
-function expectReviewOfBothShots(question: { body: string; options?: readonly unknown[] }): void {
+/** shot-1.png carries its acceptance over; only shot-2.png is asked. */
+function expectReviewOfSecondShot(question: { body: string; options?: readonly unknown[] }): void {
   expect(question.options).toEqual(["Accept", "Request changes"]);
   expect(question.body.startsWith(VISUAL_REVIEW_QUESTION)).toBe(true);
-  expect(question.body).toContain(`![shot-1.png](<${ASSET}>)`);
+  expect(question.body).not.toContain(`![shot-1.png]`);
   expect(question.body).toContain(`![shot-2.png](<${ASSET}>)`);
+  expect(question.body).toContain("Unchanged since your approval, so not asked again: shot-1.png.");
 }
 
 async function pausedForReview(

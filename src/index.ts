@@ -121,6 +121,7 @@ import {
   readStoredToken,
   startCatchUpPoller,
   parseLinearAdministration,
+  parseLinearIssueClosed,
   parseLinearUndelegation,
   parseLinearUserChange,
   sessionCreatedKey,
@@ -139,6 +140,7 @@ import {
   LinearTaskAccess,
   authorizeLinearTask,
   handleLinearAdministration,
+  closeClosedIssueTasks,
   stopUndelegatedIssue,
   refreshLinearNotificationContext,
   type Orchestrator,
@@ -436,6 +438,20 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   await orchestrator.interruptLinearSession(sessionId);
                 },
               });
+            const closedIssue = parseLinearIssueClosed(event);
+            if (closedIssue) {
+              await closeClosedIssueTasks(db, closedIssue, {
+                notify: (command) => {
+                  if (orchestrator === null) throw new Error("The loop is not attached.");
+                  orchestrator.bus.emit(command);
+                },
+                interrupt: async (sessionId) => {
+                  if (orchestrator === null) throw new Error("The loop is not attached.");
+                  await orchestrator.interruptLinearSession(sessionId);
+                },
+              });
+              if (event.source === "poll") return false;
+            }
             if (issueEvent && reconciler) {
               const targets = await reconciler.issueChanged(issueEvent);
               if (targets.length > 0) orchestrator?.reconcileExecution();
@@ -1276,6 +1292,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     clock: options?.hostClock,
     signal: abort.signal,
     agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
+    stopAgent: (itemId) => {
+      void orchestrator?.stopAgent(itemId).catch(() => undefined);
+    },
     restartFromMainBlocked:
       runtime.githubAuth === "app"
         ? (item) => {
