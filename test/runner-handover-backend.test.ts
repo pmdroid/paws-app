@@ -102,10 +102,13 @@ async function fixture() {
   const work = createRunnerWork({ db, keyId: "fixture", privateKey: signing.privateKey });
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
+  // Moves the transcript store's clock, as if the runner sealed late.
+  const clock = { skew: 0 };
   const transcripts = createRunnerTranscripts({
     db,
     work,
     objects: createFakeRunnerTranscriptObjects(),
+    now: () => Date.now() + clock.skew,
   });
   work.heartbeat(runnerId);
 
@@ -194,6 +197,7 @@ async function fixture() {
     } satisfies RunAgentOptions;
   }
   return {
+    clock,
     dir,
     db,
     work,
@@ -288,7 +292,10 @@ test("a fake runner handover leaves its WIP commit and full transcript with Paws
     offset: transcript.length,
     sizeBytes: transcript.length,
     sha256,
+    handedOver: true,
   });
+  // The seal commits the handover, so Paws waits for the result past the deadline.
+  await delay(800);
   f.results.submit({
     runnerId: f.runnerId,
     runId: assigned.runId,
@@ -369,6 +376,68 @@ test("a handover that does not finish in time is reported and the session stays 
     token: grant.token,
     result: {
       executionId: workspaceId(),
+      commandId: assigned.id,
+      role: "implementer",
+      stopReason: "error",
+      errorMessage: "fixture ended",
+      timedOut: false,
+      cancelled: false,
+      authRequired: false,
+      agentExited: true,
+    },
+  });
+  await running.catch(() => undefined);
+}, 20_000);
+
+test("a handed-over transcript sealed after the deadline is refused and the session stays on the runner", async () => {
+  const f = await fixture();
+  const record = f.item();
+  const running = f.backend.forItem(record.id)(f.input(record));
+  void running.catch(() => undefined);
+  const assigned = await f.next();
+  if (assigned.type !== "run") throw new Error("Expected a run command");
+  const grant = f.work.issueGrant({
+    runnerId: f.runnerId,
+    runId: assigned.runId,
+    commandId: assigned.id,
+    generation: assigned.generation,
+  });
+  const handing = f.backend.handoverItem(record.id);
+  expect((await f.next()).type).toBe("handover");
+  const executionId = workspaceId();
+  const transcript = Buffer.from(`${JSON.stringify({ event: { type: "cancelled" } })}\n`);
+  const sha256 = createHash("sha256").update(transcript).digest("hex");
+  const access = { runnerId: f.runnerId, runId: assigned.runId, token: grant.token };
+  await f.transcripts.upload(access, {
+    generation: assigned.generation,
+    executionId,
+    offset: 0,
+    sha256,
+    data: transcript.toString("base64"),
+  });
+  const seal = {
+    generation: assigned.generation,
+    executionId,
+    offset: transcript.length,
+    sizeBytes: transcript.length,
+    sha256,
+  };
+  f.clock.skew = 60_000;
+  await expect(f.transcripts.finish(access, { ...seal, handedOver: true })).rejects.toThrow(
+    "denied",
+  );
+  const outcome = await handing;
+  expect(outcome.handedOver).toBe(false);
+  expect(outcome.handedOver ? "" : outcome.reason).toContain("stays on the runner");
+  // The session goes on, and its ordinary end still seals the transcript.
+  expect(await f.transcripts.finish(access, seal)).toEqual({ uri: expect.any(String) });
+  f.results.submit({
+    runnerId: f.runnerId,
+    runId: assigned.runId,
+    generation: assigned.generation,
+    token: grant.token,
+    result: {
+      executionId,
       commandId: assigned.id,
       role: "implementer",
       stopReason: "error",
