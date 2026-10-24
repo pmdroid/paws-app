@@ -166,6 +166,14 @@ export function createLinearSessionProgress(
     },
     link(label: string, url: string) {
       // Links are not throttled, so they sort ahead of a plan or summary that is still waiting.
+      const added = db
+        .query<{ id: number }, [string, number, string]>(
+          `SELECT id FROM outbox WHERE target = 'linear' AND op = 'linear.session.links'
+            AND ordering_key = ? AND delivery_generation = ? AND status IN ('pending', 'sent')
+            AND json_extract(payload, '$.addedExternalUrls[0].url') = ? LIMIT 1`,
+        )
+        .get(sessionId, generation, url);
+      if (added !== null) return;
       enqueueOutboxOnce(db, {
         target: "linear",
         op: "linear.session.links",
