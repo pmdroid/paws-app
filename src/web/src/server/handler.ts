@@ -16,7 +16,6 @@ import {
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
-import { handleLinearConversationsRequest } from "./conversations";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
 import { handleAgentTranscriptRequest } from "./transcript";
 
@@ -105,13 +104,6 @@ export async function handleStatusRequest(
     options.trustedOrigin,
   );
   if (artifact !== null) return artifact;
-  const conversations = handleLinearConversationsRequest(
-    request,
-    options.db,
-    options.sessionIds,
-    options.trustedOrigin,
-  );
-  if (conversations !== null) return conversations;
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
   const auth = await handleGitHubAuthRequest(request, options.githubAuth, options.csrfToken);

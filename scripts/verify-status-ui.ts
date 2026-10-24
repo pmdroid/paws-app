@@ -34,7 +34,6 @@ const server = Bun.serve({
     if (path === "/api/runners")
       return Response.json({ setupRequired: true, workspaceReady: false, runners: [] });
     if (path === "/api/linear/sessions") return Response.json({ available: true, sessions: [] });
-    if (path === "/api/linear/conversations") return Response.json({ sessions: [] });
     if (path === "/api/execution-controls") {
       if (request.method === "POST") {
         const body = await request.json();
@@ -64,7 +63,6 @@ const pages = [
   ["Projects", "/projects"],
   ["Questions", "/questions"],
   ["Runs", "/runs"],
-  ["Conversations", "/sessions"],
   ["Runners", "/runners"],
   ["Agents", "/settings/agents"],
   ["Integrations", "/settings/integrations"],
@@ -265,7 +263,9 @@ try {
     await expect(
       page.locator('[data-action="toggle-check"][aria-expanded="true"]').first(),
     ).toBeVisible();
-    await navigate(page, "Conversations", width);
+    await page.goto(`http://127.0.0.1:${server.port}/status/sessions`);
+    await expect(page).toHaveURL(/\/status\/issues$/);
+    await expect(page.getByRole("link", { name: "Conversations" })).toHaveCount(0);
     await expect(page.locator("#linear-session-start")).toBeVisible();
     expect(
       await page
@@ -336,7 +336,7 @@ try {
     };
     await page.route("**/api/status", (route) => route.fulfill({ json: empty }));
     await page.reload();
-    for (const name of ["Overview", "Issues", "Questions", "Runs", "Conversations"]) {
+    for (const name of ["Overview", "Issues", "Questions", "Runs"]) {
       await navigate(page, name, width);
       await expect(page.locator("#content .empty")).toBeVisible();
     }

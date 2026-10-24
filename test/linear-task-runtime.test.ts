@@ -33,7 +33,6 @@ import {
   findOpenQuestion,
   getQuestion,
 } from "../src/questions";
-import { handleStatusRequest } from "../src/web";
 import { tempDb, tempHome } from "./helpers";
 
 function event(): AcceptedLinearEvent {
@@ -239,30 +238,6 @@ test("a parent discussion classifies before fanout and completes without Git, is
         .filter((update) => update.kind === "response")
         .map((update) => update.body),
     ).toEqual([f.answer.trim()]);
-    const dashboard = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/linear/conversations"),
-      { db: f.db, staticDir: null },
-    );
-    expect(dashboard?.status).toBe(200);
-    expect(await dashboard!.json()).toMatchObject({
-      sessions: [
-        expect.objectContaining({
-          id: "session",
-          items: [
-            expect.objectContaining({
-              id: item.id,
-              state: "completed",
-              mode: "answer",
-              response: f.answer.trim(),
-            }),
-          ],
-          messages: expect.arrayContaining([
-            expect.objectContaining({ kind: "response", text: f.answer.trim(), state: "sent" }),
-          ]),
-          artifacts: [],
-        }),
-      ],
-    });
     expect(existsSync(join(f.root, "worktrees"))).toBe(false);
     expect(existsSync(join(f.root, "mirrors"))).toBe(false);
     for (const trace of f.traces)
@@ -725,40 +700,6 @@ test.each(["ok", "fail", "omit"] as const)(
         expect(responses[0]?.body).toContain(
           "https://uploads.linear.app/workspace/deliverable.txt",
         );
-        const dashboard = await handleStatusRequest(
-          new Request("http://127.0.0.1/api/linear/conversations"),
-          { db: f.db, staticDir: null },
-        );
-        expect(dashboard?.status).toBe(200);
-        expect(await dashboard!.json()).toMatchObject({
-          sessions: [
-            expect.objectContaining({
-              id: "session",
-              items: [
-                expect.objectContaining({
-                  id: itemId,
-                  state: "completed",
-                  mode: "artifact",
-                  response: responses[0]!.body,
-                }),
-              ],
-              messages: expect.arrayContaining([
-                expect.objectContaining({
-                  kind: "response",
-                  text: responses[0]!.body,
-                  state: "sent",
-                }),
-              ]),
-              artifacts: [
-                expect.objectContaining({
-                  displayName: "deliverable.txt",
-                  state: "uploaded",
-                  href: expect.stringMatching(/^\/api\/linear\/artifacts\//),
-                }),
-              ],
-            }),
-          ],
-        });
         const fileIndex = f.tracker.progress.findIndex((update) =>
           update.body.includes("[deliverable.txt]"),
         );
