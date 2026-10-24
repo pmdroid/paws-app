@@ -13,7 +13,7 @@ import {
 import { unavailableRemoteExecution } from "../src/index";
 import { createFakeTracker } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { createAdmission } from "../src/scheduler";
+import { workspaceAdmission } from "./fake-workspace";
 import { tempHome } from "./helpers";
 
 test("with a workspace and no paired runner a delegated task fails because a remote runner is required", async () => {
@@ -42,7 +42,7 @@ test("with a workspace and no paired runner a delegated task fails because a rem
     pawsRoot: home,
     tracker,
     linearTaskModes: true,
-    admission: createAdmission({ db, managed: true, workspace: true }),
+    admission: workspaceAdmission(db),
     launch: () => {
       throw new Error("Remote execution must not launch a local agent");
     },
@@ -63,11 +63,6 @@ test("with a workspace and no paired runner a delegated task fails because a rem
       payload: JSON.stringify({ agentSession: { creatorId: "human" } }),
     });
     const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
-    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',0)");
-    db.run(
-      "INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states) VALUES(?,'workspace',1,'[]','[]')",
-      [itemId],
-    );
     saveTaskMode(db, itemId, "answer");
     await orchestrator.reconcileExecution();
     for (let tick = 0; tick < 5 && getWorkItem(db, itemId)?.state !== "failed"; tick++)

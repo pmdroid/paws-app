@@ -14,6 +14,7 @@ import {
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 test("a session delegated while every runner slot is busy is queued at once and classified when it starts", async () => {
   const home = tempHome();
@@ -81,6 +82,7 @@ test("a session delegated while every runner slot is busy is queued at once and 
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     home,

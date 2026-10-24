@@ -21,6 +21,7 @@ import {
 } from "../src/linear";
 import { LinearTaskAccess, attachOrchestrator } from "../src/loop";
 import { emptyReview, repoLayout, stateOf, writeOk } from "./e2e-harness";
+import { workspaceAdmission } from "./fake-workspace";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
@@ -151,6 +152,7 @@ async function runWithFault(fault: {
   });
   orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     tracker,

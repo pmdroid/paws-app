@@ -33,6 +33,7 @@ import {
   findOpenQuestion,
   getQuestion,
 } from "../src/questions";
+import { workspaceAdmission } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
 function event(): AcceptedLinearEvent {
@@ -192,6 +193,7 @@ function setup(
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: root,
@@ -534,6 +536,7 @@ test("clarified parent code requests recover the ordered child queue and every c
     migrate(reopened);
     const recovery = attachOrchestrator({
       db: reopened,
+      admission: workspaceAdmission(reopened),
       jobs: new JobLoop(reopened, systemClock),
       outbox: new OutboxDispatcher(reopened, systemClock),
       pawsRoot: f.root,

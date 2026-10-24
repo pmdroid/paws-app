@@ -5,8 +5,8 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
 } from "../src/db";
-import { dispatch } from "../src/scheduler";
 import { tempDb } from "./helpers";
+import { workspaceDispatch } from "./fake-workspace";
 
 const NOW = 1_000;
 
@@ -52,7 +52,7 @@ test("a second person's single task starts in the first round beside a large bat
   try {
     for (let index = 1; index <= 20; index += 1) queue(`ada-${index}`, "ada", index);
     queue("ben-1", "ben", 100);
-    expect(dispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1"]);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1"]);
     expect(getQueuePosition(db, "ada-2")).toMatchObject({ position: 1, ownerCap: null });
   } finally {
     db.close();
@@ -65,7 +65,7 @@ test("a project's tasks share one turn whoever delegated them", () => {
     queue("launch-1", "ada", 1, "launch");
     queue("launch-2", "ben", 2, "launch");
     queue("ben-1", "ben", 3);
-    expect(dispatch(db, { now: NOW })).toEqual(["launch-1", "ben-1"]);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["launch-1", "ben-1"]);
   } finally {
     db.close();
   }
@@ -77,14 +77,14 @@ test("with a cap of 3 one owner never runs more than 3 tasks while others wait",
     for (let index = 1; index <= 10; index += 1) queue(`ada-${index}`, "ada", index);
     queue("ben-1", "ben", 100);
     queue("ben-2", "ben", 101);
-    expect(dispatch(db, { now: NOW, ownerCap: 3 })).toEqual([
+    expect(workspaceDispatch(db, { now: NOW, ownerCap: 3 })).toEqual([
       "ada-1",
       "ben-1",
       "ada-2",
       "ben-2",
       "ada-3",
     ]);
-    expect(dispatch(db, { now: NOW + 1, ownerCap: 3 })).toEqual([]);
+    expect(workspaceDispatch(db, { now: NOW + 1, ownerCap: 3 })).toEqual([]);
     expect(getQueuePosition(db, "ada-4")).toMatchObject({ position: 1, ownerCap: 3 });
   } finally {
     db.close();
@@ -95,7 +95,7 @@ test("without a cap one owner gets every free runner slot", () => {
   const { db, queue } = fixture(4);
   try {
     for (let index = 1; index <= 6; index += 1) queue(`ada-${index}`, "ada", index);
-    expect(dispatch(db, { now: NOW })).toEqual(["ada-1", "ada-2", "ada-3", "ada-4"]);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ada-2", "ada-3", "ada-4"]);
   } finally {
     db.close();
   }

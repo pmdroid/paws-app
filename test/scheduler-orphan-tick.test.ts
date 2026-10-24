@@ -8,8 +8,9 @@ import {
   migrations,
   openDatabase,
 } from "../src/db";
-import { dispatch, registerScheduler } from "../src/scheduler";
+import { registerScheduler } from "../src/scheduler";
 import { tempDb } from "./helpers";
+import { workspaceDispatch } from "./fake-workspace";
 
 const GRACE_MS = 5 * 60_000;
 
@@ -32,7 +33,11 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
     insertQueuedItem(db, { id: "next", now: 2 });
     const jobs = new JobLoop(db, clock);
     const ticks: string[][] = [];
-    registerScheduler(jobs, () => void ticks.push(dispatch(db, { now: clock.now() })), clock.now());
+    registerScheduler(
+      jobs,
+      () => void ticks.push(workspaceDispatch(db, { now: clock.now() })),
+      clock.now(),
+    );
 
     const tick = await jobs.tick(["scheduler.tick"]);
     expect(tick?.queue).toBe("scheduler.tick");

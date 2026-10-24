@@ -33,6 +33,7 @@ import {
   recordLinearInstallation,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 const token = "synthetic-host-git-token";
 
@@ -274,6 +275,7 @@ test("verified saved credentials reach real host clone and fetch without reachin
     process.env.GIT_SSL_CAINFO = cert;
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       tracker,
