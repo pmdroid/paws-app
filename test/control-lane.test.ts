@@ -1,3 +1,4 @@
+import { workspaceDispatch } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import {
   bindWorkItemRepository,
@@ -8,7 +9,7 @@ import {
   listJobs,
 } from "../src/db";
 import { FakeClock, JOB_KIND } from "../src/core";
-import { dispatch, saveSchedulingContext } from "../src/scheduler";
+import { saveSchedulingContext } from "../src/scheduler";
 import { tempDb } from "./helpers";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
@@ -22,7 +23,7 @@ test("reconciliation runs while every execution worker holds a handler open", as
     bindWorkItemRepository(db, id, repository);
     saveSchedulingContext(db, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] });
   }
-  expect(dispatch(db, { now: clock.now() })).toEqual(ids);
+  expect(workspaceDispatch(db, { now: clock.now() })).toEqual(ids);
   const loop = new JobLoop(db, clock, { concurrency: 4, pollMs: 1 });
   const held: string[] = [];
   let release!: () => void;

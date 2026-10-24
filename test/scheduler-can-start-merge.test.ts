@@ -3,6 +3,7 @@ import { test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { recordLinearInstallation, saveTaskMode } from "../src/db";
 import { createAdmission } from "../src/scheduler";
+import { joinFakeWorkspace, workspaceAdmission } from "./fake-workspace";
 import { tempDb } from "./helpers";
 
 function item(
@@ -34,13 +35,13 @@ function setState(db: Database, id: string, state: string) {
   db.run("UPDATE work_item SET state=? WHERE id=?", [state, id]);
 }
 
-test("an Item without a workspace starts once its blocker in the delegation merged", () => {
+test("an Item starts once its blocker in the delegation merged", () => {
   const db = tempDb();
   try {
     item(db, { id: "blocker", state: "running" });
     item(db, { id: "blocked", position: 1 });
     block(db, "blocker", "blocked");
-    const admission = createAdmission({ db });
+    const admission = workspaceAdmission(db);
     assert.deepEqual(admission.canStart("blocked"), { ok: false, held: "blocked" });
     setState(db, "blocker", "merged");
     assert.deepEqual(admission.canStart("blocked"), { ok: true });
@@ -55,7 +56,7 @@ test("a completed blocker satisfies the Block only for answer and artifact work"
     item(db, { id: "blocker", state: "completed" });
     item(db, { id: "blocked", position: 1 });
     block(db, "blocker", "blocked");
-    const admission = createAdmission({ db });
+    const admission = workspaceAdmission(db);
     assert.deepEqual(admission.canStart("blocked"), { ok: false, held: "blocked" });
     saveTaskMode(db, "blocker", "answer");
     assert.deepEqual(admission.canStart("blocked"), { ok: true });
@@ -70,7 +71,7 @@ test("a merge waits for an unmerged blocker and passes once it merged", () => {
     item(db, { id: "blocker", state: "verifying" });
     item(db, { id: "blocked", state: "merge_queue", position: 1 });
     block(db, "blocker", "blocked");
-    const admission = createAdmission({ db });
+    const admission = workspaceAdmission(db);
     assert.deepEqual(admission.canMerge("blocked"), { ok: false, held: "blocked" });
     setState(db, "blocker", "merged");
     assert.deepEqual(admission.canMerge("blocked"), { ok: true });
@@ -83,7 +84,7 @@ test("project authority holds start and merge before readiness is read", () => {
   const db = tempDb();
   try {
     item(db, { id: "held", state: "merge_queue" });
-    const admission = createAdmission({ db, authority: (id) => id !== "delegation" });
+    const admission = workspaceAdmission(db, { authority: (id) => id !== "delegation" });
     assert.deepEqual(admission.canStart("held"), { ok: false, held: "project" });
     assert.deepEqual(admission.canMerge("held"), { ok: false, held: "project" });
     assert.equal(admission.canDispatchDelegation("delegation"), false);
@@ -98,7 +99,7 @@ test("missing and cancel requested Items are held", () => {
   try {
     item(db, { id: "stopping" });
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id='stopping'");
-    const admission = createAdmission({ db });
+    const admission = workspaceAdmission(db);
     assert.deepEqual(admission.canStart("absent"), { ok: false, held: "missing" });
     assert.deepEqual(admission.canStart("stopping"), { ok: false, held: "cancelled" });
     assert.deepEqual(admission.canMerge("stopping"), { ok: false, held: "cancelled" });
@@ -107,7 +108,7 @@ test("missing and cancel requested Items are held", () => {
   }
 });
 
-test("managed admission holds a delegation until its snapshots exist and changes are applied", () => {
+test("admission holds a delegation until its snapshots exist and changes are applied", () => {
   const db = tempDb();
   try {
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',0)");
@@ -120,13 +121,15 @@ test("managed admission holds a delegation until its snapshots exist and changes
       observedAtMs: 0,
     });
     item(db, { id: "work", session: "session" });
-    const managed = createAdmission({ db, managed: true });
-    assert.deepEqual(managed.canStart("work"), { ok: false, held: "snapshot" });
-    assert.equal(managed.canDispatchDelegation("delegation"), false);
+    const admission = createAdmission({ db });
+    assert.deepEqual(admission.canStart("work"), { ok: false, held: "snapshot" });
+    assert.equal(admission.canDispatchDelegation("delegation"), false);
     db.run("INSERT INTO item_reconciliation_request VALUES('work','workspace','token')");
-    assert.deepEqual(managed.canStart("work"), { ok: false, held: "reconciling" });
-    assert.equal(createAdmission({ db }).canDispatchDelegation("delegation"), true);
-    assert.deepEqual(createAdmission({ db }).canStart("work"), { ok: false, held: "blocked" });
+    assert.deepEqual(admission.canStart("work"), { ok: false, held: "reconciling" });
+    db.run("DELETE FROM item_reconciliation_request");
+    joinFakeWorkspace(db, "delegation");
+    assert.equal(admission.canDispatchDelegation("delegation"), true);
+    assert.deepEqual(admission.canStart("work"), { ok: true });
   } finally {
     db.close();
   }

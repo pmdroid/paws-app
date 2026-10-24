@@ -25,6 +25,7 @@ import {
 import { attachOrchestrator } from "../src/loop";
 import { registerScheduler } from "../src/scheduler";
 import { tempDb, tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 const TASKS = 100;
 const STARTED = 60;
@@ -120,6 +121,7 @@ test("100 tasks stay under 1,700 Linear requests and spend none while they wait 
   registerScheduler(jobs, () => orchestrator.reconcileExecution(), clock.now());
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     home,

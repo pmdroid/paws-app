@@ -37,6 +37,7 @@ import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
 import { attachOrchestrator, FakeHostGitHubAuth } from "../../src/loop";
 import { saveSchedulingContext } from "../../src/scheduler";
 import { migratedDatabase } from "../helpers";
+import { workspaceAdmission } from "../fake-workspace";
 
 export const RUNNER_ORCHESTRATION_SCENARIOS = [
   "success",
@@ -333,6 +334,7 @@ export async function probeRunnerOrchestration(
     );
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       clock,
       jobs,
       outbox,

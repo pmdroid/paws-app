@@ -1,3 +1,4 @@
+import { workspaceAdmission } from "../fake-workspace";
 import "../quiet-journal";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,7 +23,6 @@ import {
 } from "../../src/db";
 import { attachOrchestrator, GitHubAuthQuestions } from "../../src/loop";
 import { findOpenQuestion, getQuestion } from "../../src/questions";
-import { createAdmission } from "../../src/scheduler";
 
 const home = process.argv[2]!;
 const denied = process.argv[3] === "denied";
@@ -128,7 +128,7 @@ if (denied) {
     actorForItem: () => "linear-owner",
   });
   let launches = 0;
-  const admission = createAdmission({ db });
+  const admission = workspaceAdmission(db);
   const orchestrator = attachOrchestrator({
     db,
     admission: {

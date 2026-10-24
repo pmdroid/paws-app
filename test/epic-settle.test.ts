@@ -14,12 +14,14 @@ import { intakeDelegatedIssue } from "../src/intake";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
+import { workspaceAdmission } from "./fake-workspace";
 
 function harness() {
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,
@@ -122,6 +124,7 @@ test("the orchestrator pump treats a delegation whose items are all merged as fi
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,
@@ -191,6 +194,7 @@ test("a follow-up session turn routes by the item's task key without the epic ro
   const jobs = new JobLoop(db, clock);
   const orchestrator = new Orchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),
     clock,

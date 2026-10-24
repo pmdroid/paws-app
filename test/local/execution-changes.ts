@@ -21,6 +21,7 @@ import { createFakeTracker } from "../../src/linear";
 import { Orchestrator, type ExecutionChanges } from "../../src/loop";
 import { openQuestion } from "../../src/questions";
 import type { RunAgentOptions, RunAgentResult } from "../../src/acp";
+import { workspaceAdmission } from "../fake-workspace";
 
 export async function probeExecutionChanges(
   root: string,
@@ -67,6 +68,7 @@ export async function probeExecutionChanges(
   };
   const orchestrator = new Orchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),
     clock,

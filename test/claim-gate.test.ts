@@ -15,7 +15,8 @@ import {
   setJournalSink,
   type Job,
 } from "../src/db";
-import { createAdmission, dispatch } from "../src/scheduler";
+import { dispatch } from "../src/scheduler";
+import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { migratedDatabase, tempDb, tempHome } from "./helpers";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
@@ -76,7 +77,7 @@ test("a reserved start the legacy rule holds behind unreserved work is journaled
     applyWorkItemEvent(db, "legacy", "dispatched");
     insertRun(db, { itemId: "legacy", now: 0, status: "active" });
     queued(db, "next", 1);
-    assert.deepEqual(dispatch(db, { now: 1000 }), ["next"]);
+    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["next"]);
     const start = db
       .query<{ id: number }, []>(
         "SELECT job_id AS id FROM scheduler_admission WHERE item_id='next'",
@@ -99,13 +100,13 @@ test("a queued Reservation survives a restart and both rules claim its start", (
   const db = migratedDatabase(path);
   queued(db, "a");
   queued(db, "b", 1);
-  assert.deepEqual(dispatch(db, { now: 1000 }), ["a", "b"]);
+  assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["a", "b"]);
   db.close();
   const reopened = openDatabase(path);
   try {
     let claimed: (string | null)[] = [];
     const lines = disagreements(() => {
-      assert.deepEqual(dispatch(reopened, { now: 2000 }), []);
+      assert.deepEqual(workspaceDispatch(reopened, { now: 2000 }), []);
       claimed = [claimNextJob(reopened, { now: 2000 }), claimNextJob(reopened, { now: 2000 })].map(
         itemOf,
       );
@@ -127,7 +128,7 @@ test("work in flight without a Reservation after a restart is reconstructed befo
   try {
     let claimed: (string | null)[] = [];
     const lines = disagreements(() => {
-      dispatch(reopened, { now: 1000 });
+      workspaceDispatch(reopened, { now: 1000 });
       claimed = [claimNextJob(reopened, { now: 1000 }), claimNextJob(reopened, { now: 1000 })].map(
         itemOf,
       );
@@ -150,7 +151,7 @@ test("resume and reverify claim against their Reservation and never twice for on
     inFlight(db, "recover", "lease_expired");
     let claimed: (string | null)[] = [];
     const lines = disagreements(() => {
-      dispatch(db, { now: 1000 });
+      workspaceDispatch(db, { now: 1000 });
       claimed = [claimNextJob(db, { now: 1000 }), claimNextJob(db, { now: 1000 })].map(itemOf);
       enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "recover" }, now: 1000 });
       assert.equal(claimNextJob(db, { now: 1000 }), null);
@@ -167,8 +168,8 @@ test("a Project pause between dispatch and claim retracts the stale Reservation"
   try {
     queued(db, "paused");
     const lines = disagreements(() => {
-      assert.deepEqual(dispatch(db, { now: 1000 }), ["paused"]);
-      const paused = createAdmission({ db, authority: () => false });
+      assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["paused"]);
+      const paused = workspaceAdmission(db, { authority: () => false });
       assert.deepEqual(dispatch(db, { now: 1001, admission: paused }), []);
       assert.equal(claimNextJob(db, { now: 1001 }), null);
     });
@@ -190,8 +191,8 @@ test("an access change between dispatch and claim retracts only that Item's Rese
       .get()!.id;
     let claimed: (string | null)[] = [];
     const lines = disagreements(() => {
-      assert.deepEqual(dispatch(db, { now: 1000 }), ["revoked", "kept"]);
-      const access = createAdmission({ db, authority: (id) => id !== revoked });
+      assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["revoked", "kept"]);
+      const access = workspaceAdmission(db, { authority: (id) => id !== revoked });
       assert.deepEqual(dispatch(db, { now: 1001, admission: access }), []);
       claimed = [claimNextJob(db, { now: 1001 }), claimNextJob(db, { now: 1001 })].map(itemOf);
     });

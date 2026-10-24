@@ -7,11 +7,13 @@ export type { StoredDelegation, StoredWorkItem } from "./store";
 export {
   canAdvanceItem,
   hasPendingDelegationChanges,
+  itemDependenciesCurrent,
+  recordItemDependencies,
   readyItems,
   syncItemDependencies,
   delegationSnapshotsComplete,
 } from "./dependencies";
-export type { DependencyReadiness } from "./dependencies";
+export type { DependencyReadiness, DependencyReads } from "./dependencies";
 export { delegationReadiness, itemReadiness } from "./readiness";
 export type { ReadinessHold, ReadinessPhase } from "./readiness";
 export { createItemReconciler, SWEEP_FULL_REFRESH_MS } from "./reconciliation";

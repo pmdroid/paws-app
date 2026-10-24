@@ -16,6 +16,7 @@ import {
 } from "../../src/db";
 import { FakeHostGitHubAuth, Orchestrator } from "../../src/loop";
 import { migratedDatabase } from "../helpers";
+import { workspaceAdmission } from "../fake-workspace";
 
 export async function probeCurrentRunStartup(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -55,6 +56,7 @@ export async function probeCurrentRunStartup(root: string) {
     });
     const orchestrator = new Orchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       clock,
       outbox: new OutboxDispatcher(db, clock),

@@ -19,6 +19,7 @@ import {
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+import { workspaceAdmission } from "./fake-workspace";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -69,6 +70,7 @@ for (const delivered of [true, false, "completed"] as const)
     const forwarded: { itemId: string; body: string }[] = [];
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot,
