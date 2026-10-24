@@ -93,90 +93,92 @@ async function fixture(
   let postFailures = faults.postFailures ?? 0;
   // A worker that wrote a handover result has exited; a resumed worker runs again.
   let alive = !handover;
-  const runtime = await openRunnerRuntime({
-    root,
-    spool,
-    results,
-    repositoryRoot: join(root, "repositories"),
-    home: root,
-    now: () => now,
-    monotonic: () => clock,
-    onError: () => {},
-    async networkGit(input) {
-      if (input.operation === "clone")
-        git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
-      else if (input.operation === "push") {
-        pushes.push(clock);
-        if (rejection !== null) throw new Error(rejection);
-      }
-    },
-    broker: {
-      async start(id) {
-        execution = id;
-        const directory = join(results.root, id);
-        mkdirSync(directory);
-        chmodSync(directory, 0o750);
-        writeFileSync(join(directory, "events.jsonl"), "");
-        chmodSync(join(directory, "events.jsonl"), 0o640);
-        return { alreadyAdmitted: false };
+  const open = () =>
+    openRunnerRuntime({
+      root,
+      spool,
+      results,
+      repositoryRoot: join(root, "repositories"),
+      home: root,
+      now: () => now,
+      monotonic: () => clock,
+      onError: () => {},
+      async networkGit(input) {
+        if (input.operation === "clone")
+          git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
+        else if (input.operation === "push") {
+          pushes.push(clock);
+          if (rejection !== null) throw new Error(rejection);
+        }
       },
-      async stop() {},
-      alive: () => alive,
-      async resume(id) {
-        resumes.push(id);
-        alive = true;
+      broker: {
+        async start(id) {
+          execution = id;
+          const directory = join(results.root, id);
+          mkdirSync(directory);
+          chmodSync(directory, 0o750);
+          writeFileSync(join(directory, "events.jsonl"), "");
+          chmodSync(join(directory, "events.jsonl"), 0o640);
+          return { alreadyAdmitted: false };
+        },
+        async stop() {},
+        alive: () => alive,
+        async resume(id) {
+          resumes.push(id);
+          alive = true;
+        },
       },
-    },
-    daemon: {
-      status: () => paired,
-      async heartbeat() {
-        return { leases: [{ runId: "run", generation: 1, expiresAt: now + 60_000 }], fenced: [] };
+      daemon: {
+        status: () => paired,
+        async heartbeat() {
+          return { leases: [{ runId: "run", generation: 1, expiresAt: now + 60_000 }], fenced: [] };
+        },
+        async pollCommands() {
+          return { commands: pending, rejected: [], deniedRepositories: [] };
+        },
+        pendingCommands: () => pending,
+        async acknowledgeCommand(id) {
+          pending = pending.filter((entry) => entry.id !== id);
+        },
+        async issueRunGrant() {
+          return { token: "token", expiresAt: now + 3_600_000 };
+        },
+        async sendEvent() {
+          return { duplicate: false };
+        },
+        async answers() {
+          return { answers: [] };
+        },
+        async postResult(_runId, _generation, result) {
+          if (postFailures-- > 0) throw new RunnerRequestError(503);
+          posted.push(result);
+          return { duplicate: false };
+        },
+        async repositoryCredential(_runId, _generation, access) {
+          return {
+            token: "fixture-token",
+            expiresAt: now + 3_600_000,
+            remoteUrl: command.repository.remoteUrl,
+            branch: access === "write" ? "paws/fixture" : null,
+          };
+        },
+        async renewCertificate() {
+          return paired;
+        },
+        async uploadArtifact() {
+          return { ok: true };
+        },
+        async uploadTranscript(_runId, chunk) {
+          return { offset: chunk.offset, duplicate: false };
+        },
+        async finishTranscript(_runId, finish) {
+          if (faults.sealRefused) throw new RunnerRequestError(409);
+          seals.push({ ...(finish.handedOver ? { handedOver: finish.handedOver } : {}) });
+          return { uri: "transcript" };
+        },
       },
-      async pollCommands() {
-        return { commands: pending, rejected: [], deniedRepositories: [] };
-      },
-      pendingCommands: () => pending,
-      async acknowledgeCommand(id) {
-        pending = pending.filter((entry) => entry.id !== id);
-      },
-      async issueRunGrant() {
-        return { token: "token", expiresAt: now + 3_600_000 };
-      },
-      async sendEvent() {
-        return { duplicate: false };
-      },
-      async answers() {
-        return { answers: [] };
-      },
-      async postResult(_runId, _generation, result) {
-        if (postFailures-- > 0) throw new RunnerRequestError(503);
-        posted.push(result);
-        return { duplicate: false };
-      },
-      async repositoryCredential(_runId, _generation, access) {
-        return {
-          token: "fixture-token",
-          expiresAt: now + 3_600_000,
-          remoteUrl: command.repository.remoteUrl,
-          branch: access === "write" ? "paws/fixture" : null,
-        };
-      },
-      async renewCertificate() {
-        return paired;
-      },
-      async uploadArtifact() {
-        return { ok: true };
-      },
-      async uploadTranscript(_runId, chunk) {
-        return { offset: chunk.offset, duplicate: false };
-      },
-      async finishTranscript(_runId, finish) {
-        if (faults.sealRefused) throw new RunnerRequestError(409);
-        seals.push({ ...(finish.handedOver ? { handedOver: finish.handedOver } : {}) });
-        return { uri: "transcript" };
-      },
-    },
-  });
+    });
+  let runtime = await open();
   const tick = () => runtime.tick().catch(() => {});
   const started = () => execution !== "";
   for (let index = 0; index < 400 && !started(); index++) {
@@ -211,6 +213,12 @@ async function fixture(
     pushes,
     resumes,
     seals,
+    /** Stops the runtime and opens a new one on the same journal, with Paws reachable again. */
+    async restart() {
+      await runtime.stop();
+      postFailures = 0;
+      runtime = await open();
+    },
     async run(minutes: number) {
       for (let step = 0; step <= minutes * 2; step++) {
         for (let index = 0; index < 5; index++) {
@@ -355,6 +363,29 @@ test.skipIf(linuxUser)(
       expect(f.pushes).toEqual([0]);
       expect(f.posted).toEqual([]);
       expect(f.resumes).toHaveLength(1);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(linuxUser)(
+  "a runner that restarts after the handover seal finishes the handover instead of failing the run",
+  async () => {
+    const f = await fixture(null, { expiresIn: 60_000 }, { postFailures: 1_000 });
+    try {
+      await f.run(1);
+      expect(f.seals).toEqual([{ handedOver: true }]);
+      expect(f.posted).toEqual([]);
+      await f.restart();
+      await f.run(1);
+      expect(f.resumes).toEqual([]);
+      expect(f.pushes).toEqual([0]);
+      expect(f.seals).toEqual([{ handedOver: true }, { handedOver: true }]);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]).toMatchObject({ handedOver: true, cancelled: true });
+      expect(f.posted[0]!.candidateSha).toMatch(/^[a-f0-9]{40}$/);
     } finally {
       await f.cleanup();
     }

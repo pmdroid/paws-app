@@ -24,6 +24,7 @@ import {
   HANDOVER_RESULT,
   HANDOVER_RESUME_PROMPT,
   HANDOVER_TIMEOUT_NOTICE,
+  isAskTeamCall,
   type RunnerWorkerOptions,
 } from "../src/runner-worker";
 
@@ -460,3 +461,29 @@ test("a worker restarted after a missed handover continues the session on the ru
     f.cleanup();
   }
 }, 30_000);
+
+test("only the agent's own ask_team call counts as a question, never an edit that mentions it", () => {
+  // Claude names the tool in its metadata; Codex titles it and reports server and tool.
+  expect(
+    isAskTeamCall({
+      title: "Ask team",
+      _meta: { claudeCode: { toolName: "mcp__paws__ask_team" } },
+    }),
+  ).toBe(true);
+  expect(isAskTeamCall({ title: "mcp.paws.ask_team" })).toBe(true);
+  expect(
+    isAskTeamCall({
+      title: "MCP call",
+      rawInput: { server: "paws", tool: "ask_team", arguments: {} },
+    }),
+  ).toBe(true);
+  // Edits and commands whose text or arguments mention ask_team stay ordinary tool calls.
+  expect(
+    isAskTeamCall({ title: "Edit docs/ask_team.md", rawInput: { content: "call ask_team" } }),
+  ).toBe(false);
+  expect(
+    isAskTeamCall({ title: "Write", rawInput: { path: "x.ts", text: "mcp__paws__ask_team" } }),
+  ).toBe(false);
+  expect(isAskTeamCall({ title: "mcp.other.ask_team" })).toBe(false);
+  expect(isAskTeamCall({ title: "Run", _meta: { claudeCode: { toolName: "Bash" } } })).toBe(false);
+});

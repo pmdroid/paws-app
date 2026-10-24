@@ -113,6 +113,33 @@ export const HANDOVER_RESUME_PROMPT =
 /** A handed-over result waits here until the runner publishes it before its deadline. */
 export const HANDOVER_RESULT = "handover.json";
 
+/** The host tool server the agent reaches ask_team through. */
+const HOST_TOOL_SERVER = "paws";
+
+/**
+ * Whether a tool call is the agent's own ask_team call, by the tool identity the ACP adapter
+ * reports, never by the call's arguments: an edit whose text mentions ask_team is still an edit.
+ * Claude names the tool in `_meta.claudeCode.toolName`; Codex titles it `mcp.<server>.<tool>`
+ * and reports `server` and `tool` in its input.
+ */
+export function isAskTeamCall(update: {
+  title?: string | null;
+  rawInput?: unknown;
+  _meta?: { [key: string]: unknown } | null;
+}): boolean {
+  const claude = update["_meta"]?.["claudeCode"] as { toolName?: unknown } | undefined;
+  const input = update.rawInput as { server?: unknown; tool?: unknown } | null | undefined;
+  return (
+    claude?.toolName === `mcp__${HOST_TOOL_SERVER}__${ASK_TEAM_TOOL_NAME}` ||
+    update.title === `mcp__${HOST_TOOL_SERVER}__${ASK_TEAM_TOOL_NAME}` ||
+    update.title === `mcp.${HOST_TOOL_SERVER}.${ASK_TEAM_TOOL_NAME}` ||
+    (typeof input === "object" &&
+      input !== null &&
+      input.server === HOST_TOOL_SERVER &&
+      input.tool === ASK_TEAM_TOOL_NAME)
+  );
+}
+
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
 
@@ -643,10 +670,7 @@ export async function executeRunnerCommand(
               )
                 handover.tools.set(
                   update.toolCallId,
-                  (handover.tools.get(update.toolCallId) ?? false) ||
-                    `${update.title ?? ""} ${JSON.stringify(update.rawInput ?? null)}`.includes(
-                      ASK_TEAM_TOOL_NAME,
-                    ),
+                  (handover.tools.get(update.toolCallId) ?? false) || isAskTeamCall(update),
                 );
             }
           }

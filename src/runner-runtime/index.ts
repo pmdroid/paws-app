@@ -156,9 +156,15 @@ export async function openRunnerRuntime(options: {
       Promise.allSettled(work),
       new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
     ]);
+  // Committed handovers left by a restart: their seal and result are finished, not failed.
+  const recovering: Execution[] = [];
   try {
     for (const previous of journal.executions(true)) {
       await broker.stop(previous.id);
+      if (previous.phase === "handover") {
+        recovering.push(previous);
+        continue;
+      }
       report(
         new Error(
           `Runner interrupted execution ${previous.id} for run ${previous.command.runId}: runner restarted`,
@@ -225,7 +231,8 @@ export async function openRunnerRuntime(options: {
     entry.stopped ??= (async () => {
       await quiesce(entry);
       if (notify) await fail(entry.execution, reason, entry.transcriptSealed, pushFailure);
-      journal.phase(entry.execution.id, "interrupted");
+      // A committed handover that stops quietly, as on shutdown, is finished after the restart.
+      if (!entry.handoverCommitted || notify) journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
     })();
     await entry.stopped;
@@ -307,6 +314,96 @@ export async function openRunnerRuntime(options: {
       );
     } catch (error) {
       report(error);
+    }
+  }
+  /**
+   * Finishes a committed handover after a runner restart: seals the transcript as a handover,
+   * which Paws repeats when it is already sealed, and posts the handed-over result. Returns
+   * false when Paws refuses the seal, so the execution is reported as failed instead.
+   */
+  async function recoverHandover(execution: Execution): Promise<boolean> {
+    const { command } = execution;
+    if (command.type !== "run") return false;
+    const worker = workerResult.parse(
+      JSON.parse(
+        readRunnerResultFile(options.results, execution.id, HANDOVER_RESULT).toString("utf8"),
+      ),
+    );
+    if (worker.executionId !== execution.id || worker.commandId !== command.id)
+      throw new Error("Runner result identity mismatch");
+    const result = RunnerResultSchema.parse({
+      ...worker.run,
+      executionId: worker.executionId,
+      commandId: worker.commandId,
+      ...(worker.candidateSha ? { candidateSha: worker.candidateSha } : {}),
+    });
+    if (!result.handedOver) throw new Error("Invalid runner handover result");
+    const { token } = await remote(() =>
+      options.daemon.issueRunGrant(command.runId, {
+        commandId: command.id,
+        generation: command.generation,
+      }),
+    );
+    const raw = readRunnerResultFile(options.results, execution.id, "events.jsonl");
+    journal.ingest(execution.id, raw);
+    let { offset } = journal.transcriptCursor(execution.id);
+    try {
+      while (offset < raw.length) {
+        const bytes = raw.subarray(
+          offset,
+          Math.min(offset + RUNNER_TRANSCRIPT_CHUNK_BYTES, raw.length),
+        );
+        await remote(() =>
+          options.daemon.uploadTranscript(
+            command.runId,
+            {
+              generation: command.generation,
+              executionId: execution.id,
+              offset,
+              sha256: createHash("sha256").update(bytes).digest("hex"),
+              data: bytes.toString("base64"),
+            },
+            token,
+          ),
+        );
+        journal.transcriptUploaded(execution.id, offset, offset + bytes.length);
+        offset += bytes.length;
+      }
+      await remote(() =>
+        options.daemon.finishTranscript(
+          command.runId,
+          {
+            generation: command.generation,
+            executionId: execution.id,
+            offset: raw.length,
+            sizeBytes: raw.length,
+            sha256: createHash("sha256").update(raw).digest("hex"),
+            handedOver: true,
+          },
+          token,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof RemoteFailure) throw error;
+      report(error);
+      return false;
+    }
+    await remote(() => options.daemon.postResult(command.runId, command.generation, result, token));
+    return true;
+  }
+  async function recoverHandovers() {
+    for (const execution of [...recovering]) {
+      try {
+        if (await recoverHandover(execution)) journal.phase(execution.id, "complete");
+        else {
+          await fail(execution, "the runner restarted before the handover finished");
+          journal.phase(execution.id, "interrupted");
+        }
+        recovering.splice(recovering.indexOf(execution), 1);
+      } catch (error) {
+        // Paws is unreachable; the next tick tries again.
+        report(error);
+      }
     }
   }
   function quiesce(entry: Active) {
@@ -835,6 +932,7 @@ export async function openRunnerRuntime(options: {
     if (handoverLate()) return continueSession(entry);
     if (handoverBy !== undefined) {
       entry.handoverCommitted = true;
+      journal.phase(entry.execution.id, "handover");
       try {
         await drainTranscript(entry, true, true);
       } catch (error) {
@@ -869,6 +967,7 @@ export async function openRunnerRuntime(options: {
   async function step() {
     await pulse().catch(report);
     if (closed) return;
+    if (recovering.length) await recoverHandovers();
     const polled = await options.daemon.pollCommands();
     for (const repository of polled.deniedRepositories) {
       if (deniedReported.has(repository)) continue;
