@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { FakeClock, systemClock, WORK_ITEM_STATES } from "../../src/core";
+import { systemClock, WORK_ITEM_STATES } from "../../src/core";
 import { loadRuntime, writeAgentSettings, type AgentSettings } from "../../src/config";
 import {
   JobLoop,
@@ -12,7 +12,6 @@ import {
   openDatabase,
   submitCommand,
 } from "../../src/db";
-import { createCommentMode, createFakeCommentBoard } from "../../src/comments";
 import { createFakeTracker } from "../../src/linear";
 import {
   createFakeGitHub,
@@ -20,7 +19,7 @@ import {
   fakeRequiredChecks,
   type GitHubClient,
 } from "../../src/github";
-import { commentTracker, syncComments, startPaws } from "../../src/index";
+import { startPaws } from "../../src/index";
 import { attachOrchestrator, type AgentLaunch } from "../../src/loop";
 import { handleStatusRequest, parseStatusSnapshot } from "../../src/web";
 import type { FakeScript, FakeStep } from "../../src/acp/testing/script";
@@ -113,9 +112,6 @@ async function scenario(
   await git("-C", seed, "commit", "-m", "Seed local acceptance policy");
   await git("-C", seed, "push", "origin", "HEAD:main");
   const initialHead = await git("--git-dir", bare, "rev-parse", "main");
-  const clock = new FakeClock(Date.now());
-  const comments = createFakeCommentBoard({ clock, selfUserId: "local-user" });
-  const commentMode = createCommentMode({ board: comments, clock, selfUserId: "local-user" });
   const pulls = createFakeGitHub();
   const requests: unknown[] = [];
   const json = (body: unknown, status = 200) => Response.json(body, { status });
@@ -199,7 +195,7 @@ async function scenario(
                 type: "update",
                 update: { sessionUpdate: "tool_call", toolCallId: "check", title: "Check locally" },
               },
-              ...(input.itemId.endsWith("-2")
+              ...(secondItem(input.itemId)
                 ? [
                     {
                       type: "ask_team" as const,
@@ -210,7 +206,7 @@ async function scenario(
                 : []),
               write(
                 "result.txt",
-                name === "happy" && input.itemId.endsWith("-2") ? "broken\n" : "yes\n",
+                name === "happy" && secondItem(input.itemId) ? "broken\n" : "yes\n",
               ),
               write(`${input.itemId}.txt`, "done\n"),
               ...["Verified", " locally."].map(chunk),
@@ -253,7 +249,7 @@ async function scenario(
     outbox,
     pawsRoot,
     home: process.env.HOME,
-    tracker: commentTracker(db, linear, commentMode),
+    tracker: linear,
     repository: { owner: "local", repo: "fixture", remoteUrl: bare },
     github: {
       appId: "",
@@ -263,7 +259,6 @@ async function scenario(
       tokenProvider: { mode: "oauth", tokenFor: async () => token },
     },
     launch,
-    channel: "comments",
   });
   let interrupted = false;
   const interrupt = () => {
@@ -290,7 +285,7 @@ async function scenario(
     activityId: null,
     body: null,
     signal: null,
-    updatedAtMs: clock.now(),
+    updatedAtMs: Date.now(),
     payload: "{}",
   });
   const server = Bun.serve({
@@ -298,7 +293,12 @@ async function scenario(
     port: 0,
     async fetch(request) {
       if (new URL(request.url).pathname === "/__fixture")
-        return json({ comments: comments.comments, pulls: pulls.opened, merged: pulls.merged });
+        return json({
+          progress: linear.progress,
+          questions: linear.questions,
+          pulls: pulls.opened,
+          merged: pulls.merged,
+        });
       return (
         (await handleStatusRequest(request, { db, env: {} })) ??
         new Response("Not found", { status: 404 })
@@ -312,7 +312,7 @@ async function scenario(
   const answerer = (async () => {
     for (;;) {
       if (stopped) return;
-      const question = comments.comments.find((comment) => comment.body.includes("<!-- paws:q:"));
+      const question = linear.questions.at(-1);
       if (question && !answered) {
         answered = true;
         parked = listWorkItemsByStates(db, WORK_ITEM_STATES).map((item) => item.state);
@@ -327,14 +327,20 @@ async function scenario(
               ? parsed.snapshot.questions.map(({ id, links }) => ({ id, links }))
               : parsed.error,
           );
-        clock.advance(6_000);
-        comments.post({
-          issueId: question.issueId,
-          parentId: question.id,
+        await orchestrator.onLinearEvent({
+          dedupeKey: "local-answer",
+          deliveryId: null,
+          source: "webhook",
+          action: "prompted",
+          sessionId: question.sessionId,
+          issueId: null,
+          activityId: "local-answer",
+          actorId: "teammate",
           body: "yes",
-          userId: "teammate",
+          signal: null,
+          updatedAtMs: Date.now(),
+          payload: "{}",
         });
-        await syncComments(db, commentMode, orchestrator);
       }
       await Bun.sleep(10);
     }
@@ -369,7 +375,7 @@ async function scenario(
       initialHead,
       finalHead,
       launches,
-      comments: comments.comments,
+      progress: linear.progress,
       pulls: pulls.opened,
       merged: pulls.merged,
       requests,
@@ -493,12 +499,12 @@ try {
   );
   observe(
     "completion does not post an epic summary or a raw turn",
-    !happy.comments.some((comment) => comment.body.includes("Epic complete.")) &&
-      !happy.comments.some((comment) => comment.body.includes("Epic abandoned.")) &&
-      !happy.comments.some((comment) => /^Paws: (I|Verified)\n/.test(comment.body)),
-    happy.comments
-      .filter((comment) => comment.body.includes("Verified") || comment.body.includes("Epic"))
-      .map((comment) => comment.body),
+    !happy.progress.some((update) => update.body.includes("Epic complete.")) &&
+      !happy.progress.some((update) => update.body.includes("Epic abandoned.")) &&
+      !happy.progress.some((update) => /^(I will|Verified locally)/.test(update.body)),
+    happy.progress
+      .filter((update) => update.body.includes("Verified") || update.body.includes("Epic"))
+      .map((update) => update.body),
   );
   observe(
     "implementation receives issue acceptance criteria",
@@ -571,3 +577,7 @@ try {
   globalThis.fetch = nativeFetch;
 }
 process.exitCode = observations.some((observation) => !observation.passed) ? 1 : 0;
+
+function secondItem(itemId: string): boolean {
+  return /^LOCAL-2(-|$)/.test(itemId);
+}

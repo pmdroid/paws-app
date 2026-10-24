@@ -409,8 +409,6 @@ export type OrchestratorOptions = {
   journal?: (line: string) => void;
   scheduling?: () => Pick<SchedulerOptions, "defaultRepository" | "ownerCap">;
   clock?: Clock;
-  /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
-  channel?: "comments" | "agent-session";
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
   placementPollMs?: number;
@@ -570,9 +568,7 @@ export class Orchestrator {
       event.action === "prompted" &&
       event.sessionId &&
       event.body !== null &&
-      (!findOpenQuestion(this.db, event.sessionId) ||
-        this.hasPublishedPullRequest(event.sessionId)) &&
-      this.options.channel !== "comments"
+      (!findOpenQuestion(this.db, event.sessionId) || this.hasPublishedPullRequest(event.sessionId))
     ) {
       const turn = this.recordTurn(event);
       if (turn) turnEventKey = turn.eventKey;
@@ -710,8 +706,7 @@ export class Orchestrator {
     if (event.action === "prompted") {
       const question = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
       const questionItem = question ? getWorkItem(this.db, question.itemId) : null;
-      const linearPrompt = this.options.channel !== "comments" && event.sessionId;
-      if (linearPrompt && event.sessionId && event.body) {
+      if (event.sessionId && event.body) {
         const session = recordLinearSessionEvent(this.db, event, this.now());
         if (questionItem && session && !workItemForSession(this.db, event.sessionId)) {
           bindLinearSessionTask(this.db, event.sessionId, questionItem.delegationId);
@@ -721,21 +716,21 @@ export class Orchestrator {
         if (turn?.state !== "pending") return;
         event = { ...event, dedupeKey: turn.eventKey, body: turn.body, payload: turn.payload };
       }
-      if (linearPrompt && !question && event.sessionId) {
+      if (!question && event.sessionId) {
         await this.resumeLinearSession(event.sessionId);
         return;
       }
       const outcome = await this.deliverPrompt(
         event,
         Boolean(
-          linearPrompt &&
+          event.sessionId &&
           questionItem &&
           question &&
           !isWorkItemRepositoryQuestion(this.db, questionItem.id, question.id) &&
           ["answer", "artifact"].includes(getTaskMode(this.db, questionItem.id) ?? ""),
         ),
       );
-      if (linearPrompt && event.sessionId) {
+      if (event.sessionId) {
         if (outcome === "rejected") discardLinearTurns(this.db, event.sessionId, [event.dedupeKey]);
         if (outcome === "redirect") await this.resumeLinearSession(event.sessionId);
       }
@@ -753,10 +748,7 @@ export class Orchestrator {
     }
     const tracker = this.tracker;
     if (tracker === null) throw new Error("Linear is not connected");
-    const session =
-      this.options.channel !== "comments"
-        ? recordLinearSessionEvent(this.db, event, this.now())
-        : null;
+    const session = recordLinearSessionEvent(this.db, event, this.now());
     const taskKey = session ? sessionTaskKey(this.db, session) : null;
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
     let result: IntakeResult;
@@ -881,18 +873,17 @@ export class Orchestrator {
     const savedRequest = taskKey ? getTaskClassification(this.db, taskKey) : null;
     const redirect = savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
     if (redirect) taskKey = redirect.taskKey;
-    const progressTracker =
-      sessionId && this.options.channel !== "comments"
-        ? {
-            ...tracker,
-            postProgress: (update: ProgressUpdate) =>
-              this.enqueueSessionProgress(
-                update,
-                `intake:${taskKey ?? issueId}:${update.kind}`,
-                initialSession?.generation,
-              ),
-          }
-        : tracker;
+    const progressTracker = sessionId
+      ? {
+          ...tracker,
+          postProgress: (update: ProgressUpdate) =>
+            this.enqueueSessionProgress(
+              update,
+              `intake:${taskKey ?? issueId}:${update.kind}`,
+              initialSession?.generation,
+            ),
+        }
+      : tracker;
     let authorizedSnapshot: EpicSnapshot | null = null;
     let loadedSnapshot: EpicSnapshot | null = null;
     const edges: DependencyEdge[] = [];
@@ -917,11 +908,7 @@ export class Orchestrator {
     };
     const deferred = !savedRequest && this.options.remoteExecution?.slotFree?.() === false;
     const snapshot =
-      this.options.linearTaskModes &&
-      sessionId &&
-      taskKey &&
-      this.options.channel !== "comments" &&
-      !deferred
+      this.options.linearTaskModes && sessionId && taskKey && !deferred
         ? authorizeSnapshot(await tracker.loadEpic(issueId))
         : null;
     if (snapshot) intakeTracker = { ...progressTracker, listDeps, loadEpic: async () => snapshot };
@@ -975,10 +962,9 @@ export class Orchestrator {
       sessionId,
       acknowledged: options.acknowledged,
       isCurrent: intakeCurrent,
-      reconcileSessions:
-        sessionId && this.options.channel !== "comments"
-          ? (issueIds) => this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent)
-          : undefined,
+      reconcileSessions: sessionId
+        ? (issueIds) => this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent)
+        : undefined,
       beforeAdmit: retireRedirectedItem,
       onAccepted: (accepted) => {
         immediate(this.db, () => {
@@ -1300,7 +1286,6 @@ export class Orchestrator {
     if (tracker === null) throw new Error("Linear is not connected");
     if (
       this.options.linearAccess &&
-      this.options.channel !== "comments" &&
       message.orderingKey &&
       message.op !== "catchup" &&
       message.op !== "linear.catchup"
@@ -1479,7 +1464,7 @@ export class Orchestrator {
 
     {
       const handoff = readString(payload, "handoff") ?? undefined;
-      if (this.options.linearTaskModes && item.sessionKey && this.options.channel !== "comments") {
+      if (this.options.linearTaskModes && item.sessionKey) {
         if (!(await this.resolveTaskMode(item, handoff))) return;
         item = getWorkItem(this.db, loaded.id);
         if (!item || item.state !== "running" || item.cancelRequested) return;
@@ -2821,7 +2806,7 @@ export class Orchestrator {
       return { kind: "failed", reason: "publish", message: published.reason };
     this.post(
       item,
-      this.options.channel === "comments" ? "thought" : "response",
+      "response",
       `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.`,
       `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
       {},
@@ -2935,18 +2920,14 @@ export class Orchestrator {
       ciFixAttempts: () => this.ciFixAttempts(),
       voice: {
         thought: (item, body, key) => this.post(item, "thought", body, key),
-        status: (item, body, key) => this.statusAfterPullRequest(item, body, key),
+        status: (item, body) => this.statusAfterPullRequest(item, body),
         afterPullRequest: (item, body, key) => this.postAfterPullRequest(item, body, key),
         flush: () => this.flush(),
       },
     };
   }
 
-  private statusAfterPullRequest(item: WorkItemRecord, body: string, key: string): void {
-    if (this.options.channel === "comments") {
-      this.post(item, "thought", body, key);
-      return;
-    }
+  private statusAfterPullRequest(item: WorkItemRecord, body: string): void {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     if (getWorkItem(this.db, item.id)?.state === "cancelled") return;
     this.sessionProgress(item)?.status(body);
@@ -2955,14 +2936,7 @@ export class Orchestrator {
 
   /** Progress is quiet once the pull request is open, so this posts like the pull request note. */
   private postAfterPullRequest(item: WorkItemRecord, body: string, key: string): void {
-    this.post(
-      item,
-      this.options.channel === "comments" ? "thought" : "response",
-      body,
-      key,
-      {},
-      "ordered",
-    );
+    this.post(item, "response", body, key, {}, "ordered");
   }
 
   /** `[queue] start_timeout_hours`, read on every dispatch. Missing or unreadable means 24. */
@@ -3303,14 +3277,12 @@ export class Orchestrator {
     this.taskAccess()?.invalidate({ sessionId });
     this.githubAuth?.invalidate({ sessionId });
     const requestedAt = at > 0 ? at : this.now();
-    const agentSession = this.options.channel !== "comments";
     const commands: LinearCommand[] = [];
     const accepted = immediate(this.db, () => {
-      if (agentSession && acceptLinearStop(this.db, sessionId, eventKey, requestedAt) === null)
-        return false;
+      if (acceptLinearStop(this.db, sessionId, eventKey, requestedAt) === null) return false;
       const items = this.itemsForSession(sessionId);
-      if (items.length === 0 && agentSession) stopAdoptedParent(this.db, sessionId, requestedAt);
-      if (items.length === 0 && agentSession)
+      if (items.length === 0) stopAdoptedParent(this.db, sessionId, requestedAt);
+      if (items.length === 0)
         enqueueOutboxOnce(this.db, {
           target: "linear",
           op: "activity",
@@ -3812,7 +3784,7 @@ export class Orchestrator {
   }
 
   private sessionProgress(item: WorkItemRecord, mode: "code" | "answer" | "artifact" = "code") {
-    if (this.options.channel === "comments" || !this.tracker?.updateSession) return null;
+    if (!this.tracker?.updateSession) return null;
     const sessionId = this.activitySession(item);
     return sessionId === null
       ? null
@@ -3858,8 +3830,7 @@ export class Orchestrator {
     const sessionId = this.activitySession(item);
     return (
       sessionId === null ||
-      (findOpenQuestion(this.db, sessionId) === null &&
-        (this.options.channel === "comments" || !this.hasPublishedPullRequest(sessionId)))
+      (findOpenQuestion(this.db, sessionId) === null && !this.hasPublishedPullRequest(sessionId))
     );
   }
 
@@ -3908,10 +3879,6 @@ export class Orchestrator {
 
   private assignSession(delegationId: string, sessionId: string): void {
     const items = this.delegationItems(delegationId);
-    if (this.options.channel === "comments") {
-      for (const item of items) configureWorkItem(this.db, item.id, { sessionKey: sessionId });
-      return;
-    }
     const item =
       items.find((entry) => inFlight(entry.state)) ??
       items.find((entry) => entry.state === "queued");
@@ -4004,9 +3971,7 @@ export class Orchestrator {
   }
 
   private taskAccess(): LinearTaskAccess | undefined {
-    return this.options.linearTaskModes && this.options.channel !== "comments"
-      ? this.options.linearAccess
-      : undefined;
+    return this.options.linearTaskModes ? this.options.linearAccess : undefined;
   }
 
   private repositoryGit(
@@ -4043,7 +4008,7 @@ export class Orchestrator {
   }
 
   private authorization(item: WorkItemRecord): GitHubAuthQuestions | null {
-    return this.options.channel !== "comments" && item.sessionKey !== null ? this.githubAuth : null;
+    return item.sessionKey !== null ? this.githubAuth : null;
   }
 
   private signalForItem(itemId: string): AbortSignal | undefined {
@@ -4341,7 +4306,7 @@ export class Orchestrator {
   }
 
   private async hydrateLinearContext(sessionId: string | null, signal: AbortSignal): Promise<void> {
-    if (this.options.channel === "comments" || !sessionId) return;
+    if (!sessionId) return;
     if (!hasLinearSessionSnapshotContext(this.db, sessionId) && this.tracker?.getSession) {
       const session = await this.tracker.getSession(sessionId, { signal });
       signal.throwIfAborted();
@@ -4836,7 +4801,6 @@ export class Orchestrator {
   }
 
   private activitySession(item: WorkItemRecord): string | null {
-    if (this.options.channel === "comments") return item.linearIssueId;
     const session = item.sessionKey;
     if (session === null || session.length === 0) return null;
     return session;

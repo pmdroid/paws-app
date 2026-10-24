@@ -94,7 +94,6 @@ export async function probeResponseTaskRecovery(root: string) {
       home,
       tracker: createFakeTracker(),
       linearTaskModes: true,
-      channel: "agent-session",
       launch: () => {
         launches++;
         return {
