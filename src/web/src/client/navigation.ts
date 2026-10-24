@@ -14,8 +14,8 @@ export const PAGES = {
     description: "Approve selected Linear issues and supervise delivery.",
   },
   runs: {
-    title: "Runs",
-    description: "Agent activity, execution controls and verification evidence.",
+    title: "Issues",
+    description: "Every issue delegated to Paws, who owns it and what blocks it.",
   },
   mergeQueue: {
     title: "Merge queue",
@@ -23,7 +23,7 @@ export const PAGES = {
   },
   evidence: {
     title: "Evidence",
-    description: "A Closeout video or screenshot the agent published with a run.",
+    description: "A Closeout video or screenshot the agent published for an issue.",
   },
   questions: {
     title: "Questions",
@@ -42,7 +42,7 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "issues", "projects", "questions", "runs", "mergeQueue"],
+    views: ["overview", "issues", "projects", "questions", "mergeQueue"],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;

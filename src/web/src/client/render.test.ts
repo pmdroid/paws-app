@@ -128,7 +128,7 @@ describe("status views", () => {
     snapshot.items[2]!.blockers = [];
     snapshot.runs[0]!.state = "paused";
     const paused = render(model({ snapshot })).content;
-    expect(paused).toContain("This run is paused.");
+    expect(paused).toContain("This issue is paused.");
     expect(paused).toContain("0 working");
   });
 

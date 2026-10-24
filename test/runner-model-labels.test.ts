@@ -83,3 +83,27 @@ test("a runner's run history labels the model it ran", async () => {
     body.usage.map(({ resolvedModel, modelLabel }) => ({ resolvedModel, modelLabel })),
   ).toEqual([{ resolvedModel: "opus[1m]", modelLabel: "Opus 5.5 · 1M context" }]);
 });
+
+test("a runner's history names the issue each execution worked on", async () => {
+  const { db, now, runnerId, userId, principal } = fixture();
+  db.run(
+    "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item-1','del-1','issue-1','PAS-367','Parse config files','running','paws/pas-367',0,1)",
+  );
+  db.run(
+    "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,role,purpose,started_at) VALUES('work-1',?,?,'item-1','implementer','work',?),('prepare-1',?,?,NULL,'implementer','prepare',?)",
+    [runnerId, userId, now - 1000, runnerId, userId, now - 2000],
+  );
+  const response = await createRunnerPlacementBrowser({ db })(
+    new Request("http://127.0.0.1/api/runners/usage"),
+    { ...principal, role: "owner", authenticatedAt: now, teamIds: [] },
+  );
+  const body = (await response!.json()) as {
+    usage: Array<{ commandId: string; identifier: string | null; title: string | null }>;
+  };
+  expect(
+    body.usage.map(({ commandId, identifier, title }) => ({ commandId, identifier, title })),
+  ).toEqual([
+    { commandId: "work-1", identifier: "PAS-367", title: "Parse config files" },
+    { commandId: "prepare-1", identifier: null, title: null },
+  ]);
+});

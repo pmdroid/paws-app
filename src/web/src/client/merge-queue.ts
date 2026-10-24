@@ -126,7 +126,7 @@ function detail(group: Group, entry: StatusMergeEntry, item: StatusItem | undefi
       own.order !== "queue"
         ? `${own.rule} rule: merges when green`
         : own.mainMoved === "closeout"
-          ? `${own.rule} rule: runs Closeout again after its branch update`
+          ? `${own.rule} rule: Closeout checks it again after its branch update`
           : `${own.rule} rule: re-check ${recheck(own)}`,
     );
   return lines.join(" · ");

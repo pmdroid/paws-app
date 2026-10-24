@@ -122,7 +122,7 @@ describe("live evidence", () => {
       'data-action="evidence-copy"',
       `href="/api/evidence/${VIDEO}" download="checkout.webm">Download</a>`,
       `<div id="evidence-player" data-evidence="${VIDEO}"></div>`,
-      'aria-label="More from this run"',
+      'aria-label="More from this issue"',
       `href="/issues/${item}#check=2/e2e">Closeout output</a>`,
       `href="/evidence/${IMAGE}"`,
       'alt="Cart &lt;total&gt;.png"',
