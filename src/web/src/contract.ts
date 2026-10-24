@@ -113,6 +113,18 @@ export interface StatusItem {
   githubQueue?: StatusGitHubQueue;
   linearRequests?: number;
   visualReviews?: StatusVisualReview[];
+  /** The Linear session this work belongs to. Sub-issues delegated together share one. */
+  session?: StatusItemSession;
+  /** Set on an earlier attempt that a newer Linear session on the same issue replaced. */
+  endedAt?: string;
+}
+
+export interface StatusItemSession {
+  id: string;
+  /** The session in Linear. */
+  url: string;
+  /** The other issues worked in the same Linear session. */
+  shared: string[];
 }
 
 export const VISUAL_REVIEW_STATES = ["waiting", "accepted", "changes_requested", "stale"] as const;
@@ -249,6 +261,8 @@ export interface StatusCheck {
 
 export interface StatusVerdict {
   itemId: string;
+  /** The `StatusRun.id` of the attempt this verdict belongs to, when the issue had several. */
+  runId?: string;
   decision: VerdictDecision;
   attempt: number;
   maxAttempts: number;
@@ -788,6 +802,19 @@ function readItem(input: unknown, index: number): StatusItem {
             readVisualReview(entry, `${path}.visualReviews[${at}]`),
           ),
         }),
+    ...(body.session === undefined
+      ? {}
+      : { session: readItemSession(body.session, `${path}.session`) }),
+    ...(body.endedAt === undefined ? {} : { endedAt: dateString(body, "endedAt", path) }),
+  };
+}
+
+function readItemSession(input: unknown, path: string): StatusItemSession {
+  const body = object(input, path);
+  return {
+    id: text(body, "id", path),
+    url: text(body, "url", path),
+    shared: stringArray(body, "shared", path),
   };
 }
 
@@ -975,6 +1002,7 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
   }
   return {
     itemId: text(body, "itemId", path),
+    ...(body.runId === undefined ? {} : { runId: text(body, "runId", path) }),
     decision: oneOf(string(body, "decision", path), VERDICT_DECISIONS, `${path}.decision`),
     attempt: count(body, "attempt", path),
     maxAttempts,

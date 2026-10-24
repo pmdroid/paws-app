@@ -25,7 +25,14 @@ import {
 import { captureLogs, restoreLogs } from "./log-scroll";
 import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
 import { render, type RenderModel } from "./render";
-import { matchRoute, needsSnapshot, parseRoute, routerBase, type Route } from "./route";
+import {
+  issueRedirect,
+  matchRoute,
+  needsSnapshot,
+  parseRoute,
+  routerBase,
+  type Route,
+} from "./route";
 import type { SettingsPage } from "./settings-pages";
 import { RUN_FILTER_KEYS, runFilterSearch, type RunFilters } from "./runs-list";
 
@@ -163,10 +170,8 @@ async function reload(): Promise<void> {
     return;
   }
   const route = currentRoute();
-  if (route.view === "sessions") {
-    conversations = await loadConversations(engineUrl, source(), location.origin);
-    paint();
-    schedule();
+  if (route.view === "sessions" && route.id === null) {
+    await reloadConversations(engineUrl);
     return;
   }
   if (!needsSnapshot(route)) {
@@ -196,7 +201,29 @@ async function reload(): Promise<void> {
     if (via !== "engine") snapshot = null;
   }
   paint();
+  // A session the snapshot does not know is a conversation without Paws work.
+  if (currentRoute().view === "sessions") {
+    await reloadConversations(engineUrl);
+    return;
+  }
   schedule();
+}
+
+async function reloadConversations(engineUrl: string): Promise<void> {
+  conversations = await loadConversations(engineUrl, source(), location.origin);
+  paint();
+  schedule();
+}
+
+/** Run, session and verdict links open the issue page, so links posted in Linear keep working. */
+function followIssueRedirect(): boolean {
+  const pathname = router.state.location.pathname;
+  const target = issueRedirect(pathname.slice(routerBase(pathname).length), snapshot);
+  if (target === null) return false;
+  void router.navigate(`${target}${router.state.location.search}${location.hash}`, {
+    replace: true,
+  });
+  return true;
 }
 
 function showFallback(): void {
@@ -248,6 +275,7 @@ function schedule(): void {
 
 function paint(): void {
   if (!workspaceReady) return;
+  if (phase === "ready" && followIssueRedirect()) return;
   const model: RenderModel = {
     route: currentRoute(),
     phase,
@@ -265,14 +293,7 @@ function paint(): void {
   const view = render(model);
   const route = model.route;
   const detail =
-    route.view === "runs"
-      ? snapshot?.runs.find(
-          (entry) =>
-            entry.id === route.id || (route.id !== null && entry.attempts?.includes(route.id)),
-        )
-      : route.view === "evidence"
-        ? snapshot?.evidence?.find((entry) => entry.id === route.id)
-        : null;
+    route.view === "evidence" ? snapshot?.evidence?.find((entry) => entry.id === route.id) : null;
   if (snapshot) shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
   shell.setBreadcrumb(
     detail

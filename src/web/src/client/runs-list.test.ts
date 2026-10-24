@@ -54,7 +54,7 @@ describe("runs list", () => {
     expect(shownRuns(html).sort()).toEqual(["r-100", "r-101", "r-102", "r-103", "r-99"]);
     const merging = row(html, "r-101");
     expect(merging).toContain('<span class="lin-id">ENG-101</span> <b>Export job worker</b>');
-    expect(merging).toContain('href="/runs/r-101"');
+    expect(merging).toContain('href="/issues/ENG-101"');
     expect(merging).toContain("Audit log export");
     expect(merging).toContain("Jonas Berg");
     expect(listPhase(html, "r-101")).toBe("Waiting to merge");
