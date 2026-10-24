@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -252,4 +253,76 @@ test("a new agent home has the current skills when its first worker starts, pinn
   expect(seen).toBe("impeccable");
   await supervisor.stop("01K00000000000000000000001");
   expect(holds).toEqual(["hold 01K00000000000000000000001", "release 01K00000000000000000000001"]);
+});
+
+test("a crashed worker resumes on the skills folder it started with, after an update", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-worker-supervisor-"));
+  roots.push(root);
+  const { spool, results } = prepared(root);
+  const [first, second] = ["01K00000000000000000000001", "01K00000000000000000000002"];
+  for (const executionId of [first, second])
+    publishRunnerJob(spool, {
+      executionId,
+      command: { ...probe.command, id: `cmd-${executionId}` },
+    });
+  const bundles = new Map<string, Uint8Array>();
+  const skill = async (version: string) => {
+    const bytes = await new Bun.Archive({ "SKILL.md": version }, { compress: "gzip" }).bytes();
+    bundles.set(version, bytes);
+    return {
+      name: "impeccable",
+      version,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sizeBytes: bytes.byteLength,
+      agents: ["claude" as const],
+    };
+  };
+  const agentHome = join(root, "agent");
+  mkdirSync(agentHome);
+  const skills = createRunnerSkillInstaller({
+    root: join(root, "skills"),
+    homes: [agentHome],
+    owner: { uid: process.getuid!(), gid: process.getgid!() },
+    download: async (wanted) => bundles.get(wanted.version)!,
+  });
+  await skills.sync([await skill("2.4.1")]);
+  const launched: { executionId: string; folder: string; seen: string; pid: number }[] = [];
+  const supervisor = createDirectWorkerSupervisor({
+    stateRoot: join(root, "workers"),
+    spool,
+    results,
+    agentHome,
+    skills,
+    launch(executionId, _home, _log, _resume, _tag, folder) {
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      launched.push({
+        executionId,
+        folder: folder!,
+        seen: readFileSync(join(folder!, ".claude/skills/impeccable/SKILL.md"), "utf8"),
+        pid: remember(child.pid),
+      });
+      return child;
+    },
+  });
+  await supervisor.start(first);
+  await skills.sync([await skill("2.5.0")]);
+  const crashed = launched[0]!.pid;
+  process.kill(crashed, "SIGKILL");
+  while (alive(crashed)) await new Promise((resolve) => setTimeout(resolve, 10));
+  await supervisor.resume!(first);
+  await supervisor.start(second);
+  expect(launched.map(({ executionId, seen }) => [executionId, seen])).toEqual([
+    [first, "2.4.1"],
+    [first, "2.4.1"],
+    [second, "2.5.0"],
+  ]);
+  expect(launched[1]!.folder).toBe(launched[0]!.folder);
+  expect(launched[2]!.folder).not.toBe(launched[0]!.folder);
+  await supervisor.stop(first);
+  await supervisor.stop(second);
+  skills.prepareHome(agentHome);
+  expect(existsSync(launched[0]!.folder)).toBe(false);
 });
