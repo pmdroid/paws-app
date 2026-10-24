@@ -6,11 +6,14 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { FakeClock } from "../core";
 import {
+  applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
+  getWorkItem,
   insertQueuedItem,
   migrate,
   openDatabase,
+  saveCheckpoint,
   type TaskMergeSettings,
 } from "../db";
 import {
@@ -116,6 +119,7 @@ export async function mergeHarness(
       | (() => MergeVerdict),
     ciFixAttempts: 3,
     stopped: false,
+    orders: new Map<string, TaskMergeSettings["order"]>(),
   };
   let jobId = 0;
 
@@ -192,6 +196,26 @@ export async function mergeHarness(
     return item;
   }
 
+  async function requeue(id: string, fix?: string): Promise<string> {
+    const item = items.get(id)!;
+    if (fix !== undefined) {
+      await writeFile(path.join(item.worktree, `${id}.txt`), fix);
+      await git(item.worktree, "commit", "-qam", `${id} fix`);
+      await git(item.worktree, "push", "-qf", "origin", `HEAD:paws/${id}`);
+    }
+    const head = await git(item.worktree, "rev-parse", "HEAD");
+    const current = getWorkItem(db, id)!;
+    applyWorkItemEvent(db, id, "turn_ended");
+    applyWorkItemEvent(db, id, "closeout_accepted");
+    saveCheckpoint(db, id, { ...current.checkpoint!, phase: "merge_queue", wipCommit: head });
+    payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
+    return head;
+  }
+
+  async function remoteHead(id: string): Promise<string> {
+    return git(bare, "rev-parse", `refs/heads/paws/${id}`);
+  }
+
   async function moveMain(file: string, content: string): Promise<string> {
     await git(seed, "pull", "-q", "--ff-only", "origin", "main");
     await writeFile(path.join(seed, file), content);
@@ -236,7 +260,11 @@ export async function mergeHarness(
         summary: "Closeout accepted.",
         commit: { title: `${id} change` },
       }),
-      settings: async () => ({ ...settings, resolved: {} }),
+      settings: async () => ({
+        ...settings,
+        order: state.orders.get(id) ?? settings.order,
+        resolved: {},
+      }),
       accept: (candidate) => accepted.push(candidate),
       verify: async (input) => {
         verified.push(input);
@@ -286,6 +314,8 @@ export async function mergeHarness(
     closeoutHelp,
     completed,
     addItem,
+    requeue,
+    remoteHead,
     moveMain,
     pass,
     git,
