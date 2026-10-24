@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { QuestionOption } from "./channel";
 
-export type QuestionKind = "agent" | "clarification" | "repository" | "runner-wait";
+export type QuestionKind = "agent" | "clarification" | "repository" | "runner-wait" | "time-limit";
 
 export type StoredQuestion = {
   id: string;
