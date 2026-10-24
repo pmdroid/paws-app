@@ -3187,10 +3187,10 @@ export class Orchestrator {
     } catch {}
     const user = answerer(answeredBy);
     if (user === null) return "rejected";
-    const review = open.kind === "visual-review" ? getVisualReview(this.db, open.id) : null;
-    if (review) {
+    if (open.kind === "visual-review") {
+      const review = getVisualReview(this.db, open.id);
       const item = getWorkItem(this.db, open.itemId);
-      if (item === null) return "rejected";
+      if (review === null || item === null) return "rejected";
       if (!(await this.canAnswerVisualReview(item, answeredBy))) {
         postNote(
           this.db,
@@ -3205,7 +3205,6 @@ export class Orchestrator {
       }
       return this.answerVisualReview(open, review, event.dedupeKey, answer, answeredBy);
     }
-    if (open.kind === "visual-review") return "rejected";
     if (open.kind === "github-auth") {
       const accepted =
         (await this.githubAuth?.retry(open.id, answeredBy, () => {

@@ -69,10 +69,6 @@ export class GitHubAuthQuestions {
     this.integration?.invalidate(scope);
   }
 
-  owns(questionId: string): boolean {
-    return !this.closed && (this.integration?.owns(questionId) || this.read(questionId) !== null);
-  }
-
   async ensure(
     item: WorkItemRecord,
     phase: GitHubAuthPhase,
