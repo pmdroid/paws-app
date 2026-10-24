@@ -93,6 +93,48 @@ const EXCLUSIVE_SQL = `(candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).j
 
 const IN_FLIGHT_SQL = IN_FLIGHT_ITEM_STATES.map(sqlLiteral).join(", ");
 
+const ITEM_ID = "COALESCE(json_extract(candidate.payload, '$.itemId'), '')";
+const HELD_EXCLUSIVE = EXCLUSIVE_SQL.replaceAll("candidate.", "held.");
+const RESERVATION = `EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = ${ITEM_ID}
+    AND (candidate.queue != ${sqlLiteral(JOB_KIND.start)} OR a.job_id = candidate.id))`;
+const PARALLEL = `(candidate.queue != ${sqlLiteral(JOB_KIND.start)} OR EXISTS
+    (SELECT 1 FROM work_item mine WHERE mine.id = ${ITEM_ID} AND mine.state = 'queued' AND mine.cancel_requested = 0
+      AND NOT EXISTS (SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning'))))
+    AND candidate.queue IN (${[JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify].map(sqlLiteral).join(",")})
+    AND ${RESERVATION}`;
+const SAME_ITEM = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND (${HELD_EXCLUSIVE} OR ${mergeLaneSql("held")})
+    AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${ITEM_ID})`;
+const HOLDS_EXECUTION = `(other.state != 'merge_queue'
+    OR EXISTS (SELECT 1 FROM run live WHERE live.item_id=other.id AND live.status IN ('active','provisioning'))
+    OR EXISTS (SELECT 1 FROM job held WHERE held.status='running'
+      AND (held.locked_until IS NULL OR held.locked_until>?) AND ${HELD_EXCLUSIVE}
+      AND json_extract(held.payload,'$.itemId')=other.id))`;
+const UNRESERVED = `EXISTS (SELECT 1 FROM work_item other WHERE other.state IN (${IN_FLIGHT_SQL})
+      AND other.id != ${ITEM_ID} AND ${HOLDS_EXECUTION} AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = other.id))
+    OR EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+      AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${HELD_EXCLUSIVE}
+      AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = json_extract(held.payload,'$.itemId')))`;
+const STALE_START = `candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND ${RESERVATION} AND NOT EXISTS
+      (SELECT 1 FROM work_item mine WHERE mine.id = ${ITEM_ID} AND mine.state = 'queued' AND mine.cancel_requested = 0
+      AND NOT EXISTS (SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning')))`;
+const CLAIMABLE =
+  "(candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?)))";
+const LEGACY_HELD =
+  "EXISTS (SELECT 1 FROM job AS held WHERE held.id != candidate.id AND held.status = 'running' " +
+  `AND (held.locked_until IS NULL OR held.locked_until > ?) AND (${HELD_EXCLUSIVE} OR (${mergeLaneSql("held")} AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${ITEM_ID}))) ` +
+  `OR (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND EXISTS (SELECT 1 FROM work_item AS active WHERE active.state IN (${IN_FLIGHT_SQL}))) ` +
+  `OR (EXISTS (SELECT 1 FROM work_item AS other WHERE other.state IN (${IN_FLIGHT_SQL}) AND other.id != ${ITEM_ID}) ` +
+  `AND NOT EXISTS (SELECT 1 FROM work_item AS mine WHERE mine.state IN (${IN_FLIGHT_SQL}) AND mine.id = ${ITEM_ID}))`;
+const LEGACY_GATE = `NOT (NOT (${PARALLEL}) AND (${LEGACY_HELD})) AND NOT ((${PARALLEL}) AND (${SAME_ITEM} OR ${UNRESERVED}))`;
+const RESERVATION_GATE = `(${PARALLEL}) AND NOT ${SAME_ITEM}`;
+
+function queueFilterSql(queueCount: number): string {
+  return queueCount > 0
+    ? ` AND candidate.queue IN (${Array.from({ length: queueCount }, () => "?").join(", ")})`
+    : "";
+}
+
 /**
  * One `UPDATE … RETURNING`. Lower priority numbers run first, then earlier run_at.
  * A running row whose lease has expired is reclaimable. No semicolon: one statement.
@@ -103,56 +145,31 @@ const IN_FLIGHT_SQL = IN_FLIGHT_ITEM_STATES.map(sqlLiteral).join(", ");
  * and merge. Other queues, including `core.command` and `linear.catchup`, are not held up.
  */
 export function claimJobSql(queueCount: number): string {
-  const queueFilter =
-    queueCount > 0
-      ? ` AND candidate.queue IN (${Array.from({ length: queueCount }, () => "?").join(", ")})`
-      : "";
-  const itemId = "COALESCE(json_extract(candidate.payload, '$.itemId'), '')";
-  const heldExclusive = EXCLUSIVE_SQL.replaceAll("candidate.", "held.");
-  const reservation = `EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = ${itemId}
-    AND (candidate.queue != ${sqlLiteral(JOB_KIND.start)} OR a.job_id = candidate.id))`;
-  const parallel = `(candidate.queue != ${sqlLiteral(JOB_KIND.start)} OR EXISTS
-    (SELECT 1 FROM work_item mine WHERE mine.id = ${itemId} AND mine.state = 'queued' AND mine.cancel_requested = 0
-      AND NOT EXISTS (SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning'))))
-    AND candidate.queue IN (${[JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify].map(sqlLiteral).join(",")})
-    AND ${reservation}`;
-  const sameItem = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND (${heldExclusive} OR ${mergeLaneSql("held")})
-    AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${itemId})`;
-  const holdsExecution = `(other.state != 'merge_queue'
-    OR EXISTS (SELECT 1 FROM run live WHERE live.item_id=other.id AND live.status IN ('active','provisioning'))
-    OR EXISTS (SELECT 1 FROM job held WHERE held.status='running'
-      AND (held.locked_until IS NULL OR held.locked_until>?) AND ${heldExclusive}
-      AND json_extract(held.payload,'$.itemId')=other.id))`;
-  const unreserved = `EXISTS (SELECT 1 FROM work_item other WHERE other.state IN (${IN_FLIGHT_SQL})
-      AND other.id != ${itemId} AND ${holdsExecution} AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = other.id))
-    OR EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-      AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}
-      AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = json_extract(held.payload,'$.itemId')))`;
-  const reposDiffer = `EXISTS (SELECT 1 FROM work_item_repository mine
-    JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
-    WHERE mine.item_id = ${itemId}
-      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))`;
   const heldSameMergeLane = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")} AND NOT (${reposDiffer}))`;
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")} AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
+    JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
+    WHERE mine.item_id = ${ITEM_ID}
+      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))))`;
   return (
     "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
     "WHERE id = (" +
     "SELECT candidate.id FROM job AS candidate WHERE candidate.run_at <= ?" +
-    queueFilter +
-    ` AND NOT (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND ${reservation} AND NOT EXISTS
-      (SELECT 1 FROM work_item mine WHERE mine.id = ${itemId} AND mine.state = 'queued' AND mine.cancel_requested = 0
-      AND NOT EXISTS (SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning'))))` +
-    " AND (candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?))) " +
-    `AND NOT (${EXCLUSIVE_SQL} AND NOT (${parallel}) AND (` +
-    "EXISTS (SELECT 1 FROM job AS held WHERE held.id != candidate.id AND held.status = 'running' " +
-    `AND (held.locked_until IS NULL OR held.locked_until > ?) AND (${heldExclusive} OR (${mergeLaneSql("held")} AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${itemId}))) ` +
-    `OR (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND EXISTS (SELECT 1 FROM work_item AS active WHERE active.state IN (${IN_FLIGHT_SQL}))) ` +
-    `OR (EXISTS (SELECT 1 FROM work_item AS other WHERE other.state IN (${IN_FLIGHT_SQL}) AND other.id != ${itemId}) ` +
-    `AND NOT EXISTS (SELECT 1 FROM work_item AS mine WHERE mine.state IN (${IN_FLIGHT_SQL}) AND mine.id = ${itemId}))` +
-    `)) AND NOT (${mergeLaneSql("candidate")} AND ${heldSameMergeLane}) ` +
-    `AND NOT ((${parallel}) AND (${sameItem} OR ${unreserved})) ` +
+    queueFilterSql(queueCount) +
+    ` AND NOT (${STALE_START}) AND ${CLAIMABLE} ` +
+    `AND NOT (${EXCLUSIVE_SQL} AND NOT (${PARALLEL}) AND (${LEGACY_HELD})) ` +
+    `AND NOT (${mergeLaneSql("candidate")} AND ${heldSameMergeLane}) ` +
+    `AND NOT ((${PARALLEL}) AND (${SAME_ITEM} OR ${UNRESERVED})) ` +
     "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
+  );
+}
+
+export function claimGateSql(queueCount: number): string {
+  return (
+    `SELECT candidate.id AS id, candidate.queue AS queue, ${ITEM_ID} AS itemId, ` +
+    `${LEGACY_GATE} AS legacy, ${RESERVATION_GATE} AS reservation ` +
+    `FROM job AS candidate WHERE ${EXCLUSIVE_SQL} AND NOT (${STALE_START}) AND ${CLAIMABLE} ` +
+    "AND candidate.run_at <= ?" +
+    queueFilterSql(queueCount)
   );
 }
 
@@ -222,6 +239,7 @@ export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | nu
   const now = options.now ?? Date.now();
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
   const workerId = `${options.workerId ?? "paws"}:${randomUUID()}`;
+  journalGateDisagreements(db, queues, now);
   const sql = claimJobSql(queues?.length ?? 0);
   const binds: (string | number)[] = [workerId, now + leaseMs, now];
   if (queues !== undefined) binds.push(...queues);
@@ -229,6 +247,40 @@ export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | nu
   binds.push(now, now, now, now, now, now);
   const row = db.query<JobRow, Array<string | number>>(sql).get(...binds);
   return row === null ? null : mapJob(row);
+}
+
+const journaledDisagreements = new WeakMap<Database, Set<string>>();
+
+function journalGateDisagreements(
+  db: Database,
+  queues: readonly string[] | undefined,
+  now: number,
+): void {
+  if (queues?.some((queue) => (EXCLUSIVE_QUEUES as readonly string[]).includes(queue)) === false)
+    return;
+  const sql = claimGateSql(queues?.length ?? 0);
+  const binds: (string | number)[] = Array.from(
+    { length: sql.split("?").length - 1 - (queues?.length ?? 0) },
+    () => now,
+  );
+  if (queues !== undefined) binds.push(...queues);
+  const seen = journaledDisagreements.get(db) ?? new Set<string>();
+  journaledDisagreements.set(db, seen);
+  const rows = db
+    .query<
+      { id: number; queue: string; itemId: string; legacy: number; reservation: number },
+      Array<string | number>
+    >(sql)
+    .all(...binds);
+  for (const row of rows) {
+    const key = `${row.id}:${row.legacy}`;
+    if (row.legacy === row.reservation || seen.has(key)) continue;
+    seen.add(key);
+    const verdict = (claims: number) => (claims ? "claim" : "hold");
+    journal(
+      `claim gate disagreement job=${row.id} ${row.queue} item=${row.itemId || "-"} legacy=${verdict(row.legacy)} reservation=${verdict(row.reservation)} reason=${row.reservation ? "unreserved work in flight" : "no reservation"}`,
+    );
+  }
 }
 
 /** Succeeds only for the worker that holds the lease. A recurring row arms its next fire. */
