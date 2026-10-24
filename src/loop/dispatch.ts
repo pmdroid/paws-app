@@ -106,17 +106,19 @@ async function postActivity(
   if (ephemeral && kind !== "thought" && kind !== "action")
     throw new Error("Only thought and action activities can be ephemeral");
   if (action && kind !== "action") throw new Error("Structured details require an action");
-  await tracker.postProgress(
-    {
-      sessionId,
-      kind,
-      body,
-      ...(id === undefined ? {} : { id }),
-      ...(action === undefined ? {} : { action }),
-      ...(ephemeral === undefined ? {} : { ephemeral }),
-    },
-    options,
-  );
+  const update = {
+    sessionId,
+    kind,
+    body,
+    ...(id === undefined ? {} : { id }),
+    ...(action === undefined ? {} : { action }),
+    ...(ephemeral === undefined ? {} : { ephemeral }),
+  };
+  const session = isRecord(payload["session"]) ? readSessionUpdate(payload["session"]) : null;
+  if (session && tracker.postProgressWithSession)
+    return tracker.postProgressWithSession(update, session, options);
+  await tracker.postProgress(update, options);
+  if (session) await sendSessionUpdate(session, tracker, options);
 }
 
 /**
@@ -193,7 +195,7 @@ async function postElicitation(
   const sessionId = readString(payload, "sessionId");
   const body =
     payload["evidence"] !== undefined && db
-      ? reviewBody(payload["evidence"], db)
+      ? reviewBody(payload["evidence"], payload["carried"], db)
       : readString(payload, "body");
   if (sessionId === null || body === null)
     throw new Error("elicitation is missing session or body");
@@ -218,20 +220,28 @@ async function postElicitation(
  * A visual review runs after the session's `linear.evidence` rows, so the files it shows have
  * their Linear uploads by now. A file without one is shown as its Paws link.
  */
-function reviewBody(value: unknown, db: Database): string {
+function reviewBody(value: unknown, carried: unknown, db: Database): string {
   if (!Array.isArray(value)) throw new Error("visual review evidence must be an array");
+  const file = (entry: unknown) => {
+    const id = isRecord(entry) ? readString(entry, "id") : null;
+    const link = isRecord(entry) ? readString(entry, "link") : null;
+    if (id === null || link === null) throw new Error("visual review evidence needs id and link");
+    const row = getEvidence(db, id);
+    if (row === null) throw new Error("Visual review has no evidence row");
+    return {
+      displayName: row.displayName,
+      link,
+      ...(row.assetUrl ? { assetUrl: row.assetUrl } : {}),
+    };
+  };
   return visualReviewBody(
     value.map((entry) => {
-      const id = isRecord(entry) ? readString(entry, "id") : null;
-      const link = isRecord(entry) ? readString(entry, "link") : null;
-      if (id === null || link === null) throw new Error("visual review evidence needs id and link");
-      const row = getEvidence(db, id);
-      if (row === null) throw new Error("Visual review has no evidence row");
-      return {
-        displayName: row.displayName,
-        link,
-        ...(row.assetUrl ? { assetUrl: row.assetUrl } : {}),
-      };
+      const approved = isRecord(entry) ? entry["approved"] : undefined;
+      return { ...file(entry), ...(approved === undefined ? {} : { approved: file(approved) }) };
+    }),
+    (Array.isArray(carried) ? carried : []).flatMap((id) => {
+      const row = typeof id === "string" ? getEvidence(db, id) : null;
+      return row ? [row.displayName] : [];
     }),
   );
 }
@@ -241,7 +251,23 @@ async function postSession(
   tracker: TrackerAdapter,
   options?: TrackerRequestOptions,
 ): Promise<void> {
+  await sendSessionUpdate(readSessionUpdate(payload), tracker, options);
+}
+
+async function sendSessionUpdate(
+  update: SessionUpdate,
+  tracker: TrackerAdapter,
+  options?: TrackerRequestOptions,
+): Promise<void> {
   if (!tracker.updateSession) throw new Error("Tracker does not support session updates");
+  const signal = AbortSignal.any([
+    ...(options?.signal ? [options.signal] : []),
+    AbortSignal.timeout(5000),
+  ]);
+  await tracker.updateSession(update, { ...options, signal });
+}
+
+function readSessionUpdate(payload: Record<string, unknown>): SessionUpdate {
   const sessionId = readString(payload, "sessionId");
   if (sessionId === null) throw new Error("session update requires a session");
   const update: SessionUpdate = { sessionId };
@@ -280,11 +306,7 @@ async function postSession(
       throw new Error("removed session links must be an array of URLs");
     update.removedExternalUrls = [...payload.removedExternalUrls];
   }
-  const signal = AbortSignal.any([
-    ...(options?.signal ? [options.signal] : []),
-    AbortSignal.timeout(5000),
-  ]);
-  await tracker.updateSession(update, { ...options, signal });
+  return update;
 }
 
 async function postStatus(

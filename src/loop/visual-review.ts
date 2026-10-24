@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { EvidenceApproval, ResolvedEvidence } from "../closeout";
 import { JOB_KIND } from "../core";
 import {
@@ -7,6 +9,7 @@ import {
   applyWorkItemEvent,
   enqueueJobOnce,
   enqueueOutboxOnce,
+  getEvidence,
   getWorkItem,
   linearConversationUrl,
   latestEvidence,
@@ -16,9 +19,16 @@ import {
   saveCheckpoint,
 } from "../db";
 import { reviewMarkPath } from "./input-files";
+import { compareScreenshots } from "./screenshot-diff";
 import {
   acceptedVisualReviews,
   answerQuestion,
+  approvalTime,
+  carriedInFull,
+  humanApprovedScreens,
+  recordCarriedVisualReview,
+  visualReviewCarriedNote,
+  type VisualReviewCarry,
   findOpenQuestion,
   getQuestion,
   getVisualReview,
@@ -69,6 +79,106 @@ export function dueVisualReview(
   return null;
 }
 
+/** What happens to each file due for review. */
+export type VisualReviewCarryPlan = {
+  /** Files that look the same as one a person accepted. */
+  carried: VisualReviewCarry[];
+  /** Changed files with the approved version to show beside them. */
+  approved: Map<string, string>;
+};
+
+/**
+ * Matches each file to the latest file a person accepted with the same check
+ * and display name. Same bytes, or pixels within tolerance, carry the
+ * approval over. A changed file keeps its approved version for the question.
+ * A file with no accepted predecessor is asked. Reads files, so call outside a transaction.
+ */
+export async function planVisualReviewCarry(
+  db: Database,
+  itemId: string,
+  checkId: string,
+  evidenceIds: readonly string[],
+  evidenceRoot: string | undefined,
+): Promise<VisualReviewCarryPlan> {
+  const plan: VisualReviewCarryPlan = { carried: [], approved: new Map() };
+  const approved = humanApprovedScreens(db, itemId, checkId).flatMap((origin) => {
+    const row = getEvidence(db, origin.fromEvidenceId);
+    return row ? [{ ...origin, row }] : [];
+  });
+  for (const id of evidenceIds) {
+    const row = getEvidence(db, id);
+    if (row === null) continue;
+    const before = approved.findLast(
+      (entry) => entry.row.displayName === row.displayName && entry.row.checkId === row.checkId,
+    );
+    if (before === undefined) continue;
+    const { row: seen, ...origin } = before;
+    if (seen.sha256 === row.sha256) {
+      plan.carried.push({ ...origin, evidenceId: id, match: "identical" });
+      continue;
+    }
+    if (
+      evidenceRoot !== undefined &&
+      seen.mediaType.startsWith("image/") &&
+      row.mediaType.startsWith("image/") &&
+      (await looksTheSame(evidenceRoot, seen.id, row.id))
+    ) {
+      plan.carried.push({ ...origin, evidenceId: id, match: "similar" });
+      continue;
+    }
+    plan.approved.set(id, seen.id);
+  }
+  return plan;
+}
+
+async function looksTheSame(root: string, before: string, after: string): Promise<boolean> {
+  try {
+    const [a, b] = await Promise.all([
+      readFile(path.join(root, before)),
+      readFile(path.join(root, after)),
+    ]);
+    return (await compareScreenshots(a, b))?.same === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Every file due for review carried an approval over: records the accepted
+ * review without a question and posts one line to Linear. Call inside a transaction.
+ */
+export function carryVisualReview(
+  db: Database,
+  input: {
+    item: WorkItemRecord;
+    sessionId: string;
+    checkId: string;
+    evidenceIds: readonly string[];
+    carried: readonly VisualReviewCarry[];
+    head: string;
+    now: number;
+  },
+): StoredVisualReview {
+  const review = recordCarriedVisualReview(db, {
+    itemId: input.item.id,
+    checkId: input.checkId,
+    evidenceIds: input.evidenceIds,
+    carried: input.carried,
+    headCommit: input.head,
+    now: input.now,
+  });
+  const approvedAt = Math.max(...input.carried.map((entry) => entry.approvedAt));
+  postNote(
+    db,
+    input.sessionId,
+    input.item,
+    visualReviewCarriedNote(approvedAt, input.now),
+    `visual-review-carried:${review.questionId}`,
+    input.now,
+  );
+  return review;
+}
+
 export function askForVisualReview(
   db: Database,
   input: {
@@ -81,9 +191,14 @@ export function askForVisualReview(
     head: string;
     publicUrl: string;
     now: number;
+    /** Files among `evidenceIds` that carried an approval over and are not asked about. */
+    carried?: readonly VisualReviewCarry[];
+    /** For a changed file, the approved file to show beside it. */
+    approved?: ReadonlyMap<string, string>;
   },
 ): boolean {
   const { item, sessionId } = input;
+  const carried = input.carried ?? [];
   const current = getWorkItem(db, item.id);
   if (current?.state !== "running" || current.cancelRequested) return false;
   if (findOpenQuestion(db, sessionId) !== null) return false;
@@ -95,6 +210,7 @@ export function askForVisualReview(
     evidenceIds: input.evidenceIds,
     headCommit: input.head,
     now: input.now,
+    carried,
   });
   applyWorkItemEvent(db, item.id, "blocking_question");
   saveCheckpoint(db, item.id, {
@@ -103,10 +219,18 @@ export function askForVisualReview(
     baseSha: input.base,
   });
   const base = input.publicUrl.replace(/\/+$/, "");
-  const evidence = input.evidenceIds.map((id) => ({
-    id,
-    link: `${base}/evidence/${encodeURIComponent(id)}`,
-  }));
+  const link = (id: string) => `${base}/evidence/${encodeURIComponent(id)}`;
+  const skipped = new Set(carried.map((entry) => entry.evidenceId));
+  const evidence = input.evidenceIds
+    .filter((id) => !skipped.has(id))
+    .map((id) => {
+      const approved = input.approved?.get(id);
+      return {
+        id,
+        link: link(id),
+        ...(approved ? { approved: { id: approved, link: link(approved) } } : {}),
+      };
+    });
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "elicitation",
@@ -119,6 +243,7 @@ export function askForVisualReview(
       body: VISUAL_REVIEW_QUESTION,
       options: [...VISUAL_REVIEW_OPTIONS],
       evidence,
+      ...(carried.length ? { carried: carried.map((entry) => entry.evidenceId) } : {}),
     },
     now: input.now,
   });
@@ -320,16 +445,33 @@ export function visualReviewPullRequestNote(
   db: Database,
   item: WorkItemRecord,
   publicUrl: string | null,
+  now: number = Date.now(),
 ): string {
   const accepted = listVisualReviews(db, item.id).filter((review) => review.outcome === "accepted");
   if (accepted.length === 0) return "";
   const evidence = listEvidence(db, item.id);
   const question = linearConversationUrl(db, item.sessionKey, item.linearIdentifier);
   const base = publicUrl?.replace(/\/+$/, "");
+  const names = new Map(evidence.map((row) => [row.id, row.displayName]));
   return accepted
-    .map((review) =>
-      [
-        `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in [Linear](<${question}>).`,
+    .map((review) => {
+      const full = carriedInFull(review);
+      const origins = [
+        ...new Map(review.carried.map((entry) => [entry.approvalId, entry])).values(),
+      ];
+      const carried = origins.map((origin) => {
+        const screens = review.carried
+          .filter((entry) => entry.approvalId === origin.approvalId)
+          .map((entry) => names.get(entry.evidenceId) ?? entry.evidenceId);
+        return `${full ? "Visual review carried over" : "Carried over"} from the approval by ${origin.approvedBy} at ${approvalTime(origin.approvedAt, now)} (approval ${origin.approvalId}), unchanged since: ${screens.join(", ")}.`;
+      });
+      return [
+        ...(full
+          ? []
+          : [
+              `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in [Linear](<${question}>).`,
+            ]),
+        ...carried,
         ...latestEvidence(evidence.filter((row) => review.evidenceIds.includes(row.id))).flatMap(
           (row) => {
             const label = row.displayName.replace(/[\\[\]]/g, "\\$&");
@@ -341,8 +483,8 @@ export function visualReviewPullRequestNote(
             ];
           },
         ),
-      ].join("\n\n"),
-    )
+      ].join("\n\n");
+    })
     .join("\n\n");
 }
 

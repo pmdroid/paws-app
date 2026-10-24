@@ -8,6 +8,8 @@ export type CloseoutDecision = "accepted" | "rejected" | "blocked" | "invalid";
 
 export type CloseoutRunInput = {
   taskId: string;
+  /** The Linear identifier the summary names, such as `PAS-367`. */
+  taskLabel?: string;
   worktree: string;
   baseSha: string;
   headSha: string;
@@ -69,6 +71,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         checkoutExclusions: options.checkoutExclusions,
         worktree: input.worktree,
         taskId: input.taskId,
+        ...(input.taskLabel ? { taskLabel: input.taskLabel } : {}),
         base: input.baseSha,
         head: input.headSha,
         candidate: options.candidate,

@@ -104,7 +104,7 @@ describe("live evidence", () => {
   });
 
   test("the evidence page shows the file details and the rest of the run", () => {
-    const { db, run } = seeded();
+    const { db } = seeded();
     const snapshot = snapshotFor(db);
     const html = page(snapshot, { view: "evidence", id: VIDEO });
     const item = snapshot.evidence![0]!.itemId;
@@ -123,7 +123,7 @@ describe("live evidence", () => {
       `href="/api/evidence/${VIDEO}" download="checkout.webm">Download</a>`,
       `<div id="evidence-player" data-evidence="${VIDEO}"></div>`,
       'aria-label="More from this run"',
-      `href="/runs/${run.id}#check=2/e2e">Closeout output</a>`,
+      `href="/issues/${item}#check=2/e2e">Closeout output</a>`,
       `href="/evidence/${IMAGE}"`,
       'alt="Cart &lt;total&gt;.png"',
     ])

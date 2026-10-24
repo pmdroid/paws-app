@@ -72,7 +72,7 @@ test("issues list offers state filters and a simple item list", () => {
   expect(list).toContain("data-issue-state=");
   expect(list).not.toContain("data-view-tabs");
   const detail = render({ ...model, route: { view: "issues", id: "ENG-104" } }).content;
-  expect(detail).toContain("All issues");
+  expect(detail).toContain('<a href="/issues">Issues</a>');
   expect(detail).not.toContain("Linear agent session");
 });
 

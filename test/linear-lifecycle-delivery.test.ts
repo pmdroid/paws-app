@@ -147,9 +147,16 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
     };
     await orchestrator.sessionProgressReporter(created())(update);
     await orchestrator.sessionProgressReporter(created())(update);
+    expect(ids).toHaveLength(0);
+    expect(listOutbox(db)[0]?.notBefore).toBe(6_000);
+    clock.advance(5_000);
+    outbox.tick();
+    await outbox.idle();
     expect(ids).toHaveLength(1);
     clock.advance(60_000);
     await orchestrator.sessionProgressReporter(created())(update);
+    outbox.tick();
+    await outbox.idle();
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(ids[1]);
     expect(ids[0]).toBeString();

@@ -224,6 +224,38 @@ describe("closeout gate", () => {
     }
   });
 
+  test("the summary names the task by its Linear identifier and keeps the path id for evidence", async () => {
+    const repo = await originRepo({ ".agents/closeout.yaml": policy([alwaysPass("test")]) });
+    try {
+      const pathId = "PAS-367-01M5NDWPQZ0JQ91E1MFMVEY6EP";
+      const gate = createCloseoutGate({
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: throwingReviewer(),
+        fixer: committingFixer(repo.dir, []),
+      });
+      const verdict = await gate.run({
+        taskId: pathId,
+        taskLabel: "PAS-367",
+        worktree: repo.dir,
+        baseSha: repo.head,
+        headSha: repo.head,
+        attempt: 1,
+      });
+      expect(verdict.decision).toBe("accepted");
+      expect(verdict.summary.split("\n")).toContain("Task: PAS-367");
+      expect(verdict.summary).not.toContain(pathId);
+      expect(verdict.result?.taskId).toBe(pathId);
+      // Evidence stays under the full path id, so sibling tasks never share it.
+      const baseline = await snapshotRetryBaseline(pathId, repo.pawsHome);
+      expect(baseline.some((key) => key.includes(pathId))).toBe(true);
+      expect(await snapshotRetryBaseline("PAS-367", repo.pawsHome)).toEqual([]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("feeds a failing command back and accepts on attempt 2", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([commandUntilOk("test")]),

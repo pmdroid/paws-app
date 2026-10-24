@@ -2,10 +2,13 @@ import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
   beginImplementRun,
+  ensureCloseoutProgress,
   insertQueuedItem,
   listOutbox,
   migrations,
   openDatabase,
+  saveCheckpoint,
+  saveCloseoutRecovery,
   setCurrentRun,
   setJournalSink,
 } from "../src/db";
@@ -84,6 +87,91 @@ test("a newer runner wait replaces a queued one of the same kind", () => {
   expect(getQuestion(db, newer.question.id)?.status).toBe("queued");
 });
 
+test("a newer CI help replaces only its own task's queued CI help", () => {
+  const { db, asker } = setup();
+  const sibling = insertQueuedItem(db, { id: "ENG-8", sessionKey: "ses_1", title: "Import rows" });
+  openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const older = ask(db, asker, "ci-help", "CI failed.", { now: NOW + 1 });
+  const other = ask(db, { ...asker, itemId: sibling.id, runId: null }, "ci-help", "CI failed.", {
+    now: NOW + 2,
+  });
+  const newer = ask(db, asker, "ci-help", "CI failed again.", { now: NOW + 3 });
+  expect(getQuestion(db, older.question.id)?.status).toBe("cancelled");
+  expect(getQuestion(db, other.question.id)?.status).toBe("queued");
+  expect(getQuestion(db, newer.question.id)?.status).toBe("queued");
+});
+
+function queuedCloseoutHelp() {
+  const { db, asker } = setup();
+  saveCheckpoint(db, asker.itemId, {
+    phase: "awaiting_input",
+    baseSha: "base",
+    wipCommit: "head-1",
+  });
+  ensureCloseoutProgress(
+    db,
+    asker.itemId,
+    { taskId: "ENG-7", base: "base", head: "head-1", policyDigest: "policy-1", policyPath: null },
+    NOW,
+    true,
+  );
+  openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const help = ask(db, asker, "closeout-help", "Closeout needs your help.", { now: NOW + 1 });
+  saveCloseoutRecovery(db, {
+    questionId: help.question.id,
+    taskId: "ENG-7",
+    itemId: asker.itemId,
+    base: "base",
+    head: "head-1",
+    policyDigest: "policy-1",
+    failedChecks: ["test"],
+    retryBaseline: [],
+    summary: "Closeout: rejected",
+  });
+  return { db, asker, help: help.question };
+}
+
+function promote(db: Database): string[] {
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    answer(db, reply("answer-1", "Yes"));
+  } finally {
+    restore();
+  }
+  return lines;
+}
+
+test("a queued Closeout help for the same candidate and policy is delivered", () => {
+  const { db, help } = queuedCloseoutHelp();
+  expect(promote(db)).toEqual([]);
+  expect(findOpenQuestion(db, "ses_1")?.id).toBe(help.id);
+  expect(elicitations(db)).toEqual([help.id]);
+});
+
+test("a queued Closeout help is dropped once its candidate moved", () => {
+  const { db, asker, help } = queuedCloseoutHelp();
+  saveCheckpoint(db, asker.itemId, { phase: "verifying", baseSha: "base", wipCommit: "head-2" });
+  expect(promote(db)).toEqual([`question ${help.id} dropped from the queue: its candidate moved`]);
+  expect(getQuestion(db, help.id)?.status).toBe("cancelled");
+  expect(elicitations(db)).toEqual([]);
+});
+
+test("a queued Closeout help is dropped once the Closeout policy changed", () => {
+  const { db, asker, help } = queuedCloseoutHelp();
+  ensureCloseoutProgress(
+    db,
+    asker.itemId,
+    { taskId: "ENG-7", base: "base", head: "head-1", policyDigest: "policy-2", policyPath: null },
+    NOW + 50,
+    true,
+  );
+  expect(promote(db)).toEqual([
+    `question ${help.id} dropped from the queue: its Closeout policy changed`,
+  ]);
+  expect(elicitations(db)).toEqual([]);
+});
+
 test("the answer is idempotent on the delivery id and runs its kind's effect once", () => {
   const { db, asker } = setup();
   const asked = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
@@ -155,4 +243,33 @@ test("the migration classifies an open runner wait and leaves every other row an
     { id: "wait-open", kind: "runner-wait", status: "open" },
   ]);
   expect(() => insert.run("queued", "ses_1", null, "queued")).not.toThrow();
+});
+
+test("the migration classifies questions with a Closeout recovery as Closeout help", () => {
+  const db = openDatabase(":memory:");
+  db.run("CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT");
+  const cutoff = migrations.findIndex(
+    (migration) => migration.id === "118_question_closeout_help_kind",
+  );
+  for (const migration of migrations.slice(0, cutoff)) {
+    if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
+    db.transaction(() => db.run(migration.sql)).immediate();
+    db.run("PRAGMA foreign_keys = ON");
+  }
+  db.run("PRAGMA foreign_keys = OFF");
+  const insert = db.prepare(
+    `INSERT INTO question (id, item_id, session_id, body, status, created_at)
+     VALUES (?, 'ENG-7', ?, 'Body', 'open', 1)`,
+  );
+  insert.run("help", "ses_1");
+  insert.run("agent", "ses_2");
+  db.run(
+    `INSERT INTO closeout_recovery (question_id, task_id, item_id, base, head, policy_digest, failed_checks, retry_baseline, summary)
+     VALUES ('help', 'ENG-7', 'ENG-7', 'base', 'head', '', '[]', '[]', 'Closeout: rejected')`,
+  );
+  db.transaction(() => db.run(migrations[cutoff]!.sql)).immediate();
+  expect(db.query("SELECT id, kind FROM question ORDER BY id").all() as unknown[]).toEqual([
+    { id: "agent", kind: "agent" },
+    { id: "help", kind: "closeout-help" },
+  ]);
 });

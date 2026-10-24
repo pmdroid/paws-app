@@ -154,13 +154,13 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     implementations.length = 0;
     const reads: string[] = [];
     let inFlight = 0;
-    const session = access.adapter.session;
-    access.adapter.session = async (id, options) => {
+    const inspect = lifecycle.inspect;
+    lifecycle.inspect = async (id, options) => {
       inFlight += 1;
       reads.push(`start:${id}`);
       try {
         await Bun.sleep(10);
-        return await session(id, options);
+        return await inspect(id, options);
       } finally {
         inFlight -= 1;
         reads.push(`end:${id}`);
@@ -182,7 +182,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       () => detail(db),
     );
 
-    expect(reads).toEqual(ISSUES.flatMap((id) => [`start:ses_${id}`, `end:ses_${id}`]));
+    expect(reads).toEqual(ISSUES.flatMap((id) => [`start:${id}`, `end:${id}`]));
     expect(
       listWorkItems(db).map((item) => getWorkItem(db, item.id)?.state),
       detail(db),

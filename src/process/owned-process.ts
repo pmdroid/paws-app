@@ -22,6 +22,7 @@ export class OwnedProcess extends EventEmitter {
   private readonly closed: Promise<void>;
   private anchorClosed = false;
   private anchorKilled = false;
+  private anchorExited = false;
   private teardownConfirmed = false;
   private stopping: Promise<boolean> | undefined;
   private commandClosed = false;
@@ -83,6 +84,7 @@ export class OwnedProcess extends EventEmitter {
     });
     this.anchor.on("error", (error) => this.emit("error", error));
     this.anchor.on("exit", (code, signal) => {
+      this.anchorExited = true;
       this.anchorKilled = signal === "SIGKILL";
       if (this.exitCode === null && this.signalCode === null) {
         this.exitCode = code;
@@ -142,11 +144,13 @@ export class OwnedProcess extends EventEmitter {
         new Promise((resolve) => setTimeout(resolve, graceMs)),
       ]);
       this.killGroup("SIGKILL");
+      const confirmMs =
+        this.anchorExited && !this.teardownConfirmed ? 0 : Math.max(graceMs, KILL_CONFIRMATION_MS);
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         this.closed,
         new Promise((resolve) => {
-          timer = setTimeout(resolve, Math.max(graceMs, KILL_CONFIRMATION_MS));
+          timer = setTimeout(resolve, confirmMs);
         }),
       ]);
       clearTimeout(timer);

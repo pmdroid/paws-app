@@ -55,6 +55,11 @@ export interface TrackerAdapter {
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;
   postProgress(update: ProgressUpdate, options?: TrackerRequestOptions): Promise<void>;
+  postProgressWithSession?(
+    update: ProgressUpdate,
+    session: SessionUpdate,
+    options?: TrackerRequestOptions,
+  ): Promise<void>;
   askQuestion(question: Elicitation, options?: TrackerRequestOptions): Promise<void>;
   updateSession?(update: SessionUpdate, options?: TrackerRequestOptions): Promise<SessionReceipt>;
   setStatus(update: StatusUpdate, options?: TrackerRequestOptions): Promise<void>;

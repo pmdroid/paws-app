@@ -77,6 +77,8 @@ export type GateInput = {
   checkoutExclusions?: readonly string[];
   worktree: string;
   taskId: string;
+  /** The Linear identifier the summary names, such as `PAS-367`. Defaults to `taskId`. */
+  taskLabel?: string;
   base: string;
   /** Defaults to `git rev-parse HEAD` in the worktree. */
   head?: string;
@@ -952,6 +954,7 @@ async function finalResult(
     formatEvidenceSummary({
       outcome,
       taskId: input.taskId,
+      ...(input.taskLabel ? { taskLabel: input.taskLabel } : {}),
       base: input.base,
       head,
       fixAttempts,

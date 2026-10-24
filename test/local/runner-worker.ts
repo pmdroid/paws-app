@@ -293,7 +293,7 @@ export async function probeRunnerWorker(
         candidate.candidateSha,
       ])
     ).trim(),
-    "paws-test[bot]\n88+paws-test[bot]@users.noreply.github.com\npaws-test[bot]\n88+paws-test[bot]@users.noreply.github.com",
+    "Paws\n88+paws-test[bot]@users.noreply.github.com\nPaws\n88+paws-test[bot]@users.noreply.github.com",
   );
   assert.equal(
     (await invoke(["-C", acquired, "show", "-s", "--format=%an", baseSha])).trim(),

@@ -99,7 +99,14 @@ for (const shutdown of ["application", "linear"] as const) {
       await running.stop();
       await orchestrator.shutdown();
       expect(store.listUnhandled()).toHaveLength(1);
-      expect(tracker.progress.map((update) => update.kind)).toEqual(["thought"]);
+      expect(tracker.progress).toEqual([]);
+      expect(
+        listOutbox(db).filter(
+          (entry) =>
+            entry.status === "pending" &&
+            (entry.payload as { body?: string }).body === "Picked up this issue.",
+        ),
+      ).toHaveLength(1);
       expect(
         listOutbox(db).some((entry) => (entry.payload as { kind?: string }).kind === "error"),
       ).toBe(false);
