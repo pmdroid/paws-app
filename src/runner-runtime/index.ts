@@ -253,7 +253,7 @@ export async function openRunnerRuntime(options: {
       if (!sealed) {
         let raw: Buffer = Buffer.alloc(0);
         try {
-          raw = readRunnerResultFile(options.results, execution.id, "events.jsonl");
+          raw = transcriptSource(execution.id);
         } catch {}
         journal.ingest(execution.id, raw);
         let { offset, consumed } = journal.transcriptCursor(execution.id);
@@ -317,6 +317,14 @@ export async function openRunnerRuntime(options: {
     }
   }
   /**
+   * The run's transcript as the runner uploads and seals it: the worker's event journal, which
+   * carries the agent's ACP events next to its questions and progress. Every path that uploads
+   * or seals a transcript reads it here, so a repeated seal covers the same bytes.
+   */
+  function transcriptSource(executionId: string): Buffer {
+    return readRunnerResultFile(options.results, executionId, "events.jsonl");
+  }
+  /**
    * Finishes a committed handover after a runner restart: seals the transcript as a handover,
    * which Paws repeats when it is already sealed, and posts the handed-over result. Returns
    * false when Paws refuses the seal, so the execution is reported as failed instead.
@@ -344,9 +352,12 @@ export async function openRunnerRuntime(options: {
         generation: command.generation,
       }),
     );
-    const raw = readRunnerResultFile(options.results, execution.id, "events.jsonl");
+    // The same bytes drainTranscript sealed: the worker exited, so they no longer change.
+    const raw = transcriptSource(execution.id);
     journal.ingest(execution.id, raw);
-    let { offset } = journal.transcriptCursor(execution.id);
+    let { offset, consumed } = journal.transcriptCursor(execution.id);
+    if (offset > consumed || consumed !== raw.length)
+      throw new Error("Runner transcript is incomplete");
     try {
       while (offset < raw.length) {
         const bytes = raw.subarray(
@@ -591,7 +602,7 @@ export async function openRunnerRuntime(options: {
     check(entry);
     let raw: Buffer;
     try {
-      raw = readRunnerResultFile(options.results, entry.execution.id, "events.jsonl");
+      raw = transcriptSource(entry.execution.id);
     } catch (error) {
       if (!final && (error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
