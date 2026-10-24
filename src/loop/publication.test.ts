@@ -267,9 +267,19 @@ test.skipIf(process.platform !== "linux")(
           { cwd: root, env: process.env },
         )
         .catch((error: unknown) => error);
-      for (let i = 0; i < 200 && !existsSync(marker); i++) await Bun.sleep(5);
-      expect(existsSync(marker)).toBe(true);
-      const owner = JSON.parse(readFileSync(marker, "utf8")) as { pid: number; anchor: number };
+      const readOwner = () => {
+        try {
+          return JSON.parse(readFileSync(marker, "utf8")) as { pid: number; anchor: number };
+        } catch {
+          return undefined;
+        }
+      };
+      let owner = readOwner();
+      for (let i = 0; i < 200 && owner === undefined; i++) {
+        await Bun.sleep(5);
+        owner = readOwner();
+      }
+      if (owner === undefined) throw new Error("owner.json never held the child's pid");
       pid = owner.pid;
       process.kill(owner.anchor, "SIGKILL");
       f.controller.abort();
