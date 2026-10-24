@@ -2389,4 +2389,10 @@ UPDATE question SET kind = 'closeout-help'
 WHERE id IN (SELECT question_id FROM closeout_recovery);
 `,
   },
+  {
+    id: "119_runner_skill_waiting",
+    sql: `
+ALTER TABLE runner_skill ADD COLUMN waiting INTEGER;
+`,
+  },
 ];

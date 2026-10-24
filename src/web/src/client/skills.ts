@@ -1,6 +1,7 @@
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
+import { waitingLabel } from "./runners";
 
 export type SkillAgent = "claude" | "codex" | "grok";
 
@@ -22,6 +23,7 @@ export type SkillRollout = {
   total: number;
   upToDate: number;
   installing: string[];
+  waiting?: { runner: string; tasks: number }[];
   outOfDate: string[];
   failed: string[];
 };
@@ -149,6 +151,10 @@ export function skillRolloutMarkup(rollout: SkillRollout | undefined): string {
     rollout.installing.length
       ? `<span class="tag running wrap">${esc(runnerNames(rollout.installing, "installing"))}</span>`
       : "",
+    ...(rollout.waiting ?? []).map(
+      (entry) =>
+        `<span class="tag running wrap">${esc(waitingLabel(entry.tasks, entry.runner))}</span>`,
+    ),
     rollout.outOfDate.length
       ? `<span class="tag warn wrap">${esc(runnerNames(rollout.outOfDate, "out of date"))}</span>`
       : "",

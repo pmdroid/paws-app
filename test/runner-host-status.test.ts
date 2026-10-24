@@ -299,7 +299,7 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
     },
   ]);
   expect(listRunnerSkills(runner.db, runner.runnerId)).toEqual([
-    { ...installed[0]!, status: "installed", error: null, reportedAt: runner.now() },
+    { ...installed[0]!, status: "installed", error: null, waiting: null, reportedAt: runner.now() },
   ]);
   const refused = {
     name: "impeccable",
@@ -310,7 +310,7 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
   };
   expect((await runner.heartbeat({ skills: [refused] }))!.status).toBe(200);
   expect(listRunnerSkills(runner.db, runner.runnerId)).toEqual([
-    { ...refused, status: "refused", reportedAt: runner.now() },
+    { ...refused, status: "refused", waiting: null, reportedAt: runner.now() },
   ]);
 
   const download = (await runner.fetch("/v1/skills/impeccable/2.4.1"))!;
@@ -380,6 +380,32 @@ test("stray processes are stored with the heartbeat and listed with the metrics"
     expect((await runner.heartbeat({ strayProcesses: [stray] }))!.status).toBe(403);
 });
 
+test("a runner waiting on running tasks says how many still hold the earlier version", async () => {
+  const runner = await fixture();
+  const pin = {
+    name: "impeccable",
+    source: { kind: "npm" as const, package: "impeccable" },
+    version: "2.5.0",
+    sha256: "b".repeat(64),
+    sizeBytes: 4,
+    agents: ["claude" as const],
+    updatedAt: runner.now(),
+  };
+  saveSkill(runner.db, pin);
+  const pending = { name: pin.name, version: pin.version, sha256: pin.sha256, status: "pending" };
+  expect((await runner.heartbeat({ skills: [{ ...pending, waiting: 2 }] }))?.status).toBe(200);
+  const list = (await runner.list()) as unknown as {
+    runners: { skills: RunnerSkillView[] }[];
+  };
+  expect(list.runners[0]!.skills[0]).toMatchObject({ state: "installing", waiting: 2 });
+  expect(skillRollouts(runner.db)[0]).toMatchObject({
+    installing: [],
+    waiting: [{ runner: "Host VM", tasks: 2 }],
+  });
+  expect((await runner.heartbeat({ skills: [pending] }))?.status).toBe(200);
+  expect(skillRollouts(runner.db)[0]).toMatchObject({ installing: ["Host VM"], waiting: [] });
+});
+
 test("the runner list shows each registered skill as up to date, installing, out of date or failed", async () => {
   const runner = await fixture();
   const pin = {
@@ -419,6 +445,7 @@ test("the runner list shows each registered skill as up to date, installing, out
       installedVersion: "2.0.0",
       state: "up_to_date",
       error: null,
+      waiting: null,
       reportedAt: runner.now(),
     },
     {
@@ -427,6 +454,7 @@ test("the runner list shows each registered skill as up to date, installing, out
       installedVersion: null,
       state: "failed",
       error: "Skill failing has no SKILL.md.",
+      waiting: null,
       reportedAt: runner.now(),
     },
     {
@@ -435,6 +463,7 @@ test("the runner list shows each registered skill as up to date, installing, out
       installedVersion: null,
       state: "installing",
       error: null,
+      waiting: null,
       reportedAt: null,
     },
     {
@@ -443,6 +472,7 @@ test("the runner list shows each registered skill as up to date, installing, out
       installedVersion: "1.9.0",
       state: "out_of_date",
       error: null,
+      waiting: null,
       reportedAt: runner.now(),
     },
     {
@@ -451,14 +481,27 @@ test("the runner list shows each registered skill as up to date, installing, out
       installedVersion: "2.0.0",
       state: "installing",
       error: null,
+      waiting: null,
       reportedAt: runner.now(),
     },
   ]);
   expect(skillRollouts(runner.db).map(({ name, ...rollout }) => [name, rollout])).toEqual([
-    ["current", { total: 1, upToDate: 1, installing: [], outOfDate: [], failed: [] }],
-    ["failing", { total: 1, upToDate: 0, installing: [], outOfDate: [], failed: ["Host VM"] }],
-    ["missing", { total: 1, upToDate: 0, installing: ["Host VM"], outOfDate: [], failed: [] }],
-    ["older", { total: 1, upToDate: 0, installing: [], outOfDate: ["Host VM"], failed: [] }],
-    ["pending", { total: 1, upToDate: 0, installing: ["Host VM"], outOfDate: [], failed: [] }],
+    ["current", { total: 1, upToDate: 1, installing: [], waiting: [], outOfDate: [], failed: [] }],
+    [
+      "failing",
+      { total: 1, upToDate: 0, installing: [], waiting: [], outOfDate: [], failed: ["Host VM"] },
+    ],
+    [
+      "missing",
+      { total: 1, upToDate: 0, installing: ["Host VM"], waiting: [], outOfDate: [], failed: [] },
+    ],
+    [
+      "older",
+      { total: 1, upToDate: 0, installing: [], waiting: [], outOfDate: ["Host VM"], failed: [] },
+    ],
+    [
+      "pending",
+      { total: 1, upToDate: 0, installing: ["Host VM"], waiting: [], outOfDate: [], failed: [] },
+    ],
   ]);
 });
