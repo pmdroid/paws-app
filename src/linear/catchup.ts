@@ -1,3 +1,4 @@
+import { closedIssueState, type LinearIssueClosedState } from "./administration";
 import { linearBudget, type LinearRateBudget } from "./budget";
 import type { LinearClient } from "./graphql";
 import { isRecord, readString } from "./read";
@@ -22,6 +23,9 @@ const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDur
       id
       identifier
       updatedAt
+      completedAt
+      canceledAt
+      state { type }
       delegate { id }
       labels { nodes { name } }
     }
@@ -66,6 +70,8 @@ export type PolledIssue = {
   updatedAtMs: number;
   labeled: boolean;
   delegated: boolean;
+  /** Set when the issue sits in a completed or canceled workflow state. */
+  closed?: { stateType: LinearIssueClosedState; closedAtMs: number } | null;
 };
 
 export type PolledComment = {
@@ -317,9 +323,18 @@ function dedupeIssues(
       updatedAtMs,
       labeled: hasPawsLabel(node),
       delegated: appUserId !== null && delegateId === appUserId,
+      closed: readClosed(node, updatedAtMs),
     });
   }
   return issues;
+}
+
+function readClosed(node: Record<string, unknown>, updatedAtMs: number): PolledIssue["closed"] {
+  const state = isRecord(node["state"]) ? node["state"] : null;
+  const stateType = closedIssueState(state === null ? null : readString(state, "type"));
+  if (stateType === null) return null;
+  const closedAtMs = readTime(node, stateType === "completed" ? "completedAt" : "canceledAt");
+  return { stateType, closedAtMs: closedAtMs ?? updatedAtMs };
 }
 
 function dedupeComments(nodes: readonly Record<string, unknown>[]): PolledComment[] {

@@ -33,9 +33,16 @@ export {
   type RepositoryBinding,
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
+export { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 export { questionEffects } from "./question-effects";
 
-export { handleLinearAdministration, stopUndelegatedIssue } from "./linear-administration";
+export {
+  closeClosedIssueTasks,
+  handleLinearAdministration,
+  ISSUE_CLOSED_RESPONSE,
+  stopUndelegatedIssue,
+} from "./linear-administration";
+export type { ClosedIssueTask } from "./linear-administration";
 export { LinearTaskAccess } from "./linear-task-access";
 export { TASK_ACCESS_TTL_MS } from "./github-integration";
 export { createRepositoryGit } from "./repository-git";

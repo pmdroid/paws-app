@@ -16,8 +16,9 @@ import {
 } from "../db";
 import { githubQueueLine, githubQueueMerge, readPullReview, type GitHubBinding } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
-import { askMergeHelp, returnToAgent, type MergeReturnReason } from "./returns";
-import { MAX_REBASE_RETURNS, type MergeStep } from "./step";
+import type { RebaseConflict } from "./budget";
+import { askMergeHelp, rebaseBudgetFor, returnToAgent, type MergeReturnReason } from "./returns";
+import type { MergeStep } from "./step";
 import { githubQueueWatch, type MergeWait } from "./wait";
 
 export const REBASE_CONFLICT_INSTRUCTION =
@@ -41,7 +42,8 @@ export type OrderCapabilities = {
   now(): number;
   stopped(): boolean;
   session(item: WorkItemRecord): string | null;
-  fetchMain(item: WorkItemRecord): Promise<boolean>;
+  /** Fetch main into the item's worktree. Main's commit, or null without a worktree. */
+  fetchMain(item: WorkItemRecord): Promise<string | null>;
   ciFixAttempts(): number;
   voice: MergeVoice;
 };
@@ -63,7 +65,7 @@ export type MergePull = {
 export function sendBack(
   { db, item, caps }: MergeContext,
   reason: MergeReturnReason,
-  limit: number,
+  admit: (returns: number) => boolean,
   handoff: string,
   report: {
     thought: (attempt: number) => string;
@@ -73,7 +75,7 @@ export function sendBack(
   return returnToAgent(db, {
     itemId: item.id,
     reason,
-    limit,
+    admit,
     handoff,
     now: caps.now(),
     record: report.record,
@@ -247,25 +249,36 @@ export async function mergeThroughGitHubQueue(
           CI_FIX_SOURCE.queue,
         );
       if (removal.cause === "conflict") {
+        const base = await caps.fetchMain(item).catch(() => null);
+        const conflict: RebaseConflict = { base, files: null };
+        const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
         if (
-          (await caps.fetchMain(item).catch(() => false)) &&
-          sendBack(merge, "rebase-conflict", MAX_REBASE_RETURNS, REBASE_CONFLICT_INSTRUCTION, {
-            thought: () =>
-              `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
-            record: (jobId) =>
-              recordRebaseReturn(db, {
-                itemId: item.id,
-                jobId,
-                candidate: head,
-                reason: "github_queue",
-              }),
-          })
+          base !== null &&
+          sendBack(
+            merge,
+            "rebase-conflict",
+            () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+            REBASE_CONFLICT_INSTRUCTION,
+            {
+              thought: () =>
+                `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
+              record: (jobId) =>
+                recordRebaseReturn(db, {
+                  itemId: item.id,
+                  jobId,
+                  candidate: head,
+                  reason: "github_queue",
+                  ...conflict,
+                  recordedAt: caps.now(),
+                }),
+            },
+          )
         )
           return { kind: "returned" };
         return {
           kind: "failed",
           reason: "merge",
-          message: `GitHub's merge queue removed the pull request for a conflict${why}.`,
+          message: `GitHub's merge queue removed the pull request for a conflict${why}.${budget.allowed ? "" : ` ${budget.message}`}`,
         };
       }
       return askGitHubQueueRemoval(
@@ -302,7 +315,7 @@ async function githubQueueCiFailed(
     logSource: null,
   }));
   if (
-    sendBack(merge, "ci-failed", limit, `${source}\n\n${ciFixHandoff(checks)}`, {
+    sendBack(merge, "ci-failed", (fixes) => fixes < limit, `${source}\n\n${ciFixHandoff(checks)}`, {
       thought: (attempt) => ciFixRoundLine(checks, attempt, limit),
       record: (_, attempt) => ciRound(merge, head, failed, "agent", limit, attempt),
     })
