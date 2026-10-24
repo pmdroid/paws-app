@@ -130,6 +130,25 @@ describe("one page per issue", () => {
     expect(timeline.match(/Implementation started with/g)).toHaveLength(3);
   });
 
+  test("an old Conversations URL redirects to the issue page", () => {
+    const db = database();
+    threeRuns(db);
+    const snapshot = snapshotOf(db);
+    expect(issueRedirect(`/sessions/${SESSION}`, snapshot)).toBe("/issues/PAS-367");
+    expect(issueRedirect(`/sessions/${encodeURIComponent(SESSION)}`, snapshot)).toBe(
+      "/issues/PAS-367",
+    );
+    expect(parseRoute(`/sessions/${SESSION}`, snapshot)).toEqual({
+      view: "issues",
+      id: "PAS-367",
+    });
+    // A session Paws never worked on has no issue page, so the link opens the issue list.
+    expect(issueRedirect("/sessions/unknown-session", snapshot)).toBe("/issues");
+    expect(issueRedirect("/sessions", snapshot)).toBe("/issues");
+    // Before the snapshot arrives, nothing moves yet.
+    expect(issueRedirect(`/sessions/${SESSION}`, null)).toBeNull();
+  });
+
   test("run, session and verdict links redirect to /issues/PAS-367", () => {
     const db = database();
     const runIds = threeRuns(db);
@@ -141,7 +160,6 @@ describe("one page per issue", () => {
     // Before the snapshot arrives, and for paths that are not folded, nothing moves.
     expect(issueRedirect(`/runs/${runIds[1]}`, null)).toBeNull();
     expect(issueRedirect("/issues/PAS-367", snapshot)).toBeNull();
-    expect(issueRedirect("/sessions/unknown-session", snapshot)).toBeNull();
     expect(issueRedirect("/runs", snapshot)).toBeNull();
   });
 
