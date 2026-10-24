@@ -530,6 +530,37 @@ describe("policy errors", () => {
     );
   });
 
+  test("a link to the repository root and root-level links stay in the commit", () => {
+    const toRoot = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      "look/SKILL.md": "root look\n",
+    });
+    toRoot.put(".agents/skills", "..", "120000");
+    const repo = tempDir();
+    writeRepoFile(repo, "look/SKILL.md", "checkout look\n");
+    const viaRoot = present(loadPolicy({ repo, git: toRoot, env: {} }));
+    expect(viaRoot.files.map((file) => file.path)).toEqual([
+      ".agents/closeout.yaml",
+      ".agents/skills/look/SKILL.md",
+    ]);
+    expect(viaRoot.files[1]?.sha256).toBe(sha256("root look\n"));
+
+    const chain = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+      "source.md": "committed source\n",
+    });
+    chain.put("rubric.md", "source.md", "120000");
+    chain.put(".agents/skills/look/references/rubric.md", "../../../../rubric.md", "120000");
+    const chained = present(loadPolicy({ repo: tempDir(), git: chain, env: {} }));
+    expect(chained.files.map((file) => file.path)).toContain(
+      ".agents/skills/look/references/rubric.md",
+    );
+    expect(chained.files.find((file) => file.path.endsWith("references/rubric.md"))?.sha256).toBe(
+      sha256("committed source\n"),
+    );
+  });
+
   test("a skill reached through a linked directory loads from the commit", () => {
     const git = createFakeGitReader({
       [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),

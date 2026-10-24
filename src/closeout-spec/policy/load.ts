@@ -301,7 +301,8 @@ function followLink(
   if (target.length === 0 || target.includes("\0"))
     return { ok: false, message: `skill link is broken: ${linkPath}` };
   if (!target.startsWith("/")) {
-    const joined = normalizeJoin(linkPath.slice(0, linkPath.lastIndexOf("/")), target);
+    const joined = normalizeJoin(parentOf(linkPath), target);
+    if (joined === "") return { ok: false, message: `skill path is not a file: ${linkPath}` };
     if (joined !== undefined && repoPath(joined) !== undefined) {
       const inTree = resolveTarget(git, repo, commit, joined, depth);
       if (!("ok" in inTree) && inTree.kind === "missing")
@@ -309,9 +310,7 @@ function followLink(
       return inTree;
     }
   }
-  const onDisk = target.startsWith("/")
-    ? target
-    : join(repo, linkPath.slice(0, linkPath.lastIndexOf("/") + 1), target);
+  const onDisk = target.startsWith("/") ? target : join(repo, parentOf(linkPath), target);
   return readDisk(onDisk, linkPath, depth);
 }
 
@@ -337,9 +336,15 @@ function throughAncestors(
     if (target.length === 0 || target.includes("\0"))
       return { ok: false, message: `skill link is broken: ${prefix}` };
     if (!target.startsWith("/")) {
-      const joined = normalizeJoin(prefix.slice(0, prefix.lastIndexOf("/")), target);
-      if (joined !== undefined && repoPath(joined) !== undefined) {
-        const inTree = resolveTarget(git, repo, commit, `${joined}/${remainder}`, depth + 1);
+      const joined = normalizeJoin(parentOf(prefix), target);
+      if (joined !== undefined && (joined === "" || repoPath(joined) !== undefined)) {
+        const inTree = resolveTarget(
+          git,
+          repo,
+          commit,
+          joined === "" ? remainder : `${joined}/${remainder}`,
+          depth + 1,
+        );
         if (!("ok" in inTree) && inTree.kind === "missing")
           return { ok: false, message: `skill link is broken: ${prefix}` };
         return inTree;
@@ -347,10 +352,15 @@ function throughAncestors(
     }
     const onDisk = target.startsWith("/")
       ? join(target, ...remainder.split("/"))
-      : join(repo, prefix.slice(0, prefix.lastIndexOf("/") + 1), target, ...remainder.split("/"));
+      : join(repo, parentOf(prefix), target, ...remainder.split("/"));
     return readDisk(onDisk, path, depth + 1);
   }
   return { kind: "missing" };
+}
+
+function parentOf(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash);
 }
 
 function normalizeJoin(dir: string, target: string): string | undefined {
