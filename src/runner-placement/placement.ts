@@ -125,10 +125,10 @@ export function createRunnerPlacement(options: {
     if (!issueId) throw new Error("Runner issue authority is unavailable");
     const placement = item
       ? (db
-          .query<{ ownerUserId: string | null; projectApprovalId: string | null }, [string]>(
-            "SELECT owner_user_id AS ownerUserId,project_approval_id AS projectApprovalId FROM work_item WHERE id=?",
+          .query<{ ownerUserId: string | null }, [string]>(
+            "SELECT owner_user_id AS ownerUserId FROM work_item WHERE id=?",
           )
-          .get(item.id) ?? { ownerUserId: null, projectApprovalId: null })
+          .get(item.id) ?? { ownerUserId: null })
       : null;
     const ownership = item
       ? delegatedLinearUserId(db, item.id)
@@ -148,7 +148,6 @@ export function createRunnerPlacement(options: {
             version: item.version,
             cancelRequested: item.cancelRequested,
             ownerUserId: current.placement?.ownerUserId ?? null,
-            projectApprovalId: current.placement?.projectApprovalId ?? null,
           }
         : null,
       session: current.session,
@@ -247,15 +246,6 @@ export function createRunnerPlacement(options: {
          AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL))`,
         )
         .all(input.profile?.agent ?? "", current.workspace.id, at - 60_000);
-      const projectMembers = current.placement?.projectApprovalId
-        ? db
-            .query<{ id: string }, [string]>(
-              `SELECT actor_id AS id FROM project_approval WHERE id=?1 UNION SELECT lead_user_id FROM project_approval WHERE id=?1
-               UNION SELECT u.id FROM project_approval_member m JOIN workspace_user u ON u.linear_user_id=m.linear_user_id WHERE m.approval_id=?1`,
-            )
-            .all(current.placement.projectApprovalId)
-            .map((row) => row.id)
-        : [];
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(
@@ -283,9 +273,8 @@ export function createRunnerPlacement(options: {
           (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(teamId))
         )
           return [];
-        const own = runner.ownerId === (current.placement?.ownerUserId ?? requester);
-        const shared = runner.sharing === 1 && projectMembers.includes(runner.ownerId);
-        if (!own && !shared) return [];
+        // Every task runs on the runners of the person who delegated it.
+        if (runner.ownerId !== (current.placement?.ownerUserId ?? requester)) return [];
         if (
           input.profile &&
           input.purpose !== "prepare" &&
@@ -301,7 +290,7 @@ export function createRunnerPlacement(options: {
           return [];
         const reviewRank =
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
-        return [{ runner, rank: reviewRank * 10 + (own ? 0 : 1) }];
+        return [{ runner, rank: reviewRank }];
       });
       const session = input.role === "implementer" && input.purpose === "work" && input.session;
       const holder = session
