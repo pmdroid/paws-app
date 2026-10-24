@@ -130,9 +130,59 @@ export function treeFiles(root: string): PolicyFilesLoad {
   };
 }
 
+/** Largest repository-root file {@link loadOriginMainRootFiles} reads. */
+export const ROOT_FILE_MAX_BYTES = 65_536;
+
+export type RootFilesLoad =
+  | { ok: true; files: ReadonlyMap<string, Uint8Array> }
+  | { ok: false; message: string };
+
+/**
+ * Read the named files at the repository root of `origin/main`, through the
+ * same confirmed fetch and `ls-remote` answer as the Closeout policy. The work
+ * tree and local refs are not read. A name that is absent is left out of the
+ * result. A name that is a symlink, a directory or larger than
+ * {@link ROOT_FILE_MAX_BYTES} fails the load.
+ */
+export function loadOriginMainRootFiles(
+  input: Pick<LoadPolicyInput, "repo" | "git">,
+  names: readonly string[],
+): RootFilesLoad {
+  const confirmed = confirmedOriginMain(input);
+  if (!confirmed.ok) return confirmed;
+  const files = new Map<string, Uint8Array>();
+  for (const name of names) {
+    if (name.includes("/") || repoPath(name) === undefined)
+      return { ok: false, message: `not a repository-root file: ${name}` };
+    const listed = input.git.listBlobs(input.repo, confirmed.commit, name);
+    if (!listed.ok) return { ok: false, message: `could not read ${name}` };
+    const blob = listed.blobs.find((entry) => entry.path === name);
+    if (blob === undefined) {
+      if (listed.blobs.length > 0) return { ok: false, message: `${name} is not a file` };
+      continue;
+    }
+    if (!regularMode(blob.mode)) return { ok: false, message: `${name} is not a file` };
+    const read = input.git.readBlob(input.repo, blob.object);
+    if (!read.ok) return { ok: false, message: `could not read ${name}` };
+    if (read.bytes.byteLength > ROOT_FILE_MAX_BYTES)
+      return { ok: false, message: `${name} is larger than ${ROOT_FILE_MAX_BYTES} bytes` };
+    files.set(name, read.bytes);
+  }
+  return { ok: true, files };
+}
+
 function originMainFiles(
   input: LoadPolicyInput,
 ): { ok: true; files: Map<string, Uint8Array> } | { ok: false; message: string } {
+  const confirmed = confirmedOriginMain(input);
+  if (!confirmed.ok) return confirmed;
+  return materialize(input.git, input.repo, confirmed.commit);
+}
+
+/** The `origin/main` commit when the fetch and `ls-remote` name the same one. */
+function confirmedOriginMain(
+  input: Pick<LoadPolicyInput, "repo" | "git">,
+): { ok: true; commit: string } | { ok: false; message: string } {
   const fetched = input.git.fetchOriginMain(input.repo);
   if (!fetched.ok) return { ok: false, message: unavailable(fetched.stderr) };
   const commit = fetched.commit.trim().toLowerCase();
@@ -142,7 +192,7 @@ function originMainFiles(
   const remote = remoteSha(listed.stdout);
   if (remote === undefined || remote !== commit)
     return { ok: false, message: "origin/main is unavailable" };
-  return materialize(input.git, input.repo, commit);
+  return { ok: true, commit };
 }
 
 function loadGlobal(input: LoadPolicyInput): PolicyLoadOutcome {

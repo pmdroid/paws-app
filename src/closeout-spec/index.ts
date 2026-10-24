@@ -87,13 +87,14 @@ export {
   reviewRequirements,
   run,
   trustedPolicyFiles,
+  trustedRootFiles,
   validate,
   visualReviewRequirements,
   workspacePolicyFiles,
 } from "./facade";
 export { approvalsAtHead } from "./published";
 export { decodePolicyFiles, encodePolicyFiles } from "./policy/transfer";
-export type { PolicyFilesLoad } from "./policy/load";
+export type { PolicyFilesLoad, RootFilesLoad } from "./policy/load";
 export type {
   AddReviewInput,
   AddReviewResult,
