@@ -105,3 +105,92 @@ print(json.dumps({"version": release.MISE_VERSION, "digests": release.MISE_SHA25
     "linux-arm64": `mise ${result.version} linux-arm64 checksum mismatch`,
   });
 });
+
+test("a packed runner artifact has no musl package and no devDependency, and keeps every required file", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-runner-pack-"));
+  const deploy = new URL("../deploy/linux/", import.meta.url).pathname;
+  const script = `
+import argparse, importlib.util, json, pathlib, platform, sys, tarfile
+from types import SimpleNamespace
+from unittest import mock
+spec = importlib.util.spec_from_file_location("packager", sys.argv[1] + "package.py")
+packager = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(packager)
+release = packager.release
+root = pathlib.Path(sys.argv[2])
+source = root / "source"
+modules = root / "production" / "node_modules"
+def write(path, content=b"synthetic"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+for name in release.REQUIRED:
+    relative = name.removeprefix("app/")
+    if relative.startswith("node_modules/"):
+        write(modules / relative.removeprefix("node_modules/"))
+        if relative in release.PROVIDER_EXECUTABLES.values():
+            (modules / relative.removeprefix("node_modules/")).chmod(0o755)
+    else:
+        write(source / relative)
+development = json.load(open(sys.argv[3]))["devDependencies"]
+write(source / "package.json", json.dumps({"dependencies": {"left-pad": "1"}, "devDependencies": development}).encode())
+arch = release.ARCHITECTURE[0]
+for name in development:
+    write(modules / name / "package.json", b"{}")
+for name in (f"@anthropic-ai/claude-agent-sdk-linux-{arch}-musl", f"@oxlint/binding-linux-{arch}-musl", f"lightningcss-linux-{arch}-musl", "left-pad/node_modules/helper-linux-musl"):
+    write(modules / name / "index.js")
+write(modules / "left-pad/index.js")
+write(root / "bun")
+installs = []
+def install(bun, checkout, workspace):
+    installs.append(str(checkout))
+    return modules
+with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\\n")), mock.patch.object(packager, "install_production", side_effect=install), mock.patch.object(packager, "compile_runner", return_value=b"\\x7fELFrunner"), mock.patch.object(release, "download_mise", return_value=b"\\x7fELFmise"):
+    packager.pack(argparse.Namespace(source=source, bun=root / "bun", version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=root / "package", mise=None))
+members = sorted(tarfile.open(root / "package" / "artifact.tar").getnames())
+print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "development": sorted(development), "installs": installs, "source": str(source.resolve())}))
+`;
+  try {
+    const child = Bun.spawn(
+      [
+        "python3",
+        "-I",
+        "-B",
+        "-c",
+        script,
+        deploy,
+        root,
+        new URL("../package.json", import.meta.url).pathname,
+      ],
+      { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    const result: {
+      members: string[];
+      required: string[];
+      development: string[];
+      installs: string[];
+      source: string;
+    } = JSON.parse(stdout);
+    expect(result.installs).toEqual([result.source]);
+    expect(result.development).toContain("typescript");
+    for (const name of result.required) expect(result.members).toContain(name);
+    expect(result.members).toContain("app/node_modules/left-pad/index.js");
+    const packages = result.members
+      .filter((name) => name.startsWith("app/node_modules/"))
+      .flatMap((name) =>
+        [...name.matchAll(/(?:^app\/|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/g)].map(
+          (match) => match[1]!,
+        ),
+      );
+    expect(packages.filter((name) => name.endsWith("-musl"))).toEqual([]);
+    expect(packages.filter((name) => result.development.includes(name))).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
