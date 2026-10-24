@@ -52,12 +52,8 @@ export type GrokCommand = {
   error: string | null;
 };
 
-function packageSearchStart(): string {
-  return process.execPath.endsWith("/bun") ? import.meta.dir : "/opt/paws-runner/current";
-}
-
 /** Checkout root that contains the paws `package.json`. */
-export function pawsPackageRoot(start: string = packageSearchStart()): string {
+export function pawsPackageRoot(start: string = import.meta.dir): string {
   let dir = start;
   for (let i = 0; i < 8; i++) {
     const candidate = join(dir, "package.json");
