@@ -140,12 +140,10 @@ import {
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
-  saveCloseoutRecovery,
   listCloseoutRounds,
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
-  type CloseoutRecovery,
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
@@ -233,7 +231,6 @@ import {
 import {
   answer as answerAsked,
   answerer,
-  answerQuestion,
   ask,
   canAnswer,
   cancelItemQuestions,
@@ -245,7 +242,6 @@ import {
   getQuestion,
   getVisualReview,
   markVisualReviewStale,
-  openQuestion,
   questionReplyConsumed,
   visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
@@ -293,7 +289,8 @@ import {
   KEEPALIVE_MS,
   publicToolText,
 } from "./activity";
-import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
+import { parseRecoveryAnswer, recoveryOptions } from "./closeout-recovery";
+import { askCloseoutHelp } from "./closeout-help";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
@@ -2528,45 +2525,8 @@ export class Orchestrator {
       retryBaseline,
       summary,
     };
-    this.openCloseoutQuestion(item, sessionId, context);
+    askCloseoutHelp(this.db, sessionId, context, { now: this.now() });
     await this.flush();
-  }
-
-  private openCloseoutQuestion(
-    item: WorkItemRecord,
-    sessionId: string,
-    context: Omit<CloseoutRecovery, "questionId" | "answer" | "answeredBy">,
-    error?: string,
-  ): void {
-    immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
-      if (!current || current.state === "cancelled") return;
-      if (findOpenQuestion(this.db, sessionId) !== null) return;
-      const body = recoveryQuestion(context, error);
-      const question = openQuestion(this.db, {
-        itemId: item.id,
-        runId: item.currentRunId,
-        sessionId,
-        body,
-        now: this.now(),
-      });
-      saveCloseoutRecovery(this.db, { ...context, questionId: question.id });
-      if (current.state !== "awaiting_input")
-        applyWorkItemEvent(this.db, item.id, "blocking_question");
-      saveCheckpoint(this.db, item.id, {
-        phase: "awaiting_input",
-        baseSha: context.base,
-        wipCommit: context.head,
-      });
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "elicitation",
-        orderingKey: sessionId,
-        idempotencyKey: `closeout-help:${question.id}`,
-        payload: { sessionId, questionId: question.id, body },
-        now: this.now(),
-      });
-    });
   }
 
   private async reverify(payload: unknown, jobId: number): Promise<void> {
@@ -3148,9 +3108,6 @@ export class Orchestrator {
     const createdAt =
       event.activityCreatedAtMs === undefined ? event.updatedAtMs : event.activityCreatedAtMs;
     if (createdAt === null || createdAt <= open.createdAt) return "rejected";
-    const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
-      (entry) => entry.questionId === open.id,
-    );
     let answeredBy = event.actorId ?? "unknown";
     try {
       const payload = JSON.parse(event.payload) as {
@@ -3196,72 +3153,23 @@ export class Orchestrator {
       await this.flush();
       return accepted ? "answered" : "rejected";
     }
-    if (!canAnswer({ kind: recovery ? "closeout-bypass" : open.kind }, user)) return "rejected";
-    if (open.kind === "runner-wait") {
+    if (!canAnswer({ kind: open.kind === "closeout-help" ? "closeout-bypass" : open.kind }, user))
+      return "rejected";
+    if (open.kind === "runner-wait" || open.kind === "closeout-help") {
+      const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
+        (entry) => entry.questionId === open.id,
+      );
+      if (recovery && getWorkItem(this.db, open.itemId)?.state !== "awaiting_input")
+        return "rejected";
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
         questionEffects(this.db, { now: this.now() }),
       );
       await this.flush();
+      if (recovery && parseRecoveryAnswer(answer, recovery.failedChecks) === null)
+        return "rejected";
       return outcome.status === "answered" ? "answered" : "rejected";
-    }
-    if (recovery) {
-      const parsed = parseRecoveryAnswer(answer, recovery.failedChecks);
-      const item = getWorkItem(this.db, open.itemId);
-      if (item === null || item.state !== "awaiting_input") return "rejected";
-      const outcome = immediate(this.db, () => {
-        if (
-          answerQuestion(this.db, open.id, {
-            answer,
-            answeredBy,
-            eventKey: event.dedupeKey,
-            now: this.now(),
-          }) === null
-        )
-          return "rejected";
-        if (parsed === null) {
-          this.openCloseoutQuestion(
-            item,
-            sessionId,
-            recovery,
-            "Use /paws bypass check-id -- your reason from an identifiable trusted account, or reply with guidance.",
-          );
-          return "rejected";
-        }
-        if (item.sessionKey === sessionId)
-          applyLinearTurns(this.db, sessionId, [event.dedupeKey], item.id);
-        applyWorkItemEvent(this.db, item.id, "answer_received");
-        if (parsed.kind === "bypass") {
-          applyWorkItemEvent(this.db, item.id, "turn_ended");
-          saveCheckpoint(this.db, item.id, {
-            phase: "verifying",
-            baseSha: recovery.base,
-            wipCommit: recovery.head,
-          });
-          enqueueJobOnce(this.db, {
-            queue: JOB_KIND.reverify,
-            jobKey: `closeout-bypass:${open.id}`,
-            payload: { itemId: item.id },
-            now: this.now(),
-          });
-        } else {
-          enqueueJobOnce(this.db, {
-            queue: JOB_KIND.resume,
-            jobKey: `closeout-guidance:${open.id}`,
-            payload: {
-              itemId: item.id,
-              freshSession: true,
-              handoff: handoffNote({ question: recovery.summary, answer: parsed.body }),
-              reason: "closeout-guidance",
-            },
-            now: this.now(),
-          });
-        }
-        return "answered" as const;
-      });
-      await this.flush();
-      return outcome;
     }
     const outcome = immediate(this.db, () => {
       const item = getWorkItem(this.db, open.itemId);

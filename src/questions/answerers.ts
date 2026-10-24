@@ -7,6 +7,7 @@ export type AnswerableQuestion =
   | { kind: "runner-wait" }
   | { kind: "time-limit" }
   | { kind: "closeout-bypass" }
+  | { kind: "ci-help" }
   | { kind: "visual-review"; delegatorId: string | null; leadId: string | null }
   | { kind: "github-auth"; actorId: string };
 
@@ -24,6 +25,7 @@ export const ANSWER_POLICY: Policy = {
   "runner-wait": () => true,
   "time-limit": () => true,
   "closeout-bypass": () => true,
+  "ci-help": () => true,
   "visual-review": (question, user) =>
     user.id === question.delegatorId || user.id === question.leadId,
   "github-auth": (question, user) => user.id === question.actorId,

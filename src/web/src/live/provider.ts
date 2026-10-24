@@ -1500,8 +1500,9 @@ function verdictKey(itemId: string, key: string): { head: string; outcome: strin
 }
 
 function questionId(key: string): string | null {
-  if (!key.startsWith("ask:")) return null;
-  const id = key.slice("ask:".length).trim();
+  const prefix = ["ask:", "question:"].find((candidate) => key.startsWith(candidate));
+  if (prefix === undefined) return null;
+  const id = key.slice(prefix.length).trim();
   return id || null;
 }
 
