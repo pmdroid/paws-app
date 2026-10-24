@@ -253,7 +253,6 @@ export function retireEmptyFailedAttempt(db: Database, issueId: string, sessionI
        WHERE item.linear_issue_id = ? AND item.session_key != incoming.session_id
          AND item.state = 'failed' AND item.cancel_requested = 1
          AND item.current_run_id IS NULL AND item.checkpoint IS NULL
-         AND item.project_approval_id IS NULL
          AND NOT EXISTS (SELECT 1 FROM parent_delegation_issue sub
            WHERE sub.delegation_id = item.delegation_id)
          AND json_type(item.brief, '$.epic') = 'null'

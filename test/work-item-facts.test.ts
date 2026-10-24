@@ -21,19 +21,9 @@ test("lists each item's owner, Linear project, and creation time", () => {
     name: "Ada Owner",
     email: "ada@example.test",
   });
-  db.run(
-    `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at)
-     VALUES('approval','ws','proj',?,?,'g1',?,0,1)`,
-    [userId, userId, JSON.stringify({ name: "Wrong", project: { name: "Exports" } })],
-  );
   db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, newer.id]);
   saveWorkItemLinearProject(db, newer.id, { id: "linear-project", name: "Exports" });
-  // A Paws project start is not the issue's Linear project.
-  db.run("UPDATE work_item SET owner_user_id = ?, project_approval_id = ? WHERE id = ?", [
-    userId,
-    "approval",
-    older.id,
-  ]);
+  db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, older.id]);
 
   expect(listWorkItemFacts(db)).toEqual([
     {
