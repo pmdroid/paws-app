@@ -4,6 +4,7 @@ import {
   JOB_KIND,
   delegationHasOpenWork,
   holdsExecution as itemHoldsExecution,
+  isBlockerSatisfied,
   isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
@@ -13,10 +14,13 @@ import {
   enqueueJob,
   enqueueJobOnce,
   enqueueOutboxOnce,
+  getTaskMode,
   immediate,
   mergeLaneSql,
   requeueOrphanedWork,
+  saveItemHolds,
   saveQueuePositions,
+  type ItemHold,
   type JobLoop,
 } from "../db";
 import { readyItems } from "../intake";
@@ -59,7 +63,36 @@ export type SchedulerOptions = {
   sessionFor?: (itemId: string) => string | null;
   onWaiting?: (itemIds: readonly string[]) => void;
   ownerCap?: number | null;
+  log?: (line: string) => void;
 };
+
+const HOLD_LINES: Record<ItemHold["reason"], string> = {
+  blocked: "blocked by another issue",
+  project: "its project has not released it yet",
+  reconciling: "Linear changes are still syncing",
+  snapshot: "reading its dependencies from Linear",
+  cap: "its owner already runs the most tasks at once",
+  slot: "no free slot on any runner",
+};
+
+function holdLine(hold: ItemHold): string {
+  return hold.reason === "blocked" && hold.blockers.length
+    ? `blocked by ${hold.blockers.join(", ")}`
+    : HOLD_LINES[hold.reason];
+}
+
+function openBlockers(db: Database, item: Item): string[] {
+  return db
+    .query<{ id: string; identifier: string; state: WorkItemState }, [string]>(
+      `SELECT i.id,i.linear_identifier AS identifier,i.state FROM task_block b
+       JOIN work_item i ON i.id=(SELECT c.id FROM work_item c WHERE c.linear_issue_id=b.blocker_linear_issue_id
+         ORDER BY c.created_at DESC,c.id DESC LIMIT 1)
+       WHERE b.blocked_linear_issue_id=? AND i.linear_identifier IS NOT NULL ORDER BY i.position,i.id`,
+    )
+    .all(item.issueId)
+    .filter((blocker) => !isBlockerSatisfied({ ...blocker, mode: getTaskMode(db, blocker.id) }))
+    .map((blocker) => blocker.identifier);
+}
 
 export function schedulerPaths(paths: readonly string[]): string[] {
   if (!paths.length) return ["*"];
@@ -341,17 +374,10 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     requeueOrphanedWork(db, now);
     const items = allItems(db, now);
     const byId = new Map(items.map((item) => [item.id, item]));
-    const ready = new Set(
-      items
-        .filter(
-          (item) =>
-            item.state === "queued" &&
-            !item.cancelRequested &&
-            !item.absent &&
-            admission.canStart(item.id).ok,
-        )
-        .map((item) => item.id),
-    );
+    const starts = items
+      .filter((item) => item.state === "queued" && !item.cancelRequested && !item.absent)
+      .map((item) => ({ item, start: admission.canStart(item.id) }));
+    const ready = new Set(starts.filter(({ start }) => start.ok).map(({ item }) => item.id));
     yieldIdleMergeSessions(db, items, ready, admission, now);
     if (options.sessionFor) reportDependencyCycles(db, items, admission, options.sessionFor, now);
     const saved = db
@@ -473,8 +499,43 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       now,
       new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
     );
-    return { admitted, waiting: waiting.map(({ item }) => item.id) };
+    const holds: ItemHold[] = [
+      ...starts.flatMap(({ item, start }): ItemHold[] =>
+        start.ok ||
+        start.held === "missing" ||
+        start.held === "cancelled" ||
+        start.held === "workspace"
+          ? []
+          : [
+              {
+                itemId: item.id,
+                reason: start.held,
+                blockers: start.held === "blocked" ? openBlockers(db, item) : [],
+              },
+            ],
+      ),
+      ...waiting.map(({ item, capped }): ItemHold => ({
+        itemId: item.id,
+        reason: capped ? "cap" : "slot",
+        blockers: [],
+      })),
+    ];
+    const changes = saveItemHolds(db, holds).map((change) => {
+      const name =
+        byId.get(change.itemId)?.identifier ??
+        db
+          .query<{ name: string | null }, [string]>(
+            "SELECT linear_identifier AS name FROM work_item WHERE id=?",
+          )
+          .get(change.itemId)?.name ??
+        change.itemId;
+      return change.held
+        ? `item ${name} held: ${holdLine(change.held)}`
+        : `item ${name} no longer held`;
+    });
+    return { admitted, waiting: waiting.map(({ item }) => item.id), changes };
   });
+  if (options.log) for (const line of result.changes) options.log(line);
   options.onWaiting?.(result.waiting);
   return result.admitted;
 }

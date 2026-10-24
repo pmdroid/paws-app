@@ -406,6 +406,8 @@ export {
   saveQueuePositions,
 } from "./queue-wait";
 export type { QueuePosition } from "./queue-wait";
+export { listItemHolds, saveItemHolds } from "./item-hold";
+export type { ItemHold, ItemHoldChange, ItemHoldReason } from "./item-hold";
 export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
 export {
   getTaskLinearRead,

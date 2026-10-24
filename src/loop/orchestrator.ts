@@ -404,6 +404,7 @@ export type OrchestratorOptions = {
     candidate?: { sha: string; baseSha: string },
   ) => boolean | Promise<boolean>;
   admission?: ItemAdmission;
+  journal?: (line: string) => void;
   scheduling?: () => Pick<SchedulerOptions, "defaultRepository" | "ownerCap">;
   clock?: Clock;
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
@@ -3633,6 +3634,7 @@ export class Orchestrator {
     dispatch(this.db, {
       now: this.now(),
       admission: this.admission,
+      ...(this.options.journal ? { log: this.options.journal } : {}),
       handoffForItem: (itemId) => this.dependencyHandoff(itemId),
       sessionFor: (itemId) => {
         const item = getWorkItem(this.db, itemId);

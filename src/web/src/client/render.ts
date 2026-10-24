@@ -23,6 +23,7 @@ import {
   mergeQueueLine,
   queueLine,
   capLine,
+  heldLine,
   unmergedBlockers,
   waitReason,
   runLabel,
@@ -600,8 +601,13 @@ function usagePauseSection(run: StatusRun, pause: StatusUsagePause): string {
 
 /** Where a queued task stands while every runner slot is busy. */
 function queueNotice(item: StatusItem): string {
-  if (item.state !== "queued" || !item.queue) return "";
-  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p></div></section>`;
+  if (item.state !== "queued") return "";
+  const held = heldLine(item);
+  if (!item.queue)
+    return held
+      ? `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">II</span><div><h3 id="queue-${esc(item.id)}">${esc(held)}</h3><p>It holds no runner slot while it waits.</p></div></section>`
+      : "";
+  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `${held ? `${held}. ` : ""}Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p></div></section>`;
 }
 
 /** Where a task stands in its repository's merge queue. Only the first one moves. */

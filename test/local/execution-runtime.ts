@@ -46,17 +46,16 @@ export async function probeExecutionRuntime(input: {
         "SELECT queue,recurring_every_ms AS interval,fire_count AS fires FROM job WHERE queue IN ('scheduler.tick','execution.reconcile','linear.epics.reconcile') ORDER BY queue",
       )
       .all();
-  await until(() => timers().length === 3 && timers().every((row) => row.fires > 0));
+  await until(() => timers().length === 2 && timers().every((row) => row.fires > 0));
   assert.deepEqual(
     timers().map(({ queue, interval }) => ({ queue, interval })),
     [
-      { queue: "execution.reconcile", interval: 30_000 },
       { queue: "linear.epics.reconcile", interval: 1_800_000 },
       { queue: "scheduler.tick", interval: 30_000 },
     ],
   );
   observe(
-    "Actual Paws startup persists and executes scheduler, execution and active-epic sweep timers",
+    "Actual Paws startup persists and executes only the scheduler and active-epic sweep timers",
     timers(),
   );
   let changed = false;

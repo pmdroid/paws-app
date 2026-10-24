@@ -227,6 +227,34 @@ describe("status views", () => {
     );
   });
 
+  test("a held task shows why it waits on its issue page", () => {
+    const snapshot = demoStatus();
+    const item = snapshot.items[0]!;
+    item.state = "queued";
+    item.blockers = [];
+    delete item.queue;
+    const issue = () => render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    expect(issue()).not.toContain("Waiting:");
+    const lines: [NonNullable<typeof item.held>, string][] = [
+      [{ reason: "blocked", blockers: ["PAS-367"] }, "Waiting: blocked by PAS-367"],
+      [{ reason: "blocked", blockers: [] }, "Waiting: blocked by another issue"],
+      [{ reason: "project", blockers: [] }, "Waiting: its project has not released it yet"],
+      [{ reason: "reconciling", blockers: [] }, "Waiting: Linear changes are still syncing"],
+      [{ reason: "snapshot", blockers: [] }, "Waiting: reading its dependencies from Linear"],
+      [{ reason: "cap", blockers: [] }, "Waiting: its owner already runs the most tasks at once"],
+      [{ reason: "slot", blockers: [] }, "Waiting: no free slot on any runner"],
+    ];
+    for (const [held, line] of lines) {
+      item.held = held;
+      expect(issue()).toContain(line);
+    }
+    item.queue = { position: 2, busySlots: 4, totalSlots: 4 };
+    expect(issue()).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
+    expect(issue()).toContain("Waiting: no free slot on any runner.");
+    item.state = "running";
+    expect(issue()).not.toContain("Waiting:");
+  });
+
   test("the issue page shows how many Linear requests the task made", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
