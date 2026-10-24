@@ -1367,7 +1367,7 @@ export async function syncComments(
   }
 }
 
-function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {
+export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {
   const required = () => Promise.reject(new Error("A remote runner is required."));
   return {
     cancelItem: async () => {},
