@@ -164,7 +164,6 @@ describe("agent settings config", () => {
     const path = join(tempHome(), "config.toml");
     writeAgentSettings(path, settings);
     const setup = {
-      linearMode: "comments" as const,
       linearTeam: "ENG",
       linearTeamId: "team-eng",
       linearViewerId: "viewer",

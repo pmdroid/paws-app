@@ -1,7 +1,13 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import { MISSING_GITHUB_CLIENT_ID_MESSAGE, missingGitHubClientId } from "../auth";
-import { LINEAR_WORKSPACE_REQUIRED, loadEnv, pawsPaths, type EnvSource } from "../config";
+import {
+  LINEAR_COMMENT_MODE_REMOVED,
+  LINEAR_WORKSPACE_REQUIRED,
+  loadEnv,
+  pawsPaths,
+  type EnvSource,
+} from "../config";
 import { describeLinearWebhookWarning, LINEAR_WEBHOOK_FIX, type LinearWebhookWarning } from "../db";
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
 import type { GrokLoginStatus } from "../install";
@@ -40,7 +46,7 @@ const FIX = {
   mode: "Connect your Linear workspace in the Paws website.",
   team: "Choose the Linear teams in workspace settings.",
   workspace: LINEAR_WORKSPACE_REQUIRED,
-  label: "Create the paws label in your Linear team.",
+  commentMode: LINEAR_COMMENT_MODE_REMOVED,
   ghLogin: "Run gh auth login.",
   ghPush: "Run gh auth login, then grant that login push access to the repository.",
   adapter: "Run bun install in the paws checkout.",
@@ -87,7 +93,6 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       workspaceCheck(probe.env, facts),
       teamCheck(facts),
     );
-    if (facts.linearMode === "comments") checks.push(labelCheck(facts));
   }
   if (facts.githubAuth !== "gh") {
     checks.push(...githubAuthChecks(facts));
@@ -263,8 +268,9 @@ function modeCheck(facts: ProbeFacts): DoctorCheck {
   if (facts.configError !== null) {
     return check("linear-mode", false, facts.configError, FIX.mode);
   }
-  const label = facts.configured ? facts.linearMode : `${facts.linearMode} (default)`;
-  return check("linear-mode", true, label, FIX.mode);
+  if (facts.linearCommentMode)
+    return check("linear-mode", false, "comment mode is configured", FIX.commentMode);
+  return check("linear-mode", true, "agent-session", FIX.mode);
 }
 
 function workspaceCheck(env: EnvSource, facts: ProbeFacts): DoctorCheck {
@@ -289,14 +295,6 @@ function teamCheck(facts: ProbeFacts): DoctorCheck {
     return check("linear-team", false, detail, FIX.team);
   }
   return check("linear-team", true, facts.team ?? facts.teamId ?? "team", FIX.team);
-}
-
-function labelCheck(facts: ProbeFacts): DoctorCheck {
-  if (!facts.linear.labelFound) {
-    const detail = facts.linear.reachable ? "paws label is missing" : "Linear could not be reached";
-    return check("linear-label", false, detail, FIX.label);
-  }
-  return check("linear-label", true, "paws", FIX.label);
 }
 
 function closeoutCheck(facts: ProbeFacts): DoctorCheck {
