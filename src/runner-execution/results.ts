@@ -67,12 +67,18 @@ export function runnerResultDirectory(options: RunnerResults, executionId: strin
 export function readRunnerResultFile(
   options: RunnerResults,
   executionId: string,
-  name: "candidate.bundle" | "events.jsonl" | "result.json" | `artifact-${string}.bytes`,
+  name:
+    | "candidate.bundle"
+    | "events.jsonl"
+    | "result.json"
+    | "handover.json"
+    | `artifact-${string}.bytes`,
 ): Buffer {
   const limits = {
     "candidate.bundle": 536_870_912,
     "events.jsonl": 16_777_216,
     "result.json": 1_048_576,
+    "handover.json": 1_048_576,
   };
   const limit = Object.hasOwn(limits, name)
     ? limits[name as keyof typeof limits]

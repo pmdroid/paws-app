@@ -6,6 +6,7 @@ import type { RunnerTranscriptObjects } from "./objects";
 import {
   RunnerTranscriptChunkSchema,
   RunnerTranscriptFinishSchema,
+  RUNNER_HANDOVER_SEAL_GRACE_MS,
   RUNNER_TRANSCRIPT_CHUNK_BYTES,
   RUNNER_TRANSCRIPT_MAX_BYTES,
   type RunnerTranscriptChunk,
@@ -37,8 +38,10 @@ export function createRunnerTranscripts(options: {
   db: Database;
   work: RunnerWork;
   objects: RunnerTranscriptObjects;
+  now?: () => number;
 }) {
   const { db, work, objects } = options;
+  const now = options.now ?? Date.now;
   async function writeObject(key: string, bytes: Blob | ReadableStream<Uint8Array>) {
     try {
       await objects.write(key, bytes);
@@ -148,8 +151,65 @@ export function createRunnerTranscripts(options: {
     async finish(access: Access, raw: RunnerTranscriptFinish) {
       const finish = RunnerTranscriptFinishSchema.parse(raw);
       if (finish.offset !== finish.sizeBytes) denied();
+      const tail = finish.tail
+        ? { ...finish.tail, bytes: Buffer.from(finish.tail.data, "base64") }
+        : undefined;
+      if (
+        tail &&
+        (!tail.bytes.length ||
+          tail.bytes.length > RUNNER_TRANSCRIPT_CHUNK_BYTES ||
+          tail.bytes.toString("base64") !== tail.data ||
+          hash(tail.bytes) !== tail.sha256 ||
+          tail.offset % RUNNER_TRANSCRIPT_CHUNK_BYTES !== 0 ||
+          tail.offset + tail.bytes.length !== finish.sizeBytes)
+      )
+        denied();
+      if (tail) {
+        // Written first; it is part of the transcript only once the seal below records it.
+        const pending = immediate(db, () => rowFor(access, finish.generation, finish.executionId));
+        await writeObject(
+          chunkKey(pending, {
+            offset: tail.offset,
+            sizeBytes: tail.bytes.length,
+            sha256: tail.sha256,
+          }),
+          new Blob([tail.bytes]),
+        );
+      }
       const row = immediate(db, () => {
-        const value = rowFor(access, finish.generation, finish.executionId);
+        let value = rowFor(access, finish.generation, finish.executionId);
+        // A handover that is not sealed by its deadline stays on the runner; Paws says so.
+        if (value.sealedSize === null && finish.handedOver) {
+          const handover = db
+            .query<{ expiresAt: number }, [string, number]>(
+              `SELECT expires_at AS expiresAt FROM runner_command
+               WHERE run_id=? AND generation=? AND kind='handover' ORDER BY ordinal DESC LIMIT 1`,
+            )
+            .get(access.runId, finish.generation);
+          if (!handover || now() > handover.expiresAt + RUNNER_HANDOVER_SEAL_GRACE_MS) denied();
+        }
+        if (tail && value.sealedSize === null) {
+          const previous = existing(access.runId, finish.generation, tail.offset);
+          if (previous) {
+            if (previous.sha256 !== tail.sha256 || previous.sizeBytes !== tail.bytes.length)
+              denied();
+          } else {
+            if (value.sizeBytes !== tail.offset) denied();
+            db.run("INSERT INTO runner_transcript_chunk VALUES(?,?,?,?,?)", [
+              access.runId,
+              finish.generation,
+              tail.offset,
+              tail.bytes.length,
+              tail.sha256,
+            ]);
+            db.run("UPDATE runner_transcript SET size_bytes=? WHERE run_id=? AND generation=?", [
+              finish.sizeBytes,
+              access.runId,
+              finish.generation,
+            ]);
+            value = { ...value, sizeBytes: finish.sizeBytes };
+          }
+        }
         if (
           value.sizeBytes !== finish.sizeBytes ||
           (value.sealedSize !== null &&

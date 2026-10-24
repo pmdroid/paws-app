@@ -689,6 +689,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           const backend = await remote;
           await backend.agents.cancelItem(itemId);
         },
+        handoverItem: async (itemId, signal) => {
+          const backend = await remote;
+          return backend.agents.handoverItem(itemId, signal);
+        },
         slotFree: () =>
           db
             .query<{ id: string }, []>(

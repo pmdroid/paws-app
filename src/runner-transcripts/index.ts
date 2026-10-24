@@ -6,6 +6,7 @@ export {
 export {
   RunnerTranscriptChunkSchema,
   RunnerTranscriptFinishSchema,
+  RUNNER_HANDOVER_SEAL_GRACE_MS,
   RUNNER_TRANSCRIPT_CHUNK_BYTES,
   RUNNER_TRANSCRIPT_MAX_BYTES,
   type RunnerTranscriptChunk,

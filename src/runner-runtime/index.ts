@@ -16,7 +16,12 @@ import {
   type RunnerSpool,
   type RunnerResults,
 } from "../runner-execution";
-import { publishRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
+import {
+  publishRunnerAnswer,
+  publishRunnerHandover,
+  readRunnerHandover,
+  runnerFollowUpRequestId,
+} from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
@@ -26,6 +31,9 @@ class GitHubFailure extends RemoteFailure {}
 const GITHUB_UNAVAILABLE = "GitHub git operation failed";
 
 const CANDIDATE_PUSH_RETRY_MS = [0, 60_000, 120_000, 240_000, 480_000];
+/** A handover is published only if this much of its time is left for the transcript and result. */
+const HANDOVER_SEAL_RESERVE_MS = 10_000;
+const HANDOVER_RESULT = "handover.json";
 const PERMANENT_PUSH_REJECTION =
   /\[remote rejected\]|protected branch|\bGH0\d\d\b|Permission to \S+ denied|Repository not found|pre-receive hook declined/i;
 
@@ -61,6 +69,7 @@ const workerResult = z.object({
   }).strip(),
   candidateSha: RunnerResultSchema.shape.candidateSha,
   reviewText: RunnerResultSchema.shape.reviewText,
+  handoverExpiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 });
 type PushFailure = NonNullable<RunnerResult["pushFailure"]>;
 type Active = {
@@ -75,6 +84,11 @@ type Active = {
   publicationBranch?: string;
   followUps?: number;
   transcriptSealed?: boolean;
+  /**
+   * The runtime asked Paws to seal a handed-over transcript. From here on the handover only
+   * finishes: Paws decides by sealing or refusing, and the worker never restarts on a sealed one.
+   */
+  handoverCommitted?: boolean;
   restarts?: number;
   pushTries?: number;
   pushAt?: number;
@@ -142,9 +156,15 @@ export async function openRunnerRuntime(options: {
       Promise.allSettled(work),
       new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
     ]);
+  // Committed handovers left by a restart: their seal and result are finished, not failed.
+  const recovering: Execution[] = [];
   try {
     for (const previous of journal.executions(true)) {
       await broker.stop(previous.id);
+      if (previous.phase === "handover") {
+        recovering.push(previous);
+        continue;
+      }
       report(
         new Error(
           `Runner interrupted execution ${previous.id} for run ${previous.command.runId}: runner restarted`,
@@ -211,7 +231,8 @@ export async function openRunnerRuntime(options: {
     entry.stopped ??= (async () => {
       await quiesce(entry);
       if (notify) await fail(entry.execution, reason, entry.transcriptSealed, pushFailure);
-      journal.phase(entry.execution.id, "interrupted");
+      // A committed handover that stops quietly, as on shutdown, is finished after the restart.
+      if (!entry.handoverCommitted || notify) journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
     })();
     await entry.stopped;
@@ -221,6 +242,7 @@ export async function openRunnerRuntime(options: {
     reason: string,
     sealed = false,
     pushFailure?: PushFailure,
+    candidateSha?: string,
   ) {
     const { command } = execution;
     if (command.type !== "run" && command.type !== "review" && command.type !== "task") return;
@@ -232,7 +254,7 @@ export async function openRunnerRuntime(options: {
       if (!sealed) {
         let raw: Buffer = Buffer.alloc(0);
         try {
-          raw = readRunnerResultFile(options.results, execution.id, "events.jsonl");
+          raw = transcriptSource(execution.id);
         } catch {}
         journal.ingest(execution.id, raw);
         let { offset, consumed } = journal.transcriptCursor(execution.id);
@@ -288,11 +310,161 @@ export async function openRunnerRuntime(options: {
               16_384,
             ),
           ...(pushFailure ? { pushFailure } : {}),
+          ...(candidateSha && command.type === "run" ? { candidateSha } : {}),
         }),
         token,
       );
     } catch (error) {
       report(error);
+    }
+  }
+  /**
+   * The run's transcript as the runner uploads and seals it: the worker's event journal, which
+   * carries the agent's ACP events next to its questions and progress. Every path that uploads
+   * or seals a transcript reads it here, so a repeated seal covers the same bytes.
+   */
+  function transcriptSource(executionId: string): Buffer {
+    return readRunnerResultFile(options.results, executionId, "events.jsonl");
+  }
+  /**
+   * Finishes a committed handover after a runner restart: seals the transcript as a handover,
+   * which Paws repeats when it is already sealed, and posts the handed-over result. Returns
+   * false when Paws refuses the seal, so the execution is reported as failed instead.
+   */
+  async function recoverHandover(
+    execution: Execution,
+  ): Promise<{ committed: boolean; candidateSha?: string }> {
+    const { command } = execution;
+    if (command.type !== "run") return { committed: false };
+    const worker = workerResult.parse(
+      JSON.parse(
+        readRunnerResultFile(options.results, execution.id, HANDOVER_RESULT).toString("utf8"),
+      ),
+    );
+    if (worker.executionId !== execution.id || worker.commandId !== command.id)
+      throw new Error("Runner result identity mismatch");
+    const result = RunnerResultSchema.parse({
+      ...worker.run,
+      executionId: worker.executionId,
+      commandId: worker.commandId,
+      ...(worker.candidateSha ? { candidateSha: worker.candidateSha } : {}),
+    });
+    if (!result.handedOver) throw new Error("Invalid runner handover result");
+    const { token } = await remote(() =>
+      options.daemon.issueRunGrant(command.runId, {
+        commandId: command.id,
+        generation: command.generation,
+      }),
+    );
+    // The same bytes drainTranscript sealed: the worker exited, so they no longer change.
+    const raw = transcriptSource(execution.id);
+    journal.ingest(execution.id, raw);
+    try {
+      await sealHandover(execution, raw, async () => token);
+    } catch (error) {
+      if (error instanceof RemoteFailure) throw error;
+      report(error);
+      return {
+        committed: false,
+        ...(result.candidateSha ? { candidateSha: result.candidateSha } : {}),
+      };
+    }
+    await remote(() => options.daemon.postResult(command.runId, command.generation, result, token));
+    return { committed: true };
+  }
+  /**
+   * Uploads a handed-over transcript's whole chunks, then asks Paws to seal it with the last
+   * partial chunk. Paws stores that tail only with the seal, so a refused seal leaves whole
+   * chunks and a session that continues on this runner can keep appending to its transcript.
+   */
+  async function sealHandover(
+    execution: Execution,
+    raw: Buffer,
+    token: () => Promise<string>,
+    guard: () => void = () => undefined,
+  ) {
+    const { command } = execution;
+    let { offset, consumed } = journal.transcriptCursor(execution.id);
+    // A transcript uploaded to its end was sealed before; the seal is only repeated.
+    const repeat = offset === raw.length;
+    if (
+      offset > consumed ||
+      consumed !== raw.length ||
+      (!repeat && offset % RUNNER_TRANSCRIPT_CHUNK_BYTES)
+    )
+      throw new Error("Runner transcript is incomplete");
+    const whole =
+      Math.floor(raw.length / RUNNER_TRANSCRIPT_CHUNK_BYTES) * RUNNER_TRANSCRIPT_CHUNK_BYTES;
+    while (offset < whole) {
+      const bytes = raw.subarray(offset, offset + RUNNER_TRANSCRIPT_CHUNK_BYTES);
+      const authorization = await token();
+      await remote(() =>
+        options.daemon.uploadTranscript(
+          command.runId,
+          {
+            generation: command.generation,
+            executionId: execution.id,
+            offset,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            data: bytes.toString("base64"),
+          },
+          authorization,
+        ),
+      );
+      guard();
+      journal.transcriptUploaded(execution.id, offset, offset + bytes.length);
+      offset += bytes.length;
+    }
+    const rest = repeat ? Buffer.alloc(0) : raw.subarray(whole);
+    const authorization = await token();
+    await remote(() =>
+      options.daemon.finishTranscript(
+        command.runId,
+        {
+          generation: command.generation,
+          executionId: execution.id,
+          offset: raw.length,
+          sizeBytes: raw.length,
+          sha256: createHash("sha256").update(raw).digest("hex"),
+          handedOver: true,
+          ...(rest.length
+            ? {
+                tail: {
+                  offset: whole,
+                  sha256: createHash("sha256").update(rest).digest("hex"),
+                  data: rest.toString("base64"),
+                },
+              }
+            : {}),
+        },
+        authorization,
+      ),
+    );
+    guard();
+    if (raw.length > offset) journal.transcriptUploaded(execution.id, offset, raw.length);
+  }
+  async function recoverHandovers() {
+    for (const execution of [...recovering]) {
+      try {
+        const recovered = await recoverHandover(execution);
+        if (recovered.committed) journal.phase(execution.id, "complete");
+        else {
+          // The worker stopped with the restart, so the session cannot continue here. The
+          // failed run still carries the pushed WIP commit, which Paws keeps as the checkpoint.
+          await fail(
+            execution,
+            "the runner restarted before the handover finished",
+            false,
+            undefined,
+            recovered.candidateSha,
+          );
+          journal.phase(execution.id, "interrupted");
+        }
+        recovering.splice(recovering.indexOf(execution), 1);
+      } catch (error) {
+        // Paws is unreachable; the next tick tries again.
+        report(error);
+      }
     }
   }
   function quiesce(entry: Active) {
@@ -476,16 +648,26 @@ export async function openRunnerRuntime(options: {
         entry.task = undefined;
       });
   }
-  async function drainTranscript(entry: Active, final: boolean) {
+  async function drainTranscript(entry: Active, final: boolean, handedOver = false) {
     check(entry);
     let raw: Buffer;
     try {
-      raw = readRunnerResultFile(options.results, entry.execution.id, "events.jsonl");
+      raw = transcriptSource(entry.execution.id);
     } catch (error) {
       if (!final && (error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
     journal.ingest(entry.execution.id, raw);
+    if (final && handedOver && !entry.transcriptSealed) {
+      await sealHandover(
+        entry.execution,
+        raw,
+        () => grant(entry),
+        () => check(entry),
+      );
+      entry.transcriptSealed = true;
+      return;
+    }
     let { offset, consumed } = journal.transcriptCursor(entry.execution.id);
     if (offset > consumed || (final && consumed !== raw.length))
       throw new Error("Runner transcript is incomplete");
@@ -524,6 +706,7 @@ export async function openRunnerRuntime(options: {
             offset: raw.length,
             sizeBytes: raw.length,
             sha256: createHash("sha256").update(raw).digest("hex"),
+            ...(handedOver ? { handedOver: true as const } : {}),
           },
           token,
         ),
@@ -533,7 +716,11 @@ export async function openRunnerRuntime(options: {
     }
   }
   async function deliver(entry: Active) {
-    await drainTranscript(entry, entry.execution.phase === "publishing");
+    // A handover's transcript is sealed by complete(), where Paws may refuse the seal.
+    await drainTranscript(
+      entry,
+      entry.execution.phase === "publishing" && !entry.handoverCommitted,
+    );
     for (const delivery of journal.pending(entry.execution.id)) {
       const token = await grant(entry);
       if (delivery.event.type === "artifact") {
@@ -626,7 +813,7 @@ export async function openRunnerRuntime(options: {
     )
       return false;
     try {
-      readRunnerResultFile(options.results, id, "result.json");
+      workerResultFile(id);
       return false;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -636,21 +823,49 @@ export async function openRunnerRuntime(options: {
     await broker.resume(id);
     return true;
   }
-  async function complete(entry: Active) {
-    let raw: Buffer;
+  /** The worker's final result, or a handed-over result that waits for publication. */
+  function workerResultFile(id: string): { name: "result.json" | "handover.json"; raw: Buffer } {
     try {
-      raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
+      return { name: "result.json", raw: readRunnerResultFile(options.results, id, "result.json") };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return {
+        name: HANDOVER_RESULT,
+        raw: readRunnerResultFile(options.results, id, HANDOVER_RESULT),
+      };
+    }
+  }
+  /**
+   * A handover that cannot be published before its deadline is not published: the worker
+   * restarts on its own session, so the session stays on this runner, as Paws reports.
+   */
+  async function continueSession(entry: Active) {
+    if (!broker.resume) throw new Error("the runner could not hand over the session in time");
+    check(entry);
+    journal.phase(entry.execution.id, "running");
+    entry.execution.phase = "running";
+    entry.quiesced = undefined;
+    entry.pushAt = undefined;
+    entry.pushTries = undefined;
+    await broker.resume(entry.execution.id);
+  }
+  async function complete(entry: Active) {
+    let file: ReturnType<typeof workerResultFile>;
+    try {
+      file = workerResultFile(entry.execution.id);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       if (broker.alive?.(entry.execution.id) !== false) return;
       try {
-        raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
+        file = workerResultFile(entry.execution.id);
       } catch {
         throw new Error("worker exited without a result");
       }
     }
+    // A worker that restarted after a missed handover removes the file itself.
+    if (file.name === HANDOVER_RESULT && broker.alive?.(entry.execution.id) === true) return;
     try {
-      JSON.parse(raw.toString("utf8"));
+      JSON.parse(file.raw.toString("utf8"));
     } catch {
       return;
     }
@@ -659,7 +874,7 @@ export async function openRunnerRuntime(options: {
     await deliver(entry);
     const worker = workerResult.parse(
       JSON.parse(
-        readRunnerResultFile(options.results, entry.execution.id, "result.json").toString("utf8"),
+        readRunnerResultFile(options.results, entry.execution.id, file.name).toString("utf8"),
       ),
     );
     if (
@@ -678,6 +893,16 @@ export async function openRunnerRuntime(options: {
       ...(worker.candidateSha ? { candidateSha: worker.candidateSha } : {}),
       ...(worker.reviewText !== undefined ? { reviewText: worker.reviewText } : {}),
     });
+    const handoverBy = file.name === HANDOVER_RESULT ? worker.handoverExpiresAt : undefined;
+    if (file.name === HANDOVER_RESULT && (!result.handedOver || handoverBy === undefined))
+      throw new Error("Invalid runner handover result");
+    // Once the runtime asks Paws to seal the transcript, the handover is only finished.
+    const handoverLate = () =>
+      handoverBy !== undefined &&
+      !entry.handoverCommitted &&
+      !entry.transcriptSealed &&
+      now() >= handoverBy - HANDOVER_SEAL_RESERVE_MS;
+    if (handoverLate()) return continueSession(entry);
     journal.phase(entry.execution.id, "publishing");
     entry.execution.phase = "publishing";
     if (
@@ -685,54 +910,118 @@ export async function openRunnerRuntime(options: {
       entry.execution.command.type !== "task" &&
       result.candidateSha !== entry.execution.command.repository.baseSha
     ) {
-      if (entry.execution.command.type !== "run" || result.cancelled || !result.agentExited)
+      if (
+        entry.execution.command.type !== "run" ||
+        (result.cancelled && !result.handedOver) ||
+        !result.agentExited
+      )
         throw new Error("Unsafe runner candidate result");
       if ((entry.pushAt ?? 0) > monotonic()) return;
-      const token = await grant(entry);
-      const credential = await remote(() =>
-        options.daemon.repositoryCredential(
-          entry.execution.command.runId,
-          entry.execution.command.generation,
-          "write",
-          token,
-        ),
-      );
-      check(entry);
-      if (!credential.branch) throw new Error("Runner publication branch is missing");
-      entry.publicationBranch = credential.branch;
-      try {
-        await repositories.publish(
-          entry.execution.command,
-          {
-            bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
-            sha: result.candidateSha,
-            branch: credential.branch,
-          },
+      if (handoverBy !== undefined && entry.handoverCommitted) {
+        // The push finished before the seal was asked for; a retry only completes the seal.
+      } else if (handoverBy !== undefined) {
+        // A handover gets one push, bounded by its deadline.
+        const signal = AbortSignal.any([
           entry.abort.signal,
-        );
-      } catch (error) {
-        if (!(error instanceof GitHubFailure)) throw error;
-        const tries = (entry.pushTries ?? 0) + 1;
-        entry.pushTries = tries;
-        const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
-        if (!permanent && tries <= CANDIDATE_PUSH_RETRY_MS.length) {
-          entry.pushAt = monotonic() + CANDIDATE_PUSH_RETRY_MS[tries - 1]!;
-          throw error;
+          AbortSignal.timeout(Math.max(1, handoverBy - HANDOVER_SEAL_RESERVE_MS - now())),
+        ]);
+        try {
+          const token = await grant(entry);
+          const credential = await remote(() =>
+            options.daemon.repositoryCredential(
+              entry.execution.command.runId,
+              entry.execution.command.generation,
+              "write",
+              token,
+            ),
+          );
+          if (!credential.branch) throw new Error("Runner publication branch is missing");
+          signal.throwIfAborted();
+          entry.publicationBranch = credential.branch;
+          await repositories.publish(
+            entry.execution.command,
+            {
+              bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
+              sha: result.candidateSha,
+              branch: credential.branch,
+            },
+            signal,
+          );
+        } catch (error) {
+          entry.abort.signal.throwIfAborted();
+          report(error instanceof Error ? error : new Error(String(error)));
+          return continueSession(entry);
         }
-        const failure = { branch: credential.branch, error: error.message.slice(0, 4096) };
-        await interrupt(
-          entry,
-          permanent
-            ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
-            : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
-          true,
-          failure,
+        check(entry);
+        if (handoverLate()) return continueSession(entry);
+      } else {
+        const token = await grant(entry);
+        const credential = await remote(() =>
+          options.daemon.repositoryCredential(
+            entry.execution.command.runId,
+            entry.execution.command.generation,
+            "write",
+            token,
+          ),
         );
-        return;
+        check(entry);
+        if (!credential.branch) throw new Error("Runner publication branch is missing");
+        entry.publicationBranch = credential.branch;
+        try {
+          await repositories.publish(
+            entry.execution.command,
+            {
+              bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
+              sha: result.candidateSha,
+              branch: credential.branch,
+            },
+            entry.abort.signal,
+          );
+        } catch (error) {
+          if (!(error instanceof GitHubFailure)) throw error;
+          const tries = (entry.pushTries ?? 0) + 1;
+          entry.pushTries = tries;
+          const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
+          if (!permanent && tries <= CANDIDATE_PUSH_RETRY_MS.length) {
+            entry.pushAt = monotonic() + CANDIDATE_PUSH_RETRY_MS[tries - 1]!;
+            throw error;
+          }
+          const failure = { branch: credential.branch, error: error.message.slice(0, 4096) };
+          await interrupt(
+            entry,
+            permanent
+              ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
+              : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
+            true,
+            failure,
+          );
+          return;
+        }
+        check(entry);
       }
-      check(entry);
     }
-    await drainTranscript(entry, true);
+    if (handoverLate()) return continueSession(entry);
+    if (handoverBy !== undefined) {
+      entry.handoverCommitted = true;
+      journal.phase(entry.execution.id, "handover");
+      try {
+        await drainTranscript(entry, true, true);
+      } catch (error) {
+        // Paws refused the seal, so the transcript is open and the session stays here.
+        if (
+          error instanceof RunnerRequestError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          ![408, 429].includes(error.status) &&
+          !entry.transcriptSealed
+        ) {
+          entry.handoverCommitted = false;
+          report(error);
+          return continueSession(entry);
+        }
+        throw error;
+      }
+    } else await drainTranscript(entry, true);
     const token = await grant(entry);
     await remote(() =>
       options.daemon.postResult(
@@ -749,6 +1038,7 @@ export async function openRunnerRuntime(options: {
   async function step() {
     await pulse().catch(report);
     if (closed) return;
+    if (recovering.length) await recoverHandovers();
     const polled = await options.daemon.pollCommands();
     for (const repository of polled.deniedRepositories) {
       if (deniedReported.has(repository)) continue;
@@ -765,6 +1055,25 @@ export async function openRunnerRuntime(options: {
       if (command.type !== "cancel") continue;
       const entry = active.get(`${command.runId}:${command.generation}`);
       if (entry) await interrupt(entry, "cancelled by Paws");
+      await options.daemon.acknowledgeCommand(command.id);
+    }
+    for (const command of commands) {
+      if (command.type !== "handover") continue;
+      const entry = active.get(`${command.runId}:${command.generation}`);
+      // Only a running worker can hand over. Paws reports a handover that gets no result.
+      if (
+        entry?.execution.phase === "running" &&
+        entry.execution.command.type === "run" &&
+        !entry.abort.signal.aborted &&
+        command.expiresAt > now()
+      )
+        try {
+          let sequence = 1;
+          while (readRunnerHandover(options.spool, entry.execution.id, sequence)) sequence++;
+          publishRunnerHandover(options.spool, entry.execution.id, sequence, command.expiresAt);
+        } catch (error) {
+          report(error instanceof Error ? error : new Error(String(error)));
+        }
       await options.daemon.acknowledgeCommand(command.id);
     }
     for (const entry of active.values()) {

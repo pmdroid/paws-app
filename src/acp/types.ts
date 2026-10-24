@@ -145,6 +145,8 @@ export interface RunAgentResult {
   timedOut: boolean;
   cancelled: boolean;
   interrupted?: boolean;
+  /** A runner stopped the agent so the session can continue on another runner. */
+  handedOver?: boolean;
   transcriptPath?: string;
   authRequired: boolean;
   errorMessage?: string;

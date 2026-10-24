@@ -49,6 +49,7 @@ import { RUNNER_LEASE_GRACE_MS, type RunnerCommand, type RunnerResult } from "..
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
+import { createRemoteHandover } from "./handover";
 import {
   RetryableRunnerError,
   runWithFailover,
@@ -197,6 +198,9 @@ export function createRemoteAgentRunner(options: {
   ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
   now?: () => number;
   pollIntervalMs?: number;
+  /** How long a runner has to hand over a session. Tests shorten it. */
+  handoverMs?: number;
+  handoverGraceMs?: number;
   placement?: RunnerPlacement;
 }) {
   const { db, work, results, health } = options;
@@ -358,6 +362,7 @@ export function createRemoteAgentRunner(options: {
     };
   }
   const cancelItem = createRemoteCancellation(options);
+  const handoverItem = createRemoteHandover(options);
   function usageLimitWait(itemId: string, input: RunAgentOptions): UsageLimitWait {
     return {
       now,
@@ -398,6 +403,7 @@ export function createRemoteAgentRunner(options: {
   }
   return {
     cancelItem,
+    handoverItem,
     forItem(itemId: string) {
       const attempt: FailoverAttempt = async (input, excluded, limit) => {
         input.signal?.throwIfAborted();
@@ -1047,6 +1053,9 @@ export function createRemoteAgentRunner(options: {
             await delay(interval, undefined, { signal });
           }
           if (!complete) throw new Error("Remote run timed out");
+          // A handover keeps the question the agent asked; Paws holds it for the next runner.
+          if (question && complete.handedOver) await question;
+          if (questionError) throw questionError;
           if (question) throw new Error("Remote run completed with an unanswered question");
           if (assigned.type === "task" && (complete.candidateSha || complete.reviewText))
             throw new Error("Remote response task returned code work");
@@ -1143,7 +1152,10 @@ export function createRemoteAgentRunner(options: {
             );
             if (complete.stopReason !== "end_turn" || complete.errorMessage)
               saveCheckpoint(db, itemId, {
-                phase: "running",
+                phase:
+                  complete.handedOver && getWorkItem(db, itemId)?.state === "awaiting_input"
+                    ? "awaiting_input"
+                    : "running",
                 baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
                 wipCommit: complete.candidateSha,
               });
@@ -1238,6 +1250,7 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
+export type { RunnerHandoverOutcome } from "./handover";
 
 function agentName(agent: string): string {
   return agent.charAt(0).toUpperCase() + agent.slice(1);
