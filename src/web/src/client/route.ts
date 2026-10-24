@@ -110,9 +110,12 @@ function issueForRun(id: string, snapshot: StatusSnapshot | null | undefined): s
   return run?.itemId ?? null;
 }
 
-/** The Linear session's issue. Sub-issues that share a session open the first one. */
+/**
+ * The Linear session's issue. Sub-issues that share a session open the one delegated first;
+ * items arrive newest first.
+ */
 function issueForSession(id: string, snapshot: StatusSnapshot | null | undefined): string | null {
-  return snapshot?.items.find((item) => item.session?.id === id)?.id ?? null;
+  return snapshot?.items.findLast((item) => item.session?.id === id)?.id ?? null;
 }
 
 function issueForVerdict(id: string, snapshot: StatusSnapshot | null | undefined): string | null {
