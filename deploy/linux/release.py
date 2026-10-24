@@ -20,13 +20,47 @@ MISE_SHA256 = {
 }
 MISE_LIMIT = 268_435_456
 ARCHITECTURE = {"x86_64": ("x64", "x86_64"), "aarch64": ("arm64", "aarch64")}.get(platform.machine(), ("unsupported", "unsupported"))
-PROVIDER_EXECUTABLES = {
-    "claude": f"node_modules/@anthropic-ai/claude-agent-sdk-linux-{ARCHITECTURE[0]}/claude",
-    "codex": f"node_modules/@openai/codex-linux-{ARCHITECTURE[0]}/vendor/{ARCHITECTURE[1]}-unknown-linux-musl/bin/codex",
+# The coding agents are not in the release. The installer installs each one from npm into
+# /opt/paws-runner/agents/<agent>/<version> from the pinned lockfile in agents.json.
+AGENT_PACKAGES = {
+    "claude": "@agentclientprotocol/claude-agent-acp",
+    "codex": "@agentclientprotocol/codex-acp",
+    "grok": "@xai-official/grok",
 }
-CODEX_PLATFORM_PACKAGE = f"node_modules/@openai/codex-linux-{ARCHITECTURE[0]}/package.json"
+# The agents and the packages that carry their native builds (and every platform variant of those).
+AGENT_ONLY = frozenset({*AGENT_PACKAGES.values(), "@anthropic-ai/claude-agent-sdk", "@openai/codex"})
+CODEX_VENDOR = f"node_modules/@openai/codex-linux-{ARCHITECTURE[0]}/vendor/{ARCHITECTURE[1]}-unknown-linux-musl"
+# Launchers in /opt/paws-runner/bin: launcher name -> (agent, file inside the agent's version folder,
+# whether it is a node script run on the bundled Bun). The installer checks each kind before a version
+# is put in place, so a launcher never guesses.
+PROVIDER_EXECUTABLES = {
+    "claude-agent-acp": ("claude", "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js", True),
+    "claude": ("claude", f"node_modules/@anthropic-ai/claude-agent-sdk-linux-{ARCHITECTURE[0]}/claude", False),
+    "codex-acp": ("codex", "node_modules/@agentclientprotocol/codex-acp/dist/index.js", True),
+    "codex": ("codex", "node_modules/@openai/codex/bin/codex.js", True),
+    "grok": ("grok", "node_modules/@xai-official/grok/bin/grok", True),
+}
+# Native files each agent needs, which must be executable after install.
+AGENT_NATIVE = {
+    "claude": (f"node_modules/@anthropic-ai/claude-agent-sdk-linux-{ARCHITECTURE[0]}/claude",),
+    "codex": (CODEX_VENDOR + "/bin/codex",),
+    "grok": (),
+}
+# Removed from the staged install before it is put in place. Codex's voice host is for the
+# interactive voice mode, which agent sessions never start. codex-code-mode-host stays: the Codex
+# binary checks its package layout and starts it when features.code_mode_host is on.
+AGENT_DROPPED = {
+    "claude": (),
+    "codex": (CODEX_VENDOR + "/codex-resources/voice",),
+    "grok": (),
+}
+AGENT_MANIFEST_LIMIT = 8_388_608
+INTEGRITY = re.compile(r"sha512-[A-Za-z0-9+/]{86}==\Z")
+PACKAGE_PATH = re.compile(r"(?:@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*(?:/(?:@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*)*\Z")
+EXACT_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?\Z")
 SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 ASSETS = {
+    "agents.json",
     "paws-agent@.service",
     "paws-runner.service",
     "paws-runner.sysusers",
@@ -42,14 +76,7 @@ REQUIRED = {
     "app/src/runner-cli/main.ts",
     "app/src/acp/ask-team-mcp.ts",
     "app/src/process/process-anchor.ts",
-    "app/node_modules/.bin/claude-agent-acp",
-    "app/node_modules/.bin/codex-acp",
-    "app/node_modules/.bin/grok",
-    "app/node_modules/.bin/claude",
-    "app/node_modules/.bin/codex",
-    "app/node_modules/@openai/codex/bin/codex.js",
-    "app/" + CODEX_PLATFORM_PACKAGE,
-} | {"app/" + target for target in PROVIDER_EXECUTABLES.values()} | {f"deploy/linux/{name}" for name in ASSETS}
+} | {f"deploy/linux/{name}" for name in ASSETS}
 BINARIES = ("bin/bun", "bin/mise", "bin/paws-runner")
 # bin/paws-runner runs the runner entry on the bundled Bun, so the release carries Bun once.
 # Bun would otherwise read .env and bunfig.toml (which can preload code) from the working directory.
@@ -175,14 +202,131 @@ def inspect_archive(path):
             archive.seek(following)
     if not REQUIRED <= seen.keys():
         raise ValueError("Release archive is missing required runtime files")
-    executable_providers = {"app/node_modules/.bin/claude", "app/node_modules/.bin/codex"} | {"app/" + target for target in PROVIDER_EXECUTABLES.values()}
-    if any(seen[name].mode != 0o755 for name in executable_providers):
-        raise ValueError("Bundled provider launchers and native binaries must be executable")
+    shipped = {package_names(name.removeprefix("app/node_modules/").split("/"))[0] for name in seen if name.startswith("app/node_modules/") and not name.startswith("app/node_modules/.bin/")}
+    if any(name in AGENT_ONLY or name.startswith(tuple(package + "-" for package in AGENT_ONLY)) for name in shipped) or any(name.startswith("app/node_modules/.bin/") and name.rsplit("/", 1)[1] in PROVIDER_EXECUTABLES for name in seen):
+        raise ValueError("Coding agents are installed from agents.json, not shipped in the release")
     if seen["bin/mise"].mode != 0o755:
         raise ValueError("Bundled mise must be executable")
     if seen["bin/paws-runner"].mode != 0o755:
         raise ValueError("Bundled runner launcher must be executable")
     return seen
+
+
+def package_names(parts):
+    """Package names along a node_modules path: a/node_modules/@b/c/x.js -> [a, @b/c]."""
+    names = []
+    index = 0
+    while index < len(parts):
+        if index == 0 or parts[index - 1] == "node_modules":
+            if parts[index].startswith("@"):
+                if index + 1 == len(parts):
+                    break
+                names.append(parts[index] + "/" + parts[index + 1])
+                index += 1
+            elif parts[index] not in ("node_modules", ".bin"):
+                names.append(parts[index])
+        index += 1
+    return names
+
+
+def strip_trailing_commas(text):
+    """bun.lock is JSON with trailing commas. Drop each comma that closes an object or array."""
+    output = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character == ",":
+            following = index + 1
+            while following < len(text) and text[following] in " \t\r\n":
+                following += 1
+            if following < len(text) and text[following] in "}]":
+                index += 1
+                continue
+        output.append(character)
+        index += 1
+    return "".join(output)
+
+
+def parse_lockfile(text):
+    lockfile = json.loads(strip_trailing_commas(text), object_pairs_hook=unique_object)
+    if not isinstance(lockfile, dict) or not isinstance(lockfile.get("packages"), dict) or not isinstance(lockfile.get("workspaces"), dict):
+        raise ValueError("Invalid bun.lock")
+    return lockfile
+
+
+def agent_package_json(agent, version):
+    return {"name": f"paws-agent-{agent}", "private": True, "dependencies": {AGENT_PACKAGES[agent]: version}}
+
+
+def parse_agent_manifest(content):
+    """Check agents.json: every package the lockfile can install is listed with its exact version and sha512."""
+    manifest = json.loads(content, object_pairs_hook=unique_object)
+    if not isinstance(manifest, dict) or set(manifest) != {"format", "agents"} or manifest["format"] != 1 or type(manifest["format"]) is not int:
+        raise ValueError("Invalid agent manifest")
+    agents = manifest["agents"]
+    if not isinstance(agents, dict) or set(agents) != set(AGENT_PACKAGES):
+        raise ValueError("The agent manifest must list exactly the claude, codex and grok agents")
+    for agent, entry in agents.items():
+        if not isinstance(entry, dict) or set(entry) != {"package", "version", "packages", "lockfile"}:
+            raise ValueError(f"Invalid agent manifest entry for {agent}")
+        if entry["package"] != AGENT_PACKAGES[agent] or not isinstance(entry["version"], str) or len(entry["version"]) > 64 or not EXACT_VERSION.fullmatch(entry["version"]):
+            raise ValueError(f"Invalid agent package or version for {agent}")
+        lockfile = entry["lockfile"]
+        if not isinstance(lockfile, dict) or set(lockfile) - {"lockfileVersion", "configVersion", "workspaces", "packages"} or not isinstance(lockfile.get("packages"), dict):
+            raise ValueError(f"Invalid lockfile for {agent}")
+        expected = agent_package_json(agent, entry["version"])
+        if lockfile.get("workspaces") != {"": {"name": expected["name"], "dependencies": expected["dependencies"]}}:
+            raise ValueError(f"The {agent} lockfile does not pin {entry['package']}@{entry['version']}")
+        listed = entry["packages"]
+        if not isinstance(listed, list) or not listed:
+            raise ValueError(f"Invalid package list for {agent}")
+        packages = {}
+        for item in listed:
+            if not isinstance(item, dict) or set(item) != {"path", "name", "version", "integrity"} or not all(isinstance(item[key], str) for key in item):
+                raise ValueError(f"Invalid package entry for {agent}")
+            if not PACKAGE_PATH.fullmatch(item["path"]) or not PACKAGE_PATH.fullmatch(item["name"]) or not EXACT_VERSION.fullmatch(item["version"]) or not INTEGRITY.fullmatch(item["integrity"]) or item["path"] in packages:
+                raise ValueError(f"Invalid package entry for {agent}: {item.get('path')}")
+            packages[item["path"]] = item
+        if set(packages) != set(lockfile["packages"]):
+            raise ValueError(f"The {agent} lockfile and package list differ")
+        for path, locked in lockfile["packages"].items():
+            item = packages[path]
+            # [name@version, registry tarball ("" = the default registry), metadata, integrity]
+            if not isinstance(locked, list) or len(locked) != 4 or locked[0] != f"{item['name']}@{item['version']}" or locked[1] != "" or not isinstance(locked[2], dict) or locked[3] != item["integrity"]:
+                raise ValueError(f"The {agent} lockfile entry {path} does not match its pinned version and integrity")
+        if packages.get(entry["package"], {}).get("version") != entry["version"]:
+            raise ValueError(f"The {agent} lockfile does not install {entry['package']}@{entry['version']}")
+    return manifest
+
+
+def agent_launcher(name, base="/opt/paws-runner"):
+    """Launcher that runs an agent from its current version folder and holds that folder for the session.
+
+    The shared flock on the version folder is inherited by the agent and everything it starts, so the
+    installer can tell whether a session still uses a version before it moves `current`.
+    """
+    agent, target, script = PROVIDER_EXECUTABLES[name]
+    folder = f"{base}/agents/{agent}"
+    interpreter = f"{base}/bin/bun --no-env-file " if script else ""
+    return (
+        "#!/bin/sh\n"
+        "set -eu\n"
+        f"version=$(/usr/bin/readlink -e -- '{folder}/current') || {{ echo 'Coding agent {agent} is not installed. Reinstall paws-runner.' >&2; exit 127; }}\n"
+        'exec 9<"$version"\n'
+        "/usr/bin/flock --shared 9\n"
+        f'exec {interpreter}"$version/{target}" "$@"\n'
+    ).encode()
 
 
 def snapshot_artifact(source, destination):

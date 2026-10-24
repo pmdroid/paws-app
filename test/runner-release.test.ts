@@ -106,7 +106,7 @@ print(json.dumps({"version": release.MISE_VERSION, "digests": release.MISE_SHA25
   });
 });
 
-test("a packed runner artifact has no musl package, no devDependency and no dashboard, and keeps every required file", async () => {
+test("a packed runner artifact has no coding agent, musl package, devDependency or dashboard, and keeps every required file", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-pack-"));
   const deploy = new URL("../deploy/linux/", import.meta.url).pathname;
   const script = `
@@ -124,15 +124,19 @@ def write(path, content=b"synthetic"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
 for name in release.REQUIRED:
-    relative = name.removeprefix("app/")
-    if relative.startswith("node_modules/"):
-        write(modules / relative.removeprefix("node_modules/"))
-        if relative in release.PROVIDER_EXECUTABLES.values():
-            (modules / relative.removeprefix("node_modules/")).chmod(0o755)
-    else:
-        write(source / relative)
-development = json.load(open(sys.argv[3]))["devDependencies"]
-write(source / "package.json", json.dumps({"dependencies": {"left-pad": "1"}, "devDependencies": development}).encode())
+    write(source / name.removeprefix("app/"))
+write(source / "deploy/linux/agents.json", open(sys.argv[1] + "agents.json", "rb").read())
+root_manifest = json.load(open(sys.argv[3]))
+development = root_manifest["devDependencies"]
+agents = {package: root_manifest["dependencies"][package] for package in release.AGENT_PACKAGES.values()}
+write(source / "package.json", json.dumps({"dependencies": {"left-pad": "1", "shared": "1", **agents}, "devDependencies": development}).encode())
+# Agent packages and what only they need stay out; a dependency the runner also needs stays in.
+for package in agents:
+    write(modules / package / "package.json", json.dumps({"dependencies": {"agent-only": "1", "shared": "1"}}).encode())
+    write(modules / package / "dist/index.js")
+write(modules / "agent-only/index.js")
+write(modules / "shared/index.js")
+write(modules / ".bin/claude-agent-acp", b"#!/bin/sh\\n")
 arch = release.ARCHITECTURE[0]
 for name in development:
     write(modules / name / "package.json", b"{}")
@@ -149,7 +153,7 @@ def install(bun, checkout, workspace):
 with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\\n")), mock.patch.object(packager, "install_production", side_effect=install), mock.patch.object(release, "download_mise", return_value=b"\\x7fELFmise"):
     packager.pack(argparse.Namespace(source=source, bun=root / "bun", version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=root / "package", mise=None))
 members = sorted(tarfile.open(root / "package" / "artifact.tar").getnames())
-print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "development": sorted(development), "installs": installs, "source": str(source.resolve())}))
+print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "development": sorted(development), "agents": sorted(agents), "installs": installs, "source": str(source.resolve())}))
 `;
   try {
     const child = Bun.spawn(
@@ -176,6 +180,7 @@ print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "dev
       members: string[];
       required: string[];
       development: string[];
+      agents: string[];
       installs: string[];
       source: string;
     } = JSON.parse(stdout);
@@ -183,6 +188,16 @@ print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "dev
     expect(result.development).toContain("typescript");
     for (const name of result.required) expect(result.members).toContain(name);
     expect(result.members).toContain("app/node_modules/left-pad/index.js");
+    expect(result.members).toContain("app/node_modules/shared/index.js");
+    expect(result.members).toContain("deploy/linux/agents.json");
+    expect(result.agents).toHaveLength(3);
+    for (const name of [...result.agents, "agent-only", ".bin/claude-agent-acp"])
+      expect(
+        result.members.filter(
+          (member) =>
+            member.startsWith(`app/node_modules/${name}/`) || member === `app/node_modules/${name}`,
+        ),
+      ).toEqual([]);
     expect(result.members.filter((name) => name.startsWith("app/src/web/"))).toEqual([]);
     expect(result.members).toContain("app/src/webhooks/keep.ts");
     const dashboard = ["@base-ui/react", "lucide-react", "react", "react-dom", "video.js"];

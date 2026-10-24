@@ -54,20 +54,7 @@ def development_only(manifest):
     return frozenset(names[2] - names[0] - names[1])
 
 
-def package_names(parts):
-    names = []
-    index = 0
-    while index < len(parts):
-        if index == 0 or parts[index - 1] == "node_modules":
-            if parts[index].startswith("@"):
-                if index + 1 == len(parts):
-                    break
-                names.append(parts[index] + "/" + parts[index + 1])
-                index += 1
-            elif parts[index] not in ("node_modules", ".bin"):
-                names.append(parts[index])
-        index += 1
-    return names
+package_names = release.package_names
 
 
 def package_root(parts):
@@ -88,9 +75,32 @@ def runtime_dependencies(content):
     return {name for field in ("dependencies", "optionalDependencies") if isinstance(manifest.get(field), dict) for name in manifest[field]}
 
 
-def left_out(parts, development):
+def runner_packages(manifest, modules):
+    """Top-level packages the runner can load: the production dependencies other than the coding agents,
+    and everything they depend on. Packages only the agents need stay out; the installer installs the agents."""
+    root = json.loads(manifest)
+    pending = [name for field in ("dependencies", "optionalDependencies") for name in (root.get(field) or {}) if name not in release.AGENT_PACKAGES.values()]
+    seen = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        folder = modules / name
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        # The package and any copies nested under it, whose dependencies may be hoisted to the top.
+        for current, directories, files in os.walk(folder, followlinks=False):
+            directories[:] = [entry for entry in directories if not entry.startswith(".")]
+            parts = pathlib.Path(current).relative_to(modules).parts
+            if "package.json" in files and package_root(parts):
+                pending.extend(runtime_dependencies(read_package_file(pathlib.Path(current) / "package.json", 16_777_216)) - seen)
+    return frozenset(seen)
+
+
+def left_out(parts, development, runner=None):
     names = package_names(parts)
-    return bool(names) and (names[0] in development or any(name.endswith("-musl") for name in names))
+    return bool(names) and (names[0] in development or runner is not None and names[0] not in runner or any(name.endswith("-musl") for name in names))
 
 
 def install_production(bun, source, workspace):
@@ -120,10 +130,6 @@ def pack(arguments):
     if arguments.platform not in ("linux-x64", "linux-arm64"):
         raise ValueError("Invalid release platform")
     release.check_platform({"platform": arguments.platform})
-    provider_targets = {
-        "claude": release.PROVIDER_EXECUTABLES["claude"],
-        "codex": "node_modules/@openai/codex/bin/codex.js",
-    }
     manifest = read_package_file(source / "package.json", 16_777_216)
     development = development_only(manifest)
     runtime = read_package_file(bun, 536_870_912)
@@ -132,15 +138,16 @@ def pack(arguments):
         raise ValueError("Pinned Bun runtime is required")
     with tempfile.TemporaryDirectory(prefix="paws-runner-dependencies-") as workspace:
         modules = pathlib.Path(install_production(bun, source, pathlib.Path(workspace))).resolve(strict=True)
-        return pack_with(arguments, source, bun, runtime, manifest, development, modules, provider_targets)
+        return pack_with(arguments, source, bun, runtime, manifest, development, modules)
 
 
-def pack_with(arguments, source, bun, runtime, manifest, development, modules, provider_targets):
-    for target in {*provider_targets.values(), *release.PROVIDER_EXECUTABLES.values(), release.CODEX_PLATFORM_PACKAGE}:
-        path = modules / pathlib.PurePosixPath(target).relative_to("node_modules")
-        read_package_file(path, 536_870_912)
-        if target in release.PROVIDER_EXECUTABLES.values() and not path.stat().st_mode & 0o111:
-            raise ValueError("Bundled provider executable must be executable")
+def pack_with(arguments, source, bun, runtime, manifest, development, modules):
+    agents = release.parse_agent_manifest(read_package_file(source / "deploy/linux/agents.json", release.AGENT_MANIFEST_LIMIT))
+    pins = json.loads(manifest).get("dependencies") or {}
+    for agent, entry in agents["agents"].items():
+        if pins.get(entry["package"]) != entry["version"]:
+            raise ValueError(f"deploy/linux/agents.json pins {entry['package']}@{entry['version']} but package.json has {pins.get(entry['package'])}; run deploy/linux/agent-manifest.py")
+    runner = runner_packages(manifest, modules)
     output = pathlib.Path(arguments.output)
     output.mkdir(mode=0o700)
     mise = release.verify_mise(read_package_file(arguments.mise, release.MISE_LIMIT), arguments.platform) if arguments.mise else release.download_mise(arguments.platform)
@@ -152,10 +159,6 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules, p
         add_content(archive, "bin/paws-runner", release.RUNNER_LAUNCHER, True)
         add_content(archive, "app/package.json", manifest)
         add_content(archive, "app/bun.lock", read_package_file(source / "bun.lock", 16_777_216))
-        for name, target in provider_targets.items():
-            interpreter = "/opt/paws-runner/bin/bun --no-env-file " if name == "codex" else ""
-            content = ("#!/bin/sh\nexec " + interpreter + "'/opt/paws-runner/current/" + target + "' \"$@\"\n").encode()
-            add_content(archive, f"app/node_modules/.bin/{name}", content, True)
         required_by_packed = set()
         for directory, base in (("src", source / "src"), ("node_modules", modules)):
             if base.is_symlink() or not base.is_dir():
@@ -167,7 +170,7 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules, p
                     name
                     for name in directories
                     if (not name.startswith(".") or name == ".bin")
-                    and (directory == "src" and (current / name).relative_to(base).parts not in CONTROL_PLANE_ONLY or directory == "node_modules" and SAFE_NAME.fullmatch(name) and not left_out((current / name).relative_to(base).parts, development))
+                    and (directory == "src" and (current / name).relative_to(base).parts not in CONTROL_PLANE_ONLY or directory == "node_modules" and SAFE_NAME.fullmatch(name) and not left_out((current / name).relative_to(base).parts, development, runner))
                 )
                 for name in directories:
                     if (current / name).is_symlink():
@@ -176,7 +179,7 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules, p
                     if name.startswith(".") or directory == "node_modules" and not SAFE_NAME.fullmatch(name) and not (current / name).is_symlink():
                         continue
                     path = current / name
-                    if path.parent == bin_directory and name in provider_targets:
+                    if path.parent == bin_directory and name in release.PROVIDER_EXECUTABLES:
                         continue
                     relative = directory + "/" + path.relative_to(base).as_posix()
                     if path.is_symlink():
@@ -185,7 +188,7 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules, p
                         target = path.resolve(strict=True)
                         if not target.is_relative_to(modules):
                             raise ValueError("Adapter launcher escapes dependencies")
-                        if left_out(target.relative_to(modules).parts, development):
+                        if left_out(target.relative_to(modules).parts, development, runner):
                             continue
                         target_relative = "node_modules/" + target.relative_to(modules).as_posix()
                         target_member = tarfile.TarInfo("app/" + target_relative)
