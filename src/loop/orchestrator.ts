@@ -47,6 +47,7 @@ import {
   createCloseoutGate,
   reviewRequirements,
   trustedPolicyFiles,
+  trustedRootFiles,
   visualReviewRequirements,
   bypassable,
   snapshotRetryBaseline,
@@ -330,6 +331,7 @@ import {
   type RunnerWaitQuestion,
 } from "./runner-wait";
 import { createRepositoryGit } from "./repository-git";
+import { RUNTIME_FILES, runtimeList, type RuntimeList } from "../runtimes";
 import { questionEffects } from "./question-effects";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
@@ -472,6 +474,7 @@ export class Orchestrator {
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
   private readonly jobContexts = new Map<string, JobContext>();
+  private readonly runtimeLists = new Map<string, { runId: string; list: RuntimeList }>();
   private shuttingDown = false;
   private activitySeq = 0;
   private readonly activityRequests = new Map<number, AbortSignal>();
@@ -2423,7 +2426,7 @@ export class Orchestrator {
           ...(deps.home ? { home: deps.home } : {}),
           ...(deps.signal ? { signal: deps.signal } : {}),
         };
-        const result = await runner!({ ...options, ...this.closeoutPolicy(item, options) });
+        const result = await runner!({ ...options, ...this.trustedRunInputs(item, options) });
         assertCurrent();
         if ((await git(["-C", worktree, "rev-parse", "HEAD"])).trim() !== head) {
           await git(["-C", worktree, "reset", "--hard", head]);
@@ -4718,7 +4721,7 @@ export class Orchestrator {
         !input.prepareOnly
           ? await this.commitPolicy(item)
           : undefined;
-      return backend({ ...input, commitPolicy: policy, ...this.closeoutPolicy(item, input) });
+      return backend({ ...input, commitPolicy: policy, ...this.trustedRunInputs(item, input) });
     });
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
@@ -4779,7 +4782,7 @@ export class Orchestrator {
           input.role === "implementer" && !input.prepareOnly
             ? await this.commitPolicy(item)
             : undefined;
-        return runner({ ...input, commitPolicy: policy, ...this.closeoutPolicy(item, input) });
+        return runner({ ...input, commitPolicy: policy, ...this.trustedRunInputs(item, input) });
       },
       agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
@@ -4965,14 +4968,17 @@ export class Orchestrator {
     );
   }
 
-  private closeoutPolicy(
+  /** The Closeout policy and the runtime list, both read from origin/main and never the work tree. */
+  private trustedRunInputs(
     item: WorkItemRecord,
     input: RunAgentOptions,
-  ): Pick<RunAgentOptions, "closeoutPolicy"> {
-    if (input.role !== "implementer" || input.prepareOnly || !this.repositoryForItem(item))
-      return {};
+  ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes"> {
+    if (input.prepareOnly || !this.repositoryForItem(item)) return {};
+    const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
+    if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
     return {
+      ...runtimes,
       closeoutPolicy: async () => {
         const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
         return load.ok && !load.absent
@@ -4980,6 +4986,19 @@ export class Orchestrator {
           : load;
       },
     };
+  }
+
+  /**
+   * The repository's runtime list from mise config on origin/main, read once per run. Its
+   * notices are returned with the first read only, so the task gets each line once.
+   */
+  private async runtimeList(item: WorkItemRecord, worktreePath: string): Promise<RuntimeList> {
+    const runId = getWorkItem(this.db, item.id)?.currentRunId ?? item.id;
+    const cached = this.runtimeLists.get(item.id);
+    if (cached?.runId === runId) return { runtimes: cached.list.runtimes, notices: [] };
+    const list = runtimeList(trustedRootFiles(worktreePath, RUNTIME_FILES));
+    this.runtimeLists.set(item.id, { runId, list });
+    return list;
   }
 
   private closeoutHome(item: WorkItemRecord): {
