@@ -52,7 +52,7 @@ describe("shutdown WIP", () => {
     db.close();
   }, 20_000);
 
-  test("a start job does not launch a host agent and stop still commits recoverable WIP", async () => {
+  test("without a Linear workspace a start job launches nothing and stop still commits recoverable WIP", async () => {
     const home = tempHome();
     const evidence = join(home, "owned-agent.jsonl");
     await seedWorktree(home, "ENG-21");
@@ -173,16 +173,15 @@ describe("shutdown WIP", () => {
       bindLinearSessionTask(paws.db, "session", answer.delegationId);
       saveTaskMode(paws.db, answer.id, "answer");
       enqueueJob(paws.db, { queue: JOB_KIND.start, payload: { itemId: answer.id } });
-      for (let i = 0; i < 5_000 && getWorkItem(paws.db, answer.id)?.state !== "failed"; i++)
-        await Bun.sleep(1);
-      expect(getWorkItem(paws.db, answer.id)?.state).toBe("failed");
-      expect(
+      const ticked = () =>
         paws.db
-          .query<{ body: string }, [string]>(
-            "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE idempotency_key=?",
+          .query<{ n: number }, []>(
+            "SELECT COUNT(*) AS n FROM job WHERE queue='scheduler.tick' AND run_at>created_at",
           )
-          .get(`fail:${answer.id}:${getWorkItem(paws.db, answer.id)!.version}:answer_error`)?.body,
-      ).toContain("remote runner");
+          .get()!.n > 0;
+      for (let i = 0; i < 2_000 && !ticked(); i += 5) await Bun.sleep(5);
+      expect(ticked()).toBe(true);
+      expect(getWorkItem(paws.db, answer.id)?.state).toBe("queued");
       expect(existsSync(evidence)).toBe(false);
       expect(existsSync(`${evidence}.descendant`)).toBe(false);
       insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
@@ -197,7 +196,7 @@ describe("shutdown WIP", () => {
       const recovered = openDatabase(paws.paths.db);
       try {
         expect(getWorkItem(recovered, "ENG-21")?.state).toBe("recovering");
-        expect(getWorkItem(recovered, answer.id)?.state).toBe("failed");
+        expect(getWorkItem(recovered, answer.id)?.state).toBe("queued");
       } finally {
         recovered.close();
       }

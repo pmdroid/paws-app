@@ -26,6 +26,7 @@ const NAMES = [
   "home",
   "linear",
   "linear-mode",
+  "linear-workspace",
   "linear-team",
   "linear-label",
   "gh-login",
@@ -61,6 +62,25 @@ test("agent mode is ready without a paws label", () => {
   const checks = doctorChecks(ready);
   expect(checks.every((item) => item.ok)).toBe(true);
   expect(checks.map((item) => item.name)).not.toContain("linear-label");
+});
+
+test("doctor fails without a Linear workspace and says how to configure one", () => {
+  const unconfigured = probe(true);
+  delete unconfigured.env.PAWS_PUBLIC_DASHBOARD;
+  const checks = doctorChecks(unconfigured);
+  const workspace = checks.find((item) => item.name === "linear-workspace");
+  expect(workspace?.ok).toBe(false);
+  expect(workspace?.fix).toContain("PAWS_PUBLIC_DASHBOARD=1");
+  expect(workspace?.fix).toContain("docs/workspace-access.md");
+  expect(formatDoctor(checks)).toContain("missing linear-workspace:");
+});
+
+test("doctor fails while no Linear workspace admin has signed in", () => {
+  const pending = probe(true);
+  pending.facts.workspace = null;
+  const workspace = doctorChecks(pending).find((item) => item.name === "linear-workspace");
+  expect(workspace?.ok).toBe(false);
+  expect(workspace?.detail).toContain("signed in");
 });
 
 test("comment mode requires the paws label", () => {
@@ -469,6 +489,7 @@ function probe(
   const ready = ok
     ? {
         PAWS_GITHUB_REPOSITORY: "pmdroid/paws-demo",
+        PAWS_PUBLIC_DASHBOARD: "1",
       }
     : env;
   return {
@@ -517,6 +538,7 @@ function greenFacts(): ProbeFacts {
       rate: { ok: true, detail: "not used" },
     },
     webhooks: false,
+    workspace: "Paws Demo",
     publicUrl: null,
     repo: "pmdroid/paws-demo",
     team: "ENG",

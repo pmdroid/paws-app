@@ -14,6 +14,9 @@ import {
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
 
+export const LINEAR_WORKSPACE_REQUIRED =
+  "Paws needs a Linear workspace. Set PAWS_PUBLIC_DASHBOARD=1 with PAWS_PUBLIC_URL and the Linear app OAuth client, restart Paws, then sign in to the dashboard as a Linear workspace admin (docs/workspace-access.md).";
+
 /**
  * What the process runs with. `config.toml` and the secret files it names
  * are the source. Environment variables override a single field when set.

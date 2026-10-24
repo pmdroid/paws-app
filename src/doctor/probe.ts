@@ -55,6 +55,7 @@ export type ProbeFacts = {
   githubDoctor: GitHubDoctorFacts;
   webhooks: boolean;
   linearWebhook?: LinearWebhookWarning | null;
+  workspace?: string | null;
   githubDelivery?: { event: string; receivedAt: number } | null;
   publicUrl: string | null;
   repo: string | null;
@@ -116,6 +117,13 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     webhooks: runtime.webhooks,
     linearWebhook: readPawsDb(runtime.env.home, (db) => linearWebhookWarning(db, Date.now())),
     githubDelivery: readPawsDb(runtime.env.home, latestGitHubDelivery),
+    workspace: readPawsDb(
+      runtime.env.home,
+      (db) =>
+        db
+          .query<{ name: string }, []>("SELECT name FROM workspace ORDER BY created_at LIMIT 1")
+          .get()?.name ?? null,
+    ),
     publicUrl: runtime.publicUrl,
     repo: runtime.repo,
     team: runtime.linearTeam,

@@ -22,6 +22,7 @@ import {
 import {
   closeoutPolicyRoot,
   ensureLayout,
+  LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
   loadEnv,
   loadConfigFile,
@@ -58,6 +59,7 @@ import {
   listRepositoryCandidates,
   getLinearSessionInstallation,
   isLinearAppRevoked,
+  journal,
   getLinearSessionAccess,
   delegatedLinearUserId,
   getWorkItemRepository,
@@ -833,7 +835,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       ? commentTracker(db, comment.tracker, comment.mode)
       : (linear?.tracker ?? null);
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
-  const admission = createAdmission({ db, authority: projectExecution.canDispatch, managed });
+  if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
+  const admission = createAdmission({
+    db,
+    authority: projectExecution.canDispatch,
+    managed,
+    workspace: managed,
+  });
   const enqueueMissingSnapshots = () => {
     const targets = db
       .query<{ itemId: string; workspaceId: string }, []>(
@@ -863,7 +871,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const loops = startLoops({
     db,
     signal: abort.signal,
-    concurrency: managed ? 4 : 1,
+    concurrency: 4,
     prepare(created) {
       assignments?.register(created.jobs);
       const attached = attachOrchestrator({
@@ -907,17 +915,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             ? (await workspace.access).recheckLinearEvent(event) &&
               (projectExecution.recheckEvent(event) ?? assignments?.recheck(event) ?? true)
             : (projectExecution.recheckEvent(event) ?? true),
-        ...(managed
-          ? {
-              scheduling: () => {
-                enqueueMissingSnapshots();
-                return { defaultRepository: repository, ownerCap: ownerCap(paths.configFile) };
-              },
-              publicationReady: (
-                ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
-              ) => Promise.resolve(publication?.publicationReady(...args) ?? false),
-            }
-          : {}),
+        scheduling: () => {
+          enqueueMissingSnapshots();
+          return { defaultRepository: repository, ownerCap: ownerCap(paths.configFile) };
+        },
+        publicationReady: (
+          ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
+        ) => Promise.resolve(publication?.publicationReady(...args) ?? false),
         githubAuth:
           channel === "agent-session"
             ? createLinearGitHubAuth({
@@ -1221,7 +1225,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             );
           attached.reconcileExecution();
         });
-        registerScheduler(created.jobs, () => attached.reconcileExecution());
         created.jobs.register("linear.epics.reconcile", async () => {
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
           attached.reconcileExecution();
@@ -1233,6 +1236,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           now: Date.now(),
         });
       }
+      registerScheduler(created.jobs, () => attached.reconcileExecution());
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );

@@ -1,7 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import { MISSING_GITHUB_CLIENT_ID_MESSAGE, missingGitHubClientId } from "../auth";
-import { loadEnv, pawsPaths, type EnvSource } from "../config";
+import { LINEAR_WORKSPACE_REQUIRED, loadEnv, pawsPaths, type EnvSource } from "../config";
 import { describeLinearWebhookWarning, LINEAR_WEBHOOK_FIX, type LinearWebhookWarning } from "../db";
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
 import type { GrokLoginStatus } from "../install";
@@ -39,6 +39,7 @@ const FIX = {
   linear: "Open Paws in your browser and connect Linear.",
   mode: "Connect your Linear workspace in the Paws website.",
   team: "Choose the Linear teams in workspace settings.",
+  workspace: LINEAR_WORKSPACE_REQUIRED,
   label: "Create the paws label in your Linear team.",
   ghLogin: "Run gh auth login.",
   ghPush: "Run gh auth login, then grant that login push access to the repository.",
@@ -80,7 +81,12 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     ),
   ];
   {
-    checks.push(linearCheck(facts), modeCheck(facts), teamCheck(facts));
+    checks.push(
+      linearCheck(facts),
+      modeCheck(facts),
+      workspaceCheck(probe.env, facts),
+      teamCheck(facts),
+    );
     if (facts.linearMode === "comments") checks.push(labelCheck(facts));
   }
   if (facts.githubAuth !== "gh") {
@@ -259,6 +265,19 @@ function modeCheck(facts: ProbeFacts): DoctorCheck {
   }
   const label = facts.configured ? facts.linearMode : `${facts.linearMode} (default)`;
   return check("linear-mode", true, label, FIX.mode);
+}
+
+function workspaceCheck(env: EnvSource, facts: ProbeFacts): DoctorCheck {
+  if (env.PAWS_PUBLIC_DASHBOARD !== "1")
+    return check("linear-workspace", false, "PAWS_PUBLIC_DASHBOARD is not 1", FIX.workspace);
+  if (!facts.workspace)
+    return check(
+      "linear-workspace",
+      false,
+      "no Linear workspace admin has signed in",
+      FIX.workspace,
+    );
+  return check("linear-workspace", true, facts.workspace);
 }
 
 function teamCheck(facts: ProbeFacts): DoctorCheck {

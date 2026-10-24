@@ -13,6 +13,18 @@ function item(db: Database, id: string, state = "queued", position = 0) {
   );
 }
 
+function fullRunner(db: Database) {
+  db.run("PRAGMA foreign_keys=OFF");
+  db.run(
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','owner','Runner','active',0,?)",
+    [Date.now()],
+  );
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES('run','runner','ws',1,0,'command',?,0)",
+    [Date.now() + 600_000],
+  );
+}
+
 function journal() {
   const lines: string[] = [];
   return { lines, log: (line: string) => lines.push(line) };
@@ -46,10 +58,13 @@ test("a ready item without a free slot, then over its owner cap, journals each n
     item(db, "PAS-1", "running");
     item(db, "PAS-2", "queued", 1);
     const { lines, log } = journal();
-    dispatch(db, { now: 1, log, maxInFlight: 1 });
+    fullRunner(db);
+    const now = Date.now();
+    dispatch(db, { now, log });
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-2", reason: "slot", blockers: [] }]);
-    dispatch(db, { now: 2, log, maxInFlight: 1 });
-    dispatch(db, { now: 3, log, ownerCap: 1 });
+    dispatch(db, { now: now + 1, log });
+    db.run("DELETE FROM runner_work");
+    dispatch(db, { now: now + 2, log, ownerCap: 1 });
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-2", reason: "cap", blockers: [] }]);
     expect(lines).toEqual([
       "item PAS-2 held: no free slot on any runner",
@@ -69,6 +84,27 @@ test("a project that holds an item is its held reason", () => {
     expect(dispatch(db, { now: 1, log, admission })).toEqual([]);
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-5", reason: "project", blockers: [] }]);
     expect(lines).toEqual(["item PAS-5 held: its project has not released it yet"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("without a workspace nothing starts and earlier holds stay as they were", () => {
+  const db = tempDb();
+  try {
+    item(db, "PAS-7", "running");
+    item(db, "PAS-8", "queued", 1);
+    db.run("INSERT INTO task_block VALUES('issue-PAS-7','issue-PAS-8')");
+    const { lines, log } = journal();
+    expect(dispatch(db, { now: 1, log })).toEqual([]);
+    db.run("UPDATE work_item SET state='merged' WHERE id='PAS-7'");
+    item(db, "PAS-9", "queued", 2);
+    const admission = createAdmission({ db, workspace: false });
+    expect(dispatch(db, { now: 2, log, admission })).toEqual([]);
+    expect(listItemHolds(db)).toEqual([
+      { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
+    ]);
+    expect(lines).toEqual(["item PAS-8 held: blocked by PAS-7"]);
   } finally {
     db.close();
   }
