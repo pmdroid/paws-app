@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
-import { insertQueuedItem, listWorkItemFacts, putWorkspaceUser } from "../src/db";
+import {
+  insertQueuedItem,
+  listWorkItemFacts,
+  putWorkspaceUser,
+  saveWorkItemLinearProject,
+} from "../src/db";
 import { tempDb } from "./helpers";
 
-test("lists each item's owner, project, and creation time", () => {
+test("lists each item's owner, Linear project, and creation time", () => {
   const db = tempDb();
   const older = insertQueuedItem(db, { id: "older", title: "Older", now: 10 });
   const newer = insertQueuedItem(db, { id: "newer", title: "Newer", now: 20 });
@@ -21,12 +26,14 @@ test("lists each item's owner, project, and creation time", () => {
      VALUES('approval','ws','proj',?,?,'g1',?,0,1)`,
     [userId, userId, JSON.stringify({ name: "Wrong", project: { name: "Exports" } })],
   );
+  db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, newer.id]);
+  saveWorkItemLinearProject(db, newer.id, { id: "linear-project", name: "Exports" });
+  // A Paws project start is not the issue's Linear project.
   db.run("UPDATE work_item SET owner_user_id = ?, project_approval_id = ? WHERE id = ?", [
     userId,
     "approval",
-    newer.id,
+    older.id,
   ]);
-  db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, older.id]);
 
   expect(listWorkItemFacts(db)).toEqual([
     {
@@ -39,7 +46,7 @@ test("lists each item's owner, project, and creation time", () => {
     {
       itemId: newer.id,
       owner: "Ada Owner",
-      projectId: "approval",
+      projectId: "linear-project",
       projectName: "Exports",
       createdAt: 20,
     },

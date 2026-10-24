@@ -1,7 +1,7 @@
 import type { StatusSnapshot } from "./contract";
 
 const AT = "2026-10-09T22:15:00.000Z";
-const AUDIT = { id: "approval-audit", name: "Audit log export" };
+const AUDIT = { id: "linear-audit", name: "Audit log export" };
 
 const DEMO: StatusSnapshot = {
   version: 1,

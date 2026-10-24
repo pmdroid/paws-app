@@ -140,6 +140,11 @@ export {
   type WorkItemBlockRecord,
   type WorkItemFact,
 } from "./reads";
+export {
+  applyLinearIssueProject,
+  saveWorkItemLinearProject,
+  type WorkItemLinearProject,
+} from "./linear-project";
 export { immediate } from "./tx";
 export {
   createRunnerPairing,

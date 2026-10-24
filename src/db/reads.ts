@@ -81,12 +81,11 @@ export function listWorkItemFacts(db: Database): WorkItemFact[] {
     .query<FactSql, []>(
       `SELECT i.id AS item_id,
               u.name AS owner,
-              p.id AS project_id,
-              json_extract(p.preview, '$.project.name') AS project_name,
+              i.linear_project_id AS project_id,
+              i.linear_project_name AS project_name,
               i.created_at AS created_at
        FROM work_item i
        LEFT JOIN workspace_user u ON u.id = i.owner_user_id
-       LEFT JOIN project_approval p ON p.id = i.project_approval_id
        ORDER BY i.created_at DESC, i.id DESC`,
     )
     .all()

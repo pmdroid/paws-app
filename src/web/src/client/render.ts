@@ -267,15 +267,48 @@ function viewIssues(
       <button type="button" class="btn" data-action="issue-filter" data-issue-filter="needs" aria-pressed="false">Needs attention</button>
       <button type="button" class="btn" data-action="issue-filter" data-issue-filter="done" aria-pressed="false">Done</button>
     </div>
+    ${projectFilter(snapshot.items)}
     <ul class="issue-list" role="list">${snapshot.items.map((item) => issueRow(snapshot, item)).join("")}</ul>
     <p class="empty issue-filter-empty" hidden>No issues match this filter.</p>`;
+}
+
+/** The value the project filter uses for issues without a Linear project. */
+export const NO_PROJECT_FILTER = "none";
+
+/** Whether an Issues row shows under a state filter and a project filter (empty for any). */
+export function issueRowMatches(
+  row: { state: string | undefined; project: string | undefined },
+  filter: { state: "all" | "active" | "needs" | "done"; project: string },
+): boolean {
+  return (
+    (filter.state === "all" || row.state === filter.state) &&
+    (!filter.project || row.project === filter.project)
+  );
+}
+
+/** A project picker built from the Linear projects of the listed issues. */
+function projectFilter(items: readonly StatusItem[]): string {
+  const projects = new Map<string, string>();
+  for (const item of items) if (item.project) projects.set(item.project.id, item.project.name);
+  if (!projects.size) return "";
+  const options = [...projects]
+    .sort(
+      ([leftId, left], [rightId, right]) =>
+        left.localeCompare(right) || leftId.localeCompare(rightId),
+    )
+    .map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`)
+    .join("");
+  const none = items.some((item) => !item.project)
+    ? `<option value="${NO_PROJECT_FILTER}">No project</option>`
+    : "";
+  return `<label class="field issue-project-filter"><span>Project</span><select name="issue-project" data-issue-project-filter aria-label="Filter by project"><option value="">Any project</option>${options}${none}</select></label>`;
 }
 
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
   const blockers = unmergedBlockers(snapshot, item);
   const reason =
     waitReason(snapshot, item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {

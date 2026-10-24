@@ -201,6 +201,39 @@ export function parseLinearIssueClosed(event: AcceptedLinearEvent): LinearIssueC
   };
 }
 
+/** A webhook that moved an issue to another Linear project, or out of every project. */
+export type LinearIssueProjectChange = {
+  issueId: string;
+  organizationId: string;
+  project: { id: string; name: string | null } | null;
+};
+
+/**
+ * Reads only what the event delivered: an issue update whose `updatedFrom` names `projectId`.
+ * The name comes from the payload's `project`, when Linear included it.
+ */
+export function parseLinearIssueProjectChange(
+  event: AcceptedLinearEvent,
+): LinearIssueProjectChange | null {
+  const payload = verifiedPayload(event);
+  if (payload === null || readString(payload, "type") !== "Issue") return null;
+  if (readString(payload, "action") !== "update") return null;
+  const data = child(payload, "data");
+  const previous = child(payload, "updatedFrom");
+  const organizationId = id(payload, "organizationId");
+  const issueId = data === null ? null : id(data, "id");
+  if (data === null || previous === null || organizationId === null || issueId === null)
+    return null;
+  if (!("projectId" in previous)) return null;
+  const nested = child(data, "project");
+  if (data["projectId"] === null || (!("projectId" in data) && data["project"] === null))
+    return { issueId, organizationId, project: null };
+  const projectId = reference(data, "projectId", nested);
+  if (projectId === null) return null;
+  const name = nested === null ? null : readString(nested, "name");
+  return { issueId, organizationId, project: { id: projectId, name: name?.trim() || null } };
+}
+
 function polledIssueClosed(event: AcceptedLinearEvent): LinearIssueClosed | null {
   if (event.issueId === null) return null;
   let payload: unknown;
