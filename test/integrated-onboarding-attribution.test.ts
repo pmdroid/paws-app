@@ -369,7 +369,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(current().state).toBe("running");
     expect(dbApi.listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
     expect(appBotCommitIdentity(captured!.bot)).toEqual({
-      name: "paws-test[bot]",
+      name: "Paws",
       email: "88+paws-test[bot]@users.noreply.github.com",
     });
     expect(policyCoauthors(await policy())).toEqual([

@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appBotCommitIdentity, commitIdentityEnv } from "../src/core";
+import { appBotCommitIdentity, commitIdentityEnv, validateCommitAttribution } from "../src/core";
 import { commitCheckpoint, commitCheckpointSync, git } from "../src/acp";
 import { createGitHubTokenProvider } from "../src/auth";
 import { signRunnerCommand, verifyRunnerCommand, type RunnerCommand } from "../src/runner-protocol";
@@ -22,9 +22,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("bot names and noreply emails are derived from authoritative numeric IDs", () => {
+test("commits are named Paws and use the bot noreply email derived from authoritative numeric IDs", () => {
   expect(identity).toEqual({
-    name: "paws-test[bot]",
+    name: "Paws",
     email: "88+paws-test[bot]@users.noreply.github.com",
   });
   for (const invalid of [
@@ -34,6 +34,27 @@ test("bot names and noreply emails are derived from authoritative numeric IDs", 
   ])
     expect(() => appBotCommitIdentity(invalid)).toThrow();
   expect(() => commitIdentityEnv({ name: "Injected\nName", email: identity.email })).toThrow();
+});
+
+test("candidate attribution accepts Paws and the legacy bot login with the bot email only", () => {
+  const policy = { bot, projectLead: null, taskSteerer: null };
+  const email = "88+paws-test[bot]@users.noreply.github.com";
+  for (const [author, committer] of [
+    ["Paws", "Paws"],
+    ["paws-test[bot]", "paws-test[bot]"],
+    ["paws-test[bot]", "Paws"],
+  ])
+    expect(() =>
+      validateCommitAttribution(policy, [author!, email, committer!, email], []),
+    ).not.toThrow();
+  for (const candidate of [
+    ["Human", email, "Paws", email],
+    ["Paws", "human@example.invalid", "Paws", email],
+    ["Paws", email, "Paws", "77+paws-test[bot]@users.noreply.github.com"],
+    ["another[bot]", email, "Paws", email],
+    ["Paws", email, "Paws"],
+  ])
+    expect(() => validateCommitAttribution(policy, candidate, [])).toThrow("authorized App bot");
 });
 
 test("App authority rejects wrong Apps and non-bot accounts and re-resolves current identity", async () => {
