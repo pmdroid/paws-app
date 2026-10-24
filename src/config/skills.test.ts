@@ -17,7 +17,6 @@ test("project skills resolve per repository and survive setup rewrites", () => {
   expect(projectSkillsRoot(config, root, "ACME/DEMO")).toBe(join(root, "local-skills"));
   expect(projectSkillsRoot(config, root, "other/repo")).toBeUndefined();
   const setup: PawsSetupConfig = {
-    linearMode: "comments",
     linearTeam: "ENG",
     linearTeamId: "team",
     linearViewerId: "viewer",
