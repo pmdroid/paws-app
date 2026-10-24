@@ -2,6 +2,7 @@ import {
   listSkills,
   recordRunAgentSetup,
   recordRunnerCapacity,
+  recordRunnerRuntimes,
   recordRunnerSkills,
   teamRepositoryAllowedSql,
 } from "../db";
@@ -28,6 +29,7 @@ import {
   type RunnerEvent,
   signRunnerCommand,
   type RunnerCommand,
+  type RunnerInstalledRuntime,
   type RunnerInstalledSkill,
   type RunnerSkill,
   type SignedRunnerCommand,
@@ -474,7 +476,8 @@ export function createRunnerWork(options: {
     },
     /**
      * `ceiling` comes from runners that apply the desired concurrency from the reply. `installed`
-     * comes from runners that install skills; only they get the skill manifest back.
+     * comes from runners that install skills; only they get the skill manifest back. `runtimes`
+     * comes from runners that have installed task runtimes with mise.
      */
     heartbeat(
       runnerId: string,
@@ -482,6 +485,7 @@ export function createRunnerWork(options: {
       host: RunnerHostSample = {},
       ceiling?: number,
       installed?: readonly RunnerInstalledSkill[],
+      runtimes?: readonly RunnerInstalledRuntime[],
     ) {
       return immediate(db, () => {
         runner(runnerId);
@@ -492,6 +496,7 @@ export function createRunnerWork(options: {
           recordRunnerHostStatus(db, runnerId, host, at);
         const skills: RunnerSkill[] | undefined = installed && skillManifest();
         if (installed) recordRunnerSkills(db, runnerId, installed, at);
+        if (runtimes) recordRunnerRuntimes(db, runnerId, runtimes, at);
         const rows = db
           .query<Assignment, [string]>(
             `SELECT ${columns} FROM runner_work WHERE runner_id=? AND ended_at IS NULL`,
