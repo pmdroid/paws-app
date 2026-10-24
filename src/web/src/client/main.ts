@@ -34,7 +34,6 @@ import {
   type Route,
 } from "./route";
 import type { SettingsPage } from "./settings-pages";
-import { RUN_FILTER_KEYS, runFilterSearch, type RunFilters } from "./runs-list";
 
 import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
@@ -106,10 +105,6 @@ router.subscribe((state) => {
 });
 document.addEventListener("change", (event) => {
   const target = event.target;
-  if (target instanceof HTMLInputElement && target.dataset.runFilter !== undefined) {
-    applyRunFilters(target.form);
-    return;
-  }
   if (!(target instanceof HTMLSelectElement) || target.dataset.routePicker === undefined) return;
   const path = appPath(target.value);
   if (path !== null && ["issues", "runs"].includes(parseRoute(path).view))
@@ -268,7 +263,6 @@ function paint(): void {
     engineUrl: currentEngine(),
     closeout,
     mediaInfo: evidence.info,
-    search: router.state.location.search,
   };
   const view = render(model);
   const route = model.route;
@@ -396,9 +390,6 @@ function setHtml(selector: (typeof regions)[number], html: string): void {
   if (!element || painted.get(selector) === html) return;
   const focus = selector === "#page-content" ? captureFocus(element) : null;
   const logs = selector === "#page-content" ? captureLogs(element) : [];
-  const open = [
-    ...element.querySelectorAll<HTMLDetailsElement>("details[data-run-filter-group][open]"),
-  ].map((node) => node.dataset.runFilterGroup);
   const scroll = selector === "#page-content" ? window.scrollY : 0;
   painted.set(selector, html);
   if (selector === "#page-content") evidence.detach();
@@ -406,8 +397,6 @@ function setHtml(selector: (typeof regions)[number], html: string): void {
   if (selector !== "#page-content") return;
   window.scrollTo({ top: scroll, behavior: "instant" });
   restoreLogs(element, logs);
-  for (const node of element.querySelectorAll<HTMLDetailsElement>("details[data-run-filter-group]"))
-    node.open = open.includes(node.dataset.runFilterGroup);
   restoreFocus(element, focus);
 }
 
@@ -423,8 +412,7 @@ type HeldFocus =
   | { kind: "log"; key: string }
   | { kind: "href"; href: string }
   | { kind: "tab"; text: string }
-  | { kind: "picker"; label: string }
-  | { kind: "run-filter"; name: string; value: string };
+  | { kind: "picker"; label: string };
 
 function captureFocus(root: Element): HeldFocus | null {
   const active = document.activeElement;
@@ -434,8 +422,6 @@ function captureFocus(root: Element): HeldFocus | null {
     if (href) return { kind: "href", href };
   }
   if (active.getAttribute("role") === "tab") return { kind: "tab", text: active.textContent ?? "" };
-  if (active instanceof HTMLInputElement && active.dataset.runFilter !== undefined)
-    return { kind: "run-filter", name: active.name, value: active.value };
   if (active.matches("select[data-route-picker]"))
     return { kind: "picker", label: active.getAttribute("aria-label") ?? "" };
   const log = active.closest("[data-log]")?.getAttribute("data-log");
@@ -472,12 +458,6 @@ function findHeld(root: Element, held: HeldFocus): Element | null {
     return (
       [...root.querySelectorAll("select[data-route-picker]")].find(
         (node) => node.getAttribute("aria-label") === held.label,
-      ) ?? null
-    );
-  if (held.kind === "run-filter")
-    return (
-      [...root.querySelectorAll<HTMLInputElement>("input[data-run-filter]")].find(
-        (node) => node.name === held.name && node.value === held.value,
       ) ?? null
     );
   if (held.kind === "log") {
@@ -679,22 +659,6 @@ async function signInWithGitHub(): Promise<void> {
 
 function openDialog(): void {
   sourceDialog.open(sourceHelp());
-}
-
-function applyRunFilters(form: HTMLFormElement | null): void {
-  if (!form) return;
-  const filters: RunFilters = { project: [], lead: [], status: [], phase: [] };
-  for (const input of form.querySelectorAll<HTMLInputElement>("input[data-run-filter]:checked")) {
-    const key = RUN_FILTER_KEYS.find((entry) => entry === input.name);
-    if (key) filters[key].push(input.value);
-  }
-  const location = router.state.location;
-  void router.navigate(
-    `${location.pathname.slice(routerBase(location.pathname).length)}${runFilterSearch(location.search, filters)}`,
-    {
-      replace: true,
-    },
-  );
 }
 
 function applyIssueFilter(): void {

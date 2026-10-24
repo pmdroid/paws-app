@@ -112,6 +112,8 @@ describe("runner execution history", () => {
     runnerId: runner.id,
     runnerName: runner.name,
     runId: "run-7",
+    identifier: "ENG-7",
+    title: "Parse config files",
     agent: "claude",
     resolvedModel: "claude-opus",
     purpose: "work",
@@ -120,13 +122,15 @@ describe("runner execution history", () => {
     endedAt: now,
   };
 
-  test("lists each execution with its run, agent, duration and outcome", () => {
+  test("lists each execution with its issue, agent, duration and outcome", () => {
     const html = runnerHistoryMarkup([
       entry,
       {
         ...entry,
         commandId: "command-2",
         runId: null,
+        identifier: null,
+        title: null,
         agent: null,
         resolvedModel: null,
         purpose: "check",
@@ -134,11 +138,13 @@ describe("runner execution history", () => {
         endedAt: null,
       },
     ]);
-    expect(html).toContain('<a href="/runs/run-7">Work</a>');
+    expect(html).toContain(
+      '<a class="work-title" href="/issues/ENG-7"><span class="lin-id">ENG-7</span> Parse config files</a><p class="muted">Work</p>',
+    );
     expect(html).toContain("claude-opus");
     expect(html).toContain("2m 5s");
     expect(html).toContain('<span class="tag ok">Success</span>');
-    expect(html).toContain("<td>Checks</td><td>None</td>");
+    expect(html).toContain('<td>Checks</td><td class="hide-phone">None</td>');
     expect(html).toContain('<span class="tag running">Running</span>');
   });
 
@@ -182,11 +188,11 @@ describe("what a runner is running now", () => {
     );
   });
 
-  test("a runner with one session links its issue to the run page", () => {
+  test("a runner with one session links its issue to the issue page", () => {
     const html = runnerRunningMarkup([working], now);
-    expect(html).toContain('aria-label="Slots"');
+    expect(html).toContain('aria-label="Running issues"');
     expect(html).toContain(
-      '<span class="lin-id">ENG-7</span><a class="work-title" href="/runs/run-1">Parse &lt;config&gt; files</a>',
+      '<a class="work-title" href="/issues/ENG-7"><span class="lin-id">ENG-7</span> Parse &lt;config&gt; files</a>',
     );
     expect(html).toContain('<span class="st running">Working</span>');
     expect(html).toContain(">12m</span>");
@@ -202,7 +208,7 @@ describe("what a runner is running now", () => {
     const html = runnerRunningMarkup([working, closeout], now);
     expect(html.match(/<li /g)).toHaveLength(2);
     expect(html.indexOf("ENG-7")).toBeLessThan(html.indexOf("ENG-9"));
-    expect(html).toContain('href="/runs/run-2"');
+    expect(html).toContain('href="/issues/ENG-9"');
     expect(html).toContain('<span class="st verifying">Closeout</span>');
     expect(html).toContain(">1h 15m</span>");
     expect(
@@ -238,7 +244,7 @@ describe("what a runner is running now", () => {
         )?.[0];
       expect(slots?.match(/data-running-run=/g)).toHaveLength(2);
       expect(slots).toContain('<span class="lin-id">ENG-7</span>');
-      expect(slots).toContain('href="/runs/run-1">Parse &lt;config&gt; files</a>');
+      expect(slots).toContain('href="/issues/ENG-7"><span class="lin-id">ENG-7</span>');
       expect(slots).toContain('<span class="st running">Working</span>');
       expect(slots).toContain(">12m</span>");
       expect(slots).toContain('<span class="lin-id">ENG-9</span>');
@@ -295,7 +301,7 @@ describe("runner details", () => {
     expect(html).toContain("5 min 0.25 · 15 min 0.13");
     expect(html).toContain("40 GB free of 100 GB");
     expect(runnerDetailMarkup({ ...runner, slots: { used: 2, total: 10 } }, view)).toContain(
-      `<h3 id="runner-${runner.id}-slots">Slots</h3><span class="gauge-value">2 of 10 in use</span>`,
+      `<h3 id="runner-${runner.id}-slots">Running issues</h3><span class="gauge-value">2 of 10 slots in use</span>`,
     );
     expect(
       runnerRowMarkup({ ...runner, slots: { used: 2, total: 10 } }, { now, serverVersion: null }),
@@ -499,9 +505,9 @@ describe("live host metrics", () => {
 
   test("the slot count turns orange when all slots are in use", () => {
     const some = runnerDetailMarkup({ ...runner, slots: { used: 1, total: 3 } }, view);
-    expect(some).toContain('<span class="gauge-value">1 of 3 in use</span>');
+    expect(some).toContain('<span class="gauge-value">1 of 3 slots in use</span>');
     const full = runnerDetailMarkup({ ...runner, slots: { used: 3, total: 3 } }, view);
-    expect(full).toContain('<span class="gauge-value high">3 of 3 in use</span>');
+    expect(full).toContain('<span class="gauge-value high">3 of 3 slots in use</span>');
   });
 
   test("metrics older than two heartbeats look stale", () => {

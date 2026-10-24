@@ -81,6 +81,8 @@ export type Usage = {
   runnerId: string;
   runnerName: string;
   runId: string | null;
+  identifier?: string | null;
+  title?: string | null;
   agent: string | null;
   resolvedModel: string | null;
   /** The model entry's label, such as "Opus 5.5 · 1M context". */
@@ -247,8 +249,8 @@ export function runnerHistoryMarkup(usage: Usage[]): string {
   const rows = usage
     .map((entry) => {
       const purpose = esc(PURPOSES[entry.purpose] ?? entry.purpose);
-      const work = entry.runId
-        ? `<a href="${esc(routeHref({ view: "runs", id: entry.runId }))}">${purpose}</a>`
+      const work = entry.identifier
+        ? `${issueLink(entry.identifier, entry.title ?? "")}<p class="muted">${purpose}</p>`
         : purpose;
       const agent = entry.agent ? (AGENT_LABELS[entry.agent] ?? entry.agent) : "None";
       const outcome =
@@ -257,10 +259,10 @@ export function runnerHistoryMarkup(usage: Usage[]): string {
           : `<span class="tag ${entry.outcome === "success" ? "ok" : entry.outcome === "cancelled" ? "warn" : "bad"}">${esc(entry.outcome[0]!.toUpperCase() + entry.outcome.slice(1).replaceAll("_", " "))}</span>`;
       const duration =
         entry.endedAt === null ? "Running" : durationLabel(entry.endedAt - entry.startedAt);
-      return `<tr><td><span title="${esc(new Date(entry.startedAt).toLocaleString())}">${esc(new Date(entry.startedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</span></td><td>${work}</td><td>${esc(agent)}${entry.resolvedModel ? `<p class="muted">${esc(entry.modelLabel ?? entry.resolvedModel)}</p>` : ""}</td><td class="hide-phone">${esc(duration)}</td><td>${outcome}</td></tr>`;
+      return `<tr><td><span title="${esc(new Date(entry.startedAt).toLocaleString())}">${esc(new Date(entry.startedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</span></td><td>${work}</td><td class="hide-phone">${esc(agent)}${entry.resolvedModel ? `<p class="muted">${esc(entry.modelLabel ?? entry.resolvedModel)}</p>` : ""}</td><td class="hide-phone">${esc(duration)}</td><td>${outcome}</td></tr>`;
     })
     .join("");
-  return `<table class="runner-history"><thead><tr><th>Started</th><th>Task</th><th>Agent</th><th class="hide-phone">Duration</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table class="runner-history"><thead><tr><th>Started</th><th>Issue</th><th class="hide-phone">Agent</th><th class="hide-phone">Duration</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 const SKILL_STATES: Record<RunnerSkill["state"], [string, string]> = {
@@ -289,7 +291,7 @@ export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: strin
         : skill.state === "out_of_date" && has
           ? `Has ${has}. Paws pins ${pinned}.`
           : skill.state === "installing" && has && has !== pinned
-            ? `Has ${has} until no run is using it.`
+            ? `Has ${has} until no issue is using it.`
             : skill.state === "installing" && skill.reportedAt === null
               ? "Not reported by this runner yet."
               : "";
@@ -309,6 +311,10 @@ const PHASES: Record<RunningSession["phase"], [string, string]> = {
   fixing: ["warn", "Fixing"],
   merging: ["now", "Merging"],
 };
+
+function issueLink(identifier: string, title: string): string {
+  return `<a class="work-title" href="${esc(routeHref({ view: "issues", id: identifier }))}"><span class="lin-id">${esc(identifier)}</span> ${esc(title)}</a>`;
+}
 
 function elapsedLabel(ms: number): string {
   const minutes = Math.floor(Math.max(0, ms) / 60_000);
@@ -330,7 +336,7 @@ export function runnerRunningMarkup(
   const rows = sessions
     .map((session) => {
       const [tone, phase] = PHASES[session.phase] ?? PHASES.working;
-      return `<li class="slot-row" data-running-run="${esc(session.runId)}"><span class="slot-mark used${full ? " high" : ""}" aria-hidden="true"></span><span class="lin-id">${esc(session.identifier)}</span><a class="work-title" href="${esc(routeHref({ view: "runs", id: session.runId }))}">${esc(session.title)}</a><span class="slot-facts">${statePill(tone, phase)}<span class="muted" title="Started ${esc(new Date(session.startedAt).toLocaleString())}">${esc(elapsedLabel(now - session.startedAt))}</span></span></li>`;
+      return `<li class="slot-row" data-running-run="${esc(session.runId)}"><span class="slot-mark used${full ? " high" : ""}" aria-hidden="true"></span>${issueLink(session.identifier, session.title)}<span class="slot-facts">${statePill(tone, phase)}<span class="muted" title="Started ${esc(new Date(session.startedAt).toLocaleString())}">${esc(elapsedLabel(now - session.startedAt))}</span></span></li>`;
     })
     .join("");
   const other = Math.max(0, (slots?.used ?? 0) - sessions.length);
@@ -341,7 +347,7 @@ export function runnerRunningMarkup(
     free > 0
       ? `<li class="slot-row"><span class="slot-mark" aria-hidden="true"></span><span class="muted">${free === total ? "Nothing running · " : ""}${free} ${free === 1 ? "slot" : "slots"} free</span></li>`
       : "";
-  return `<ul class="slot-list" role="list" aria-label="Slots">${rows}${busy}${idle}</ul>`;
+  return `<ul class="slot-list" role="list" aria-label="Running issues">${rows}${busy}${idle}</ul>`;
 }
 
 /** Processes that outlived their run, busiest first, so someone can stop them. */
@@ -353,7 +359,7 @@ export function runnerStrayMarkup(strays: readonly StrayProcess[]): string {
       return `<li class="slot-row" data-stray-pid="${stray.pid}"><span class="slot-mark used${busy ? " high" : ""}" aria-hidden="true"></span><span class="lin-id">${esc(stray.name)}</span><span class="work-title">PID ${stray.pid}</span><span class="slot-facts">${busy ? `<span class="gauge-value high">${esc(cpu)}<span class="sr-only">, high</span></span>` : `<span class="gauge-value">${esc(cpu)}</span>`}<span class="muted">Running ${esc(elapsedLabel(stray.ageSeconds * 1000))}</span></span></li>`;
     })
     .join("");
-  return `<p class="muted">Running as the runner user after their run ended.</p><ul class="slot-list" role="list" aria-label="Stray processes">${rows}</ul>`;
+  return `<p class="muted">Still running as the runner user after their work ended.</p><ul class="slot-list" role="list" aria-label="Stray processes">${rows}</ul>`;
 }
 
 export function runnerActionsMarkup(
@@ -577,7 +583,7 @@ export function runnerDetailMarkup(
     : `<button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button>`;
   const slots = runner.slots;
   const capacity = slots
-    ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(`${slots.used} of ${slots.total} in use`)}</span>`
+    ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(`${slots.used} of ${slots.total} slots in use`)}</span>`
     : "";
   const head = `<div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta" title="${esc(metrics ? new Date(metrics.reportedAt).toLocaleString() : "")}">${meta}</p></div>${pauseMarkup(runner, { manages, busy: view.busy })}</div>`;
   const block = (key: string, title: string, aside: string, body: string) =>
@@ -587,7 +593,7 @@ export function runnerDetailMarkup(
       ? ""
       : block(
           "slots",
-          "Slots",
+          "Running issues",
           capacity,
           runnerRunningMarkup(runner.running ?? [], view.now, slots),
         )

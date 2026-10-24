@@ -172,7 +172,7 @@ describe("merge queue page", () => {
       "2 ENG-102 CSV / JSON formatters Audit log export Aisha Khan #415 35m Queued Starts when #412 merges",
     );
     expect(rowText(html, "ENG-107")).toContain(
-      "3 ENG-107 Fix export timezone Audit log export Aisha Khan #418 10m Queued Starts when #415 merges · Bug rule: runs Closeout again after its branch update",
+      "3 ENG-107 Fix export timezone Audit log export Aisha Khan #418 10m Queued Starts when #415 merges · Bug rule: Closeout checks it again after its branch update",
     );
     const green = html.slice(web);
     expect(green).toContain("Merge each when green");
