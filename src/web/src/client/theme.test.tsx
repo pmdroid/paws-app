@@ -3,7 +3,6 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { themedMarkup } from "./theme";
 import { render } from "./render";
-import { renderConversations, type ConversationModel } from "./conversations";
 import { identityLinkMarkup } from "./workspace-identities";
 import { linearConnectionMarkup } from "./workspace";
 import { runnerDetailMarkup, type Runner } from "./runners";
@@ -45,15 +44,7 @@ test("markup renders Neobrutalism components while retaining action hooks and na
 });
 
 test("every dashboard view renders without authored inline styles", () => {
-  for (const view of [
-    "overview",
-    "issues",
-    "runs",
-    "questions",
-    "sessions",
-    "settings",
-    "runners",
-  ] as const) {
+  for (const view of ["overview", "issues", "runs", "questions", "settings", "runners"] as const) {
     const rendered = render({
       route: { view, id: null },
       phase: "ready",
@@ -122,58 +113,6 @@ test("run checks, transcripts, and stop controls keep their columns aligned", ()
   const details = action.match(/<details class="([^"]*)"/)?.[1] ?? "";
   expect(details).not.toContain("my-2");
   expect(details).toContain("self-start");
-});
-
-test("conversation detail separates plan, file, and task metadata", () => {
-  const model: ConversationModel = {
-    state: "ready",
-    sessions: [
-      {
-        id: "sess",
-        title: "Signed URL delivery",
-        stopped: false,
-        activeItemId: "answer",
-        summary: "Waiting on an expiry",
-        planState: "sent",
-        delivery: [],
-        items: [
-          {
-            id: "answer",
-            identifier: "ENG-103",
-            title: "Signed URL delivery",
-            state: "awaiting_input",
-            mode: "answer",
-            response: null,
-          },
-        ],
-        messages: [],
-        plan: [{ content: "Read the export delivery path", status: "completed" }],
-        questions: [],
-        artifacts: [
-          {
-            id: "file",
-            itemId: "answer",
-            displayName: "deliver.ts",
-            mimeType: "text/plain",
-            sizeBytes: 5120,
-            state: "uploaded",
-            href: "/api/linear/artifacts/file",
-          },
-        ],
-        links: [],
-      },
-    ],
-  };
-  const raw = renderConversations(model, "sess");
-  expect(raw).toContain('<span class="lin-id">ENG-103</span> <span>Signed URL delivery</span>');
-  expect(raw).toContain('<span class="muted">text/plain · 5 KB</span>');
-  expect(raw).toContain('class="title-row"');
-  const html = markup(raw);
-  for (const value of classNames(html, "conversation-row")) {
-    expect(value).toContain("flex-col");
-    expect(value).toContain("gap-2");
-  }
-  expect(classNames(html, "title-row")[0]).toContain("items-baseline");
 });
 
 test("account links and the Linear connection line up in columns", () => {

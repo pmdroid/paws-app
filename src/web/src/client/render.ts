@@ -37,7 +37,6 @@ import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
 import { emptyCloseoutView, renderCloseoutChecks, type CloseoutView } from "./closeout";
 import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-closeout";
-import { renderConversations, type ConversationModel } from "./conversations";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
@@ -45,7 +44,6 @@ import { renderIntake } from "./intake";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
 
 export interface RenderModel {
-  conversations?: ConversationModel;
   route: Route;
   phase: "loading" | "ready" | "error";
   snapshot: StatusSnapshot | null;
@@ -83,11 +81,9 @@ export function render(model: RenderModel): Rendered {
           ? '<div id="project-delivery"></div>'
           : model.route.view === "settings"
             ? renderSettingsPage(model.route.page)
-            : model.route.view === "sessions"
-              ? renderConversations(model.conversations, model.route.id)
-              : snapshot && model.phase !== "loading"
-                ? renderView(snapshot, model)
-                : renderPending(model),
+            : snapshot && model.phase !== "loading"
+              ? renderView(snapshot, model)
+              : renderPending(model),
     title,
   };
 }
@@ -145,8 +141,6 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       return '<div id="project-delivery"></div>';
     case "settings":
       return renderSettingsPage(model.route.page);
-    case "sessions":
-      return renderConversations(model.conversations, model.route.id);
   }
 }
 

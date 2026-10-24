@@ -78,11 +78,11 @@ export function recordLinearInstallation(
       throw new Error("Linear session OAuth client ownership changed");
     if (current.installation_observed_at !== null) {
       if (current.installation_observed_at > input.observedAtMs) return;
-      if (
-        current.installation_observed_at === input.observedAtMs &&
-        current.team_id !== input.teamId
-      )
-        throw new Error("Linear session team observations conflict");
+      if (current.installation_observed_at === input.observedAtMs) {
+        if (input.teamId === null) return;
+        if (current.team_id !== null && current.team_id !== input.teamId)
+          throw new Error("Linear session team observations conflict");
+      }
     }
     db.run(
       "UPDATE linear_session SET oauth_client_id = ?, team_id = ?, installation_observed_at = ? WHERE session_id = ?",

@@ -196,7 +196,7 @@ function replace(node: DOMNode): ReactElement | undefined {
       return styled(
         "flex flex-col gap-3 rounded-base border-2 border-border bg-secondary-background p-4 shadow-shadow transition-transform hover:translate-x-1 hover:translate-y-1 hover:shadow-none",
       );
-    if (has("btn", "nav", "tab", "conversation-tab") || attribs["aria-current"])
+    if (has("btn", "nav", "tab") || attribs["aria-current"])
       return styled(
         buttonVariants({
           variant: attribs["aria-current"] || has("primary", "on") ? "default" : "neutral",
@@ -238,55 +238,14 @@ function replace(node: DOMNode): ReactElement | undefined {
           ? "inline-block h-3 w-6 rounded-base border-2 border-border bg-green-200"
           : "inline-block h-3 w-6 rounded-base border-2 border-border bg-main",
     );
-  if (has("conversation-row"))
-    return styled(
-      "flex min-w-0 flex-col items-start gap-2 rounded-base border-2 border-border bg-secondary-background px-4 py-3",
-    );
-  if (has("conversation-message", "conversation-question"))
-    return styled(
-      "space-y-3 rounded-base border-2 border-border bg-secondary-background px-4 py-4",
-    );
-  if (
-    has(
-      "conversation-timeline",
-      "conversation-details",
-      "conversation-plan",
-      "conversation-files",
-      "conversation-tasks",
-      "settings-label",
-      "settings-role",
-    )
-  )
-    return styled(
-      has("conversation-plan", "conversation-tasks", "conversation-files")
-        ? "m-0 flex list-none flex-col gap-3 p-0"
-        : "flex min-w-0 flex-col gap-4",
-    );
-  if (has("conversation-heading")) return styled("flex min-w-0 flex-col gap-2");
-  if (has("title-row"))
-    return styled("grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3");
-  if (has("conversation-message-meta", "crumbs"))
-    return styled("flex flex-wrap items-center gap-2");
+  if (has("settings-label", "settings-role")) return styled("flex min-w-0 flex-col gap-4");
+  if (has("crumbs")) return styled("flex flex-wrap items-center gap-2");
   if (has("sr-only")) return styled("sr-only");
   if (has("logo", "av"))
     return styled(
       "inline-block size-9 shrink-0 rounded-base border-2 border-border bg-main text-center text-sm font-bold leading-8 text-main-foreground",
     );
-  if (
-    has(
-      "st",
-      "tag",
-      "cnt",
-      "n",
-      "kind",
-      "ico",
-      "ph",
-      "pill",
-      "demo-pill",
-      "live-pill",
-      "conversation-delivery-state",
-    )
-  ) {
+  if (has("st", "tag", "cnt", "n", "kind", "ico", "ph", "pill", "demo-pill", "live-pill")) {
     const state = has("err", "bad", "failed", "exhausted", "needs_human", "rejected", "blocked")
       ? "bg-red-200 text-black"
       : has("merged", "completed", "accepted", "passed", "done", "ok")
@@ -484,7 +443,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-3 py-4");
   if (has("overview-copy")) return styled("min-w-0 flex-1 basis-72 space-y-1 break-words");
   if (has("overview-summary")) return styled("text-sm font-semibold leading-relaxed");
-  if (has("split", "conversation-layout"))
+  if (has("split"))
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)] [&>*]:min-w-0 [&>div:first-child]:space-y-4",
     );
@@ -575,8 +534,6 @@ function replace(node: DOMNode): ReactElement | undefined {
       "legend",
       "artifact",
       "settings-inherit",
-      "conversation-tabs",
-      "conversation-links",
     )
   )
     return styled(

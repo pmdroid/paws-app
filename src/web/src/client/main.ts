@@ -39,7 +39,6 @@ import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
 import { createMergeSettings } from "./merge-settings";
 import { createHookSettings } from "./hooks";
-import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createProjects } from "./projects";
@@ -86,7 +85,6 @@ let workspaceReady = false;
 let booted = false;
 let shownPath = router.state.location.pathname;
 let shownSearch = router.state.location.search;
-let conversations: ConversationModel = { state: "loading", sessions: [] };
 
 const sourceDialog = createSourceDialog(applyChoice);
 let issueFilter: "all" | "active" | "needs" | "done" = "all";
@@ -109,7 +107,7 @@ document.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLSelectElement) || target.dataset.routePicker === undefined) return;
   const path = appPath(target.value);
-  if (path !== null && ["issues", "runs", "sessions"].includes(parseRoute(path).view))
+  if (path !== null && ["issues", "runs"].includes(parseRoute(path).view))
     void router.navigate(path);
 });
 
@@ -165,10 +163,6 @@ async function reload(): Promise<void> {
     return;
   }
   const route = currentRoute();
-  if (route.view === "sessions" && route.id === null) {
-    await reloadConversations(engineUrl);
-    return;
-  }
   if (!needsSnapshot(route)) {
     schedule();
     return;
@@ -195,17 +189,6 @@ async function reload(): Promise<void> {
     phase = "error";
     if (via !== "engine") snapshot = null;
   }
-  paint();
-  // A session the snapshot does not know is a conversation without Paws work.
-  if (currentRoute().view === "sessions") {
-    await reloadConversations(engineUrl);
-    return;
-  }
-  schedule();
-}
-
-async function reloadConversations(engineUrl: string): Promise<void> {
-  conversations = await loadConversations(engineUrl, source(), location.origin);
   paint();
   schedule();
 }
@@ -260,7 +243,7 @@ function servedLocally(): boolean {
 function schedule(): void {
   window.clearInterval(timer);
   const route = currentRoute();
-  if (!currentEngine() || !(needsSnapshot(route) || route.view === "sessions")) return;
+  if (!currentEngine() || !needsSnapshot(route)) return;
   // Stored evidence does not change, and a repaint would interrupt the video.
   if (route.view === "evidence") return;
   timer = window.setInterval(() => {
@@ -280,9 +263,6 @@ function paint(): void {
     engineUrl: currentEngine(),
     closeout,
     mediaInfo: evidence.info,
-    conversations: canReadConversations(currentEngine(), source(), location.origin)
-      ? conversations
-      : { state: "unavailable", sessions: [] },
   };
   const view = render(model);
   const route = model.route;
@@ -331,7 +311,12 @@ function paint(): void {
   if (hooksRoot) hookSettings.mount(hooksRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot)
-    sessionStart.mount(sessionRoot, currentEngine(), source(), model.route.view === "sessions");
+    sessionStart.mount(
+      sessionRoot,
+      currentEngine(),
+      source(),
+      model.route.view === "issues" && model.route.id === null,
+    );
   const executionRoot = document.querySelector<HTMLElement>("#execution-controls");
   if (executionRoot) executionControls.mount(executionRoot, currentEngine(), source());
   const drawRoot = document.querySelector<HTMLElement>("#review-draw");

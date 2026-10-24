@@ -9,7 +9,6 @@ export type Route =
   | { view: "runs"; id: string | null }
   | { view: "mergeQueue" }
   | { view: "evidence"; id: string | null }
-  | { view: "sessions"; id: string | null }
   | { view: "questions"; id: string | null }
   | { view: "settings"; page?: SettingsPage };
 
@@ -53,10 +52,8 @@ export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Rout
       return { view: "mergeQueue" };
     case "evidence":
       return { view: "evidence", id };
-    case "sessions": {
-      const issue = id === null ? null : issueForSession(id, snapshot);
-      return issue ? { view: "issues", id: issue } : { view: "sessions", id };
-    }
+    case "sessions":
+      return { view: "issues", id: id === null ? null : issueForSession(id, snapshot) };
     case "questions":
       return { view: "questions", id };
     case "verdicts":
@@ -84,7 +81,6 @@ export function routeHref(route: Route): string {
 }
 
 export function needsSnapshot(route: Route): boolean {
-  if (route.view === "sessions") return route.id !== null;
   return ["overview", "issues", "runs", "mergeQueue", "questions", "evidence"].includes(route.view);
 }
 
@@ -92,7 +88,9 @@ const FOLDED = new Set(["runs", "sessions", "verdicts"]);
 
 /**
  * The issue page a run, session or verdict link now opens, such as `/issues/PAS-367`.
- * Null when the path is not one of those, or the snapshot does not know it yet.
+ * A session link the snapshot does not know opens the issue list, since the Conversations
+ * page it used to open no longer exists.
+ * Null when the path is not one of those, or the snapshot has not arrived yet.
  */
 export function issueRedirect(path: string, snapshot: StatusSnapshot | null): string | null {
   if (!snapshot) return null;
@@ -102,7 +100,8 @@ export function issueRedirect(path: string, snapshot: StatusSnapshot | null): st
     .find((part) => part.length > 0);
   if (head === undefined || !FOLDED.has(head)) return null;
   const route = matchRoute(path, snapshot);
-  return route?.view === "issues" && route.id !== null ? routePath(route) : null;
+  if (route?.view !== "issues") return null;
+  return route.id !== null || head === "sessions" ? routePath(route) : null;
 }
 
 /** Any of a task's engine run ids, or the run id the dashboard shows for it. */

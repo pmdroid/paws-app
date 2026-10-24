@@ -15,6 +15,14 @@ afterEach(async () => {
 });
 
 describe("status HTTP stub", () => {
+  test("the Conversations API is gone, so the status handler leaves it unrouted", async () => {
+    const response = await handleStatusRequest(
+      new Request("http://127.0.0.1:8787/api/linear/conversations"),
+      { provider: fakeStatusProvider() },
+    );
+    expect(response).toBeNull();
+  });
+
   test("GET /api/status returns the sample snapshot and allows the static site to read it", async () => {
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
       provider: fakeStatusProvider(),

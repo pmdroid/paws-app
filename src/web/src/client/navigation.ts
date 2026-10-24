@@ -29,10 +29,6 @@ export const PAGES = {
     title: "Questions",
     description: "Review blocked work and answer questions in Linear.",
   },
-  sessions: {
-    title: "Conversations",
-    description: "Read Linear sessions and start a conversation on an issue or comment thread.",
-  },
   runners: {
     title: "Runners",
     description: "Manage the hosts that execute work delegated in Linear.",
@@ -46,7 +42,7 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "issues", "projects", "questions", "mergeQueue", "sessions"],
+    views: ["overview", "issues", "projects", "questions", "mergeQueue"],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;
