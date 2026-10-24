@@ -143,7 +143,7 @@ describe("runner execution history", () => {
     );
     expect(html).toContain("claude-opus");
     expect(html).toContain("2m 5s");
-    expect(html).toContain('<span class="tag ok">Success</span>');
+    expect(html).toContain('<span class="tag outcome ok">Success</span>');
     expect(html).toContain('<td>Checks</td><td class="hide-phone">None</td>');
     expect(html).toContain('<span class="tag running">Running</span>');
   });
