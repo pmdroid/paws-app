@@ -63,3 +63,45 @@ export function runnerSkillPath(path: string): string | null {
   if (kept.length === 0 || kept.some((part) => part === ".." || part.includes("\0"))) return null;
   return kept.join("/");
 }
+
+function* tarFiles(tar: Uint8Array): Generator<{ path: string; header: number; mode: number }> {
+  const field = (from: number, length: number) =>
+    new TextDecoder().decode(tar.subarray(from, from + length)).replace(/\0[\s\S]*$/, "");
+  let paxPath: string | undefined;
+  for (let at = 0; at + 512 <= tar.length && tar[at] !== 0;) {
+    const size = parseInt(field(at + 124, 12).trim() || "0", 8);
+    const type = field(at + 156, 1);
+    if (type === "x") paxPath = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(field(at + 512, size))?.[1];
+    else {
+      const base = field(at, 100);
+      const prefix = field(at + 257, 6) === "ustar" ? field(at + 345, 155) : "";
+      if (type === "0" || type === "")
+        yield {
+          path: paxPath ?? (prefix ? `${prefix}/${base}` : base),
+          header: at,
+          mode: parseInt(field(at + 100, 8).trim() || "0", 8),
+        };
+      paxPath = undefined;
+    }
+    at += 512 + Math.ceil(size / 512) * 512;
+  }
+}
+
+export function tarModes(archive: Uint8Array): Map<string, number> {
+  const tar =
+    archive[0] === 0x1f && archive[1] === 0x8b ? Bun.gunzipSync(new Uint8Array(archive)) : archive;
+  return new Map([...tarFiles(tar)].map(({ path, mode }) => [path, mode]));
+}
+
+export function withTarModes<T extends Uint8Array>(tar: T, modes: ReadonlyMap<string, number>): T {
+  const encode = (text: string) => new TextEncoder().encode(text);
+  for (const { path, header } of tarFiles(tar)) {
+    const mode = modes.get(path);
+    if (mode === undefined) continue;
+    tar.set(encode(`${mode.toString(8).padStart(7, "0")}\0`), header + 100);
+    tar.fill(0x20, header + 148, header + 156);
+    const sum = tar.subarray(header, header + 512).reduce((total, byte) => total + byte, 0);
+    tar.set(encode(`${sum.toString(8).padStart(6, "0")}\0 `), header + 148);
+  }
+  return tar;
+}

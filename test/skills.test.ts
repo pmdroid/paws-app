@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -14,6 +22,7 @@ import {
   saveHook,
   syncWorkspaceMember,
 } from "../src/db";
+import { tarModes, withTarModes } from "../src/runner-protocol";
 import { handleSkillSettingsRequest, type SkillSettingsOptions } from "../src/settings";
 import {
   addSkill,
@@ -50,11 +59,16 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function tarball(files: Record<string, string>): Promise<Uint8Array> {
+async function tarball(
+  files: Record<string, string>,
+  modes: Record<string, number> = {},
+): Promise<Uint8Array> {
   const entries = Object.fromEntries(
     Object.entries(files).map(([path, text]) => [`package/${path}`, text]),
   );
-  return new Bun.Archive(entries, { compress: "gzip" }).bytes();
+  const packaged = Object.entries(modes).map(([path, mode]) => [`package/${path}`, mode] as const);
+  const tar = await new Bun.Archive(entries).bytes();
+  return Bun.gzipSync(withTarModes(tar, new Map(packaged)));
 }
 
 /** A registry that serves `impeccable` at the given versions, the last one tagged latest. */
@@ -130,6 +144,7 @@ function impeccableRepo(): string {
   for (const folder of [".claude", ".agents", ".agent", ".cursor", "plugin"])
     write(`${folder}/skills/impeccable/SKILL.md`, SKILL);
   write(".claude/skills/impeccable/scripts/impeccable", "echo hook\n");
+  chmodSync(join(repo, ".claude/skills/impeccable/scripts/impeccable"), 0o755);
   write("tests/oracle/workspaces/ctx-pin/.claude/skills/audit/SKILL.md", manifest("audit"));
   write(".claude-plugin/plugin.json", JSON.stringify({ skills: "./.claude/skills/" }));
   write(
@@ -455,6 +470,39 @@ describe("skill sources", () => {
       "SKILL.md": SKILL,
       "reference/typography.md": "Use a scale.",
     });
+  });
+
+  test("an npm skill keeps its executable files executable in the bundle", async () => {
+    const npm = npmRegistry({
+      "1.0.0": await tarball(
+        { "SKILL.md": SKILL, "scripts/impeccable": "echo hook\n" },
+        { "scripts/impeccable": 0o755 },
+      ),
+    });
+    const resolver = createSkillResolver({ fetch: npm.fetch, registry: "https://registry.test" });
+    await addSkill(registry(resolver), { kind: "npm", package: "impeccable" });
+    const bundle = join(root, "skills", "impeccable", "1.0.0", SKILL_BUNDLE_FILE);
+    expect(tarModes(readFileSync(bundle))).toEqual(
+      new Map([
+        ["SKILL.md", 0o644],
+        ["scripts/impeccable", 0o755],
+      ]),
+    );
+  });
+
+  test("a git skill keeps its executable files executable in the bundle", async () => {
+    const skill = await addSkill(registry(createSkillResolver()), {
+      kind: "git",
+      url: impeccableRepo(),
+      subfolder: ".claude/skills/impeccable",
+    });
+    const bundle = join(root, "skills", "impeccable", skill.version, SKILL_BUNDLE_FILE);
+    expect(tarModes(readFileSync(bundle))).toEqual(
+      new Map([
+        ["SKILL.md", 0o644],
+        ["scripts/impeccable", 0o755],
+      ]),
+    );
   });
 
   test("an npm tarball that does not match its integrity is refused", async () => {

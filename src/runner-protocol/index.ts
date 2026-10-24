@@ -82,6 +82,8 @@ export {
   RunnerSkillManifestSchema,
   RunnerSkillSchema,
   runnerSkillPath,
+  tarModes,
+  withTarModes,
   type RunnerInstalledSkill,
   type RunnerSkill,
   type RunnerSkillAgent,
