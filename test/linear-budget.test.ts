@@ -271,7 +271,7 @@ describe("shared Linear budget", () => {
     const ignore = () => {};
     await tracker.loadEpic("issue").catch(ignore);
     await tracker.getIssueContext!("issue").catch(ignore);
-    await tracker.listProjectMembers!("project").catch(ignore);
+    await tracker.projectOverview!("issue").catch(ignore);
     await lifecycle.inspect("issue").catch(ignore);
     await linearCaller("intake", () => tracker.loadEpic("issue").catch(ignore));
     expect(Object.keys(ledger.usage().callers).sort()).toEqual([
@@ -279,7 +279,7 @@ describe("shared Linear budget", () => {
       "issue-context",
       "issue-inspect",
       "issue-snapshot",
-      "project-members",
+      "project-overview",
     ]);
   });
 

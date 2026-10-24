@@ -140,14 +140,12 @@ import {
   type RepositoryBinding,
   type HostGitHubAuth,
 } from "./loop";
-import { createItemReconciler, createPublicationReadiness } from "./intake";
-import { createExecutionControls } from "./execution-controls";
 import {
-  createApprovedProjects,
-  createProjectHttp,
-  createProjectExecutionGuard,
-} from "./project-execution";
-import { saveExternalBlockerPolicies } from "./intake";
+  createItemReconciler,
+  createParentDelegations,
+  createPublicationReadiness,
+} from "./intake";
+import { createExecutionControls } from "./execution-controls";
 import { createAdmission, registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
@@ -298,9 +296,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
   let executionControls: ReturnType<typeof createExecutionControls> | null = null;
-  let projects: ReturnType<typeof createApprovedProjects> | null = null;
-  let projectHttp: ReturnType<typeof createProjectHttp> | null = null;
-  const projectExecution = createProjectExecutionGuard(db, () => projects);
   const repository = repositoryBinding(runtime.repo);
   const repositories = [runtime.repo, ...runtime.file.githubRepos]
     .map(repositoryBinding)
@@ -639,8 +634,28 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
+  // A delegated parent runs each sub-issue in its own Linear session.
+  const parents =
+    workspace && linear?.tracker && linear.issueLifecycle
+      ? createParentDelegations({
+          db,
+          tracker: linear.tracker,
+          lifecycle: linear.issueLifecycle,
+          ...(linear.startSession && runtime.publicUrl
+            ? { startSession: linear.startSession }
+            : {}),
+          resumeSession: async (sessionId) => {
+            const event = linear.webhook.store.get(sessionCreatedKey(sessionId));
+            if (!event || !linear.webhook.onEvent)
+              throw new Error("Wait for Linear to refresh this sub-issue session.");
+            if ((await linear.webhook.onEvent(event)) === false)
+              throw new Error("Sub-issue session admission is awaiting access.");
+          },
+          origin: runtime.publicUrl ?? "http://127.0.0.1:8787",
+        })
+      : null;
   const placement = linear
-    ? createRunnerPlacement({ db, sessionActor: projectExecution.actor })
+    ? createRunnerPlacement({ db, ...(parents ? { sessionActor: parents.actor } : {}) })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
   const remote = placeOnRunner
@@ -717,9 +732,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),
-      projects: async (...args) =>
-        projectHttp?.(...args) ??
-        Response.json({ error: "Project delivery is starting." }, { status: 503 }),
       ...(tls ? { tls } : {}),
       ...(workspace
         ? {
@@ -806,11 +818,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (runtime.linearCommentMode) journal(LINEAR_COMMENT_MODE_REMOVED);
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
-  const admission = createAdmission({
-    db,
-    authority: projectExecution.canDispatch,
-    workspace: managed,
-  });
+  const admission = createAdmission({ db, workspace: managed });
   const enqueueMissingSnapshots = () => {
     const targets = db
       .query<{ itemId: string; workspaceId: string }, []>(
@@ -843,6 +851,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     concurrency: 4,
     prepare(created) {
       assignments?.register(created.jobs);
+      parents?.register(created.jobs);
       const attached = attachOrchestrator({
         db,
         jobs: created.jobs,
@@ -862,28 +871,30 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearAccess: linearTaskAccess ?? undefined,
         admission,
         journal,
-        authorizeLinearIntake: workspace
-          ? (sessionId, spec) =>
-              projectExecution.authorizeIntake(sessionId, spec) &&
-              (assignments?.authorizeIntake(sessionId, spec) ?? true)
-          : projectExecution.authorizeIntake,
-        linearIntakeScope: projectExecution.scope,
-        linearIntakeActor: projectExecution.actor,
-        onLinearIntake: projectExecution.accepted,
-        adoptLinearParent: projectExecution.adoptParent,
+        authorizeLinearIntake: (sessionId, spec) =>
+          (parents?.authorizeIntake(sessionId, spec) ?? true) &&
+          (!workspace || (assignments?.authorizeIntake(sessionId, spec) ?? true)),
+        ...(parents
+          ? {
+              linearIntakeScope: parents.scope,
+              linearIntakeActor: parents.actor,
+              onLinearIntake: parents.accepted,
+              adoptLinearParent: parents.adoptParent,
+            }
+          : {}),
         authorizeLinearEvent: async (event) => {
-          if (!workspace) return (await projectExecution.authorizeEvent(event)) ?? ACCEPTED;
+          if (!workspace) return ACCEPTED;
           if (!(await (await workspace.access).authorizeLinearEvent(event))) return MEMBERS_ONLY;
           return (
-            (await projectExecution.authorizeEvent(event)) ??
+            (await parents?.authorizeEvent(event)) ??
             (assignments ? assignments.authorize(event) : ACCEPTED)
           );
         },
         recheckLinearEvent: async (event) =>
           workspace
             ? (await workspace.access).recheckLinearEvent(event) &&
-              (projectExecution.recheckEvent(event) ?? assignments?.recheck(event) ?? true)
-            : (projectExecution.recheckEvent(event) ?? true),
+              (parents?.recheckEvent(event) ?? assignments?.recheck(event) ?? true)
+            : true,
         scheduling: () => {
           enqueueMissingSnapshots();
           return { defaultRepository: repository, ownerCap: ownerCap(paths.configFile) };
@@ -1074,35 +1085,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         getPort: () => attached,
       });
       if (workspace && linear?.tracker && linear.issueLifecycle) {
-        if (linear.memberships && linear.startSession && runtime.publicUrl) {
-          projects = createApprovedProjects({
-            db,
-            tracker: linear.tracker,
-            lifecycle: linear.issueLifecycle,
-            memberships: linear.memberships,
-            startSession: linear.startSession,
-            resumeSession: async (sessionId) => {
-              const event = linear.webhook.store.get(sessionCreatedKey(sessionId));
-              if (!event || !linear.webhook.onEvent)
-                throw new Error("Wait for Linear to refresh this project session.");
-              if ((await linear.webhook.onEvent(event)) === false)
-                throw new Error("Project session admission is awaiting access.");
-            },
-            origin: runtime.publicUrl,
-            bus: attached.bus,
-            getPort: () => attached,
-            repository: (name) =>
-              repositories.find((value) => `${value.owner}/${value.repo}` === name) ?? null,
-            saveBlockerPolicies: (value) => saveExternalBlockerPolicies(db, value),
-          });
-          projectHttp = createProjectHttp({ db, tracker: linear.tracker, projects });
-          projects.register(created.jobs);
-        }
         reconciler = createItemReconciler({
           db,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
-          scopeSnapshot: projectExecution.scopeSnapshot,
+          ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
           onChanges: (changes) => {
             for (const { itemId, issue } of changes.issues)
               saveSchedulingContext(db, {

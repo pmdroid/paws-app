@@ -73,7 +73,7 @@ test("a delegation whose only item is cancelled is no longer treated as running 
   }
 });
 
-test("a project item reads its parent issue from project_approval", async () => {
+test("a sub-issue of a delegated parent reads its parent issue from parent_delegation", async () => {
   const db = tempDb();
   const tracker = createFakeTracker([
     {
@@ -106,10 +106,14 @@ test("a project item reads its parent issue from project_approval", async () => 
     if (!intake.ok) return;
     install(db, intake.delegation.id);
     db.run(
-      `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at,source)
-       VALUES('approval','workspace','parent-issue','person','person','1','{}',1000,9000,1000,'parent')`,
+      `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
+       VALUES('adopted','workspace','org','parent-issue','PRJ-1','Parent','parent-session','person','[]',1000)`,
     );
-    db.run("UPDATE work_item SET project_approval_id='approval' WHERE id=?", [intake.items[0]!.id]);
+    db.run(
+      `INSERT INTO parent_delegation_issue(parent_delegation_id,workspace_id,issue_id,identifier,title,position,delegation_id)
+       VALUES('adopted','workspace','child-issue','PRJ-2','Child',0,?)`,
+      [intake.delegation.id],
+    );
     seen.length = 0;
     await syncItemDependencies(db, {
       itemId: intake.items[0]!.id,

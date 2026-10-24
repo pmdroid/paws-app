@@ -115,8 +115,8 @@ describe("intake", () => {
           "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
         );
         db.run(
-          `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at,source)
-           VALUES('approval','workspace','parent','person','person','parent:ses_1','{"project":{"name":"Parent","identifier":"ENG-1"}}',1,1,1,'parent')`,
+          `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
+           VALUES('adopted','workspace','org','parent','ENG-1','Parent','ses_1','person','[]',1)`,
         );
         return true;
       },
@@ -127,7 +127,7 @@ describe("intake", () => {
     expect(result.alreadyExisted).toBe(false);
     expect(result.items).toEqual([]);
     expect(result.delegation.state).toBe("done");
-    expect(result.delegation.id).toBe("approval");
+    expect(result.delegation.id).toBe("adopted");
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
@@ -162,11 +162,11 @@ describe("intake", () => {
     expect(tracker.progress.map((update) => update.body)).toEqual([
       queueMessage(["ENG-2", "ENG-3", "ENG-4"], false),
     ]);
-    expect(db.query("SELECT id FROM project_approval").all()).toHaveLength(0);
+    expect(db.query("SELECT delegation_id FROM parent_delegation").all()).toHaveLength(0);
     db.close();
   });
 
-  test("a blocks cycle does not adopt a parent project", async () => {
+  test("a blocks cycle does not adopt a parent", async () => {
     const db = tempDb();
     const tracker = createFakeTracker([parent]);
     tracker.deps.set("a", [
@@ -186,7 +186,7 @@ describe("intake", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("cycle");
-    expect(db.query("SELECT id FROM project_approval").all()).toHaveLength(0);
+    expect(db.query("SELECT delegation_id FROM parent_delegation").all()).toHaveLength(0);
     db.close();
   });
 
@@ -412,7 +412,7 @@ describe("intake", () => {
     db.close();
   });
 
-  test("an adopted parent replays from its project approval", async () => {
+  test("an adopted parent replays from its parent delegation", async () => {
     const db = tempDb();
     const tracker = createFakeTracker([
       {
@@ -433,8 +433,8 @@ describe("intake", () => {
       taskKey: "parent-task",
       adoptParent: () => {
         db.run(
-          `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at,source)
-           VALUES('approval','workspace','parent','person','person','parent:ses_1','{"project":{"name":"Parent","identifier":"ENG-1"}}',1,1,1,'parent')`,
+          `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
+           VALUES('adopted','workspace','org','parent','ENG-1','Parent','ses_1','person','[]',1)`,
         );
         return true;
       },
@@ -444,7 +444,7 @@ describe("intake", () => {
     expect(result.alreadyExisted).toBe(false);
     expect(result.items).toEqual([]);
     expect(result.delegation).toMatchObject({
-      id: "approval",
+      id: "adopted",
       linearIssueId: "parent",
       linearIdentifier: "ENG-1",
       title: "Parent",
@@ -463,7 +463,7 @@ describe("intake", () => {
     });
     expect(again.ok && again.alreadyExisted).toBe(true);
     if (!again.ok) return;
-    expect(again.delegation.id).toBe("approval");
+    expect(again.delegation.id).toBe("adopted");
     expect(again.items).toEqual([]);
     expect(tracker.progress).toHaveLength(0);
     expect(

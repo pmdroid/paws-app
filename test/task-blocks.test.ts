@@ -111,7 +111,9 @@ describe("task blocks", () => {
         migration.id === "058_one_active_item" ||
         migration.id === "059_drop_old_blocks" ||
         migration.id === "064_work_item_without_epic_fk" ||
-        migration.id === "065_drop_epic"
+        migration.id === "065_drop_epic" ||
+        // Copies project_approval_issue.delegation_id, which 065 renames from epic_id.
+        migration.id === "129_parent_delegation"
       )
         continue;
       if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
