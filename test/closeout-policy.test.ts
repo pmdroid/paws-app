@@ -663,15 +663,27 @@ describe("policy errors", () => {
     );
   });
 
-  test("a regular file on the way through a link target breaks the link", () => {
-    const git = createFakeGitReader({
+  test("a regular file or a missing directory on the way through a link target breaks the link", () => {
+    const file = createFakeGitReader({
       [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
       ".agents/skills/look/SKILL.md": "look\n",
       ".agents/skills/look/AGENTS.md": "rules\n",
     });
-    git.put(".agents/skills/look/CLAUDE.md", "SKILL.md/../AGENTS.md", "120000");
+    file.put(".agents/skills/look/CLAUDE.md", "SKILL.md/../AGENTS.md", "120000");
     expectBlocked(
-      loadPolicy({ repo: tempDir(), git, env: {} }),
+      loadPolicy({ repo: tempDir(), git: file, env: {} }),
+      "repo",
+      "skill link is broken: .agents/skills/look/CLAUDE.md",
+    );
+
+    const missing = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+      ".agents/skills/look/AGENTS.md": "rules\n",
+    });
+    missing.put(".agents/skills/look/CLAUDE.md", "missing/../AGENTS.md", "120000");
+    expectBlocked(
+      loadPolicy({ repo: tempDir(), git: missing, env: {} }),
       "repo",
       "skill link is broken: .agents/skills/look/CLAUDE.md",
     );
