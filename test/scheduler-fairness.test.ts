@@ -33,9 +33,6 @@ function fixture(capacity: number) {
     [NOW],
   );
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('box',?)", [capacity]);
-  db.run(
-    "INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at) VALUES('launch','ws-1','project','ada','ada','1','{}',0,9000,0)",
-  );
   const queue = (id: string, owner: string, createdAt: number) => {
     insertQueuedItem(db, { id, now: createdAt });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, id]);
@@ -61,19 +58,6 @@ test("two owners' tasks take turns", () => {
     for (let index = 1; index <= 3; index += 1) queue(`ada-${index}`, "ada", index);
     for (let index = 1; index <= 3; index += 1) queue(`ben-${index}`, "ben", 10 + index);
     expect(workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1", "ada-2", "ben-2"]);
-  } finally {
-    db.close();
-  }
-});
-
-test("a Paws project start no longer shares one turn between owners", () => {
-  const { db, queue } = fixture(2);
-  try {
-    queue("launch-1", "ada", 1);
-    queue("launch-2", "ben", 2);
-    queue("ben-1", "ben", 3);
-    db.run("UPDATE work_item SET project_approval_id='launch' WHERE id LIKE 'launch-%'");
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["launch-1", "launch-2"]);
   } finally {
     db.close();
   }

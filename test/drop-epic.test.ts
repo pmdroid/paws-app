@@ -71,7 +71,7 @@ test("migration 065 keeps every work item row and its delegation id", () => {
         "SELECT id, epic_id AS delegationId FROM work_item ORDER BY id",
       )
       .all();
-    migrate(db);
+    migrate(db, { until: "129_parent_delegation" });
     expect(
       db.query("SELECT 1 FROM schema_migration WHERE id = '065_drop_epic'").get(),
     ).toBeTruthy();

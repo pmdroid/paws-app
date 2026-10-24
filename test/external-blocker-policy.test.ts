@@ -1,14 +1,7 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { bindLinearSessionTask, migrate, recordLinearInstallation, saveTaskMode } from "../src/db";
-import {
-  intakeDelegatedIssue,
-  readExternalBlockerPolicies,
-  readyItems,
-  saveExternalBlockerPolicies,
-  syncItemDependencies,
-  type ExternalBlockerPolicy,
-} from "../src/intake";
+import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../src/linear";
 import { inspectPullRequestMerge } from "../src/github";
 
@@ -54,14 +47,6 @@ async function fixture() {
   bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "linear-person" });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
-  const policyTarget = { workspaceId: "workspace", itemId };
-  const policy: ExternalBlockerPolicy = {
-    blockerLinearIssueId: "a",
-    outcome: "merge",
-    repository: "owner/repo",
-    targetBranch: "main",
-    pullRequestNumber: 12,
-  };
   const refresh = () =>
     syncItemDependencies(db, {
       ...target,
@@ -69,55 +54,15 @@ async function fixture() {
       tracker,
       lifecycle,
     });
-  const save = (policies: ExternalBlockerPolicy[]) =>
-    saveExternalBlockerPolicies(db, { ...policyTarget, userId: "person", policies });
   return {
     db,
     target,
     tracker,
     lifecycle,
-    policy,
     refresh,
-    save,
     ready: () => readyItems(db, target).readyItemIds.includes(itemId),
   };
 }
-
-test("a policy saved for an item is read back for that item only", async () => {
-  const f = await fixture();
-  try {
-    f.save([f.policy]);
-    expect(readExternalBlockerPolicies(f.db, f.target)).toEqual([f.policy]);
-    f.db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('other-item',?,'other','DEP-9','Other','queued','paws/other',2,1001,'session')",
-      [
-        f.db
-          .query<{ delegationId: string }, [string]>(
-            "SELECT delegation_id AS delegationId FROM work_item WHERE id=?",
-          )
-          .get(f.target.itemId)!.delegationId,
-      ],
-    );
-    expect(
-      readExternalBlockerPolicies(f.db, {
-        workspaceId: f.target.workspaceId,
-        itemId: "other-item",
-      }),
-    ).toEqual([]);
-    expect(
-      f.db.query<{ itemId: string }, []>("SELECT item_id AS itemId FROM item_blocker_policy").all(),
-    ).toEqual([{ itemId: f.target.itemId }]);
-    expect(
-      f.db
-        .query(
-          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'external_blocker_policy'",
-        )
-        .get(),
-    ).toBeNull();
-  } finally {
-    f.db.close();
-  }
-});
 
 test("an outside blocker completed in Linear releases the item", async () => {
   const f = await fixture();
@@ -139,22 +84,6 @@ test("a canceled outside blocker holds the item", async () => {
     f.lifecycle.issue.stateType = "canceled";
     await f.refresh();
     expect(f.ready()).toBe(false);
-  } finally {
-    f.db.close();
-  }
-});
-
-test("saved per-project blocker policies no longer decide readiness", async () => {
-  const f = await fixture();
-  try {
-    f.save([f.policy]);
-    f.lifecycle.issue.stateType = "started";
-    await f.refresh();
-    expect(f.ready()).toBe(false);
-    f.save([{ blockerLinearIssueId: "a", outcome: "completion" }]);
-    f.lifecycle.issue.stateType = "completed";
-    await f.refresh();
-    expect(f.ready()).toBe(true);
   } finally {
     f.db.close();
   }
