@@ -4,7 +4,6 @@ import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 export type Route =
   | { view: "overview" }
   | { view: "runners"; id: string | null }
-  | { view: "projects" }
   | { view: "issues"; id: string | null }
   | { view: "runs"; id: string | null }
   | { view: "mergeQueue" }
@@ -37,8 +36,6 @@ export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Rout
       return { view: "overview" };
     case "runners":
       return { view: "runners", id };
-    case "projects":
-      return { view: "projects" };
     case "issues":
       return { view: "issues", id };
     case "epics":
@@ -70,7 +67,6 @@ export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Rout
 export function routePath(route: Route): string {
   if (route.view === "overview") return "/";
   if (route.view === "settings") return route.page ? `/settings/${route.page}` : "/settings";
-  if (route.view === "projects") return "/projects";
   if (route.view === "mergeQueue") return "/merge-queue";
   return route.id ? `/${route.view}/${encodeURIComponent(route.id)}` : `/${route.view}`;
 }

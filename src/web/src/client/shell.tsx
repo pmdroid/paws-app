@@ -10,7 +10,6 @@ import {
 } from "react-router";
 import {
   LayoutDashboard,
-  GitBranch,
   ListTodo,
   Terminal,
   CircleHelp,
@@ -43,7 +42,6 @@ import {
 const ICONS = {
   overview: LayoutDashboard,
   issues: ListTodo,
-  projects: GitBranch,
   runs: Terminal,
   mergeQueue: GitPullRequestArrow,
   questions: CircleHelp,

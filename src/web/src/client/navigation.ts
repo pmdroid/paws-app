@@ -9,10 +9,6 @@ export const PAGES = {
     title: "Issues",
     description: "Every issue delegated to Paws, who owns it and what blocks it.",
   },
-  projects: {
-    title: "Projects",
-    description: "Approve selected Linear issues and supervise delivery.",
-  },
   runs: {
     title: "Issues",
     description: "Every issue delegated to Paws, who owns it and what blocks it.",
@@ -42,7 +38,7 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "issues", "projects", "questions", "mergeQueue"],
+    views: ["overview", "issues", "questions", "mergeQueue"],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;
