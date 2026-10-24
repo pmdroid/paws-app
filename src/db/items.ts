@@ -235,7 +235,7 @@ export function recordTurn(db: Database, id: string, now = Date.now()): CapOutco
       return { capped: current.cancelRequested, item: current };
     }
     db.run("UPDATE work_item SET turn_count = turn_count + 1 WHERE id = ?", [id]);
-    return enforceCaps(db, id, now);
+    return enforceCaps(db, id, now, { stopsAgent: false });
   });
 }
 
@@ -272,7 +272,12 @@ export function accrueAwake(db: Database, id: string, mono: number, now = Date.n
  * Fails an item past a cap. Work Closeout already accepted never fails on the time
  * cap: Paws keeps publishing and merging it, and a resumed agent asks in Linear.
  */
-function enforceCaps(db: Database, id: string, now: number): CapOutcome {
+function enforceCaps(
+  db: Database,
+  id: string,
+  now: number,
+  options: { stopsAgent: boolean } = { stopsAgent: true },
+): CapOutcome {
   const updated = getWorkItem(db, id);
   if (updated === null) throw new Error(`work item ${id} not found`);
   const reason = capReason({
@@ -284,6 +289,9 @@ function enforceCaps(db: Database, id: string, now: number): CapOutcome {
   if (reason === null) return { capped: false, item: updated };
   if (reason === "time" && updated.acceptedHead !== null) {
     if (updated.state !== "running") return { capped: false, item: updated };
+    // Asking or pausing ends the run, so only a caller that stops the live agent
+    // (the host supervisor, through accrueAwake) may do it. It asks on its next tick.
+    if (!options.stopsAgent) return { capped: false, item: updated };
     if (askTimeLimit(db, updated, now))
       return { capped: false, asked: true, stopAgent: true, item: refetch() };
     pauseAtTimeLimit(db, updated, now);
