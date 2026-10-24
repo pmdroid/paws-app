@@ -18,7 +18,6 @@ import {
   MERGE_CI_WAIT_MS,
   ciWaitVerification,
   parkMerge,
-  wakeMergesBehind,
 } from "../merge";
 import { acceptGitHubDelivery, retryMergeLater, waitForMergeTurn } from "./merge-jobs";
 import { worktreeBranch } from "./sources";
@@ -431,30 +430,5 @@ describe("merge poll backstop", () => {
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     parkMerge(db, job!, clock.now(), { queued: true, reason: "review" });
     expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
-  });
-
-  test("a merge leaving the queue wakes the merges waiting behind it", () => {
-    const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
-    const ids = ["eng-1", "eng-2"].map((itemId) =>
-      enqueueJob(db, {
-        queue: JOB_KIND.merge,
-        lane: MERGE_LANE,
-        payload: { itemId },
-        now: clock.now(),
-      }),
-    );
-    ping(db, clock.now());
-    for (const reason of ["ahead", "review"] as const) {
-      const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
-      parkMerge(db, job!, clock.now(), { queued: true, reason });
-    }
-    clock.advance(1_000);
-    wakeMergesBehind(db, clock.now());
-    expect(ids.map((id) => getJob(db, id)?.runAt)).toEqual([
-      clock.now(),
-      clock.now() - 1_000 + MERGE_BACKSTOP_POLL_MS,
-    ]);
   });
 });

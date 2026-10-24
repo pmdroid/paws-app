@@ -126,10 +126,19 @@ describe("advanceMerge in the repository merge queue", () => {
       now: h.clock.now(),
     });
 
+    const review = enqueueJob(h.db, {
+      queue: JOB_KIND.merge,
+      lane: MERGE_LANE,
+      payload: { itemId: "ENG-124", mergeWait: { reason: "review" } },
+      runAt: h.clock.now() + 300_000,
+      now: h.clock.now(),
+    });
+
     const failing = items[0]!.accepted;
     h.state.ci = (head) => (head === failing ? failingTest() : undefined);
     expect(await h.pass("ENG-121")).toEqual({ kind: "returned" });
     expect(getJob(h.db, behind)?.runAt).toBe(h.clock.now());
+    expect(getJob(h.db, review)?.runAt).toBe(h.clock.now() + 300_000);
     expect(resumes(h).map((payload) => [payload.itemId, payload.reason])).toEqual([
       ["ENG-121", "ci-failed"],
     ]);
