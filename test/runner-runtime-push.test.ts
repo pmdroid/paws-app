@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { RunnerRequestError } from "../src/runner-daemon";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 
@@ -23,7 +24,11 @@ function git(args: string[], cwd: string) {
   return child.stdout.toString().trim();
 }
 
-async function fixture(rejection: string | null, handover?: { expiresIn: number }) {
+async function fixture(
+  rejection: string | null,
+  handover?: { expiresIn: number },
+  faults: { postFailures?: number; sealRefused?: boolean } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-push-"));
   const now = Date.now();
   let clock = 0;
@@ -84,6 +89,8 @@ async function fixture(rejection: string | null, handover?: { expiresIn: number 
   const posted: RunnerResult[] = [];
   const pushes: number[] = [];
   const resumes: string[] = [];
+  const seals: { handedOver?: true }[] = [];
+  let postFailures = faults.postFailures ?? 0;
   // A worker that wrote a handover result has exited; a resumed worker runs again.
   let alive = !handover;
   const runtime = await openRunnerRuntime({
@@ -142,6 +149,7 @@ async function fixture(rejection: string | null, handover?: { expiresIn: number 
         return { answers: [] };
       },
       async postResult(_runId, _generation, result) {
+        if (postFailures-- > 0) throw new RunnerRequestError(503);
         posted.push(result);
         return { duplicate: false };
       },
@@ -162,7 +170,9 @@ async function fixture(rejection: string | null, handover?: { expiresIn: number 
       async uploadTranscript(_runId, chunk) {
         return { offset: chunk.offset, duplicate: false };
       },
-      async finishTranscript() {
+      async finishTranscript(_runId, finish) {
+        if (faults.sealRefused) throw new RunnerRequestError(409);
+        seals.push({ ...(finish.handedOver ? { handedOver: finish.handedOver } : {}) });
         return { uri: "transcript" };
       },
     },
@@ -200,6 +210,7 @@ async function fixture(rejection: string | null, handover?: { expiresIn: number 
     posted,
     pushes,
     resumes,
+    seals,
     async run(minutes: number) {
       for (let step = 0; step <= minutes * 2; step++) {
         for (let index = 0; index < 5; index++) {
@@ -271,6 +282,7 @@ test.skipIf(linuxUser)(
       await f.run(1);
       expect(f.pushes).toEqual([0]);
       expect(f.resumes).toEqual([]);
+      expect(f.seals).toEqual([{ handedOver: true }]);
       expect(f.posted).toHaveLength(1);
       expect(f.posted[0]).toMatchObject({ handedOver: true, cancelled: true });
       expect(f.posted[0]!.candidateSha).toMatch(/^[a-f0-9]{40}$/);
@@ -306,6 +318,40 @@ test.skipIf(linuxUser)(
     );
     try {
       await f.run(2);
+      expect(f.pushes).toEqual([0]);
+      expect(f.posted).toEqual([]);
+      expect(f.resumes).toHaveLength(1);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(linuxUser)(
+  "a handover whose result post fails after the seal only posts again and never restarts the worker",
+  async () => {
+    const f = await fixture(null, { expiresIn: 60_000 }, { postFailures: 2 });
+    try {
+      await f.run(3);
+      expect(f.pushes).toEqual([0]);
+      expect(f.seals).toEqual([{ handedOver: true }]);
+      expect(f.resumes).toEqual([]);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]).toMatchObject({ handedOver: true });
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(linuxUser)(
+  "a handover whose seal Paws refuses is not posted and its worker continues the session",
+  async () => {
+    const f = await fixture(null, { expiresIn: 60_000 }, { sealRefused: true });
+    try {
+      await f.run(1);
       expect(f.pushes).toEqual([0]);
       expect(f.posted).toEqual([]);
       expect(f.resumes).toHaveLength(1);

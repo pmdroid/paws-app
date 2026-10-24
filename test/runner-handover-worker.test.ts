@@ -124,7 +124,7 @@ async function handoverFixture(
     outputDirectory,
     events,
     /** Restarts the worker on its session, as the runner does after a missed handover. */
-    async resume(resumeSteps: unknown[]) {
+    async resume(resumeSteps: unknown[], resumeExtra: Partial<RunnerWorkerOptions> = {}) {
       const resumeScript = join(root, "resume.json");
       writeFileSync(resumeScript, JSON.stringify({ model: "fixture-model", steps: resumeSteps }));
       return executeRunnerCommand({
@@ -140,6 +140,7 @@ async function handoverFixture(
           command: process.execPath,
           args: [fake, join(root, "resume-trace.json"), resumeScript],
         },
+        ...resumeExtra,
       });
     },
     trace: (file: string) =>
@@ -420,10 +421,26 @@ test("a worker restarted after a missed handover continues the session on the ru
   );
   try {
     expect(f.result.run.handedOver).toBe(true);
-    const resumed = await f.resume([
-      { type: "fs_write", path: join(f.checkout, "rest.txt"), content: "rest\n" },
-      { type: "end" },
-    ]);
+    expect(f.result.handoverSequence).toBe(1);
+    // The answered request stays in the spool and has time left; the restarted worker skips it.
+    const asked: number[] = [];
+    const request = { expiresAt: Date.now() + 120_000 };
+    const resumed = await f.resume(
+      [
+        { type: "fs_write", path: join(f.checkout, "rest.txt"), content: "rest\n" },
+        { type: "end" },
+      ],
+      {
+        async handover(sequence, signal) {
+          asked.push(sequence);
+          if (sequence === 1) return request;
+          await new Promise((resolve) => signal.addEventListener("abort", resolve));
+          signal.throwIfAborted();
+          return request;
+        },
+      },
+    );
+    expect(asked).toEqual([2]);
     expect(resumed.run.handedOver).toBeUndefined();
     expect(resumed.run.stopReason).toBe("end_turn");
     expect(existsSync(join(f.outputDirectory, HANDOVER_RESULT))).toBe(false);

@@ -179,6 +179,8 @@ export interface RunnerWorkerResult {
   candidateSha?: string;
   /** When a handed-over result must be published by, or the session continues on the runner. */
   handoverExpiresAt?: number;
+  /** The handover request this result answers; a restarted worker does not act on it again. */
+  handoverSequence?: number;
   reviewText?: string;
   text?: string;
   login?: {
@@ -289,7 +291,18 @@ export async function executeRunnerCommand(
   const resumedId = resumed ? resumedSession(options.outputDirectory) : undefined;
   // The runner restarts a worker whose handover it could not publish in time.
   const handoverResumed = resumed && existsSync(join(options.outputDirectory, HANDOVER_RESULT));
-  if (handoverResumed) rmSync(join(options.outputDirectory, HANDOVER_RESULT), { force: true });
+  // The request the missed handover answered stays in the spool; the watcher starts after it.
+  let consumedHandover = 0;
+  if (handoverResumed) {
+    try {
+      const missed = JSON.parse(
+        readFileSync(join(options.outputDirectory, HANDOVER_RESULT), "utf8"),
+      ) as { handoverSequence?: unknown };
+      if (Number.isSafeInteger(missed.handoverSequence))
+        consumedHandover = missed.handoverSequence as number;
+    } catch {}
+    rmSync(join(options.outputDirectory, HANDOVER_RESULT), { force: true });
+  }
   const resumePrompt = handoverResumed ? HANDOVER_RESUME_PROMPT : RESUME_PROMPT;
   if (!resumed) {
     const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
@@ -526,11 +539,12 @@ export async function executeRunnerCommand(
             tools: new Map<string, boolean>(),
             asking: 0,
             expiresAt: 0,
+            sequence: 0,
           }
         : undefined;
     const clock = options.now ?? Date.now;
     async function watchHandover(state: NonNullable<typeof handover>): Promise<void> {
-      for (let sequence = 1; ; sequence++) {
+      for (let sequence = consumedHandover + 1; ; sequence++) {
         const request = await state.requested(sequence, state.watching.signal);
         // A request from before a worker restart may already be over.
         if (request.expiresAt <= clock()) continue;
@@ -546,6 +560,7 @@ export async function executeRunnerCommand(
           continue;
         }
         state.expiresAt = request.expiresAt;
+        state.sequence = sequence;
         state.interrupt.abort();
         return;
       }
@@ -938,6 +953,7 @@ export async function executeRunnerCommand(
       await recordCandidate();
       if (result.candidateSha === command.repository.baseSha) delete result.candidateSha;
       result.handoverExpiresAt = handover!.expiresAt;
+      result.handoverSequence = handover!.sequence;
     } else if (repository && run.agentExited && clean) await recordCandidate();
     else if (repository && run.agentExited && wip) {
       await recordCandidate().catch(() => {

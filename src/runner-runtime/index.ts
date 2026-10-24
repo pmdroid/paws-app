@@ -84,6 +84,11 @@ type Active = {
   publicationBranch?: string;
   followUps?: number;
   transcriptSealed?: boolean;
+  /**
+   * The runtime asked Paws to seal a handed-over transcript. From here on the handover only
+   * finishes: Paws decides by sealing or refusing, and the worker never restarts on a sealed one.
+   */
+  handoverCommitted?: boolean;
   restarts?: number;
   pushTries?: number;
   pushAt?: number;
@@ -485,7 +490,7 @@ export async function openRunnerRuntime(options: {
         entry.task = undefined;
       });
   }
-  async function drainTranscript(entry: Active, final: boolean) {
+  async function drainTranscript(entry: Active, final: boolean, handedOver = false) {
     check(entry);
     let raw: Buffer;
     try {
@@ -533,6 +538,7 @@ export async function openRunnerRuntime(options: {
             offset: raw.length,
             sizeBytes: raw.length,
             sha256: createHash("sha256").update(raw).digest("hex"),
+            ...(handedOver ? { handedOver: true as const } : {}),
           },
           token,
         ),
@@ -542,7 +548,11 @@ export async function openRunnerRuntime(options: {
     }
   }
   async function deliver(entry: Active) {
-    await drainTranscript(entry, entry.execution.phase === "publishing");
+    // A handover's transcript is sealed by complete(), where Paws may refuse the seal.
+    await drainTranscript(
+      entry,
+      entry.execution.phase === "publishing" && !entry.handoverCommitted,
+    );
     for (const delivery of journal.pending(entry.execution.id)) {
       const token = await grant(entry);
       if (delivery.event.type === "artifact") {
@@ -718,9 +728,10 @@ export async function openRunnerRuntime(options: {
     const handoverBy = file.name === HANDOVER_RESULT ? worker.handoverExpiresAt : undefined;
     if (file.name === HANDOVER_RESULT && (!result.handedOver || handoverBy === undefined))
       throw new Error("Invalid runner handover result");
-    // Once the transcript is sealed the handover is committed, and the result is posted.
+    // Once the runtime asks Paws to seal the transcript, the handover is only finished.
     const handoverLate = () =>
       handoverBy !== undefined &&
+      !entry.handoverCommitted &&
       !entry.transcriptSealed &&
       now() >= handoverBy - HANDOVER_SEAL_RESERVE_MS;
     if (handoverLate()) return continueSession(entry);
@@ -738,7 +749,9 @@ export async function openRunnerRuntime(options: {
       )
         throw new Error("Unsafe runner candidate result");
       if ((entry.pushAt ?? 0) > monotonic()) return;
-      if (handoverBy !== undefined) {
+      if (handoverBy !== undefined && entry.handoverCommitted) {
+        // The push finished before the seal was asked for; a retry only completes the seal.
+      } else if (handoverBy !== undefined) {
         // A handover gets one push, bounded by its deadline.
         const signal = AbortSignal.any([
           entry.abort.signal,
@@ -820,7 +833,26 @@ export async function openRunnerRuntime(options: {
       }
     }
     if (handoverLate()) return continueSession(entry);
-    await drainTranscript(entry, true);
+    if (handoverBy !== undefined) {
+      entry.handoverCommitted = true;
+      try {
+        await drainTranscript(entry, true, true);
+      } catch (error) {
+        // Paws refused the seal, so the transcript is open and the session stays here.
+        if (
+          error instanceof RunnerRequestError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          ![408, 429].includes(error.status) &&
+          !entry.transcriptSealed
+        ) {
+          entry.handoverCommitted = false;
+          report(error);
+          return continueSession(entry);
+        }
+        throw error;
+      }
+    } else await drainTranscript(entry, true);
     const token = await grant(entry);
     await remote(() =>
       options.daemon.postResult(

@@ -6,6 +6,7 @@ import type { RunnerTranscriptObjects } from "./objects";
 import {
   RunnerTranscriptChunkSchema,
   RunnerTranscriptFinishSchema,
+  RUNNER_HANDOVER_SEAL_GRACE_MS,
   RUNNER_TRANSCRIPT_CHUNK_BYTES,
   RUNNER_TRANSCRIPT_MAX_BYTES,
   type RunnerTranscriptChunk,
@@ -37,8 +38,10 @@ export function createRunnerTranscripts(options: {
   db: Database;
   work: RunnerWork;
   objects: RunnerTranscriptObjects;
+  now?: () => number;
 }) {
   const { db, work, objects } = options;
+  const now = options.now ?? Date.now;
   async function writeObject(key: string, bytes: Blob | ReadableStream<Uint8Array>) {
     try {
       await objects.write(key, bytes);
@@ -156,6 +159,16 @@ export function createRunnerTranscripts(options: {
             (value.sealedSize !== finish.sizeBytes || value.sha256 !== finish.sha256))
         )
           denied();
+        // A handover that is not sealed by its deadline stays on the runner; Paws says so.
+        if (value.sealedSize === null && finish.handedOver) {
+          const handover = db
+            .query<{ expiresAt: number }, [string, number]>(
+              `SELECT expires_at AS expiresAt FROM runner_command
+               WHERE run_id=? AND generation=? AND kind='handover' ORDER BY ordinal DESC LIMIT 1`,
+            )
+            .get(access.runId, finish.generation);
+          if (!handover || now() > handover.expiresAt + RUNNER_HANDOVER_SEAL_GRACE_MS) denied();
+        }
         db.run(
           "UPDATE runner_transcript SET sealed_size=?,sha256=? WHERE run_id=? AND generation=?",
           [finish.sizeBytes, finish.sha256, access.runId, finish.generation],

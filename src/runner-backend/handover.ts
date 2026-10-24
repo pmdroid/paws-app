@@ -3,16 +3,19 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { getWorkItem, immediate } from "../db";
 import { RUNNER_HANDOVER_MS, RunnerResultSchema } from "../runner-protocol";
+import { RUNNER_HANDOVER_SEAL_GRACE_MS } from "../runner-transcripts";
 import type { RunnerWork } from "../runner-work";
 
 /** After the runner's result, how long Paws waits for the run to import the WIP commit. */
 const HANDOVER_IMPORT_MS = 2 * 60_000;
 /**
- * The runner posts a handed-over result only while it is early enough to seal the transcript
- * before the deadline; this covers the post itself and clock differences. A runner that misses
- * the deadline posts no handed-over result and keeps the session.
+ * A handover commits when Paws seals its transcript, which Paws allows only until
+ * `RUNNER_HANDOVER_SEAL_GRACE_MS` after the deadline. Paws waits a little longer than that, so
+ * a handover it reports as failed can no longer commit, and the session stays on the runner.
  */
-const HANDOVER_RESULT_GRACE_MS = 30_000;
+const HANDOVER_RESULT_GRACE_MS = RUNNER_HANDOVER_SEAL_GRACE_MS + 15_000;
+/** After the seal, how long Paws waits for the runner to post its handed-over result. */
+const HANDOVER_COMMITTED_MS = 5 * 60_000;
 
 export type RunnerHandoverOutcome =
   | { handedOver: true; runnerId: string; wipCommit?: string }
@@ -72,7 +75,7 @@ export function createRemoteHandover(options: {
         ...row,
         runId,
         id,
-        deadline: performance.now() + limit + (options.handoverGraceMs ?? HANDOVER_RESULT_GRACE_MS),
+        waitUntil: issuedAt + limit + (options.handoverGraceMs ?? HANDOVER_RESULT_GRACE_MS),
       };
     });
     if (!request) return { handedOver: false, reason: "The task has no running session." };
@@ -91,8 +94,29 @@ export function createRemoteHandover(options: {
           "SELECT ended_at AS endedAt FROM runner_work WHERE run_id=? AND generation=?",
         )
         .get(runId, generation)?.endedAt !== null;
+    const sealed = () =>
+      db
+        .query<{ sealed: number | null }, [string, number]>(
+          "SELECT sealed_size AS sealed FROM runner_transcript WHERE run_id=? AND generation=?",
+        )
+        .get(runId, generation)?.sealed != null;
     let finished = result();
-    while (!finished && performance.now() < request.deadline) {
+    let committedSince: number | undefined;
+    while (!finished) {
+      if (committedSince === undefined && sealed()) committedSince = performance.now();
+      // Without a seal by the deadline the handover can no longer commit.
+      if (committedSince === undefined && now() >= request.waitUntil) break;
+      // After the seal, the result follows unless the runner loses the run.
+      if (
+        committedSince !== undefined &&
+        (ended() || performance.now() - committedSince >= HANDOVER_COMMITTED_MS)
+      )
+        return {
+          handedOver: false,
+          runnerId,
+          reason:
+            "The runner committed the handover, but its result has not arrived. Check the runner.",
+        };
       signal?.throwIfAborted();
       await delay(interval, undefined, { signal });
       finished = result();
