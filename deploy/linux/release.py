@@ -9,9 +9,16 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import urllib.request
 
 
 BUN_VERSION = "1.4.2"
+MISE_VERSION = "2026.10.18"
+MISE_SHA256 = {
+    "linux-x64": "e97c38973336aa2ff350fea50f47b412b266fe263b102b7200ff1e9b118c6942",
+    "linux-arm64": "3a3c72376687ba21a588d0f5a2c88c76f483fb6cdece7b0fc43d5e3132b08a52",
+}
+MISE_LIMIT = 268_435_456
 ARCHITECTURE = {"x86_64": ("x64", "x86_64"), "aarch64": ("arm64", "aarch64")}.get(platform.machine(), ("unsupported", "unsupported"))
 PROVIDER_EXECUTABLES = {
     "claude": f"node_modules/@anthropic-ai/claude-agent-sdk-linux-{ARCHITECTURE[0]}/claude",
@@ -27,6 +34,7 @@ ASSETS = {
 }
 REQUIRED = {
     "bin/bun",
+    "bin/mise",
     "bin/paws-runner",
     "app/package.json",
     "app/bun.lock",
@@ -41,6 +49,7 @@ REQUIRED = {
     "app/node_modules/@openai/codex/bin/codex.js",
     "app/" + CODEX_PLATFORM_PACKAGE,
 } | {"app/" + target for target in PROVIDER_EXECUTABLES.values()} | {f"deploy/linux/{name}" for name in ASSETS}
+BINARIES = ("bin/bun", "bin/mise", "bin/paws-runner")
 COMMAND_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C"}
 
 
@@ -49,6 +58,28 @@ def command(arguments):
     if result.returncode != 0:
         raise ValueError(f"Required command failed: {arguments[0]}")
     return result.stdout
+
+
+def mise_url(platform_name):
+    if platform_name not in MISE_SHA256:
+        raise ValueError("Unsupported mise platform")
+    return f"https://github.com/jdx/mise/releases/download/v{MISE_VERSION}/mise-v{MISE_VERSION}-{platform_name}"
+
+
+def verify_mise(content, platform_name):
+    if platform_name not in MISE_SHA256:
+        raise ValueError("Unsupported mise platform")
+    if hashlib.sha256(content).hexdigest() != MISE_SHA256[platform_name]:
+        raise ValueError(f"mise {MISE_VERSION} {platform_name} checksum mismatch")
+    return content
+
+
+def download_mise(platform_name, opener=urllib.request.urlopen):
+    with opener(mise_url(platform_name), timeout=300) as response:
+        content = response.read(MISE_LIMIT + 1)
+    if len(content) > MISE_LIMIT:
+        raise ValueError("mise download exceeds size limit")
+    return verify_mise(content, platform_name)
 
 
 def read_regular(path, limit):
@@ -99,7 +130,7 @@ def validate_member(member):
     parts = name.split("/")
     if member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or member.size < 0 or member.mode not in (0o644, 0o755) or any(part in ("", ".", "..") or not re.fullmatch(r"[A-Za-z0-9@._+-]+", part) for part in parts):
         raise ValueError("Unsafe release archive member")
-    allowed = name in ("bin/bun", "bin/paws-runner") or name in ("app/package.json", "app/bun.lock") or len(parts) > 2 and parts[:2] in (["app", "src"], ["app", "node_modules"]) or len(parts) == 3 and parts[:2] == ["deploy", "linux"] and parts[2] in ASSETS
+    allowed = name in BINARIES or name in ("app/package.json", "app/bun.lock") or len(parts) > 2 and parts[:2] in (["app", "src"], ["app", "node_modules"]) or len(parts) == 3 and parts[:2] == ["deploy", "linux"] and parts[2] in ASSETS
     if not allowed:
         raise ValueError("Unexpected release archive member")
     if any(part.startswith(".") and part != ".bin" for part in parts):
@@ -143,6 +174,8 @@ def inspect_archive(path):
     executable_providers = {"app/node_modules/.bin/claude", "app/node_modules/.bin/codex"} | {"app/" + target for target in PROVIDER_EXECUTABLES.values()}
     if any(seen[name].mode != 0o755 for name in executable_providers):
         raise ValueError("Bundled provider launchers and native binaries must be executable")
+    if seen["bin/mise"].mode != 0o755:
+        raise ValueError("Bundled mise must be executable")
     return seen
 
 
