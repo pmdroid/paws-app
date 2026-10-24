@@ -262,6 +262,7 @@ function replace(node: DOMNode): ReactElement | undefined {
           attribs.class,
           state,
           has("wrap") && "h-auto max-w-full whitespace-normal [overflow-wrap:anywhere]",
+          has("outcome") && "h-auto whitespace-normal",
         )}
       >
         {children()}
@@ -295,7 +296,11 @@ function replace(node: DOMNode): ReactElement | undefined {
     return (
       <Table
         {...props}
-        className={has("runner-history", "merge-table") ? "[overflow-wrap:normal]" : undefined}
+        className={cn(
+          has("runner-history", "merge-table") && "[overflow-wrap:normal]",
+          has("runner-history") &&
+            "max-sm:[&_td]:px-3 max-sm:[&_th]:px-3 [&_.lin-id]:whitespace-nowrap",
+        )}
       >
         {children()}
       </Table>
