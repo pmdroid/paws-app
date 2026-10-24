@@ -64,6 +64,7 @@ const MODULES = [
   "runner-inputs",
   "evidence",
   "skills",
+  "runtimes",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -108,6 +109,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   settings: ["config", "core", "db", "skills"],
   skills: ["core", "db", "runner-protocol"],
+  runtimes: [],
   host: ["core", "db"],
   loop: [
     "decisions",
@@ -123,6 +125,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "merge",
     "questions",
     "config",
+    "runtimes",
   ],
   doctor: [
     "credentials",
