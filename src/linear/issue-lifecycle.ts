@@ -54,7 +54,7 @@ const START = `query IssueStart($id: String!, $actor: String!, $hasActor: Boolea
     project { id name content lead { id } } assignee { id } delegate { id } state { type }
     labels(first: 100) { nodes { name } }
     children(first: 50) {
-      nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id lead { id } } assignee { id } priority }
+      nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id name lead { id } } assignee { id } priority }
       ${PAGE}
     }
     relations(first: 50) { ${RELATION} ${PAGE} }

@@ -11,6 +11,7 @@ import {
 } from "./store";
 import type { StoredDelegation, StoredWorkItem } from "./store";
 import { ulid } from "./ulid";
+import { snapshotProject } from "./project";
 
 export type IntakeResult =
   | {
@@ -154,6 +155,12 @@ export async function intakeDelegatedIssue(
             (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
               issue.linearIssueId,
               { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
+            ]),
+          ),
+          projects: new Map(
+            (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
+              issue.linearIssueId,
+              snapshotProject(issue) ?? null,
             ]),
           ),
           edges,

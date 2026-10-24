@@ -22,12 +22,12 @@ const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
     title
     description
     team { id }
-    project { id lead { id } }
+    project { id name lead { id } }
     assignee { id }
     priority
     state { type }
     children(first: 50, after: $after) {
-      nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id lead { id } } assignee { id } priority }
+      nodes { id identifier title url description subIssueSortOrder state { type } team { id } project { id name lead { id } } assignee { id } priority }
       pageInfo { hasNextPage endCursor }
     }
   }
