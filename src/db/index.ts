@@ -467,3 +467,20 @@ export {
   linearWebhookWarning,
   type LinearWebhookWarning,
 } from "./linear-webhook";
+export {
+  lastAgentCatalogCheck,
+  listAgentVersions,
+  readAgentVersion,
+  readNpmIntegrity,
+  readNpmPackage,
+  saveAgentVersions,
+  saveNpmPackage,
+  touchNpmPackage,
+} from "./agent-versions";
+export type {
+  AgentVersionRow,
+  AgentVersionStatus,
+  NpmIntegrityRecord,
+  NpmVersionMetadata,
+  StoredNpmPackage,
+} from "./agent-versions";

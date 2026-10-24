@@ -2619,6 +2619,40 @@ DROP TABLE project_approval_issue;
 DROP TABLE project_approval;
 `,
   },
+  {
+    // The coding agent versions Paws is willing to install (PAS-619). npm_package keeps the last
+    // registry document and its ETag; npm_package_version keeps the integrity first seen per version.
+    id: "131_agent_version",
+    sql: `
+CREATE TABLE npm_package (
+  package TEXT PRIMARY KEY,
+  etag TEXT,
+  fetched_at INTEGER NOT NULL,
+  versions TEXT NOT NULL CHECK (json_valid(versions))
+) STRICT;
+CREATE TABLE npm_package_version (
+  package TEXT NOT NULL,
+  version TEXT NOT NULL,
+  integrity TEXT NOT NULL,
+  first_seen_at INTEGER NOT NULL,
+  changed_integrity TEXT,
+  changed_at INTEGER,
+  PRIMARY KEY (package, version)
+) STRICT;
+CREATE TABLE agent_version (
+  agent TEXT NOT NULL,
+  version TEXT NOT NULL,
+  published_at INTEGER,
+  integrity TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('eligible','waiting','ineligible','refused')),
+  first_seen_at INTEGER NOT NULL,
+  reason TEXT,
+  native_version TEXT,
+  checked_at INTEGER NOT NULL,
+  PRIMARY KEY (agent, version)
+) STRICT;
+`,
+  },
 ];
 
 /**
