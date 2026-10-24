@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
-import { matchRoute, needsSnapshot, parseRoute, routeHref, routerBase, type Route } from "./route";
+import {
+  issueRedirect,
+  matchRoute,
+  needsSnapshot,
+  parseRoute,
+  routeHref,
+  routerBase,
+  type Route,
+} from "./route";
 import { render } from "./render";
 import { demoStatus } from "../demo";
 
@@ -42,13 +50,8 @@ test("empty pages retain their own heading and empty state", () => {
     verdicts: [],
     mergeQueue: [],
   };
-  for (const view of ["overview", "issues", "runs", "questions", "sessions"] as const) {
-    const html = render({
-      ...model,
-      snapshot,
-      route: { view, id: null },
-      conversations: { state: "ready", sessions: [] },
-    }).content;
+  for (const view of ["overview", "issues", "runs", "questions"] as const) {
+    const html = render({ ...model, snapshot, route: { view, id: null } }).content;
     expect(html.match(/<h1 /g)?.length).toBe(1);
     expect(html).toContain(`<h1 class="sr-only">${PAGES[view].title}</h1>`);
     expect(html).toContain('class="empty"');
@@ -88,6 +91,18 @@ test("path routes keep the engine base and only claim dashboard pages", () => {
   expect(matchRoute("/api/status")).toBeNull();
   expect(matchRoute("/assets/app.js")).toBeNull();
   expect(parseRoute("/unknown")).toEqual({ view: "overview" });
+});
+
+test("the Conversations page is gone and its old links open the issue list", () => {
+  expect(Object.keys(PAGES)).not.toContain("sessions");
+  expect(NAVIGATION.flatMap((group) => [...group.views])).not.toContain("sessions");
+  expect(Object.values(PAGES).map((page) => page.title)).not.toContain("Conversations");
+  expect(parseRoute("/sessions")).toEqual({ view: "issues", id: null });
+  expect(parseRoute("/sessions/unknown")).toEqual({ view: "issues", id: null });
+  const snapshot = demoStatus();
+  expect(issueRedirect("/sessions", snapshot)).toBe("/issues");
+  expect(issueRedirect("/sessions/unknown-session", snapshot)).toBe("/issues");
+  expect(issueRedirect("/sessions", null)).toBeNull();
 });
 
 test("only work pages read the status snapshot", () => {
