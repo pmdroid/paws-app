@@ -146,7 +146,7 @@ installs = []
 def install(bun, checkout, workspace):
     installs.append(str(checkout))
     return modules
-with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\\n")), mock.patch.object(packager, "install_production", side_effect=install), mock.patch.object(packager, "compile_runner", return_value=b"\\x7fELFrunner"), mock.patch.object(release, "download_mise", return_value=b"\\x7fELFmise"):
+with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\\n")), mock.patch.object(packager, "install_production", side_effect=install), mock.patch.object(release, "download_mise", return_value=b"\\x7fELFmise"):
     packager.pack(argparse.Namespace(source=source, bun=root / "bun", version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=root / "package", mise=None))
 members = sorted(tarfile.open(root / "package" / "artifact.tar").getnames())
 print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "development": sorted(development), "installs": installs, "source": str(source.resolve())}))

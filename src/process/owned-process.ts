@@ -31,16 +31,13 @@ export class OwnedProcess extends EventEmitter {
   constructor(command: string, args: string[], env: Record<string, string>, cwd?: string) {
     super();
     if (process.platform === "win32") throw new Error("Owned ACP process groups require POSIX");
-    const packaged = !process.execPath.endsWith("/bun");
     const tag = process.env[EXECUTION_TAG_ENV];
     if (tag) env = { ...env, [EXECUTION_TAG_ENV]: tag };
     this.anchor = spawn(
-      packaged ? "/opt/paws-runner/bin/bun" : process.execPath,
+      process.execPath,
       [
         "--no-env-file",
-        packaged
-          ? "/opt/paws-runner/current/src/process/process-anchor.ts"
-          : fileURLToPath(new URL("./process-anchor.ts", import.meta.url)),
+        fileURLToPath(new URL("./process-anchor.ts", import.meta.url)),
         JSON.stringify([command, args, cwd ?? process.cwd()]),
       ],
       {
@@ -48,9 +45,7 @@ export class OwnedProcess extends EventEmitter {
         detached: true,
         stdio: ["pipe", "pipe", "pipe", "ipc"],
         serialization: "json",
-        cwd: packaged
-          ? "/opt/paws-runner/current/src/process"
-          : fileURLToPath(new URL(".", import.meta.url)),
+        cwd: fileURLToPath(new URL(".", import.meta.url)),
       },
     );
     this.pid = this.anchor.pid;

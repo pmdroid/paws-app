@@ -39,6 +39,7 @@ REQUIRED = {
     "app/package.json",
     "app/bun.lock",
     "app/src/index.ts",
+    "app/src/runner-cli/main.ts",
     "app/src/acp/ask-team-mcp.ts",
     "app/src/process/process-anchor.ts",
     "app/node_modules/.bin/claude-agent-acp",
@@ -50,6 +51,9 @@ REQUIRED = {
     "app/" + CODEX_PLATFORM_PACKAGE,
 } | {"app/" + target for target in PROVIDER_EXECUTABLES.values()} | {f"deploy/linux/{name}" for name in ASSETS}
 BINARIES = ("bin/bun", "bin/mise", "bin/paws-runner")
+# bin/paws-runner runs the runner entry on the bundled Bun, so the release carries Bun once.
+# Bun would otherwise read .env and bunfig.toml (which can preload code) from the working directory.
+RUNNER_LAUNCHER = b"#!/bin/sh\nexec /opt/paws-runner/bin/bun --no-env-file --config=/dev/null /opt/paws-runner/current/src/runner-cli/main.ts \"$@\"\n"
 COMMAND_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C"}
 
 
@@ -176,6 +180,8 @@ def inspect_archive(path):
         raise ValueError("Bundled provider launchers and native binaries must be executable")
     if seen["bin/mise"].mode != 0o755:
         raise ValueError("Bundled mise must be executable")
+    if seen["bin/paws-runner"].mode != 0o755:
+        raise ValueError("Bundled runner launcher must be executable")
     return seen
 
 
