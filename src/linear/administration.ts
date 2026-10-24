@@ -147,6 +147,82 @@ export function parseLinearUndelegation(
   return { organizationId, appUserId, issueId, createdAtMs };
 }
 
+export type LinearIssueClosedState = "completed" | "canceled";
+
+/** An issue moved to a completed or canceled workflow state, from a webhook or the catch-up poll. */
+export type LinearIssueClosed = {
+  issueId: string;
+  /** Null for a polled event: the poll is already scoped to this installation. */
+  organizationId: string | null;
+  identifier: string | null;
+  stateType: LinearIssueClosedState;
+  /** When Linear closed the issue. Tasks created after it are left alone. */
+  closedAtMs: number;
+};
+
+/** The polled event payload for a closed issue. `src/linear/poller.ts` writes it. */
+export const CLOSED_ISSUE_EVENT = "closed";
+
+export function closedIssueState(value: string | null): LinearIssueClosedState | null {
+  return value === "completed" || value === "canceled" ? value : null;
+}
+
+/**
+ * Reads only what the event delivered. A webhook counts when its `updatedFrom` shows the
+ * state changed; a polled event counts when the poll saw the issue in a closed state.
+ */
+export function parseLinearIssueClosed(event: AcceptedLinearEvent): LinearIssueClosed | null {
+  if (event.source === "poll") return polledIssueClosed(event);
+  const payload = verifiedPayload(event);
+  if (payload === null || readString(payload, "type") !== "Issue") return null;
+  if (readString(payload, "action") !== "update") return null;
+  const data = child(payload, "data");
+  const previous = child(payload, "updatedFrom");
+  const organizationId = id(payload, "organizationId");
+  const issueId = data === null ? null : id(data, "id");
+  if (data === null || previous === null || organizationId === null || issueId === null)
+    return null;
+  if (!("stateId" in previous)) return null;
+  const state = child(data, "state");
+  const stateType = closedIssueState(state === null ? null : readString(state, "type"));
+  if (stateType === null) return null;
+  const closedAtMs = Date.parse(
+    readString(data, stateType === "completed" ? "completedAt" : "canceledAt") ??
+      readString(payload, "createdAt") ??
+      "",
+  );
+  if (!Number.isFinite(closedAtMs)) return null;
+  return {
+    issueId,
+    organizationId,
+    identifier: readString(data, "identifier"),
+    stateType,
+    closedAtMs,
+  };
+}
+
+function polledIssueClosed(event: AcceptedLinearEvent): LinearIssueClosed | null {
+  if (event.issueId === null) return null;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(event.payload);
+  } catch {
+    return null;
+  }
+  if (!isRecord(payload) || readString(payload, "kind") !== CLOSED_ISSUE_EVENT) return null;
+  const stateType = closedIssueState(readString(payload, "stateType"));
+  const closedAtMs = payload["closedAtMs"];
+  if (stateType === null || typeof closedAtMs !== "number" || !Number.isFinite(closedAtMs))
+    return null;
+  return {
+    issueId: event.issueId,
+    organizationId: null,
+    identifier: readString(payload, "identifier"),
+    stateType,
+    closedAtMs,
+  };
+}
+
 export function parseLinearUserChange(event: AcceptedLinearEvent): {
   organizationId: string;
   userId: string;
