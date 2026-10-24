@@ -50,3 +50,29 @@ Each sub-issue runs in its own Linear agent session and its own run. Paws opens 
 Configure the Linear app callbacks described in [Workspace access](workspace-access.md). Enable **Agent session events** and set the webhook URL to the Paws HTTPS origin followed by `/webhooks/linear`. Set `LINEAR_WEBHOOKS=true` and the matching signing secret on the server.
 
 Sign in on the website and authorize the app as a workspace admin. Delegate the sandbox issue and verify its first activity, questions, Closeout result and GitHub pull request.
+
+## Runtimes
+
+This run proves a runner installs a repository's runtimes and puts them on `PATH`. How a repository declares them is in [Declare a repository's runtimes](runtimes.md).
+
+1. Install the runner from the newest GitHub release, as in [Pair a remote Linux runner](runner-pairing.md), or upgrade an existing one to it. Pair it and start the daemon.
+2. Push `examples/runtimes-demo` from this repository to an empty GitHub repository as its `main`:
+
+   ```sh
+   cp -R examples/runtimes-demo /tmp/runtimes-demo
+   cd /tmp/runtimes-demo
+   git init -b main && git add -A && git commit -m "Runtimes demo"
+   gh repo create OWNER/runtimes-demo --private --source . --push
+   ```
+
+3. In Integrations, select the new repository and map it to the sandbox Linear team.
+4. Create an issue such as **Record runtime versions**: "Add `VERSIONS.md` with the output of `node --version` and `python --version`." Delegate it to the Paws app.
+
+Expect these results:
+
+- The issue's session posts a line that names `node@22` and `python@3.12` and how long the install took.
+- Closeout runs `node-version` and `python-version`. Each prints its version and passes only for Node 22 and Python 3.12.
+- The pull request opens and Paws merges it.
+- On the dashboard, the runner's card under **Runners** lists node 22 and python 3.12 as **Installed**.
+
+Delegate a second issue to the same runner. The install line should take about a second, because the runner reuses both versions.

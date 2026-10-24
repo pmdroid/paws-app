@@ -1,0 +1,16 @@
+specVersion: "0.1"
+description: The runner must put Node 22 and Python 3.12 from mise.toml on PATH for every check.
+retry:
+  maxFailedAttemptsPerItem: 2
+  scope: task
+items:
+  - id: node-version
+    kind: command
+    gate: beforePR
+    exec: ["sh", "-c", "node --version && node --version | grep -Eq '^v22\\.'"]
+    timeoutSeconds: 60
+  - id: python-version
+    kind: command
+    gate: beforePR
+    exec: ["sh", "-c", "python --version && python --version | grep -Eq '^Python 3\\.12\\.'"]
+    timeoutSeconds: 60
