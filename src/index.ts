@@ -117,6 +117,7 @@ import {
   parseLinearUndelegation,
   parseLinearUserChange,
   cacheLinearMemberships,
+  sessionCreatedKey,
   type AcceptedLinearEvent,
   type IntakeDecision,
   type LinearRunning,
@@ -139,7 +140,11 @@ import {
   type RepositoryBinding,
   type HostGitHubAuth,
 } from "./loop";
-import { createItemReconciler, createPublicationReadiness } from "./intake";
+import {
+  createItemReconciler,
+  createParentDelegations,
+  createPublicationReadiness,
+} from "./intake";
 import { createExecutionControls } from "./execution-controls";
 import { createAdmission, registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
@@ -629,7 +634,29 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
-  const placement = linear ? createRunnerPlacement({ db }) : undefined;
+  // A delegated parent runs each sub-issue in its own Linear session.
+  const parents =
+    workspace && linear?.tracker && linear.issueLifecycle
+      ? createParentDelegations({
+          db,
+          tracker: linear.tracker,
+          lifecycle: linear.issueLifecycle,
+          ...(linear.startSession && runtime.publicUrl
+            ? { startSession: linear.startSession }
+            : {}),
+          resumeSession: async (sessionId) => {
+            const event = linear.webhook.store.get(sessionCreatedKey(sessionId));
+            if (!event || !linear.webhook.onEvent)
+              throw new Error("Wait for Linear to refresh this sub-issue session.");
+            if ((await linear.webhook.onEvent(event)) === false)
+              throw new Error("Sub-issue session admission is awaiting access.");
+          },
+          origin: runtime.publicUrl ?? "http://127.0.0.1:8787",
+        })
+      : null;
+  const placement = linear
+    ? createRunnerPlacement({ db, ...(parents ? { sessionActor: parents.actor } : {}) })
+    : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
@@ -824,6 +851,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     concurrency: 4,
     prepare(created) {
       assignments?.register(created.jobs);
+      parents?.register(created.jobs);
       const attached = attachOrchestrator({
         db,
         jobs: created.jobs,
@@ -843,16 +871,29 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearAccess: linearTaskAccess ?? undefined,
         admission,
         journal,
-        ...(workspace && assignments ? { authorizeLinearIntake: assignments.authorizeIntake } : {}),
+        authorizeLinearIntake: (sessionId, spec) =>
+          (parents?.authorizeIntake(sessionId, spec) ?? true) &&
+          (!workspace || (assignments?.authorizeIntake(sessionId, spec) ?? true)),
+        ...(parents
+          ? {
+              linearIntakeScope: parents.scope,
+              linearIntakeActor: parents.actor,
+              onLinearIntake: parents.accepted,
+              adoptLinearParent: parents.adoptParent,
+            }
+          : {}),
         authorizeLinearEvent: async (event) => {
           if (!workspace) return ACCEPTED;
           if (!(await (await workspace.access).authorizeLinearEvent(event))) return MEMBERS_ONLY;
-          return assignments ? assignments.authorize(event) : ACCEPTED;
+          return (
+            (await parents?.authorizeEvent(event)) ??
+            (assignments ? assignments.authorize(event) : ACCEPTED)
+          );
         },
         recheckLinearEvent: async (event) =>
           workspace
             ? (await workspace.access).recheckLinearEvent(event) &&
-              (assignments?.recheck(event) ?? true)
+              (parents?.recheckEvent(event) ?? assignments?.recheck(event) ?? true)
             : true,
         scheduling: () => {
           enqueueMissingSnapshots();
@@ -1048,6 +1089,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           db,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
+          ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
           onChanges: (changes) => {
             for (const { itemId, issue } of changes.issues)
               saveSchedulingContext(db, {
