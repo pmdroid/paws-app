@@ -1437,8 +1437,11 @@ test("cancel still stops a grok session", async () => {
     cancelGraceMs: 1_000,
     signal: controller.signal,
     checkpoint: false,
+    // Cancel once the session exists, not after a fixed delay that parallel load can outrun.
+    onEvent: (event) => {
+      if (event.type === "session_started") controller.abort();
+    },
   });
-  setTimeout(() => controller.abort(), 200);
   const result = await running;
   expect(result.cancelled).toBe(true);
   expect(result.agentExited).toBe(true);
