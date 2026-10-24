@@ -23,6 +23,17 @@ globalThis.fetch = Object.assign(
     const payload = JSON.parse(String(init?.body));
     if (payload.query.includes("IntakePoll"))
       return Response.json({ data: { viewer: { id: "app" } } });
+    if (payload.query.includes("PawsSessionInstallation"))
+      return Response.json({
+        data: {
+          viewer: { id: "app", app: true, organization: { id: "org" } },
+          agentSession: {
+            id: "session",
+            appUser: { id: "app", app: true, organization: { id: "org" } },
+            issue: { id: "issue", team: { id: "team" } },
+          },
+        },
+      });
     if (payload.query.includes("PawsTeamAccess")) {
       started.resolve();
       return released.promise;
@@ -60,7 +71,7 @@ const created = await post(
   {
     type: "AgentSessionEvent",
     action: "created",
-    agentSession: { id: "session", issue: { id: "issue", team: { id: "team" } } },
+    agentSession: { id: "session", issueId: "issue" },
   },
   "created",
 );

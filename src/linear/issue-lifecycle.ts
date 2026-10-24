@@ -93,34 +93,26 @@ function createUnlabelledLifecycle(client: LinearClient): LinearIssueLifecycle {
     inspect,
     async startCodeIssue(input, options) {
       if (input.appUserId.trim() === "") throw new Error("The Linear app user is not configured.");
-      const first =
+      const issue =
         options?.issue?.id === input.issueId
           ? options.issue
           : await inspect(input.issueId, options);
-      if (!humanCodeOwnership(first, input)) return { issue: first, eligible: false };
-      let read = false;
+      if (!humanCodeOwnership(issue, input)) return { issue, eligible: false };
       if (!humans.has(input.actorId!)) {
-        read = true;
         const actor = child(await client.query(ACTOR, { id: input.actorId }, options), "user");
         options?.signal?.throwIfAborted();
         if (actor?.["id"] !== input.actorId || actor["app"] !== false)
-          return { issue: first, eligible: false };
+          return { issue, eligible: false };
         humans.add(input.actorId!);
       }
       let stateId: string | null = null;
-      if (first.stateType !== "started") {
-        stateId = startedStates.get(first.teamId) ?? null;
+      if (issue.stateType !== "started") {
+        stateId = startedStates.get(issue.teamId) ?? null;
         if (stateId === null) {
-          read = true;
-          stateId = await startedState(first.teamId, options);
-          startedStates.set(first.teamId, stateId);
+          stateId = await startedState(issue.teamId, options);
+          startedStates.set(issue.teamId, stateId);
         }
       }
-      const issue = read ? await inspect(input.issueId, options) : first;
-      if (!humanCodeOwnership(issue, input)) return { issue, eligible: false };
-      if (issue.teamId !== first.teamId) throw new Error("The Linear issue changed teams.");
-      if (issue.stateType !== "started" && stateId === null)
-        throw new Error("The Linear issue changed workflow state.");
       options?.signal?.throwIfAborted();
       options?.beforeStart?.(issue);
       options?.signal?.throwIfAborted();
