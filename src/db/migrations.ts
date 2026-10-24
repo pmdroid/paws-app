@@ -2415,4 +2415,10 @@ CREATE TABLE item_hold (
 ) STRICT;
 `,
   },
+  {
+    id: "122_drop_execution_reconcile_job",
+    sql: `
+DELETE FROM job WHERE queue = 'execution.reconcile';
+`,
+  },
 ];
