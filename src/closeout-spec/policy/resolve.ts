@@ -297,45 +297,46 @@ function listSkillFiles(root: string, skillFile: string): TreeList {
   if (dirStat.status === "missing" || !dirStat.stat.isDirectory())
     return { ok: false, message: `skill is missing: ${skillFile}` };
   const found: string[] = [];
-  const visited = new Set<string>();
-  const stack = [dirAbs];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (current === undefined) break;
-    const real = realDirectory(current);
-    if (real === undefined) return { ok: false, message: `skill link is broken: ${current}` };
-    if (visited.has(real)) return { ok: false, message: `skill link loops: ${current}` };
-    visited.add(real);
-    let entries;
-    try {
-      entries = readdirSync(current, { withFileTypes: true });
-    } catch {
-      return { ok: false, message: "could not read the skill directory" };
-    }
-    for (const entry of entries) {
-      const absolute = join(current, entry.name);
-      const target = entry.isSymbolicLink() ? followStat(absolute) : undefined;
-      if (target?.status === "broken") return { ok: false, message: target.message };
-      if (target?.status === "missing")
-        return { ok: false, message: `skill link is broken: ${absolute}` };
-      const isDirectory = target ? target.stat.isDirectory() : entry.isDirectory();
-      const isFile = target ? target.stat.isFile() : entry.isFile();
-      if (isDirectory) {
-        const realChild = realDirectory(absolute);
-        if (realChild === undefined)
-          return { ok: false, message: `skill link is broken: ${absolute}` };
-        if (
-          [...visited].some((seen) => seen === realChild || seen.startsWith(`${realChild}${sep}`))
-        )
-          return { ok: false, message: `skill link loops: ${absolute}` };
-        stack.push(absolute);
-        continue;
-      }
-      if (!isFile) continue;
-      found.push(relative(root, absolute).split(sep).join("/"));
-    }
-  }
+  const failure = walkSkillDir(root, dirAbs, [], found);
+  if (failure !== undefined) return { ok: false, message: failure };
   return { ok: true, paths: found };
+}
+
+const WALK_DEPTH = 32;
+
+function walkSkillDir(
+  root: string,
+  dir: string,
+  ancestors: readonly string[],
+  found: string[],
+): string | undefined {
+  const real = realDirectory(dir);
+  if (real === undefined) return `skill link is broken: ${dir}`;
+  if (ancestors.some((above) => above === real || above.startsWith(`${real}${sep}`)))
+    return `skill link loops: ${dir}`;
+  if (ancestors.length >= WALK_DEPTH) return `skill link loops: ${dir}`;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return "could not read the skill directory";
+  }
+  for (const entry of entries) {
+    const absolute = join(dir, entry.name);
+    const target = entry.isSymbolicLink() ? followStat(absolute) : undefined;
+    if (target?.status === "broken") return target.message;
+    if (target?.status === "missing") return `skill link is broken: ${absolute}`;
+    const isDirectory = target ? target.stat.isDirectory() : entry.isDirectory();
+    const isFile = target ? target.stat.isFile() : entry.isFile();
+    if (isDirectory) {
+      const failure = walkSkillDir(root, absolute, [...ancestors, real], found);
+      if (failure !== undefined) return failure;
+      continue;
+    }
+    if (!isFile) continue;
+    found.push(relative(root, absolute).split(sep).join("/"));
+  }
+  return undefined;
 }
 
 type FollowStat =

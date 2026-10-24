@@ -516,6 +516,36 @@ describe("policy errors", () => {
     );
   });
 
+  test("an in-tree link whose target the commit lacks is broken, never read from the checkout", () => {
+    const git = createFakeGitReader({
+      ".agents/skills/look/SKILL.md": "look\n",
+    });
+    git.put(PUBLIC_POLICY_PATH, "policy.yaml", "120000");
+    const repo = tempDir();
+    writeRepoFile(repo, ".agents/policy.yaml", reviewPolicy(".agents/skills/look/SKILL.md"));
+    expectBlocked(
+      loadPolicy({ repo, git, env: {} }),
+      "repo",
+      "skill link is broken: .agents/closeout.yaml",
+    );
+  });
+
+  test("a skill reached through a linked directory loads from the commit", () => {
+    const git = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      "shared/look/SKILL.md": "shared look\n",
+      "shared/look/references/rubric.md": "shared rubric\n",
+    });
+    git.put(".agents/skills/look", "../../shared/look", "120000");
+    const policy = present(loadPolicy({ repo: tempDir(), git, env: {} }));
+    expect(policy.files.map((file) => file.path)).toEqual([
+      ".agents/closeout.yaml",
+      ".agents/skills/look/SKILL.md",
+      ".agents/skills/look/references/rubric.md",
+    ]);
+    expect(policy.files[1]?.sha256).toBe(sha256("shared look\n"));
+  });
+
   test("unreadable git blobs", () => {
     const listed = createFakeGitReader({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\n' });
     listed.listError = "fatal: not a git repository";
@@ -922,6 +952,15 @@ ${commandItem("local-draft")}
     ]);
     expect(policy.files[2]?.sha256).toBe(sha256("rules\n"));
     expect(policy.files[4]?.sha256).toBe(sha256("shared rubric\n"));
+
+    symlinkSync("references", join(home, ".agents/skills/look/references-copy"));
+    const aliased = present(
+      loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} }),
+    );
+    expect(aliased.files.map((file) => file.path)).toContain(
+      ".agents/skills/look/references-copy/rubric.md",
+    );
+    rmSync(join(home, ".agents/skills/look/references-copy"));
 
     const link = join(home, ".agents/skills/look/references-more/extra.md");
     mkdirSync(dirname(link), { recursive: true });
