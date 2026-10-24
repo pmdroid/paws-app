@@ -21,6 +21,7 @@ import { createCommentMode, createFakeCommentBoard } from "../src/comments";
 import { createFakeTracker } from "../src/linear";
 import { commentTracker, syncComments } from "../src/index";
 import { attachOrchestrator } from "../src/loop";
+import { workspaceAdmission } from "./fake-workspace";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -75,6 +76,7 @@ for (const target of ["child", "child-before-progress"] as const) {
     );
     const orchestrator = attachOrchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs,
       outbox,
       pawsRoot,

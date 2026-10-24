@@ -16,9 +16,9 @@ import {
   getWorkItem,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
-import { createAdmission } from "../../src/scheduler";
 import { readyItems, syncItemDependencies } from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
+import { workspaceAdmission } from "../fake-workspace";
 
 export async function probeExecutionLifecycle(
   root: string,
@@ -31,6 +31,7 @@ export async function probeExecutionLifecycle(
   const create = (scheduling?: () => object) =>
     new Orchestrator({
       db,
+      admission: workspaceAdmission(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       clock,
@@ -225,7 +226,7 @@ export async function probeExecutionLifecycle(
       outbox: new OutboxDispatcher(guardDb, clock),
       clock,
       pawsRoot: join(root, "admission"),
-      admission: createAdmission({ db: guardDb, authority: () => allowed }),
+      admission: workspaceAdmission(guardDb, { authority: () => allowed }),
     });
     try {
       guardDb.run(

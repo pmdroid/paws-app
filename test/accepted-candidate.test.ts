@@ -19,6 +19,7 @@ import { createFakeGitHub, type GitHubResponse } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { emptyReview, githubClient, repoLayout, stateOf, writeOk } from "./e2e-harness";
+import { workspaceAdmission } from "./fake-workspace";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -102,6 +103,7 @@ async function runAccepted(options: {
   ) => realSetTimeout(handler, ms === 10_000 ? 1 : ms)) as unknown as typeof setTimeout);
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,

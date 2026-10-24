@@ -1,3 +1,4 @@
+import { workspaceAdmission } from "./fake-workspace";
 import { execFile } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -81,6 +82,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
   };
   const orchestrator = attachOrchestrator({
     db,
+    admission: workspaceAdmission(db),
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
