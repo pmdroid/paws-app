@@ -102,6 +102,7 @@ async function placeItem(project: boolean, bindTask = true) {
   ]);
   for (const [id, userId, sharing] of [
     ["own", owner, 0],
+    ["second", owner, 0],
     ["shared", colleague, 1],
     ["api", pool, 1],
     ["unshared", pool, 0],
@@ -153,10 +154,10 @@ test("Runner placement uses actual ownership, explicit sharing, provider evidenc
   }
 });
 
-test("a solo item runs on its owner's runner and not another member's shared runner", async () => {
+test("a solo item runs on its owner's runners and not another member's shared runner", async () => {
   const placed = await placeItem(false);
   try {
-    expect(await placed.ids()).toEqual(["own"]);
+    expect(await placed.ids()).toEqual(["own", "second"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -166,17 +167,17 @@ test("a solo item runs on its owner's runner and not another member's shared run
 test("runner placement resolves its item through session_key alone", async () => {
   const placed = await placeItem(false, false);
   try {
-    expect(await placed.ids()).toEqual(["own"]);
+    expect(await placed.ids()).toEqual(["own", "second"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
   }
 });
 
-test("a project item runs on another project member's shared runner", async () => {
+test("an item from a Paws project start never lands on another member's runner", async () => {
   const placed = await placeItem(true);
   try {
-    expect(await placed.ids()).toEqual(["own", "shared"]);
+    expect(await placed.ids()).toEqual(["own", "second"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -186,24 +187,24 @@ test("a project item runs on another project member's shared runner", async () =
 test("a continuing task lands on the runner of its last session, or elsewhere after the grace period", async () => {
   const placed = await placeItem(true);
   try {
-    const session = { session: { runnerId: "shared" } };
-    expect(await placed.ids()).toEqual(["own", "shared"]);
-    expect(await placed.ids(session)).toEqual(["shared", "own"]);
+    const session = { session: { runnerId: "second" } };
+    expect(await placed.ids()).toEqual(["own", "second"]);
+    expect(await placed.ids(session)).toEqual(["second", "own"]);
 
     const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
     placed.db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'shared',?,1,0,'busy',?,0)",
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
       [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
     );
-    expect(await placed.ids(session)).toEqual(["shared"]);
+    expect(await placed.ids(session)).toEqual(["second"]);
     for (let waited = 0; waited < SESSION_GRACE_MS; waited += 30_000) {
-      expect(await placed.ids(session)).toEqual(["shared"]);
+      expect(await placed.ids(session)).toEqual(["second"]);
       placed.tick(30_000);
     }
-    expect(await placed.ids(session)).toEqual(["own", "shared"]);
+    expect(await placed.ids(session)).toEqual(["own", "second"]);
 
     placed.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), run.id]);
-    expect(await placed.ids(session)).toEqual(["shared", "own"]);
+    expect(await placed.ids(session)).toEqual(["second", "own"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -213,15 +214,15 @@ test("a continuing task lands on the runner of its last session, or elsewhere af
 test("a continuing task that checks back only after the grace period is offered other runners", async () => {
   const placed = await placeItem(true);
   try {
-    const session = { session: { runnerId: "shared" } };
+    const session = { session: { runnerId: "second" } };
     const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
     placed.db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'shared',?,1,0,'busy',?,0)",
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
       [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
     );
-    expect(await placed.ids(session)).toEqual(["shared"]);
+    expect(await placed.ids(session)).toEqual(["second"]);
     placed.tick(SESSION_GRACE_MS + placementWaitMs(3));
-    expect(await placed.ids(session)).toEqual(["own", "shared"]);
+    expect(await placed.ids(session)).toEqual(["own", "second"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -231,8 +232,8 @@ test("a continuing task that checks back only after the grace period is offered 
 test("a continuing task does not wait for an offline session runner", async () => {
   const placed = await placeItem(true);
   try {
-    placed.db.run("UPDATE runner SET last_seen_at=0 WHERE id='shared'");
-    expect(await placed.ids({ session: { runnerId: "shared" } })).toEqual(["own"]);
+    placed.db.run("UPDATE runner SET last_seen_at=0 WHERE id='second'");
+    expect(await placed.ids({ session: { runnerId: "second" } })).toEqual(["own"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -242,18 +243,8 @@ test("a continuing task does not wait for an offline session runner", async () =
 test("a solo task lands only on its owner's runner without calling Linear", async () => {
   const placed = await placeItem(false);
   try {
-    expect(await networkRequests(async () => expect(await placed.ids()).toEqual(["own"]))).toBe(0);
-  } finally {
-    placed.db.close();
-    rmSync(placed.root, { recursive: true, force: true });
-  }
-});
-
-test("a project task lands on a project member's shared runner without calling Linear", async () => {
-  const placed = await placeItem(true);
-  try {
     expect(
-      await networkRequests(async () => expect(await placed.ids()).toEqual(["own", "shared"])),
+      await networkRequests(async () => expect(await placed.ids()).toEqual(["own", "second"])),
     ).toBe(0);
   } finally {
     placed.db.close();
@@ -261,16 +252,14 @@ test("a project task lands on a project member's shared runner without calling L
   }
 });
 
-test("a project task lands on the shared runner of a stored member who is neither actor nor lead without calling Linear", async () => {
+test("a stored project member's shared runner is not offered", async () => {
   const placed = await placeItem(true);
   try {
-    placed.db.run("UPDATE project_approval SET lead_user_id=actor_id WHERE id='approval'");
-    expect(await placed.ids()).toEqual(["own"]);
     placed.db.run(
       "INSERT INTO project_approval_member(approval_id,linear_user_id) VALUES('approval','colleague')",
     );
     expect(
-      await networkRequests(async () => expect(await placed.ids()).toEqual(["own", "shared"])),
+      await networkRequests(async () => expect(await placed.ids()).toEqual(["own", "second"])),
     ).toBe(0);
   } finally {
     placed.db.close();
@@ -281,10 +270,10 @@ test("a project task lands on the shared runner of a stored member who is neithe
 test("a task waiting ten minutes for its busy session runner never calls Linear", async () => {
   const placed = await placeItem(true);
   try {
-    const session = { session: { runnerId: "shared" } };
+    const session = { session: { runnerId: "second" } };
     const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
     placed.db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'shared',?,1,0,'busy',?,0)",
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
       [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
     );
     const offers: string[][] = [];
@@ -294,8 +283,8 @@ test("a task waiting ten minutes for its busy session runner never calls Linear"
         placed.tick(placementWaitMs(attempt));
       }
     });
-    expect(offers.slice(0, 5)).toEqual(Array(5).fill(["shared"]));
-    expect(offers.slice(5)).toEqual(Array(8).fill(["own", "shared"]));
+    expect(offers.slice(0, 5)).toEqual(Array(5).fill(["second"]));
+    expect(offers.slice(5)).toEqual(Array(8).fill(["own", "second"]));
     expect(requests).toBe(0);
   } finally {
     placed.db.close();

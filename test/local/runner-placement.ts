@@ -76,6 +76,7 @@ export async function probeRunnerPlacement(
   const users: Record<string, string> = { owner };
   for (const [id, user] of [
     ["own", "owner"],
+    ["second", "owner"],
     ["shared", "colleague"],
     ["api", "pool"],
   ]) {
@@ -102,7 +103,10 @@ export async function probeRunnerPlacement(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
       [id!, workspace.id, userId, id!, now, now],
     );
-    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id!, id === "own" ? 0 : 1]);
+    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [
+      id!,
+      user === "owner" ? 0 : 1,
+    ]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id!]);
   }
   const lead = (user: string) =>
@@ -165,7 +169,7 @@ export async function probeRunnerPlacement(
     ...changes,
   });
   try {
-    assert.deepEqual(await ids(), ["own", "shared"]);
+    assert.deepEqual(await ids(), ["own", "second"]);
     observe("An unchanged installation refresh preserves ownership reads and assignment", true, {
       sameOAuthClient: true,
       sameAppUser: true,
@@ -174,26 +178,22 @@ export async function probeRunnerPlacement(
     observeInstallation("other-team");
     await assert.rejects(ids(), /outside workspace access/);
     observeInstallation("team");
-    assert.deepEqual(await ids(), ["own", "shared"]);
+    assert.deepEqual(await ids(), ["own", "second"]);
     observe("A changed installation team still fences selection", true, {
       teamChangeRejected: true,
     });
     lead("owner");
-    assert.deepEqual(await ids(), ["own"]);
+    assert.deepEqual(await ids(), ["own", "second"]);
     lead("colleague");
-    db.run("UPDATE runner_policy SET sharing=0 WHERE runner_id='shared'");
-    assert.deepEqual(await ids(), ["own"]);
-    db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='shared'");
-    observe(
-      "Assignee runners precede explicitly shared project members and sharing is opt in",
-      true,
-      { first: "own", shared: "shared", outsidersExcluded: true },
-    );
+    observe("A Paws project start does not offer another member's shared runner", true, {
+      offered: ["own", "second"],
+      sharedExcluded: true,
+    });
     lead("pool");
-    assert.deepEqual(await ids(), ["own", "api"]);
+    assert.deepEqual(await ids(), ["own", "second"]);
     lead("colleague");
-    observe("A shared host follows its project member after the owner's host", true, {
-      shared: ["api", "shared"],
+    observe("Placement follows the owner whoever leads the Paws project", true, {
+      offered: ["own", "second"],
     });
     await placement.candidates(request);
     saveCheckpoint(db, item.id, {
@@ -286,38 +286,38 @@ export async function probeRunnerPlacement(
       true,
       quota,
     );
-    const authCommand = await start("shared");
+    const authCommand = await start("second");
     placement.finished({
       commandId: authCommand,
-      runnerId: "shared",
+      runnerId: "second",
       finishedAt: now,
       result: result(authCommand, "other", { authRequired: true, stopReason: "error" }),
     });
-    assert(!(await ids()).includes("shared"));
-    const fencedSignedOut = await start("shared", "prepare");
+    assert(!(await ids()).includes("second"));
+    const fencedSignedOut = await start("second", "prepare");
     placement.finished({
       commandId: fencedSignedOut,
-      runnerId: "shared",
+      runnerId: "second",
       finishedAt: now,
       failure: "heartbeat_lost",
     });
-    assert(!(await ids()).includes("shared"));
-    const login = await start("shared", "prepare");
+    assert(!(await ids()).includes("second"));
+    const login = await start("second", "prepare");
     placement.finished({
       commandId: login,
-      runnerId: "shared",
+      runnerId: "second",
       finishedAt: now,
       result: result(login, "other"),
     });
-    assert((await ids()).includes("shared"));
-    const fencedSignedIn = await start("shared");
+    assert((await ids()).includes("second"));
+    const fencedSignedIn = await start("second");
     placement.finished({
       commandId: fencedSignedIn,
-      runnerId: "shared",
+      runnerId: "second",
       finishedAt: now,
       failure: "heartbeat_lost",
     });
-    assert((await ids()).includes("shared"));
+    assert((await ids()).includes("second"));
     observe("Expired authentication holds work until successful readiness verification", true, {
       held: true,
       heldAfterFence: true,
@@ -337,14 +337,14 @@ export async function probeRunnerPlacement(
         role: "reviewer",
         profile: { agent: "codex", model: "review-model" },
       }),
-      ["shared", "own"],
+      ["second", "own"],
     );
     assert.deepEqual(await ids({ ...request, role: "reviewer" }), []);
-    const conflictCommand = await start("shared", "work", "reviewer", "review-model");
+    const conflictCommand = await start("second", "work", "reviewer", "review-model");
     assert.equal(
       placement.finished({
         commandId: conflictCommand,
-        runnerId: "shared",
+        runnerId: "second",
         finishedAt: now,
         result: { ...result(conflictCommand), role: "reviewer" },
       }).retryable,
@@ -363,9 +363,9 @@ export async function probeRunnerPlacement(
       rejectedReview,
     );
     observe(
-      "Review selection prefers a different member and refuses the implementation model",
+      "Review selection prefers a different runner and refuses the implementation model",
       true,
-      { preferred: "shared", sameModelDenied: true },
+      { preferred: "second", sameModelDenied: true },
     );
     await placement.candidates(request);
     db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='own'");
@@ -387,13 +387,12 @@ export async function probeRunnerPlacement(
     observe("Policy changes between selection and assignment cannot admit stale authority", true, {
       denied: true,
     });
-    db.run("UPDATE runner SET last_seen_at=0 WHERE id='shared'");
-    assert(!(await ids()).includes("shared"));
-    db.run("UPDATE runner SET last_seen_at=? WHERE id='shared'", [now]);
-    db.run(
-      "UPDATE workspace_member SET active=0 WHERE user_id=(SELECT owner_user_id FROM runner WHERE id='shared')",
-    );
-    assert(!(await ids()).includes("shared"));
+    db.run("UPDATE runner SET last_seen_at=0 WHERE id='second'");
+    assert(!(await ids()).includes("second"));
+    db.run("UPDATE runner SET last_seen_at=? WHERE id='second'", [now]);
+    db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [owner]);
+    await assert.rejects(ids(), /not an active workspace member/);
+    db.run("UPDATE workspace_member SET active=1 WHERE user_id=?", [owner]);
     observe("Offline hosts and revoked workspace members are excluded", true, {
       offlineDenied: true,
       revokedDenied: true,
