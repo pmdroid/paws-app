@@ -113,6 +113,30 @@ function runners() {
   ];
 }
 
+function usage(runnerId: string) {
+  const now = Date.now();
+  const row = (commandId: string, outcome: string | null, identifier: string, title: string) => ({
+    commandId,
+    runnerId,
+    runnerName: runnerId === busy ? "build-box" : "spare-box",
+    runId: `run-${commandId}`,
+    identifier,
+    title,
+    agent: "claude",
+    resolvedModel: "claude-opus-5-5",
+    modelLabel: "Opus 5.5",
+    purpose: "work",
+    outcome,
+    startedAt: now - 3 * 3_600_000,
+    endedAt: outcome === null ? null : now - 2 * 3_600_000,
+  });
+  return [
+    row("cmd-1", null, "PAS-431", "Retry Closeout after a transient failure"),
+    row("cmd-2", "infrastructure_error", "PAS-1207", "Show queued work on Overview"),
+    row("cmd-3", "success", "PAS-432", "Cache the GitHub App token"),
+  ];
+}
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -129,7 +153,10 @@ const server = Bun.serve({
       });
     if (path === "/api/runners")
       return Response.json({ runners: runners(), serverVersion: "1.4.0", workspaceReady: true });
-    if (path === "/api/runners/usage") return Response.json({ usage: [] });
+    if (path === "/api/runners/usage")
+      return Response.json({
+        usage: usage(new URL(request.url).searchParams.get("runner") ?? ""),
+      });
     if (/^\/api\/runners\/[^/]+\/policy$/.test(path))
       return Response.json({ ownerUserId: "owner", sharing: 1 });
     return (
@@ -159,17 +186,23 @@ try {
         await page.goto(`http://127.0.0.1:${server.port}/status/runners/${id}`);
         const card = page.locator(`[data-runner-card="${id}"]`);
         await card.waitFor();
+        await page.locator("#runner-history-heading + div table").waitFor();
         // A string expression, because this file type-checks without the DOM library.
         const overflow = Number(
           await page.evaluate(
             "document.documentElement.scrollWidth - document.documentElement.clientWidth",
           ),
         );
+        const tableOverflow = Number(
+          await page.evaluate(
+            "(() => { const box = document.querySelector('#runner-history-heading + div table').parentElement; return box.scrollWidth - box.clientWidth; })()",
+          ),
+        );
         const name = `${prefix}-${id === busy ? "busy" : "calm"}-${width}-${scheme}.png`;
         // The sticky toolbar covers a scrolled card on phones, so phones capture the whole page.
         if (width < 768) await page.screenshot({ path: join(directory, name), fullPage: true });
         else await card.screenshot({ path: join(directory, name) });
-        observations.push({ name, width, scheme, overflow, errors });
+        observations.push({ name, width, scheme, overflow, tableOverflow, errors });
         await page.close();
       }
 } finally {
@@ -182,7 +215,10 @@ await writeFile(
 );
 console.log(JSON.stringify(observations));
 const failed = observations.filter(
-  (entry) => (entry.overflow as number) > 0 || (entry.errors as string[]).length,
+  (entry) =>
+    (entry.overflow as number) > 0 ||
+    (entry.tableOverflow as number) > 0 ||
+    (entry.errors as string[]).length,
 );
 if (failed.length) {
   console.error("Horizontal overflow or page errors:", JSON.stringify(failed));
