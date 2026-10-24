@@ -16,21 +16,23 @@ export function guardGitHubPublication(input: {
   gitExec?: GitExec;
   onCleanupFailure(): void;
   isCurrent(): boolean;
-  assert(purpose?: TokenPurpose): Promise<void>;
+  assert(purpose?: TokenPurpose, merging?: boolean): Promise<void>;
 }): GitHubBinding & { gitExec: GitExec } {
   const current = () => {
     input.signal.throwIfAborted();
     if (!input.isCurrent()) throw new Error("The Linear publication was superseded.");
   };
-  const check = async (purpose?: TokenPurpose) => {
+  const check = async (purpose?: TokenPurpose, merging = false) => {
     current();
-    await input.assert(purpose);
+    await input.assert(purpose, merging);
     current();
   };
   const client: GitHubClient = {
     async request(request) {
-      if (request.method !== "GET")
-        await check(request.method === "PUT" && request.path.endsWith("/merge") ? "merge" : "pr");
+      if (request.method !== "GET") {
+        const merging = mergesPullRequest(request);
+        await check(merging ? "merge" : "pr", merging);
+      }
       current();
       return input.github.client.request({
         ...request,
@@ -84,4 +86,14 @@ export function guardGitHubPublication(input: {
       },
     },
   };
+}
+
+function mergesPullRequest(request: Parameters<GitHubClient["request"]>[0]): boolean {
+  if (request.method === "PUT") return request.path.endsWith("/merge");
+  const query = (request.body as { query?: unknown } | undefined)?.query;
+  return (
+    request.path === "/graphql" &&
+    typeof query === "string" &&
+    query.trimStart().startsWith("mutation EnqueuePullRequest")
+  );
 }
