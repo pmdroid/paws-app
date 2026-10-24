@@ -41,15 +41,17 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 /**
  * Ask the developer's own `claude` or `codex` CLI whether it is logged in.
  * The command is fixed (`claude auth status` / `codex login status`).
- * Paws does not read credential files and does not accept a command override.
+ * Paws does not read credential files and does not accept a command override. `executable`
+ * only says where that CLI lives, for the runner, whose launchers are not on the task `PATH`.
  */
 export async function checkDeveloperLogin(options: {
   cli: DeveloperCli;
+  executable?: string;
   env?: NodeJS.ProcessEnv;
   run?: LoginCommandRunner;
   timeoutMs?: number;
 }): Promise<LoginCheck> {
-  const spec = developerLoginCommand(options.cli);
+  const spec = developerLoginCommand(options.cli, options.executable);
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const run =
@@ -86,12 +88,15 @@ export async function checkDeveloperLogins(options?: {
   return { claude, codex };
 }
 
-export function developerLoginCommand(cli: DeveloperCli): { command: string; args: string[] } {
+export function developerLoginCommand(
+  cli: DeveloperCli,
+  executable: string = cli,
+): { command: string; args: string[] } {
   switch (cli) {
     case "claude":
-      return { command: "claude", args: ["auth", "status"] };
+      return { command: executable, args: ["auth", "status"] };
     case "codex":
-      return { command: "codex", args: ["login", "status"] };
+      return { command: executable, args: ["login", "status"] };
   }
 }
 

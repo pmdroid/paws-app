@@ -6,7 +6,12 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { LockWaitTimeoutError, withFileLock } from "./lock";
 
 /** The mise binary the runner package ships. */
-export const RUNNER_MISE_PATH = "/opt/paws-runner/bin/mise";
+/**
+ * The runner package's own executables: its Bun, mise, and the provider launchers. Paws starts
+ * them by absolute path. Tasks never get this folder on `PATH`, so a repo's Bun comes from mise.
+ */
+export const RUNNER_BIN_DIR = "/opt/paws-runner/bin";
+export const RUNNER_MISE_PATH = `${RUNNER_BIN_DIR}/mise`;
 
 /** Longest a task's runtime install may run, and longest it waits for another task's lock. */
 export const RUNTIME_INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -247,6 +252,14 @@ function duration(ms: number): string {
  * `path` with `binPaths` in front, so a runtime the task asked for wins over the system one.
  * With no bin paths, `path` comes back unchanged.
  */
+/** `path` without the runner's own bin folder, for the agent and Closeout checks. */
+export function withoutRunnerBin(path: string | undefined, bin: string = RUNNER_BIN_DIR): string {
+  return (path ?? "")
+    .split(delimiter)
+    .filter((entry) => entry.length > 0 && entry.replace(/\/+$/, "") !== bin)
+    .join(delimiter);
+}
+
 export function prependRuntimePath(binPaths: readonly string[], path: string | undefined): string {
   if (!binPaths.length) return path ?? "";
   return [...binPaths, ...(path ? [path] : [])].join(delimiter);
