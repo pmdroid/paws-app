@@ -33,7 +33,10 @@ type State = {
   refused: Refused[];
   /** What Paws installed in each home, so removals only touch skills Paws put there. */
   homes: Record<string, Record<string, Installed>>;
+  folders?: Record<string, string>;
 };
+
+const VERSIONED: readonly RunnerSkillAgent[] = ["claude", "codex"];
 
 /** A refused bundle is not downloaded again for this long unless Paws pins another one. */
 const REFUSED_RETRY_MS = 10 * 60_000;
@@ -61,7 +64,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
   const statePath = join(options.root, "state.json");
   mkdirSync(bundles, { recursive: true, mode: 0o700 });
   let state = readState();
-  const holds = new Map<string, string>();
+  const holds = new Map<string, { home: string; folder?: string }>();
   let syncing: Promise<void> | undefined;
   let queued: readonly RunnerSkill[] | undefined;
 
@@ -178,24 +181,71 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     rmSync(retired, { recursive: true, force: true });
   }
 
+  function folderId(): string {
+    const versioned = state.desired
+      .map((skill) => [skill.name, skill.sha256, versionedAgents(skill)] as const)
+      .filter(([, , agents]) => agents.length);
+    return createHash("sha256").update(JSON.stringify(versioned)).digest("hex").slice(0, 32);
+  }
+  const foldersOf = (home: string) => join(home, ".paws-skills", "versions");
+  function buildFolder(home: string): void {
+    const id = folderId();
+    const target = join(ownedDirectory(home, ".paws-skills/versions"), id);
+    if (!existsSync(target)) {
+      const name = `${id}.${randomUUID()}`;
+      const staging = ownedDirectory(home, ".paws-skills");
+      ownedDirectory(staging, name);
+      try {
+        for (const skill of state.desired)
+          for (const agent of versionedAgents(skill))
+            copyTree(
+              bundlePath(skill.sha256),
+              join(ownedDirectory(staging, `${name}/${RUNNER_SKILL_FOLDERS[agent]}`), skill.name),
+            );
+        renameSync(join(staging, name), target);
+      } finally {
+        rmSync(join(staging, name), { recursive: true, force: true });
+      }
+    }
+    (state.folders ??= {})[home] = id;
+  }
+  function pruneFolders(home: string): void {
+    const keep = new Set(
+      [...holds.values()].filter((hold) => hold.home === home).map((hold) => hold.folder),
+    );
+    const current = state.folders?.[home];
+    if (current) keep.add(join(foldersOf(home), current));
+    for (const entry of readdirSync(foldersOf(home), { withFileTypes: true }))
+      if (!keep.has(join(foldersOf(home), entry.name)))
+        rmSync(join(foldersOf(home), entry.name), { recursive: true, force: true });
+  }
+
   /** Bring one home to the desired skills, unless a run in progress is pinned to what it has. */
   function applyHome(home: string): void {
-    if ([...holds.values()].includes(home)) return;
     if (!lstatSync(home, { throwIfNoEntry: false })?.isDirectory()) return;
+    try {
+      buildFolder(home);
+      pruneFolders(home);
+    } catch (error) {
+      report(error);
+    }
+    saveState();
+    if ([...holds.values()].some((hold) => hold.home === home)) return;
     const current = state.homes[home] ?? {};
     const next: Record<string, Installed> = {};
     for (const skill of state.desired) {
       const have = current[skill.name];
+      const agents = skill.agents.filter((agent) => !VERSIONED.includes(agent));
       try {
         for (const agent of have?.agents ?? [])
-          if (!skill.agents.includes(agent)) removeFolder(home, agent, skill.name);
-        for (const agent of skill.agents)
+          if (!agents.includes(agent)) removeFolder(home, agent, skill.name);
+        for (const agent of agents)
           if (have?.sha256 !== skill.sha256 || !have.modes || !have.agents.includes(agent))
             installFolder(home, agent, skill);
         next[skill.name] = {
           version: skill.version,
           sha256: skill.sha256,
-          agents: skill.agents,
+          agents,
           modes: true,
         };
       } catch (error) {
@@ -254,6 +304,8 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     state.refused = refused;
     saveState();
     for (const home of Object.keys(state.homes)) if (!existsSync(home)) delete state.homes[home];
+    for (const home of Object.keys(state.folders ?? {}))
+      if (!existsSync(home)) delete state.folders![home];
     for (const home of homes()) applyHome(home);
     const keep = new Set(desired.map((skill) => unpackedName(skill.sha256)));
     for (const entry of readdirSync(bundles))
@@ -289,8 +341,13 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       }
     },
     /** Pin `home` to its installed skills while `executionId` runs there. */
-    hold(home: string, executionId: string): void {
-      holds.set(executionId, home);
+    hold(home: string, executionId: string): string | undefined {
+      const held = holds.get(executionId);
+      if (held?.home === home) return held.folder;
+      const id = state.folders?.[home];
+      const folder = id ? join(foldersOf(home), id) : undefined;
+      holds.set(executionId, { home, ...(folder ? { folder } : {}) });
+      return folder;
     },
     release(executionId: string): void {
       holds.delete(executionId);
@@ -308,11 +365,15 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       );
       for (const skill of state.desired) {
         if (reported.some((entry) => entry.name === skill.name)) continue;
+        const shared = skill.agents.some((agent) => !VERSIONED.includes(agent));
         const behind = (home: string) => {
           const entry = state.homes[home]?.[skill.name];
-          return entry?.sha256 !== skill.sha256 || !entry?.modes;
+          return (
+            (shared && (entry?.sha256 !== skill.sha256 || !entry?.modes)) ||
+            (versionedAgents(skill).length > 0 && state.folders?.[home] !== folderId())
+          );
         };
-        const waiting = [...holds.values()].filter(behind).length;
+        const waiting = [...holds.values()].filter((hold) => behind(hold.home)).length;
         reported.push({
           name: skill.name,
           version: skill.version,
@@ -324,6 +385,10 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       return reported;
     },
   };
+}
+
+function versionedAgents(skill: RunnerSkill): RunnerSkillAgent[] {
+  return skill.agents.filter((agent) => VERSIONED.includes(agent));
 }
 
 function privateMode(mode: number): number {

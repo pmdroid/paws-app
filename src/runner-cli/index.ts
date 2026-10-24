@@ -4,7 +4,7 @@ import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { createRunnerHostSampler, openRunnerDaemon } from "../runner-daemon";
-import { ExecutionIdSchema } from "../runner-execution";
+import { ExecutionIdSchema, RUNNER_SKILLS_ENV } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
 import { runPairedDaemon } from "./daemon";
 
@@ -118,6 +118,7 @@ export async function runRunnerCli(
         home: process.env.HOME ?? "/var/lib/paws-agent",
         signal: abort.signal,
         resume: args[2] === "--resume",
+        ...(process.env[RUNNER_SKILLS_ENV] ? { skills: process.env[RUNNER_SKILLS_ENV] } : {}),
       });
       abort.signal.throwIfAborted();
       return 0;

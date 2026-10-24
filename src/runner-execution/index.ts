@@ -10,7 +10,7 @@ export {
   type RunnerSpool,
 } from "./spool";
 export { createRunnerBrokerClient, type RunnerBrokerClient } from "./broker";
-export { createDirectWorkerSupervisor } from "./supervisor";
+export { createDirectWorkerSupervisor, RUNNER_SKILLS_ENV } from "./supervisor";
 export { runnerResultDirectory, readRunnerResultFile, type RunnerResults } from "./results";
 export {
   createRunnerSkillInstaller,

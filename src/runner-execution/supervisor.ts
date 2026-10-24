@@ -19,6 +19,8 @@ import type { RunnerResults } from "./results";
 import type { RunnerBrokerClient } from "./broker";
 import type { RunnerSkillInstaller } from "./skills";
 
+export const RUNNER_SKILLS_ENV = "PAWS_AGENT_SKILLS";
+
 function openDirectory(path: string): number {
   if (!isAbsolute(path) || path.split("/").some((part) => part === "." || part === ".."))
     throw new Error("Invalid runner directory");
@@ -94,6 +96,7 @@ function workerLaunch(
   log: number,
   resume?: boolean,
   tag: Record<string, string> = {},
+  skills?: string,
 ) {
   const script = process.argv[1];
   const worker = [
@@ -109,6 +112,7 @@ function workerLaunch(
     PATH: "/opt/paws-runner/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     LANG: "C.UTF-8",
     ...tag,
+    ...(skills ? { [RUNNER_SKILLS_ENV]: skills } : {}),
   };
   for (const key of ["USER", "LOGNAME"] as const) {
     const value = process.env[key];
@@ -138,6 +142,7 @@ export function createDirectWorkerSupervisor(options: {
     resume?: boolean,
     /** Environment that marks the worker and everything it starts as this execution's. */
     tag?: Record<string, string>,
+    skills?: string,
   ) => {
     pid?: number;
     unref(): void;
@@ -244,8 +249,8 @@ export function createDirectWorkerSupervisor(options: {
     );
     try {
       options.skills?.prepareHome(home);
-      options.skills?.hold(home, executionId);
-      child = launch(executionId, home, log, resume, executionTag(scope, executionId));
+      const skills = options.skills?.hold(home, executionId);
+      child = launch(executionId, home, log, resume, executionTag(scope, executionId), skills);
       child.on?.("exit", (code, signal) => {
         try {
           const exit = openSync(logPath(executionId), constants.O_WRONLY | constants.O_APPEND);

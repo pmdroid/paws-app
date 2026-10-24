@@ -69,6 +69,7 @@ import {
   RunnerArtifactSchema,
   RunnerEventSchema,
   RunnerHelperResultSchema,
+  RUNNER_SKILL_FOLDERS,
   type RunnerArtifact,
   type RunnerEvent,
 } from "../runner-protocol";
@@ -93,6 +94,7 @@ export interface RunnerWorkerOptions {
   loginCommand?: LoginCommandRunner;
   codexRateLimits?: CodexRateLimitReader;
   resume?: boolean;
+  skills?: string;
 }
 
 export const RESUME_PROMPT =
@@ -241,6 +243,7 @@ export async function executeRunnerCommand(
   const task = command.type === "task";
   if (
     ![options.outputDirectory, options.workRoot, options.home].every(isAbsolute) ||
+    (options.skills !== undefined && !isAbsolute(options.skills)) ||
     !Number.isSafeInteger(options.resultsGid) ||
     options.resultsGid < 0 ||
     repository !== (options.repositoryBundle !== undefined) ||
@@ -490,6 +493,14 @@ export async function executeRunnerCommand(
       ...options.launch,
       hostAccess: true,
       skillsRoot,
+      ...(options.skills && (repository || task)
+        ? {
+            agentSkills: {
+              claude: options.skills,
+              codex: join(options.skills, RUNNER_SKILL_FOLDERS.codex),
+            },
+          }
+        : {}),
       ...(command.type === "run" && command.hooks?.length ? { workspaceHooks: command.hooks } : {}),
       env: agentEnv,
       checkpointEnv: env,
@@ -867,6 +878,7 @@ export async function runRunnerWorker(options: {
   home: string;
   signal?: AbortSignal;
   resume?: boolean;
+  skills?: string;
 }): Promise<RunnerWorkerResult> {
   if (process.getuid?.() === 0 || process.getuid?.() !== options.results.agentUid)
     throw new Error("Runner worker identity is invalid");
@@ -886,6 +898,7 @@ export async function runRunnerWorker(options: {
     resultsGid: options.results.resultsGid,
     signal: options.signal,
     resume: options.resume,
+    ...(options.skills ? { skills: options.skills } : {}),
     async answer(requestId, signal) {
       while (true) {
         signal.throwIfAborted();
