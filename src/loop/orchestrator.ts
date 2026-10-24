@@ -115,6 +115,8 @@ import {
   enqueueJobOnce,
   recordRebaseReturn,
   enqueueOutboxOnce,
+  attachSessionUpdates,
+  getOutbox,
   failWorkItem,
   getQueuePosition,
   queueWaitSince,
@@ -797,6 +799,18 @@ export class Orchestrator {
       );
   }
 
+  private startPost(id: number): void {
+    const row = getOutbox(this.db, id);
+    if (row?.orderingKey == null) return;
+    attachSessionUpdates(this.db, id, this.now());
+    this.db.run(
+      `UPDATE outbox SET status = 'dropped', error = ? WHERE target = 'linear' AND ordering_key = ?
+        AND op = 'activity' AND status = 'pending' AND attempts = 0
+        AND (locked_until IS NULL OR locked_until <= ?) AND json_extract(payload, '$.body') = ?`,
+      [`Sent as outbox ${id}.`, row.orderingKey, this.now(), FIRST_ACTIVITY_BODY],
+    );
+  }
+
   private async enqueueSessionProgress(
     update: ProgressUpdate,
     idempotencyKey: string,
@@ -811,11 +825,27 @@ export class Orchestrator {
       orderingKey: update.sessionId,
       idempotencyKey,
       payload: { ...update, id: update.id ?? crypto.randomUUID() },
-      ...(initialActivity ? { delivery: "critical" } : {}),
+      ...(initialActivity
+        ? { delivery: "critical", notBefore: this.now() + FIRST_ACTIVITY_HOLD_MS }
+        : {}),
       ...(generation === undefined ? {} : { generation }),
       now: this.now(),
     });
     if (request?.signal) this.activityRequests.set(id, request.signal);
+    if (initialActivity) {
+      const forget = () => {
+        if (this.activityRequests.get(id) === request?.signal) this.activityRequests.delete(id);
+      };
+      request?.signal?.addEventListener("abort", forget, { once: true });
+      const held = setTimeout(() => {
+        if (!this.shuttingDown)
+          void this.flush(request?.signal, update.sessionId)
+            .catch(() => undefined)
+            .finally(forget);
+      }, FIRST_ACTIVITY_HOLD_MS);
+      held.unref?.();
+      return;
+    }
     try {
       await this.flush(request?.signal, update.sessionId);
       request?.signal?.throwIfAborted();
@@ -1860,10 +1890,15 @@ export class Orchestrator {
       const auth = this.authorization(item);
       if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
       await this.taskAccess()?.prepare(item, controller.signal);
-      this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`, {
-        ephemeral: true,
-      });
+      const working = this.post(
+        item,
+        "action",
+        `Working on ${item.linearIdentifier}.`,
+        `${run.id}:working`,
+        { ephemeral: true },
+      );
       sessionProgress?.phase("implementing");
+      if (working !== undefined) this.startPost(working);
       if (!this.taskAccess()) this.postStatus(item, "started");
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
@@ -3772,14 +3807,14 @@ export class Orchestrator {
     key: string,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
     delivery?: "critical" | "ordered",
-  ): void {
+  ): number | undefined {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state === "cancelled") return;
     if ((kind === "thought" || kind === "action") && !this.canReportProgress(item.id)) return;
     const sessionId = this.activitySession(current);
     if (sessionId === null || body.trim() === "") return;
-    enqueueOutboxOnce(this.db, {
+    return enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "activity",
       orderingKey: sessionId,
@@ -5330,6 +5365,7 @@ export class Orchestrator {
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
 const OUTBOX_WAIT_MS = 30_000;
+const FIRST_ACTIVITY_HOLD_MS = 5_000;
 const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
 const CHECKS_RATE_LIMIT_WAIT_MS = 60 * 60_000;
 

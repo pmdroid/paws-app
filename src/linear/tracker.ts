@@ -102,6 +102,7 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   loadEpic: "issue-snapshot",
   listDeps: "issue-relations",
   postProgress: "activity-post",
+  postProgressWithSession: "activity-post",
   askQuestion: "elicitation-post",
   setStatus: "issue-status",
 };
@@ -241,6 +242,9 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
     },
     async postProgress(update, options) {
       await sessions.createActivity(update, options);
+    },
+    async postProgressWithSession(update, session, options) {
+      await sessions.createActivity(update, options, session);
     },
     async askQuestion(question, options) {
       await sessions.createElicitation(question, options);
