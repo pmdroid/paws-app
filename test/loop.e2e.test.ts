@@ -10,7 +10,6 @@ import type { Database } from "bun:sqlite";
 import * as acp from "../src/acp";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
-import { createCommentMode, createFakeCommentBoard, withCommentActivities } from "../src/comments";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
@@ -725,7 +724,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
   }
 }, 90_000);
 
-test("the demo delegation merges three pull requests in comment mode with gh auth", async () => {
+test("the demo delegation merges three pull requests with gh auth", async () => {
   const seed = JSON.parse(
     await readFile(new URL("../examples/paws-demo/epic/epic.json", import.meta.url), "utf8"),
   ) as DemoSeed;
@@ -759,34 +758,13 @@ test("the demo delegation merges three pull requests in comment mode with gh aut
   for (const id of [parentId, ...children.map((child) => child.linearIssueId)]) {
     tracker.deps.set(id, edges);
   }
-  const board = createFakeCommentBoard({ selfUserId: "paws" });
-  const mode = createCommentMode({ board, selfUserId: "paws" });
-  const comments = withCommentActivities(tracker, {
-    async postProgress(update) {
-      mode.bind({
-        itemId: update.sessionId,
-        linearIssueId: update.sessionId,
-        sessionId: update.sessionId,
-      });
-      await mode.postProgress(update);
-      await tracker.postProgress(update);
-    },
-    async askQuestion(question) {
-      mode.bind({
-        itemId: question.sessionId,
-        linearIssueId: question.sessionId,
-        sessionId: question.sessionId,
-      });
-      await mode.askQuestion(question);
-    },
-  });
   const github = createFakeGitHub();
   const apiPaths: string[] = [];
   const client = githubClient(layout.bare, github, apiPaths);
   const tokenProvider: GitHubTokenProvider = {
     mode: "gh",
     async tokenFor() {
-      return "ghp_comment_mode";
+      return "ghp_gh_auth";
     },
   };
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
@@ -817,7 +795,7 @@ test("the demo delegation merges three pull requests in comment mode with gh aut
     outbox,
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    tracker: comments,
+    tracker,
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
     github: {
       appId: "",
@@ -827,7 +805,6 @@ test("the demo delegation merges three pull requests in comment mode with gh aut
       tokenProvider,
     },
     launch,
-    channel: "comments",
   });
 
   const askIssue = bySlug.get("archived-rows");
@@ -838,45 +815,20 @@ test("the demo delegation merges three pull requests in comment mode with gh aut
   const answerer = (async () => {
     for (;;) {
       if (stop) return;
-      const question = board.comments.find(
-        (comment) => comment.parentId === null && comment.body.includes("Include archived rows?"),
+      const question = tracker.questions.find((asked) =>
+        asked.body.includes("Include archived rows?"),
       );
       if (question && !delivered) {
         delivered = true;
         whileAsking = children.map((child) => stateOf(db, child.identifier) ?? "missing").join("/");
-        board.post({
-          issueId: question.issueId,
-          parentId: question.id,
-          body: "yes",
-          userId: "human",
-        });
-        const synced = await mode.sync(question.issueId);
-        for (const answer of synced.resumed) {
-          await orchestrator.onLinearEvent({
-            dedupeKey: `comment-answer:${answer.questionId}`,
-            deliveryId: null,
-            source: "poll",
-            action: "prompted",
-            sessionId: question.issueId,
-            issueId: question.issueId,
-            activityId: null,
-            actorId: answer.answeredBy,
-            body: answer.answer,
-            signal: null,
-            updatedAtMs: Date.now(),
-            payload: "{}",
-          });
-        }
+        await orchestrator.onLinearEvent(linearEvent("prompted", "yes", null));
       }
       await Bun.sleep(20);
     }
   })();
 
-  const created = linearEvent("created", null, null, parentId);
-  created.source = "poll";
-  created.sessionId = parentId;
   try {
-    await orchestrator.onLinearEvent(created);
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, parentId));
     const deadline = Date.now() + 90_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {
@@ -892,20 +844,13 @@ test("the demo delegation merges three pull requests in comment mode with gh aut
     stop = true;
     await answerer;
 
-    expect(created.source).toBe("poll");
     expect(whileAsking, debug(layout, db)).toBe("merged/merged/awaiting_input");
     expect(askIssue.title).toContain("Include archived rows?");
-    const question = board.comments.find((comment) =>
-      comment.body.includes("Include archived rows?"),
+    const question = tracker.questions.find((asked) =>
+      asked.body.includes("Include archived rows?"),
     );
-    expect(question?.body).toContain("yes");
-    expect(question?.body).toContain("no");
-    expect(
-      board.comments.some(
-        (comment) =>
-          comment.parentId === question?.id && comment.userId === "human" && comment.body === "yes",
-      ),
-    ).toBe(true);
+    expect(JSON.stringify(question?.options)).toContain("yes");
+    expect(JSON.stringify(question?.options)).toContain("no");
     expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(
       children.map((child) => stateOf(db, child.identifier)),
@@ -3885,7 +3830,7 @@ function demoScript(input: {
   if (input.purpose === "fix") {
     return { steps: [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }] };
   }
-  if (input.itemId === "ENG-4") {
+  if (/^ENG-4(-|$)/.test(input.itemId)) {
     if (input.prompt.includes("Handoff from the previous session.")) {
       return {
         steps: [
