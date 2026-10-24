@@ -2432,4 +2432,17 @@ CREATE TABLE linear_item_caller_request (
 ) STRICT;
 `,
   },
+  {
+    id: "124_item_hold_workspace",
+    sql: `
+CREATE TABLE item_hold_next (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  reason TEXT NOT NULL CHECK (reason IN ('blocked','project','reconciling','snapshot','cap','slot','workspace')),
+  blockers TEXT NOT NULL CHECK (json_valid(blockers))
+) STRICT;
+INSERT INTO item_hold_next(item_id,reason,blockers) SELECT item_id,reason,blockers FROM item_hold;
+DROP TABLE item_hold;
+ALTER TABLE item_hold_next RENAME TO item_hold;
+`,
+  },
 ];
