@@ -18,6 +18,7 @@ import {
   immediate,
   mergeLaneSql,
   requeueOrphanedWork,
+  listItemHolds,
   saveItemHolds,
   saveQueuePositions,
   type ItemHold,
@@ -499,7 +500,13 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       now,
       new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
     );
+    const withoutWorkspace = new Set(
+      starts.flatMap(({ item, start }) =>
+        !start.ok && start.held === "workspace" ? [item.id] : [],
+      ),
+    );
     const holds: ItemHold[] = [
+      ...listItemHolds(db).filter((hold) => withoutWorkspace.has(hold.itemId)),
       ...starts.flatMap(({ item, start }): ItemHold[] =>
         start.ok ||
         start.held === "missing" ||
