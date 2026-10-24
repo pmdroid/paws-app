@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusSnapshot } from "../contract";
 import { demoStatus } from "../demo";
 import { NAVIGATION, PAGES } from "./navigation";
 import { render } from "./render";
-import { parseRoute, type Route } from "./route";
+import { issueRedirect, parseRoute, type Route } from "./route";
+import { themedMarkup } from "./theme";
 import {
   runnerDetailMarkup,
   runnerHistoryMarkup,
@@ -80,8 +83,34 @@ describe("pages outside the issue page talk about issues", () => {
       for (const href of taskHrefs(page(route))) expect(href).toMatch(/^\/issues\/[^/]+/);
     });
 
-  test("the old runs list opens the issues list", () => {
+  test("the old runs list opens the issues list and run links still open their issue", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs[0]!;
     expect(parseRoute("/runs")).toEqual({ view: "issues", id: null });
+    expect(issueRedirect(`/runs/${run.id}`, snapshot)).toBe(`/issues/${run.itemId}`);
+    expect(page({ view: "runs", id: "missing" }, snapshot)).toContain("Issue not found");
+  });
+
+  test("the issues list says why a queued issue waits, and wraps at 390 px", () => {
+    const snapshot = demoStatus();
+    for (const item of snapshot.items) {
+      if (item.id === "ENG-100") Object.assign(item, { state: "queued", blockers: ["ENG-102"] });
+      if (item.id === "ENG-103")
+        Object.assign(item, {
+          state: "queued",
+          queue: { position: 1, busySlots: 4, totalSlots: 4 },
+        });
+    }
+    const html = page({ view: "issues", id: null }, snapshot);
+    const reason = (id: string) =>
+      new RegExp(`data-issue-id="${id}".*?data-wait-reason>([^<]+)<`).exec(html)?.[1];
+    expect(reason("ENG-100")).toBe("Blocked by ENG-102");
+    expect(reason("ENG-103")).toBe("Waiting for a free runner");
+    const themed = renderToStaticMarkup(createElement(Fragment, null, themedMarkup(html)));
+    expect(themed).toMatch(
+      /class="[^"]*flex-wrap[^"]*"[^>]*><span[^>]*>[^<]*<\/span><span[^>]*data-wait-reason/,
+    );
+    expect(themed).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   });
 
   test("navigation names issues, not runs", () => {
@@ -118,7 +147,8 @@ describe("the runner card lists running issues", () => {
   const runner: Runner = {
     id: "01JRUNNER0000000000000000A",
     name: "build-box",
-    status: "online",
+    ownerUserId: "owner-1",
+    status: "active",
     metrics: {
       cpuPercent: 10,
       memoryTotalBytes: null,

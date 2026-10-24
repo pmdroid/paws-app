@@ -40,7 +40,6 @@ import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-c
 import { renderConversations, type ConversationModel } from "./conversations";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
-import { renderRunsList } from "./runs-list";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
@@ -55,7 +54,6 @@ export interface RenderModel {
   engineUrl: string | null;
   closeout?: CloseoutView;
   mediaInfo?: ReadonlyMap<string, MediaInfo>;
-  search?: string;
 }
 
 export interface Rendered {
@@ -65,7 +63,6 @@ export interface Rendered {
   title: string;
 }
 
-const ACTIVE_RUN = new Set(["running", "awaiting_input", "verifying", "paused"]);
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
 export function render(model: RenderModel): Rendered {
@@ -128,7 +125,6 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       return viewRuns(
         snapshot,
         model.route.id,
-        model.search ?? "",
         model.closeout ?? emptyCloseoutView(),
         model.engineUrl,
       );
@@ -184,7 +180,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
             : item.state === "awaiting_input" || run?.state === "awaiting_input"
               ? "Waiting for your input."
               : run?.state === "paused"
-                ? "This run is paused."
+                ? "This issue is paused."
                 : null;
     return reason
       ? [
@@ -308,28 +304,13 @@ function relatedIssues(ids: readonly string[]): string {
 function viewRuns(
   snapshot: StatusSnapshot,
   id: string | null,
-  search: string,
   closeout: CloseoutView,
   engineUrl: string | null,
 ): string {
-  const runs = [...snapshot.runs].sort(
-    (a, b) => rankRun(a) - rankRun(b) || b.startedAt.localeCompare(a.startedAt),
-  );
-  if (id === null && runs.length)
-    return `${pageHeading("runs")}${renderRunsList(snapshot, runs, search)}`;
-  // The address moves to the issue page; until then the run's issue page shows here.
-  const run = id === null ? undefined : runs.find((entry) => inRun(entry, id));
+  const run = id === null ? undefined : snapshot.runs.find((entry) => inRun(entry, id));
   if (run && findItem(snapshot, run.itemId))
     return issuePage(snapshot, run.itemId, closeout, engineUrl);
-  const picker = entityPicker(
-    "Issue",
-    snapshot.items.map((item) => ({
-      value: routeHref({ view: "issues", id: item.id }),
-      label: `${item.id} · ${item.title}`,
-    })),
-    "",
-  );
-  return `${pageHeading("runs")}${id ? picker : ""}<div class="empty">${id ? "Run not found. Choose an issue instead." : "No runs yet. Agent activity appears here when delegated work starts."}</div>`;
+  return viewIssues(snapshot, id, closeout, engineUrl);
 }
 
 /**
@@ -764,10 +745,6 @@ function itemLink(item: StatusItem | undefined): string {
 
 function findItem(snapshot: StatusSnapshot, id: string): StatusItem | undefined {
   return snapshot.items.find((item) => item.id === id);
-}
-
-function rankRun(run: StatusRun): number {
-  return ACTIVE_RUN.has(run.state) ? 0 : 1;
 }
 
 function pageHeading(view: Route["view"]): string {

@@ -45,7 +45,8 @@ export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Rout
     case "epics":
       return { view: "issues", id: null };
     case "runs": {
-      const issue = id === null ? null : issueForRun(id, snapshot);
+      if (id === null) return { view: "issues", id: null };
+      const issue = issueForRun(id, snapshot);
       return issue ? { view: "issues", id: issue } : { view: "runs", id };
     }
     case "merge-queue":

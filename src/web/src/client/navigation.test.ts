@@ -16,7 +16,9 @@ const model = {
 test("sidebar exposes every page exactly once and all page links round-trip", () => {
   const views = NAVIGATION.flatMap((group) => [...group.views]);
   // Settings has its own menu, and an evidence page is opened from a run or a copied link.
-  const linked = Object.keys(PAGES).filter((view) => !["settings", "evidence"].includes(view));
+  const linked = Object.keys(PAGES).filter(
+    (view) => !["settings", "evidence", "runs"].includes(view),
+  );
   expect(new Set(views).size).toBe(linked.length);
   expect(views.length).toBe(linked.length);
   for (const view of views) {

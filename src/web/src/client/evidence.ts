@@ -135,14 +135,14 @@ export function renderEvidencePage(
             `<li><a class="evidence-thumb" href="${esc(evidencePageHref(entry.id))}" aria-label="${esc(`${kindLabel(entry.kind)} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}</a></li>`,
         )
         .join("")}</ul>`
-    : '<p class="muted">No other evidence from this run.</p>';
+    : '<p class="muted">No other evidence from this issue.</p>';
   return `<nav class="crumbs" aria-label="Breadcrumb"><span>Evidence</span><span>/</span>${issue}<span>/</span><span class="mono">${esc(evidence.id)}</span></nav>
     <header class="run-heading"><div class="row">${issue}<span class="tag">${esc(evidence.checkId)}</span><span class="mono muted">${esc(snapshot.project.repo)} · head ${esc(evidence.headCommit.slice(0, 7))}</span></div><h1>${esc(evidence.displayName)}</h1><p class="muted">Anyone signed in to Paws with access to ${esc(snapshot.project.repo)} sees this evidence.</p></header>
     <div class="evidence-layout"><div>
       <div id="evidence-player" data-evidence="${esc(evidence.id)}"></div>
 
-    </div><aside class="evidence-aside"><div class="card"><div class="row"><button type="button" class="primary" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div><div class="kv"><span class="k">Issue</span><a class="lin-id" href="${esc(routeHref({ view: "issues", id: evidence.itemId }))}">${esc(evidence.itemId)}</a><span class="k">Check</span><span>${esc(evidence.checkId)} · attempt ${evidence.attempt}</span><span class="k">Published</span><span>${esc(evidence.publisher)} · ${esc(new Date(evidence.publishedAt).toLocaleString())}</span><span class="k">File</span><span>${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))}${measure ? ` · ${esc(measure)}` : ""}</span></div><p class="muted">Stored on this Paws host, never uploaded to Linear.</p></div><section class="card" aria-label="More from this run">
-        <div class="between"><h3>More from this run</h3><a href="${esc(closeoutOutputHref(evidence))}">Closeout output</a></div>
+    </div><aside class="evidence-aside"><div class="card"><div class="row"><button type="button" class="primary" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div><div class="kv"><span class="k">Issue</span><a class="lin-id" href="${esc(routeHref({ view: "issues", id: evidence.itemId }))}">${esc(evidence.itemId)}</a><span class="k">Check</span><span>${esc(evidence.checkId)} · attempt ${evidence.attempt}</span><span class="k">Published</span><span>${esc(evidence.publisher)} · ${esc(new Date(evidence.publishedAt).toLocaleString())}</span><span class="k">File</span><span>${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))}${measure ? ` · ${esc(measure)}` : ""}</span></div><p class="muted">Stored on this Paws host, never uploaded to Linear.</p></div><section class="card" aria-label="More from this issue">
+        <div class="between"><h3>More from this issue</h3><a href="${esc(closeoutOutputHref(evidence))}">Closeout output</a></div>
         ${more}
       </section>
     </aside></div>`;
