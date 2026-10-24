@@ -243,11 +243,17 @@ describe("status views", () => {
       [{ reason: "snapshot", blockers: [] }, "Waiting: reading its dependencies from Linear"],
       [{ reason: "cap", blockers: [] }, "Waiting: its owner already runs the most tasks at once"],
       [{ reason: "slot", blockers: [] }, "Waiting: no free slot on any runner"],
+      [{ reason: "workspace", blockers: [] }, "Waiting: no Linear workspace is configured"],
     ];
     for (const [held, line] of lines) {
       item.held = held;
       expect(issue()).toContain(line);
     }
+    item.held = { reason: "workspace", blockers: [] };
+    expect(render(model({ snapshot, route: { view: "issues", id: null } })).content).toContain(
+      '<span class="muted" data-wait-reason>Waiting: no Linear workspace is configured</span>',
+    );
+    item.held = { reason: "slot", blockers: [] };
     item.queue = { position: 2, busySlots: 4, totalSlots: 4 };
     expect(issue()).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
     expect(issue()).toContain("Waiting: no free slot on any runner.");

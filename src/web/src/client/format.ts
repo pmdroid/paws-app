@@ -287,6 +287,7 @@ const HELD_LINES: Record<HeldReason, string> = {
   snapshot: "reading its dependencies from Linear",
   cap: "its owner already runs the most tasks at once",
   slot: "no free slot on any runner",
+  workspace: "no Linear workspace is configured",
 };
 
 export function heldLine(item: StatusItem): string | null {
