@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import type {
   DecisionWarning,
   PolicyLoadResult,
@@ -290,7 +290,7 @@ function resolveTarget(
   return { kind: "directory", entries };
 }
 
-type Location = { kind: "tree"; path: string } | { kind: "disk"; path: string };
+type Located = { ok: true; path: string } | { ok: false; message: string };
 
 function followLink(
   git: GitReader,
@@ -303,8 +303,7 @@ function followLink(
   if (target.length === 0 || target.includes("\0"))
     return { ok: false, message: `skill link is broken: ${linkPath}` };
   const where = locate(git, repo, commit, linkPath, target, depth);
-  if ("ok" in where) return where;
-  if (where.kind === "disk") return readDisk(where.path, linkPath, depth);
+  if (!where.ok) return where;
   if (where.path === "") return { ok: false, message: `skill path is not a file: ${linkPath}` };
   const inTree = resolveTarget(git, repo, commit, where.path, depth);
   if (!("ok" in inTree) && inTree.kind === "missing")
@@ -330,8 +329,7 @@ function throughAncestors(
     if (entry.target.length === 0 || entry.target.includes("\0"))
       return { ok: false, message: `skill link is broken: ${prefix}` };
     const where = locate(git, repo, commit, prefix, entry.target, depth);
-    if ("ok" in where) return where;
-    if (where.kind === "disk") return readDisk(`${where.path}/${remainder}`, path, depth + 1);
+    if (!where.ok) return where;
     const inTree = resolveTarget(
       git,
       repo,
@@ -370,11 +368,11 @@ function locate(
   linkPath: string,
   target: string,
   depth: number,
-): Location | { ok: false; message: string } {
+): Located {
   if (!target.startsWith("/"))
     return walk(git, repo, commit, linkPath, parentOf(linkPath), target, depth);
   const inside = insideRepo(repo, target);
-  if (inside === undefined) return { kind: "disk", path: target };
+  if (inside === undefined) return escapes(linkPath);
   return walk(git, repo, commit, linkPath, "", inside, depth);
 }
 
@@ -386,39 +384,58 @@ function walk(
   start: string,
   target: string,
   depth: number,
-): Location | { ok: false; message: string } {
+): Located {
   const parts = target.split("/").filter((part) => part !== "" && part !== ".");
   let current = start;
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index] as string;
     if (part === "..") {
-      if (current === "") return { kind: "disk", path: `${repo}/${parts.slice(index).join("/")}` };
+      if (current === "") return escapes(linkPath);
       current = parentOf(current);
       continue;
     }
     current = current === "" ? part : `${current}/${part}`;
     if (index === parts.length - 1) break;
+    const directory = directoryAt(git, repo, commit, linkPath, current, depth);
+    if (!directory.ok) return directory;
+    current = directory.path;
+  }
+  return { ok: true, path: current };
+}
+
+function directoryAt(
+  git: GitReader,
+  repo: string,
+  commit: string,
+  linkPath: string,
+  path: string,
+  depth: number,
+): Located {
+  let current = path;
+  for (let hops = 0; current !== ""; hops += 1) {
     const entry = entryAt(git, repo, commit, current);
     if ("ok" in entry) return entry;
-    if (entry.kind !== "link") continue;
+    if (entry.kind === "absent") break;
+    if (entry.kind === "file") return { ok: false, message: `skill link is broken: ${linkPath}` };
     if (entry.target.length === 0 || entry.target.includes("\0"))
       return { ok: false, message: `skill link is broken: ${current}` };
-    if (depth >= LINK_DEPTH) return { ok: false, message: `skill link loops: ${current}` };
-    const where = locate(git, repo, commit, current, entry.target, depth + 1);
-    if ("ok" in where) return where;
-    const rest = parts.slice(index + 1).join("/");
-    if (where.kind === "disk") return { kind: "disk", path: `${where.path}/${rest}` };
+    if (depth + hops >= LINK_DEPTH) return { ok: false, message: `skill link loops: ${current}` };
+    const where = locate(git, repo, commit, current, entry.target, depth + hops + 1);
+    if (!where.ok) return where;
     current = where.path;
   }
-  return { kind: "tree", path: current };
+  return { ok: true, path: current };
+}
+
+function escapes(linkPath: string): Located {
+  return { ok: false, message: `skill link escapes the repository: ${linkPath}` };
 }
 
 function insideRepo(repo: string, target: string): string | undefined {
-  const absolute = resolve(target);
   for (const root of [resolve(repo), realRoot(repo)]) {
     if (root === undefined) continue;
-    if (absolute === root) return "";
-    if (absolute.startsWith(`${root}/`)) return absolute.slice(root.length + 1);
+    if (target === root) return "";
+    if (target.startsWith(`${root}/`)) return target.slice(root.length + 1);
   }
   return undefined;
 }
@@ -434,46 +451,6 @@ function realRoot(repo: string): string | undefined {
 function parentOf(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash);
-}
-
-function readDisk(
-  absolute: string,
-  linkPath: string,
-  depth: number,
-): Resolved | { ok: false; message: string } {
-  let info;
-  try {
-    info = statSync(absolute);
-  } catch (error) {
-    const code = (error as { code?: string }).code;
-    if (code === "ELOOP") return { ok: false, message: `skill link loops: ${linkPath}` };
-    return { ok: false, message: `skill link is broken: ${linkPath}` };
-  }
-  if (info.isFile()) {
-    try {
-      return { kind: "file", bytes: new Uint8Array(readFileSync(absolute)) };
-    } catch {
-      return { ok: false, message: "could not read the policy file" };
-    }
-  }
-  if (!info.isDirectory()) return { ok: false, message: `skill path is not a file: ${linkPath}` };
-  if (depth > LINK_DEPTH) return { ok: false, message: `skill link loops: ${linkPath}` };
-  const entries: Array<{ path: string; bytes: Uint8Array }> = [];
-  let names: string[];
-  try {
-    names = readdirSync(absolute);
-  } catch {
-    return { ok: false, message: "could not read the skill directory" };
-  }
-  for (const name of names.sort()) {
-    const child = readDisk(join(absolute, name), `${linkPath}/${name}`, depth + 1);
-    if ("ok" in child) return child;
-    if (child.kind === "file") entries.push({ path: name, bytes: child.bytes });
-    else if (child.kind === "directory")
-      for (const entry of child.entries)
-        entries.push({ path: `${name}/${entry.path}`, bytes: entry.bytes });
-  }
-  return { kind: "directory", entries };
 }
 
 function materialize(

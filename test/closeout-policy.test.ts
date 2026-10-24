@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   anyPathMatches,
@@ -561,7 +561,7 @@ describe("policy errors", () => {
     );
   });
 
-  test("an absolute link into the repository resolves in the commit, one outside it on disk", () => {
+  test("an absolute link into the repository resolves in the commit, one outside it is an error", () => {
     const repo = tempDir();
     const git = createFakeGitReader({
       ".agents/policy.yaml": reviewPolicy(".agents/skills/look/SKILL.md"),
@@ -577,8 +577,37 @@ describe("policy errors", () => {
     writeRepoFile(outside, "policy.yaml", commandPolicy("disk"));
     const away = createFakeGitReader({ ".agents/skills/look/SKILL.md": "look\n" });
     away.put(PUBLIC_POLICY_PATH, join(outside, "policy.yaml"), "120000");
-    const fromDisk = present(loadPolicy({ repo: tempDir(), git: away, env: {} }));
-    expect(fromDisk.items.map((item) => item.id)).toEqual(["disk"]);
+    expectBlocked(
+      loadPolicy({ repo: tempDir(), git: away, env: {} }),
+      "repo",
+      "skill link escapes the repository: .agents/closeout.yaml",
+    );
+  });
+
+  test("a link that climbs out of the repository is an error even when it comes back", () => {
+    const repo = tempDir();
+    const back = createFakeGitReader({
+      ".agents/policy.yaml": reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+    });
+    back.put(PUBLIC_POLICY_PATH, `../../${basename(repo)}/.agents/policy.yaml`, "120000");
+    writeRepoFile(repo, ".agents/policy.yaml", commandPolicy("checkout"));
+    expectBlocked(
+      loadPolicy({ repo, git: back, env: {} }),
+      "repo",
+      "skill link escapes the repository: .agents/closeout.yaml",
+    );
+
+    const up = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+    });
+    up.put(".agents/skills/look/ref", "../../../../shared", "120000");
+    expectBlocked(
+      loadPolicy({ repo: tempDir(), git: up, env: {} }),
+      "repo",
+      "skill link escapes the repository: .agents/skills/look/ref",
+    );
   });
 
   test("a dot-dot after a linked directory climbs from the directory the link resolves to", () => {
@@ -600,6 +629,52 @@ describe("policy errors", () => {
       ".agents/skills/look/ref/note.md",
     ]);
     expect(policy.files[2]?.sha256).toBe(sha256("shared rubric\n"));
+
+    const chained = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+      "shared/rubric.md": "shared rubric\n",
+      "shared/sub/note.md": "note\n",
+    });
+    chained.put(".agents/skills/look/ref1", "ref2", "120000");
+    chained.put(".agents/skills/look/ref2", "../../../shared/sub", "120000");
+    chained.put(".agents/skills/look/example.md", "ref1/../rubric.md", "120000");
+    const viaChain = present(loadPolicy({ repo: tempDir(), git: chained, env: {} }));
+    expect(viaChain.files.find((file) => file.path.endsWith("/example.md"))?.sha256).toBe(
+      sha256("shared rubric\n"),
+    );
+
+    const absoluteRepo = tempDir();
+    const absolute = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+      "shared/rubric.md": "shared rubric\n",
+      "shared/sub/note.md": "note\n",
+    });
+    absolute.put(".agents/skills/look/ref", "../../../shared/sub", "120000");
+    absolute.put(
+      ".agents/skills/look/example.md",
+      `${absoluteRepo}/.agents/skills/look/ref/../rubric.md`,
+      "120000",
+    );
+    const viaAbsolute = present(loadPolicy({ repo: absoluteRepo, git: absolute, env: {} }));
+    expect(viaAbsolute.files.find((file) => file.path.endsWith("/example.md"))?.sha256).toBe(
+      sha256("shared rubric\n"),
+    );
+  });
+
+  test("a regular file on the way through a link target breaks the link", () => {
+    const git = createFakeGitReader({
+      [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/SKILL.md"),
+      ".agents/skills/look/SKILL.md": "look\n",
+      ".agents/skills/look/AGENTS.md": "rules\n",
+    });
+    git.put(".agents/skills/look/CLAUDE.md", "SKILL.md/../AGENTS.md", "120000");
+    expectBlocked(
+      loadPolicy({ repo: tempDir(), git, env: {} }),
+      "repo",
+      "skill link is broken: .agents/skills/look/CLAUDE.md",
+    );
   });
 
   test("a skill reached through a linked directory loads from the commit", () => {
