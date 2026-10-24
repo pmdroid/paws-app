@@ -97,7 +97,6 @@ test("the Conversations page is gone and its old links open the issue list", () 
   expect(Object.keys(PAGES)).not.toContain("sessions");
   expect(NAVIGATION.flatMap((group) => [...group.views])).not.toContain("sessions");
   expect(Object.values(PAGES).map((page) => page.title)).not.toContain("Conversations");
-  // Without a snapshot the old URL already shows the issue list, never a Conversations page.
   expect(parseRoute("/sessions")).toEqual({ view: "issues", id: null });
   expect(parseRoute("/sessions/unknown")).toEqual({ view: "issues", id: null });
   const snapshot = demoStatus();

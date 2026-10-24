@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 
-/** The Linear session URL Paws first saw for a session, from its webhook or a recorded turn. */
 export function getLinearConversationSource(db: Database, sessionId: string): string | null {
   for (const [table, filter, order] of [
     ["inbox_event", "AND action = 'created'", "received_at"],

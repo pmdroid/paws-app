@@ -52,7 +52,6 @@ export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Rout
     case "evidence":
       return { view: "evidence", id };
     case "sessions":
-      // The Conversations page is gone. A session link opens its issue, or the issue list.
       return { view: "issues", id: id === null ? null : issueForSession(id, snapshot) };
     case "questions":
       return { view: "questions", id };

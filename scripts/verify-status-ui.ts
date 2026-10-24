@@ -263,7 +263,6 @@ try {
     await expect(
       page.locator('[data-action="toggle-check"][aria-expanded="true"]').first(),
     ).toBeVisible();
-    // The Conversations page is gone: its old URL opens the issue list, which offers the form.
     await page.goto(`http://127.0.0.1:${server.port}/status/sessions`);
     await expect(page).toHaveURL(/\/status\/issues$/);
     await expect(page.getByRole("link", { name: "Conversations" })).toHaveCount(0);

@@ -142,10 +142,8 @@ describe("one page per issue", () => {
       view: "issues",
       id: "PAS-367",
     });
-    // A session Paws never worked on has no issue page, so the link opens the issue list.
     expect(issueRedirect("/sessions/unknown-session", snapshot)).toBe("/issues");
     expect(issueRedirect("/sessions", snapshot)).toBe("/issues");
-    // Before the snapshot arrives, nothing moves yet.
     expect(issueRedirect(`/sessions/${SESSION}`, null)).toBeNull();
   });
 
