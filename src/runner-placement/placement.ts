@@ -124,11 +124,24 @@ export function createRunnerPlacement(options: {
     const issueId = item?.linearIssueId ?? session.issueId;
     if (!issueId) throw new Error("Runner issue authority is unavailable");
     const placement = item
-      ? (db
-          .query<{ ownerUserId: string | null }, [string]>(
-            "SELECT owner_user_id AS ownerUserId FROM work_item WHERE id=?",
-          )
-          .get(item.id) ?? { ownerUserId: null })
+      ? {
+          ownerUserId:
+            db
+              .query<{ ownerUserId: string | null }, [string]>(
+                "SELECT owner_user_id AS ownerUserId FROM work_item WHERE id=?",
+              )
+              .get(item.id)?.ownerUserId ?? null,
+          // The leads of the Linear projects across the item's delegation lend their shared runners.
+          leadUserIds: db
+            .query<{ id: string }, [string]>(
+              `SELECT DISTINCT u.id FROM work_item i
+               JOIN work_item_scheduling c ON c.item_id=i.id
+               JOIN workspace_user u ON u.linear_user_id=c.project_lead_id
+               WHERE i.delegation_id=? ORDER BY u.id`,
+            )
+            .all(item.delegationId)
+            .map((row) => row.id),
+        }
       : null;
     const ownership = item
       ? delegatedLinearUserId(db, item.id)
@@ -148,6 +161,7 @@ export function createRunnerPlacement(options: {
             version: item.version,
             cancelRequested: item.cancelRequested,
             ownerUserId: current.placement?.ownerUserId ?? null,
+            leadUserIds: current.placement?.leadUserIds ?? [],
           }
         : null,
       session: current.session,
@@ -273,8 +287,13 @@ export function createRunnerPlacement(options: {
           (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(teamId))
         )
           return [];
-        // Every task runs on the runners of the person who delegated it.
-        if (runner.ownerId !== (current.placement?.ownerUserId ?? requester)) return [];
+        // A task runs on the runners of the person who delegated it, then on the shared runners
+        // of its Linear project leads.
+        const own = runner.ownerId === (current.placement?.ownerUserId ?? requester);
+        const lead =
+          runner.sharing === 1 &&
+          (current.placement?.leadUserIds.includes(runner.ownerId) ?? false);
+        if (!own && !lead) return [];
         if (
           input.profile &&
           input.purpose !== "prepare" &&
@@ -290,7 +309,7 @@ export function createRunnerPlacement(options: {
           return [];
         const reviewRank =
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
-        return [{ runner, rank: reviewRank }];
+        return [{ runner, rank: reviewRank * 10 + (own ? 0 : 1) }];
       });
       const session = input.role === "implementer" && input.purpose === "work" && input.session;
       const holder = session

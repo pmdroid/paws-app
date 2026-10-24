@@ -20,6 +20,7 @@ import {
   type PlacementRequest,
 } from "../src/runner-placement";
 import { placementWaitMs } from "../src/core";
+import { saveSchedulingContext } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
@@ -177,6 +178,65 @@ test("runner placement resolves its item through session_key alone", async () =>
 test("an item from a Paws project start never lands on another member's runner", async () => {
   const placed = await placeItem(true);
   try {
+    expect(await placed.ids()).toEqual(["own", "second"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("an item in a Linear project also runs on its lead's shared runners after the owner's", async () => {
+  const placed = await placeItem(false);
+  try {
+    saveSchedulingContext(placed.db, {
+      itemId: "item",
+      projectId: "project",
+      projectLeadId: "colleague",
+    });
+    expect(await placed.ids()).toEqual(["own", "second", "shared"]);
+    placed.db.run("UPDATE runner_policy SET sharing=0 WHERE runner_id='shared'");
+    expect(await placed.ids()).toEqual(["own", "second"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a delegation spanning projects with several leads uses all of their shared runners", async () => {
+  const placed = await placeItem(false);
+  try {
+    placed.db.run(
+      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
+       SELECT 'sibling',delegation_id,'lin-sibling','sibling','Sibling','queued','paws/sibling',1,created_at FROM work_item WHERE id='item'`,
+    );
+    saveSchedulingContext(placed.db, {
+      itemId: "item",
+      projectId: "one",
+      projectLeadId: "colleague",
+    });
+    saveSchedulingContext(placed.db, {
+      itemId: "sibling",
+      projectId: "two",
+      projectLeadId: "pool",
+    });
+    expect((await placed.ids()).toSorted()).toEqual(["api", "own", "second", "shared"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a lead leaving the project stops lending runners, and an unknown lead keeps the saved one", async () => {
+  const placed = await placeItem(false);
+  try {
+    saveSchedulingContext(placed.db, {
+      itemId: "item",
+      projectId: "project",
+      projectLeadId: "colleague",
+    });
+    saveSchedulingContext(placed.db, { itemId: "item", projectId: "project", priority: 2 });
+    expect(await placed.ids()).toEqual(["own", "second", "shared"]);
+    saveSchedulingContext(placed.db, { itemId: "item", projectId: null });
     expect(await placed.ids()).toEqual(["own", "second"]);
   } finally {
     placed.db.close();
