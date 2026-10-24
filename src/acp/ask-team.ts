@@ -621,11 +621,29 @@ function parseAsk(value: {
   ) {
     throw new Error("ask_team options must be strings or label/value choices");
   }
+  if (value.options && value.options.length > MAX_ASK_OPTIONS) {
+    throw new Error(
+      `ask_team takes at most ${MAX_ASK_OPTIONS} options. Put the rest in context and ask again.`,
+    );
+  }
+  const long = value.options?.find((option) => optionLabel(option).length > MAX_ASK_LABEL);
+  if (long !== undefined) {
+    throw new Error(
+      `ask_team option labels must be at most ${MAX_ASK_LABEL} characters, but "${optionLabel(long)}" is longer. Use a short label and explain the option in context.`,
+    );
+  }
   return {
     question: value.question,
     ...(value.options ? { options: value.options } : {}),
     ...(value.context ? { context: value.context } : {}),
   };
+}
+
+const MAX_ASK_OPTIONS = 3;
+const MAX_ASK_LABEL = 24;
+
+function optionLabel(option: AskTeamOption): string {
+  return (typeof option === "string" ? option : (option.label ?? option.value)).trim();
 }
 
 function isAskTeamOption(value: unknown): value is AskTeamOption {
