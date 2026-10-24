@@ -8,7 +8,7 @@ export function delegationIssueIdSql(item: string): string {
 }
 
 export function parentIssueIdSql(item: string): string {
-  const projectIssue = `(SELECT parent_approval.project_id FROM project_approval parent_approval WHERE parent_approval.id = ${item}.project_approval_id AND parent_approval.source = 'parent' AND parent_approval.stopped_at IS NULL AND parent_approval.project_id <> ${item}.linear_issue_id)`;
+  const projectIssue = `(SELECT parent.parent_issue_id FROM parent_delegation_issue sub JOIN parent_delegation parent ON parent.delegation_id = sub.parent_delegation_id WHERE sub.delegation_id = ${item}.delegation_id AND parent.stopped_at IS NULL AND parent.parent_issue_id <> ${item}.linear_issue_id)`;
   return `COALESCE(${projectIssue}, ${delegationIssueIdSql(item)})`;
 }
 

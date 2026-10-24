@@ -2474,4 +2474,66 @@ CREATE TABLE runner_runtime (
 ) STRICT;
 `,
   },
+  {
+    id: "129_parent_delegation",
+    sql: `
+CREATE TABLE parent_delegation (
+  delegation_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  organization_id TEXT NOT NULL,
+  parent_issue_id TEXT NOT NULL,
+  parent_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL REFERENCES workspace_user(id),
+  edges TEXT NOT NULL CHECK (json_valid(edges)),
+  created_at INTEGER NOT NULL,
+  stopped_at INTEGER,
+  last_error TEXT
+) STRICT;
+CREATE UNIQUE INDEX parent_delegation_active ON parent_delegation(workspace_id, parent_issue_id) WHERE stopped_at IS NULL;
+CREATE INDEX parent_delegation_session ON parent_delegation(session_id);
+CREATE TABLE parent_delegation_issue (
+  parent_delegation_id TEXT NOT NULL REFERENCES parent_delegation(delegation_id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  issue_id TEXT NOT NULL,
+  identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  url TEXT,
+  position INTEGER NOT NULL,
+  session_id TEXT UNIQUE,
+  delegation_id TEXT,
+  released_at INTEGER,
+  PRIMARY KEY (parent_delegation_id, issue_id)
+) STRICT;
+CREATE UNIQUE INDEX parent_delegation_issue_active ON parent_delegation_issue(workspace_id, issue_id) WHERE released_at IS NULL;
+CREATE INDEX parent_delegation_issue_delegation ON parent_delegation_issue(delegation_id);
+INSERT INTO parent_delegation (
+  delegation_id, workspace_id, organization_id, parent_issue_id, parent_identifier, title,
+  session_id, owner_user_id, edges, created_at, stopped_at, last_error
+)
+SELECT a.id, a.workspace_id, COALESCE(json_extract(a.preview, '$.project.organizationId'), w.linear_organization_id),
+  a.project_id, a.project_id, COALESCE(json_extract(a.preview, '$.project.name'), a.project_id),
+  substr(a.generation, length('parent:') + 1), a.actor_id,
+  COALESCE(json_extract(a.preview, '$.edges'), '[]'), a.created_at, a.stopped_at, a.last_error
+FROM project_approval a JOIN workspace w ON w.id = a.workspace_id
+WHERE a.source = 'parent' AND a.generation LIKE 'parent:%';
+INSERT INTO parent_delegation_issue (
+  parent_delegation_id, workspace_id, issue_id, identifier, title, url, position,
+  session_id, delegation_id, released_at
+)
+SELECT c.approval_id, c.workspace_id, c.issue_id,
+  COALESCE((SELECT json_extract(issue.value, '$.identifier') FROM project_approval a2, json_each(a2.preview, '$.project.issues') issue
+    WHERE a2.id = c.approval_id AND json_extract(issue.value, '$.linearIssueId') = c.issue_id), c.issue_id),
+  COALESCE((SELECT json_extract(issue.value, '$.title') FROM project_approval a2, json_each(a2.preview, '$.project.issues') issue
+    WHERE a2.id = c.approval_id AND json_extract(issue.value, '$.linearIssueId') = c.issue_id), c.issue_id),
+  (SELECT json_extract(issue.value, '$.url') FROM project_approval a2, json_each(a2.preview, '$.project.issues') issue
+    WHERE a2.id = c.approval_id AND json_extract(issue.value, '$.linearIssueId') = c.issue_id),
+  COALESCE((SELECT CAST(o.key AS INTEGER) FROM project_approval a2, json_each(a2.preview, '$.order') o
+    WHERE a2.id = c.approval_id AND o.value = c.issue_id), 0),
+  c.session_id, c.delegation_id, c.released_at
+FROM project_approval_issue c
+WHERE c.approval_id IN (SELECT delegation_id FROM parent_delegation);
+`,
+  },
 ];

@@ -56,10 +56,11 @@ type DelegationRow = {
   title: string;
 };
 
-type ApprovalRow = {
-  id: string;
-  project_id: string;
-  preview: string;
+type ParentRow = {
+  delegation_id: string;
+  parent_issue_id: string;
+  parent_identifier: string;
+  title: string;
 };
 
 export function findAcceptedIntake(
@@ -97,30 +98,40 @@ export function findAcceptedIntake(
   return adopted === null ? null : { delegation: adopted, items: [] };
 }
 
+/** Stop the parent delegation a session adopted and release its sub-issues. */
 export function stopAdoptedParent(db: Database, sessionId: string, now: number): void {
-  const generation = `parent:${sessionId}`;
   db.run(
-    `UPDATE project_approval_issue SET released_at = ? WHERE released_at IS NULL AND approval_id IN
-       (SELECT id FROM project_approval WHERE source = 'parent' AND generation = ? AND stopped_at IS NULL)`,
-    [now, generation],
+    `UPDATE parent_delegation_issue SET released_at = ? WHERE released_at IS NULL AND parent_delegation_id IN
+       (SELECT delegation_id FROM parent_delegation WHERE session_id = ? AND stopped_at IS NULL)`,
+    [now, sessionId],
   );
   db.run(
-    "UPDATE project_approval SET stopped_at = ? WHERE source = 'parent' AND generation = ? AND stopped_at IS NULL",
-    [now, generation],
+    "UPDATE parent_delegation SET stopped_at = ? WHERE session_id = ? AND stopped_at IS NULL",
+    [now, sessionId],
   );
 }
 
+/** The active delegation of a parent issue whose sub-issues each run in their own session. */
 export function readAdoptedParent(db: Database, linearIssueId: string): StoredDelegation | null {
   const row = db
-    .query<ApprovalRow, [string]>(
-      `SELECT id, project_id, preview
-       FROM project_approval
-       WHERE source = 'parent' AND project_id = ? AND stopped_at IS NULL
-       ORDER BY created_at, id
+    .query<ParentRow, [string]>(
+      `SELECT delegation_id, parent_issue_id, parent_identifier, title
+       FROM parent_delegation
+       WHERE parent_issue_id = ? AND stopped_at IS NULL
+       ORDER BY created_at, delegation_id
        LIMIT 1`,
     )
     .get(linearIssueId);
-  return row === null ? null : delegationFromApproval(row);
+  return row === null
+    ? null
+    : {
+        id: row.delegation_id,
+        linearIssueId: row.parent_issue_id,
+        linearIdentifier: row.parent_identifier,
+        title: row.title,
+        state: "done",
+        version: 0,
+      };
 }
 
 export function listWorkItems(db: Database, delegationId: string): StoredWorkItem[] {
@@ -229,23 +240,6 @@ function delegationState(items: readonly StoredWorkItem[]): DelegationState {
   return "done";
 }
 
-function delegationFromApproval(row: ApprovalRow): StoredDelegation {
-  const preview = JSON.parse(row.preview) as {
-    project?: { name?: unknown; identifier?: unknown };
-  };
-  const name = preview.project?.name;
-  const identifier = preview.project?.identifier;
-  return {
-    id: row.id,
-    linearIssueId: row.project_id,
-    linearIdentifier:
-      typeof identifier === "string" && identifier.length > 0 ? identifier : row.project_id,
-    title: typeof name === "string" && name.length > 0 ? name : row.project_id,
-    state: "done",
-    version: 0,
-  };
-}
-
 export function retireEmptyFailedAttempt(db: Database, issueId: string, sessionId: string): void {
   const items = db
     .query<{ id: string }, [string, string]>(
@@ -260,6 +254,8 @@ export function retireEmptyFailedAttempt(db: Database, issueId: string, sessionI
          AND item.state = 'failed' AND item.cancel_requested = 1
          AND item.current_run_id IS NULL AND item.checkpoint IS NULL
          AND item.project_approval_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM parent_delegation_issue sub
+           WHERE sub.delegation_id = item.delegation_id)
          AND json_type(item.brief, '$.epic') = 'null'
          AND NOT EXISTS (SELECT 1 FROM work_item sibling
            WHERE sibling.delegation_id = item.delegation_id AND sibling.id != item.id)
