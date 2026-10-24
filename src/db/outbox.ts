@@ -459,6 +459,7 @@ const SESSION_FIELDS = new Set([
   "addedExternalUrls",
   "identifier",
   "mode",
+  "itemId",
 ]);
 
 function mergeableSession(row: OutboxRow): boolean {

@@ -3794,6 +3794,7 @@ export class Orchestrator {
           item.linearIdentifier,
           () => this.now(),
           mode,
+          item.id,
         );
   }
 
