@@ -41,6 +41,7 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
   decodePolicyFiles,
+  providerCliPath,
   type PolicyFilesLoad,
 } from "../acp";
 import {
@@ -56,7 +57,12 @@ import {
   type RunnerSpool,
 } from "../runner-execution";
 import { readRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
-import { installRuntimes, prependRuntimePath, runnerMiseDirectories } from "../runner-mise";
+import {
+  installRuntimes,
+  prependRuntimePath,
+  runnerMiseDirectories,
+  withoutRunnerBin,
+} from "../runner-mise";
 import {
   checkDeveloperLogin,
   claudeLimits,
@@ -99,6 +105,8 @@ export interface RunnerWorkerOptions {
   skills?: string;
   /** The mise binary and install cap. Tests point these at a fake. */
   mise?: { path?: string; timeoutMs?: number };
+  /** Where the `claude` and `codex` CLIs are. Defaults to the runner's installed launchers. */
+  providerCli?: (cli: "claude" | "codex") => string;
 }
 
 export const RESUME_PROMPT =
@@ -505,8 +513,11 @@ export async function executeRunnerCommand(
     let tokens = 0;
     let eventFailure: Error | undefined;
     const mise = runnerMiseDirectories(options.home);
+    const providerCli = options.providerCli ?? ((cli: "claude" | "codex") => providerCliPath(cli));
+    // The runner's own bin folder (its Bun, mise, launchers) never reaches the task. Paws starts
+    // those by absolute path; a repo that needs Bun declares it in mise.toml.
     const agentEnv = minimalAgentEnv({
-      PATH: "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
+      PATH: "/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,
       HOME: options.home,
       CODEX_HOME: join(options.home, ".codex"),
@@ -514,6 +525,8 @@ export async function executeRunnerCommand(
       MISE_DATA_DIR: mise.dataDir,
       MISE_CACHE_DIR: mise.cacheDir,
     });
+    agentEnv.PATH = withoutRunnerBin(agentEnv.PATH);
+    const closeoutBasePath = withoutRunnerBin(process.env.PATH);
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
     if (installed.binPaths.length)
       agentEnv.PATH = prependRuntimePath(installed.binPaths, agentEnv.PATH);
@@ -538,6 +551,7 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.hooks?.length ? { workspaceHooks: command.hooks } : {}),
       env: agentEnv,
       ...(installed.binPaths.length ? { runtimeBinPaths: installed.binPaths } : {}),
+      closeoutBasePath,
       checkpointEnv: env,
       commitPolicy: command.type === "run" ? command.commitPolicy : undefined,
       ...(command.type === "run" && command.repository.mainSha
@@ -782,6 +796,7 @@ export async function executeRunnerCommand(
           ? null
           : await checkDeveloperLogin({
               cli: command.agent,
+              executable: providerCli(command.agent),
               env: agentEnv,
               run: options.loginCommand,
             });
@@ -792,7 +807,10 @@ export async function executeRunnerCommand(
         (checked?.loggedIn ?? Boolean(run.identity));
       if (authenticated && command.agent === "codex")
         agentLimits = codexLimits(
-          await (options.codexRateLimits ?? readCodexRateLimits)(agentEnv).catch(() => null),
+          await (options.codexRateLimits ?? readCodexRateLimits)(
+            agentEnv,
+            providerCli("codex"),
+          ).catch(() => null),
         );
       result.login = {
         agent: command.agent,

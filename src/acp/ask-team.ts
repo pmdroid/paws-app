@@ -158,6 +158,8 @@ interface HostToolBridgeOptions {
   closeoutPolicy?: () => Promise<PolicyFilesLoad>;
   /** Installed runtimes' bin dirs, put in front of `PATH` for Closeout checks. */
   runtimeBinPaths?: readonly string[];
+  /** `PATH` for Closeout checks before the runtime bin dirs. Defaults to this process's `PATH`. */
+  closeoutBasePath?: string;
   commandGuard?: GuardContext;
   allowCloseoutRun?: boolean;
   signal: AbortSignal;
@@ -187,6 +189,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         policy: options.closeoutPolicy ?? (async () => workspacePolicyFiles(worktreePath)),
         signal: options.signal,
         ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
+        ...(options.closeoutBasePath !== undefined ? { basePath: options.closeoutBasePath } : {}),
         allowCommand(argv) {
           authorizeCloseout(argv, worktreePath, options.commandGuard);
         },

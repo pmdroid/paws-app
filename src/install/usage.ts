@@ -53,13 +53,18 @@ export function codexLimits(result: unknown): AgentLimit[] {
   });
 }
 
-export type CodexRateLimitReader = (env: NodeJS.ProcessEnv) => Promise<unknown>;
+export type CodexRateLimitReader = (
+  env: NodeJS.ProcessEnv,
+  executable?: string,
+) => Promise<unknown>;
 
+/** `executable` is the `codex` CLI to run. The runner passes its launcher's absolute path. */
 export async function readCodexRateLimits(
   env: NodeJS.ProcessEnv,
+  executable = "codex",
   timeoutMs = 15_000,
 ): Promise<unknown> {
-  const child = Bun.spawn(["codex", "app-server"], {
+  const child = Bun.spawn([executable, "app-server"], {
     env: Object.fromEntries(
       Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
