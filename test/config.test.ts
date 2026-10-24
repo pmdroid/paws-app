@@ -23,7 +23,6 @@ describe("config", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
     const setup = {
-      linearMode: "comments" as const,
       linearTeam: "ENG",
       linearTeamId: "team",
       linearViewerId: "human",
@@ -137,11 +136,10 @@ describe("config", () => {
     const paths = pawsPaths(home);
     ensureLayout(paths);
     writeConfigFile(paths.configFile, {
-      linearMode: "comments",
       linearTeam: "ENG",
       linearTeamId: "team_eng",
       linearViewerId: "viewer_1",
-      linearSecret: "secrets/linear-api-key",
+      linearSecret: "secrets/linear-oauth.json",
       linearClientFile: null,
       githubAuth: "gh",
       repo: "pmdroid/paws-demo",
@@ -151,11 +149,15 @@ describe("config", () => {
       implementer: "claude",
     });
     mkdirSync(paths.secretsDir, { recursive: true });
-    writeFileSync(join(paths.secretsDir, "linear-api-key"), "lin_api_from_file\n", { mode: 0o600 });
-    chmodSync(join(paths.secretsDir, "linear-api-key"), 0o600);
+    writeFileSync(
+      join(paths.secretsDir, "linear-oauth.json"),
+      JSON.stringify({ accessToken: "lin_oauth_from_file" }),
+      { mode: 0o600 },
+    );
+    chmodSync(join(paths.secretsDir, "linear-oauth.json"), 0o600);
 
     const parsed = loadConfigFile(paths.configFile);
-    expect(parsed.linearMode).toBe("comments");
+    expect(parsed.linearCommentMode).toBe(false);
     expect(parsed.linearTeam).toBe("ENG");
     expect(parsed.repo).toBe("pmdroid/paws-demo");
     expect(parsed.maxTurns).toBe(40);
@@ -165,8 +167,8 @@ describe("config", () => {
       PAWS_GITHUB_REPOSITORY: "other/repo",
     });
     expect(runtime.configured).toBe(true);
-    expect(runtime.linearMode).toBe("comments");
-    expect(runtime.linearApiKey).toBe("lin_api_from_file");
+    expect(runtime.linearCommentMode).toBe(false);
+    expect(runtime.linearAccessToken).toBe("lin_oauth_from_file");
     expect(runtime.repo).toBe("other/repo");
     expect(runtime.githubAuth).toBe("gh");
     expect(runtime.maxTurns).toBe(40);
@@ -174,12 +176,30 @@ describe("config", () => {
 
     const overridden = loadRuntime({
       PAWS_HOME: home,
-      LINEAR_API_KEY: "lin_api_from_env",
-      LINEAR_MODE: "agent-session",
+      LINEAR_ACCESS_TOKEN: "lin_oauth_from_env",
     });
-    expect(overridden.linearMode).toBe("agent-session");
-    expect(overridden.linearApiKey).toBeNull();
-    expect(overridden.linearAccessToken).toBeNull();
+    expect(overridden.linearAccessToken).toBe("lin_oauth_from_env");
+  });
+
+  test("a configured comment mode is reported and selects nothing", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    expect(loadRuntime({ PAWS_HOME: home }).linearCommentMode).toBe(false);
+    expect(loadRuntime({ PAWS_HOME: home, LINEAR_MODE: "comments" }).linearCommentMode).toBe(true);
+    expect(loadRuntime({ PAWS_HOME: home, PAWS_LINEAR_MODE: "comments" }).linearCommentMode).toBe(
+      true,
+    );
+    writeFileSync(paths.configFile, '[linear]\nmode = "comments"\n', { mode: 0o600 });
+    const runtime = loadRuntime({ PAWS_HOME: home });
+    expect(runtime.configError).toBeNull();
+    expect(runtime.linearCommentMode).toBe(true);
+    writeFileSync(paths.configFile, '[linear]\nmode = "agent-session"\n', { mode: 0o600 });
+    expect(loadRuntime({ PAWS_HOME: home }).linearCommentMode).toBe(false);
+    writeFileSync(paths.configFile, '[linear]\nmode = "email"\n', { mode: 0o600 });
+    expect(loadRuntime({ PAWS_HOME: home }).configError).toContain(
+      "linear.mode must be agent-session",
+    );
   });
 
   test("missing config.toml defaults the implementer to claude", () => {
@@ -257,7 +277,6 @@ describe("config", () => {
     const paths = pawsPaths(home);
     ensureLayout(paths);
     writeConfigFile(paths.configFile, {
-      linearMode: "comments",
       linearTeam: "ENG",
       linearTeamId: "team_eng",
       linearViewerId: "viewer_1",

@@ -256,7 +256,7 @@ export function runnerHistoryMarkup(usage: Usage[]): string {
       const outcome =
         entry.outcome === null
           ? '<span class="tag running">Running</span>'
-          : `<span class="tag ${entry.outcome === "success" ? "ok" : entry.outcome === "cancelled" ? "warn" : "bad"}">${esc(entry.outcome[0]!.toUpperCase() + entry.outcome.slice(1).replaceAll("_", " "))}</span>`;
+          : `<span class="tag outcome ${entry.outcome === "success" ? "ok" : entry.outcome === "cancelled" ? "warn" : "bad"}">${esc(entry.outcome[0]!.toUpperCase() + entry.outcome.slice(1).replaceAll("_", " "))}</span>`;
       const duration =
         entry.endedAt === null ? "Running" : durationLabel(entry.endedAt - entry.startedAt);
       return `<tr><td><span title="${esc(new Date(entry.startedAt).toLocaleString())}">${esc(new Date(entry.startedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</span></td><td>${work}</td><td class="hide-phone">${esc(agent)}${entry.resolvedModel ? `<p class="muted">${esc(entry.modelLabel ?? entry.resolvedModel)}</p>` : ""}</td><td class="hide-phone">${esc(duration)}</td><td>${outcome}</td></tr>`;

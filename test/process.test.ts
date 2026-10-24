@@ -63,7 +63,6 @@ describe("process", () => {
     const paths = pawsPaths(home);
     ensureLayout(paths);
     writeConfigFile(paths.configFile, {
-      linearMode: "comments",
       linearTeam: "ENG",
       linearTeamId: "team_eng",
       linearViewerId: "viewer_1",

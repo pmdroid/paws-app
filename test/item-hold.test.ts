@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { listItemHolds } from "../src/db";
+import { listItemHolds, migrate, migrations, openDatabase, saveItemHolds } from "../src/db";
 import { createAdmission, dispatch } from "../src/scheduler";
 import { createLiveStatusProvider } from "../src/web";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
@@ -90,7 +90,7 @@ test("a project that holds an item is its held reason", () => {
   }
 });
 
-test("without a workspace nothing starts and earlier holds stay as they were", () => {
+test("without a workspace every queued item is held for the workspace, journaled once", () => {
   const db = tempDb();
   try {
     item(db, "PAS-7", "running");
@@ -102,10 +102,21 @@ test("without a workspace nothing starts and earlier holds stay as they were", (
     item(db, "PAS-9", "queued", 2);
     const admission = createAdmission({ db, workspace: false });
     expect(dispatch(db, { now: 2, log, admission })).toEqual([]);
+    expect(dispatch(db, { now: 3, log, admission })).toEqual([]);
     expect(listItemHolds(db)).toEqual([
-      { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
+      { itemId: "PAS-8", reason: "workspace", blockers: [] },
+      { itemId: "PAS-9", reason: "workspace", blockers: [] },
     ]);
-    expect(lines).toEqual(["item PAS-8 held: blocked by PAS-7"]);
+    expect(lines).toEqual([
+      "item PAS-8 held: blocked by PAS-7",
+      "item PAS-8 held: no Linear workspace",
+      "item PAS-9 held: no Linear workspace",
+    ]);
+    expect(
+      createLiveStatusProvider(db)
+        .snapshot()
+        .items.find((entry) => entry.id === "PAS-9")?.held,
+    ).toEqual({ reason: "workspace", blockers: [] });
   } finally {
     db.close();
   }
@@ -124,6 +135,35 @@ test("the status API carries the held reason of a queued item", () => {
       blockers: ["PAS-367"],
     });
     expect(items.find((entry) => entry.id === "PAS-367")?.held).toBeUndefined();
+  } finally {
+    db.close();
+  }
+});
+
+test("migration 124 keeps the stored holds and accepts the workspace reason", () => {
+  const db = openDatabase(":memory:");
+  try {
+    db.run(
+      "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
+    );
+    const cutoff = migrations.findIndex((migration) => migration.id === "124_item_hold_workspace");
+    expect(cutoff).toBeGreaterThan(0);
+    for (const migration of migrations.slice(0, cutoff)) {
+      db.run(migration.sql);
+      db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, 0)", [migration.id]);
+    }
+    item(db, "PAS-8");
+    item(db, "PAS-9");
+    db.run("INSERT INTO item_hold VALUES('PAS-8','blocked','[\"PAS-7\"]')");
+    migrate(db);
+    saveItemHolds(db, [
+      { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
+      { itemId: "PAS-9", reason: "workspace", blockers: [] },
+    ]);
+    expect(listItemHolds(db)).toEqual([
+      { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
+      { itemId: "PAS-9", reason: "workspace", blockers: [] },
+    ]);
   } finally {
     db.close();
   }

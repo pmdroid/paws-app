@@ -195,6 +195,7 @@ export const HELD_REASONS = [
   "snapshot",
   "cap",
   "slot",
+  "workspace",
 ] as const;
 export type HeldReason = (typeof HELD_REASONS)[number];
 

@@ -32,7 +32,6 @@ import {
 import { renderQueueSettings } from "./queue";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
 
-export type LinearConfigMode = "comments" | "agent-session";
 export type GitHubConfigAuth = "oauth" | "gh" | "app";
 export type TrackerKind = "github" | "linear" | "both";
 
@@ -70,7 +69,7 @@ export function isImplementer(value: string): value is ImplementerName {
  * Secret values are paths, never the secret itself.
  */
 export type PawsConfigFile = {
-  linearMode: LinearConfigMode | null;
+  linearCommentMode: boolean;
   linearTeam: string | null;
   linearTeamId: string | null;
   linearViewerId: string | null;
@@ -118,7 +117,6 @@ export type PawsConfigFile = {
  * `linearSecret` and `linearClientFile` are paths relative to `~/.paws`.
  */
 export type PawsSetupConfig = {
-  linearMode: "comments" | "agent-session";
   linearTeam: string;
   linearTeamId: string;
   linearViewerId: string;
@@ -138,7 +136,7 @@ export type PawsSetupConfig = {
 
 export function emptyConfigFile(): PawsConfigFile {
   return {
-    linearMode: null,
+    linearCommentMode: false,
     linearTeam: null,
     linearTeamId: null,
     linearViewerId: null,
@@ -201,7 +199,6 @@ export function parseConfigToml(text: string): PawsConfigFile {
 export function renderConfigToml(config: PawsSetupConfig): string {
   const lines = [
     "[linear]",
-    `mode = ${tomlString(config.linearMode)}`,
     `team = ${tomlString(config.linearTeam)}`,
     `team_id = ${tomlString(config.linearTeamId)}`,
     `viewer_id = ${tomlString(config.linearViewerId)}`,
@@ -402,7 +399,7 @@ function assignConfig(
   line: number,
 ): void {
   if (section === "linear") {
-    if (key === "mode") config.linearMode = linearMode(value, line);
+    if (key === "mode") config.linearCommentMode = linearCommentMode(value, line);
     else if (key === "team") config.linearTeam = asString(value, line);
     else if (key === "team_id") config.linearTeamId = asString(value, line);
     else if (key === "viewer_id") config.linearViewerId = asString(value, line);
@@ -586,11 +583,11 @@ export function setImplementerText(current: string, implementer: ImplementerName
   return `${body}[agents]\n${assignment}\n`;
 }
 
-function linearMode(value: string | number | boolean | string[], line: number): LinearConfigMode {
+function linearCommentMode(value: string | number | boolean | string[], line: number): boolean {
   const mode = asString(value, line);
-  if (mode === "comments" || mode === "agent-session") return mode;
-  if (mode === "agent") return "agent-session";
-  throw new Error(`config.toml line ${line} linear.mode must be comments or agent-session`);
+  if (mode === "comments") return true;
+  if (mode === "agent-session" || mode === "agent") return false;
+  throw new Error(`config.toml line ${line} linear.mode must be agent-session`);
 }
 
 function githubAuth(value: string | number | boolean | string[], line: number): GitHubConfigAuth {

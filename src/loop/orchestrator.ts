@@ -43,6 +43,7 @@ import {
 } from "../config";
 import {
   approvalsAtHead,
+  awaitsVisualReview,
   createCloseoutGate,
   reviewRequirements,
   trustedPolicyFiles,
@@ -259,6 +260,7 @@ import {
   planVisualReviewCarry,
   postNote,
   remindVisualReview,
+  reviewable,
   visualReviewApprovals,
   visualReviewPullRequestNote,
   visualReviewHandoff,
@@ -2076,7 +2078,21 @@ export class Orchestrator {
       });
       return;
     }
+    if (await this.askVisualReviewAfter(after, verdict, worktree, base, head)) return;
     await this.askCloseoutHelp(after, verdict.result, verdict.summary);
+  }
+
+  private async askVisualReviewAfter(
+    item: WorkItemRecord,
+    verdict: CloseoutVerdict,
+    worktree: string,
+    base: string,
+    head: string,
+  ): Promise<boolean> {
+    return (
+      awaitsVisualReview(verdict.result) &&
+      this.askVisualReview(item, worktree, base, verdict.result?.head ?? head)
+    );
   }
 
   private async runVerification(
@@ -2340,7 +2356,8 @@ export class Orchestrator {
       },
       recorder: {
         record: async (verdict) => {
-          if (deps.signal?.aborted || verdict.outcome === "accepted") return;
+          if (deps.signal?.aborted || verdict.outcome === "accepted" || awaitsVisualReview(verdict))
+            return;
           this.post(
             item,
             "thought",
@@ -2632,6 +2649,7 @@ export class Orchestrator {
     const verdict = await this.runVerification(item, worktree, base, head, candidate);
     if (this.stopped(item.id)) return;
     if (verdict.decision !== "accepted") {
+      if (await this.askVisualReviewAfter(item, verdict, worktree, base, head)) return;
       await this.askCloseoutHelp(item, verdict.result, verdict.summary);
       return;
     }
@@ -4505,7 +4523,7 @@ export class Orchestrator {
         if (now === null) return "none" as const;
         if (now.requirement.id !== due.requirement.id) return "again" as const;
         const current = getWorkItem(this.db, item.id);
-        if (current?.state !== "running" || current.cancelRequested) return "none" as const;
+        if (!reviewable(current)) return "none" as const;
         const carried = plan.carried.filter((entry) => now.evidenceIds.includes(entry.evidenceId));
         if (carried.length === now.evidenceIds.length) {
           const review = carryVisualReview(this.db, {

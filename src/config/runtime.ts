@@ -8,7 +8,6 @@ import {
   loadConfigFile,
   PAWS_GITHUB_OAUTH_CLIENT_ID,
   type GitHubConfigAuth,
-  type LinearConfigMode,
   type PawsConfigFile,
 } from "./file";
 import { pawsPaths } from "./paths";
@@ -16,6 +15,9 @@ import { loadGitHubAppCredentials } from "./github-app";
 
 export const LINEAR_WORKSPACE_REQUIRED =
   "Paws needs a Linear workspace. Set PAWS_PUBLIC_DASHBOARD=1 with PAWS_PUBLIC_URL and the Linear app OAuth client, restart Paws, then sign in to the dashboard as a Linear workspace admin (docs/workspace-access.md).";
+
+export const LINEAR_COMMENT_MODE_REMOVED =
+  'Linear comment mode was removed and is ignored. Delete mode = "comments" from [linear] in config.toml and unset LINEAR_MODE, then connect a Linear workspace in agent-session mode (docs/workspace-access.md).';
 
 /**
  * What the process runs with. `config.toml` and the secret files it names
@@ -27,12 +29,10 @@ export type RuntimeConfig = {
   /** True when `config.toml` was present. */
   configured: boolean;
   configError: string | null;
-  linearMode: LinearConfigMode;
+  linearCommentMode: boolean;
   linearTeam: string | null;
   linearTeamId: string | null;
   linearViewerId: string | null;
-  /** Personal API key for comment mode. Not logged. */
-  linearApiKey: string | null;
   /** OAuth access token for agent-session mode. Not logged. */
   linearAccessToken: string | null;
   linearRefreshToken: string | null;
@@ -79,14 +79,8 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     configError =
       'Paws uses Linear for issue tracking. Set [tracker] kind = "linear", remove [tracker.github], and connect Linear through the Paws website. Keep your existing database as an archive and use a new --home if it contains GitHub issue work.';
   }
-  const linearMode = resolveMode(file, source, configured, configError);
-  const secrets = readLinearSecrets(env.home, file, linearMode);
-  const apiFromEnv = optional(source, "LINEAR_API_KEY");
-  const accessFromEnv = optional(source, "LINEAR_ACCESS_TOKEN");
-  const linearApiKey =
-    linearMode === "comments" ? (apiFromEnv ?? accessFromEnv ?? secrets.apiKey) : null;
-  const linearAccessToken =
-    linearMode === "agent-session" ? (accessFromEnv ?? secrets.accessToken) : null;
+  const secrets = readLinearSecrets(env.home, file);
+  const linearAccessToken = optional(source, "LINEAR_ACCESS_TOKEN") ?? secrets.accessToken;
   const githubAuth = resolveGitHubAuth(file, source, configured);
 
   return {
@@ -94,14 +88,13 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     file,
     configured,
     configError,
-    linearMode,
+    linearCommentMode: commentModeConfigured(file, source),
     linearTeam: optional(source, "LINEAR_TEAM") ?? file.linearTeam,
     linearTeamId: optional(source, "LINEAR_TEAM_ID") ?? file.linearTeamId,
     linearViewerId:
       optional(source, "LINEAR_APP_USER_ID") ??
       optional(source, "LINEAR_VIEWER_ID") ??
       file.linearViewerId,
-    linearApiKey,
     linearAccessToken,
     linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN") ?? secrets.refreshToken,
     linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
@@ -119,26 +112,9 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
   };
 }
 
-function resolveMode(
-  file: PawsConfigFile,
-  source: EnvSource,
-  configured: boolean,
-  configError: string | null,
-): LinearConfigMode {
-  if (configError !== null) return "comments";
+function commentModeConfigured(file: PawsConfigFile, source: EnvSource): boolean {
   const flagged = optional(source, "LINEAR_MODE") ?? optional(source, "PAWS_LINEAR_MODE");
-  if (flagged === "comments") return "comments";
-  if (flagged === "agent" || flagged === "agent-session") return "agent-session";
-  if (file.linearMode !== null) return file.linearMode;
-  if (source.PAWS_PUBLIC_DASHBOARD === "1") return "agent-session";
-  if (
-    !configured &&
-    optional(source, "LINEAR_CLIENT_ID") &&
-    optional(source, "LINEAR_ACCESS_TOKEN")
-  ) {
-    return "agent-session";
-  }
-  return "comments";
+  return flagged === "comments" || file.linearCommentMode;
 }
 
 function resolveGitHubAuth(
@@ -183,32 +159,16 @@ function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {
 }
 
 type LinearSecrets = {
-  apiKey: string | null;
   accessToken: string | null;
   refreshToken: string | null;
   clientId: string | null;
   clientSecret: string | null;
 };
 
-function readLinearSecrets(
-  home: string,
-  file: PawsConfigFile,
-  mode: LinearConfigMode,
-): LinearSecrets {
-  const secret = readText(home, file.linearSecret);
+function readLinearSecrets(home: string, file: PawsConfigFile): LinearSecrets {
   const client = readJson(home, file.linearClientFile ?? "secrets/linear-client.json");
-  if (mode === "comments") {
-    return {
-      apiKey: secret,
-      accessToken: null,
-      refreshToken: null,
-      clientId: null,
-      clientSecret: null,
-    };
-  }
   const oauth = readJson(home, file.linearSecret ?? "secrets/linear-oauth.json");
   return {
-    apiKey: null,
     accessToken: jsonString(oauth, "accessToken"),
     refreshToken: jsonString(oauth, "refreshToken"),
     clientId: jsonString(client, "clientId"),
