@@ -30,6 +30,8 @@ export {
 } from "./client";
 export type { ExeDevFetch, ExeDevOptions, ExeDevTokenReader } from "./client";
 export { createFakeExeDev, FAKE_UNSCRIPTED_EXIT } from "./fake";
+export { createFakeBootstrap } from "./fake-bootstrap";
+export type { FakeBootstrap, FakeBootstrapCall, FakeBootstrapOptions } from "./fake-bootstrap";
 export type { FakeExecScript, FakeExeDev, FakeExeDevCall, FakeFailure } from "./fake";
 export { isExeDevVmName, MAX_EXEC_COMMAND_BYTES } from "./names";
 export { isProvisioningError, ProvisioningError } from "./types";
