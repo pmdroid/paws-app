@@ -16,7 +16,7 @@ import {
   workspaceForOrganization,
   workspaceMember,
 } from "../db";
-import type { LinearMembershipReads } from "../linear";
+import { linearItem, type LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceIdentityLinks } from "./identity-links";
 import { createWorkspaceLinearActions } from "./linear-actions";
@@ -341,11 +341,18 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       if (result.identity.organizationId !== options.installedOrganization.id)
         return json({ error: "This Linear workspace is not installed in Paws." }, 403);
       const observedAt = now();
-      const identity = await options.memberships.member(
-        result.identity.organizationId,
-        result.identity.userId,
-        AbortSignal.timeout(10_000),
-      );
+      const read = () =>
+        options.memberships.member(
+          result.identity.organizationId,
+          result.identity.userId,
+          AbortSignal.timeout(10_000),
+        );
+      // A link sign-in's membership read counts toward the held issue under /health.
+      const held =
+        result.assignmentHash === null
+          ? null
+          : (options.assignments?.issueIdentifier(result.assignmentHash) ?? null);
+      const identity = await (held === null ? read() : linearItem(held, read));
       if (
         !identity.active ||
         identity.userId !== result.identity.userId ||

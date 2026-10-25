@@ -643,6 +643,11 @@ export function createWorkspaceAssignments(options: {
         getLinearSessionAccess(db, event.sessionId) === "allowed"
       );
     },
+    /** The issue a hold waits on, for counting its Linear requests. Grants nothing. */
+    issueIdentifier(hash: string): string | null {
+      const hold = byToken(hash);
+      return hold ? holdIdentifier(hold) : null;
+    },
     /** Resolves an /onboard/<link id> address. The id alone grants nothing. */
     open(link: string): AssignmentLink | null {
       if (!LINK_ID.test(link)) return null;
