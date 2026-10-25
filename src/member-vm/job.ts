@@ -59,6 +59,9 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
   return async (job: Job, context: JobContext): Promise<void> => {
     const id = memberVmId(job.payload);
     const row = id === null ? null : getMemberVm(db, id);
+    // Once Delete VM is confirmed no new step starts. A step already running still records what
+    // it did (the VM exe.dev created or refused, the runner that enrolled): the delete waits for
+    // it and relies on that to decide what is Paws's to remove.
     if (row === null || row.failure !== null || row.step === "ready" || row.deleteStep !== null)
       return;
     const minted: string[] = [];
@@ -81,6 +84,8 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
       return;
     }
     if (outcome.next === "done" || !context.isCurrent()) return;
+    // Delete VM waits for this step and starts no new one: the job ends here.
+    if (getMemberVm(db, row.id)?.deleteStep != null) return;
     const at = now();
     parkLeasedJob(db, job, {
       runAt: outcome.next === "advance" ? at : at + pollMs,
@@ -118,7 +123,7 @@ async function runStep(
         if (!ours) {
           if (rejected(error))
             db.run(
-              "UPDATE member_vm SET create_requested_at=? WHERE id=? AND step='create' AND failure IS NULL AND delete_step IS NULL",
+              "UPDATE member_vm SET create_requested_at=? WHERE id=? AND step='create' AND failure IS NULL",
               [asked, row.id],
             );
           if (isProvisioningError(error) && error.code === "conflict")
@@ -240,7 +245,7 @@ function update(db: Database, row: MemberVm, columns: Columns, at: number): void
   if (entries.length === 0) return;
   const changed = db.run(
     `UPDATE member_vm SET ${entries.map(([name]) => `${name}=?`).join(",")},updated_at=?
-    WHERE id=? AND step=? AND failure IS NULL AND delete_step IS NULL`,
+    WHERE id=? AND step=? AND failure IS NULL`,
     [...entries.map(([, value]) => value ?? null), at, row.id, row.step],
   ).changes;
   if (changed !== 1) throw new StepMoved();
@@ -255,7 +260,7 @@ function advance(
   immediate(db, () => {
     const changed = db.run(
       `UPDATE member_vm SET step=?,step_started_at=?,${STEP_AT[step]}=?,updated_at=?
-      WHERE id=? AND step=? AND failure IS NULL AND delete_step IS NULL`,
+      WHERE id=? AND step=? AND failure IS NULL`,
       [step, at, at, at, row.id, row.step],
     ).changes;
     if (changed !== 1) throw new StepMoved();

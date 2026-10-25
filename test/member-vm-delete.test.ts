@@ -20,6 +20,7 @@ import {
   createMemberVmHttp,
   findMemberVm,
   getMemberVm,
+  MEMBER_VM_DELETE_POLL_MS,
   MEMBER_VM_DELETE_QUEUE,
   MEMBER_VM_POLL_MS,
   MEMBER_VM_QUEUE,
@@ -31,7 +32,7 @@ import {
   type MemberVmResponse,
   type MemberVmView,
 } from "../src/member-vm";
-import { createFakeBootstrap, createFakeExeDev } from "../src/provisioning";
+import { createFakeBootstrap, createFakeExeDev, type ExeDev } from "../src/provisioning";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import {
@@ -46,7 +47,15 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+const temp = (prefix: string) => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  roots.push(dir);
+  return dir;
+};
+
 type Role = WorkspacePrincipal["role"];
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-member-vm-delete-"));
@@ -109,19 +118,32 @@ async function fixture() {
   });
   let hosts = 0;
   const exeDev = createFakeExeDev();
+  /** Set a gate to hold provisioning's create, or its enrollment after the runner exists. */
+  const hold: { create: Promise<void> | null; enroll: Promise<void> | null } = {
+    create: null,
+    enroll: null,
+  };
+  const provisioningExeDev: ExeDev = {
+    ...exeDev,
+    async createVm(name) {
+      await hold.create;
+      return exeDev.createVm(name);
+    },
+  };
   const bootstrap = createFakeBootstrap({
     installPolls: 1,
     async enroll(vm, token) {
       hosts += 1;
       const key = await createRunnerKey(join(root, `host-${hosts}`));
       const identity = await control.enroll({ token, name: vm, csr: key.csr });
+      await hold.enroll;
       return { runnerId: identity.runnerId, workspaceId: identity.workspaceId };
     },
   });
   const stopped: string[] = [];
   const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
   registerMemberVmJob(loop, {
-    exeDev,
+    exeDev: provisioningExeDev,
     bootstrap,
     mintEnrollment: (ref, request) =>
       control.createEnrollment(principal(ref.userId, "member"), request),
@@ -136,6 +158,7 @@ async function fixture() {
     },
     disconnect: (fingerprint) => disconnected.push(fingerprint),
     now: () => clock.now(),
+    pollMs: MEMBER_VM_DELETE_POLL_MS,
   });
   const http = createMemberVmHttp({ db, available: () => true, now: () => clock.now() });
   const call = async (who: WorkspacePrincipal, path: string, body?: unknown) => {
@@ -198,6 +221,9 @@ async function fixture() {
   return {
     db,
     clock,
+    hold,
+    control,
+    principal,
     workspace,
     member,
     colleague,
@@ -494,5 +520,132 @@ describe("Delete VM", () => {
     expect(same.id).toBe(vm.id);
     expect(same.deleting!.step).toBe("drain");
     expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
+  });
+});
+
+describe("Delete VM while a provisioning step is still running", () => {
+  /** A gate the test opens later, and the promise of a tick that runs into it. */
+  const gate = () => {
+    let open!: () => void;
+    const promise = new Promise<void>((resolve) => (open = resolve));
+    return { promise, open };
+  };
+  /** Tick the delete job, moving the clock past its poll, until it settles or `limit` runs out. */
+  const pump = async (f: Fixture, limit = 20) => {
+    for (let index = 0; index < limit; index++)
+      if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_DELETE_POLL_MS);
+  };
+
+  test("waits for an outstanding create and leaves a VM exe.dev refused as taken", async () => {
+    const f = await fixture();
+    // Someone else already has the name on exe.dev, so the create will answer conflict.
+    f.exeDev.addVm("ada-lovelace-paws");
+    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const held = gate();
+    f.hold.create = held.promise;
+    const creating = f.loop.tick();
+    await Bun.sleep(5);
+    expect(getMemberVm(f.db, row.id)!.createRequestedAt).not.toBeNull();
+
+    expect((await f.remove(f.member, row.id)).status).toBe(200);
+    await pump(f, 3);
+    // The delete holds at drain while the create call is outstanding.
+    expect(getMemberVm(f.db, row.id)!.deleteStep).toBe("drain");
+    expect(f.exeDev.calls.filter((call) => call.operation !== "createVm")).toEqual([]);
+
+    held.open();
+    await creating;
+    expect(getMemberVm(f.db, row.id)!.createRequestedAt).toBeNull();
+    await pump(f);
+    expect(getMemberVm(f.db, row.id)).toBeNull();
+    expect(f.exeDev.calls.map((call) => call.operation)).toEqual(["createVm"]);
+    expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
+  });
+
+  test("waits for an outstanding create that succeeds, then destroys the VM", async () => {
+    const f = await fixture();
+    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const held = gate();
+    f.hold.create = held.promise;
+    const creating = f.loop.tick();
+    await Bun.sleep(5);
+    await f.remove(f.member, row.id);
+    await pump(f, 3);
+    expect(getMemberVm(f.db, row.id)!.deleteStep).toBe("drain");
+    held.open();
+    await creating;
+    await pump(f);
+    expect(getMemberVm(f.db, row.id)).toBeNull();
+    expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(false);
+    expect(f.exeDev.calls.at(-1)).toEqual({ operation: "deleteVm", vm: "ada-lovelace-paws" });
+    expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
+  });
+
+  test("revokes a runner whose enrollment finishes after the delete was confirmed", async () => {
+    const f = await fixture();
+    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    for (let index = 0; index < 100 && getMemberVm(f.db, row.id)!.step !== "enroll"; index++)
+      if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
+    expect(getMemberVm(f.db, row.id)!.step).toBe("enroll");
+    const held = gate();
+    f.hold.enroll = held.promise;
+    const enrolling = f.loop.tick();
+    for (let index = 0; index < 100; index++) {
+      if (f.db.query("SELECT 1 FROM runner WHERE name='ada-lovelace-paws'").get()) break;
+      await Bun.sleep(5);
+    }
+    const runner = f.db
+      .query<{ id: string }, []>("SELECT id FROM runner WHERE name='ada-lovelace-paws'")
+      .get()!;
+    expect(getMemberVm(f.db, row.id)!.runnerId).toBeNull();
+
+    await f.remove(f.member, row.id);
+    expect(getMemberVm(f.db, row.id)!.deleteRunnerId).toBeNull();
+    await pump(f, 3);
+    expect(getMemberVm(f.db, row.id)!.deleteStep).toBe("drain");
+
+    held.open();
+    await enrolling;
+    await pump(f);
+    expect(getMemberVm(f.db, row.id)).toBeNull();
+    expect(getRunner(f.db, runner.id)!.status).toBe("revoked");
+    const live = f.db
+      .query<{ n: number }, [string]>(
+        "SELECT count(*) AS n FROM runner_certificate WHERE runner_id=? AND revoked_at IS NULL",
+      )
+      .get(runner.id)!.n;
+    expect(live).toBe(0);
+  });
+
+  test("revokes a runner enrolled for this VM that the row never recorded", async () => {
+    const f = await fixture();
+    const vm = await f.ready();
+    // As if Paws stopped after an earlier enrollment answered but before runner_id was written.
+    const enrollment = f.control.createEnrollment(f.principal(f.member.userId, "member"), {
+      name: vm.vmName,
+    });
+    const key = await createRunnerKey(temp("paws-orphan-host-"));
+    const orphan = await f.control.enroll({
+      token: enrollment.token,
+      name: vm.vmName,
+      csr: key.csr,
+    });
+    // A host the member added by hand under another name stays.
+    const manual = f.control.createEnrollment(f.principal(f.member.userId, "member"), {
+      name: "laptop",
+    });
+    const laptopKey = await createRunnerKey(temp("paws-laptop-host-"));
+    const laptop = await f.control.enroll({
+      token: manual.token,
+      name: "laptop",
+      csr: laptopKey.csr,
+    });
+
+    await f.remove(f.member, vm.id);
+    await f.settle();
+    expect(getMemberVm(f.db, vm.id)).toBeNull();
+    expect(getRunner(f.db, vm.runnerId!)!.status).toBe("revoked");
+    expect(getRunner(f.db, orphan.runnerId)!.status).toBe("revoked");
+    expect(getRunner(f.db, laptop.runnerId)!.status).toBe("active");
   });
 });
