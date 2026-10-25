@@ -242,6 +242,7 @@ import {
   LinearIntakePendingError,
   LinearIntakeRefusedError,
   LinearRateLimitError,
+  currentLinearCaller,
   linearCaller,
   linearItem,
   isMergeConflictRequest,
@@ -860,12 +861,18 @@ export class Orchestrator {
     initialActivity = false,
   ): Promise<void> {
     request?.signal?.throwIfAborted();
+    const linearIdentifier = currentLinearCaller().item;
     const id = enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "activity",
       orderingKey: update.sessionId,
       idempotencyKey,
-      payload: { ...update, id: update.id ?? crypto.randomUUID() },
+      payload: {
+        ...update,
+        id: update.id ?? crypto.randomUUID(),
+        // Delivered later from the outbox, so it keeps the issue it counts toward.
+        ...(linearIdentifier === undefined ? {} : { linearIdentifier }),
+      },
       ...(initialActivity
         ? { delivery: "critical", notBefore: this.now() + FIRST_ACTIVITY_HOLD_MS }
         : {}),
@@ -1162,7 +1169,10 @@ export class Orchestrator {
   private forItem<T>(payload: unknown, run: () => T): T {
     const itemId = readString(payload, "itemId");
     const item = itemId ? getWorkItem(this.db, itemId) : null;
-    return item ? linearItem(item.linearIdentifier, run, item.id) : run();
+    if (item) return linearItem(item.linearIdentifier, run, item.id);
+    // A write for a session that has no item yet, such as a first delegation's sign-in action.
+    const identifier = readString(payload, "linearIdentifier");
+    return identifier ? linearItem(identifier, run) : run();
   }
 
   private register(): void {
@@ -1534,6 +1544,7 @@ export class Orchestrator {
               idempotencyKey: `runner-setup-resume:${current.id}:${hold.since}`,
               payload: {
                 sessionId,
+                itemId: current.id,
                 kind: "thought",
                 body: `Starting ${current.linearIdentifier ?? "this issue"} on ${runner.name}.`,
               },
