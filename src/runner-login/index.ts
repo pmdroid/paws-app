@@ -55,7 +55,7 @@ export function createRunnerLogin(options: {
       !runner ||
       runner.workspaceId !== workspaceId ||
       runner.ownerUserId !== userId ||
-      runner.status !== "active" ||
+      (runner.status !== "active" && runner.status !== "paused") ||
       !workspaceMember(db, workspaceId, runner.ownerUserId)?.active
     )
       throw new Error("Agent account access denied");
