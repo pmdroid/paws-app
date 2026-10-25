@@ -149,7 +149,9 @@ export {
   type OutboxTarget,
 } from "./outbox";
 export {
+  deadDeliveryItemId,
   listDeadDeliveries,
+  parseDeadDeliveryRef,
   retryDeadDelivery,
   type DeadDelivery,
   type DeadDeliveryRef,

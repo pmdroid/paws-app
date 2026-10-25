@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
   beginImplementRun,
+  enqueueJob,
   enqueueOutbox,
   insertQueuedItem,
   insertRun,
@@ -254,5 +255,79 @@ describe("one page per issue", () => {
     const html = issuePage(snapshotOf(db));
     expect(html).toContain("Back to the agent for a follow-up in Linear.");
     expect(html).toContain("by Jonas Berg");
+  });
+
+  test("dead outbox rows and dead jobs of the issue are listed with a retry", () => {
+    const db = database();
+    threeRuns(db);
+    insertQueuedItem(db, { id: "other", title: "Other", sessionKey: "other-session", now: T0 });
+    identify(db, "other", "PAS-368", "lin-368");
+    const elicitation = enqueueOutbox(db, {
+      target: "linear",
+      op: "elicitation",
+      orderingKey: SESSION,
+      idempotencyKey: "question:q1",
+      payload: { sessionId: SESSION, body: "Which repository?" },
+      now: T0 + 130_000,
+    });
+    const job = enqueueJob(db, {
+      queue: "run.resume",
+      payload: { itemId: ITEM },
+      now: T0 + 140_000,
+    });
+    const otherJob = enqueueJob(db, { queue: "run.resume", payload: { itemId: "other" }, now: T0 });
+    db.run(
+      "UPDATE outbox SET status = 'dead', attempts = 5, error = 'Linear is down' WHERE id = ?",
+      [elicitation],
+    );
+    db.run(
+      "UPDATE job SET status = 'dead', attempts = 10, last_error = 'runner lost', finished_at = ? WHERE id IN (?, ?)",
+      [T0 + 150_000, job, otherJob],
+    );
+
+    const snapshot = snapshotOf(db);
+    expect(snapshot.dead).toEqual(
+      [
+        {
+          itemId: "PAS-368",
+          kind: "job",
+          target: `job:${otherJob}`,
+          name: "run.resume",
+          attempts: 10,
+          lastError: "runner lost",
+          at: new Date(T0 + 150_000).toISOString(),
+        },
+        {
+          itemId: "PAS-367",
+          kind: "outbox",
+          target: `outbox:${elicitation}`,
+          name: "linear.elicitation",
+          attempts: 5,
+          lastError: "Linear is down",
+          at: new Date(T0 + 130_000).toISOString(),
+        },
+        {
+          itemId: "PAS-367",
+          kind: "job",
+          target: `job:${job}`,
+          name: "run.resume",
+          attempts: 10,
+          lastError: "runner lost",
+          at: new Date(T0 + 150_000).toISOString(),
+        },
+      ].sort((left, right) => left.at.localeCompare(right.at)),
+    );
+
+    const html = issuePage(snapshot);
+    expect(html).toContain('id="dead-deliveries"');
+    expect(html).toContain(`data-retry="outbox:${elicitation}"`);
+    expect(html).toContain(`data-retry="job:${job}"`);
+    expect(html).not.toContain(`data-retry="job:${otherJob}"`);
+    const text = visibleText(html);
+    expect(text).toContain("Linear question");
+    expect(text).toContain("Last error: Linear is down");
+    expect(text).toContain("Job run.resume");
+    expect(text).not.toMatch(ULID);
+    expect(issuePage(snapshot, "PAS-368")).toContain(`data-retry="job:${otherJob}"`);
   });
 });

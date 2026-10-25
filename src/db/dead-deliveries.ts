@@ -66,6 +66,32 @@ export function listDeadDeliveries(db: Database, itemId: string): DeadDelivery[]
   return [...outbox, ...jobs].sort((left, right) => left.at - right.at || left.id - right.id);
 }
 
+/** The work item a dead row or job belongs to, or null when it is not dead or has no item. */
+export function deadDeliveryItemId(db: Database, ref: DeadDeliveryRef): string | null {
+  const row =
+    ref.kind === "outbox"
+      ? db
+          .query<{ itemId: string | null }, [number]>(
+            `SELECT ${OUTBOX_ITEM_SQL("o")} AS itemId FROM outbox o WHERE o.id = ? AND o.status = 'dead'`,
+          )
+          .get(ref.id)
+      : db
+          .query<{ itemId: string | null }, [number]>(
+            `SELECT json_extract(payload, '$.itemId') AS itemId FROM job WHERE id = ? AND status = 'dead'`,
+          )
+          .get(ref.id);
+  return typeof row?.itemId === "string" ? row.itemId : null;
+}
+
+/** Parse `outbox:12` or `job:7`, the form the issue page sends. */
+export function parseDeadDeliveryRef(value: unknown): DeadDeliveryRef | null {
+  if (typeof value !== "string") return null;
+  const match = /^(outbox|job):([1-9][0-9]{0,15})$/.exec(value);
+  if (match === null) return null;
+  const id = Number(match[2]);
+  return Number.isSafeInteger(id) ? { kind: match[1] as DeadDeliveryRef["kind"], id } : null;
+}
+
 /**
  * Put one dead row or job of the item back to pending, due now, with a fresh attempt budget.
  * Returns false when it is not dead or belongs to another item.

@@ -40,6 +40,7 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  listDeadDeliveries,
   describeLinearWebhookWarning,
   getConfirmedRemoteMerge,
   LINEAR_WEBHOOK_FIX,
@@ -81,6 +82,7 @@ import { agentCloseoutOf } from "./agent-closeout";
 import {
   STATUS_API_VERSION,
   isBlockerSatisfied,
+  type StatusDeadDelivery,
   type ActivityKind,
   type CheckKind,
   type CheckState,
@@ -332,7 +334,25 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
     ciRounds: ciRoundsFor(db, records, env),
+    dead: deadFor(db, records),
   };
+}
+
+/** Dead outbox rows and dead jobs of the visible items, so none blocks a session unseen. */
+function deadFor(db: Database, records: readonly WorkItemRecord[]): StatusDeadDelivery[] {
+  return records
+    .flatMap((record) =>
+      listDeadDeliveries(db, record.id).map((dead) => ({
+        itemId: publicId(record),
+        kind: dead.kind,
+        target: `${dead.kind}:${dead.id}`,
+        name: dead.name,
+        attempts: dead.attempts,
+        lastError: dead.error,
+        at: iso(dead.at),
+      })),
+    )
+    .sort((left, right) => left.at.localeCompare(right.at));
 }
 
 /**
