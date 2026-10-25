@@ -106,7 +106,14 @@ async function fixture() {
         new Request("https://paws.invalid/api/runners"),
         principal,
       ))!.json()) as {
-        runners: { id: string; metrics: unknown; os: unknown; version: unknown; idle: boolean }[];
+        runners: {
+          id: string;
+          hasRunWork: boolean;
+          metrics: unknown;
+          os: unknown;
+          version: unknown;
+          idle: boolean;
+        }[];
         serverVersion: string | null;
       },
     advance(ms: number) {
