@@ -39,7 +39,11 @@ import {
 } from "../src/workspace";
 import { createOnboardingReadiness } from "../src/onboarding-readiness";
 
-function fixture({ installed = true } = {}) {
+function fixture({
+  installed = true,
+  projectLeadId,
+  createVm,
+}: { installed?: boolean; projectLeadId?: string; createVm?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-assignment-"));
   let db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -66,6 +70,7 @@ function fixture({ installed = true } = {}) {
       identifier: "TEST-1",
       title: "Work",
       description: "Original criteria",
+      ...(projectLeadId === undefined ? {} : { projectId: "project", projectLeadId }),
       subIssues: [],
     },
   ]);
@@ -243,6 +248,7 @@ function fixture({ installed = true } = {}) {
       installedOrganization: { id: "org", name: "Workspace" },
       memberships,
       onboardingReadiness: createOnboardingReadiness(db),
+      ...(createVm === undefined ? {} : { createVmAvailable: async () => createVm }),
       now: () => clock.now(),
       fetch: (async (input, init) => {
         if (String(input).endsWith("/oauth/token")) {
@@ -922,6 +928,77 @@ test("the creator's link sign-in resumes the held session and lands on its onboa
     expect(reopened.status).toBe(200);
     expect(await reopened.text()).toContain("Welcome, member");
     expect(listOutbox(f.db)).toHaveLength(outbox);
+  } finally {
+    await f.close();
+  }
+});
+
+test("the runner step uses the issue's project lead's shared runner, never another member's", async () => {
+  const f = fixture({ projectLeadId: "lead" });
+  try {
+    for (const id of ["lead", "colleague"]) {
+      putWorkspaceUser(f.db, {
+        id,
+        linearUserId: id,
+        name: id === "lead" ? "Lena Lead" : "Colin",
+        email: `${id}@example.invalid`,
+      });
+      syncWorkspaceMember(f.db, {
+        workspaceId: "workspace",
+        userId: id,
+        role: "member",
+        active: true,
+        teamIds: ["team"],
+        now: f.clock.now(),
+      });
+    }
+    const addRunner = (id: string, owner: string, sharing: number) => {
+      f.db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?)",
+        [id, "workspace", owner, `${id}-host`, "active", f.clock.now(), f.clock.now()],
+      );
+      f.db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id, sharing]);
+    };
+    // A colleague who does not lead the project shares a runner; it does not count.
+    addRunner("colleague-box", "colleague", 1);
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const done = await f.callback(await f.begin(link));
+    const cookie = sessionCookie(done);
+    const open = async () =>
+      (
+        await fetch(`${f.local}${onboardPath(link)}`, { redirect: "manual", headers: { cookie } })
+      ).text();
+    const needed = await open();
+    expect(needed).toMatch(
+      /<h2>Your runner<\/h2><p class="detail">Paws runs your issues on a runner you own\. Add a host with an enrollment token\. This step completes when it pairs\.<\/p><a class="action" href="\/status\/runners">Add a host<\/a><\/div><span class="label">Needed<\/span>/,
+    );
+    expect(needed).not.toContain("colleague-box");
+    // The lead shares a runner: the step is ready on the next load, without restarting anything.
+    const outbox = listOutbox(f.db).length;
+    addRunner("lead-box", "lead", 1);
+    expect(await open()).toMatch(
+      /<h2>Your runner<\/h2><p class="detail">Paws runs TEST-1 on lead-box-host, shared by Lena Lead\.<\/p><\/div><span class="label">Ready<\/span>/,
+    );
+    expect(listOutbox(f.db)).toHaveLength(outbox);
+  } finally {
+    await f.close();
+  }
+});
+
+test("the runner step offers Create VM when Paws can create one", async () => {
+  const f = fixture({ createVm: true });
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const done = await f.callback(await f.begin(link));
+    const html = await (
+      await fetch(`${f.local}${onboardPath(link)}`, {
+        redirect: "manual",
+        headers: { cookie: sessionCookie(done) },
+      })
+    ).text();
+    expect(html).toContain('<a class="action" href="/status/runners">Create VM or add a host</a>');
   } finally {
     await f.close();
   }

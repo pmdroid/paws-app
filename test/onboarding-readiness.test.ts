@@ -43,7 +43,7 @@ function workspace() {
     tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", NOW)),
     now: NOW,
   });
-  for (const id of ["me", "colleague"])
+  for (const id of ["me", "colleague", "lead"])
     syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId: user(id),
@@ -55,7 +55,8 @@ function workspace() {
   const read = createOnboardingReadiness(db);
   return {
     db,
-    read: () => read({ workspaceId: "ws", userId: "me", teamId: "team", now: NOW }),
+    read: (projectLeadIds: string[] = []) =>
+      read({ workspaceId: "ws", userId: "me", teamId: "team", projectLeadIds, now: NOW }),
   };
 }
 
@@ -66,6 +67,7 @@ function runner(
     owner?: string;
     status?: string;
     seenAgoMs?: number;
+    sharing?: number;
     agents?: Record<string, { ready: number; authExpired?: number }>;
   } = {},
 ) {
@@ -81,6 +83,8 @@ function runner(
       NOW - (input.seenAgoMs ?? 0),
     ],
   );
+  if (input.sharing !== undefined)
+    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id, input.sharing]);
   for (const [agent, policy] of Object.entries(input.agents ?? {}))
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,?,?,?)", [
       id,
@@ -104,6 +108,46 @@ test("a member with no runner needs one, and another member's runner does not co
   const w = workspace();
   runner(w.db, "theirs", { owner: "colleague", agents: { claude: { ready: 1 } } });
   expect(w.read()).toEqual({ runner: { state: "needed" }, agents: WAITING });
+});
+
+test("another member's runner never counts, shared or not, unless they lead the issue's project", () => {
+  const w = workspace();
+  runner(w.db, "theirs", { owner: "colleague", sharing: 1, agents: { claude: { ready: 1 } } });
+  runner(w.db, "private", { owner: "lead", agents: { claude: { ready: 1 } } });
+  runner(w.db, "stopped", { owner: "colleague", seenAgoMs: 10 * 60_000 });
+  expect(w.read()).toEqual({ runner: { state: "needed" }, agents: WAITING });
+  // The lead's own unshared runner stays theirs.
+  expect(w.read(["lead"])).toEqual({ runner: { state: "needed" }, agents: WAITING });
+  // A colleague who does not lead the project lends nothing, even with sharing on.
+  expect(w.read(["someone-else"])).toEqual({ runner: { state: "needed" }, agents: WAITING });
+});
+
+test("a runner the issue's project lead shares makes the step ready, naming who shares it", () => {
+  const w = workspace();
+  runner(w.db, "shared", {
+    owner: "lead",
+    sharing: 1,
+    agents: { claude: { ready: 1 }, codex: { ready: 1 } },
+  });
+  expect(w.read(["lead"])).toEqual({
+    runner: { state: "ready", name: "shared-host", sharedBy: "lead" },
+    agents: { claude: "connected", codex: "connected" },
+  });
+  // The member's own runner wins when it is as far along.
+  runner(w.db, "mine", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
+  expect(w.read(["lead"])).toEqual({
+    runner: { state: "ready", name: "mine-host" },
+    agents: { claude: "connected", codex: "connected" },
+  });
+});
+
+test("the step turns ready when the member's runner enrolls, with no restart", () => {
+  const w = workspace();
+  vm(w.db, "enroll");
+  expect(w.read()).toEqual({ runner: { state: "setting-up", name: "me-paws" }, agents: WAITING });
+  // The VM's runner enrolls and reports in; the next read shows it.
+  runner(w.db, "vm-runner");
+  expect(w.read()).toEqual({ runner: { state: "ready", name: "vm-runner-host" }, agents: WAITING });
 });
 
 test("a VM being set up or failed shows as the runner step", () => {
@@ -147,6 +191,7 @@ const base: OnboardingPageInput = {
   memberOfTeam: true,
   readiness: { runner: { state: "needed" }, agents: { claude: "waiting", codex: "waiting" } },
   github: null,
+  createVm: true,
 };
 
 test("the page lists Linear, membership, runner, coding agents, then the optional GitHub credit", () => {
@@ -170,6 +215,36 @@ test("the page lists Linear, membership, runner, coding agents, then the optiona
     ["Sign-in expired", "Sign in to Codex on mia-paws. The Codex sign-in expired."],
     ["Linked", "Linked as @mia-chen. Your commits credit you."],
   ]);
+});
+
+test("with no usable runner the page offers Create VM or Add a host on the Runners page", async () => {
+  const [needed] = onboardingSteps(base).slice(2);
+  expect(needed).toMatchObject({
+    state: "needed",
+    detail:
+      "Paws runs your issues on a runner you own. Create a VM, or add a host with an enrollment token. This step completes when it is ready.",
+    action: { href: "/status/runners", label: "Create VM or add a host" },
+  });
+  const [hostOnly] = onboardingSteps({ ...base, createVm: false }).slice(2);
+  expect(hostOnly).toMatchObject({
+    detail:
+      "Paws runs your issues on a runner you own. Add a host with an enrollment token. This step completes when it pairs.",
+    action: { href: "/status/runners", label: "Add a host" },
+  });
+  const html = await onboardingPage(base).text();
+  expect(html).toContain('<a class="action" href="/status/runners">Create VM or add a host</a>');
+  const shared = onboardingSteps({
+    ...base,
+    readiness: {
+      runner: { state: "ready", name: "lead-box", sharedBy: "Ada" },
+      agents: { claude: "waiting", codex: "waiting" },
+    },
+  })[2];
+  expect(shared).toMatchObject({
+    label: "Ready",
+    detail: "Paws runs TEST-1 on lead-box, shared by Ada.",
+  });
+  expect(shared?.action).toBeUndefined();
 });
 
 test("a fully set up member sees no remaining steps and the page stops reloading", async () => {

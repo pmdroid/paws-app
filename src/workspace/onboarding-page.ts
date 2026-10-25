@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 /** The member's runner, as onboarding sees it. */
 export type OnboardingRunner =
-  | { state: "ready"; name: string }
+  /** A usable runner. `sharedBy` names the project lead who shares it, when it is not the member's. */
+  | { state: "ready"; name: string; sharedBy?: string }
   | { state: "offline" | "paused"; name: string }
   | { state: "setting-up"; name: string }
   | { state: "failed"; name: string; failure: string }
@@ -22,6 +23,8 @@ export type OnboardingReadinessReader = (input: {
   userId: string;
   /** The Linear team of the issue. */
   teamId: string;
+  /** Linear user ids of the leads of the issue's Linear projects, who may share a runner. */
+  projectLeadIds: readonly string[];
   now: number;
 }) => OnboardingReadiness;
 
@@ -34,11 +37,22 @@ export type OnboardingPageInput = {
   memberOfTeam: boolean;
   readiness: OnboardingReadiness;
   github: { login: string } | null;
+  /** Paws can create a VM for the member, so the runner step offers Create VM. */
+  createVm: boolean;
 };
 
 type StepState = "done" | "needed" | "running" | "failed" | "later" | "optional";
 
-type Step = { title: string; state: StepState; label: string; detail: string };
+type Step = {
+  title: string;
+  state: StepState;
+  label: string;
+  detail: string;
+  action?: { href: string; label: string };
+};
+
+/** The dashboard page with Create VM and Add a host. */
+const RUNNERS_PAGE = "/status/runners";
 
 const STYLE = `
 :root{color-scheme:light;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#17151f;background:#c3b6f0}
@@ -66,6 +80,7 @@ nav{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0 0}
 nav a{color:#17151f;font-weight:600;border:2px solid #17151f;padding:8px 14px;text-decoration:none;background:#fff}
 nav a:first-child{background:#ff7a3d}
 .note{margin:20px 0 0;font-size:.85rem;color:#3b3748}
+.action{display:inline-block;margin:10px 0 0;color:#17151f;font-weight:600;border:2px solid #17151f;padding:6px 12px;text-decoration:none;background:#ff7a3d}
 `;
 const STYLE_HASH = createHash("sha256").update(STYLE).digest("base64");
 const MARK: Record<StepState, string> = {
@@ -112,7 +127,10 @@ export function onboardingSteps(input: OnboardingPageInput): Step[] {
         title: "Your runner",
         state: "done",
         label: "Ready",
-        detail: `Paws runs ${input.identifier} on ${runner.name}.`,
+        detail:
+          runner.sharedBy === undefined
+            ? `Paws runs ${input.identifier} on ${runner.name}.`
+            : `Paws runs ${input.identifier} on ${runner.name}, shared by ${runner.sharedBy}.`,
       });
       break;
     case "offline":
@@ -125,6 +143,7 @@ export function onboardingSteps(input: OnboardingPageInput): Step[] {
           runner.state === "offline"
             ? `${runner.name} is offline. Start it so Paws can reach it.`
             : `${runner.name} is paused. Resume it so Paws can use it.`,
+        action: { href: RUNNERS_PAGE, label: "Open Runners" },
       });
       break;
     case "setting-up":
@@ -148,7 +167,13 @@ export function onboardingSteps(input: OnboardingPageInput): Step[] {
         title: "Your runner",
         state: "needed",
         label: "Needed",
-        detail: "Pair a runner you own. Paws runs your issues there.",
+        detail: input.createVm
+          ? "Paws runs your issues on a runner you own. Create a VM, or add a host with an enrollment token. This step completes when it is ready."
+          : "Paws runs your issues on a runner you own. Add a host with an enrollment token. This step completes when it pairs.",
+        action: {
+          href: RUNNERS_PAGE,
+          label: input.createVm ? "Create VM or add a host" : "Add a host",
+        },
       });
   }
   const names = { claude: "Claude", codex: "Codex" } as const;
@@ -213,9 +238,11 @@ export function onboardingPage(input: OnboardingPageInput): Response {
       (step, index) =>
         `<li class="${step.state}"><span class="mark" aria-hidden="true">${
           MARK[step.state] || String(index + 1)
-        }</span><div><h2>${escape(step.title)}</h2><p class="detail">${escape(
-          step.detail,
-        )}</p></div><span class="label">${escape(step.label)}</span></li>`,
+        }</span><div><h2>${escape(step.title)}</h2><p class="detail">${escape(step.detail)}</p>${
+          step.action
+            ? `<a class="action" href="${escape(step.action.href)}">${escape(step.action.label)}</a>`
+            : ""
+        }</div><span class="label">${escape(step.label)}</span></li>`,
     )
     .join("");
   const links = [
