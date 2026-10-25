@@ -170,6 +170,7 @@ export async function probeRunnerCoordinator(
       id: pairing.id,
       claim: pairing.claim,
     });
+    coordinator.control.setStatus(principal, identity.runnerId, "active");
     assert.deepEqual(identity.signingKeys, initialized);
     assert(!JSON.stringify(identity).includes("PRIVATE KEY"));
     const peer = { cert: identity.certificate, key: readFileSync(client.keyPath, "utf8") };
