@@ -27,6 +27,15 @@ const columns =
   "id,runner_id AS runnerId,workspace_id AS workspaceId,user_id AS userId,agent,state,expires_at AS expiresAt,terminal,authorization,input_id AS inputId";
 const pending = (row: Row) => row.state === "starting" || row.state === "waiting";
 
+class SignInRefused extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export function createRunnerLogin(options: {
   db: Database;
   work: RunnerWork;
@@ -142,13 +151,20 @@ export function createRunnerLogin(options: {
             )
             .get(runnerId, at, runnerId, at)
         )
-          throw new Error("Wait for the runner's active work before signing in");
+          throw new SignInRefused(
+            "This runner is working on a task. Sign in once its work has finished.",
+            409,
+          );
         const count = db
           .query<{ count: number }, [string, number]>(
             "SELECT COUNT(*) AS count FROM runner_login WHERE runner_id=? AND state IN ('starting','waiting') AND expires_at>?",
           )
           .get(runnerId, at)!.count;
-        if (count >= 4) throw new Error("Runner sign-in queue is full");
+        if (count >= 4)
+          throw new SignInRefused(
+            "This runner already has four sign-ins waiting. Finish one first.",
+            429,
+          );
         const id = randomUUID();
         const expiresAt = at + 600_000;
         work.enqueue({
@@ -280,7 +296,8 @@ export function createRunnerLogin(options: {
           return json(snapshot(current));
         }
         return json({ error: "Unsupported agent account request." }, 405);
-      } catch {
+      } catch (error) {
+        if (error instanceof SignInRefused) return json({ error: error.message }, error.status);
         return json(
           { error: "Agent sign-in is unavailable. Refresh your sign-in and try again." },
           403,
