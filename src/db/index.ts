@@ -407,11 +407,13 @@ export {
 export type { QueuePosition } from "./queue-wait";
 export { listItemHolds, saveItemHolds } from "./item-hold";
 export {
+  enqueueRunnerSetupCheck,
   getRunnerSetupHold,
   holdForRunnerSetup,
   listRunnerSetupHolds,
   markRunnerSetupNotified,
   releaseRunnerSetupHold,
+  takeRunnerSetupResume,
 } from "./runner-setup-hold";
 export type { RunnerSetupHold } from "./runner-setup-hold";
 export type { ItemHold, ItemHoldChange, ItemHoldReason } from "./item-hold";

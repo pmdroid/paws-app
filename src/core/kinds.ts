@@ -8,6 +8,8 @@ export const JOB_KIND = {
   closeStoppedPull: "github.close_stopped",
   catchup: "linear.catchup",
   visualReviewReminder: "linear.visual_review_reminder",
+  /** Written by the SQLite triggers of migration 144, one pending job per hold owner. */
+  runnerSetupCheck: "runner_setup.check",
 } as const;
 
 export const MERGE_LANE = "merge";

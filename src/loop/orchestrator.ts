@@ -184,8 +184,12 @@ import {
   type WorkItemRecord,
   type RunnerCapacityWaitState,
   deferWorkItem,
+  enqueueRunnerSetupCheck,
   holdForRunnerSetup,
+  listRunnerSetupHolds,
   markRunnerSetupNotified,
+  releaseRunnerSetupHold,
+  takeRunnerSetupResume,
   runnerAgentName,
   runnerCapacityWait,
   runnerSlotFree,
@@ -433,6 +437,15 @@ export type OrchestratorOptions = {
    * and its thought. Null when a runner is usable or only offline. SQLite only.
    */
   runnerSetupNeed?: (itemId: string, agent: string, now: number) => RunnerSetupNeed | null;
+  /**
+   * A runner the item's owner may use for this agent now, for the line that resumes a
+   * runner-setup hold. Null when none is eligible. SQLite only.
+   */
+  eligibleRunner?: (
+    itemId: string,
+    agent: string,
+    now: number,
+  ) => { id: string; name: string } | null;
   clock?: Clock;
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
@@ -1184,6 +1197,10 @@ export class Orchestrator {
       if (!context.isCurrent() || questionId === null) return;
       if (remindVisualReview(this.db, questionId, this.now())) await this.flush();
     });
+    jobs.register(JOB_KIND.runnerSetupCheck, (job) => {
+      const owner = readString(job.payload, "ownerUserId");
+      if (owner !== null) this.checkRunnerSetup(owner);
+    });
     jobs.register(JOB_KIND.start, (job, context) =>
       this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
     );
@@ -1434,7 +1451,7 @@ export class Orchestrator {
           markRun(this.db, run.id, "lost", now);
       }
       applyWorkItemEvent(this.db, current.id, "restart");
-      this.recordRunnerSetupHold(current, need, now);
+      this.recordRunnerSetupHold(current, need, now, current.currentRunId);
       return true;
     });
   }
@@ -1443,7 +1460,12 @@ export class Orchestrator {
    * Write the runner-setup hold of a queued item and post its thought, once per hold. Runs in
    * the caller's transaction.
    */
-  private recordRunnerSetupHold(current: WorkItemRecord, need: RunnerSetupNeed, now: number) {
+  private recordRunnerSetupHold(
+    current: WorkItemRecord,
+    need: RunnerSetupNeed,
+    now: number,
+    runId: string | null = null,
+  ) {
     const hold = holdForRunnerSetup(this.db, {
       itemId: current.id,
       ownerUserId:
@@ -1456,8 +1478,12 @@ export class Orchestrator {
       ...(need.reason === "agent-not-signed-in"
         ? { runnerId: need.runnerId, agent: need.agent }
         : {}),
+      runId,
       now,
     });
+    // A runner may have become usable while placement decided to hold. Check once now, so the
+    // hold does not wait for a later write.
+    if (hold.ownerUserId !== null) enqueueRunnerSetupCheck(this.db, hold.ownerUserId, now);
     this.options.journal?.(`item ${current.linearIdentifier} held: runner setup (${need.reason})`);
     if (hold.notifiedAt !== null) return;
     const sessionId = this.activitySession(current);
@@ -1471,6 +1497,52 @@ export class Orchestrator {
         now,
       });
     markRunnerSetupNotified(this.db, current.id, now);
+  }
+
+  /**
+   * The `runner_setup.check` job: resume each hold of `ownerUserId` whose owner now has a runner
+   * they may use. A resume ends the hold, posts one thought and lets the scheduler start the
+   * item, which places it by its normal checks. Reads SQLite only, never Linear.
+   */
+  private checkRunnerSetup(ownerUserId: string): void {
+    const eligibleRunner = this.options.eligibleRunner;
+    if (!eligibleRunner) return;
+    const holds = listRunnerSetupHolds(this.db, ownerUserId);
+    if (holds.length === 0) return;
+    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const now = this.now();
+    let resumed = false;
+    for (const hold of holds) {
+      const item = getWorkItem(this.db, hold.itemId);
+      if (!item || item.state !== "queued" || item.cancelRequested) continue;
+      const runner = eligibleRunner(item.id, this.implementerAgent(item, config), now);
+      if (!runner) continue;
+      resumed =
+        immediate(this.db, () => {
+          const current = getWorkItem(this.db, item.id);
+          if (!current || current.state !== "queued" || current.cancelRequested) return false;
+          if (!releaseRunnerSetupHold(this.db, current.id, now)) return false;
+          this.options.journal?.(
+            `item ${current.linearIdentifier} resumed: runner setup (${runner.name})`,
+          );
+          const sessionId = this.activitySession(current);
+          if (sessionId !== null)
+            enqueueOutboxOnce(this.db, {
+              target: OUTBOX_ACTIVITY.target,
+              op: OUTBOX_ACTIVITY.op,
+              orderingKey: sessionId,
+              idempotencyKey: `runner-setup-resume:${current.id}:${hold.since}`,
+              payload: {
+                sessionId,
+                kind: "thought",
+                body: `Starting ${current.linearIdentifier ?? "this issue"} on ${runner.name}.`,
+              },
+              now,
+            });
+          return true;
+        }) || resumed;
+    }
+    if (resumed) this.dispatch();
   }
 
   private runnerSetupLine(need: RunnerSetupNeed): string {
@@ -3850,6 +3922,12 @@ export class Orchestrator {
     if (item.currentRunId !== null) {
       const existing = getRun(this.db, item.currentRunId);
       if (existing && existing.status === "active") return existing;
+      // A runner-setup hold stopped this run before any work. The resume continues it, so the
+      // task keeps one run.
+      if (existing?.status === "lost" && takeRunnerSetupResume(this.db, item.id, existing.id)) {
+        markRun(this.db, existing.id, "active", this.now());
+        return existing;
+      }
     }
     const repository = this.repositoryForItem(item);
     const run = insertRun(this.db, {
