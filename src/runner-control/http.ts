@@ -3,13 +3,25 @@ import { RunnerAgentUpdateError, RunnerConcurrencyError } from "../db";
 import { RUNNER_CODING_AGENTS, RunnerAgentVersionSchema } from "../runner-protocol";
 import type { RunnerPeer } from "../runner-identity";
 import type { WorkspacePrincipal } from "../workspace";
-import type { RunnerControl } from "./pairing";
+import { RunnerEnrollmentDenied, type RunnerControl } from "./pairing";
 
 const code = z.object({ code: z.string().regex(/^[A-F0-9]{16}$/) }).strict();
 const enrollment = z.union([
   z.object({ name: z.string().max(80), csr: z.string().max(16_384) }).strict(),
   z.object({ id: z.string().max(80), claim: z.string().max(80) }).strict(),
 ]);
+const hostEnrollment = z
+  .object({
+    token: z
+      .string()
+      .min(16)
+      .max(256)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    name: z.string().max(80),
+    csr: z.string().max(16_384),
+  })
+  .strict();
+const enrollmentRequest = z.object({ name: z.string().max(80) }).strict();
 const certificate = z.object({ csr: z.string().max(16_384) }).strict();
 const runnerStatus = z
   .object({ status: z.enum(["active", "paused", "draining", "revoked"]) })
@@ -49,6 +61,28 @@ export function createRunnerHttp(
         enrolling -= 1;
       }
     },
+    /**
+     * `POST /api/runner-enrollments`: the host posts its token, name and CSR once and receives
+     * its identity. A used, expired or unknown token answers 401.
+     */
+    async hostEnrollment(request: Request): Promise<Response> {
+      if (new URL(request.url).protocol !== "https:")
+        return json({ error: "HTTPS is required." }, 400);
+      if (request.method !== "POST") return json({ error: "Use POST." }, 405);
+      if (enrolling >= 4) return json({ error: "Enrollment is busy. Try again shortly." }, 429);
+      enrolling += 1;
+      try {
+        const parsed = hostEnrollment.safeParse(await readJson(request).catch(() => undefined));
+        if (!parsed.success) return json({ error: "Runner enrollment request is invalid." }, 400);
+        return json(await control.enroll(parsed.data));
+      } catch (error) {
+        if (error instanceof RunnerEnrollmentDenied)
+          return json({ error: "Runner enrollment token is invalid or expired." }, 401);
+        return json({ error: "Runner enrollment request is invalid or unavailable." }, 400);
+      } finally {
+        enrolling -= 1;
+      }
+    },
     async browser(request: Request, principal: WorkspacePrincipal): Promise<Response | null> {
       const path = new URL(request.url).pathname;
       try {
@@ -64,6 +98,10 @@ export function createRunnerHttp(
             serverVersion: control.serverVersion(),
             agentVersions: control.agentVersions(),
           });
+        if (path === "/api/runners/enrollments" && request.method === "POST")
+          return json(
+            control.createEnrollment(principal, enrollmentRequest.parse(await readJson(request))),
+          );
         if (path === "/api/runners/pairings/inspect" && request.method === "POST")
           return json(control.inspectPairing(principal, code.parse(await readJson(request)).code));
         if (path === "/api/runners/pairings/approve" && request.method === "POST")

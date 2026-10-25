@@ -746,6 +746,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 : Promise.resolve(
                     Response.json({ error: "Runner control is starting." }, { status: 503 }),
                   ),
+            runnerHostEnrollment: (request: Request) =>
+              runner
+                ? runner.hostEnrollment(request)
+                : Promise.resolve(
+                    Response.json({ error: "Runner control is starting." }, { status: 503 }),
+                  ),
             runnerControl: async (request: Request, principal: WorkspacePrincipal) =>
               (await placementBrowser(request, principal)) ??
               (runner
