@@ -2841,7 +2841,7 @@ ALTER TABLE member_vm ADD COLUMN delete_blocked TEXT
 `,
   },
   {
-    id: "139_member_vm_enrollment",
+    id: "140_member_vm_enrollment",
     sql: `
 CREATE TABLE member_vm_enrollment (
   token_hash TEXT PRIMARY KEY,
