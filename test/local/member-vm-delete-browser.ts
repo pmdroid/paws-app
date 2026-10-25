@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
-import { chromium, type Browser } from "@playwright/test";
+import { chromium, type Browser, type Page } from "@playwright/test";
 
 const repo = resolve(import.meta.dir, "../..");
 const output = process.argv[2] ?? mkdtempSync(join(tmpdir(), "paws-member-vm-delete-browser-"));
@@ -129,6 +129,25 @@ async function pageFor(browser: Browser, manifest: Manifest, identity: "member" 
   return page;
 }
 
+/** Desktop and 390 px screenshots; the narrow one must not scroll sideways. */
+async function capture(page: Page, name: string) {
+  await page.screenshot({ path: join(output, `${name}.png`), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(200);
+  // The callback runs in the page; this file type-checks without the DOM library.
+  const overflow = await page.evaluate(() => {
+    const view = globalThis as unknown as {
+      document: { documentElement: { scrollWidth: number } };
+      innerWidth: number;
+    };
+    return view.document.documentElement.scrollWidth > view.innerWidth;
+  });
+  await page.screenshot({ path: join(output, `${name}-mobile.png`), fullPage: true });
+  assert.equal(overflow, false, `${name} overflows at 390 px`);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.waitForTimeout(100);
+}
+
 type Snapshot = {
   vm: {
     vmName: string;
@@ -164,7 +183,7 @@ try {
 
   const remove = page.locator("[data-member-vm] [data-vm-delete]");
   await remove.waitFor();
-  await page.screenshot({ path: join(output, "01-delete-vm-button.png"), fullPage: true });
+  await capture(page, "01-delete-vm-button");
   observe("a ready VM shows Delete VM");
 
   await fixture.send("task");
@@ -174,7 +193,7 @@ try {
   const text = await dialog.innerText();
   assert.match(text, /will be destroyed on exe\.dev/);
   assert.match(text, /runner removed from Paws/);
-  await page.screenshot({ path: join(output, "02-delete-vm-confirm.png"), fullPage: true });
+  await capture(page, "02-delete-vm-confirm");
   observe("the confirmation names the VM, exe.dev and the runner", text);
 
   await dialog.getByRole("button", { name: "Cancel" }).click();
@@ -187,7 +206,7 @@ try {
   const blocked = page.locator('[data-member-vm-delete="drain"] [data-vm-delete-blocked]');
   await blocked.waitFor({ timeout: STEP_WAIT_MS });
   assert.match(await blocked.innerText(), /PAS-901/);
-  await page.screenshot({ path: join(output, "03-delete-blocked-by-task.png"), fullPage: true });
+  await capture(page, "03-delete-blocked-by-task");
   const draining = await snapshot();
   assert.equal(draining.runners.find((runner) => runner.name === vmName)?.status, "draining");
   observe("a running task blocks the delete and is named; the runner is draining");
@@ -201,14 +220,14 @@ try {
   assert.equal(gone.deleteVm, 1);
   assert.equal(gone.exeDev.includes(vmName), false);
   assert.equal(gone.runners.find((runner) => runner.name === vmName)?.status, "revoked");
-  await page.screenshot({ path: join(output, "04-deleted.png"), fullPage: true });
+  await capture(page, "04-deleted");
   observe("force delete stops the task, revokes the runner, destroys the VM and clears it", gone);
 
   await page.getByRole("button", { name: "Create VM", exact: true }).click();
   await page.locator("[data-member-vm]").waitFor();
   const again = await snapshot();
   assert.equal(again.vm[0]?.vmName, vmName);
-  await page.screenshot({ path: join(output, "05-recreated.png"), fullPage: true });
+  await capture(page, "05-recreated");
   observe("Create VM after the delete reuses the name", again.vm[0]);
   assert.deepEqual(errors, []);
 } finally {
