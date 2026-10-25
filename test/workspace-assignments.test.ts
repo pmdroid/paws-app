@@ -21,7 +21,7 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { readyItems, syncItemDependencies } from "../src/intake";
-import { attachOrchestrator } from "../src/loop";
+import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
 import { FakeClock } from "../src/core";
 import {
   acknowledgeNewSession,
@@ -88,6 +88,7 @@ function fixture({ installed = true } = {}) {
   const ownership = {
     id: "issue",
     teamId: "team",
+    teamName: "Platform",
     assigneeId: "member",
     delegateId: "app" as string | null,
     stateType: "started",
@@ -122,7 +123,10 @@ function fixture({ installed = true } = {}) {
     payload: JSON.stringify({
       organizationId: "org",
       appUserId: "app",
-      agentSession: { creatorId: "member" },
+      agentSession: {
+        creatorId: "member",
+        creator: { id: "member", name: "Morgan Member" },
+      },
     }),
   };
   ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
@@ -291,6 +295,15 @@ function fixture({ installed = true } = {}) {
       headers: { cookie: start.headers.get("set-cookie")!.split(";")[0]! },
     });
   }
+  const delivered = new Set<number>();
+  /** Sends every queued Linear write to the fake tracker, as the outbox would. */
+  async function deliver() {
+    for (const row of listOutbox(db))
+      if (!delivered.has(row.id)) {
+        delivered.add(row.id);
+        await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+      }
+  }
   function jobs() {
     const loop = new JobLoop(db, clock);
     assignments.register(loop);
@@ -305,6 +318,8 @@ function fixture({ installed = true } = {}) {
     continuations,
     begin,
     callback,
+    deliver,
+    local,
     link,
     jobs,
     get db() {
@@ -408,8 +423,15 @@ for (const identity of ["wrong", "outsider"])
     try {
       await f.assignments.authorize(f.event);
       const start = await f.begin();
-      expect((await f.callback(start, identity)).status).toBe(identity === "outsider" ? 403 : 400);
+      const refused = await f.callback(start, identity);
+      expect(refused.status).toBe(403);
+      if (identity === "wrong")
+        expect(await refused.text()).toContain("This link belongs to Morgan Member.");
+      expect(refused.headers.get("location")).toBeNull();
       expect(listJobs(f.db)).toHaveLength(0);
+      expect(
+        f.db.query("SELECT status,completed_at AS completedAt FROM workspace_assignment").get(),
+      ).toEqual({ status: "pending", completedAt: null });
       expect(f.calls).toBe(0);
       expect((await f.callback(await f.begin())).status).toBe(303);
     } finally {
@@ -460,7 +482,7 @@ for (const change of [
     }
   });
 
-test("held prompts cannot become initial delegation; Stop invalidates hold; expired links rotate durably", async () => {
+test("held prompts cannot become initial delegation; waiting writes nothing; Stop invalidates hold", async () => {
   const f = fixture();
   try {
     await f.assignments.authorize(f.event);
@@ -477,13 +499,12 @@ test("held prompts cannot become initial delegation; Stop invalidates hold; expi
       reason: "It waits until you sign in to Paws with your Linear account.",
     });
     f.clock.advance(600_001);
-    expect((await f.begin(original)).status).toBe(400);
     await f.restart();
     await f.jobs().tick();
-    expect(listOutbox(f.db)).toHaveLength(2);
-    expect(f.link()).not.toBe(original);
-    expect((await f.begin(original)).status).toBe(400);
-    const start = await f.begin();
+    expect(listOutbox(f.db)).toHaveLength(1);
+    expect(f.link()).toBe(original);
+    const start = await f.begin(original);
+    expect(start.status).toBe(303);
     expect(
       await f.assignments.authorize({ ...f.event, signal: "stop", action: "prompted" }),
     ).toEqual({ outcome: "accepted" });
@@ -570,7 +591,11 @@ const rules: [string, string, (f: ReturnType<typeof fixture>) => void][] = [
     (f) => advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() }),
   ],
   ["inactive account", "Your Linear account is not active.", (f) => f.setActive(false)],
-  ["guest", "Linear guests cannot delegate issues to Paws.", (f) => f.setGuest(true)],
+  [
+    "guest",
+    "Linear guests cannot delegate issues to Paws. Ask a member of Platform to delegate this issue.",
+    (f) => f.setGuest(true),
+  ],
   ["outside the team", "You are not a member of this issue's Linear team.", (f) => f.setTeams([])],
   [
     "inactive membership",
@@ -579,7 +604,7 @@ const rules: [string, string, (f: ReturnType<typeof fixture>) => void][] = [
   ],
   [
     "observer",
-    "Observers in the Paws workspace cannot delegate issues to Paws.",
+    "Observers in the Paws workspace cannot delegate issues to Paws. Ask a member of Platform to delegate this issue.",
     (f) => f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='member'"),
   ],
 ];
@@ -739,7 +764,7 @@ test("a new canonical generation does not reuse an obsolete onboarding hold", as
     ).toMatchObject({ outcome: "refused" });
     expect(listOutbox(f.db)).toHaveLength(2);
     expect(f.link()).not.toBe(previous);
-    expect((await f.begin(previous)).status).toBe(400);
+    expect((await f.begin(previous)).status).toBe(404);
     expect((await f.callback(await f.begin())).status).toBe(303);
   } finally {
     await f.close();
@@ -754,6 +779,181 @@ test("browser callback cannot accept a hold after losing the issue team", async 
     f.setTeams([]);
     expect((await f.callback(start)).status).toBe(400);
     expect(listJobs(f.db)).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+});
+
+const SIGN_IN_BODY =
+  "Welcome to Paws. Sign in with Linear so I can start TEST-1. I'll start on my own once you're set up. You can Stop this anytime.\n\nOptional: link GitHub on the next page so your commits credit you.";
+
+const elicitations = (f: ReturnType<typeof fixture>) =>
+  listOutbox(f.db).filter((row) => row.op === "elicitation");
+
+test("an unknown delegator sees the first thought, then one sign-in action, and waiting writes nothing", async () => {
+  const f = fixture();
+  try {
+    const acknowledged = new Set<string>();
+    const deliver = () =>
+      acknowledgeNewSession(
+        f.tracker,
+        f.event,
+        (event) => f.orchestrator.onLinearEvent(event),
+        {},
+        {
+          acknowledged,
+        },
+      );
+    expect(await deliver()).toBe(false);
+    await f.deliver();
+    expect(f.tracker.progress.map((update) => [update.kind, update.body])).toEqual([
+      ["thought", "Picked up this issue."],
+    ]);
+    expect(f.tracker.questions).toHaveLength(1);
+    const question = f.tracker.questions[0]!;
+    expect(question.body).toBe(SIGN_IN_BODY);
+    expect(question.body).toContain(
+      "Optional: link GitHub on the next page so your commits credit you.",
+    );
+    expect(question.auth?.userId).toBe("member");
+    expect(question.auth?.url).toMatch(
+      /^https:\/\/paws\.example\.invalid\/onboard\/[A-Za-z0-9]{26}$/,
+    );
+    expect(question.auth?.url).not.toContain("?");
+
+    expect(await deliver()).toBe(false);
+    const jobs = f.jobs();
+    for (let minute = 0; minute < 120; minute++) {
+      f.clock.advance(60_000);
+      await jobs.tick();
+    }
+    await f.deliver();
+    expect(f.tracker.progress).toHaveLength(1);
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(listOutbox(f.db)).toHaveLength(1);
+
+    const start = await f.begin(question.auth!.url);
+    expect(start.status).toBe(303);
+    const provider = new URL(start.headers.get("location")!);
+    expect(`${provider.origin}${provider.pathname}`).toBe("https://linear.app/oauth/authorize");
+    expect(provider.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(start.headers.get("set-cookie")).toMatch(/^__Host-paws-login=/);
+  } finally {
+    await f.close();
+  }
+});
+
+test("the creator's link sign-in resumes the held session and lands on its issue page", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const done = await f.callback(await f.begin(link));
+    expect(done.status).toBe(303);
+    expect(done.headers.get("location")).toBe("/status/issues/TEST-1");
+    const hold = f.db
+      .query<{ status: string; completedAt: number | null }, []>(
+        "SELECT status,completed_at AS completedAt FROM workspace_assignment",
+      )
+      .get()!;
+    expect(hold).toEqual({ status: "ready", completedAt: f.clock.now() });
+    const jobs = f.jobs();
+    await jobs.tick();
+    await jobs.tick();
+    expect(f.continuations).toEqual([f.event.dedupeKey]);
+    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(elicitations(f)).toHaveLength(1);
+    const again = await f.begin(link);
+    expect(again.status).toBe(303);
+    expect(again.headers.get("location")).toBe("/status/issues/TEST-1");
+  } finally {
+    await f.close();
+  }
+});
+
+test("signing in from the dashboard instead of the link releases the hold", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const start = await fetch(`${f.local}/auth/linear`, { redirect: "manual" });
+    const done = await f.callback(start);
+    expect(done.status).toBe(303);
+    expect(done.headers.get("location")).toBe("/status/");
+    const jobs = f.jobs();
+    await jobs.tick();
+    await jobs.tick();
+    expect(f.continuations).toEqual([f.event.dedupeKey]);
+    expect(elicitations(f)).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a member row for the creator lets the hold continue on the next sweep with no new action", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const jobs = f.jobs();
+    await jobs.tick();
+    expect(f.continuations).toEqual([]);
+    linkMember(f);
+    f.clock.advance(60_000);
+    await jobs.tick();
+    await jobs.tick();
+    await jobs.tick();
+    expect(f.continuations).toEqual([f.event.dedupeKey]);
+    expect(elicitations(f)).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("old secret sign-in links answer 410 and unknown onboarding links 404", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const old = await fetch(`${f.local}/auth/linear?assignment=${"a".repeat(43)}`, {
+      redirect: "manual",
+    });
+    expect(old.status).toBe(410);
+    expect(await old.json()).toEqual({
+      error: "This sign-in link was replaced. Use the latest Sign in to Paws action in Linear.",
+    });
+    expect(old.headers.get("set-cookie")).toBeNull();
+    for (const path of ["/onboard/AAAAAAAAAAAAAAAAAAAAAAAAAA", "/onboard/short", "/onboard/"])
+      expect((await fetch(`${f.local}${path}`, { redirect: "manual" })).status).toBe(404);
+  } finally {
+    await f.close();
+  }
+});
+
+test("at deploy a pending hold without a link gets one link and one new-form action", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    f.db.run(
+      "UPDATE workspace_assignment SET link_id=NULL,link_expires_at=NULL,token_hash='old',expires_at=?",
+      [f.clock.now() - 1],
+    );
+    f.db.run("DELETE FROM outbox");
+    await f.restart();
+    f.jobs();
+    await f.restart();
+    await f.jobs().tick();
+    expect(elicitations(f)).toHaveLength(1);
+    const link = f.link();
+    expect(link).toMatch(/^https:\/\/paws\.example\.invalid\/onboard\/[A-Za-z0-9]{26}$/);
+    const hold = f.db
+      .query<{ linkId: string; tokenHash: string; linkExpiresAt: number }, []>(
+        "SELECT link_id AS linkId,token_hash AS tokenHash,link_expires_at AS linkExpiresAt FROM workspace_assignment",
+      )
+      .get()!;
+    expect(link.endsWith(hold.linkId)).toBe(true);
+    expect(hold.tokenHash).toBe(workspaceTokenHash(hold.linkId));
+    expect(hold.linkExpiresAt).toBeGreaterThan(f.clock.now());
+    expect((await f.callback(await f.begin(link))).headers.get("location")).toBe(
+      "/status/issues/TEST-1",
+    );
   } finally {
     await f.close();
   }
