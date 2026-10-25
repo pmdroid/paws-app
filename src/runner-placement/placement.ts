@@ -197,48 +197,54 @@ export function createRunnerPlacement(options: {
       }),
     );
   }
+  /** Who the work belongs to and where, for `eligibleRunners`. Throws when nobody may run it. */
+  function eligibility(current: ReturnType<typeof scope>) {
+    const teamId = db
+      .query<{ teamId: string | null }, [string]>(
+        "SELECT team_id AS teamId FROM linear_session WHERE session_id=?",
+      )
+      .get(current.session.sessionId)?.teamId;
+    if (!teamId) throw new Error("Runner issue team is unavailable");
+    if (
+      current.repository &&
+      !db
+        .query(`SELECT 1 WHERE ${teamRepositoryAllowedSql("?1", "?2", "lower(?3)")}`)
+        .get(
+          current.workspace.id,
+          teamId,
+          `${current.repository.owner}/${current.repository.repo}`.toLowerCase(),
+        )
+    )
+      throw new Error("Runner repository is outside workspace access");
+    const requester = current.ownership
+      ? db
+          .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
+          .get(current.ownership)?.id
+      : undefined;
+    if (
+      !requester ||
+      !workspaceMember(db, current.workspace.id, requester)?.active ||
+      workspaceMember(db, current.workspace.id, requester)?.role === "observer"
+    )
+      throw new Error("Runner requester is not an active workspace member");
+    return {
+      workspaceId: current.workspace.id,
+      teamId,
+      ownerUserId: current.placement?.ownerUserId ?? requester,
+      leadUserIds: current.placement?.leadUserIds ?? [],
+    };
+  }
   return {
     async candidates(input) {
       input.signal?.throwIfAborted();
       if (!input.profile) throw new Error("Runner agent profile is required");
       const current = scope(input);
       const binding = authority(current);
-      const teamId = db
-        .query<{ teamId: string | null }, [string]>(
-          "SELECT team_id AS teamId FROM linear_session WHERE session_id=?",
-        )
-        .get(current.session.sessionId)?.teamId;
-      if (!teamId) throw new Error("Runner issue team is unavailable");
-      if (
-        current.repository &&
-        !db
-          .query(`SELECT 1 WHERE ${teamRepositoryAllowedSql("?1", "?2", "lower(?3)")}`)
-          .get(
-            current.workspace.id,
-            teamId,
-            `${current.repository.owner}/${current.repository.repo}`.toLowerCase(),
-          )
-      )
-        throw new Error("Runner repository is outside workspace access");
-      const requester = current.ownership
-        ? db
-            .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-            .get(current.ownership)?.id
-        : undefined;
-      if (
-        !requester ||
-        !workspaceMember(db, current.workspace.id, requester)?.active ||
-        workspaceMember(db, current.workspace.id, requester)?.role === "observer"
-      )
-        throw new Error("Runner requester is not an active workspace member");
       const at = now();
       // A task runs on the runners of the person who delegated it, then on the shared runners
       // of its Linear project leads.
       const rows = eligibleRunners(db, {
-        workspaceId: current.workspace.id,
-        teamId,
-        ownerUserId: current.placement?.ownerUserId ?? requester,
-        leadUserIds: current.placement?.leadUserIds ?? [],
+        ...eligibility(current),
         agent: input.profile.agent,
         purpose: input.purpose,
         now: at,
@@ -321,6 +327,40 @@ export function createRunnerPlacement(options: {
           expiresAt: at + 15_000,
         });
       return ranked.map(({ runner }) => ({ id: runner.id, workspaceId: runner.workspaceId }));
+    },
+    setupNeed(input) {
+      if (!input.profile) return null;
+      const current = scope(input);
+      const owner = eligibility(current);
+      const runners = eligibleRunners(db, {
+        ...owner,
+        agent: input.profile.agent,
+        purpose: "work",
+        now: now(),
+      });
+      if (runners.some((runner) => runner.eligible)) return null;
+      const own = runners.filter((runner) => runner.ownerId === owner.ownerUserId);
+      const signIn = own.find(
+        (runner) => runner.reason === "agent-not-signed-in" || runner.reason === "auth-expired",
+      );
+      if (signIn)
+        return {
+          reason: "agent-not-signed-in",
+          runnerId: signIn.id,
+          runnerName:
+            db
+              .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
+              .get(signIn.id)?.name ?? signIn.id,
+          agent: input.profile.agent,
+        };
+      // A runner the delegator may use that is offline or paused comes back on its own, so the
+      // start waits for it as before instead of asking for a new runner.
+      const usable = (runner: (typeof runners)[number]) =>
+        runner.ownerId === owner.ownerUserId ||
+        (runner.sharing === 1 && owner.leadUserIds.includes(runner.ownerId));
+      if (runners.some((runner) => usable(runner) && ["offline", "paused"].includes(runner.reason)))
+        return null;
+      return { reason: "no-runner" };
     },
     started(input) {
       immediate(db, () => {
