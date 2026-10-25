@@ -82,11 +82,12 @@ function beforeDrop(
   return db;
 }
 
-test("a database whose only project items are finished drops the project start", () => {
+test("a database whose only project items are finished or failed drops the project start", () => {
   const db = beforeDrop([
     ["merged", "merged"],
     ["done", "completed"],
     ["cancelled", "cancelled"],
+    ["failed", "failed"],
   ]);
   try {
     const before = db
