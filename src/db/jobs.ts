@@ -5,6 +5,7 @@ import {
   DEFAULT_BACKOFF_CAP_MS,
   DEFAULT_LEASE_MS,
   IN_FLIGHT_ITEM_STATES,
+  holdsExecution,
   isMergeWork,
   JOB_KIND,
   MERGE_WORK,
@@ -105,7 +106,16 @@ const PARALLEL = `(candidate.queue != ${sqlLiteral(JOB_KIND.start)} OR EXISTS
 const SAME_ITEM = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
     AND (held.locked_until IS NULL OR held.locked_until > ?) AND (${HELD_EXCLUSIVE} OR ${mergeLaneSql("held")})
     AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${ITEM_ID})`;
-const HOLDS_EXECUTION = `(other.state != 'merge_queue'
+// Paused and awaiting-input items keep the legacy session reservation as well.
+const SESSION_HOLD_SQL = IN_FLIGHT_ITEM_STATES.filter(
+  (state) =>
+    holdsExecution({ state, liveRun: false, liveJob: false }) ||
+    state === "paused" ||
+    state === "awaiting_input",
+)
+  .map(sqlLiteral)
+  .join(", ");
+const HOLDS_EXECUTION = `(other.state IN (${SESSION_HOLD_SQL})
     OR EXISTS (SELECT 1 FROM run live WHERE live.item_id=other.id AND live.status IN ('active','provisioning'))
     OR EXISTS (SELECT 1 FROM job held WHERE held.status='running'
       AND (held.locked_until IS NULL OR held.locked_until>?) AND ${HELD_EXCLUSIVE}

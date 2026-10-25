@@ -93,7 +93,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   merge: ["core", "db", "github", "questions"],
   questions: ["core", "db"],
   decisions: ["db", "scheduler"],
-  web: ["db"],
+  web: ["db", "core"],
   evidence: ["db"],
   server: [
     "evidence",

@@ -20,6 +20,7 @@ import {
   recordCiRound,
   recordConfirmedRemoteMerge,
   saveEvidence,
+  saveTaskMode,
   saveTaskBlocks,
   startCloseoutRound,
   upsertCloseoutStep,
@@ -28,6 +29,7 @@ import {
 import { parseStatusSnapshot, statusIntegrity } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
 import { createLiveStatusProvider } from "./provider";
+import { waitReason } from "../client/format";
 
 const open: Database[] = [];
 const homes: string[] = [];
@@ -862,6 +864,48 @@ describe("live status provider", () => {
       createLiveStatusProvider(db, { sessionIds: ["other"] }).snapshot().ciRounds ?? [],
     ).toEqual([]);
   });
+
+  test.each([
+    ["merged", "code", null, true],
+    ["merged", "code", "merged-head", false],
+    ["completed", "code", null, true],
+    ["completed", "answer", null, false],
+    ["completed", "artifact", null, false],
+    ["cancelled", "code", null, true],
+  ] as const)(
+    "blocker %s in %s mode with merge SHA %s is named: %s",
+    (state, mode, mergeSha, named) => {
+      const db = database();
+      const blocker = insertQueuedItem(db, { id: "PAS-709", now: 10 });
+      const blocked = insertQueuedItem(db, { id: "PAS-710", now: 20 });
+      db.run("UPDATE work_item SET state=? WHERE id=?", [state, blocker.id]);
+      saveTaskMode(db, blocker.id, mode);
+      if (mergeSha)
+        recordConfirmedRemoteMerge(db, {
+          itemId: blocker.id,
+          repositoryOwner: "pmdroid",
+          repositoryName: "paws-app",
+          pullNumber: 1,
+          pullUrl: null,
+          mergeSha,
+          confirmedAt: 30,
+        });
+      saveTaskBlocks(
+        db,
+        [blocked.linearIssueId],
+        [
+          {
+            blockerLinearIssueId: blocker.linearIssueId,
+            blockedLinearIssueId: blocked.linearIssueId,
+          },
+        ],
+      );
+      const snapshot = createLiveStatusProvider(db).snapshot();
+      const item = snapshot.items.find((entry) => entry.id === "PAS-710")!;
+      expect(item.blockers).toEqual(named ? ["PAS-709"] : []);
+      expect(waitReason(item)).toBe(named ? "Blocked by PAS-709" : "Waiting for a free runner");
+    },
+  );
 
   test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {
     const db = database();

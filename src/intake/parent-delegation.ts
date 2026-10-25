@@ -167,13 +167,19 @@ export function createParentDelegations(input: {
   function blockerSatisfied(parent: Parent, blockerId: string): boolean {
     const items = db
       .query<
-        { state: WorkItemState; mode: TaskMode | null; cancelRequested: number },
+        {
+          state: WorkItemState;
+          mode: TaskMode | null;
+          cancelRequested: number;
+          mergeSha: string | null;
+        },
         [string, string]
       >(
-        `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested FROM work_item i
+        `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested,f.merge_sha AS mergeSha FROM work_item i
          JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
          LEFT JOIN work_item_task t ON t.item_id=i.id
+         LEFT JOIN remote_merge_fact f ON f.item_id=i.id
          WHERE w.id=? AND i.linear_issue_id=? AND i.state<>'cancelled'
          AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
          ORDER BY i.created_at,i.id`,
