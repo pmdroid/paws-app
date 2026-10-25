@@ -2825,6 +2825,40 @@ ALTER TABLE github_attribution_request ADD COLUMN return_path TEXT CHECK (
 );
 `,
   },
+  {
+    id: "141_member_vm_delete",
+    sql: `
+ALTER TABLE member_vm ADD COLUMN delete_step TEXT
+  CHECK(delete_step IS NULL OR delete_step IN ('drain','tailnet','revoke','destroy','clear'));
+ALTER TABLE member_vm ADD COLUMN delete_runner_id TEXT;
+ALTER TABLE member_vm ADD COLUMN delete_requested_by TEXT;
+ALTER TABLE member_vm ADD COLUMN delete_force INTEGER NOT NULL DEFAULT 0 CHECK(delete_force IN (0,1));
+ALTER TABLE member_vm ADD COLUMN delete_step_started_at INTEGER;
+ALTER TABLE member_vm ADD COLUMN delete_at TEXT CHECK(delete_at IS NULL OR json_valid(delete_at));
+ALTER TABLE member_vm ADD COLUMN delete_failure TEXT;
+ALTER TABLE member_vm ADD COLUMN delete_blocked TEXT
+  CHECK(delete_blocked IS NULL OR json_valid(delete_blocked));
+`,
+  },
+  {
+    id: "142_member_vm_enrollment",
+    sql: `
+CREATE TABLE member_vm_enrollment (
+  token_hash TEXT PRIMARY KEY,
+  member_vm_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX member_vm_enrollment_vm ON member_vm_enrollment(member_vm_id);
+`,
+  },
+  {
+    id: "143_member_vm_enrollments_tracked",
+    sql: `
+ALTER TABLE member_vm ADD COLUMN enrollments_tracked INTEGER NOT NULL DEFAULT 1
+  CHECK(enrollments_tracked IN (0,1));
+UPDATE member_vm SET enrollments_tracked=0;
+`,
+  },
 ];
 
 /**

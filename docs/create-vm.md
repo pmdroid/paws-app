@@ -4,7 +4,7 @@ Create VM on the Runners page makes a VM on [exe.dev](https://exe.dev), installs
 
 ## Give Paws an exe.dev token
 
-Generate an exe.dev API token that may run `new`, `ls` and `ssh`, and save it on the Paws machine:
+Generate an exe.dev API token that may run `new`, `ls`, `ssh` and `rm`, and save it on the Paws machine:
 
 ```sh
 printf '%s' '<exe.dev token>' | install -m 0600 /dev/stdin ~/.paws/secrets/exe-dev-token

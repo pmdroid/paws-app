@@ -137,19 +137,32 @@ export type HostEnrollment = {
 };
 
 /** The member's exe.dev VM as `GET /api/runners/vm` describes it. */
+type StepState = "done" | "running" | "failed" | "pending";
+export type MemberVmDeleteStep = "drain" | "tailnet" | "revoke" | "destroy" | "clear";
 export type MemberVm = {
   id: string;
   vmName: string;
+  userId?: string;
+  ownerName?: string | null;
   step: "create" | "install" | "enroll" | "health" | "ready";
   failure: string | null;
   runnerId: string | null;
   steps: {
     step: "create" | "install" | "enroll" | "health";
-    state: "done" | "running" | "failed" | "pending";
+    state: StepState;
     elapsedMs: number | null;
   }[];
+  deleting?: {
+    step: MemberVmDeleteStep;
+    failure: string | null;
+    blocked: { itemId: string; identifier: string; title: string }[];
+    force: boolean;
+    steps: { step: MemberVmDeleteStep; state: StepState; elapsedMs: number | null }[];
+  } | null;
 };
-export type MemberVmState = { available: false } | { available: true; vm: MemberVm | null };
+export type MemberVmState =
+  | { available: false }
+  | { available: true; vm: MemberVm | null; vms?: MemberVm[] };
 
 const VM_STEPS: Record<MemberVm["steps"][number]["step"], string> = {
   create: "Create the VM",
@@ -164,11 +177,104 @@ const VM_STATES: Record<MemberVm["steps"][number]["state"], [string, string]> = 
   pending: ["", "Waiting"],
 };
 
+const VM_DELETE_STEPS: Record<MemberVmDeleteStep, string> = {
+  drain: "Stop new work",
+  tailnet: "Leave the tailnet",
+  revoke: "Revoke the runner",
+  destroy: "Destroy the VM on exe.dev",
+  clear: "Clear the record",
+};
+
+function deleteButton(vm: MemberVm, busy: boolean): string {
+  return `<button class="btn" data-vm-delete="${esc(vm.id)}" aria-haspopup="dialog" data-focus="vm-delete:${esc(vm.id)}"${busy ? " disabled" : ""}>Delete VM</button>`;
+}
+
+export function memberVmDeleteDialogMarkup(vm: MemberVm, view: { busy: boolean }): string {
+  const name = esc(vm.vmName);
+  const disabled = view.busy ? " disabled" : "";
+  return `<dialog id="vm-delete-dialog" aria-labelledby="vm-delete-heading" aria-describedby="vm-delete-detail"><div class="dialog-body"><h2 id="vm-delete-heading">Delete VM <span class="mono">${name}</span>?</h2><p id="vm-delete-detail"><b class="mono">${name}</b> will be destroyed on exe.dev, with everything on its disk, and its runner removed from Paws.</p><p class="muted">A task running on the runner stops the delete and is named here. You can then wait for it or force the delete, which stops the task.</p><div class="settings-actions"><button class="btn" data-vm-delete-cancel data-focus="vm-delete-cancel">Cancel</button><button class="btn primary" data-vm-delete-confirm="${esc(vm.id)}" data-focus="vm-delete-confirm"${disabled}>Delete VM</button></div></div></dialog>`;
+}
+
+export function memberVmDeleteMarkup(vm: MemberVm, view: { busy: boolean; title: string }): string {
+  const deleting = vm.deleting!;
+  const id = esc(vm.id);
+  const blocked = deleting.failure !== null && deleting.blocked.length > 0;
+  const rows = deleting.steps
+    .map((entry) => {
+      const [tone, label] = VM_STATES[entry.state];
+      const time =
+        entry.elapsedMs === null
+          ? ""
+          : `<span class="muted" data-vm-elapsed>${esc(durationLabel(entry.elapsedMs))}</span>`;
+      const error =
+        entry.state === "failed" && !blocked
+          ? `<p class="runner-skill-error" role="alert">${esc(deleting.failure ?? "The step failed without a reason.")}</p>`
+          : "";
+      return `<li class="runner-skill" data-vm-delete-step="${esc(entry.step)}" data-vm-state="${esc(entry.state)}"><span class="runner-skill-name"><b>${esc(VM_DELETE_STEPS[entry.step])}</b>${time}</span><span class="tag ${tone}">${esc(blocked && entry.state === "failed" ? "Blocked" : label)}</span>${error}</li>`;
+    })
+    .join("");
+  const disabled = view.busy ? " disabled" : "";
+  const tasks = deleting.blocked
+    .map((task) => `<li><b class="mono">${esc(task.identifier)}</b> ${esc(task.title)}</li>`)
+    .join("");
+  const status = blocked
+    ? `<div role="alert"><p>${deleting.blocked.length === 1 ? "This task is" : "These tasks are"} still running on the VM:</p><ul data-vm-delete-blocked>${tasks}</ul><p class="muted">Retry once ${deleting.blocked.length === 1 ? "it ends" : "they end"}, or force the delete. Force delete stops ${deleting.blocked.length === 1 ? "the task" : "each task"} the way Stop does.</p></div>`
+    : deleting.failure !== null
+      ? '<p class="muted">Retry resumes from the failed step.</p>'
+      : '<p class="muted">Paws drains the runner, removes it and destroys the VM on exe.dev.</p>';
+  const actions =
+    deleting.failure === null
+      ? ""
+      : `<div class="settings-actions"><button class="btn primary" data-vm-delete-retry="${id}" data-focus="vm-delete-retry:${id}"${disabled}>Retry</button>${blocked && !deleting.force ? `<button class="btn" data-vm-delete-force="${id}" data-focus="vm-delete-force:${id}"${disabled}>Force delete</button>` : ""}</div>`;
+  const pill = blocked
+    ? '<span class="tag warn">Blocked</span>'
+    : deleting.failure !== null
+      ? '<span class="tag bad">Delete failed</span>'
+      : '<span class="tag running">Deleting</span>';
+  return `<section class="runner-section" data-member-vm-delete="${esc(deleting.step)}" aria-labelledby="vm-delete-progress-${id}"><div class="between"><h2 id="vm-delete-progress-${id}" tabindex="-1" data-focus="vm-delete-progress:${id}">${esc(view.title)} <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM delete steps">${rows}</ul>${actions}</section>`;
+}
+
+export function runnerVmMarkup(vm: MemberVm, view: { busy: boolean }): string {
+  if (vm.deleting) return memberVmDeleteMarkup(vm, { busy: view.busy, title: "Deleting VM" });
+  return `<section class="runner-section" aria-labelledby="runner-vm-${esc(vm.id)}"><div class="between"><h2 id="runner-vm-${esc(vm.id)}">exe.dev VM <span class="mono">${esc(vm.vmName)}</span></h2>${deleteButton(vm, view.busy)}</div><p class="muted">Created with Create VM. Deleting it destroys the VM on exe.dev and removes this runner from Paws.</p></section>`;
+}
+
+export function memberVmsMarkup(vms: readonly MemberVm[], view: { busy: boolean }): string {
+  if (vms.length === 0) return "";
+  const rows = vms
+    .filter((vm) => !vm.deleting)
+    .map((vm) => {
+      const [tone, label] =
+        vm.failure !== null
+          ? ["bad", "Setup failed"]
+          : vm.step === "ready"
+            ? ["ok", "Ready"]
+            : ["running", "Setting up"];
+      const owner = vm.ownerName ? `Created by ${vm.ownerName}` : "Created with Create VM";
+      return `<li class="runner-skill" data-member-vm-other="${esc(vm.id)}"><span class="runner-skill-name"><b class="mono">${esc(vm.vmName)}</b><span class="muted">${esc(owner)}</span></span><span class="tag ${tone}">${esc(label)}</span><div class="runner-agent-actions">${deleteButton(vm, view.busy)}</div></li>`;
+    })
+    .join("");
+  const list = rows
+    ? `<section class="runner-section" aria-labelledby="member-vms-heading"><h2 id="member-vms-heading">Members' VMs</h2><p class="muted">VMs other members created with Create VM. As a workspace owner or admin you can delete them.</p><ul class="runner-skill-list" role="list" aria-label="Members' VMs">${rows}</ul></section>`
+    : "";
+  const deleting = vms
+    .filter((vm) => vm.deleting)
+    .map((vm) =>
+      memberVmDeleteMarkup(vm, {
+        busy: view.busy,
+        title: vm.ownerName ? `Deleting ${vm.ownerName}'s VM` : "Deleting VM",
+      }),
+    )
+    .join("");
+  return `${list}${deleting}`;
+}
+
 /** The member's VM: each step with its state and time, the stored error and Retry. */
 export function memberVmMarkup(
   vm: MemberVm,
   view: { busy: boolean; runner: Pick<Runner, "id" | "name" | "status"> | null },
 ): string {
+  if (vm.deleting) return memberVmDeleteMarkup(vm, { busy: view.busy, title: "Deleting your VM" });
   const removed = vm.step === "ready" && (view.runner === null || view.runner.status === "revoked");
   const ready = vm.step === "ready" && !removed;
   const rows = vm.steps
@@ -208,7 +314,7 @@ export function memberVmMarkup(
       : vm.failure === null
         ? '<span class="tag running">Setting up</span>'
         : '<span class="tag bad">Failed</span>';
-  return `<section class="runner-section" data-member-vm="${esc(vm.step)}" aria-labelledby="member-vm-heading"><div class="between"><h2 id="member-vm-heading" tabindex="-1" data-focus="vm-heading">Your VM <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM setup steps">${rows}</ul>${retry ? `<div class="settings-actions">${retry}</div>` : ""}</section>`;
+  return `<section class="runner-section" data-member-vm="${esc(vm.step)}" aria-labelledby="member-vm-heading"><div class="between"><h2 id="member-vm-heading" tabindex="-1" data-focus="vm-heading">Your VM <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM setup steps">${rows}</ul><div class="settings-actions">${retry}${deleteButton(vm, view.busy)}</div></section>`;
 }
 
 function shellQuote(value: string): string {
@@ -959,6 +1065,7 @@ export function createRunners() {
   let hostName = "";
   let enrollment: HostEnrollment | null = null;
   let memberVm: MemberVmState = { available: false };
+  let confirmingDelete: string | null = null;
   let busy = false;
   let feedback = "";
   let error = "";
@@ -986,6 +1093,17 @@ export function createRunners() {
     addingHost = false;
     enrollment = null;
     memberVm = { available: false };
+    confirmingDelete = null;
+  }
+  function deletableVms(): MemberVm[] {
+    const state = memberVm;
+    if (!state.available) return [];
+    const own = state.vm ? [state.vm] : [];
+    return [...own, ...(state.vms ?? []).filter((entry) => entry.id !== state.vm?.id)];
+  }
+  function deleteDialog(): string {
+    const vm = deletableVms().find((entry) => entry.id === confirmingDelete);
+    return vm && !vm.deleting ? memberVmDeleteDialogMarkup(vm, { busy }) : "";
   }
   /** Any active member who is not an observer may add a host, and owns it. */
   function addsHosts() {
@@ -1144,13 +1262,22 @@ export function createRunners() {
     const actions = addsHosts()
       ? `<div class="settings-actions">${createVm}<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a host</button></div>`
       : "";
-    const vmSection = vm
-      ? memberVmMarkup(vm, {
-          busy,
-          runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
-        })
-      : "";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}`;
+    const vmSection = `${
+      vm
+        ? memberVmMarkup(vm, {
+            busy,
+            runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
+          })
+        : ""
+    }${
+      manages()
+        ? memberVmsMarkup(
+            deletableVms().filter((entry) => entry.id !== vm?.id),
+            { busy },
+          )
+        : ""
+    }`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1158,6 +1285,7 @@ export function createRunners() {
     const runner = runners.find((entry) => entry.id === id);
     if (!runner)
       return `<h1 class="sr-only">Runners</h1>${back}${notices}${loaded ? `<div class="empty">This runner is not paired with your workspace. <a href="${list}">Choose another runner</a>.</div>` : ""}`;
+    const runnerVm = deletableVms().find((entry) => entry.runnerId === runner.id);
     return `<h1 class="sr-only">Runners</h1>${back}${notices}${runnerDetailMarkup(runner, {
       now,
       serverVersion,
@@ -1169,7 +1297,7 @@ export function createRunners() {
       ...(concurrencyDrafts.has(runner.id)
         ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
         : {}),
-    })}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>`;
+    })}${runnerVm ? runnerVmMarkup(runnerVm, { busy }) : ""}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>${deleteDialog()}`;
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
@@ -1258,6 +1386,55 @@ export function createRunners() {
         refocus("vm-heading");
       }, false);
     });
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-vm-delete]"))
+      button.addEventListener("click", () => {
+        confirmingDelete = button.dataset.vmDelete!;
+        refocus("vm-delete-cancel");
+        paint();
+      });
+    const removing = root!.querySelector<HTMLDialogElement>("#vm-delete-dialog");
+    if (removing) {
+      removing.showModal();
+      removing.addEventListener("close", () => {
+        if (!removing.isConnected || confirmingDelete === null) return;
+        const id = confirmingDelete;
+        confirmingDelete = null;
+        refocus(`vm-delete:${id}`);
+        paint();
+      });
+      removing.addEventListener("click", (event) => {
+        if (event.target === removing) removing.close();
+      });
+      removing
+        .querySelector("[data-vm-delete-cancel]")
+        ?.addEventListener("click", () => removing.close());
+      const confirm = removing.querySelector<HTMLElement>("[data-vm-delete-confirm]");
+      confirm?.addEventListener("click", () => {
+        const id = confirm.dataset.vmDeleteConfirm!;
+        confirmingDelete = null;
+        void change(async () => {
+          memberVm = await api<MemberVmState>("/api/runners/vm/delete", { id });
+          refocus(`vm-delete-progress:${id}`);
+        }, false);
+      });
+    }
+    for (const [attribute, force] of [
+      ["vmDeleteRetry", false],
+      ["vmDeleteForce", true],
+    ] as const)
+      for (const button of root!.querySelectorAll<HTMLElement>(
+        `[data-${attribute === "vmDeleteRetry" ? "vm-delete-retry" : "vm-delete-force"}]`,
+      ))
+        button.addEventListener("click", () => {
+          const id = button.dataset[attribute]!;
+          void change(async () => {
+            memberVm = await api<MemberVmState>("/api/runners/vm/delete", {
+              id,
+              ...(force ? { force: true } : {}),
+            });
+            refocus(`vm-delete-progress:${id}`);
+          }, false);
+        });
     root!.querySelector<HTMLElement>("[data-runner-add]")?.addEventListener("click", () => {
       addingHost = true;
       enrollment = null;

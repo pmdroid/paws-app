@@ -4,6 +4,12 @@ import { isExeDevVmName } from "../provisioning";
 import { workspaceId as mintId } from "../workspace";
 
 export const MEMBER_VM_QUEUE = "member_vm.provision";
+export const MEMBER_VM_DELETE_QUEUE = "member_vm.delete";
+
+export const MEMBER_VM_DELETE_STEPS = ["drain", "tailnet", "revoke", "destroy", "clear"] as const;
+export type MemberVmDeleteStep = (typeof MEMBER_VM_DELETE_STEPS)[number];
+
+export type MemberVmBlockingTask = { itemId: string; identifier: string; title: string };
 
 export const MEMBER_VM_STEPS = ["create", "install", "enroll", "health", "ready"] as const;
 export type MemberVmStep = (typeof MEMBER_VM_STEPS)[number];
@@ -27,6 +33,15 @@ export type MemberVm = {
   readyAt: number | null;
   createdAt: number;
   updatedAt: number;
+  deleteStep: MemberVmDeleteStep | null;
+  deleteRunnerId: string | null;
+  deleteRequestedBy: string | null;
+  deleteForce: number;
+  deleteStepStartedAt: number | null;
+  deleteAt: string | null;
+  deleteFailure: string | null;
+  deleteBlocked: string | null;
+  enrollmentsTracked: number;
 };
 
 export type MemberRef = { workspaceId: string; userId: string };
@@ -43,7 +58,11 @@ const COLUMNS = `id,workspace_id AS workspaceId,user_id AS userId,vm_name AS vmN
   runner_id AS runnerId,step_started_at AS stepStartedAt,create_requested_at AS createRequestedAt,
   install_started_at AS installStartedAt,token_expires_at AS tokenExpiresAt,
   install_at AS installAt,enroll_at AS enrollAt,health_at AS healthAt,ready_at AS readyAt,
-  created_at AS createdAt,updated_at AS updatedAt`;
+  created_at AS createdAt,updated_at AS updatedAt,delete_step AS deleteStep,
+  delete_runner_id AS deleteRunnerId,delete_requested_by AS deleteRequestedBy,
+  delete_force AS deleteForce,delete_step_started_at AS deleteStepStartedAt,delete_at AS deleteAt,
+  delete_failure AS deleteFailure,delete_blocked AS deleteBlocked,
+  enrollments_tracked AS enrollmentsTracked`;
 
 export function getMemberVm(db: Database, id: string): MemberVm | null {
   return db.query<MemberVm, [string]>(`SELECT ${COLUMNS} FROM member_vm WHERE id=?`).get(id);
@@ -61,6 +80,7 @@ export function startMemberVm(db: Database, input: MemberRef & { now?: number })
   const now = input.now ?? Date.now();
   return immediate(db, () => {
     const existing = current(db, input, now);
+    if (existing?.deleteStep != null) return existing;
     if (existing) {
       if (
         existing.failure === null &&
@@ -95,6 +115,7 @@ export function retryMemberVm(db: Database, input: MemberRef & { now?: number })
   return immediate(db, () => {
     const existing = current(db, input, now);
     if (!existing) throw new Error("This member has no VM to retry.");
+    if (existing.deleteStep !== null) throw new Error("This VM is being deleted.");
     if (existing.failure === null) return existing;
     requireOwner(db, input);
     db.run(
@@ -109,6 +130,86 @@ export function retryMemberVm(db: Database, input: MemberRef & { now?: number })
     ensureJob(db, existing.id, now);
     return getMemberVm(db, existing.id)!;
   });
+}
+
+export class MemberVmDeleteDenied extends Error {
+  constructor() {
+    super("Only the VM's owner or a workspace owner or admin can delete this VM.");
+    this.name = "MemberVmDeleteDenied";
+  }
+}
+
+export class MemberVmMissing extends Error {
+  constructor() {
+    super("This VM no longer exists.");
+    this.name = "MemberVmMissing";
+  }
+}
+
+export function mayDeleteMemberVm(db: Database, row: MemberVm, requester: MemberRef): boolean {
+  if (row.workspaceId !== requester.workspaceId) return false;
+  const member = db
+    .query<{ role: string; active: number }, [string, string]>(
+      "SELECT role,active FROM workspace_member WHERE workspace_id=? AND user_id=?",
+    )
+    .get(requester.workspaceId, requester.userId);
+  if (!member?.active || member.role === "observer") return false;
+  return row.userId === requester.userId || member.role === "owner" || member.role === "admin";
+}
+
+export function listDeletableMemberVms(db: Database, requester: MemberRef): MemberVm[] {
+  return db
+    .query<MemberVm, [string]>(
+      `SELECT ${COLUMNS} FROM member_vm WHERE workspace_id=? ORDER BY created_at,id`,
+    )
+    .all(requester.workspaceId)
+    .filter((row) => mayDeleteMemberVm(db, row, requester));
+}
+
+export function startMemberVmDelete(
+  db: Database,
+  input: MemberRef & { id: string; force?: boolean; now?: number },
+): MemberVm {
+  const now = input.now ?? Date.now();
+  const force = input.force === true ? 1 : 0;
+  return immediate(db, () => {
+    const row = getMemberVm(db, input.id);
+    if (row === null || row.workspaceId !== input.workspaceId) throw new MemberVmMissing();
+    if (!mayDeleteMemberVm(db, row, input)) throw new MemberVmDeleteDenied();
+    if (row.deleteStep === null) {
+      db.run(
+        `UPDATE member_vm SET delete_step='drain',delete_runner_id=runner_id,delete_requested_by=?,
+        delete_force=?,delete_step_started_at=?,delete_at=json_object('drain',?),delete_failure=NULL,
+        delete_blocked=NULL,updated_at=? WHERE id=?`,
+        [input.userId, force, now, now, now, row.id],
+      );
+      db.run(
+        `UPDATE job SET status='cancelled',finished_at=?,locked_by=NULL,locked_until=NULL,
+        last_error='member VM deleted' WHERE queue=? AND status='pending'
+        AND json_extract(payload,'$.memberVmId')=?`,
+        [now, MEMBER_VM_QUEUE, row.id],
+      );
+    } else if (row.deleteFailure !== null || force > row.deleteForce) {
+      db.run(
+        `UPDATE member_vm SET delete_failure=NULL,delete_blocked=NULL,delete_force=MAX(delete_force,?),
+        delete_step_started_at=?,updated_at=? WHERE id=?`,
+        [force, now, now, row.id],
+      );
+    }
+    ensureDeleteJob(db, row.id, now);
+    return getMemberVm(db, row.id)!;
+  });
+}
+
+function ensureDeleteJob(db: Database, id: string, now: number): void {
+  const open = db
+    .query<{ id: number }, [string, string]>(
+      `SELECT id FROM job WHERE queue=? AND status IN ('pending','running')
+      AND json_extract(payload,'$.memberVmId')=? LIMIT 1`,
+    )
+    .get(MEMBER_VM_DELETE_QUEUE, id);
+  if (open) return;
+  enqueueJob(db, { queue: MEMBER_VM_DELETE_QUEUE, payload: { memberVmId: id }, now });
 }
 
 function current(db: Database, member: MemberRef, now: number): MemberVm | null {
