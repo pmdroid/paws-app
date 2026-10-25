@@ -11,6 +11,7 @@ export {
   createExeDevBootstrap,
   isBootstrapError,
   RUNNER_CONFIG_PATH,
+  RUNNER_STATE_DIR,
 } from "./bootstrap";
 export type {
   BootstrapStep,
@@ -30,6 +31,9 @@ export {
 } from "./client";
 export type { ExeDevFetch, ExeDevOptions, ExeDevTokenReader } from "./client";
 export { createFakeExeDev, FAKE_UNSCRIPTED_EXIT } from "./fake";
+export { createFakeBootstrap } from "./fake-bootstrap";
+export { PINNED_MISE, PINNED_MISE_VERSION } from "./mise";
+export type { FakeBootstrap, FakeBootstrapCall, FakeBootstrapOptions } from "./fake-bootstrap";
 export type { FakeExecScript, FakeExeDev, FakeExeDevCall, FakeFailure } from "./fake";
 export { isExeDevVmName, MAX_EXEC_COMMAND_BYTES } from "./names";
 export { isProvisioningError, ProvisioningError } from "./types";

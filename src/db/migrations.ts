@@ -2744,6 +2744,28 @@ DROP TABLE linear_github_task_account;
 DROP TABLE linear_github_auth;
 `,
   },
+  {
+    id: "136_member_vm",
+    sql: `
+CREATE TABLE member_vm (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  vm_name TEXT NOT NULL UNIQUE,
+  step TEXT NOT NULL CHECK(step IN ('create','install','enroll','health','ready')),
+  failure TEXT,
+  runner_id TEXT REFERENCES runner(id),
+  step_started_at INTEGER NOT NULL,
+  create_requested_at INTEGER,
+  install_started_at INTEGER,
+  token_expires_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(workspace_id,user_id),
+  FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_member(workspace_id,user_id)
+) STRICT;
+`,
+  },
 ];
 
 /**
