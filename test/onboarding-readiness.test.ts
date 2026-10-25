@@ -213,7 +213,7 @@ test("the page lists Linear, membership, runner, coding agents, then the optiona
   expect(ready.slice(2).map((step) => [step.label, step.detail])).toEqual([
     ["Ready", "Paws runs TEST-1 on mia-paws."],
     ["Sign-in expired", "Sign in to Codex on mia-paws. The Codex sign-in expired."],
-    ["Linked", "Linked as @mia-chen. Your commits credit you."],
+    ["Linked", "Commits will credit @mia-chen."],
   ]);
 });
 
@@ -273,4 +273,33 @@ test("values on the page are escaped", async () => {
   expect(html).not.toContain("<script>x");
   expect(html).not.toContain("<img");
   expect(html).toContain("&lt;img src=x onerror=&quot;y&quot;&gt;");
+});
+
+test("the optional GitHub step offers a consent form that posts to this page, and never blocks", async () => {
+  expect(onboardingSteps(base).at(-1)).toMatchObject({
+    state: "optional",
+    detail: "Link GitHub to get credit on commits and pull requests (optional).",
+  });
+  const offered = onboardingPage({
+    ...base,
+    githubLink: { action: "/onboard/ABCDEFGHJKMNPQRSTVWXYZ0123", csrf: 'tok"en' },
+  });
+  expect(offered.headers.get("content-security-policy")).toContain(
+    "form-action 'self' https://github.com",
+  );
+  const html = await offered.text();
+  expect(html).toContain('<form method="post" action="/onboard/ABCDEFGHJKMNPQRSTVWXYZ0123">');
+  expect(html).toContain('<input type="hidden" name="csrf" value="tok&quot;en">');
+  expect(html).toContain('name="consent" value="yes" required');
+  // Optional steps are not counted, so the page reads the same with or without the link.
+  expect(html).toContain("2 more steps before Paws starts");
+
+  for (const input of [
+    { ...base, githubLink: null },
+    { ...base, github: { login: "mia-chen" }, githubLink: { action: "/onboard/x", csrf: "t" } },
+  ]) {
+    const page = onboardingPage(input);
+    expect(page.headers.get("content-security-policy")).toContain("form-action 'none'");
+    expect(await page.text()).not.toContain("<form");
+  }
 });

@@ -39,6 +39,12 @@ export type OnboardingPageInput = {
   github: { login: string } | null;
   /** Paws can create a VM for the member, so the runner step offers Create VM. */
   createVm: boolean;
+  /**
+   * The form that starts the consented GitHub credit link, or null when it cannot be offered
+   * (already linked, an observer, or no GitHub App client metadata). `action` is this page's own
+   * `/onboard/<id>/github`; `csrf` is the viewer's session token.
+   */
+  githubLink?: { action: string; csrf: string } | null;
 };
 
 type StepState = "done" | "needed" | "running" | "failed" | "later" | "optional";
@@ -49,6 +55,8 @@ type Step = {
   label: string;
   detail: string;
   action?: { href: string; label: string };
+  /** Trusted markup below the detail, such as a form. Built here from escaped values only. */
+  form?: string;
 };
 
 /** The dashboard page with Create VM and Add a host. */
@@ -81,6 +89,8 @@ nav a{color:#17151f;font-weight:600;border:2px solid #17151f;padding:8px 14px;te
 nav a:first-child{background:#ff7a3d}
 .note{margin:20px 0 0;font-size:.85rem;color:#3b3748}
 .action{display:inline-block;margin:10px 0 0;color:#17151f;font-weight:600;border:2px solid #17151f;padding:6px 12px;text-decoration:none;background:#ff7a3d}
+form{margin:10px 0 0;display:grid;gap:8px;font-size:.85rem}
+form button{justify-self:start;font:inherit;font-weight:600;border:2px solid #17151f;padding:6px 12px;background:#ff7a3d;cursor:pointer}
 `;
 const STYLE_HASH = createHash("sha256").update(STYLE).digest("base64");
 const MARK: Record<StepState, string> = {
@@ -211,13 +221,23 @@ export function onboardingSteps(input: OnboardingPageInput): Step[] {
           title: "GitHub credit",
           state: "done",
           label: "Linked",
-          detail: `Linked as @${input.github.login}. Your commits credit you.`,
+          detail: `Commits will credit @${input.github.login}.`,
         }
       : {
           title: "GitHub credit",
           state: "optional",
           label: "Optional",
-          detail: "Link GitHub so commits Paws makes for you credit you.",
+          detail: "Link GitHub to get credit on commits and pull requests (optional).",
+          ...(input.githubLink
+            ? {
+                // Skipping is fine: Paws starts without it, and commits are by the Paws App.
+                form: `<form method="post" action="${escape(
+                  input.githubLink.action,
+                )}"><input type="hidden" name="csrf" value="${escape(
+                  input.githubLink.csrf,
+                )}"><label><input type="checkbox" name="consent" value="yes" required> I consent to public commit and pull request credit using my verified GitHub identity.</label><button type="submit">Link GitHub</button></form>`,
+              }
+            : {}),
         },
   );
   return steps;
@@ -242,7 +262,7 @@ export function onboardingPage(input: OnboardingPageInput): Response {
           step.action
             ? `<a class="action" href="${escape(step.action.href)}">${escape(step.action.label)}</a>`
             : ""
-        }</div><span class="label">${escape(step.label)}</span></li>`,
+        }${step.form ?? ""}</div><span class="label">${escape(step.label)}</span></li>`,
     )
     .join("");
   const links = [
@@ -262,7 +282,10 @@ export function onboardingPage(input: OnboardingPageInput): Response {
     status: 200,
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "content-security-policy": `default-src 'none'; style-src 'sha256-${STYLE_HASH}'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+      "content-security-policy": `default-src 'none'; style-src 'sha256-${STYLE_HASH}'; frame-ancestors 'none'; base-uri 'none'; form-action ${
+        // The credit form posts here, and its answer redirects to GitHub's authorize page.
+        steps.some((step) => step.form) ? "'self' https://github.com" : "'none'"
+      }`,
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
