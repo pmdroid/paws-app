@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
+  applyWorkItemEvent,
   beginImplementRun,
   enqueueOutbox,
   insertQueuedItem,
@@ -228,5 +229,31 @@ describe("one page per issue", () => {
     expect(text).toContain("Task: PAS-367");
     expect(text).not.toMatch(ULID);
     expect(text).not.toMatch(UUID);
+  });
+
+  test("the item timeline reads work_item_event, a restart with its reason", () => {
+    const db = database();
+    threeRuns(db);
+    applyWorkItemEvent(db, ITEM, "restart", {
+      kind: "restart",
+      reason: "follow_up",
+      actor: "Jonas Berg",
+      now: T0 + 200_000,
+    });
+    const item = snapshotOf(db).items.find((entry) => entry.id === "PAS-367");
+    expect(item?.timeline?.map((entry) => [entry.from, entry.event, entry.to, entry.kind])).toEqual(
+      [
+        ["queued", "dispatched", "running", "transition"],
+        ["running", "restart", "queued", "restart"],
+      ],
+    );
+    expect(item?.timeline?.[1]).toMatchObject({
+      at: new Date(T0 + 200_000).toISOString(),
+      reason: "follow_up",
+      actor: "Jonas Berg",
+    });
+    const html = issuePage(snapshotOf(db));
+    expect(html).toContain("Back to the agent for a follow-up in Linear.");
+    expect(html).toContain("by Jonas Berg");
   });
 });

@@ -70,6 +70,7 @@ import {
   listTaskBlockers,
   listWorkItemFacts,
   listWorkItemsByStates,
+  listWorkItemEventRows,
   type CloseoutProgressRecord,
   type CloseoutRound,
   type CloseoutStepRecord,
@@ -94,6 +95,7 @@ import {
   type StatusGitHubQueue,
   type StatusHeld,
   type StatusItem,
+  type StatusItemEvent,
   type StatusMergeQueue,
   type StatusMergeEntry,
   type StatusMergeOutcome,
@@ -299,6 +301,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     linearRequests: linearRequests.get(record.id) ?? 0,
     ...heldOf(record, holds),
     ...sessionAttempt(db, record, records, itemsByIssue, storedRuns, facts),
+    ...timelineOf(db, record),
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -512,6 +515,23 @@ function toItem(
     ...(mergeQueue ? { mergeQueue } : {}),
     ...(githubQueue ? { githubQueue } : {}),
     ...visualReviewsOf(db, record),
+  };
+}
+
+/** The item's state changes from `work_item_event`, oldest first. Omitted while it has none. */
+function timelineOf(db: Database, record: WorkItemRecord): { timeline?: StatusItemEvent[] } {
+  const rows = listWorkItemEventRows(db, record.id);
+  if (rows.length === 0) return {};
+  return {
+    timeline: rows.map((row) => ({
+      at: iso(row.at),
+      kind: row.kind,
+      from: row.fromState,
+      to: row.toState,
+      event: row.event,
+      reason: row.reason,
+      actor: row.actor,
+    })),
   };
 }
 

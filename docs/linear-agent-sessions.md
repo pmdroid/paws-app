@@ -42,6 +42,35 @@ A created session must receive an activity, or an `externalUrls` update, within 
 
 Ephemeral `thought` and `action` activities are replaced in the session UI by the next activity. That display exists only in the session UI.
 
+## Item history
+
+Every committed work-item transition writes one `work_item_event` row in the same transaction as the state change (`applyWorkItemEvent` in `src/db/items.ts`). The row carries the item, the version the transition produced, the time, `from_state`, `to_state`, the `transition()` event, a `kind` and an optional `reason`, `payload_digest` and `actor`. A transition that sends the item back to the agent is kind `restart` with reason `findings`, `ci`, `review`, `conflict`, `follow_up` or `answer`. One that asks a person is kind `ask` with the ask reason. The issue page on the status dashboard shows the rows as the item timeline.
+
+The flow metrics read this table:
+
+```sql
+-- Fix rounds per merged item.
+SELECT w.id, COUNT(e.id) AS fix_rounds
+FROM work_item w
+LEFT JOIN work_item_event e
+  ON e.item_id = w.id AND e.kind = 'restart' AND e.reason IN ('findings','ci','review')
+WHERE w.state = 'merged'
+GROUP BY w.id;
+
+-- Rebase returns per merged item.
+SELECT w.id, COUNT(e.id) AS rebase_returns
+FROM work_item w
+LEFT JOIN work_item_event e ON e.item_id = w.id AND e.kind = 'restart' AND e.reason = 'conflict'
+WHERE w.state = 'merged'
+GROUP BY w.id;
+
+-- Questions per item, and visual review requests.
+SELECT item_id, COUNT(*) AS questions, SUM(reason = 'visual_review') AS visual_reviews
+FROM work_item_event WHERE kind = 'ask' GROUP BY item_id;
+```
+
+Items created before migration `145_work_item_event` have no rows for their earlier transitions.
+
 ## What Pascal should verify
 
 These need a real Linear workspace. Do not point a webhook at a tunneled laptop for them.
