@@ -6,7 +6,9 @@ import {
   loadEnv,
   pawsPaths,
   type EnvSource,
+  isTailnetUrl,
   type ExeDevTokenStatus,
+  type TailscaleAuthKeyStatus,
 } from "../config";
 import { describeLinearWebhookWarning, LINEAR_WEBHOOK_FIX, type LinearWebhookWarning } from "../db";
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
@@ -64,6 +66,8 @@ const FIX = {
   githubRate: "Wait for the GitHub rate limit to recover.",
   exeDev:
     "Generate an exe.dev API token that may run new, ls and ssh, and save it to ~/.paws/secrets/exe-dev-token.",
+  tailscaleAuthKey:
+    "Create a reusable, pre-authorized Tailscale auth key tagged tag:paws-runner and save it to ~/.paws/secrets/tailscale-authkey (docs/create-vm.md).",
   githubWebhook:
     "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews and Merge groups events (docs/github-app.md).",
 } as const;
@@ -109,6 +113,8 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     ),
   );
   if (facts.exeDevToken !== undefined) checks.push(exeDevCheck(facts.exeDevToken));
+  if (facts.tailscaleAuthKey !== undefined)
+    checks.push(tailscaleAuthKeyCheck(facts.tailscaleAuthKey, isTailnetUrl(facts.publicUrl)));
   if (facts.webhooks) {
     checks.push(
       check(
@@ -319,6 +325,36 @@ function exeDevCheck(status: ExeDevTokenStatus): DoctorCheck {
       return check("exe-dev", false, "exe.dev token file is empty", FIX.exeDev);
     case "unreadable":
       return check("exe-dev", false, "exe.dev token file cannot be read", FIX.exeDev);
+  }
+}
+
+function tailscaleAuthKeyCheck(status: TailscaleAuthKeyStatus, tailnet: boolean): DoctorCheck {
+  switch (status) {
+    case "readable":
+      return check("tailscale-authkey", true, "auth key present and readable");
+    case "absent":
+      return tailnet
+        ? check(
+            "tailscale-authkey",
+            false,
+            "PAWS_PUBLIC_URL is on a tailnet and there is no Tailscale auth key; Create VM refuses",
+            FIX.tailscaleAuthKey,
+          )
+        : note("tailscale-authkey", "no Tailscale auth key; Create VM VMs join no tailnet");
+    case "empty":
+      return check(
+        "tailscale-authkey",
+        false,
+        "Tailscale auth key file is empty",
+        FIX.tailscaleAuthKey,
+      );
+    case "unreadable":
+      return check(
+        "tailscale-authkey",
+        false,
+        "Tailscale auth key file cannot be read",
+        FIX.tailscaleAuthKey,
+      );
   }
 }
 
