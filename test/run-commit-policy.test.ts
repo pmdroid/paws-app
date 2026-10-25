@@ -17,11 +17,10 @@ import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 
 const BOT = { appId: "5306145", login: "paws-helper[bot]", id: 342190309 };
-const BOT_ONLY: GitCommitPolicy = { bot: BOT, projectLead: null, taskSteerer: null };
+const BOT_ONLY: GitCommitPolicy = { bot: BOT, credit: null };
 const WITH_CREDIT: GitCommitPolicy = {
   bot: BOT,
-  projectLead: null,
-  taskSteerer: {
+  credit: {
     id: 434505,
     login: "pmdroid",
     name: "Pascal Matthiesen",

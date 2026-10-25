@@ -156,6 +156,17 @@ export function saveSchedulingContext(
   );
 }
 
+/** Linear user id of the item's project lead as last saved from Linear, or null. */
+export function projectLeadId(db: Database, itemId: string): string | null {
+  return (
+    db
+      .query<{ lead: string | null }, [string]>(
+        "SELECT project_lead_id AS lead FROM work_item_scheduling WHERE item_id=?",
+      )
+      .get(itemId)?.lead ?? null
+  );
+}
+
 export function hintedPaths(brief: string | null): string[] {
   const description = brief === null ? null : (JSON.parse(brief) as WorkBrief).issue.description;
   const hints = description?.match(/^\s*paths:\s*(.+)$/gim);

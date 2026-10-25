@@ -49,6 +49,7 @@ import {
   VISUAL_REVIEW_REMINDER_MS,
   visualReviewCarriedNote,
 } from "../src/questions";
+import { saveSchedulingContext } from "../src/scheduler";
 import { githubClient } from "./e2e-harness";
 import { screenshotPng, type Rect } from "./png";
 import { workspaceAdmission } from "./fake-workspace";
@@ -754,28 +755,15 @@ async function pausedForReview(
   } = {},
 ) {
   const layout = await repoLayout(closeoutPolicy(options.paths));
-  const tracker = Object.assign(
-    createFakeTracker([
-      {
-        linearIssueId: "issue",
-        identifier: "ENG-7",
-        title: "Settings screen",
-        description: null,
-        subIssues: [],
-      },
-    ]),
+  const tracker = createFakeTracker([
     {
-      async getIssueAttribution(issueId: string) {
-        return {
-          issueId,
-          organizationId: "org-1",
-          teamId: "team-1",
-          projectId: "project-1",
-          leadId: "lead-1",
-        };
-      },
+      linearIssueId: "issue",
+      identifier: "ENG-7",
+      title: "Settings screen",
+      description: null,
+      subIssues: [],
     },
-  );
+  ]);
   const log: { kind: string; body: string; options?: readonly unknown[] }[] = [];
   const { postProgress, askQuestion } = tracker;
   tracker.postProgress = async (update, requestOptions) => {
@@ -890,6 +878,11 @@ async function pausedForReview(
   });
   await orchestrator.onLinearEvent(created());
   db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
+  saveSchedulingContext(db, {
+    itemId: listWorkItems(db)[0]!.id,
+    projectId: "project-1",
+    projectLeadId: "lead-1",
+  });
   const running = jobs.tick();
   const runnerId = leaseActiveRun(db);
   await running;

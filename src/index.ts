@@ -155,8 +155,7 @@ import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./dep
 import {
   issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
-  IssueAttributionCache,
-  createCommitPolicyForItem,
+  delegatorCommitCredit,
   createWorkspaceAssignments,
   type WorkspacePrincipal,
 } from "./workspace";
@@ -384,11 +383,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
 
   let linearTaskAccess: LinearTaskAccess | null = null;
-  let issueAttribution: IssueAttributionCache | null = null;
   const invalidateAuthorization = (scope: { sessionId?: string; issueId?: string } = {}): void => {
     linearTaskAccess?.invalidate(scope);
     orchestrator?.invalidateGitHubAuthorization(scope);
-    if (scope.sessionId === undefined) issueAttribution?.invalidate(scope.issueId);
   };
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
@@ -588,10 +585,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw error;
     }
   }
-  if (linear?.tracker?.getIssueAttribution)
-    issueAttribution = new IssueAttributionCache({
-      getIssueAttribution: linear.tracker.getIssueAttribution.bind(linear.tracker),
-    });
   const commitPolicyForItem = async (
     item: WorkItemRecord,
     selected = getWorkItemRepository(db, item.id) ?? repository,
@@ -601,16 +594,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
     const policy = options?.commitPolicyForItem
       ? await options.commitPolicyForItem(item)
-      : issueAttribution && members && runtime.linearClientId
-        ? await createCommitPolicyForItem({
-            db,
-            bot,
-            clientId: runtime.linearClientId,
-            tracker: issueAttribution.tracker(item),
-            memberships: members,
-          })(item)
-        : undefined;
-    if (!policy) throw new Error("Verified workspace attribution is unavailable");
+      : { bot, credit: delegatorCommitCredit(db, item.id) };
     if (
       bot.appId !== policy.bot.appId ||
       bot.id !== policy.bot.id ||
@@ -942,10 +926,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               ? "read"
               : "write",
           actorForItem: (item) => delegatedLinearUserId(db, item.id),
-          attributionReady: async (item, selected) => {
-            if (getTaskMode(db, item.id) === "code") await commitPolicyForItem(item, selected);
-            return true;
-          },
           authorizeItem: async (item, signal, selectedRepository) => {
             if (linearTaskAccess && !(await authorizeLinearTask(linearTaskAccess, item, signal)))
               return false;
@@ -1457,7 +1437,6 @@ export function createLinearGitHubAuth(input: {
   currentIntegrationItem?: (item: WorkItemRecord) => boolean;
   administratorsForItem?: (item: WorkItemRecord) => readonly string[];
   accessForItem?: (item: WorkItemRecord) => "read" | "write";
-  attributionReady?: (item: WorkItemRecord, repository: RepositoryBinding) => Promise<boolean>;
 }): HostGitHubAuth {
   const loginFor = (item: WorkItemRecord) => {
     const repository = input.repositoryForItem(item);
@@ -1492,11 +1471,6 @@ export function createLinearGitHubAuth(input: {
                 selected !== null &&
                 (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
               );
-            },
-            attributionReady: async (item) => {
-              if (!input.attributionReady) return true;
-              const selected = input.repositoryForItem(item);
-              return selected !== null && input.attributionReady(item, selected);
             },
             async check(item: WorkItemRecord, signal: AbortSignal) {
               const selected = input.repositoryForItem(item);

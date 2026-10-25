@@ -23,7 +23,7 @@ for (const state of [
   "paused",
   "awaiting_input",
 ] as const) {
-  test(`legacy App ${state} work cannot enqueue fresh-main recovery without attribution`, async () => {
+  test(`legacy App ${state} work cannot enqueue fresh-main recovery without a run commit policy`, async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "paws-app-recovery-")));
     const home = join(root, "home");
     mkdirSync(join(home, ".kyotoagent"), { recursive: true });

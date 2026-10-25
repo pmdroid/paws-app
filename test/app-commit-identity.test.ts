@@ -37,7 +37,7 @@ test("commits are named Paws and use the bot noreply email derived from authorit
 });
 
 test("candidate attribution accepts Paws and the legacy bot login with the bot email only", () => {
-  const policy = { bot, projectLead: null, taskSteerer: null };
+  const policy = { bot, credit: null };
   const email = "88+paws-test[bot]@users.noreply.github.com";
   for (const [author, committer] of [
     ["Paws", "Paws"],
