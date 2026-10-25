@@ -1,6 +1,6 @@
 # Smoke test
 
-Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop. Install Bun 1.4.2 or newer and Git. Pair a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Pairing is in [Pair a remote Linux runner](runner-pairing.md). GitHub App sign-in is in [GitHub sign-in](github-login.md).
+Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop. Install Bun 1.4.2 or newer and Git. Pair a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Pairing is in [Pair a remote Linux runner](runner-pairing.md). GitHub App setup is in [GitHub App](github-app.md).
 
 ```sh
 bun install
@@ -16,7 +16,7 @@ Check the prerequisites before delegating:
 bun run paws doctor
 ```
 
-`linear-workspace` must be ok and name the workspace you signed in to. Without a workspace, Paws logs how to configure one and starts no work.
+`linear-workspace` must be ok and name the workspace you signed in to. `github-app`, `github-app-installation` and `github-app-push` must be ok for the demo repository. Without a workspace, Paws logs how to configure one and starts no work.
 
 ## Linear work
 
