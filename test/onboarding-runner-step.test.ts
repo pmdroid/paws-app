@@ -27,7 +27,7 @@ import { createOnboardingReadiness } from "../src/onboarding-readiness";
 import { createFakeBootstrap, createFakeExeDev } from "../src/provisioning";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { itemOwnerHasEligibleRunner } from "../src/runner-placement";
+import { createRunnerPlacement, itemOwnerHasEligibleRunner } from "../src/runner-placement";
 import {
   issueWorkspaceBootstrap,
   onboardingPage,
@@ -419,7 +419,10 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   const name = f.db
     .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
     .get(vm.runnerId!)!.name;
-  expect(page.detail()).toBe(`${name} will run this task.`);
+  expect(page.detail()).toBe(
+    `${name} is paused. Sign in the coding agents this runner should use, then turn it on.`,
+  );
+  expect(page.runner()?.getAttribute("data-runner")).toBe("paused");
   expect(page.document.querySelector(`a[href="/status/runners/${vm.runnerId}"]`)).not.toBeNull();
   // Readiness is the scheduler's gate for a held first delegation: once the agents sign in on
   // the new runner, the held item may start.
@@ -429,7 +432,22 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
       "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1",
       [vm.runnerId, agent],
     );
+  expect(ready()).toBe(false);
+  const placement = createRunnerPlacement({ db: f.db, now: () => f.clock.now() });
+  const candidates = () =>
+    placement.candidates({
+      itemId: "held",
+      profile: { agent: "claude", model: "test" },
+      role: "implementer",
+      purpose: "work",
+    });
+  expect(await candidates()).toEqual([]);
+  expect(f.control.list(f.member).find((runner) => runner.id === vm.runnerId)?.hasRunWork).toBe(
+    false,
+  );
+  f.control.setStatus(f.member, vm.runnerId!, "active");
   expect(ready()).toBe(true);
+  expect((await candidates()).map((runner) => runner.id)).toEqual([vm.runnerId!]);
   await page.poll();
   expect(page.document.querySelector("#lead")?.textContent).toBe(
     `You're set up. Paws runs TEST-1 on ${name}.`,
@@ -500,6 +518,11 @@ test("Add a host shows the one command with a single-use token that a reload nev
   const other = await createRunnerKey(join(roots[0]!, "host-b"));
   expect(f.control.enroll({ token: token!, name: "ada-host", csr: other.csr })).rejects.toThrow();
   await page.poll();
+  expect(page.detail()).toBe(
+    "ada-host is paused. Sign in the coding agents this runner should use, then turn it on.",
+  );
+  f.control.setStatus(f.member, enrolled.runnerId, "active");
+  await page.poll();
   expect(page.detail()).toBe("ada-host will run this task.");
   expect(host.hasAttribute("hidden")).toBe(true);
 });
@@ -557,4 +580,60 @@ test("a poll updates the runner step but keeps a GitHub consent the member is fi
   await page.poll();
   expect(page.detail()).toBe("mia-box will run this task.");
   expect(consent().checked).toBe(true);
+});
+
+test("only active owners and workspace admins can turn on a member's runner", async () => {
+  const f = await fixture();
+  const enrollment = f.control.createEnrollment(f.member, { name: "paused-host" });
+  const key = await createRunnerKey(join(roots.at(-1)!, "activation-host"));
+  const { runnerId } = await f.control.enroll({
+    token: enrollment.token,
+    name: "paused-host",
+    csr: key.csr,
+  });
+  const status = () => f.control.list(f.member).find((runner) => runner.id === runnerId)?.status;
+  expect(status()).toBe("paused");
+  const otherId = putWorkspaceUser(f.db, {
+    id: workspaceId(),
+    linearUserId: "other",
+    name: "Other",
+    email: "other@example.invalid",
+  });
+  const other = { ...f.member, userId: otherId };
+  syncWorkspaceMember(f.db, {
+    workspaceId: f.member.workspaceId,
+    userId: otherId,
+    role: "member",
+    active: true,
+    teamIds: ["team"],
+    now: f.clock.now(),
+  });
+  expect(() => f.control.setStatus(other, runnerId, "active")).toThrow();
+  expect(() => f.control.setStatus(f.member, runnerId, "revoked")).toThrow();
+  const response = await f.fetch(`/api/runners/${runnerId}/status`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-paws-csrf": CSRF },
+    body: JSON.stringify({ status: "active" }),
+  });
+  expect(response.status).toBe(200);
+  expect(status()).toBe("active");
+  f.control.setStatus(f.member, runnerId, "paused");
+  syncWorkspaceMember(f.db, {
+    workspaceId: f.member.workspaceId,
+    userId: f.member.userId,
+    role: "observer",
+    active: true,
+    teamIds: ["team"],
+    now: f.clock.now(),
+  });
+  expect(() => f.control.setStatus(f.member, runnerId, "active")).toThrow();
+  syncWorkspaceMember(f.db, {
+    workspaceId: f.member.workspaceId,
+    userId: f.member.userId,
+    role: "member",
+    active: false,
+    teamIds: ["team"],
+    now: f.clock.now(),
+  });
+  expect(() => f.control.setStatus(f.member, runnerId, "active")).toThrow();
 });

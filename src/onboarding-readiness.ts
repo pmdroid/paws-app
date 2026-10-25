@@ -98,7 +98,10 @@ export function createOnboardingReadiness(db: Database): OnboardingReadinessRead
       const state = down.reason === "paused" ? "paused" : "offline";
       const name = runnerRow(down.id)?.name ?? down.id;
       return {
-        runner: down === own ? { state, name } : { state, name, sharedBy: ownerName(down.id) },
+        runner:
+          down === own
+            ? { state, id: down.id, name }
+            : { state, name, sharedBy: ownerName(down.id) },
         agents: waiting,
         memberVm,
       };

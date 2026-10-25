@@ -30,6 +30,7 @@ export type Runner = {
   /** The owner's display name; older Paws releases do not send it. */
   ownerName?: string | null;
   status: RunnerStatus;
+  hasRunWork?: boolean;
   metrics: {
     cpuPercent: number | null;
     /** Online CPUs; older runners do not report it. */
@@ -302,7 +303,7 @@ export function memberVmMarkup(
     ? "<p>The runner on this VM was removed. Pair again to enroll the VM as a new runner.</p>"
     : ready
       ? view.runner
-        ? `<p>The runner is ready and owned by you. <a href="${esc(routeHref({ view: "runners", id: view.runner.id }))}" data-focus="vm-open">Open ${esc(view.runner.name)}</a> to sign in to Claude and Codex.</p>`
+        ? `<p>The runner is ready${view.runner.status === "paused" ? " (paused)" : ""} and owned by you. <a href="${esc(routeHref({ view: "runners", id: view.runner.id }))}" data-focus="vm-open">Open ${esc(view.runner.name)}</a> to sign in to coding agents${view.runner.status === "paused" ? ", then turn it on" : ""}.</p>`
         : "<p>The runner is ready and owned by you.</p>"
       : vm.failure === null
         ? '<p class="muted">Paws creates the VM, installs the runner and pairs it to you. This takes a few minutes.</p>'
@@ -310,7 +311,7 @@ export function memberVmMarkup(
   const pill = removed
     ? '<span class="tag warn">Removed</span>'
     : ready
-      ? '<span class="tag ok">Ready</span>'
+      ? `<span class="tag ${view.runner?.status === "paused" ? "paused" : "ok"}">Ready${view.runner?.status === "paused" ? " (paused)" : ""}</span>`
       : vm.failure === null
         ? '<span class="tag running">Setting up</span>'
         : '<span class="tag bad">Failed</span>';
@@ -755,10 +756,17 @@ export function runnerActionsMarkup(
   return `<div class="row">${copy}${drain}<details data-details="revoke:${id}"><summary data-focus="revoke:${id}">Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}>Revoke runner</button></details></div>`;
 }
 
+function firstActivation(runner: Runner): boolean {
+  return runner.status === "paused" && runner.hasRunWork === false;
+}
+
 function pauseMarkup(runner: Runner, state: { manages: boolean; busy: boolean }): string {
   if (!state.manages || runner.status === "revoked") return "";
   const id = esc(runner.id);
-  const [next, label] = runner.status === "active" ? ["paused", "Pause"] : ["active", "Resume"];
+  const [next, label] =
+    runner.status === "active"
+      ? ["paused", "Pause"]
+      : ["active", firstActivation(runner) ? "Turn on" : "Resume"];
   return `<button class="btn" data-runner-status="${next}" data-runner="${id}" data-focus="status:${id}:toggle"${state.busy ? " disabled" : ""}>${label}</button>`;
 }
 
@@ -970,10 +978,10 @@ export function runnerDetailMarkup(
   const capacity = slots
     ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(`${slots.used} of ${slots.total} slots in use`)}</span>`
     : "";
-  const head = `<div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta" title="${esc(metrics ? new Date(metrics.reportedAt).toLocaleString() : "")}">${meta}</p></div>${pauseMarkup(runner, { manages, busy: view.busy })}</div>`;
+  const head = `<div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta" title="${esc(metrics ? new Date(metrics.reportedAt).toLocaleString() : "")}">${meta}</p></div>${pauseMarkup(runner, { manages: manages || owns, busy: view.busy })}</div>`;
   const block = (key: string, title: string, aside: string, body: string) =>
     `<section class="runner-block" aria-labelledby="runner-${id}-${key}"><div class="runner-block-head"><h3 id="runner-${id}-${key}">${title}</h3>${aside}</div>${body}</section>`;
-  const card = `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${
+  const card = `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${firstActivation(runner) ? "<p>Sign in the coding agents this runner should use, then turn it on.</p>" : ""}${
     revoked
       ? ""
       : block(

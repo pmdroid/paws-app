@@ -216,9 +216,15 @@ test("a VM being set up or failed shows as the runner step, with each setup step
 test("an offline or paused own runner says so", () => {
   const w = workspace();
   runner(w.db, "old", { seenAgoMs: 10 * 60_000 });
-  expect(w.read()).toEqual({ ...NEEDED, runner: { state: "offline", name: "old-host" } });
+  expect(w.read()).toEqual({
+    ...NEEDED,
+    runner: { state: "offline", id: "old", name: "old-host" },
+  });
   w.db.run("UPDATE runner SET status='paused',last_seen_at=?", [NOW]);
-  expect(w.read()).toEqual({ ...NEEDED, runner: { state: "paused", name: "old-host" } });
+  expect(w.read()).toEqual({
+    ...NEEDED,
+    runner: { state: "paused", id: "old", name: "old-host" },
+  });
 });
 
 test("a ready runner reports each coding agent's sign-in, preferring the most connected", () => {
