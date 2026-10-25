@@ -584,11 +584,17 @@ export function updateRunnerStatus(
       )
       .all(input.runnerId)
       .map((row) => row.fingerprint);
-    if (input.status === "revoked")
+    if (input.status === "revoked") {
       db.run("UPDATE runner_certificate SET revoked_at=? WHERE runner_id=?", [
         input.now,
         input.runnerId,
       ]);
+      // A member's VM keeps its row; the next Create VM enrolls it again (PAS-637).
+      db.run("UPDATE member_vm SET runner_id=NULL,updated_at=? WHERE runner_id=?", [
+        input.now,
+        input.runnerId,
+      ]);
+    }
     auditWorkspaceAccess(db, {
       workspaceId: input.workspaceId,
       userId: input.userId,
