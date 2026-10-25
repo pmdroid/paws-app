@@ -77,6 +77,8 @@ type SettingsView = {
   busy: string | null;
   error: string | null;
   saved: boolean;
+  applyToWaiting?: boolean;
+  waitingRuns?: number;
   denied?: boolean;
   catalogs?: AgentModelCatalog[];
   catalogError?: string | null;
@@ -92,7 +94,7 @@ export function renderAgentSettings(view: SettingsView): string {
   const feedback = view.error
     ? `<p class="settings-message err" role="alert">${esc(view.error)}</p>`
     : view.saved
-      ? '<p class="settings-message" role="status">Agent settings saved. New work will use these profiles.</p>'
+      ? `<p class="settings-message" role="status">${view.waitingRuns === undefined ? "Agent settings saved. New work will use these profiles." : `Saved. ${view.waitingRuns} waiting ${view.waitingRuns === 1 ? "run will" : "runs will"} switch at their next step.`}</p>`
       : "";
   return `${intro}${view.catalogError ? `<p class="settings-message err" role="status">${esc(view.catalogError)} <button class="btn" type="button" data-settings="models">Reload choices</button></p>` : ""}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
@@ -106,6 +108,8 @@ export function renderAgentSettings(view: SettingsView): string {
         view.data.queue?.maxRunningPerOwner ?? null,
       )}
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
+      <label class="settings-inherit"><input type="checkbox" name="apply-to-waiting" ${view.applyToWaiting ? "checked" : ""} aria-describedby="apply-to-waiting-help">Also switch runs that are waiting</label>
+      <p class="sub" id="apply-to-waiting-help">Waiting runs use these profiles at their next step. Agents working now finish with their current profiles.</p>
       <div class="settings-actions"><button class="btn primary" type="submit" ${problems.length ? "disabled" : ""}>Save settings</button><button class="btn" type="button" data-settings="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
@@ -233,6 +237,8 @@ export function createAgentSettings(invalidate: () => void): {
         startTimeoutHours: startTimeout.value.trim() === "" ? NaN : Number(startTimeout.value),
         maxRunningPerOwner: ownerCap?.value.trim() ? Number(ownerCap.value) : null,
       };
+    view.applyToWaiting =
+      form.querySelector<HTMLInputElement>('[name="apply-to-waiting"]')?.checked ?? false;
     view.repoDraft = form.querySelector<HTMLInputElement>('[name="repo"]')?.value ?? "";
     view.saved = false;
     view.error = null;
@@ -310,6 +316,8 @@ export function createAgentSettings(invalidate: () => void): {
       view.denied = false;
       view.data = data;
       view.saved = false;
+      view.applyToWaiting = false;
+      view.waitingRuns = undefined;
     });
   const click = (event: Event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-settings]");
@@ -350,14 +358,17 @@ export function createAgentSettings(invalidate: () => void): {
     }
     const started = generation;
     void request("Saving agent settings…", async () => {
-      const data = await settingsRequest<AgentSettings>(
+      const data = await settingsRequest<AgentSettings & { waitingRuns?: number }>(
         engine!,
         "PUT",
-        view.data,
+        { ...view.data, applyToWaiting: view.applyToWaiting === true },
         readCsrfToken(document),
       );
       if (started !== generation) return;
-      view.data = data;
+      const { waitingRuns, ...settings } = data;
+      view.data = settings;
+      view.waitingRuns = waitingRuns;
+      view.applyToWaiting = false;
       view.saved = true;
     });
   };
