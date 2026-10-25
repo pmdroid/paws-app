@@ -139,12 +139,21 @@ export {
   listOutbox,
   OUTBOX_STATUSES,
   OUTBOX_TARGETS,
+  DEFAULT_OUTBOX_MAX_ATTEMPTS,
+  ELICITATION_REDELIVERY_SUFFIX,
+  outboxItemId,
   type NewOutbox,
   type OutboxDelivery,
   type OutboxRow,
   type OutboxStatus,
   type OutboxTarget,
 } from "./outbox";
+export {
+  listDeadDeliveries,
+  retryDeadDelivery,
+  type DeadDelivery,
+  type DeadDeliveryRef,
+} from "./dead-deliveries";
 export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
 export { runnerLeaseCutoff, runnerLeaseLive, runnerWorkSettled } from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
