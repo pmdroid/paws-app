@@ -1,6 +1,6 @@
 # Pair a remote Linux runner
 
-Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-runner` user. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Use your browser to approve the host in Paws.
+Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-runner` user. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Paws gives you one command with a single-use token to run on the VM.
 
 ## Prepare Paws and the host
 
@@ -61,7 +61,7 @@ Check dashboard connectivity from the VM:
 curl --fail https://paws.example.com:8787/health
 ```
 
-For a private CA, also pass `--cacert /path/to/server-ca.pem` to curl. The response includes `"ok":true`. The daemon receives its client certificate during approval and uses it on the runner listener.
+For a private CA, also pass `--cacert /path/to/server-ca.pem` to curl. The response includes `"ok":true`. The daemon receives its client certificate when it enrolls and uses it on the runner listener.
 
 ## Sign in to the agents
 
@@ -74,27 +74,23 @@ sudo /usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/pa
 
 Follow the provider's browser instructions. Provider credentials stay in `/var/lib/paws-agent` on the VM.
 
-## Request and approve pairing
+## Add the host
 
-On the VM, start pairing as the runner account. Replace `my-runner` with the host name you want to see in Paws:
+1. Open your Paws dashboard at `https://paws.example.com:8787/status/runners` and sign in. Any workspace member who is not an observer can add a host and owns the runner it adds.
+2. Select **Add a host**, enter the name you want to see in Paws, and select **Create command**.
+3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`.
+
+The token expires after ten minutes and works once. The runner appears under **Runners**, owned by you, as soon as the command prints `"paired":true`. Running the command again on an enrolled host changes nothing. If the token expires, create a new command.
+
+To enroll by hand, write the token to a root-owned mode 0600 file and run:
 
 ```sh
-sudo /usr/sbin/runuser --user paws-runner -- \
-  /usr/bin/env -i --chdir=/var/lib/paws-runner \
-  HOME=/var/lib/paws-runner PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C \
-  /opt/paws-runner/bin/paws-runner runner pair \
-  --config /etc/paws-runner/config.json --name my-runner
+sudo /opt/paws-runner/bin/paws-runner runner enroll \
+  --config /etc/paws-runner/config.json --name my-runner \
+  --token-file /etc/paws-runner/enrollment-token
 ```
 
-Keep this command running. It prints JSON containing a 16-character `code`, `requestFingerprint`, and `expiresAt`. The request expires after ten minutes.
-
-1. Open your Paws dashboard at `https://paws.example.com:8787/status/runners`.
-2. Sign in as an owner or administrator.
-3. Select **Pair a host** at the top right, enter the VM's `code` and select **Inspect host**.
-4. Compare the displayed connection fingerprint with `requestFingerprint` in the VM terminal.
-5. When they match, select **Approve runner**.
-
-The VM command prints `"paired":true` with its runner and workspace identifiers, then exits successfully. If the request expires, run the same pairing command again and use its new code. Restarting an unexpired pending request retains its existing identity and code.
+The command starts as root to read the token, then continues as `paws-runner`. The token never appears on the command line.
 
 ## Start the daemon and check health
 
