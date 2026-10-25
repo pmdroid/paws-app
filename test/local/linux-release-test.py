@@ -844,6 +844,29 @@ class AgentInstallation(unittest.TestCase):
         self.assertEqual(installed["version"], "2.0.0")
         self.assertEqual(self.current("codex"), "3.0.0")
 
+    def test_platform_builds_published_as_versions_of_the_native_package_are_accepted(self):
+        """@openai/codex 0.160.1 pulls its platform builds through npm aliases such as npm:@openai/codex@0.160.1-linux-x64."""
+        sums = {name: "sha512-" + letter * 86 + "==" for name, letter in (("acp", "A"), ("native", "B"), ("linux", "C"), ("darwin", "D"))}
+        packages = [
+            {"path": "@agentclientprotocol/codex-acp", "name": "@agentclientprotocol/codex-acp", "version": "2.2.2", "integrity": sums["acp"]},
+            {"path": "@openai/codex", "name": "@openai/codex", "version": "0.160.1", "integrity": sums["native"]},
+            {"path": "@openai/codex-linux-x64", "name": "@openai/codex", "version": "0.160.1-linux-x64", "integrity": sums["linux"]},
+            {"path": "@openai/codex-darwin-arm64", "name": "@openai/codex", "version": "0.160.1-darwin-arm64", "integrity": sums["darwin"]},
+        ]
+        pins = [
+            {"name": "@openai/codex", "version": "0.160.1", "integrity": sums["native"]},
+            {"name": "@openai/codex", "version": "0.160.1-linux-x64", "integrity": sums["linux"]},
+            {"name": "@openai/codex", "version": "0.160.1-darwin-arm64", "integrity": sums["darwin"]},
+        ]
+        request = {"id": "aliases", "agent": "codex", "version": "2.2.2", "integrity": sums["acp"], "nativeVersion": "0.160.1", "packages": pins}
+        self.installer.verify_requested_packages(request, packages)
+        unchecked = {**request, "packages": pins[:2]}
+        with self.assertRaisesRegex(self.installer.AgentInstallError, "@openai/codex@0.160.1-darwin-arm64 does not carry the integrity Paws checked"):
+            self.installer.verify_requested_packages(unchecked, packages)
+        other = [*packages, {"path": "x/node_modules/@openai/codex", "name": "@openai/codex", "version": "0.161.0", "integrity": sums["native"]}]
+        with self.assertRaisesRegex(self.installer.AgentInstallError, "not 0.160.1 as Paws checked"):
+            self.installer.verify_requested_packages(request, other)
+
     def test_a_native_package_with_bytes_other_than_the_catalog_checked_is_refused(self):
         self.installed_one()
         wrong = [{"name": "@openai/codex", "version": "2.0.0", "integrity": self.published_integrity("codex", "1.0.0")}]

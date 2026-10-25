@@ -692,7 +692,8 @@ def verify_requested_packages(request, packages):
         raise AgentInstallError(agent, version, f"npm's integrity for {package}@{version} is not the one Paws sent")
     native = release.AGENT_NATIVE_PACKAGE[agent]
     if request["nativeVersion"] is not None and native != package:
-        found = [item["version"] for item in packages if item["name"] == native]
+        platform_build = request["nativeVersion"] + "-"
+        found = sorted({item["version"] for item in packages if item["name"] == native and not item["version"].startswith(platform_build)})
         if found != [request["nativeVersion"]]:
             raise AgentInstallError(agent, version, f"it resolves {native}@{', '.join(found) or 'nothing'}, not {request['nativeVersion']} as Paws checked")
         if not any(pin["name"] == native and pin["version"] == request["nativeVersion"] for pin in request["packages"]):
