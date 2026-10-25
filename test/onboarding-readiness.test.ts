@@ -17,6 +17,8 @@ import {
   onboardingSteps,
   workspaceTokenHash,
   type OnboardingPageInput,
+  type OnboardingReadiness,
+  type OnboardingVmStep,
 } from "../src/workspace";
 
 const NOW = 1_800_000_000_000;
@@ -103,11 +105,21 @@ function vm(db: Database, step: string, failure: string | null = null) {
 }
 
 const WAITING = { claude: "waiting", codex: "waiting" } as const;
+const NEEDED: OnboardingReadiness = {
+  runner: { state: "needed" },
+  agents: WAITING,
+  memberVm: false,
+};
+const VM_STEPS = (states: OnboardingVmStep["state"][]): OnboardingVmStep[] =>
+  (["create", "install", "enroll", "health"] as const).map((step, index) => ({
+    step,
+    state: states[index]!,
+  }));
 
 test("a member with no runner needs one, and another member's runner does not count", () => {
   const w = workspace();
   runner(w.db, "theirs", { owner: "colleague", agents: { claude: { ready: 1 } } });
-  expect(w.read()).toEqual({ runner: { state: "needed" }, agents: WAITING });
+  expect(w.read()).toEqual(NEEDED);
 });
 
 test("another member's runner never counts, shared or not, unless they lead the issue's project", () => {
@@ -115,11 +127,14 @@ test("another member's runner never counts, shared or not, unless they lead the 
   runner(w.db, "theirs", { owner: "colleague", sharing: 1, agents: { claude: { ready: 1 } } });
   runner(w.db, "private", { owner: "lead", agents: { claude: { ready: 1 } } });
   runner(w.db, "stopped", { owner: "colleague", seenAgoMs: 10 * 60_000 });
-  expect(w.read()).toEqual({ runner: { state: "needed" }, agents: WAITING });
-  // The lead's own unshared runner stays theirs.
-  expect(w.read(["lead"])).toEqual({ runner: { state: "needed" }, agents: WAITING });
+  expect(w.read()).toEqual(NEEDED);
+  // The lead's own unshared runner stays theirs, and the page says so.
+  expect(w.read(["lead"])).toEqual({
+    ...NEEDED,
+    runner: { state: "needed", reason: "lead's runner isn't shared." },
+  });
   // A colleague who does not lead the project lends nothing, even with sharing on.
-  expect(w.read(["someone-else"])).toEqual({ runner: { state: "needed" }, agents: WAITING });
+  expect(w.read(["someone-else"])).toEqual(NEEDED);
 });
 
 test("a runner the issue's project lead shares makes the step ready, naming who shares it", () => {
@@ -130,56 +145,95 @@ test("a runner the issue's project lead shares makes the step ready, naming who 
     agents: { claude: { ready: 1 }, codex: { ready: 1 } },
   });
   expect(w.read(["lead"])).toEqual({
-    runner: { state: "ready", name: "shared-host", sharedBy: "lead" },
+    runner: { state: "ready", id: "shared", name: "shared-host", sharedBy: "lead" },
     agents: { claude: "connected", codex: "connected" },
+    memberVm: false,
   });
   // The member's own runner wins when it is as far along.
   runner(w.db, "mine", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
   expect(w.read(["lead"])).toEqual({
-    runner: { state: "ready", name: "mine-host" },
+    runner: { state: "ready", id: "mine", name: "mine-host" },
     agents: { claude: "connected", codex: "connected" },
+    memberVm: false,
+  });
+});
+
+test("the lead's shared runner that is offline says so", () => {
+  const w = workspace();
+  runner(w.db, "shared", { owner: "lead", sharing: 1, seenAgoMs: 10 * 60_000 });
+  expect(w.read(["lead"])).toEqual({
+    ...NEEDED,
+    runner: { state: "offline", name: "shared-host", sharedBy: "lead" },
   });
 });
 
 test("the step turns ready when the member's runner enrolls, with no restart", () => {
   const w = workspace();
   vm(w.db, "enroll");
-  expect(w.read()).toEqual({ runner: { state: "setting-up", name: "me-paws" }, agents: WAITING });
+  expect(w.read()).toEqual({
+    runner: {
+      state: "setting-up",
+      name: "me-paws",
+      steps: VM_STEPS(["done", "done", "running", "pending"]),
+    },
+    agents: WAITING,
+    memberVm: true,
+  });
   // The VM's runner enrolls and reports in; the next read shows it.
   runner(w.db, "vm-runner");
-  expect(w.read()).toEqual({ runner: { state: "ready", name: "vm-runner-host" }, agents: WAITING });
+  expect(w.read()).toEqual({
+    runner: { state: "ready", id: "vm-runner", name: "vm-runner-host" },
+    agents: WAITING,
+    memberVm: true,
+  });
 });
 
-test("a VM being set up or failed shows as the runner step", () => {
+test("a VM being set up or failed shows as the runner step, with each setup step", () => {
   const w = workspace();
   vm(w.db, "install");
-  expect(w.read()).toEqual({ runner: { state: "setting-up", name: "me-paws" }, agents: WAITING });
+  expect(w.read()).toEqual({
+    runner: {
+      state: "setting-up",
+      name: "me-paws",
+      steps: VM_STEPS(["done", "running", "pending", "pending"]),
+    },
+    agents: WAITING,
+    memberVm: true,
+  });
   w.db.run("UPDATE member_vm SET failure='npm ci failed'");
   expect(w.read()).toEqual({
-    runner: { state: "failed", name: "me-paws", failure: "npm ci failed" },
+    runner: {
+      state: "failed",
+      name: "me-paws",
+      failure: "npm ci failed",
+      steps: VM_STEPS(["done", "failed", "pending", "pending"]),
+    },
     agents: WAITING,
+    memberVm: true,
   });
 });
 
 test("an offline or paused own runner says so", () => {
   const w = workspace();
   runner(w.db, "old", { seenAgoMs: 10 * 60_000 });
-  expect(w.read()).toEqual({ runner: { state: "offline", name: "old-host" }, agents: WAITING });
+  expect(w.read()).toEqual({ ...NEEDED, runner: { state: "offline", name: "old-host" } });
   w.db.run("UPDATE runner SET status='paused',last_seen_at=?", [NOW]);
-  expect(w.read()).toEqual({ runner: { state: "paused", name: "old-host" }, agents: WAITING });
+  expect(w.read()).toEqual({ ...NEEDED, runner: { state: "paused", name: "old-host" } });
 });
 
 test("a ready runner reports each coding agent's sign-in, preferring the most connected", () => {
   const w = workspace();
   runner(w.db, "a", { agents: { claude: { ready: 1 }, codex: { ready: 0, authExpired: 1 } } });
   expect(w.read()).toEqual({
-    runner: { state: "ready", name: "a-host" },
+    runner: { state: "ready", id: "a", name: "a-host" },
     agents: { claude: "connected", codex: "expired" },
+    memberVm: false,
   });
   runner(w.db, "b", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
   expect(w.read()).toEqual({
-    runner: { state: "ready", name: "b-host" },
+    runner: { state: "ready", id: "b", name: "b-host" },
     agents: { claude: "connected", codex: "connected" },
+    memberVm: false,
   });
 });
 
@@ -189,88 +243,87 @@ const base: OnboardingPageInput = {
   teamName: "Platform",
   member: { name: "Mia Chen", email: "mia@example.invalid" },
   memberOfTeam: true,
-  readiness: { runner: { state: "needed" }, agents: { claude: "waiting", codex: "waiting" } },
+  observer: false,
+  readiness: { runner: { state: "needed" }, agents: WAITING, memberVm: false },
   github: null,
   createVm: true,
+  csrfToken: "csrf",
 };
 
 test("the page lists Linear, membership, runner, coding agents, then the optional GitHub credit", () => {
   expect(onboardingSteps(base).map((step) => [step.title, step.label])).toEqual([
     ["Linear", "Done"],
     ["Membership", "Done"],
-    ["Your runner", "Needed"],
+    ["Runner", "Needed"],
     ["Claude and Codex", "After the runner"],
     ["GitHub credit", "Optional"],
   ]);
   const ready = onboardingSteps({
     ...base,
     readiness: {
-      runner: { state: "ready", name: "mia-paws" },
+      runner: { state: "ready", id: "R", name: "mia-paws" },
       agents: { claude: "connected", codex: "expired" },
+      memberVm: true,
     },
     github: { login: "mia-chen" },
   });
   expect(ready.slice(2).map((step) => [step.label, step.detail])).toEqual([
-    ["Ready", "Paws runs TEST-1 on mia-paws."],
+    ["Ready", "mia-paws will run this task."],
     ["Sign-in expired", "Sign in to Codex on mia-paws. The Codex sign-in expired."],
     ["Linked", "Commits will credit @mia-chen."],
   ]);
 });
 
-test("with no usable runner the page offers Create VM or Add a host on the Runners page", async () => {
+test("with no usable runner the step offers Create VM and Add a host on the page", async () => {
   const [needed] = onboardingSteps(base).slice(2);
   expect(needed).toMatchObject({
     state: "needed",
-    detail:
-      "Paws runs your issues on a runner you own. Create a VM, or add a host with an enrollment token. This step completes when it is ready.",
-    action: { href: "/status/runners", label: "Create VM or add a host" },
+    actions: [
+      { button: "create-vm", label: "Create VM" },
+      { button: "add-host", label: "Add a host" },
+    ],
   });
   const [hostOnly] = onboardingSteps({ ...base, createVm: false }).slice(2);
-  expect(hostOnly).toMatchObject({
-    detail:
-      "Paws runs your issues on a runner you own. Add a host with an enrollment token. This step completes when it pairs.",
-    action: { href: "/status/runners", label: "Add a host" },
-  });
+  expect(hostOnly?.actions).toEqual([{ button: "add-host", label: "Add a host" }]);
   const html = await onboardingPage(base).text();
-  expect(html).toContain('<a class="action" href="/status/runners">Create VM or add a host</a>');
-  const shared = onboardingSteps({
-    ...base,
-    readiness: {
-      runner: { state: "ready", name: "lead-box", sharedBy: "Ada" },
-      agents: { claude: "waiting", codex: "waiting" },
-    },
-  })[2];
-  expect(shared).toMatchObject({
-    label: "Ready",
-    detail: "Paws runs TEST-1 on lead-box, shared by Ada.",
-  });
-  expect(shared?.action).toBeUndefined();
+  expect(html).toContain(
+    '<button type="button" class="action" data-action="create-vm">Create VM</button>',
+  );
+  expect(html).toContain('<section class="host" id="host" hidden');
+  const observer = onboardingSteps({ ...base, observer: true, memberOfTeam: false });
+  expect(observer[1]?.detail).toContain("You are an observer in Paws.");
+  expect(observer[2]?.actions).toEqual([]);
 });
 
 test("a fully set up member sees no remaining steps and the page stops reloading", async () => {
   const page = onboardingPage({
     ...base,
     readiness: {
-      runner: { state: "ready", name: "mia-paws" },
+      runner: { state: "ready", id: "R", name: "mia-paws" },
       agents: { claude: "connected", codex: "connected" },
+      memberVm: true,
     },
   });
   const html = await page.text();
   expect(html).toContain("Welcome, Mia");
-  expect(html).toContain("You're set up. Paws runs <strong>TEST-1</strong> on your runner.");
+  expect(html).toContain("You're set up. Paws runs <strong>TEST-1</strong> on mia-paws.");
   expect(html).not.toContain("http-equiv");
+  expect(html).toContain('<main data-poll="">');
 });
 
 test("values on the page are escaped", async () => {
   const html = await onboardingPage({
     ...base,
     member: { name: "<script>x</script>", email: null },
+    csrfToken: '"><script>',
     readiness: {
-      runner: { state: "failed", name: "vm", failure: '<img src=x onerror="y">' },
-      agents: { claude: "waiting", codex: "waiting" },
+      runner: { state: "failed", name: "vm", failure: '<img src=x onerror="y">', steps: [] },
+      agents: WAITING,
+      memberVm: true,
     },
   }).text();
   expect(html).not.toContain("<script>x");
+  expect(html).not.toContain('"><script>');
   expect(html).not.toContain("<img");
   expect(html).toContain("&lt;img src=x onerror=&quot;y&quot;&gt;");
 });
@@ -300,6 +353,7 @@ test("the optional GitHub step offers a consent form that posts to this page, an
   ]) {
     const page = onboardingPage(input);
     expect(page.headers.get("content-security-policy")).toContain("form-action 'none'");
-    expect(await page.text()).not.toContain("<form");
+    // No credit form; the Add a host form never submits, so form-action stays 'none'.
+    expect(await page.text()).not.toContain('<form method="post"');
   }
 });
