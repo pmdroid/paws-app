@@ -285,7 +285,9 @@ export function listRunnerOverview(
   return db
     .query<Row, [number, number, number, string]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
-    (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id)) AS hasRunWork,
+    (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id)
+     OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind IN ('run','review','check','task'))
+     OR EXISTS(SELECT 1 FROM runner_helper x WHERE x.runner_id=r.id)) AS hasRunWork,
     h.cpu_percent AS cpuPercent,h.cpu_count AS cpuCount,h.memory_total_bytes AS memoryTotalBytes,
     h.memory_available_bytes AS memoryAvailableBytes,h.load_1 AS load1,h.load_5 AS load5,
     h.load_15 AS load15,h.disk_total_bytes AS diskTotalBytes,h.disk_free_bytes AS diskFreeBytes,

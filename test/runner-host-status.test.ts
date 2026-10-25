@@ -648,3 +648,20 @@ test("a heartbeat with a malformed runtime is refused", async () => {
     expect((await runner.heartbeat({ runtimes: [runtime] }))?.status).toBe(403);
   expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual([]);
 });
+
+test("first activation ignores sign-in probes and remembers work after its lease moves", async () => {
+  const runner = await fixture();
+  const hasRunWork = async () => (await runner.list()).runners[0]!.hasRunWork;
+  expect(await hasRunWork()).toBe(false);
+  runner.db.run(
+    "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at,acknowledged_at) VALUES('login',?,'login_check','{}',?,?)",
+    [runner.runnerId, runner.now(), runner.now()],
+  );
+  expect(await hasRunWork()).toBe(false);
+  // Commands retain the assignment history when runner_work is replaced during failover.
+  runner.db.run(
+    "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at,acknowledged_at) VALUES('review',?,'review','{}',?,?)",
+    [runner.runnerId, runner.now(), runner.now()],
+  );
+  expect(await hasRunWork()).toBe(true);
+});
