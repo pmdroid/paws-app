@@ -19,14 +19,12 @@ const catalog: AgentCatalogEntry[] = [
 const claude: RunnerCodingAgent = {
   agent: "claude",
   current: "2.0.0",
-  previous: "1.8.0",
   pending: null,
   reportedAt: now,
 };
 const codex: RunnerCodingAgent = {
   agent: "codex",
   current: "0.9.0",
-  previous: null,
   pending: null,
   reportedAt: now,
 };
@@ -37,7 +35,6 @@ const pending = (
   ...claude,
   pending: {
     version: "2.1.0",
-    rollback: false,
     status,
     sessions: null,
     error: null,
@@ -60,7 +57,7 @@ const runner: Runner = {
 const view = { now, serverVersion: null, policy: null, userId: null, role: "owner", busy: false };
 
 describe("runner card coding agents", () => {
-  test("shows each installed version, the newest eligible one, and Update and Roll back", () => {
+  test("shows each installed version, the newest eligible one, and Update", () => {
     const html = runnerCodingAgentsMarkup([claude, codex], owner);
     expect(html).toContain(
       '<b>Claude</b><span class="mono">2.0.0</span><span class="muted">Newest eligible <span class="mono">2.1.0</span></span></span><span class="tag warn">Update available</span>',
@@ -69,13 +66,12 @@ describe("runner card coding agents", () => {
       `<button class="btn" data-agent-update="claude" data-runner="${owner.runnerId}" data-version="2.1.0"`,
     );
     expect(html).toContain(">Update to 2.1.0</button>");
-    expect(html).toContain('data-agent-rollback="claude"');
-    expect(html).toContain(">Roll back to 1.8.0</button>");
+    // Update is the only action: the Codex row, already up to date, has no button.
+    expect(html.match(/<button/g)).toHaveLength(1);
     expect(html).toContain(
       '<b>Codex</b><span class="mono">0.9.0</span></span><span class="tag ok">Up to date</span>',
     );
     expect(html).not.toContain('data-agent-update="codex"');
-    expect(html).not.toContain('data-agent-rollback="codex"');
   });
 
   test("only an eligible version is offered, and members who do not manage runners get no buttons", () => {
@@ -101,8 +97,7 @@ describe("runner card coding agents", () => {
     const installing = runnerCodingAgentsMarkup([pending("installing")], owner);
     expect(installing).toContain('<span class="tag running">Installing</span>');
     expect(installing).toContain("Installing 2.1.0. Sessions use 2.0.0 until it is in place.");
-    expect(installing).not.toContain("data-agent-update");
-    expect(installing).not.toContain("data-agent-rollback");
+    expect(installing).not.toContain("<button");
 
     const waiting = runnerCodingAgentsMarkup([pending("waiting", { sessions: 2 })], owner);
     expect(waiting).toContain('<span class="tag running">Waiting for 2 sessions to finish</span>');
@@ -115,16 +110,8 @@ describe("runner card coding agents", () => {
     expect(failed).toContain(
       `<p class="runner-skill-error" role="note">${error.replace("'", "&#39;")}</p>`,
     );
-    // After a failure the person can try again or roll back.
+    // After a failure the person can try the update again.
     expect(failed).toContain(">Update to 2.1.0</button>");
-    expect(failed).toContain(">Roll back to 1.8.0</button>");
-
-    const rollback = runnerCodingAgentsMarkup(
-      [pending("waiting", { version: "1.8.0", rollback: true, sessions: 1 })],
-      owner,
-    );
-    expect(rollback).toContain("Waiting for 1 session to finish");
-    expect(rollback).toContain("Switches back to 1.8.0 when they end.");
   });
 
   test("the runner card has a Coding agents block, and older runners say how to get one", () => {
