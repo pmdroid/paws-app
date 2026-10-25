@@ -64,7 +64,6 @@ import {
   workspaceForOrganization,
   applyLinearUserChange,
   listWorkspaceMembers,
-  listWorkspaceRepositories,
   listRepositoryCandidates,
   getLinearSessionInstallation,
   isLinearAppRevoked,
@@ -150,7 +149,10 @@ import {
   type Orchestrator,
   type OrchestratorOptions,
   type RepositoryBinding,
+  type GitHubDenial,
   type GitHubIntegration,
+  teamMemberDenial,
+  teamRepositoryDenial,
 } from "./loop";
 import {
   createItemReconciler,
@@ -1044,31 +1046,37 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             const currentSession = item.sessionKey
               ? getLinearSessionInstallation(db, item.sessionKey)
               : null;
+            if (
+              currentSession === null ||
+              currentSession.organizationId !== session.organizationId ||
+              currentSession.oauthClientId !== session.oauthClientId ||
+              currentSession.appUserId !== session.appUserId ||
+              currentSession.teamId !== session.teamId ||
+              identity.organizationId !== currentWorkspace.organizationId ||
+              identity.userId !== actorId
+            )
+              return false;
+            if (
+              !identity.active ||
+              identity.guest ||
+              !identity.teamIds.includes(session.teamId) ||
+              member === null ||
+              !member.active ||
+              member.role === "observer" ||
+              !member.teamIds.includes(session.teamId) ||
+              latest === null ||
+              !latest.active ||
+              latest.role === "observer" ||
+              !latest.teamIds.includes(session.teamId)
+            )
+              return teamMemberDenial(db, item);
             return (
-              currentSession !== null &&
-              currentSession.organizationId === session.organizationId &&
-              currentSession.oauthClientId === session.oauthClientId &&
-              currentSession.appUserId === session.appUserId &&
-              currentSession.teamId === session.teamId &&
-              identity.organizationId === currentWorkspace.organizationId &&
-              identity.userId === actorId &&
-              identity.active &&
-              !identity.guest &&
-              identity.teamIds.includes(session.teamId) &&
-              member !== null &&
-              member.active &&
-              member.role !== "observer" &&
-              member.teamIds.includes(session.teamId) &&
-              latest !== null &&
-              latest.active &&
-              latest.role !== "observer" &&
-              latest.teamIds.includes(session.teamId) &&
-              listWorkspaceRepositories(db, currentWorkspace.id).some(
-                (entry) =>
-                  entry.teamId === session.teamId &&
-                  entry.repository.toLowerCase() ===
-                    `${selectedRepository.owner}/${selectedRepository.repo}`.toLowerCase(),
-              )
+              teamRepositoryDenial(
+                db,
+                item,
+                { workspaceId: currentWorkspace.id, teamId: session.teamId },
+                selectedRepository,
+              ) ?? true
             );
           },
           currentIntegrationItem: (item) => {
@@ -1083,10 +1091,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             if (!currentWorkspace || !actorId || !session?.teamId) return false;
             const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
             return (
-              member !== null &&
-              member.active &&
-              member.role !== "observer" &&
-              member.teamIds.includes(session.teamId)
+              (member !== null &&
+                member.active &&
+                member.role !== "observer" &&
+                member.teamIds.includes(session.teamId)) ||
+              teamMemberDenial(db, item)
             );
           },
           integrationIdentity: (item) =>
@@ -1519,13 +1528,14 @@ export function createGitHubIntegration(input: {
   resolveApp?: (repository: string) => ActiveGitHubApp;
   repositoryForItem: (item: WorkItemRecord) => RepositoryBinding | null;
   actorForItem: (item: WorkItemRecord) => string | null;
+  /** False, or a `GitHubDenial` with the reason the session ends with, cancels the item. */
   authorizeItem?: (
     item: WorkItemRecord,
     signal: AbortSignal,
     repository: RepositoryBinding,
-  ) => Promise<boolean>;
+  ) => Promise<boolean | GitHubDenial>;
   integrationIdentity?: (item: WorkItemRecord) => string;
-  currentIntegrationItem?: (item: WorkItemRecord) => boolean;
+  currentIntegrationItem?: (item: WorkItemRecord) => boolean | GitHubDenial;
   administratorsForItem?: (item: WorkItemRecord) => readonly string[];
   accessForItem?: (item: WorkItemRecord) => "read" | "write";
 }): GitHubIntegration {
@@ -1544,10 +1554,8 @@ export function createGitHubIntegration(input: {
       ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
     authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
       const selected = input.repositoryForItem(item);
-      return (
-        selected !== null &&
-        (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
-      );
+      if (selected === null) return false;
+      return input.authorizeItem ? input.authorizeItem(item, signal, selected) : true;
     },
     async check(item: WorkItemRecord, signal: AbortSignal) {
       const selected = input.repositoryForItem(item);
