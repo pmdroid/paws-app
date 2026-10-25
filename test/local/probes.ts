@@ -53,7 +53,7 @@ import {
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeHostAcp } from "./host-acp";
 import { probePublicTls } from "./public-tls";
-import { probeRunnerPairing } from "./runner-pairing";
+import { probeProvisionedPairing, probeRunnerPairing } from "./runner-pairing";
 import { probeRunnerTls } from "./runner-tls";
 import { probeRunnerCoordinatorData } from "./runner-coordinator-data";
 import { probeRunnerEvidenceRelays } from "./runner-evidence-relays";
@@ -126,6 +126,7 @@ export async function probeBoundaries(
     },
   );
   await probeRunnerPairing(join(root, "runner-pairing"), observe);
+  await probeProvisionedPairing(join(root, "provisioned-pairing"), observe);
   await probeRunnerHttp(join(root, "runner-http"), observe);
   await probeRunnerRepositories(join(root, "runner-repositories"), observe);
   await probeGitCancellation(join(root, "git-cancellation"), observe);
