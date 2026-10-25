@@ -163,68 +163,37 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
   }
 });
 
-test("fresh onboarding checks attribution with the selected repository before binding it", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-selected-attribution-"));
-  const db = openDatabase(join(root, "paws.sqlite"));
+test("an App task with a selected repository starts without an attribution wait", async () => {
+  const db = openDatabase(":memory:");
   migrate(db);
-  const env = { GITHUB_AUTH: "app", PAWS_HOME: root };
-  const runtime = loadRuntime(env);
-  const selected = {
-    owner: "acme",
-    repo: "chosen",
-    remoteUrl: "https://github.com/acme/chosen.git",
-  };
-  const checked: string[] = [];
-  let policyReady = false;
-  let available = true;
+  const env = { GITHUB_AUTH: "app" };
   const host = createLinearGitHubAuth({
-    runtime,
+    runtime: loadRuntime(env),
     env,
-    repositoryForItem: () => (available ? selected : null),
+    repositoryForItem: () => ({
+      owner: "acme",
+      repo: "chosen",
+      remoteUrl: "https://github.com/acme/chosen.git",
+    }),
     actorForItem: () => "member",
-    attributionReady: async (_item, repository) => {
-      checked.push(`${repository.owner}/${repository.repo}`);
-      return policyReady;
-    },
   });
+  expect(Object.keys(host.integration!)).not.toContain("attributionReady");
   host.integration!.check = async () => true;
   host.integration!.unavailableRetryMs = [];
   const auth = new GitHubAuthQuestions(db, host, () => 1000);
-  const item = insertQueuedItem(db, { id: "unbound", sessionKey: "session" });
-  db.run("UPDATE work_item SET state='running' WHERE id=?", [item.id]);
-  const current = () => getWorkItem(db, item.id)!;
+  const item = insertQueuedItem(db, { id: "unlinked", sessionKey: "session" });
+  beginImplementRun(db, item.id, 1000);
   try {
-    expect(runtime.repo).toBeNull();
-    expect(db.query("SELECT item_id FROM work_item_repository").all()).toHaveLength(0);
-    expect(await auth.ensure(current(), "initial", new AbortController().signal)).toBe(false);
-    expect(current().currentRunId).toBeNull();
-    expect(current().state).toBe("awaiting_input");
-    expect(checked).toEqual(["acme/chosen"]);
     expect(
-      listOutbox(db).some((entry) =>
-        JSON.stringify(entry.payload).includes("GitHub App commit policy"),
-      ),
+      await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
     ).toBe(true);
+    expect(getWorkItem(db, item.id)?.state).toBe("running");
     expect(
-      listOutbox(db).some((entry) =>
-        JSON.stringify(entry.payload).includes("could not be checked"),
-      ),
+      listOutbox(db).some((entry) => JSON.stringify(entry.payload).includes("commit policy")),
     ).toBe(false);
-    await auth.recover();
-    expect(listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
-    policyReady = true;
-    await auth.recover();
-    await auth.recover();
-    expect(current().state).toBe("running");
-    expect(listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
-    expect(checked).toEqual(["acme/chosen", "acme/chosen", "acme/chosen"]);
-    available = false;
-    expect(await host.integration!.attributionReady!(current())).toBe(false);
-    expect(checked).toHaveLength(3);
   } finally {
     auth.close();
     db.close();
-    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -322,7 +291,7 @@ function cachedAuthorization() {
   const db = openDatabase(":memory:");
   migrate(db);
   const env = { GITHUB_AUTH: "app" };
-  const reads = { membership: 0, attribution: 0 };
+  const reads = { membership: 0, installation: 0 };
   let ready = true;
   const host = createLinearGitHubAuth({
     runtime: loadRuntime(env),
@@ -337,12 +306,11 @@ function cachedAuthorization() {
       reads.membership++;
       return true;
     },
-    attributionReady: async () => {
-      reads.attribution++;
-      return ready;
-    },
   });
-  host.integration!.check = async () => true;
+  host.integration!.check = async () => {
+    reads.installation++;
+    return ready;
+  };
   host.integration!.unavailableRetryMs = [];
   const clock = { now: 1_000 };
   const auth = new GitHubAuthQuestions(db, host, () => clock.now);
@@ -357,7 +325,7 @@ function cachedAuthorization() {
     reads,
     clock,
     ensure,
-    blockAttribution: (blocked: boolean) => {
+    blockInstallation: (blocked: boolean) => {
       ready = !blocked;
     },
     close: () => {
@@ -367,14 +335,14 @@ function cachedAuthorization() {
   };
 }
 
-test("ten git operations in one task read membership and attribution once", async () => {
+test("ten git operations in one task read membership and installation once", async () => {
   const f = cachedAuthorization();
   try {
     for (let i = 0; i < 10; i++) expect(await f.ensure()).toBe(true);
-    expect(f.reads).toEqual({ membership: 1, attribution: 1 });
+    expect(f.reads).toEqual({ membership: 1, installation: 1 });
     f.clock.now += TASK_ACCESS_TTL_MS;
     expect(await f.ensure()).toBe(true);
-    expect(f.reads).toEqual({ membership: 2, attribution: 2 });
+    expect(f.reads).toEqual({ membership: 2, installation: 2 });
   } finally {
     f.close();
   }
@@ -391,7 +359,7 @@ for (const scope of [{ issueId: "lin-item-task" }, { sessionId: "session" }, {}]
       expect(f.reads.membership).toBe(1);
       f.auth.invalidate(scope);
       await f.ensure();
-      expect(f.reads).toEqual({ membership: 2, attribution: 2 });
+      expect(f.reads).toEqual({ membership: 2, installation: 2 });
     } finally {
       f.close();
     }
@@ -400,11 +368,11 @@ for (const scope of [{ issueId: "lin-item-task" }, { sessionId: "session" }, {}]
 test("a check that is not ready is never reused", async () => {
   const f = cachedAuthorization();
   try {
-    f.blockAttribution(true);
+    f.blockInstallation(true);
     expect(await f.ensure()).toBe(false);
-    f.blockAttribution(false);
+    f.blockInstallation(false);
     expect(await f.ensure()).toBe(true);
-    expect(f.reads).toEqual({ membership: 2, attribution: 2 });
+    expect(f.reads).toEqual({ membership: 2, installation: 2 });
   } finally {
     f.close();
   }
@@ -416,7 +384,7 @@ test("a fresh check before publication always reads Linear and refreshes the cac
     await f.ensure();
     await f.ensure({ fresh: true });
     await f.ensure({ fresh: true });
-    expect(f.reads).toEqual({ membership: 3, attribution: 3 });
+    expect(f.reads).toEqual({ membership: 3, installation: 3 });
     await f.ensure();
     expect(f.reads.membership).toBe(3);
   } finally {

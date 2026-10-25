@@ -24,6 +24,10 @@ The private key and App credentials are envelope-encrypted and saved as `~/.paws
 
 With App mode configured, the dashboard's **Sign in with GitHub** button provides a **Continue with GitHub** authorization link. The browser onboarding flow uses the configured GitHub App.
 
+## Commit credit
+
+Every commit is authored and committed by the App bot. To be credited, a member chooses **Link GitHub identity** once under **Settings > Account** and consents to the link. When that member delegates an issue, each commit of the run carries one `Co-authored-by: <name> <id+login@users.noreply.github.com>` trailer with their GitHub noreply address, and the pull request body credits their GitHub login. Paws reads the stored link at run start and makes no Linear or GitHub request for it. A member who has not linked, or who revoked the link, gets no trailer, and the run starts without waiting. The runner refuses a candidate whose new commits are not authored by the App bot or whose trailers differ from the run's credit.
+
 ## OAuth App device sign-in
 
 ```sh

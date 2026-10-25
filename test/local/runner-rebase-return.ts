@@ -20,13 +20,7 @@ import { executeRunnerCommand } from "../../src/runner-worker";
 
 const policy: GitCommitPolicy = {
   bot: { appId: "99", id: 88, login: "paws-test[bot]" },
-  projectLead: {
-    id: 7,
-    login: "lead",
-    name: "Project Lead",
-    email: "7+lead@users.noreply.github.com",
-  },
-  taskSteerer: {
+  credit: {
     id: 8,
     login: "steerer",
     name: "Task Steerer",

@@ -317,72 +317,19 @@ for (const source of ["local", "live"] as const) {
   });
 }
 
-test("unverified commit policy parks canonically and automatically resumes exactly once when ready", async () => {
-  const f = fixture();
-  let consent = false;
-  Object.assign(f.integration, { attributionReady: async () => consent });
-  try {
-    f.ready();
-    const item = f.item("attribution");
-    expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
-    expect(
-      listOutbox(f.db).some((entry) =>
-        JSON.stringify(entry.payload).includes("GitHub App commit policy"),
-      ),
-    ).toBe(true);
-    expect(listOutbox(f.db).filter((entry) => entry.op === "elicitation")).toHaveLength(0);
-    await f.auth.recover();
-    expect(listJobs(f.db)).toHaveLength(0);
-    consent = true;
-    await Promise.all([f.auth.recover(), f.auth.recover()]);
-    await f.auth.recover();
-    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
-    expect(listJobs(f.db)).toHaveLength(1);
-  } finally {
-    f.auth.close();
-    f.db.close();
-  }
-});
-
-test("attribution provider outage is a retryable unavailable hold, not missing consent", async () => {
-  const f = fixture();
-  Object.assign(f.integration, {
-    attributionReady: async () => {
-      throw new Error("Scripted outage");
-    },
-  });
-  try {
-    f.ready();
-    expect(await f.auth.ensure(f.item("outage"), "initial", f.signal)).toBe(false);
-    expect(
-      listOutbox(f.db).some((entry) =>
-        JSON.stringify(entry.payload).includes("retry automatically"),
-      ),
-    ).toBe(true);
-    expect(
-      listOutbox(f.db).some((entry) =>
-        JSON.stringify(entry.payload).includes("GitHub App commit policy"),
-      ),
-    ).toBe(false);
-  } finally {
-    f.auth.close();
-    f.db.close();
-  }
-});
-
-test("recovery replaces an unavailable message with the current commit policy blocker only once", async () => {
+test("recovery replaces an unavailable message with the current installation blocker only once", async () => {
   const f = fixture();
   let unavailable = true;
-  let consent = false;
+  let installed = false;
   Object.assign(f.integration, {
-    attributionReady: async () => {
-      if (unavailable) throw new Error("Attribution repository is missing");
-      return consent;
+    unavailableRetryMs: [],
+    async check() {
+      if (unavailable) throw new Error("Scripted outage");
+      return installed;
     },
   });
+  const blocker = "restore the GitHub App installation";
   try {
-    f.ready();
     const item = f.item("changed-blocker");
     await f.auth.ensure(item, "initial", f.signal);
     const question = () => f.db.query<{ body: string }, []>("SELECT body FROM question").get()!;
@@ -390,15 +337,13 @@ test("recovery replaces an unavailable message with the current commit policy bl
     unavailable = false;
     await f.auth.recover();
     await f.auth.recover();
-    expect(question().body).toContain("GitHub App commit policy");
+    expect(question().body).toContain(blocker);
     expect(
-      listOutbox(f.db).filter((entry) =>
-        JSON.stringify(entry.payload).includes("GitHub App commit policy"),
-      ),
+      listOutbox(f.db).filter((entry) => JSON.stringify(entry.payload).includes(blocker)),
     ).toHaveLength(1);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
-    consent = true;
+    installed = true;
     await f.auth.recover();
     await f.auth.recover();
     expect(getWorkItem(f.db, item.id)?.state).toBe("running");
