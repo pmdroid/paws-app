@@ -12,10 +12,21 @@ export { deliverLinearOutbox, type EvidenceUploads } from "./dispatch";
 export { hintedRepository, repositoryAnswer, rankRepositories } from "./repository-selection";
 export {
   GitHubInstallationCheck,
+  noRepositoryDenial,
+  notTeamMemberDenial,
+  unmappedRepositoryDenial,
+  type GitHubDenial,
   type GitHubIntegration,
   type GitHubInstallationPhase,
 } from "./github-integration";
 export { FakeGitHubIntegration } from "./fake-installation";
+export {
+  issueTeamName,
+  teamMemberDenial,
+  teamRepositoryDenial,
+  workspaceAdministratorNames,
+  type TeamScope,
+} from "./repository-access";
 export {
   createAcpCodexReviewer,
   createAcpFixRunner,
