@@ -134,11 +134,11 @@ async function phoneWidth(page: Page, name: string) {
   await page.waitForTimeout(200);
   // The callbacks run in the page; this file type-checks without the DOM library.
   const overflow = await page.evaluate(() => {
-    const page = globalThis as unknown as {
+    const view = globalThis as unknown as {
       document: { documentElement: { scrollWidth: number } };
       innerWidth: number;
     };
-    return page.document.documentElement.scrollWidth > page.innerWidth;
+    return view.document.documentElement.scrollWidth > view.innerWidth;
   });
   await page.screenshot({ path: join(output, `${name}-mobile.png`), fullPage: true });
   assert.equal(overflow, false, `${name} overflows at 390 px`);
