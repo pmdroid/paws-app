@@ -370,3 +370,15 @@ test("a sign-in refused while the runner works says why", async () => {
   });
   expect(f.db.query("SELECT 1 FROM runner_login").get()).toBeNull();
 });
+
+test("the owner can sign in agents on a paused runner, not on a draining or revoked one", () => {
+  const f = fixture();
+  f.db.run("UPDATE runner SET status='paused' WHERE id=?", [f.runnerId]);
+  const session = f.login.start(f.owner, f.runnerId, "claude");
+  expect(session.state).toBe("starting");
+  expect(f.login.list(f.owner, f.runnerId).accounts.length).toBeGreaterThan(0);
+  for (const status of ["draining", "revoked"]) {
+    f.db.run("UPDATE runner SET status=? WHERE id=?", [status, f.runnerId]);
+    expect(() => f.login.start(f.owner, f.runnerId, "codex")).toThrow();
+  }
+});
