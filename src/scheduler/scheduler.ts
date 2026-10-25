@@ -43,6 +43,7 @@ type Item = {
   liveJob: number;
   placed: number;
   placing: number;
+  setupHeld: number;
   workspaceId: string | null;
   sessionId: string | null;
   priority: number | null;
@@ -207,6 +208,7 @@ function allItems(db: Database, now: number): Item[] {
     EXISTS(SELECT 1 FROM job start WHERE json_extract(start.payload,'$.itemId')=i.id
       AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>?)
       AND start.queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')) AS placing,
+    EXISTS(SELECT 1 FROM runner_setup_hold h WHERE h.item_id=i.id) AS setupHeld,
     w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo,
     COALESCE('user:'||i.owner_user_id,'') AS turn
     FROM work_item i
@@ -403,7 +405,12 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const items = allItems(db, now);
     const byId = new Map(items.map((item) => [item.id, item]));
     const starts = items
-      .filter((item) => item.state === "queued" && !item.cancelRequested && !item.absent)
+      // A runner-setup hold waits for the delegator, not for a slot: it is neither started nor
+      // counted as waiting, so no queue notice or start timeout reaches it.
+      .filter(
+        (item) =>
+          item.state === "queued" && !item.cancelRequested && !item.absent && !item.setupHeld,
+      )
       .map((item) => ({ item, start: admission.canStart(item.id) }));
     const ready = new Set(starts.filter(({ start }) => start.ok).map(({ item }) => item.id));
     yieldIdleMergeSessions(db, items, ready, admission, now);

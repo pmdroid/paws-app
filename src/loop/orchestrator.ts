@@ -86,6 +86,8 @@ import {
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
+  RunnerSetupRequired,
+  type RunnerSetupNeed,
   placementWaitMs,
   retryNote,
   transientRetryDelayMs,
@@ -182,6 +184,9 @@ import {
   type WorkItemRecord,
   type RunnerCapacityWaitState,
   deferWorkItem,
+  holdForRunnerSetup,
+  markRunnerSetupNotified,
+  runnerAgentName,
   runnerCapacityWait,
   runnerSlotFree,
   getTaskMergeSettings,
@@ -427,6 +432,11 @@ export type OrchestratorOptions = {
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
   placementPollMs?: number;
+  /**
+   * The page where a delegator without a usable runner creates a VM, adds a host or signs an
+   * agent in. Missing means the local Runners page.
+   */
+  runnersUrl?: string;
 };
 
 export type ExecutionChanges = {
@@ -1353,6 +1363,7 @@ export class Orchestrator {
         (item.state !== "running" && item.state !== "verifying" && item.state !== "recovering")
       )
         throw error;
+      if (error instanceof RunnerSetupRequired && this.holdForRunnerSetup(item, error.need)) return;
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
         deferWorkItem(this.db, item, {
@@ -1395,6 +1406,67 @@ export class Orchestrator {
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
       throw error;
     }
+  }
+
+  /**
+   * Put the item back in the queue under a runner-setup hold and say once what is missing. The
+   * scheduler skips held items, so nothing retries, times out or writes to Linear until the hold
+   * ends. False when the item can no longer be held, so the caller retries as before.
+   */
+  private holdForRunnerSetup(item: WorkItemRecord, need: RunnerSetupNeed): boolean {
+    const now = this.now();
+    return immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (
+        !current ||
+        current.cancelRequested ||
+        (current.state !== "running" && current.state !== "recovering")
+      )
+        return false;
+      if (current.currentRunId !== null) {
+        const run = getRun(this.db, current.currentRunId);
+        if (run && (run.status === "active" || run.status === "provisioning"))
+          markRun(this.db, run.id, "lost", now);
+      }
+      applyWorkItemEvent(this.db, current.id, "restart");
+      const hold = holdForRunnerSetup(this.db, {
+        itemId: current.id,
+        ownerUserId:
+          this.db
+            .query<{ owner: string | null }, [string]>(
+              "SELECT owner_user_id AS owner FROM work_item WHERE id=?",
+            )
+            .get(current.id)?.owner ?? null,
+        reason: need.reason,
+        ...(need.reason === "agent-not-signed-in"
+          ? { runnerId: need.runnerId, agent: need.agent }
+          : {}),
+        now,
+      });
+      this.options.journal?.(
+        `item ${current.linearIdentifier} held: runner setup (${need.reason})`,
+      );
+      if (hold.notifiedAt !== null) return true;
+      const sessionId = this.activitySession(current);
+      if (sessionId !== null)
+        enqueueOutboxOnce(this.db, {
+          target: OUTBOX_ACTIVITY.target,
+          op: OUTBOX_ACTIVITY.op,
+          orderingKey: sessionId,
+          idempotencyKey: `runner-setup:${current.id}:${need.reason}:${need.reason === "agent-not-signed-in" ? `${need.runnerId}:${need.agent}` : ""}`,
+          payload: { sessionId, kind: "thought", body: this.runnerSetupLine(need) },
+          now,
+        });
+      markRunnerSetupNotified(this.db, current.id, now);
+      return true;
+    });
+  }
+
+  private runnerSetupLine(need: RunnerSetupNeed): string {
+    const url = this.options.runnersUrl ?? "http://127.0.0.1:8787/status/runners";
+    return need.reason === "no-runner"
+      ? `You don't have a runner Paws can use yet. Create a VM or add a host here: ${url}. I'll start on my own once it's ready.`
+      : `Your runner ${need.runnerName} needs ${runnerAgentName(need.agent)} signed in. Sign in on the [Runners page](${url}); I'll start right after.`;
   }
 
   private nextRunnerWait(job: Job, error: unknown): RunnerCapacityWaitState | null {

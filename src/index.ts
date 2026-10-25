@@ -934,6 +934,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearAccess: linearTaskAccess ?? undefined,
         admission,
         journal,
+        runnersUrl: `${runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/runners`,
         authorizeLinearIntake: (sessionId, spec) =>
           (parents?.authorizeIntake(sessionId, spec) ?? true) &&
           (!workspace || (assignments?.authorizeIntake(sessionId, spec) ?? true)),
