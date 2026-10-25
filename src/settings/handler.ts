@@ -20,6 +20,8 @@ export type AgentSettingsOptions = {
   configPath: string;
   csrfToken: string;
   repos?: string[];
+  /** Replace idle run profile snapshots after saving. Runs executing a turn are excluded. */
+  applyToWaiting?: () => number;
   /** Records a changed workspace setting in the audit history. */
   audit?: (action: string, subject: string) => void;
 };
@@ -66,9 +68,18 @@ export async function handleAgentSettingsRequest(
   let settings;
   let mergeBody: unknown;
   let queueBody: unknown;
+  let applyToWaiting = false;
   try {
     // The workspace merge and queue settings travel next to the agent profiles.
-    const { merge, queue, ...agents }: Record<string, unknown> = isRecord(body) ? body : {};
+    const {
+      merge,
+      queue,
+      applyToWaiting: apply,
+      ...agents
+    }: Record<string, unknown> = isRecord(body) ? body : {};
+    if (apply !== undefined && typeof apply !== "boolean")
+      throw new Error("applyToWaiting must be a boolean");
+    applyToWaiting = apply === true;
     settings = parseAgentSettings(isRecord(body) ? agents : body);
     mergeBody = merge;
     queueBody = queue;
@@ -100,11 +111,13 @@ export async function handleAgentSettingsRequest(
   }
   let saved: number;
   let savedQueue: QueueSettings;
+  let waitingRuns = 0;
   try {
     writeAgentSettings(options.configPath, settings, merge, queue);
     const config = loadConfigFile(options.configPath);
     saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);
+    if (applyToWaiting) waitingRuns = options.applyToWaiting?.() ?? 0;
   } catch {
     return json({ error: "Agent settings could not be saved" }, 503);
   }
@@ -126,7 +139,12 @@ export async function handleAgentSettingsRequest(
       "settings.queue-owner-cap",
       `Running tasks per owner ${capBefore ?? "no cap"} → ${queue.maxRunningPerOwner ?? "no cap"}`,
     );
-  return json({ ...settings, merge: { ciFixAttempts: saved }, queue: savedQueue });
+  return json({
+    ...settings,
+    merge: { ciFixAttempts: saved },
+    queue: savedQueue,
+    ...(applyToWaiting ? { waitingRuns } : {}),
+  });
 }
 
 export function localRequest(request: Request, trustedOrigin?: string): boolean {

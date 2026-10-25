@@ -569,6 +569,28 @@ export async function probeRunnerBackend(
       await again.catch(() => undefined);
       continued[name] = command.resumeSessionId ?? null;
     }
+    // Settings model updates keep the same ACP session; an agent update starts fresh
+    // at the checkpoint's pushed commit.
+    for (const profile of [
+      { agent: "codex", model: "new-model" },
+      { agent: "claude", model: "new-model" },
+    ] as const) {
+      finishRuns();
+      db.run("UPDATE run SET status='active' WHERE id=?", [first.run.id]);
+      const stop = new AbortController();
+      const again = backend.forItem(first.id)(input(first, { profile, signal: stop.signal }));
+      void again.catch(() => undefined);
+      let command = await next();
+      while (command.type !== "run" || command.itemId !== first.id) command = await next();
+      assert.deepEqual(command.profile, profile);
+      assert.equal(
+        command.resumeSessionId,
+        profile.agent === "codex" ? "first-session" : undefined,
+      );
+      assert.equal(command.repository.baseSha, head);
+      stop.abort();
+      await again.catch(() => undefined);
+    }
     while (work.commands(runnerId).length) await next();
     db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
     observe(

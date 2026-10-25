@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -93,6 +94,7 @@ import {
   transientRetryDelayMs,
 } from "../core";
 import {
+  listWaitingProfileRuns,
   getTaskMode,
   assertLinearSessionCleanup,
   cancelOpenJobs,
@@ -3952,6 +3954,17 @@ export class Orchestrator {
       ).implementer.agent,
       freshSession: true,
     });
+    if (item.currentRunId) {
+      const saved = this.readProfileSnapshot(item.currentRunId);
+      if (saved) {
+        mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
+        writeFileSync(
+          join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
+          JSON.stringify(saved),
+          { mode: 0o600 },
+        );
+      }
+    }
     setCurrentRun(this.db, item.id, run.id);
     return run;
   }
@@ -4148,7 +4161,24 @@ export class Orchestrator {
     if (!runner) return undefined;
     return async (options: RunAgentOptions) => {
       this.assertJobCurrent(itemId);
-      const result = await runner(options);
+      const currentRunId = getWorkItem(this.db, itemId)?.currentRunId;
+      const profile = currentRunId
+        ? this.profileSnapshot(currentRunId)[options.role]
+        : options.profile;
+      const result = await runner({
+        ...options,
+        profile,
+        onEvent: async (event) => {
+          if (
+            !options.prepareOnly &&
+            options.role === "implementer" &&
+            profile &&
+            event.type === "session_started"
+          )
+            this.reportSettingsSwitch(itemId, profile, event.identity?.model);
+          await options.onEvent?.(event);
+        },
+      });
       this.assertJobCurrent(itemId);
       return result;
     };
@@ -5010,10 +5040,13 @@ export class Orchestrator {
   private agentDeps(item: WorkItemRecord): AcpAgentDeps {
     const runId = item.currentRunId ?? item.id;
     const repository = this.repositoryForItem(item);
+    const profiles = () => this.profileSnapshot(runId);
     return {
       repository: repository ? `${repository.owner}/${repository.repo}` : undefined,
       pawsRoot: this.options.pawsRoot,
-      profiles: this.profileSnapshot(runId),
+      get profiles() {
+        return profiles();
+      },
       publishArtifact: this.artifactPublisher(item),
       prepareInputFiles: this.prepareInputFiles(item, runId),
       onCandidate: (identity) => {
@@ -5090,6 +5123,7 @@ export class Orchestrator {
   private readProfileSnapshot(runId: string): {
     profiles: { implementer: AgentProfile; reviewer: AgentProfile };
     candidate?: AgentIdentity;
+    settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
   } | null {
     try {
       return JSON.parse(
@@ -5099,6 +5133,56 @@ export class Orchestrator {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
+  }
+
+  /** Synchronous with snapshot reads and runner admission in this process. */
+  applyAgentSettingsToWaiting(): number {
+    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    let changedRuns = 0;
+    for (const run of listWaitingProfileRuns(this.db, this.now())) {
+      const saved = this.readProfileSnapshot(run.id);
+      if (!saved) continue;
+      const item = getWorkItem(this.db, run.itemId)!;
+      const repository = this.repositoryForItem(item);
+      const profiles = resolveAgentProfiles(
+        config,
+        repository ? `${repository.owner}/${repository.repo}` : undefined,
+      );
+      if (JSON.stringify(saved.profiles) === JSON.stringify(profiles)) continue;
+      // Keep the original agent through repeated saves before the next turn.
+      const previousAgent = saved.settingsSwitch?.previousAgent ?? saved.profiles.implementer.agent;
+      const settingsSwitch =
+        previousAgent !== profiles.implementer.agent
+          ? { id: randomUUID(), previousAgent }
+          : undefined;
+      writeFileSync(
+        join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
+        JSON.stringify({ ...saved, profiles, settingsSwitch }),
+        { mode: 0o600 },
+      );
+      changedRuns += 1;
+    }
+    return changedRuns;
+  }
+
+  private reportSettingsSwitch(itemId: string, profile: AgentProfile, model?: string): void {
+    const item = getWorkItem(this.db, itemId);
+    if (!item?.currentRunId) return;
+    const saved = this.readProfileSnapshot(item.currentRunId);
+    if (!saved?.settingsSwitch || saved.profiles.implementer.agent !== profile.agent) return;
+    const posted = this.post(
+      item,
+      "thought",
+      `Switched to ${profile.agent} ${model ?? profile.model ?? "agent default"} as set in Settings.`,
+      `settings-agent-switch:${saved.settingsSwitch.id}`,
+    );
+    if (posted === undefined) return;
+    delete saved.settingsSwitch;
+    writeFileSync(
+      join(runDir(this.options.pawsRoot, item.currentRunId), "agent-profile.json"),
+      JSON.stringify(saved),
+      { mode: 0o600 },
+    );
   }
 
   private profileSnapshot(runId: string): { implementer: AgentProfile; reviewer: AgentProfile } {
@@ -5125,7 +5209,7 @@ export class Orchestrator {
     const profiles = this.profileSnapshot(runId);
     writeFileSync(
       join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
-      JSON.stringify({ profiles, candidate }),
+      JSON.stringify({ ...this.readProfileSnapshot(runId), profiles, candidate }),
       { mode: 0o600 },
     );
   }
@@ -5137,6 +5221,7 @@ export class Orchestrator {
     signal: AbortSignal,
     onRemoteEvent: (event: AcpEvent) => void,
   ): Promise<void> {
+    const originalProfiles = JSON.stringify(profiles);
     const repository = this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
     await ensureBareMirror({
@@ -5208,11 +5293,16 @@ export class Orchestrator {
           `reviewer preparation failed: Closeout ${check.id} requires a different reviewer model; choose another reviewer profile`,
         );
     }
+    const latest = this.readProfileSnapshot(runId);
+    if (latest && JSON.stringify(latest.profiles) !== originalProfiles) {
+      Object.assign(profiles, latest.profiles);
+      return;
+    }
     profiles.implementer.model ??= identities[0]!.model;
     profiles.reviewer.model ??= identities[1]!.model;
     writeFileSync(
       join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
-      JSON.stringify({ profiles }),
+      JSON.stringify({ ...this.readProfileSnapshot(runId), profiles }),
       { mode: 0o600 },
     );
   }
