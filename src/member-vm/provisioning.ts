@@ -21,6 +21,7 @@ export type MemberVmProvisioningSource = {
   serverCa?: string | null;
   repositories: () => readonly string[];
   runnerControl: () => Promise<MemberVmRunnerControl | null | undefined>;
+  latestRelease: () => Promise<string | null>;
   exeDev?: ExeDev;
   /** Replaces the bootstrap built from the release and installer. Tests pass the fake. */
   bootstrap?: ExeDevBootstrap;
@@ -37,9 +38,10 @@ export function createMemberVmProvisioning(
     if (!control) throw new Error("Create VM needs runner control to be configured.");
     if (source.bootstrap)
       return { exeDev, bootstrap: source.bootstrap, mintEnrollment: control.mintEnrollment };
-    if (control.serverVersion === null)
+    const runnerVersion = control.serverVersion ?? (await source.latestRelease());
+    if (runnerVersion === null)
       throw new Error(
-        "Create VM needs an installed Paws release; a source checkout has no runner version to install.",
+        "Create VM could not find the latest runner release on GitHub to install on the VM.",
       );
     const installer = source.installer();
     if (installer === null)
@@ -48,7 +50,7 @@ export function createMemberVmProvisioning(
     runnerApi.port = String(control.port);
     const bootstrap = createExeDevBootstrap({
       exeDev,
-      runnerVersion: control.serverVersion,
+      runnerVersion,
       installer,
       mise: PINNED_MISE["linux-x64"],
       runnerApiUrl: runnerApi.origin,
