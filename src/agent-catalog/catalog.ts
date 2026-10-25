@@ -201,9 +201,15 @@ export function createAgentCatalog(options: {
       const own = check(spec.package, version, versions, true, at);
       const native = await resolveNative(spec, version, metadata, load, at);
       let verdict = worst([own, native.verdict]);
-      // Stored metadata cannot clear a version: a version removed or deprecated while npm was
-      // unreachable must not pass its quarantine on the old document.
-      if (usedStale) verdict = noLooserThanBefore(agent, spec, version, verdict);
+      let nativeVersion = native.version;
+      // Cached metadata can only make a version stricter. Otherwise the last verdict and native
+      // selection stand until npm answers, so nothing passes a check on a document npm may have
+      // changed: a pulled or deprecated version, or a native build never validated as a whole.
+      if (usedStale)
+        ({ verdict, nativeVersion } = keepUnlessStricter(agent, spec, version, {
+          verdict,
+          nativeVersion,
+        }));
       const record = readNpmIntegrity(db, spec.package, version);
       const integrity = record?.integrity ?? metadata.integrity;
       if (integrity === null) continue;
@@ -215,7 +221,7 @@ export function createAgentCatalog(options: {
         status: verdict.status,
         firstSeenAt: record?.firstSeenAt ?? at,
         reason: verdict.reason,
-        nativeVersion: native.version,
+        nativeVersion,
         checkedAt: at,
       });
     }
@@ -233,21 +239,30 @@ export function createAgentCatalog(options: {
     return rows;
   }
 
-  /** The previous verdict when it is stricter; with none, the version waits for a fresh read. */
-  function noLooserThanBefore(
+  /**
+   * The previous verdict and native selection, unless the new verdict is stricter. With no
+   * previous row, the version waits for a fresh read.
+   */
+  function keepUnlessStricter(
     agent: string,
     spec: AgentPackage,
     version: string,
-    verdict: Verdict,
-  ): Verdict {
+    next: { verdict: Verdict; nativeVersion: string | null },
+  ): { verdict: Verdict; nativeVersion: string | null } {
     const previous = readAgentVersion(db, agent, version);
-    const floor: Verdict = previous
-      ? { status: previous.status, reason: previous.reason }
+    const kept = previous
+      ? {
+          verdict: { status: previous.status, reason: previous.reason },
+          nativeVersion: previous.nativeVersion,
+        }
       : {
-          status: "waiting",
-          reason: `Paws could not read npm to confirm ${spec.package}@${version}; it waits for the next successful read.`,
+          verdict: {
+            status: "waiting" as const,
+            reason: `Paws could not read npm to confirm ${spec.package}@${version}; it waits for the next successful read.`,
+          },
+          nativeVersion: null,
         };
-    return RANK[verdict.status] < RANK[floor.status] ? floor : verdict;
+    return RANK[next.verdict.status] > RANK[kept.verdict.status] ? next : kept;
   }
 
   async function resolveNative(
