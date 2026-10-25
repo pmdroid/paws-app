@@ -22,6 +22,7 @@ import { createWorkspaceIdentityLinks } from "./identity-links";
 import { createWorkspaceLinearActions } from "./linear-actions";
 import { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
 import { onboardingPage, type OnboardingReadinessReader } from "./onboarding-page";
+import { createRateLimiter, ONBOARDING_RATE_LIMITS, type RateLimiter } from "./rate-limit";
 import { handleWorkspaceAdministration, readWorkspaceJson } from "./administration";
 import {
   clearWorkspaceSessionCookie,
@@ -53,6 +54,14 @@ export type WorkspaceAccessOptions = {
   githubAttributionClient?: { clientId: string; clientSecret: string };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
+  /** Where over-limit counters are reported. Never receives a URL, code, state or cookie. */
+  log?: (line: string) => void;
+};
+
+/** What the server knows about the connection, beyond the request itself. */
+export type WorkspaceClient = {
+  /** The socket peer address. Forwarded headers are not trusted. */
+  ip?: string | null;
 };
 
 export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
@@ -81,6 +90,19 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     slack: options.slackIdentities,
     now,
   });
+  const log = options.log ?? ((line: string) => console.warn(line));
+  const limits = {
+    startsPerIp: createRateLimiter(ONBOARDING_RATE_LIMITS.startsPerIp, now),
+    startsPerLink: createRateLimiter(ONBOARDING_RATE_LIMITS.startsPerLink, now),
+    failedCallbacksPerIp: createRateLimiter(ONBOARDING_RATE_LIMITS.failedCallbacksPerIp, now),
+  };
+  /** Answers 429 and logs only the counter's name. Nothing reaches Linear or the outbox. */
+  function limited(limiter: RateLimiter, retryAfterSeconds: number): Response {
+    log(`Paws rate limit reached: ${limiter.rule.name}`);
+    const response = json({ error: "Too many sign-in attempts. Try again later." }, 429);
+    response.headers.set("retry-after", String(retryAfterSeconds));
+    return response;
+  }
   const pending = new Map<string, Promise<void>>();
   async function refresh(
     workspaceKey: string,
@@ -162,8 +184,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       return false;
     }
   }
-  async function handle(request: Request): Promise<Response | null> {
+  async function handle(request: Request, client: WorkspaceClient = {}): Promise<Response | null> {
     const url = new URL(request.url);
+    const ip = client.ip || "unknown";
     const path = url.pathname;
     const identityResponse = await attribution.handle(request);
     if (identityResponse) return identityResponse;
@@ -196,10 +219,12 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       const linkId = path.slice("/onboard/".length, github ? -GITHUB_STEP.length : undefined);
       if (request.method !== (github ? "POST" : "GET"))
         return json({ error: "Method not allowed" }, 405);
+      const perIp = limits.startsPerIp.take(ip);
+      if (!perIp.allowed) return limited(limits.startsPerIp, perIp.retryAfterSeconds);
       const link = options.assignments?.open(linkId) ?? null;
-      if (link === null) return page("This sign-in link is not active.", 404);
-      // Only the session creator's own sign-in shows the page. Anyone else, or a creator whose
-      // sign-in ended, goes through Linear OAuth again, which says nothing about the issue.
+      if (link === null) return notFound();
+      // A finished link shows only its signed-in creator where the task stands. Anyone else,
+      // signed in or not, gets the same 404 as an unknown link and learns nothing.
       const viewer =
         link.state === "done" ? requestWorkspaceSession(options.db, request, now()) : null;
       const member =
@@ -213,7 +238,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       if (github)
         // The return path comes from the hold this route just verified, never from the request.
         return creator === null
-          ? page("This sign-in link is not active.", 404)
+          ? notFound()
           : attribution.startFromPage(request, `/onboard/${creator.link.linkId}`);
       if (creator !== null) {
         const { link: done, member: owner, viewer: signedIn } = creator;
@@ -246,6 +271,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
               : null,
         });
       }
+      if (link.state === "done") return notFound();
+      const perLink = limits.startsPerLink.take(link.link);
+      if (!perLink.allowed) return limited(limits.startsPerLink, perLink.retryAfterSeconds);
       return beginWorkspaceOAuth(options.db, {
         clientId: options.clientId,
         origin,
@@ -290,115 +318,126 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     }
     if (path === "/auth/linear/callback") {
       if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
-      try {
-        const result = await completeWorkspaceOAuth(options.db, request, {
-          clientId: options.clientId,
-          origin,
-          now: now(),
-          fetch: options.fetch ?? fetch,
-        });
-        if (result.identity.organizationId !== options.installedOrganization.id)
-          return json({ error: "This Linear workspace is not installed in Paws." }, 403);
-        const observedAt = now();
-        const identity = await options.memberships.member(
-          result.identity.organizationId,
-          result.identity.userId,
-          AbortSignal.timeout(10_000),
-        );
-        if (
-          !identity.active ||
-          identity.userId !== result.identity.userId ||
-          identity.organizationId !== result.identity.organizationId
-        )
-          return json({ error: "Current Linear membership is required." }, 403);
-        const userId = putWorkspaceUser(options.db, {
+      const failures = limits.failedCallbacksPerIp.check(ip);
+      if (!failures.allowed)
+        return limited(limits.failedCallbacksPerIp, failures.retryAfterSeconds);
+      const response = await callback(request);
+      if (response.status !== 303) limits.failedCallbacksPerIp.record(ip);
+      return response;
+    }
+    return sessionRoutes(request, url, path);
+  }
+  async function callback(request: Request): Promise<Response> {
+    try {
+      const result = await completeWorkspaceOAuth(options.db, request, {
+        clientId: options.clientId,
+        origin,
+        now: now(),
+        fetch: options.fetch ?? fetch,
+      });
+      if (result.identity.organizationId !== options.installedOrganization.id)
+        return json({ error: "This Linear workspace is not installed in Paws." }, 403);
+      const observedAt = now();
+      const identity = await options.memberships.member(
+        result.identity.organizationId,
+        result.identity.userId,
+        AbortSignal.timeout(10_000),
+      );
+      if (
+        !identity.active ||
+        identity.userId !== result.identity.userId ||
+        identity.organizationId !== result.identity.organizationId
+      )
+        return json({ error: "Current Linear membership is required." }, 403);
+      const userId = putWorkspaceUser(options.db, {
+        id: workspaceId(now()),
+        linearUserId: result.identity.userId,
+        name: result.identity.name,
+        email: result.identity.email,
+      });
+      let workspace = workspaceForOrganization(options.db, result.identity.organizationId);
+      let syncAt = observedAt;
+      if (result.bootstrapHash !== null) {
+        if (identity.guest) return json({ error: "Guests cannot bootstrap a workspace." }, 403);
+        syncAt = now();
+        workspace = consumeWorkspaceBootstrap(options.db, {
           id: workspaceId(now()),
-          linearUserId: result.identity.userId,
-          name: result.identity.name,
-          email: result.identity.email,
-        });
-        let workspace = workspaceForOrganization(options.db, result.identity.organizationId);
-        let syncAt = observedAt;
-        if (result.bootstrapHash !== null) {
-          if (identity.guest) return json({ error: "Guests cannot bootstrap a workspace." }, 403);
-          syncAt = now();
-          workspace = consumeWorkspaceBootstrap(options.db, {
-            id: workspaceId(now()),
-            organizationId: result.identity.organizationId,
-            name: options.installedOrganization.name,
-            tokenHash: result.bootstrapHash,
-            userId,
-            now: syncAt,
-          });
-        }
-        if (workspace === null) {
-          if (!identity.admin || identity.guest)
-            return json(
-              { error: "A Linear workspace admin must connect this workspace first." },
-              403,
-            );
-          const grant = issueWorkspaceBootstrap(options.db, result.identity.organizationId, now());
-          workspace = consumeWorkspaceBootstrap(options.db, {
-            id: workspaceId(now()),
-            organizationId: result.identity.organizationId,
-            name: options.installedOrganization.name,
-            tokenHash: workspaceTokenHash(grant),
-            userId,
-            now: now(),
-          });
-        }
-        syncWorkspaceMember(options.db, {
-          workspaceId: workspace.id,
+          organizationId: result.identity.organizationId,
+          name: options.installedOrganization.name,
+          tokenHash: result.bootstrapHash,
           userId,
-          active: true,
-          role: identity.guest ? "observer" : "member",
-          teamIds: identity.teamIds,
           now: syncAt,
         });
-        let location = "/status/";
-        if (result.assignmentHash !== null) {
-          if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
-          const completion = options.assignments.complete(
-            result.assignmentHash,
-            workspace.id,
-            result.identity.userId,
+      }
+      if (workspace === null) {
+        if (!identity.admin || identity.guest)
+          return json(
+            { error: "A Linear workspace admin must connect this workspace first." },
+            403,
           );
-          if (completion.outcome === "other-user") {
-            const refusal = page(`This link belongs to ${completion.creatorName}.`, 403);
-            refusal.headers.append(
-              "set-cookie",
-              "__Host-paws-login=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
-            );
-            return refusal;
-          }
-          location =
-            completion.linkId === null
-              ? issuePage(completion.identifier)
-              : `/onboard/${completion.linkId}`;
-        } else options.assignments?.releaseFor(workspace.id, result.identity.userId);
-        await links.syncUser(workspace.id, userId);
-        const previous = requestWorkspaceSession(options.db, request, now());
-        if (previous !== null) deleteWorkspaceSession(options.db, previous.session.tokenHash);
-        const issued = issueWorkspaceSession(options.db, {
+        const grant = issueWorkspaceBootstrap(options.db, result.identity.organizationId, now());
+        workspace = consumeWorkspaceBootstrap(options.db, {
+          id: workspaceId(now()),
+          organizationId: result.identity.organizationId,
+          name: options.installedOrganization.name,
+          tokenHash: workspaceTokenHash(grant),
           userId,
-          workspaceId: workspace.id,
           now: now(),
         });
-        const headers = new Headers({
-          location,
-          "cache-control": "no-store",
-          "referrer-policy": "no-referrer",
-        });
-        headers.append("set-cookie", workspaceSessionCookie(issued.token));
-        headers.append(
-          "set-cookie",
-          "__Host-paws-login=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
-        );
-        return new Response(null, { status: 303, headers });
-      } catch {
-        return json({ error: "Linear sign-in could not be completed. Start sign-in again." }, 400);
       }
+      syncWorkspaceMember(options.db, {
+        workspaceId: workspace.id,
+        userId,
+        active: true,
+        role: identity.guest ? "observer" : "member",
+        teamIds: identity.teamIds,
+        now: syncAt,
+      });
+      let location = "/status/";
+      if (result.assignmentHash !== null) {
+        if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
+        const completion = options.assignments.complete(
+          result.assignmentHash,
+          workspace.id,
+          result.identity.userId,
+        );
+        if (completion.outcome === "other-user") {
+          const refusal = page(`This link belongs to ${completion.creatorName}.`, 403);
+          refusal.headers.append(
+            "set-cookie",
+            "__Host-paws-login=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+          );
+          return refusal;
+        }
+        location =
+          completion.linkId === null
+            ? issuePage(completion.identifier)
+            : `/onboard/${completion.linkId}`;
+      } else options.assignments?.releaseFor(workspace.id, result.identity.userId);
+      await links.syncUser(workspace.id, userId);
+      const previous = requestWorkspaceSession(options.db, request, now());
+      if (previous !== null) deleteWorkspaceSession(options.db, previous.session.tokenHash);
+      const issued = issueWorkspaceSession(options.db, {
+        userId,
+        workspaceId: workspace.id,
+        now: now(),
+      });
+      const headers = new Headers({
+        location,
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+      });
+      headers.append("set-cookie", workspaceSessionCookie(issued.token));
+      headers.append(
+        "set-cookie",
+        "__Host-paws-login=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+      );
+      return new Response(null, { status: 303, headers });
+    } catch {
+      return json({ error: "Linear sign-in could not be completed. Start sign-in again." }, 400);
     }
+  }
+  async function sessionRoutes(request: Request, url: URL, path: string): Promise<Response> {
     let access;
     try {
       access =
@@ -501,7 +540,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           throw new Error("Workspace team access is unavailable.");
         return options.readTeams(signal);
       }),
-    handle: (request: Request) => track(() => handle(request)),
+    handle: (request: Request, client?: WorkspaceClient) => track(() => handle(request, client)),
     origin,
     organizationId: options.installedOrganization.id,
     clientId: options.clientId,
@@ -524,6 +563,10 @@ function json(body: unknown, status = 200): Response {
       "referrer-policy": "no-referrer",
     },
   });
+}
+
+function notFound(): Response {
+  return page("This sign-in link is not active.", 404);
 }
 
 function issuePage(identifier: string): string {
