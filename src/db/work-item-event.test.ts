@@ -36,14 +36,14 @@ describe("work_item_event", () => {
     });
 
     const rows = listWorkItemEventRows(db, item.id);
-    expect(rows.map((row) => [row.fromState, row.event, row.toState, row.kind, row.reason])).toEqual(
-      [
-        ["queued", "dispatched", "running", "transition", null],
-        ["running", "restart", "queued", "restart", "findings"],
-        ["queued", "dispatched", "running", "transition", null],
-        ["running", "blocking_question", "awaiting_input", "ask", "budget_spent"],
-      ],
-    );
+    expect(
+      rows.map((row) => [row.fromState, row.event, row.toState, row.kind, row.reason]),
+    ).toEqual([
+      ["queued", "dispatched", "running", "transition", null],
+      ["running", "restart", "queued", "restart", "findings"],
+      ["queued", "dispatched", "running", "transition", null],
+      ["running", "blocking_question", "awaiting_input", "ask", "budget_spent"],
+    ]);
     expect(rows[0]).toMatchObject({ version: running.version, at: 2_000, actor: null });
     expect(rows[1]).toMatchObject({ payloadDigest: "sha256:abc", actor: "paws", at: 3_000 });
     expect(rows.at(-1)?.version).toBe(getWorkItem(db, item.id)?.version);
