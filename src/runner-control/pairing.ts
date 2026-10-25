@@ -13,7 +13,6 @@ import {
   listRunnerOverview,
   renewRunnerCertificate,
   requestAllRunnerAgentUpdates,
-  requestRunnerAgentRollback,
   requestRunnerAgentUpdate,
   isCurrentRunnerCertificate,
   runnerForCertificate,
@@ -265,21 +264,6 @@ export function createRunnerControl(options: {
           now: at,
           id: workspaceId(at),
           catalogPackages: (name, nativeVersion) => agentCatalogPackages(db, name, nativeVersion),
-        });
-      });
-    },
-    /** Switch the runner's `agent` back to the version it ran before. Returns that version. */
-    rollbackAgent(principal: WorkspacePrincipal, runnerId: string, agent: string) {
-      return immediate(db, () => {
-        admin(principal);
-        const at = now();
-        return requestRunnerAgentRollback(db, {
-          runnerId,
-          agent,
-          workspaceId: principal.workspaceId,
-          userId: principal.userId,
-          now: at,
-          id: workspaceId(at),
         });
       });
     },

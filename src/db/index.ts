@@ -491,7 +491,6 @@ export {
   listRunnerAgents,
   recordRunnerAgents,
   requestAllRunnerAgentUpdates,
-  requestRunnerAgentRollback,
   requestRunnerAgentUpdate,
   runnerAgentTargets,
   RunnerAgentUpdateError,
