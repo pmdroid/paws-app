@@ -34,6 +34,8 @@ import {
   workspaceTokenHash,
 } from "./session";
 
+const GITHUB_STEP = "/github";
+
 export type WorkspaceAccessOptions = {
   db: Database;
   assignments?: WorkspaceAssignments;
@@ -189,37 +191,60 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     )
       return json({ error: "Use the configured Paws origin." }, 403);
     if (path.startsWith("/onboard/")) {
-      if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
-      const link = options.assignments?.open(path.slice("/onboard/".length)) ?? null;
+      // `/onboard/<id>` is the page; `/onboard/<id>/github` starts its GitHub credit link.
+      const github = path.endsWith(GITHUB_STEP);
+      const linkId = path.slice("/onboard/".length, github ? -GITHUB_STEP.length : undefined);
+      if (request.method !== (github ? "POST" : "GET"))
+        return json({ error: "Method not allowed" }, 405);
+      const link = options.assignments?.open(linkId) ?? null;
       if (link === null) return page("This sign-in link is not active.", 404);
       // Only the session creator's own sign-in shows the page. Anyone else, or a creator whose
       // sign-in ended, goes through Linear OAuth again, which says nothing about the issue.
-      if (link.state === "done") {
-        const viewer = requestWorkspaceSession(options.db, request, now());
-        const member =
-          viewer?.principal.workspaceId === link.workspaceId
-            ? workspaceMember(options.db, link.workspaceId, viewer.principal.userId)
-            : null;
-        if (member?.active && member.linearUserId === link.actorId)
-          return onboardingPage({
-            identifier: link.identifier,
-            issueUrl: link.issueUrl,
-            teamName: link.teamName,
-            member: { name: member.name, email: member.email },
-            memberOfTeam: member.role !== "observer" && member.teamIds.includes(link.teamId),
-            readiness: options.onboardingReadiness?.({
-              workspaceId: link.workspaceId,
-              userId: member.userId,
-              teamId: link.teamId,
-              projectLeadIds: link.projectLeadIds,
-              now: now(),
-            }) ?? {
-              runner: { state: "needed" },
-              agents: { claude: "waiting", codex: "waiting" },
-            },
-            github: githubAttribution(options.db, link.workspaceId, member.userId),
-            createVm: await createVmAvailable(),
-          });
+      const viewer =
+        link.state === "done" ? requestWorkspaceSession(options.db, request, now()) : null;
+      const member =
+        link.state === "done" && viewer?.principal.workspaceId === link.workspaceId
+          ? workspaceMember(options.db, link.workspaceId, viewer.principal.userId)
+          : null;
+      const creator =
+        link.state === "done" && member?.active && member.linearUserId === link.actorId
+          ? { link, member, viewer: viewer! }
+          : null;
+      if (github)
+        // The return path comes from the hold this route just verified, never from the request.
+        return creator === null
+          ? page("This sign-in link is not active.", 404)
+          : attribution.startFromPage(request, `/onboard/${creator.link.linkId}`);
+      if (creator !== null) {
+        const { link: done, member: owner, viewer: signedIn } = creator;
+        const credit = githubAttribution(options.db, done.workspaceId, owner.userId);
+        return onboardingPage({
+          identifier: done.identifier,
+          issueUrl: done.issueUrl,
+          teamName: done.teamName,
+          member: { name: owner.name, email: owner.email },
+          memberOfTeam: owner.role !== "observer" && owner.teamIds.includes(done.teamId),
+          readiness: options.onboardingReadiness?.({
+            workspaceId: done.workspaceId,
+            userId: owner.userId,
+            teamId: done.teamId,
+            projectLeadIds: done.projectLeadIds,
+            now: now(),
+          }) ?? {
+            runner: { state: "needed" },
+            agents: { claude: "waiting", codex: "waiting" },
+          },
+          github: credit,
+          createVm: await createVmAvailable(),
+          // Observers cannot link; without App client metadata there is nothing to start.
+          githubLink:
+            credit === null && attribution.configured && owner.role !== "observer"
+              ? {
+                  action: `/onboard/${done.linkId}${GITHUB_STEP}`,
+                  csrf: signedIn.session.csrfToken,
+                }
+              : null,
+        });
       }
       return beginWorkspaceOAuth(options.db, {
         clientId: options.clientId,
