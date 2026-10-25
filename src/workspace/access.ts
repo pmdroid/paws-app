@@ -249,6 +249,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           teamName: done.teamName,
           member: { name: owner.name, email: owner.email },
           memberOfTeam: owner.role !== "observer" && owner.teamIds.includes(done.teamId),
+          observer: owner.role === "observer",
+          csrfToken: signedIn.session.csrfToken,
           readiness: options.onboardingReadiness?.({
             workspaceId: done.workspaceId,
             userId: owner.userId,
@@ -258,6 +260,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           }) ?? {
             runner: { state: "needed" },
             agents: { claude: "waiting", codex: "waiting" },
+            memberVm: false,
           },
           github: credit,
           createVm: await createVmAvailable(),

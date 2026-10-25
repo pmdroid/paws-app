@@ -36,6 +36,7 @@ export type {
   OnboardingReadiness,
   OnboardingReadinessReader,
   OnboardingRunner,
+  OnboardingVmStep,
 } from "./onboarding-page";
 export { handleWorkspaceGitHubIntegration } from "./github-integration";
 export { createGitHubAttributionLink } from "./github-attribution";
