@@ -18,6 +18,12 @@ export type {
   WorkItemEvent,
   WorkItemState,
 } from "./states";
+export {
+  RESTART_REASONS,
+  WORK_ITEM_EVENT_KINDS,
+  type RestartReason,
+  type WorkItemEventKind,
+} from "./item-events";
 export { WORK_ITEM_EDGES, transition } from "./transition";
 export type { TransitionErr, TransitionOk, TransitionResult } from "./transition";
 export type {
