@@ -111,6 +111,7 @@ async function remoteFixture(
       },
       pairing.code,
     );
+    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     assert.equal((await daemon.pollPairing()).phase, "paired");
     await daemon.heartbeat();
     const repository = {

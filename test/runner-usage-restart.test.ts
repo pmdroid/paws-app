@@ -139,6 +139,7 @@ async function usageLimitScenario(restart: boolean) {
     { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
     pairing.code,
   );
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });

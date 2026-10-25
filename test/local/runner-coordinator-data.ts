@@ -190,6 +190,7 @@ export async function probeRunnerCoordinatorData(
     const pairing = await daemon.beginPairing("Coordinator data");
     assert(pairing.phase === "pending");
     const { runnerId } = await coordinator.control.approvePairing(principal, pairing.code);
+    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     assert.equal((await daemon.pollPairing()).phase, "paired");
     const item = insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
     const { run } = beginImplementRun(db, item.id, now);

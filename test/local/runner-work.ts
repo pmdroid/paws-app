@@ -81,7 +81,10 @@ export async function probeRunnerWork(
   const client = await createRunnerKey(join(root, "client"));
   async function paired(name: string) {
     const pending = await control.beginPairing({ name, csr: client.csr });
-    return (await control.approvePairing(principal, pending.code)).runnerId;
+    const { runnerId } = await control.approvePairing(principal, pending.code);
+    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+    control.setStatus(principal, runnerId, "active");
+    return runnerId;
   }
   const firstRunner = await paired("First VM");
   const secondRunner = await paired("Second VM");
@@ -164,6 +167,10 @@ export async function probeRunnerWork(
       ],
       now,
     );
+    assert.equal(
+      control.list(principal).find((runner) => runner.id === firstRunner)?.hasRunWork,
+      false,
+    );
     const assigned = work.assign({
       ...command,
       hooks: [
@@ -178,6 +185,10 @@ export async function probeRunnerWork(
         },
       ],
     });
+    assert.equal(
+      control.list(principal).find((runner) => runner.id === firstRunner)?.hasRunWork,
+      true,
+    );
     assert.equal(assigned.leaseUntil, now + 60_000);
     assert.deepEqual(runAgentSetup(db, run.id), {
       runnerId: firstRunner,

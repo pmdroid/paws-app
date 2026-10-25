@@ -112,7 +112,8 @@ export async function probeRunnerSessionHelpers(
     const pairing = await daemon.beginPairing("Session helper runner");
     assert.equal(pairing.phase, "pending");
     if (pairing.phase !== "pending") throw new Error("Missing pairing challenge");
-    await coordinator.control.approvePairing(principal, pairing.code);
+    const approved = await coordinator.control.approvePairing(principal, pairing.code);
+    coordinator.control.setStatus(principal, approved.runnerId, "active");
     const paired = await daemon.pollPairing();
     assert.equal(paired.phase, "paired");
     if (paired.phase !== "paired") throw new Error("Missing runner identity");
@@ -361,7 +362,11 @@ export async function probeRunnerSessionHelpers(
       const challenge = await revocationDaemon.beginPairing("Revoked helper runner");
       assert.equal(challenge.phase, "pending");
       if (challenge.phase !== "pending") throw new Error("Missing pairing challenge");
-      await coordinator.control.approvePairing(principal, challenge.code);
+      const replacementApproval = await coordinator.control.approvePairing(
+        principal,
+        challenge.code,
+      );
+      coordinator.control.setStatus(principal, replacementApproval.runnerId, "active");
       const replacement = await revocationDaemon.pollPairing();
       if (replacement.phase !== "paired") throw new Error("Missing paired runner");
       const pending = coordinator.helpers.dispatch({ ...input, runnerId: replacement.runnerId });

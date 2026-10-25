@@ -88,6 +88,7 @@ export async function probeRunnerInputs(
     teamIds: [],
   };
   const { runnerId } = await control.approvePairing(principal, pending.code);
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const identity = control.claimPairing(pending.id, pending.claim);
   assert.equal(identity.status, "approved");
   if (identity.status !== "approved") throw new Error("Pairing must be approved");
