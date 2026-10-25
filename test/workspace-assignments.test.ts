@@ -174,6 +174,8 @@ function fixture({
   if (installed) install();
   let failedSessionReads = 0;
   let sessionReads = 0;
+  let issueReads = 0;
+  let epicReads = 0;
   const continuations: string[] = [];
   const build = () =>
     createWorkspaceAssignments({
@@ -184,6 +186,7 @@ function fixture({
       now: () => clock.now(),
       lifecycle: {
         async inspect() {
+          issueReads++;
           return structuredClone(ownership);
         },
         async startCodeIssue() {
@@ -192,6 +195,10 @@ function fixture({
       },
       tracker: {
         ...tracker,
+        async loadEpic(id) {
+          epicReads++;
+          return tracker.loadEpic(id);
+        },
         async getSession() {
           sessionReads++;
           if (failedSessionReads > 0) {
@@ -409,6 +416,10 @@ function fixture({
     get sessionReads() {
       return sessionReads;
     },
+    /** Linear reads made by the assignment decisions themselves, not by intake. */
+    get decisionReads() {
+      return { session: sessionReads, issue: issueReads, epic: epicReads };
+    },
     setActive(value: boolean) {
       active = value;
     },
@@ -543,8 +554,11 @@ for (const change of [
       const jobs = f.jobs();
       await jobs.tick();
       await jobs.tick();
-      expect(f.calls).toBe(0);
+      // The resume reads only the issue and the membership. A changed description is caught at
+      // intake, which reads the epic anyway and compares it with the stored snapshot.
+      expect(f.calls).toBe(change === "spec" ? 1 : 0);
       expect(f.continuations).toEqual([]);
+      expect(listWorkItems(f.db)).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -797,6 +811,76 @@ test("two workers cannot claim the same durable continuation", async () => {
     await f.close();
   }
 });
+
+test("the resume reuses the stored snapshot and reads only the issue and the membership", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    expect(f.decisionReads).toEqual({ session: 1, issue: 1, epic: 1 });
+    expect((await f.callback(await f.begin())).status).toBe(303);
+    const before = f.linearRequests;
+    const jobs = f.jobs();
+    await jobs.tick();
+    await jobs.tick();
+    expect(f.continuations).toEqual([f.event.dedupeKey]);
+    // One issue read and one membership read before resume; the continuation reads neither.
+    expect(f.decisionReads).toEqual({ session: 1, issue: 2, epic: 1 });
+    expect(f.linearRequests - before).toBe(1);
+  } finally {
+    await f.close();
+  }
+});
+
+const errors = (f: ReturnType<typeof fixture>) =>
+  listOutbox(f.db)
+    .map((row) => row.payload as { kind?: string; body?: string })
+    .filter((payload) => payload.kind === "error")
+    .map((payload) => payload.body);
+
+for (const [change, reason, apply] of [
+  [
+    "the issue's delegate",
+    "This issue changed while Paws waited for you to sign in.",
+    (f: ReturnType<typeof fixture>) => (f.ownership.delegateId = "another-app"),
+  ],
+  [
+    "the issue's state",
+    "This issue changed while Paws waited for you to sign in.",
+    (f: ReturnType<typeof fixture>) => (f.ownership.stateType = "completed"),
+  ],
+  [
+    "the Linear account",
+    "Your Linear account is not active.",
+    (f: ReturnType<typeof fixture>) => f.setActive(false),
+  ],
+  [
+    "the issue's team membership",
+    "You are not a member of this issue's Linear team.",
+    (f: ReturnType<typeof fixture>) => f.setTeams([]),
+  ],
+] as const)
+  test(`a change to ${change} between sign-in and resume refuses once with its reason`, async () => {
+    const f = fixture();
+    try {
+      await f.assignments.authorize(f.event);
+      expect((await f.callback(await f.begin())).status).toBe(303);
+      apply(f);
+      const jobs = f.jobs();
+      await jobs.tick();
+      await jobs.tick();
+      expect(f.calls).toBe(0);
+      expect(listWorkItems(f.db)).toHaveLength(0);
+      expect(errors(f)).toEqual([`Paws did not start this work. ${reason}`]);
+      expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
+        status: "invalid",
+      });
+      expect(
+        listJobs(f.db).filter((job) => job.queue === "workspace.assignment" && job.lastError),
+      ).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
 
 for (const change of ["spec", "repository", "membership"])
   test(`intake refuses ${change} changing after continuation checks`, async () => {

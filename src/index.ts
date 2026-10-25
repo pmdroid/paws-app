@@ -574,6 +574,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           origin: runtime.publicUrl!,
           clientId: runtime.linearClientId!,
           memberships: members!,
+          resumeMemberships: linear.memberships,
           lifecycle: linear.issueLifecycle,
           tracker: linear.tracker,
           accept: (event, signal) => linearTaskAccess!.accept(event, { signal }),
