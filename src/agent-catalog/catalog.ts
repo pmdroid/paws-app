@@ -6,11 +6,13 @@ import {
   readAgentVersion,
   readNpmIntegrity,
   readNpmPackage,
+  RunnerAgentUpdateError,
   saveAgentVersions,
   saveNpmPackage,
   touchNpmPackage,
   type AgentVersionRow,
   type AgentVersionStatus,
+  type CatalogPackage,
   type NpmVersionMetadata,
 } from "../db";
 import type { NpmRegistry } from "./registry";
@@ -371,6 +373,39 @@ export function createAgentCatalog(options: {
       return true;
     },
   };
+}
+
+/**
+ * The native build package at `nativeVersion` and every platform package it pins, each with the
+ * integrity Paws first saw on npm: the bytes the catalog checked. The runner refuses a lockfile
+ * that resolves any of these packages with other bytes. Throws when one changed integrity or was
+ * never seen, since the catalog would not offer that version.
+ */
+export function agentCatalogPackages(
+  db: Database,
+  agent: string,
+  nativeVersion: string | null,
+  agents: Readonly<Record<string, AgentPackage>> = AGENT_PACKAGES,
+): CatalogPackage[] {
+  const spec = agents[agent];
+  if (!spec || nativeVersion === null) return [];
+  const packages: CatalogPackage[] = [];
+  const add = (name: string, version: string) => {
+    const record = readNpmIntegrity(db, name, version);
+    if (!record || record.changedIntegrity !== null)
+      throw new RunnerAgentUpdateError(
+        `Paws has no unchanged integrity for ${name}@${version}, so it cannot send this version.`,
+      );
+    if (!packages.some((entry) => entry.name === name && entry.version === version))
+      packages.push({ name, version, integrity: record.integrity });
+  };
+  if (spec.native !== spec.package) add(spec.native, nativeVersion);
+  const metadata = readNpmPackage(db, spec.native)?.versions[nativeVersion];
+  for (const [alias, pin] of Object.entries(metadata?.optionalDependencies ?? {})) {
+    const target = platformPin(alias, pin);
+    if (EXACT.test(target.version)) add(target.name, target.version);
+  }
+  return packages;
 }
 
 /** `npm:<name>@<version>` aliases name another package; a bare pin names the alias itself. */

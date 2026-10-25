@@ -495,6 +495,8 @@ export {
   requestRunnerAgentUpdate,
   runnerAgentTargets,
   RunnerAgentUpdateError,
+  type CatalogPackage,
+  type CatalogPackages,
   type RunnerAgentReport,
   type RunnerAgentTargetRow,
   type RunnerAgentView,

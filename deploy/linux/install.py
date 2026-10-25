@@ -26,6 +26,8 @@ DEFAULT_REGISTRY = "https://registry.npmjs.org/"
 AGENT_REQUESTS = pathlib.Path("/var/lib/paws-runner/agent-requests.json")
 AGENT_STATUS = pathlib.Path("/var/lib/paws-runner-agents/status.json")
 AGENT_REQUEST_LIMIT = 65_536
+# Inside each version folder: the packages its lockfile installed, with their sha512.
+AGENT_PACKAGE_RECORD = ".paws-packages.json"
 AGENT_POLL_SECONDS = 5
 
 
@@ -490,6 +492,9 @@ def install_agent_version(agent, entry, bun, base=BASE, registry=DEFAULT_REGISTR
             detail = " ".join(completed.stderr.decode(errors="replace").splitlines()[-6:])[:600] or f"bun install exited {completed.returncode}"
             raise AgentInstallError(agent, version, detail)
         check_agent_tree(agent, entry, staging)
+        # What this folder installed, with each package's sha512, so a later request for this version
+        # is checked against the bytes that are here (`installed_agent_packages`).
+        (staging / AGENT_PACKAGE_RECORD).write_text(json.dumps(entry["packages"], sort_keys=True))
         trim_agent_tree(agent, staging)
         normalize_modes(staging)
         os.rename(staging, destination)
@@ -673,6 +678,34 @@ def read_agent_status(path=AGENT_STATUS):
     return status
 
 
+def verify_requested_packages(request, packages):
+    """Refuse unless `packages` (path, name, version, integrity) holds exactly what Paws sent.
+
+    The agent package must carry the integrity Paws sent. The native build package and each platform
+    package Paws listed must carry the sha512 the catalog checked: any package of one of those names
+    with another version or other bytes is refused.
+    """
+    agent, version = request["agent"], request["version"]
+    package = release.AGENT_PACKAGES[agent]
+    top = [item for item in packages if item["name"] == package and item["version"] == version]
+    if not top or any(item["integrity"] != request["integrity"] for item in top):
+        raise AgentInstallError(agent, version, f"npm's integrity for {package}@{version} is not the one Paws sent")
+    native = release.AGENT_NATIVE_PACKAGE[agent]
+    if request["nativeVersion"] is not None and native != package:
+        found = [item["version"] for item in packages if item["name"] == native]
+        if found != [request["nativeVersion"]]:
+            raise AgentInstallError(agent, version, f"it resolves {native}@{', '.join(found) or 'nothing'}, not {request['nativeVersion']} as Paws checked")
+        if not any(pin["name"] == native and pin["version"] == request["nativeVersion"] for pin in request["packages"]):
+            raise AgentInstallError(agent, version, f"Paws sent no integrity for {native}@{request['nativeVersion']}")
+    checked = {}
+    for pin in request["packages"]:
+        checked.setdefault(pin["name"], {})[pin["version"]] = pin["integrity"]
+    for item in packages:
+        expected = checked.get(item["name"])
+        if expected is not None and expected.get(item["version"]) != item["integrity"]:
+            raise AgentInstallError(agent, version, f"{item['name']}@{item['version']} does not carry the integrity Paws checked")
+
+
 def resolve_requested_agent(request, bun, registry):
     """Resolve the requested version's lockfile and check it installs exactly what Paws sent."""
     agent, version = request["agent"], request["version"]
@@ -692,14 +725,31 @@ def resolve_requested_agent(request, bun, registry):
         release.check_agent_entry(agent, entry)
     except ValueError as error:
         raise AgentInstallError(agent, version, str(error)) from error
-    pinned = {item["path"]: item for item in entry["packages"]}
-    top = pinned.get(package)
-    if top is None or top["version"] != version or top["integrity"] != request["integrity"]:
-        raise AgentInstallError(agent, version, f"npm's integrity for {package}@{version} is not the one Paws sent")
-    native = release.AGENT_NATIVE_PACKAGE[agent]
-    if request["nativeVersion"] is not None and pinned.get(native, {}).get("version") != request["nativeVersion"]:
-        raise AgentInstallError(agent, version, f"it resolves {native}@{pinned.get(native, {}).get('version')}, not {request['nativeVersion']} as Paws checked")
+    verify_requested_packages(request, entry["packages"])
     return entry
+
+
+def installed_agent_packages(base, agent, version):
+    """What an installed version folder holds, with sha512s: its own record, or the installed release's agents.json."""
+    folder = base / "agents" / agent / version
+    try:
+        packages = json.loads(release.read_regular(folder / AGENT_PACKAGE_RECORD, AGENT_REQUEST_LIMIT * 16))
+    except FileNotFoundError:
+        packages = None
+    except (OSError, ValueError) as error:
+        raise AgentInstallError(agent, version, "its installed package record is unreadable") from error
+    if packages is None:
+        try:
+            manifest = release.parse_agent_manifest(release.read_regular(base / "current/deploy/linux/agents.json", release.AGENT_MANIFEST_LIMIT))
+        except (OSError, ValueError):
+            manifest = None
+        entry = manifest["agents"].get(agent) if manifest else None
+        packages = entry["packages"] if entry and entry["version"] == version else None
+    if packages is None:
+        raise AgentInstallError(agent, version, "it is installed on this runner without a record of its integrity, so Paws cannot confirm it is the version it sent")
+    if not isinstance(packages, list) or not all(isinstance(item, dict) and {"name", "version", "integrity"} <= set(item) for item in packages):
+        raise AgentInstallError(agent, version, "its installed package record is unreadable")
+    return packages
 
 
 def apply_agent_request(request, state, bun, base, registry, save):
@@ -718,7 +768,10 @@ def apply_agent_request(request, state, bun, base, registry, save):
         if request["integrity"] is None:
             if not (folder / version).is_dir() or (folder / version).is_symlink():
                 raise AgentInstallError(agent, version, "it is not installed on this runner, so it cannot be switched back to")
-        elif not (folder / version).is_dir():
+        elif (folder / version).is_dir() and not (folder / version).is_symlink():
+            # An installed folder is never changed, so it must already hold the bytes Paws sent.
+            verify_requested_packages(request, installed_agent_packages(base, agent, version))
+        else:
             install_agent_version(agent, resolve_requested_agent(request, bun, registry), bun, base, registry)
         before = current_agent_version(folder)
         if switch_current(folder, version) == "waiting":

@@ -776,8 +776,13 @@ class AgentInstallation(unittest.TestCase):
     def published_integrity(self, agent, version):
         return self.registry.packuments[release.AGENT_PACKAGES[agent]]["versions"][version]["dist"]["integrity"]
 
-    def request(self, agent, version, request_id, integrity=True, native=None):
-        return {"id": request_id, "agent": agent, "version": version, "integrity": self.published_integrity(agent, version) if integrity is True else integrity, "nativeVersion": native}
+    def request(self, agent, version, request_id, integrity=True, native=None, packages=None):
+        """A request as Paws sends it: the catalog's integrity for the agent and for its native build package."""
+        name = release.AGENT_NATIVE_PACKAGE[agent]
+        if packages is None:
+            published = self.registry.packuments.get(name, {}).get("versions", {}).get(native)
+            packages = [{"name": name, "version": native, "integrity": published["dist"]["integrity"] if published else "sha512-" + "Q" * 86 + "=="}] if native is not None and name != release.AGENT_PACKAGES[agent] and integrity is not None else []
+        return {"id": request_id, "agent": agent, "version": version, "integrity": self.published_integrity(agent, version) if integrity is True else integrity, "nativeVersion": native, "packages": packages}
 
     def process(self, requests, sleep=None):
         """Run `install.py agent-requests` against this case's folders, as paws-runner-agents.service does."""
@@ -819,7 +824,7 @@ class AgentInstallation(unittest.TestCase):
         self.assertFalse((self.base / "agents/codex/2.0.0").exists())
         self.assertEqual(self.current("codex"), "1.0.0")
         self.assertEqual(self.current("claude"), "1.0.0")
-        for content in ('{"format": 1, "requests": [{"id": "x", "agent": "left-pad", "version": "1.0.0", "integrity": null, "nativeVersion": null}]}', '{"format": 1, "requests": [{"id": "x", "agent": "codex", "version": "../1", "integrity": null, "nativeVersion": null}]}', '{"format": 1, "requests": [{"id": "x", "agent": "codex", "version": "2.0.0", "integrity": "sha1-abc", "nativeVersion": null}]}'):
+        for content in ('{"format": 1, "requests": [{"id": "x", "agent": "left-pad", "version": "1.0.0", "integrity": null, "nativeVersion": null, "packages": []}]}', '{"format": 1, "requests": [{"id": "x", "agent": "codex", "version": "../1", "integrity": null, "nativeVersion": null, "packages": []}]}', '{"format": 1, "requests": [{"id": "x", "agent": "codex", "version": "2.0.0", "integrity": "sha1-abc", "nativeVersion": null, "packages": []}]}'):
             with self.subTest(content=content), self.assertRaises(ValueError):
                 release.parse_agent_requests(content)
 
@@ -838,6 +843,44 @@ class AgentInstallation(unittest.TestCase):
         installed = json.loads((self.base / "agents/codex/3.0.0/node_modules/@openai/codex/package.json").read_text())
         self.assertEqual(installed["version"], "2.0.0")
         self.assertEqual(self.current("codex"), "3.0.0")
+
+    def test_a_native_package_with_bytes_other_than_the_catalog_checked_is_refused(self):
+        self.installed_one()
+        wrong = [{"name": "@openai/codex", "version": "2.0.0", "integrity": self.published_integrity("codex", "1.0.0")}]
+        status = self.process([self.request("codex", "2.0.0", "native-bytes", native="2.0.0", packages=wrong)])
+        self.assertEqual(status["agents"]["codex"]["request"]["status"], "failed")
+        self.assertIn("@openai/codex@2.0.0 does not carry the integrity Paws checked", status["agents"]["codex"]["request"]["error"])
+        self.assertFalse((self.base / "agents/codex/2.0.0").exists())
+        # Paws must name the native package's integrity, not only its version.
+        status = self.process([self.request("codex", "2.0.0", "native-missing", native="2.0.0", packages=[])])
+        self.assertIn("Paws sent no integrity for @openai/codex@2.0.0", status["agents"]["codex"]["request"]["error"])
+        self.assertEqual(self.current("codex"), "1.0.0")
+        with self.assertRaises(ValueError):
+            release.parse_agent_requests(json.dumps({"format": 1, "requests": [{**self.request("codex", "2.0.0", "x", native="2.0.0"), "packages": [{"name": "../x", "version": "1.0.0", "integrity": self.published_integrity("codex", "2.0.0")}]}]}))
+
+    def test_an_installed_version_is_checked_against_the_integrity_recorded_when_it_was_installed(self):
+        self.installed_one()
+        self.install("2.0.0")
+        self.assertTrue((self.base / "agents/codex/2.0.0" / self.installer.AGENT_PACKAGE_RECORD).is_file())
+        self.registry.requests.clear()
+        status = self.process([self.request("codex", "2.0.0", "wrong-installed", integrity=self.published_integrity("codex", "1.0.0"), native="2.0.0")])
+        self.assertEqual(status["agents"]["codex"]["request"]["status"], "failed")
+        self.assertIn("is not the one Paws sent", status["agents"]["codex"]["request"]["error"])
+        self.assertEqual(self.current("codex"), "1.0.0")
+        status = self.process([self.request("codex", "2.0.0", "right-installed", native="2.0.0")])
+        self.assertEqual(status["agents"]["codex"]["request"]["status"], "installed")
+        self.assertEqual(self.current("codex"), "2.0.0")
+        self.assertEqual(self.registry.requests, [])
+        # A folder with no record (installed before records existed) is refused unless the installed
+        # release's agents.json names that version.
+        (self.base / "agents/grok/2.0.0" / self.installer.AGENT_PACKAGE_RECORD).unlink()
+        status = self.process([self.request("grok", "2.0.0", "no-record")])
+        self.assertIn("without a record of its integrity", status["agents"]["grok"]["request"]["error"])
+        (self.base / "current/deploy/linux").mkdir(parents=True)
+        (self.base / "current/deploy/linux/agents.json").write_text(self.manifests["2.0.0"])
+        status = self.process([self.request("grok", "2.0.0", "from-manifest")])
+        self.assertEqual(status["agents"]["grok"]["request"]["status"], "installed")
+        self.assertEqual(self.current("grok"), "2.0.0")
 
     def test_a_running_session_keeps_its_version_until_it_ends(self):
         self.installed_one()

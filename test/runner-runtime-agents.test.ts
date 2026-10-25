@@ -54,6 +54,13 @@ const update: RunnerAgentTarget = {
   version: "2.1.0",
   integrity: `sha512-${"B".repeat(86)}==`,
   nativeVersion: "2.1.0",
+  packages: [
+    {
+      name: "@anthropic-ai/claude-agent-sdk",
+      version: "2.1.0",
+      integrity: `sha512-${"C".repeat(86)}==`,
+    },
+  ],
 };
 
 test("a host without installed agents reports none", () => {
@@ -162,7 +169,8 @@ test("a rollback is forwarded only to a version installed on the runner", () => 
     version: "1.8.0",
     integrity: null,
     nativeVersion: null,
-  } as const;
+    packages: [],
+  } satisfies RunnerAgentTarget;
   agents.apply([rollback, { ...rollback, id: "01KMISSING", agent: "codex", version: "0.1.0" }]);
   expect(runner.requests().requests).toEqual([rollback]);
   expect(agents.installed()).toContainEqual({
