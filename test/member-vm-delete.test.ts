@@ -362,6 +362,46 @@ describe("Delete VM", () => {
     expect(f.exeDev.vms.has(vm.vmName)).toBe(false);
   });
 
+  test("a task whose stop was asked for still blocks while it runs on the VM", async () => {
+    const f = await fixture();
+    const vm = await f.ready();
+    const itemId = f.task(vm.runnerId!, "PAS-903");
+    f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [itemId]);
+
+    await f.remove(f.member, vm.id);
+    await f.settle();
+    const blocked = getMemberVm(f.db, vm.id)!;
+    expect(blocked.deleteStep).toBe("drain");
+    expect(blocked.deleteFailure).toContain("PAS-903");
+    expect(f.exeDev.vms.has(vm.vmName)).toBe(true);
+
+    f.db.run("UPDATE runner_work SET ended_at=? WHERE command_id='cmd-PAS-903'", [f.clock.now()]);
+    f.db.run("UPDATE run SET status='lost' WHERE item_id=?", [itemId]);
+    await f.remove(f.member, vm.id);
+    await f.settle();
+    expect(getMemberVm(f.db, vm.id)).toBeNull();
+    expect(f.stopped).toEqual([]);
+  });
+
+  test("a forced delete asks Stop once and goes on while the stopped task winds down", async () => {
+    const f = await fixture();
+    const vm = await f.ready();
+    const itemId = f.task(vm.runnerId!, "PAS-904");
+    await f.remove(f.member, vm.id, true);
+    await f.loop.tick();
+    expect(f.stopped).toEqual([itemId]);
+    expect(getMemberVm(f.db, vm.id)!.deleteStep).toBe("tailnet");
+    f.db.run("UPDATE member_vm SET delete_step='drain' WHERE id=?", [vm.id]);
+    enqueueJob(f.db, {
+      queue: MEMBER_VM_DELETE_QUEUE,
+      payload: { memberVmId: vm.id },
+      now: f.clock.now(),
+    });
+    await f.settle();
+    expect(f.stopped).toEqual([itemId]);
+    expect(getMemberVm(f.db, vm.id)).toBeNull();
+  });
+
   test("a VM exe.dev no longer has counts as destroyed", async () => {
     const f = await fixture();
     const vm = await f.ready();
@@ -747,6 +787,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     await f.remove(f.member, vm.id);
     await f.settle();
     expect(getMemberVm(f.db, vm.id)!.deleteFailure).toContain("Retry after it expires");
+    expect(getRunner(f.db, vm.runnerId!)!.status).toBe("draining");
 
     f.clock.advance(11 * 60_000);
     await f.remove(f.member, vm.id);

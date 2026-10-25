@@ -1,5 +1,4 @@
 import type { Database } from "bun:sqlite";
-import { TERMINAL_WORK_ITEM_STATES } from "../core";
 import {
   auditWorkspaceAccess,
   immediate,
@@ -99,7 +98,6 @@ async function runDeleteStep(
           row.id,
         ]);
       const runners = vmRunners(db, row);
-      if (row.enrollmentsTracked !== 1) untrackedEnrollments(db, row, runners, now());
       for (const runner of runners)
         if (runner.status !== "draining")
           updateRunnerStatus(db, {
@@ -109,6 +107,7 @@ async function runDeleteStep(
             status: "draining",
             now: now(),
           });
+      if (row.enrollmentsTracked !== 1) untrackedEnrollments(db, row, runners, now());
       const seen = new Set<string>();
       const tasks = runners
         .flatMap((runner) => blockingTasks(db, runner.id, now()))
@@ -129,6 +128,7 @@ async function runDeleteStep(
         return "done";
       }
       for (const task of tasks) {
+        if (stopRequested(db, task.itemId)) continue;
         await options.stopTask(task.itemId);
         auditWorkspaceAccess(db, {
           workspaceId: row.workspaceId,
@@ -221,16 +221,24 @@ async function runDeleteStep(
 }
 
 export function blockingTasks(db: Database, runnerId: string, now: number): MemberVmBlockingTask[] {
-  const terminal = TERMINAL_WORK_ITEM_STATES as readonly string[];
   return db
-    .query<MemberVmBlockingTask, [string, number, ...string[]]>(
+    .query<MemberVmBlockingTask, [string, number]>(
       `SELECT DISTINCT i.id AS itemId,i.linear_identifier AS identifier,i.title
       FROM runner_work w JOIN run r ON r.id=w.run_id JOIN work_item i ON i.id=r.item_id
       WHERE w.runner_id=? AND ((w.ended_at IS NULL AND w.lease_until>?) OR r.status IN ('active','provisioning'))
-      AND i.cancel_requested=0 AND i.state NOT IN (${terminal.map(() => "?").join(",")})
       ORDER BY r.created_at,i.id`,
     )
-    .all(runnerId, now, ...terminal);
+    .all(runnerId, now);
+}
+
+function stopRequested(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query<{ requested: number }, [string]>(
+        "SELECT cancel_requested AS requested FROM work_item WHERE id=?",
+      )
+      .get(itemId)?.requested === 1
+  );
 }
 
 function provisioningInFlight(db: Database, id: string, now: number): boolean {
