@@ -1,4 +1,4 @@
-export type ProvisioningOperation = "createVm" | "execVm" | "getVm";
+export type ProvisioningOperation = "createVm" | "deleteVm" | "execVm" | "getVm";
 
 export type ProvisioningErrorCode =
   | "invalid_name"
@@ -56,8 +56,11 @@ export type ExeDevExecOptions = {
   timeoutMs?: number;
 };
 
+export type ExeDevDeleteResult = "deleted" | "missing";
+
 export type ExeDev = {
   createVm(name: string): Promise<ExeDevCreatedVm>;
+  deleteVm(name: string): Promise<ExeDevDeleteResult>;
   execVm(name: string, command: string, options?: ExeDevExecOptions): Promise<ExeDevExecResult>;
   getVm(name: string): Promise<ExeDevVm>;
 };

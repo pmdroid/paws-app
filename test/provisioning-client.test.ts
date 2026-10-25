@@ -193,6 +193,57 @@ describe("createVm", () => {
   });
 });
 
+describe("deleteVm", () => {
+  test("posts `rm <vm>` with the bearer token and answers deleted", async () => {
+    for (const body of ["", JSON.stringify({ vm_name: "ada-paws", deleted: true })]) {
+      const { exe, sent } = client(() => new Response(body));
+      expect(await exe.deleteVm("ada-paws")).toBe("deleted");
+      expect(sent[0]?.body).toBe("rm ada-paws");
+      expect(sent[0]?.init.redirect).toBe("error");
+      expect(sent[0]?.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
+    }
+  });
+
+  test("a VM exe.dev does not know answers missing instead of failing", async () => {
+    for (const [status, body] of [
+      [404, { error: "not found" }],
+      [410, "gone"],
+      [422, { error: 'VM "ada-paws" not found' }],
+      [200, { error: "no such vm: ada-paws" }],
+    ] as const) {
+      const { exe } = client(() => json(body, status));
+      expect(await exe.deleteVm("ada-paws")).toBe("missing");
+    }
+  });
+
+  test("names, tokens and other errors are checked like the other calls", async () => {
+    const { exe, sent } = client(() => new Response(""));
+    expectCode(await failure(exe.deleteVm("a;rm -rf /")), "deleteVm", "invalid_name");
+    expect(sent).toHaveLength(0);
+    for (const [status, code] of [
+      [403, "unauthorized"],
+      [429, "rate_limited"],
+      [500, "unknown"],
+    ] as const) {
+      const { exe: failing } = client(() => json({ error: "nope" }, status));
+      expectCode(await failure(failing.deleteVm("ada-paws")), "deleteVm", code);
+    }
+    const { exe: odd } = client(() => new Response("not json"));
+    expectCode(await failure(odd.deleteVm("ada-paws")), "deleteVm", "invalid_response");
+    const { exe: tokenless } = client(() => new Response(""), { token: () => null });
+    expectCode(await failure(tokenless.deleteVm("ada-paws")), "deleteVm", "no_token");
+  });
+
+  test("a delete that never answers times out", async () => {
+    const exe = createExeDev({
+      readToken: () => TOKEN,
+      fetch: () => new Promise(() => {}),
+      timeoutMs: { deleteVm: 20 },
+    });
+    expectCode(await failure(exe.deleteVm("ada-paws")), "deleteVm", "timeout");
+  });
+});
+
 describe("token", () => {
   test("is read on every request", async () => {
     const { exe, reads } = client(() => json(LISTED));

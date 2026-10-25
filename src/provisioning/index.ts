@@ -49,6 +49,7 @@ export { isProvisioningError, ProvisioningError } from "./types";
 export type {
   ExeDev,
   ExeDevCreatedVm,
+  ExeDevDeleteResult,
   ExeDevExecOptions,
   ExeDevExecResult,
   ExeDevVm,

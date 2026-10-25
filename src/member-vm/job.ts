@@ -6,6 +6,7 @@ import {
   type ExeDevBootstrap,
   type ProvisioningErrorCode,
 } from "../provisioning";
+import { workspaceTokenHash } from "../workspace";
 import { getMemberVm, MEMBER_VM_QUEUE, STEP_AT, type MemberRef, type MemberVm } from "./store";
 
 export type MintEnrollment = (
@@ -59,7 +60,8 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
   return async (job: Job, context: JobContext): Promise<void> => {
     const id = memberVmId(job.payload);
     const row = id === null ? null : getMemberVm(db, id);
-    if (row === null || row.failure !== null || row.step === "ready") return;
+    if (row === null || row.failure !== null || row.step === "ready" || row.deleteStep !== null)
+      return;
     const minted: string[] = [];
     let outcome: Outcome;
     try {
@@ -73,15 +75,14 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
         .catch(() => []);
       const text = redact(errorText(error), [...minted, ...secrets]);
       const at = now();
-      db.run("UPDATE member_vm SET failure=?,updated_at=? WHERE id=? AND step=?", [
-        text,
-        at,
-        row.id,
-        row.step,
-      ]);
+      db.run(
+        "UPDATE member_vm SET failure=?,updated_at=? WHERE id=? AND step=? AND delete_step IS NULL",
+        [text, at, row.id, row.step],
+      );
       return;
     }
     if (outcome.next === "done" || !context.isCurrent()) return;
+    if (getMemberVm(db, row.id)?.deleteStep != null) return;
     const at = now();
     parkLeasedJob(db, job, {
       runAt: outcome.next === "advance" ? at : at + pollMs,
@@ -105,6 +106,10 @@ async function runStep(
   const mint = () => {
     const enrollment = options.mintEnrollment(member, { name: vm });
     minted(enrollment.token);
+    db.run(
+      "INSERT OR IGNORE INTO member_vm_enrollment(token_hash,member_vm_id,created_at) VALUES(?,?,?)",
+      [workspaceTokenHash(enrollment.token), row.id, now()],
+    );
     return enrollment;
   };
 

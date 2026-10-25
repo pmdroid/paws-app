@@ -4,8 +4,14 @@ import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createOnboardingReadiness } from "./onboarding-readiness";
-import { createMemberVmHttp, createMemberVmProvisioning, registerMemberVmJob } from "./member-vm";
 import {
+  createMemberVmHttp,
+  createMemberVmProvisioning,
+  registerMemberVmDeleteJob,
+  registerMemberVmJob,
+} from "./member-vm";
+import {
+  createExeDev,
   exeDevTokenReader,
   tailscaleAuthKeyReader,
   latestRunnerRelease,
@@ -647,6 +653,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
+  const memberVmExeDev = createExeDev({ readToken: exeDevToken });
+  const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
@@ -913,6 +921,27 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         provision: memberVmProvisioning,
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
+      });
+      registerMemberVmDeleteJob(created.jobs, {
+        exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
+        stopTask: async (itemId) => {
+          if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
+          submitCommand(db, orchestrator.bus, {
+            type: "stop",
+            source: "dashboard",
+            itemId,
+            requestedAt: Date.now(),
+          });
+          await Promise.race([
+            orchestrator.interruptItem(itemId).catch(() => {}),
+            Bun.sleep(MEMBER_VM_STOP_WAIT_MS),
+          ]);
+        },
+        disconnect: () =>
+          void runnerReady
+            .then((coordinator) => coordinator?.control.expireConnections())
+            .catch(() => {}),
+        secrets: () => [exeDevToken(), tailscaleAuthKey()],
       });
       const attached = attachOrchestrator({
         db,
