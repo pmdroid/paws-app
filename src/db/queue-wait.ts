@@ -13,6 +13,11 @@ export function queueWaitSince(db: Database, itemId: string, version: number, no
     .get(itemId, version)!.since;
 }
 
+/** Forget when an item began waiting for a slot, so its start timeout counts from the next wait. */
+export function clearQueueWait(db: Database, itemId: string): void {
+  db.run("DELETE FROM queue_wait WHERE item_id=?", [itemId]);
+}
+
 /** A queued item's place among the items waiting for a runner slot. */
 export type QueuePosition = {
   itemId: string;

@@ -121,6 +121,7 @@ import {
   getOutbox,
   failWorkItem,
   getQueuePosition,
+  clearQueueWait,
   queueWaitSince,
   getRun,
   getConversation,
@@ -417,6 +418,11 @@ export type OrchestratorOptions = {
   admission?: ItemAdmission;
   journal?: (line: string) => void;
   scheduling?: () => Pick<SchedulerOptions, "defaultRepository" | "ownerCap">;
+  /**
+   * Whether the item's owner has a runner they may use for this agent. False keeps a queued
+   * item out of the slot line and its start timeout. Null when it cannot tell. SQLite only.
+   */
+  ownerHasRunner?: (itemId: string, agent: string, now: number) => boolean | null;
   clock?: Clock;
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
@@ -3632,6 +3638,13 @@ export class Orchestrator {
   }
 
   private dispatch(): void {
+    const ownerHasRunner = this.options.ownerHasRunner;
+    let config: ReturnType<typeof loadConfigFile> | null = null;
+    try {
+      if (ownerHasRunner) config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    } catch {
+      config = null;
+    }
     dispatch(this.db, {
       now: this.now(),
       admission: this.admission,
@@ -3643,7 +3656,51 @@ export class Orchestrator {
       },
       ...this.options.scheduling?.(),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
+      ...(ownerHasRunner && config
+        ? {
+            ownerHasRunner: (itemId: string) => {
+              const item = getWorkItem(this.db, itemId);
+              if (!item) return null;
+              const repository = this.repositoryForItem(item);
+              const { agent } = resolveAgentProfiles(
+                config,
+                repository ? `${repository.owner}/${repository.repo}` : undefined,
+              ).implementer;
+              return ownerHasRunner(itemId, agent, this.now());
+            },
+            onRunnerSetup: (itemIds: readonly string[]) => this.noteRunnerSetup(itemIds),
+          }
+        : {}),
     });
+  }
+
+  /**
+   * A queued item whose owner has no runner they may use is not in the slot line. It gets no
+   * queue notice and no start timeout. Its session hears once what is missing, and the
+   * scheduler starts it on its own once the owner has a usable runner.
+   */
+  private noteRunnerSetup(itemIds: readonly string[]): void {
+    const now = this.now();
+    for (const id of itemIds) {
+      const item = getWorkItem(this.db, id);
+      if (!item || item.state !== "queued" || item.cancelRequested) continue;
+      clearQueueWait(this.db, item.id);
+      const sessionId = this.activitySession(item);
+      if (sessionId === null) continue;
+      const name = item.linearIdentifier ?? "this issue";
+      enqueueOutboxOnce(this.db, {
+        target: OUTBOX_ACTIVITY.target,
+        op: OUTBOX_ACTIVITY.op,
+        orderingKey: sessionId,
+        idempotencyKey: `runner-setup:${item.id}:${item.version}`,
+        payload: {
+          sessionId,
+          kind: "thought",
+          body: `${name} waits for a runner you can use. Add one on the Runners page and sign in to its agent, or ask your project lead to share theirs. Paws starts ${name} on its own once a runner is ready.`,
+        },
+        now,
+      });
+    }
   }
 
   private noteQueued(itemIds: readonly string[]): void {

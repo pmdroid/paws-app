@@ -152,7 +152,11 @@ import {
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
 import { createAdmission, registerScheduler, saveSchedulingContext } from "./scheduler";
-import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
+import {
+  createRunnerPlacement,
+  createRunnerPlacementBrowser,
+  itemOwnerHasEligibleRunner,
+} from "./runner-placement";
 import { startServer } from "./server";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
@@ -921,6 +925,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           ? {
               remoteFollowUp: async (itemId: string, body: string) =>
                 (await runnerReady)?.results.deliverFollowUp(itemId, body) ?? false,
+              ownerHasRunner: (itemId: string, agent: string, now: number) =>
+                itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
             }
           : {}),
         linearAccess: linearTaskAccess ?? undefined,

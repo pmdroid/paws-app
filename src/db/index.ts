@@ -395,6 +395,7 @@ export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-att
 
 export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";
 export {
+  clearQueueWait,
   getQueuePosition,
   listQueuePositions,
   queueWaitSince,
