@@ -39,6 +39,8 @@ export type WorkspaceAccessOptions = {
   assignments?: WorkspaceAssignments;
   /** Runner and coding-agent state for the onboarding page. */
   onboardingReadiness?: OnboardingReadinessReader;
+  /** Whether Paws can create a VM for a member, so onboarding offers Create VM. */
+  createVmAvailable?: () => Promise<boolean>;
   publicUrl: string;
   clientId: string;
   installedOrganization: { id: string; name: string };
@@ -150,6 +152,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     await refresh(current.principal.workspaceId, current.principal.userId);
     return requestWorkspaceSession(options.db, request, now());
   }
+  /** A failing check offers only Add a host. */
+  async function createVmAvailable(): Promise<boolean> {
+    try {
+      return (await options.createVmAvailable?.()) === true;
+    } catch {
+      return false;
+    }
+  }
   async function handle(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -201,12 +211,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
               workspaceId: link.workspaceId,
               userId: member.userId,
               teamId: link.teamId,
+              projectLeadIds: link.projectLeadIds,
               now: now(),
             }) ?? {
               runner: { state: "needed" },
               agents: { claude: "waiting", codex: "waiting" },
             },
             github: githubAttribution(options.db, link.workspaceId, member.userId),
+            createVm: await createVmAvailable(),
           });
       }
       return beginWorkspaceOAuth(options.db, {
