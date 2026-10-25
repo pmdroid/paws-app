@@ -269,7 +269,7 @@ async function signOut(csrfToken: string) {
 }
 
 function setLoginLayout(login: boolean): void {
-  for (const selector of ["#top", "#banner", "#github-auth", "#linear-session-start"]) {
+  for (const selector of ["#top", "#banner", "#linear-session-start"]) {
     const element = document.querySelector<HTMLElement>(selector);
     if (element) element.hidden = login;
   }

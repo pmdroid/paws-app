@@ -5,7 +5,7 @@ Configure a Linear OAuth app with these callback URLs for your Paws HTTPS origin
 - `/auth/linear/callback` for personal sign-in.
 - `/auth/linear/install/callback` for the workspace app authorization.
 
-Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Set the GitHub App credentials described in [GitHub sign-in](github-login.md) so workspace owners can connect repositories in Integrations.
+Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace owners can connect repositories in Integrations.
 
 Give Paws a valid TLS certificate and its matching private key. The key must be readable by the Paws process and have mode `0400` or `0600`.
 

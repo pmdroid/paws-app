@@ -1,8 +1,6 @@
 import { createGitHubApp, mintInstallationToken } from "../token";
 import { GitHubTokenError, type GitHubClient } from "../types";
-import { createGhCliAuth, type GhCliOptions } from "./gh";
-import { createOAuthGitAuth } from "./oauth";
-import type { GitHubAuthMode, GitHubTokenProvider, TokenPurpose } from "./types";
+import type { GitHubTokenProvider, TokenPurpose } from "./types";
 
 export type AppTokenProviderOptions = {
   access?: "read" | "write";
@@ -14,24 +12,6 @@ export type AppTokenProviderOptions = {
   repo: string;
   now?: () => Date;
 };
-
-export type GitHubAuthConfig = {
-  /** `github.auth`. Omitted or empty selects `"gh"`. */
-  auth?: string | null;
-};
-
-/**
- * `github.auth = "app"` selects the GitHub App.
- * `oauth` selects the signed-in user token.
- * Omitted or empty stays `"gh"` so old configs keep the developer login.
- */
-export function githubAuthMode(config?: GitHubAuthConfig | null): GitHubAuthMode {
-  const auth = config?.auth;
-  if (auth === undefined || auth === null || auth === "" || auth === "gh") return "gh";
-  if (auth === "app") return "app";
-  if (auth === "oauth") return "oauth";
-  throw new Error(`github.auth must be "gh", "app", or "oauth", got ${auth}`);
-}
 
 /** Installation token via the existing GitHub App mint path. One token per call. */
 export function createAppTokenProvider(options: AppTokenProviderOptions): GitHubTokenProvider {
@@ -53,37 +33,6 @@ export function createAppTokenProvider(options: AppTokenProviderOptions): GitHub
       return minted.token;
     },
   };
-}
-
-/**
- * Select the token provider from `github.auth`.
- * `"app"` keeps the GitHub App mint. The default is `gh auth token`.
- */
-export function createTokenProvider(
-  config: GitHubAuthConfig | null | undefined,
-  options: {
-    gh?: GhCliOptions;
-    app?: AppTokenProviderOptions;
-    oauth?: { owner: string; repo: string; token: () => Promise<string> };
-  },
-): GitHubTokenProvider {
-  const mode = githubAuthMode(config);
-  if (mode === "app") {
-    if (!options.app) {
-      throw new Error('github.auth is "app" but GitHub App credentials were not provided');
-    }
-    return createAppTokenProvider(options.app);
-  }
-  if (mode === "oauth") {
-    if (!options.oauth) {
-      throw new Error('github.auth is "oauth" but an OAuth token source was not provided');
-    }
-    return createOAuthGitAuth(options.oauth);
-  }
-  if (!options.gh) {
-    throw new Error('github.auth is "gh" but gh CLI options were not provided');
-  }
-  return createGhCliAuth(options.gh);
 }
 
 export async function acquireOperationToken(

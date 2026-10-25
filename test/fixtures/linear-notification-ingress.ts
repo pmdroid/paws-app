@@ -1,7 +1,6 @@
 import "../quiet-journal";
 import { createHmac } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { createTokenStore } from "../../src/auth";
 import { join } from "node:path";
 import {
   bindLinearSessionTask,
@@ -27,17 +26,8 @@ let githubReads = 0;
 if (mode === "github-auth") {
   writeFileSync(
     join(home, "config.toml"),
-    '[tracker]\nkind = "linear"\n[github]\nauth = "oauth"\nrepo = "acme/app"\n',
+    '[tracker]\nkind = "linear"\n[github]\nauth = "app"\nrepo = "acme/app"\n',
   );
-  await createTokenStore({ home, which: () => null }).save({
-    accessToken: "synthetic-host-token",
-    refreshToken: null,
-    expiresAtMs: null,
-    scope: "repo",
-    login: "owner",
-    id: 7,
-    invalid: false,
-  });
 }
 let teamReads = 0;
 let contextReads = 0;

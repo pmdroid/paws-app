@@ -1,7 +1,7 @@
 import { renderMarkup } from "./theme";
 import { LINEAR_SESSION_API_PATH } from "../session-start";
 import { esc } from "./format";
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 
 export function createSessionStart(reload: () => Promise<void>) {
   let root: HTMLElement | null = null;

@@ -1,7 +1,7 @@
 import type { StatusSnapshot } from "../contract";
 import { evidenceFileUrl } from "./evidence";
 import { esc } from "./format";
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 import { renderMarkup } from "./theme";
 
 export type ReviewShot = { id: string; name: string; src: string };

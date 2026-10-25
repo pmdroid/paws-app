@@ -8,12 +8,6 @@ import { demoStatus } from "../demo";
 import { parseEngineUrl, statusEndpoint } from "../endpoint";
 import { choiceFromValue, resolveEngineUrl, type SourceChoice } from "../source";
 import {
-  loadGitHubAccess,
-  readCsrfToken,
-  renderGitHubSignIn,
-  startGitHubDevice,
-} from "./github-auth";
-import {
   attemptsOf,
   checkAnchor,
   checkHash,
@@ -142,7 +136,6 @@ async function boot(): Promise<void> {
   }
   baked = await loadBakedEngineUrl();
   booted = true;
-  if (settingsPage(currentRoute()) === "account") void paintGitHubAuth(null);
   if (currentEngine()) {
     phase = "loading";
     paint();
@@ -156,7 +149,6 @@ async function boot(): Promise<void> {
 function routeChanged(): void {
   paint();
   if (!booted) return;
-  if (settingsPage(currentRoute()) === "account") void paintGitHubAuth(null);
   void reload();
 }
 
@@ -283,18 +275,11 @@ function paint(): void {
   );
   const showSettings = model.route.view === "settings";
   const access = document.querySelector<HTMLElement>("#workspace-access");
-  const auth = document.querySelector<HTMLElement>("#github-auth");
   if (access && access.dataset.loaded === "true")
     access.hidden =
       !showSettings ||
       model.route.view !== "settings" ||
       ["agents", "merging"].includes(model.route.page ?? "agents");
-  if (auth)
-    auth.hidden =
-      !showSettings ||
-      model.route.view !== "settings" ||
-      model.route.page !== "account" ||
-      access?.dataset.workspace === "true";
   showWorkspaceSettingsPage(
     model.route.view === "settings" ? (model.route.page ?? "agents") : null,
   );
@@ -495,10 +480,8 @@ function onClick(event: MouseEvent): void {
   followLink(event, target);
   const action = target.closest("[data-action]")?.getAttribute("data-action");
   if (!action) return;
-  if (action === "github-signin") void signInWithGitHub();
   if (action === "refresh") {
     void reload();
-    if (settingsPage(currentRoute()) === "account") void paintGitHubAuth(null);
     if (currentRoute().view === "runners") void runners.refresh();
   }
   if (action === "source") openDialog();
@@ -617,46 +600,6 @@ function openLinkedCheck(): boolean {
     .getElementById(checkAnchor(attempt.number, linked.checkId, itemId))
     ?.scrollIntoView({ block: "start" });
   return true;
-}
-
-async function paintGitHubAuth(
-  device: { userCode: string; verificationUri: string } | null,
-): Promise<void> {
-  const slot = document.querySelector("#github-auth");
-  if (!slot) return;
-  const access = await loadGitHubAccess().catch(() => null);
-  if (access === null) return;
-  renderMarkup(
-    slot,
-    access.allowed
-      ? renderGitHubSignIn({ user: access.user, device: access.user ? null : device })
-      : "",
-  );
-}
-
-async function signInWithGitHub(): Promise<void> {
-  const slot = document.querySelector("#github-auth");
-  try {
-    const device = await startGitHubDevice(readCsrfToken(document));
-    if (slot) renderMarkup(slot, renderGitHubSignIn({ user: null, device }));
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      await new Promise((resolve) => {
-        window.setTimeout(resolve, 1500);
-      });
-      const access = await loadGitHubAccess().catch(() => null);
-      if (access === null) continue;
-      if (!access.allowed || access.user) {
-        if (slot)
-          renderMarkup(
-            slot,
-            access.allowed ? renderGitHubSignIn({ user: access.user, device: null }) : "",
-          );
-        return;
-      }
-    }
-  } catch {
-    await paintGitHubAuth(null);
-  }
 }
 
 function openDialog(): void {

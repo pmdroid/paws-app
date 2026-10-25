@@ -2,13 +2,13 @@ import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
-import { createOAuthGitAuth, runGitHubGit } from "../src/github";
+import { runGitHubGit } from "../src/github";
 
 const TOKEN = "gho_git_operation_secret";
 
-describe("oauth git credential helper", () => {
+describe("GitHub git credential helper", () => {
   test("clone, fetch, and push keep the token out of env, argv, and the remote URL", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "paws-oauth-git-"));
+    const root = await mkdtemp(path.join(tmpdir(), "paws-github-git-"));
     const bin = path.join(root, "bin");
     const log = path.join(root, "git.log");
     await mkdir(bin);
@@ -36,13 +36,6 @@ describe("oauth git credential helper", () => {
           gitBin,
         });
       }
-      const provider = createOAuthGitAuth({
-        owner: "acme",
-        repo: "widgets",
-        token: async () => TOKEN,
-      });
-      expect(provider.mode).toBe("oauth");
-      expect(await provider.tokenFor("push")).toBe(TOKEN);
       const recorded = await Bun.file(log).text();
       expect(recorded).toContain(remote);
       expect(recorded).toContain("credential.helper=");

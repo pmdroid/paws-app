@@ -5,7 +5,7 @@ import {
   type LinearSessionTarget,
   type StartedLinearSession,
 } from "../session-start";
-import { processCsrfToken } from "./github-auth";
+import { processCsrfToken } from "./csrf";
 import { dashboardOrigin } from "./request-origin";
 
 export type StartLinearSession = (

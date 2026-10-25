@@ -6,7 +6,6 @@ import type {
   PullRequests,
 } from "./app";
 import { acquireOperationToken } from "./auth/provider";
-import { applyPawsLabel, withPawsEvidenceMarker } from "./auth/pr";
 import type { GitHubCredentialInput, GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, githubHttpsUrl, pullRequestBody } from "./branch";
 import { repoApiPath } from "./client";
@@ -52,12 +51,9 @@ export async function openPullRequest(
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
   const branch = branchForIssue(input.branchKey ?? input.issue);
-  const body = developerBody(
-    input.tokenProvider,
-    pullRequestBody(
-      input.issue,
-      input.description ? `${input.description.trim()}\n\n${input.evidence}` : input.evidence,
-    ),
+  const body = pullRequestBody(
+    input.issue,
+    input.description ? `${input.description.trim()}\n\n${input.evidence}` : input.evidence,
   );
   const token = await acquireOperationToken(input, "pr");
   const created = await input.client.request({
@@ -72,9 +68,7 @@ export async function openPullRequest(
     },
   });
   if (created.status === 201) {
-    const pull = pullFrom(created.body, body);
-    await labelIfDeveloper(input.tokenProvider, input.client, input.owner, input.repo, pull, token);
-    return pull;
+    return pullFrom(created.body, body);
   }
   if (created.status === 422) {
     const existing = await findOpenPull(input, token, branch);
@@ -87,9 +81,7 @@ export async function openPullRequest(
     });
     if (patched.status !== 200)
       throw new Error(`pull request update failed with status ${patched.status}`);
-    const pull = pullFrom(patched.body, body);
-    await labelIfDeveloper(input.tokenProvider, input.client, input.owner, input.repo, pull, token);
-    return pull;
+    return pullFrom(patched.body, body);
   }
   throw new Error(`opening the pull request failed with status ${created.status}`);
 }
@@ -167,7 +159,7 @@ export function createPullRequests(options: PullRequestClientOptions): PullReque
         },
         "pr",
       );
-      const body = developerBody(options.tokenProvider, input.body);
+      const body = input.body;
       const created = await options.client.request({
         method: "POST",
         path: repoApiPath(owner, repo, "/pulls"),
@@ -183,7 +175,6 @@ export function createPullRequests(options: PullRequestClientOptions): PullReque
         throw new Error(`opening the pull request failed with status ${created.status}`);
       }
       const pull = pullFrom(created.body, body);
-      await labelIfDeveloper(options.tokenProvider, options.client, owner, repo, pull, token);
       return { number: pull.number, url: pull.url ?? "" };
     },
     async merge(input: MergePullRequest): Promise<MergeResult> {
@@ -245,22 +236,6 @@ export async function publishAccepted(
   const pushed = await pushBranch(input);
   const pull = await openPullRequest(input);
   return { published: true, branch: pushed.branch, head: pushed.head, pull };
-}
-
-function developerBody(provider: GitHubTokenProvider | undefined, body: string): string {
-  return provider?.mode === "gh" ? withPawsEvidenceMarker(body) : body;
-}
-
-async function labelIfDeveloper(
-  provider: GitHubTokenProvider | undefined,
-  client: GitHubClient,
-  owner: string,
-  repo: string,
-  pull: OpenedPull,
-  token: string,
-): Promise<void> {
-  if (provider?.mode !== "gh") return;
-  await applyPawsLabel({ client, owner, repo, number: pull.number, token });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

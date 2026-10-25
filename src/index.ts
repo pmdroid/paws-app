@@ -78,14 +78,10 @@ import {
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import {
-  checkGitHubCliRepositoryAccess,
   createGitHubTokenProvider,
-  createVerifiedGitHubLogin,
   createGitHubInstallationCheck,
   createWorkspaceGitHubActivation,
   type ActiveGitHubApp,
-  loginGitHub,
-  logoutGitHub,
   type GitHubTokenProvider as AuthTokenProvider,
 } from "./auth";
 import {
@@ -95,8 +91,6 @@ import {
   repositoriesWithMergeQueue,
   repositoriesRequiringUpToDate,
   listAppRepositories,
-  listUserRepositories,
-  readGhUserToken,
   createGitHubApp,
   githubHttpsUrl,
   type GitHubBinding,
@@ -224,8 +218,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
   let repositoryAccess = options?.runnerRepositoryAccess;
-  const remotePlacementReady =
-    runnerConfig !== null && (repositoryAccess !== undefined || runtime.githubAuth === "app");
+  const remotePlacementReady = runnerConfig !== null;
   if (execution === "remote" && !remotePlacementReady)
     throw new Error("Remote execution requires runner HTTPS and GitHub App repository access.");
   if (runnerConfig !== null && (!publicDashboard || tls === undefined))
@@ -307,11 +300,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const github = githubBinding(auth);
   const listCatalog = async () => {
     const client = createFetchGitHubClient();
-    if (runtime.githubAuth === "gh") {
-      if (repository === null) return [];
-      const token = await readGhUserToken({ owner: repository.owner, repo: repository.repo });
-      return listUserRepositories({ client, token, signal: abort.signal });
-    }
     const lists = await Promise.all(
       appActivation.installations().map((app) =>
         listAppRepositories({
@@ -1027,7 +1015,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               });
           },
         }),
-        commitPolicyForItem: runtime.githubAuth === "app" ? commitPolicyForItem : undefined,
+        commitPolicyForItem,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         evidence: runtime.publicUrl
@@ -1052,11 +1040,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         repository,
         repositories,
         repositoryAccess: async (candidate, signal, access) => {
-          if (runtime.githubAuth === "gh")
-            return checkGitHubCliRepositoryAccess(
-              { repo: `${candidate.owner}/${candidate.repo}`, access },
-              signal,
-            );
           const provider = authProvider(runtime, candidate, access, resolveApp);
           if (!provider) return false;
           return (access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
@@ -1200,24 +1183,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     stopAgent: (itemId) => {
       void orchestrator?.stopAgent(itemId).catch(() => undefined);
     },
-    restartFromMainBlocked:
-      runtime.githubAuth === "app"
-        ? (item) => {
-            const policy = getItemRunCommitPolicy(db, item.id);
-            try {
-              if (policy) {
-                policyCoauthors(policy);
-                return null;
-              }
-            } catch {}
-            return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
-          }
-        : undefined,
+    restartFromMainBlocked: (item) => {
+      const policy = getItemRunCommitPolicy(db, item.id);
+      try {
+        if (policy) {
+          policyCoauthors(policy);
+          return null;
+        }
+      } catch {}
+      return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
+    },
     restartFromMain: (item) => {
       const selected = getWorkItemRepository(db, item.id) ?? repository;
       if (selected === null) return;
       const policy = getItemRunCommitPolicy(db, item.id);
-      if (runtime.githubAuth === "app" && !policy) return;
+      if (!policy) return;
       restartFromFreshMain({
         pawsRoot: paths.home,
         owner: selected.owner,
@@ -1261,7 +1241,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         await stopRunner();
         prepareShutdown(db, Date.now(), (item) => {
           const policy = getItemRunCommitPolicy(db, item.id);
-          if (runtime.githubAuth !== "app" || policy)
+          if (policy)
             commitCheckpointSync(
               worktreePath(paths.home, itemPathId(item)),
               "wip: shutdown",
@@ -1331,7 +1311,6 @@ export function runnerRepositoryAccess(
   runtime: RuntimeConfig,
   resolveApp?: (repository: string) => ActiveGitHubApp,
 ): RunnerRepositoryAccessOptions | undefined {
-  if (runtime.githubAuth !== "app") return undefined;
   return cacheRepositoryCredentials({
     github: {
       async mintInstallationToken(input) {
@@ -1375,7 +1354,7 @@ export function authProvider(
   access: "read" | "write" = "write",
   resolveApp?: (repository: string) => ActiveGitHubApp,
 ): AuthTokenProvider | null {
-  if (runtime.githubAuth === "app" && resolveApp) {
+  if (resolveApp) {
     const name = `${repository.owner}/${repository.repo}`;
     const provider = () => {
       const active = resolveApp(name);
@@ -1407,7 +1386,7 @@ export function authProvider(
   }
   const env = runtime.env;
   let privateKeyPem: string | null = null;
-  if (runtime.githubAuth === "app" && env.githubAppPrivateKeyPath !== null) {
+  if (env.githubAppPrivateKeyPath !== null) {
     try {
       privateKeyPem = readSecretFile(env.githubAppPrivateKeyPath, false);
     } catch {
@@ -1416,12 +1395,8 @@ export function authProvider(
   }
   try {
     return createGitHubTokenProvider({
-      auth: runtime.githubAuth,
       access,
-      oauthClientId: runtime.oauthClientId,
       repo: `${repository.owner}/${repository.repo}`,
-      home: env.home,
-      env: process.env,
       appId: env.githubAppId,
       installationId: env.githubAppInstallationId,
       privateKeyPem,
@@ -1448,78 +1423,44 @@ export function createLinearGitHubAuth(input: {
   administratorsForItem?: (item: WorkItemRecord) => readonly string[];
   accessForItem?: (item: WorkItemRecord) => "read" | "write";
 }): HostGitHubAuth {
-  const loginFor = (item: WorkItemRecord) => {
-    const repository = input.repositoryForItem(item);
-    if (repository === null) throw new Error("Choose a GitHub repository before signing in.");
-    return createVerifiedGitHubLogin({
-      auth: input.runtime.githubAuth,
-      home: input.runtime.env.home,
-      env: input.env,
-      repo: `${repository.owner}/${repository.repo}`,
-      oauthClientId: input.runtime.oauthClientId,
-    });
-  };
   const installation = createGitHubInstallationCheck({
     home: input.runtime.env.home,
     env: input.env,
     ...(input.resolveApp ? { resolve: input.resolveApp } : {}),
   });
   return {
-    ...(input.runtime.githubAuth === "app"
-      ? {
-          integration: {
-            recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/settings/integrations`,
-            administrators: input.administratorsForItem ?? (() => []),
-            current: input.currentIntegrationItem ?? (() => true),
-            unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
-            identity:
-              input.integrationIdentity ??
-              ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
-            authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
-              const selected = input.repositoryForItem(item);
-              return (
-                selected !== null &&
-                (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
-              );
-            },
-            async check(item: WorkItemRecord, signal: AbortSignal) {
-              const selected = input.repositoryForItem(item);
-              return (
-                selected !== null &&
-                (await installation(
-                  `${selected.owner}/${selected.repo}`,
-                  input.accessForItem?.(item) ?? "write",
-                  signal,
-                ))
-              );
-            },
-          },
-        }
-      : {}),
-    ...(input.runtime.githubAuth === "gh"
-      ? {
-          externalLogin: true,
-          recoveryMessage:
-            "Run gh auth login on the Paws host using your original GitHub account, then reply here to continue.",
-        }
-      : {}),
+    integration: {
+      recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/settings/integrations`,
+      administrators: input.administratorsForItem ?? (() => []),
+      current: input.currentIntegrationItem ?? (() => true),
+      unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
+      identity:
+        input.integrationIdentity ??
+        ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
+      authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
+        const selected = input.repositoryForItem(item);
+        return (
+          selected !== null &&
+          (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
+        );
+      },
+      async check(item: WorkItemRecord, signal: AbortSignal) {
+        const selected = input.repositoryForItem(item);
+        return (
+          selected !== null &&
+          (await installation(
+            `${selected.owner}/${selected.repo}`,
+            input.accessForItem?.(item) ?? "write",
+            signal,
+          ))
+        );
+      },
+    },
     owner: input.actorForItem,
-    linkedAccount: (item) =>
-      input.runtime.githubAuth === "gh" ? Promise.resolve(null) : loginFor(item).linkedAccount(),
-    async check(item, signal) {
-      if (input.runtime.githubAuth !== "gh") return loginFor(item).check(signal);
-      const repository = input.repositoryForItem(item);
-      if (repository === null) return null;
-      const provider = authProvider(input.runtime, repository, input.accessForItem?.(item));
-      const user = await provider?.user().catch(() => null);
-      signal.throwIfAborted();
-      return user ?? null;
-    },
-    begin: (item, options) => {
-      if (input.runtime.githubAuth === "gh")
-        return Promise.reject(new Error("Use the existing GitHub CLI host login."));
-      return loginFor(item).begin(options);
-    },
+    // The App integration answers every check. No member GitHub account is linked.
+    linkedAccount: async () => null,
+    check: async () => null,
+    begin: () => Promise.reject(new Error("GitHub sign-in was removed. Paws uses the GitHub App.")),
   };
 }
 
@@ -1536,6 +1477,19 @@ function linearEnv(runtime: RuntimeConfig, source: EnvSource): EnvSource {
   next.LINEAR_WEBHOOKS = runtime.webhooks ? "true" : "false";
   return next;
 }
+
+const CLI_HELP = `usage: paws [--no-tunnel]
+
+Commands:
+  paws                          start Paws on 127.0.0.1:8787
+  paws doctor                   check prerequisites, including the GitHub App
+  paws login slack              connect Slack
+  paws workspace bootstrap      print a single-use workspace setup code
+  paws runner <command>         pair and run a remote runner
+  paws runner-authority init    create the runner command key
+  paws public-tls validate      check the public HTTPS certificate
+
+GitHub access uses the GitHub App only. See docs/github-app.md.`;
 
 async function doctorMain(): Promise<number> {
   const checks = doctorChecks(await realProbe(process.env));
@@ -1612,11 +1566,12 @@ if (import.meta.main) {
       process.exit(1);
     }
   }
+  if (command === "--help" || command === "-h" || command === "help") {
+    console.log(CLI_HELP);
+    process.exit(0);
+  }
   if (command === "doctor") {
     process.exit(await doctorMain());
-  }
-  if (command === "login" && argv[1] === "github") {
-    process.exit(await loginGitHubCommand(argv.slice(2)));
   }
   if (command === "login" && argv[1] === "slack") {
     try {
@@ -1636,11 +1591,8 @@ if (import.meta.main) {
       process.exit(1);
     }
   }
-  if (command === "logout") {
-    process.exit(await logoutGitHubCommand());
-  }
   if (command === "login") {
-    console.error("usage: paws login github | paws login slack");
+    console.error("usage: paws login slack");
     process.exit(1);
   }
   const unknown = argv.find((arg) => arg !== "--no-tunnel");
@@ -1695,45 +1647,6 @@ export function gitHostToken(provider: AuthTokenProvider): GitHubTokenProvider {
     mode: provider.source,
     tokenFor: () => provider.token(),
   };
-}
-
-async function loginGitHubCommand(args: readonly string[]): Promise<number> {
-  try {
-    const runtime = loadRuntime(process.env);
-    let auth = runtime.githubAuth;
-    let repo = runtime.repo;
-    for (let index = 0; index < args.length; index += 1) {
-      const arg = args[index];
-      if (arg === "--app") auth = "app";
-      else if (arg === "--repo") {
-        const value = args[++index];
-        if (!value || value.startsWith("--")) throw new Error("--repo needs owner/name.");
-        repo = value;
-      } else throw new Error(`Unknown GitHub login flag ${arg}.`);
-    }
-    await loginGitHub({
-      auth,
-      repo,
-      env: process.env,
-      home: runtime.env.home,
-      oauthClientId: runtime.oauthClientId,
-    });
-    return 0;
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : "GitHub login failed");
-    return 1;
-  }
-}
-
-async function logoutGitHubCommand(): Promise<number> {
-  try {
-    const runtime = loadRuntime(process.env);
-    await logoutGitHub({ env: process.env, home: runtime.env.home });
-    return 0;
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : "GitHub logout failed");
-    return 1;
-  }
 }
 
 function acceptedIssueChange(event: AcceptedLinearEvent): {

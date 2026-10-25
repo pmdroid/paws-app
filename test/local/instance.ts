@@ -256,7 +256,7 @@ async function scenario(
       installationId: "",
       privateKeyPem: "",
       client,
-      tokenProvider: { mode: "oauth", tokenFor: async () => token },
+      tokenProvider: { mode: "token", tokenFor: async () => token },
     },
     launch,
   });
