@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
+  advanceLinearSessionGeneration,
   auditWorkspaceAccess,
   enqueueJobOnce,
   enqueueOutboxOnce,
@@ -28,7 +29,10 @@ import { workspaceTokenHash } from "./session";
 
 const QUEUE = "workspace.assignment";
 /** How long a first delegation waits for its delegator to sign in. */
-export const ASSIGNMENT_HOLD_MS = 24 * 60 * 60_000;
+export const ONBOARDING_HOLD_MS = 24 * 60 * 60_000;
+/** The one final response when a hold outlives ONBOARDING_HOLD_MS. */
+export const ONBOARDING_EXPIRED_BODY =
+  "This sign-in link expired. Delegate the issue again to retry.";
 const LINK_ID = /^[A-Za-z0-9]{26}$/;
 const LINK_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -63,7 +67,8 @@ export type AssignmentOnboarding = {
 };
 
 export type AssignmentLink =
-  | { state: "pending"; hash: string }
+  | { state: "pending"; link: string; hash: string }
+  /** Onboarding finished. Only the session creator may see where the task stands. */
   | (AssignmentOnboarding & {
       state: "done";
     });
@@ -204,6 +209,31 @@ export function createWorkspaceAssignments(options: {
       [hold.tokenHash],
     );
   }
+  /**
+   * Ends a pending hold that outlived its link: one final response that completes the Linear
+   * session, a stopped session, and a hold that can no longer start. Runs inside a write
+   * transaction.
+   */
+  function expire(hold: Hold) {
+    invalidate(hold);
+    const at = now();
+    const generation = advanceLinearSessionGeneration(db, hold.sessionId, { stop: true, now: at });
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: hold.sessionId,
+      delivery: "stop",
+      generation,
+      idempotencyKey: `assignment-expired:${hold.tokenHash}`,
+      payload: {
+        sessionId: hold.sessionId,
+        kind: "response",
+        body: ONBOARDING_EXPIRED_BODY,
+        id: crypto.randomUUID(),
+      },
+      now: at,
+    });
+  }
   async function snapshot(
     event: AcceptedLinearEvent,
     signal: AbortSignal,
@@ -304,7 +334,7 @@ export function createWorkspaceAssignments(options: {
     hold: Omit<Hold, "tokenHash" | "linkId" | "linkExpiresAt" | "expiresAt" | "status">,
   ) {
     const link = onboardingLinkId();
-    const expiresAt = now() + ASSIGNMENT_HOLD_MS;
+    const expiresAt = now() + ONBOARDING_HOLD_MS;
     const inserted = db.run(
       `INSERT INTO workspace_assignment(session_id,generation,workspace_id,actor_id,token_hash,fingerprint,event,expires_at,status,link_id,link_expires_at)
       VALUES(?,?,?,?,?,?,?,?,'pending',?,?) ON CONFLICT(session_id,generation) DO NOTHING`,
@@ -364,7 +394,7 @@ export function createWorkspaceAssignments(options: {
         if (holds(hold.sessionId)?.tokenHash !== tokenHash || !current(hold))
           return invalidate(hold);
         const link = onboardingLinkId();
-        const expiresAt = now() + ASSIGNMENT_HOLD_MS;
+        const expiresAt = now() + ONBOARDING_HOLD_MS;
         db.run(
           `UPDATE workspace_assignment SET link_id=?,link_expires_at=?,expires_at=?,token_hash=?
           WHERE token_hash=? AND status='pending' AND link_id IS NULL`,
@@ -505,7 +535,9 @@ export function createWorkspaceAssignments(options: {
       const hold = row ? currentHold(row.tokenHash) : null;
       if (!hold) return null;
       if (hold.status === "pending")
-        return !expired(hold) && current(hold) ? { state: "pending", hash: hold.tokenHash } : null;
+        return !expired(hold) && current(hold)
+          ? { state: "pending", link, hash: hold.tokenHash }
+          : null;
       // A stopped or replaced session ends its onboarding page too.
       if (hold.status === "invalid" || !current(hold)) return null;
       return {
@@ -562,9 +594,10 @@ export function createWorkspaceAssignments(options: {
         now: now(),
       });
       upgrade();
-      // Waiting writes nothing to Linear. This sweep only ends holds whose session moved on and
-      // lets a hold continue once its creator has a member row (for example after signing in
-      // from the dashboard instead of the link).
+      // Waiting writes nothing to Linear. This sweep ends holds whose session moved on, lets a
+      // hold continue once its creator has a member row (for example after signing in from the
+      // dashboard instead of the link), and gives a hold past ONBOARDING_HOLD_MS its one final
+      // response.
       jobs.register(`${QUEUE}.expire`, () => {
         upgrade();
         for (const { tokenHash } of db
@@ -577,6 +610,7 @@ export function createWorkspaceAssignments(options: {
             if (!hold || hold.status !== "pending") return;
             if (holds(hold.sessionId)?.tokenHash !== tokenHash || !current(hold))
               return invalidate(hold);
+            if (expired(hold)) return expire(hold);
             release(hold);
           });
       });

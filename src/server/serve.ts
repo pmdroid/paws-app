@@ -127,8 +127,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     hostname,
     port,
     ...(options.tls ? { tls: options.tls, development: false } : {}),
-    fetch(request: Request) {
+    fetch(request: Request, current?: Bun.Server<undefined>) {
       if (stopping) return new Response("Paws is stopping.", { status: 503 });
+      const ip = current?.requestIP(request)?.address ?? null;
       const operation = (async () =>
         (await options.onboarding?.(request)) ??
         route(request, {
@@ -140,6 +141,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           linearUsage: options.linearUsage,
           webhooks,
           csrfToken,
+          ip,
           ...(workspaceAccess === undefined ? {} : { workspaceAccess }),
           ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
           ...(options.runnerHostEnrollment
@@ -178,6 +180,8 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
+  /** The socket peer address, for the sign-in rate limits. */
+  ip?: string | null;
   workspaceAccess?: WorkspaceAccess | null;
   runnerEnrollment?: ServerOptions["runnerEnrollment"];
   runnerHostEnrollment?: ServerOptions["runnerHostEnrollment"];
@@ -228,7 +232,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   let sessionIds: readonly string[] | undefined;
   let principal: WorkspacePrincipal | undefined;
   if (workspace !== undefined) {
-    const auth = await workspace.handle(request);
+    const auth = await workspace.handle(request, { ip: secrets.ip ?? null });
     if (auth !== null) return auth;
     if ((path === "/status" || path.startsWith("/status/")) && secrets.db !== undefined) {
       const access = requestWorkspaceSession(secrets.db, request, Date.now());
