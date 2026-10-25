@@ -1,6 +1,6 @@
 # Linear agent sessions
 
-Linear is the issue tracker. GitHub authentication for repositories and pull requests is described in [GitHub sign-in](github-login.md).
+Linear is the issue tracker. GitHub authentication for repositories and pull requests is described in [GitHub App](github-app.md).
 
 Paws runs work only for a configured Linear workspace, through a Linear OAuth app installed with `actor=app`, behind [Workspace access](workspace-access.md) with `PAWS_PUBLIC_DASHBOARD=1`. Without one, `bun run paws doctor` reports `linear-workspace` as missing and Paws starts no work.
 

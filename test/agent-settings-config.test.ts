@@ -78,7 +78,7 @@ describe("agent settings config", () => {
   test("writes valid TOML, preserves other config and private permissions, and resolves overrides", () => {
     const path = join(tempHome(), "config.toml");
     const original =
-      '[github]\nauth = "gh"\nrepo = "pmdroid/barkvisor"\n\n[agents]\nimplementer = "grok"\n\n[agents.grok]\npath = "/local/grok"\nallow_api_key = false\n\n[caps]\nmax_turns = 12\n';
+      '[github]\nauth = "app"\nrepo = "pmdroid/barkvisor"\n\n[agents]\nimplementer = "grok"\n\n[agents.grok]\npath = "/local/grok"\nallow_api_key = false\n\n[caps]\nmax_turns = 12\n';
     writeFileSync(path, original, { mode: 0o600 });
     writeAgentSettings(path, settings);
     const text = readFileSync(path, "utf8");
@@ -86,7 +86,7 @@ describe("agent settings config", () => {
       agents: { implementer: "claude", grok: { path: "/local/grok", allow_api_key: false } },
       caps: { max_turns: 12 },
     });
-    expect(text).toContain('[github]\nauth = "gh"\nrepo = "pmdroid/barkvisor"');
+    expect(text).toContain('[github]\nauth = "app"\nrepo = "pmdroid/barkvisor"');
     expect(statSync(path).mode & 0o777).toBe(0o600);
     const config = loadConfigFile(path);
     expect(readAgentSettings(config)).toEqual(settings);
@@ -169,7 +169,7 @@ describe("agent settings config", () => {
       linearViewerId: "viewer",
       linearSecret: "secrets/linear-api-key",
       linearClientFile: null,
-      githubAuth: "gh" as const,
+      githubAuth: "app" as const,
       repo: "pmdroid/barkvisor",
       checkout: "/tmp/checkout",
       maxTurns: 40,

@@ -52,34 +52,17 @@ export { readPullReview } from "./review";
 export type { PullReview } from "./review";
 export type { FetchUpstreamMainInput, SerialMergeInput } from "./merge";
 export {
-  agentEnv,
-  checkGhAuthStatus,
-  checkGhPushPermission,
   createAppTokenProvider,
-  createGhCliAuth,
-  createOAuthGitAuth,
-  createTokenProvider,
-  ghDoctorChecks,
-  readGhUserToken,
-  githubAuthMode,
   inferGitHubRepository,
-  OAUTH_REAUTH_MESSAGE,
-  PAWS_EVIDENCE_MARKER,
-  PAWS_LABEL,
   parseGitHubRemote,
   runGitHubGit,
-  withPawsEvidenceMarker,
 } from "./auth";
 export type {
   AppTokenProviderOptions,
-  DoctorCheck,
-  GhCliOptions,
-  GitHubAuthConfig,
   GitHubAuthMode,
   GitHubTokenProvider,
   TokenPurpose,
 } from "./auth";
-export { GhAuthError } from "./auth";
 export {
   GitCommandError,
   GitHubTokenError,

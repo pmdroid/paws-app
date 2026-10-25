@@ -762,7 +762,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
   const apiPaths: string[] = [];
   const client = githubClient(layout.bare, github, apiPaths);
   const tokenProvider: GitHubTokenProvider = {
-    mode: "gh",
+    mode: "token",
     async tokenFor() {
       return "ghp_gh_auth";
     },
@@ -4094,7 +4094,7 @@ for (const race of ["token", "merge", "followup"] as const) {
         installationId: "2",
         privateKeyPem: PRIVATE_KEY,
         tokenProvider: {
-          mode: "oauth",
+          mode: "token",
           async tokenFor(purpose) {
             if (race === "token" && purpose === "push") {
               reached.resolve();

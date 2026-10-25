@@ -1,6 +1,6 @@
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 import { waitingLabel } from "./runners";
 
 export type SkillAgent = "claude" | "codex" | "grok";

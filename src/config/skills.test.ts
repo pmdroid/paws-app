@@ -22,7 +22,7 @@ test("project skills resolve per repository and survive setup rewrites", () => {
     linearViewerId: "viewer",
     linearSecret: "secrets/linear",
     linearClientFile: null,
-    githubAuth: "gh",
+    githubAuth: "app",
     repo: "acme/demo",
     checkout: "/repo",
     maxTurns: 10,

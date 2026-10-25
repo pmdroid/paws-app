@@ -89,7 +89,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
       installationId: "",
       privateKeyPem: "",
       client,
-      tokenProvider: { mode: "oauth", tokenFor: async () => "synthetic-delivery-token" },
+      tokenProvider: { mode: "token", tokenFor: async () => "synthetic-delivery-token" },
     },
     launch,
   });

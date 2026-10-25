@@ -32,11 +32,14 @@ import {
 import { renderQueueSettings } from "./queue";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
 
-export type GitHubConfigAuth = "oauth" | "gh" | "app";
-export type TrackerKind = "github" | "linear" | "both";
+/** `github.auth`. Paws uses the GitHub App only. */
+export type GitHubConfigAuth = "app";
 
-/** Public OAuth client id. `PAWS_GITHUB_CLIENT_ID` overrides it. No secret. */
-export const PAWS_GITHUB_OAUTH_CLIENT_ID = "Iv1.paws-oauth-placeholder";
+/** Names the setup document when a removed `github.auth` mode is configured. */
+export const GITHUB_APP_ONLY_MESSAGE =
+  'Paws uses the GitHub App only. Set github.auth = "app" or remove it, then connect the App as described in docs/github-app.md.';
+
+export type TrackerKind = "github" | "linear" | "both";
 
 export const IMPLEMENTERS = ["claude", "grok", "codex"] as const;
 
@@ -78,7 +81,6 @@ export type PawsConfigFile = {
   linearClientFile: string | null;
   webhooks: boolean | null;
   githubAuth: GitHubConfigAuth | null;
-  oauthClientId: string | null;
   /** True when `[tracker]` or `[tracker.github]` is present. Absent means linear. */
   trackerSpecified: boolean;
   retiredTrackerConfigured: boolean;
@@ -123,7 +125,6 @@ export type PawsSetupConfig = {
   linearSecret: string;
   linearClientFile: string | null;
   githubAuth: GitHubConfigAuth;
-  oauthClientId?: string;
   trackerKind?: "linear";
   repo: string;
   githubRepos?: readonly string[];
@@ -144,7 +145,6 @@ export function emptyConfigFile(): PawsConfigFile {
     linearClientFile: null,
     webhooks: null,
     githubAuth: null,
-    oauthClientId: null,
     trackerSpecified: false,
     retiredTrackerConfigured: false,
     trackerKind: null,
@@ -208,9 +208,6 @@ export function renderConfigToml(config: PawsSetupConfig): string {
     lines.push(`client_file = ${tomlString(config.linearClientFile)}`);
   }
   lines.push("", "[github]", `auth = ${tomlString(config.githubAuth)}`);
-  if (config.oauthClientId !== undefined && config.oauthClientId.length > 0) {
-    lines.push(`oauth_client_id = ${tomlString(config.oauthClientId)}`);
-  }
   lines.push(`repo = ${tomlString(config.repo)}`);
   if (config.githubRepos?.length) lines.push(`repos = ${tomlStringArray(config.githubRepos)}`);
   if (config.trackerKind !== undefined) {
@@ -410,7 +407,6 @@ function assignConfig(
   }
   if (section === "github") {
     if (key === "auth") config.githubAuth = githubAuth(value, line);
-    else if (key === "oauth_client_id") config.oauthClientId = asString(value, line);
     else if (key === "repo") config.repo = asString(value, line);
     else if (key === "repos") config.githubRepos = asStringArray(value, line);
     return;
@@ -496,39 +492,6 @@ export function writeImplementer(path: string, implementer: ImplementerName): vo
   chmodSync(path, 0o600);
 }
 
-export function writeGitHubAuth(
-  path: string,
-  auth: GitHubConfigAuth,
-  clientId: string,
-  repo: string,
-): void {
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const lines = current.split(/\r?\n/);
-  let section = "";
-  let header = -1;
-  const kept = lines.filter((line, index) => {
-    const text = stripComment(line).trim();
-    const match = /^\[([A-Za-z0-9_.-]+)]$/.exec(text);
-    if (match) {
-      section = match[1] ?? "";
-      if (section === "github") header = index;
-    }
-    return section !== "github" || !/^(auth|oauth_client_id|repo)\s*=/.test(text);
-  });
-  const values = [
-    `auth = ${tomlString(auth)}`,
-    `oauth_client_id = ${tomlString(clientId)}`,
-    `repo = ${tomlString(repo)}`,
-  ];
-  if (header < 0) kept.push("[github]", ...values);
-  else kept.splice(header + 1, 0, ...values);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${kept.join("\n").trimEnd()}\n`, { mode: 0o600 });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, path);
-}
-
 function oneOf<T extends string>(
   choices: readonly T[],
   value: string | number | boolean | string[],
@@ -592,8 +555,8 @@ function linearCommentMode(value: string | number | boolean | string[], line: nu
 
 function githubAuth(value: string | number | boolean | string[], line: number): GitHubConfigAuth {
   const auth = asString(value, line);
-  if (auth === "oauth" || auth === "gh" || auth === "app") return auth;
-  throw new Error(`config.toml line ${line} github.auth must be oauth, gh, or app`);
+  if (auth === "app") return auth;
+  throw new Error(`config.toml line ${line} github.auth must be "app". ${GITHUB_APP_ONLY_MESSAGE}`);
 }
 
 function trackerKind(value: string | number | boolean | string[], line: number): TrackerKind {

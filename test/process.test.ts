@@ -68,7 +68,7 @@ describe("process", () => {
       linearViewerId: "viewer_1",
       linearSecret: "secrets/linear-api-key",
       linearClientFile: null,
-      githubAuth: "gh",
+      githubAuth: "app",
       repo: "pmdroid/paws-demo",
       checkout: home,
       maxTurns: 80,

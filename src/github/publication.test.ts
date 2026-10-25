@@ -4,7 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { runGitHubGit } from "./auth/oauth";
+import { runGitHubGit } from "./auth/git-transport";
 import { serialMerge } from "./merge";
 import { publishAccepted, pushBranch } from "./pulls";
 import { defaultGitExec } from "./git";
@@ -14,7 +14,7 @@ import type { GitExec, GitHubClient } from "./types";
 const exec = promisify(execFile);
 const roots: string[] = [];
 const token = "synthetic-publication-canary";
-const tokenProvider = { mode: "oauth" as const, tokenFor: async () => token };
+const tokenProvider = { mode: "token" as const, tokenFor: async () => token };
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));

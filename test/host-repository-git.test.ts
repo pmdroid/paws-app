@@ -10,11 +10,7 @@ import {
   prepareRepositorySnapshot,
   runAgent,
 } from "../src/acp";
-import {
-  createGitHubTokenProvider,
-  createTokenStore,
-  createVerifiedGitHubLogin,
-} from "../src/auth";
+import { createGitHubTokenProvider } from "../src/auth";
 import { attachOrchestrator, createRepositoryGit, LinearTaskAccess } from "../src/loop";
 import {
   createFakeLinearAccessReads,
@@ -37,30 +33,10 @@ import { workspaceAdmission } from "./fake-workspace";
 
 const token = "synthetic-host-git-token";
 
-test("verified saved credentials reach real host clone and fetch without reaching repository or ACP", async () => {
+test("host credentials reach real host clone and fetch without reaching repository or ACP", async () => {
   const home = tempHome();
-  const store = createTokenStore({ home, which: () => null });
-  await store.save({
-    accessToken: token,
-    refreshToken: null,
-    expiresAtMs: null,
-    scope: "repo",
-    login: "owner",
-    id: 7,
-    invalid: false,
-  });
-  const provider = createGitHubTokenProvider({ home, store, auth: "oauth" });
-  const verified = createVerifiedGitHubLogin({
-    home,
-    store,
-    fetch: async (_url, init) => {
-      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${token}`);
-      return new Response(JSON.stringify({ id: 7, login: "owner" }), {
-        headers: { "x-oauth-scopes": "repo, read:org" },
-      });
-    },
-  });
-  expect(await verified.check(new AbortController().signal)).toEqual({ id: 7, login: "owner" });
+  const provider = { token: async () => token };
+  const owner = { id: 7, login: "owner" };
   const source = join(home, "source");
   const bare = join(home, "private.git");
   const cert = join(home, "cert.pem");
@@ -293,8 +269,8 @@ test("verified saved credentials reach real host clone and fetch without reachin
       }),
       githubAuth: {
         owner: () => "human",
-        linkedAccount: async () => (await store.load())?.id ?? null,
-        check: (_item, signal) => verified.check(signal),
+        linkedAccount: async () => owner.id,
+        check: async () => owner,
         begin: async () => {
           throw new Error("Valid host credentials must not request sign-in");
         },

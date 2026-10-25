@@ -2,12 +2,12 @@ import { loadGitHubAppCredentials } from "../config";
 import { readSecretFile } from "../credentials";
 import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../github";
 import type { ActiveGitHubApp } from "./workspace-app";
-import type { DeviceFetch } from "./github-device";
+import type { GitHubFetch } from "./provider";
 
 export function createGitHubInstallationCheck(options: {
   home: string;
   env: Record<string, string | undefined>;
-  fetch?: DeviceFetch;
+  fetch?: GitHubFetch;
   resolve?: (repository: string) => ActiveGitHubApp;
 }) {
   return async (

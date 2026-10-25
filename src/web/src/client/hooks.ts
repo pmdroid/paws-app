@@ -1,6 +1,6 @@
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 
 export type HookAgent = "claude" | "codex";
 export type HookEvent = "after_edit" | "before_shell" | "before_tool" | "stop" | "session_start";

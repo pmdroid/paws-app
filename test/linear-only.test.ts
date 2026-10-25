@@ -19,7 +19,7 @@ afterEach(() => {
 
 test.each(["github", "both"])("legacy %s tracker fails before startup writes", (kind) => {
   const dir = home();
-  const config = `[tracker]\nkind = "${kind}"\n[github]\nauth = "oauth"\n`;
+  const config = `[tracker]\nkind = "${kind}"\n[github]\nauth = "app"\n`;
   writeFileSync(join(dir, "config.toml"), config);
   const runtime = loadRuntime({ PAWS_HOME: dir });
   expect(runtime.configError).toContain('kind = "linear"');
@@ -46,7 +46,7 @@ test.each([
   expect(readFileSync(join(dir, "config.toml"), "utf8")).toBe(config);
 });
 
-test.each(["oauth", "app", "gh"])(
+test.each(["app"])(
   "retired tracker rejection preserves independent %s repository authentication",
   (auth) => {
     const dir = home();
@@ -62,17 +62,29 @@ test.each(["oauth", "app", "gh"])(
   },
 );
 
-test.each(["oauth", "app", "gh"])("Linear config preserves independent %s GitHub auth", (auth) => {
+test("Linear config keeps GitHub App auth", () => {
   const dir = home();
-  writeFileSync(
-    join(dir, "config.toml"),
-    `[tracker]\nkind = "linear"\n[github]\nauth = "${auth}"\n`,
-  );
+  writeFileSync(join(dir, "config.toml"), `[tracker]\nkind = "linear"\n[github]\nauth = "app"\n`);
   const runtime = loadRuntime({ PAWS_HOME: dir });
   expect(runtime.configError).toBeNull();
   expect(runtime.trackerKind).toBe("linear");
-  expect(runtime.githubAuth).toBe(auth);
+  expect(runtime.githubAuth).toBe("app");
 });
+
+test.each(["oauth", "gh"])(
+  "github.auth %s fails at startup and names the GitHub App doc",
+  (auth) => {
+    const dir = home();
+    const config = `[tracker]\nkind = "linear"\n[github]\nauth = "${auth}"\n`;
+    writeFileSync(join(dir, "config.toml"), config);
+    const runtime = loadRuntime({ PAWS_HOME: dir });
+    expect(runtime.configError).toContain("docs/github-app.md");
+    expect(() => startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).toThrow("docs/github-app.md");
+    expect(loadRuntime({ PAWS_HOME: dir, GITHUB_AUTH: "gh" }).configError).toContain(
+      "docs/github-app.md",
+    );
+  },
+);
 
 test("historical GitHub work is preserved and never recovered into Linear", () => {
   const dir = home();
