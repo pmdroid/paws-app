@@ -27,7 +27,7 @@ test("the runner installer installs the coding agents from pinned, integrity-che
     child.exited,
   ]);
   expect(stdout + stderr).not.toContain("skipped");
-  expect(stderr).toMatch(/Ran 12 tests[\s\S]*\nOK\n?$/);
+  expect(stderr).toMatch(/Ran 13 tests[\s\S]*\nOK\n?$/);
   expect(code).toBe(0);
 });
 
