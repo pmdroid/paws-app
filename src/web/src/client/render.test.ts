@@ -200,7 +200,7 @@ describe("status views", () => {
     expect(detail).toContain("Audit log export");
     expect(detail).toContain('id="activity-heading">Timeline</h2>');
     expect(detail).toContain("PR #479");
-    expect(detail).toContain('href="/issues/ENG-99"');
+    expect(detail).not.toContain('href="/issues/ENG-99"');
     expect(detail).toContain('href="/issues/ENG-104"');
   });
 
