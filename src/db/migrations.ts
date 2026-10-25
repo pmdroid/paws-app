@@ -2843,6 +2843,20 @@ ALTER TABLE member_vm ADD COLUMN delete_blocked TEXT
   CHECK(delete_blocked IS NULL OR json_valid(delete_blocked));
 `,
   },
+  {
+    // PAS-687. The enrollment tokens Create VM minted for each VM, by the same hash as
+    // runner_enrollment.token_hash. Delete VM finds a runner the VM enrolled through them even when
+    // Paws stopped before member_vm.runner_id was written, and nothing a member paired by hand.
+    id: "139_member_vm_enrollment",
+    sql: `
+CREATE TABLE member_vm_enrollment (
+  token_hash TEXT PRIMARY KEY,
+  member_vm_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX member_vm_enrollment_vm ON member_vm_enrollment(member_vm_id);
+`,
+  },
 ];
 
 /**

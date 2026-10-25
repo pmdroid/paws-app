@@ -6,6 +6,7 @@ import {
   type ExeDevBootstrap,
   type ProvisioningErrorCode,
 } from "../provisioning";
+import { workspaceTokenHash } from "../workspace";
 import { getMemberVm, MEMBER_VM_QUEUE, STEP_AT, type MemberRef, type MemberVm } from "./store";
 
 export type MintEnrollment = (
@@ -109,6 +110,11 @@ async function runStep(
   const mint = () => {
     const enrollment = options.mintEnrollment(member, { name: vm });
     minted(enrollment.token);
+    // Recorded before the token leaves Paws, so Delete VM can find the runner it enrolls.
+    db.run(
+      "INSERT OR IGNORE INTO member_vm_enrollment(token_hash,member_vm_id,created_at) VALUES(?,?,?)",
+      [workspaceTokenHash(enrollment.token), row.id, now()],
+    );
     return enrollment;
   };
 
