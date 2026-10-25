@@ -200,7 +200,7 @@ test("Update sends the eligible version with its integrity, and the card follows
   const sent = (await runner.heartbeat({ agents: installed })).body!.agents as {
     id: string;
   }[];
-  expect(sent).toEqual([
+  expect(sent as unknown).toEqual([
     {
       id: expect.any(String),
       agent: "claude",

@@ -422,6 +422,8 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 text-sm [overflow-wrap:anywhere] [&>p]:col-span-full",
     );
+  if (has("runner-agent-actions"))
+    return styled("col-span-full flex min-w-0 flex-wrap items-center gap-2 pt-1");
   if (has("runner-skill-name", "run-setup-item"))
     return styled("flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-sm");
   if (has("runner-skill-error"))

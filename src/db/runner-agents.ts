@@ -189,7 +189,12 @@ function activeRunner(db: Database, runnerId: string, workspaceId: string): void
   if (!row) throw new Error("Runner is unavailable.");
 }
 
-function reported(db: Database, runnerId: string, agent: string, status: "current" | "previous") {
+function reportedVersion(
+  db: Database,
+  runnerId: string,
+  agent: string,
+  status: "current" | "previous",
+) {
   return (
     db
       .query<{ version: string }, [string, string, string]>(
@@ -238,7 +243,7 @@ export function requestRunnerAgentUpdate(
 ): void {
   immediate(db, () => {
     activeRunner(db, input.runnerId, input.workspaceId);
-    const current = reported(db, input.runnerId, input.agent, "current");
+    const current = reportedVersion(db, input.runnerId, input.agent, "current");
     if (current === null)
       throw new RunnerAgentUpdateError(
         `This runner does not report ${name(input.agent)}. Update the runner package first.`,
@@ -275,7 +280,7 @@ export function requestRunnerAgentRollback(
 ): string {
   return immediate(db, () => {
     activeRunner(db, input.runnerId, input.workspaceId);
-    const previous = reported(db, input.runnerId, input.agent, "previous");
+    const previous = reportedVersion(db, input.runnerId, input.agent, "previous");
     if (previous === null)
       throw new RunnerAgentUpdateError(
         `This runner has no earlier ${name(input.agent)} version to roll back to.`,

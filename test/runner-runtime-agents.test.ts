@@ -42,6 +42,7 @@ function host() {
     });
   const requests = () =>
     JSON.parse(readFileSync(join(state, "agent-requests.json"), "utf8")) as {
+      format: number;
       requests: RunnerAgentTarget[];
     };
   return { root, base, state, install, point, status, open, requests };
