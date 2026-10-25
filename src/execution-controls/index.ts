@@ -2,10 +2,13 @@ import type { Database } from "bun:sqlite";
 import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import {
   auditWorkspaceAccess,
+  deadDeliveryItemId,
   getLinearSession,
   getWorkItem,
   getWorkspace,
+  parseDeadDeliveryRef,
   resumeUsagePauseNow,
+  retryDeadDelivery,
   submitCommand,
   usagePause,
   workspaceMember,
@@ -91,7 +94,7 @@ export function createExecutionControls(input: {
             !body ||
             typeof body !== "object" ||
             Array.isArray(body) ||
-            Object.keys(body).some((key) => !["itemId", "action"].includes(key))
+            Object.keys(body).some((key) => !["itemId", "action", "target"].includes(key))
           )
             throw new Error();
         } catch {
@@ -101,7 +104,22 @@ export function createExecutionControls(input: {
           );
         }
       }
-      const itemId = request.method === "GET" ? url.searchParams.get("itemId") : body["itemId"];
+      // Retry names a dead outbox row or job; the item is the one that row belongs to.
+      const retryRef =
+        request.method === "POST" && body["action"] === "retry"
+          ? parseDeadDeliveryRef(body["target"])
+          : null;
+      if (request.method === "POST" && body["action"] === "retry" && retryRef === null)
+        return Response.json(
+          { error: "Send the dead delivery to retry as outbox:<id> or job:<id>." },
+          { status: 400 },
+        );
+      const itemId =
+        retryRef !== null
+          ? deadDeliveryItemId(input.db, retryRef)
+          : request.method === "GET"
+            ? url.searchParams.get("itemId")
+            : body["itemId"];
       const item = typeof itemId === "string" ? authorized(itemId, principal, sessionIds) : null;
       if (!item) {
         auditWorkspaceAccess(input.db, {
@@ -115,6 +133,21 @@ export function createExecutionControls(input: {
           { error: "This item is not available to your workspace membership." },
           { status: 403 },
         );
+      }
+      if (retryRef !== null) {
+        if (!retryDeadDelivery(input.db, item.id, retryRef, now()))
+          return Response.json(
+            { error: "This delivery is no longer stopped. Refresh the run." },
+            { status: 409 },
+          );
+        auditWorkspaceAccess(input.db, {
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          action: "execution.retry",
+          subject: item.id,
+          now: now(),
+        });
+        return Response.json({ applied: true, itemId: item.id, action: "retry" });
       }
       const port = input.getPort(principal.workspaceId);
       const actions = (TERMINAL_WORK_ITEM_STATES as readonly string[]).includes(item.state)
