@@ -66,6 +66,7 @@ const MODULES = [
   "runtimes",
   "runner-mise",
   "agent-catalog",
+  "provisioning",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -242,6 +243,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "workspace",
   ],
   "runner-models": ["db", "runner-work", "runner-protocol"],
+  provisioning: ["config"],
 };
 
 describe("module boundaries", () => {
