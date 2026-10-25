@@ -77,6 +77,7 @@ async function fixture() {
   const client = await createRunnerKey(join(root, "client"));
   const pending = await control.beginPairing({ name: "Host VM", csr: client.csr });
   const { runnerId } = await control.approvePairing(principal, pending.code);
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const work = createRunnerWork({
     db,
     keyId: "fixture",

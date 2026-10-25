@@ -201,7 +201,8 @@ if (mode === "agent") {
   const daemon = openRunnerDaemon(daemonOptions(configuration));
   const pending = await daemon.beginPairing("Task runtime");
   assert(pending.phase === "pending");
-  await service.control.approvePairing(principal, pending.code);
+  const approved = await service.control.approvePairing(principal, pending.code);
+  service.control.setStatus(principal, approved.runnerId, "active");
   const paired = await daemon.pollPairing();
   assert(paired.phase === "paired");
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [

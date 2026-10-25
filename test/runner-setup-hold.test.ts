@@ -143,6 +143,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
       },
       pairing.code,
     );
+    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     db.run("UPDATE runner SET owner_user_id=? WHERE id=?", [userId, runnerId]);
     db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',?)", [

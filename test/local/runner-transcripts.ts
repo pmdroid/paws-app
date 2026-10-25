@@ -70,6 +70,7 @@ export async function probeRunnerTranscripts(
     teamIds: [],
   };
   const { runnerId } = await control.approvePairing(principal, pending.code);
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     db,
