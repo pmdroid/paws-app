@@ -73,6 +73,23 @@ import {
   type RunnerGrantRequest,
 } from "./work";
 
+const runnerName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .refine((value) =>
+    Array.from(value).every(
+      (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
+    ),
+  );
+/** The enrollment token a member minted: 32 random bytes in base64url. */
+export const EnrollmentTokenSchema = z
+  .string()
+  .min(16)
+  .max(256)
+  .regex(/^[A-Za-z0-9_-]+$/);
+
 export type RunnerDaemonOptions = {
   root: string;
   controlPlaneUrl: string;
@@ -284,6 +301,48 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     capacity: () => applied,
     ceiling: () => ceiling,
     pendingCommands,
+    /**
+     * Enroll with a member's single-use token: prepare the key and CSR, post once, store the
+     * identity Paws returns. A daemon already paired with a valid certificate returns its status
+     * without contacting Paws, so a retried bootstrap is harmless.
+     */
+    async enroll(name: string, token: string) {
+      ensureOpen();
+      const previous = state?.phase === "paired" ? state : null;
+      if (previous && describeRunnerCertificate(previous.certificate).notAfter > now())
+        return status();
+      const parsedName = runnerName.parse(name);
+      const parsedToken = EnrollmentTokenSchema.parse(token);
+      if (!state) state = await prepareState(options.root, origins);
+      const prepared = state;
+      const response = await requestJson({
+        origin: origins.controlPlaneUrl,
+        path: "/api/runner-enrollments",
+        method: "POST",
+        body: { token: parsedToken, name: parsedName, csr: prepared.csr },
+        serverCa: options.serverCa,
+      });
+      ensureOpen();
+      if (state !== prepared)
+        throw new Error("Runner enrollment changed while awaiting the response.");
+      const { status: _status, ...identity } = z
+        .strictObject({ status: z.literal("approved"), ...ApprovedIdentitySchema.shape })
+        .parse(response);
+      const enrolled = { ...common(), phase: "paired" as const, ...identity };
+      validateIdentity(options.root, enrolled, now());
+      trustedSigningKeys(enrolled, pins);
+      if (previous && identity.runnerId === previous.runnerId)
+        throw new Error("Re-enrollment requires a new runner identity.");
+      if (previous)
+        immediate(db, () => {
+          db.run("DELETE FROM pending_command");
+          db.run("DELETE FROM command_receipt");
+        });
+      writeState(options.root, enrolled);
+      state = enrolled;
+      recovery = null;
+      return status();
+    },
     async beginPairing(name: string) {
       ensureOpen();
       if (state?.phase === "paired") {
@@ -292,17 +351,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         if (recovery && recovery.expiresAt > now()) return status();
       }
       if (state?.phase === "pending" && state.expiresAt > now()) return status();
-      const parsedName = z
-        .string()
-        .trim()
-        .min(1)
-        .max(80)
-        .refine((value) =>
-          Array.from(value).every(
-            (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
-          ),
-        )
-        .parse(name);
+      const parsedName = runnerName.parse(name);
       if (!state) state = await prepareState(options.root, origins);
       const previousState = state;
       const previousRecovery = recovery;
