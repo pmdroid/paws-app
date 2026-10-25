@@ -46,3 +46,6 @@ export { readWorkspaceJson } from "./administration";
 
 export { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
 export type { LinearBrowserIdentity } from "./oauth";
+
+export { canAct, isWorkspaceAdmin } from "./eligibility";
+export type { ActionActor, ActorAction, ActorEligibility } from "./eligibility";

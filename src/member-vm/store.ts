@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { enqueueJob, immediate } from "../db";
 import { isExeDevVmName } from "../provisioning";
@@ -154,7 +155,7 @@ export function mayDeleteMemberVm(db: Database, row: MemberVm, requester: Member
     )
     .get(requester.workspaceId, requester.userId);
   if (!member?.active || member.role === "observer") return false;
-  return row.userId === requester.userId || member.role === "owner" || member.role === "admin";
+  return row.userId === requester.userId || isWorkspaceAdmin(member.role);
 }
 
 export function listDeletableMemberVms(db: Database, requester: MemberRef): MemberVm[] {

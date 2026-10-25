@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { delegatedLinearUserId, workspaceMember } from "../db";
 import type {
@@ -61,7 +62,7 @@ export function eligibleRunners(db: Database, input: EligibleRunnersInput): Elig
       }
       const member = workspaceMember(db, input.workspaceId, runner.ownerId);
       if (!member?.active || member.role === "observer") return "owner-inactive";
-      if (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(input.teamId))
+      if (!isWorkspaceAdmin(member.role) && !member.teamIds.includes(input.teamId))
         return "owner-not-in-team";
       // A runner that has not acknowledged a cancel is not taking commands, so it counts as offline.
       if ((lastSeenAt ?? 0) <= at - RUNNER_ONLINE_MS || cancelPending) return "offline";

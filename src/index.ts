@@ -173,6 +173,8 @@ import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import {
+  canAct,
+  isWorkspaceAdmin,
   issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
   delegatorCommitCredit,
@@ -1060,17 +1062,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             )
               return false;
             if (
-              !identity.active ||
-              identity.guest ||
-              !identity.teamIds.includes(session.teamId) ||
-              member === null ||
-              !member.active ||
-              member.role === "observer" ||
-              !member.teamIds.includes(session.teamId) ||
-              latest === null ||
-              !latest.active ||
-              latest.role === "observer" ||
-              !latest.teamIds.includes(session.teamId)
+              !canAct({ id: actorId, identity, member, teamId: session.teamId }, "github")
+                .allowed ||
+              !canAct({ id: actorId, identity, member: latest, teamId: session.teamId }, "github")
+                .allowed
             )
               return teamMemberDenial(db, item);
             return (
@@ -1094,10 +1089,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             if (!currentWorkspace || !actorId || !session?.teamId) return false;
             const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
             return (
-              (member !== null &&
-                member.active &&
-                member.role !== "observer" &&
-                member.teamIds.includes(session.teamId)) ||
+              canAct({ id: actorId, member, teamId: session.teamId }, "github").allowed ||
               teamMemberDenial(db, item)
             );
           },
@@ -1118,7 +1110,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               : null;
             if (!currentWorkspace) return [];
             return listWorkspaceMembers(db, currentWorkspace.id)
-              .filter((member) => member.active && ["owner", "admin"].includes(member.role))
+              .filter((member) => member.active && isWorkspaceAdmin(member.role))
               .flatMap((member) => {
                 const linked = db
                   .query<{ id: string }, [string]>(

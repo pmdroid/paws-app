@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { Database } from "bun:sqlite";
@@ -49,7 +50,7 @@ export function createRunnerControl(options: {
     options.serverVersion === undefined ? installedVersion() : options.serverVersion;
   function admin(principal: WorkspacePrincipal) {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!member?.active || !["owner", "admin"].includes(member.role))
+    if (!member?.active || !isWorkspaceAdmin(member.role))
       throw new Error("Workspace administrator access is required.");
   }
   function enrollingMember(workspace: string, userId: string) {

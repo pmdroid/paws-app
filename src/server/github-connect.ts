@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import { discoverGitHubInstallation } from "./github-connect-status";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -69,7 +70,7 @@ export function createHostedGitHubConnect(options: {
         access &&
         current?.session.tokenHash === access.session.tokenHash &&
         member?.active &&
-        ["owner", "admin"].includes(member.role)
+        isWorkspaceAdmin(member.role)
       );
     };
     const audit = (action: string) =>
@@ -84,7 +85,7 @@ export function createHostedGitHubConnect(options: {
       const member = access
         ? workspaceMember(db, access.principal.workspaceId, access.principal.userId)
         : null;
-      return Boolean(member?.active && ["owner", "admin"].includes(member.role));
+      return Boolean(member?.active && isWorkspaceAdmin(member.role));
     };
     const signedIn = () => {
       const current = requestWorkspaceSession(db, request, now());
