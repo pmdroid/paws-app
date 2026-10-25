@@ -4,7 +4,9 @@ import {
   compareVersions,
   hostEnrollmentCommand,
   livePoll,
+  memberVmDeleteDialogMarkup,
   memberVmMarkup,
+  runnerVmMarkup,
   type MemberVm,
   RUNNER_POLL_MS,
   runnerActionsMarkup,
@@ -872,6 +874,99 @@ describe("member VM", () => {
     });
     expect(removed).toContain("data-vm-create");
     expect(removed).toContain("Removed");
+  });
+
+  const deleting = (patch: Partial<NonNullable<MemberVm["deleting"]>> = {}): MemberVm =>
+    vm({
+      step: "ready",
+      runnerId: runner.id,
+      deleting: {
+        step: "destroy",
+        failure: null,
+        blocked: [],
+        force: false,
+        steps: [
+          { step: "drain", state: "done", elapsedMs: 1000 },
+          { step: "tailnet", state: "done", elapsedMs: 2000 },
+          { step: "revoke", state: "done", elapsedMs: 500 },
+          { step: "destroy", state: "running", elapsedMs: 4000 },
+          { step: "clear", state: "pending", elapsedMs: null },
+        ],
+        ...patch,
+      },
+    });
+
+  test("Delete VM sits on the VM and opens a confirmation that names it", () => {
+    const html = memberVmMarkup(vm(), { busy: false, runner: null });
+    expect(html).toContain('data-vm-delete="vm"');
+    expect(html).toContain("Delete VM");
+    expect(memberVmMarkup(vm(), { busy: true, runner: null })).toMatch(
+      /data-vm-delete="vm"[^>]*disabled/,
+    );
+    const dialog = memberVmDeleteDialogMarkup(vm(), { busy: false });
+    expect(dialog).toContain("<dialog");
+    expect(dialog).toContain('Delete VM <span class="mono">ada-paws</span>?');
+    expect(dialog).toContain("will be destroyed on exe.dev");
+    expect(dialog).toContain("its runner removed from Paws");
+    expect(dialog).toContain('data-vm-delete-confirm="vm"');
+    expect(dialog).toContain("data-vm-delete-cancel");
+  });
+
+  test("a delete in progress shows its five steps instead of the setup", () => {
+    const html = memberVmMarkup(deleting(), { busy: false, runner });
+    expect(html.match(/data-vm-delete-step=/g)).toHaveLength(5);
+    expect(html).toContain('data-vm-delete-step="revoke" data-vm-state="done"');
+    expect(html).toContain('data-vm-delete-step="destroy" data-vm-state="running"');
+    expect(html).toContain("Deleting");
+    expect(html).not.toContain("data-vm-step=");
+    expect(html).not.toContain("data-vm-delete=");
+    expect(html).not.toContain("data-vm-delete-retry");
+  });
+
+  test("a failed delete step shows the error and Retry", () => {
+    const failed = deleting({
+      failure: "exe.dev deleteVm for ada-paws failed with HTTP 429 (rate_limited).",
+      steps: deleting().deleting!.steps.map((entry) =>
+        entry.step === "destroy" ? { ...entry, state: "failed" } : entry,
+      ),
+    });
+    const html = memberVmMarkup(failed, { busy: false, runner });
+    expect(html).toContain("rate_limited");
+    expect(html).toContain("Delete failed");
+    expect(html).toContain('data-vm-delete-retry="vm"');
+    expect(html).not.toContain("data-vm-delete-force");
+  });
+
+  test("a running task blocks the delete by name and offers Force delete", () => {
+    const blocked = deleting({
+      step: "drain",
+      failure: "PAS-901 is running on ada-paws.",
+      blocked: [{ itemId: "item", identifier: "PAS-901", title: "Fix <login>" }],
+      steps: deleting().deleting!.steps.map((entry, index) => ({
+        ...entry,
+        state: index === 0 ? "failed" : "pending",
+        elapsedMs: index === 0 ? 10 : null,
+      })),
+    });
+    const html = memberVmMarkup(blocked, { busy: false, runner });
+    expect(html).toContain("PAS-901");
+    expect(html).toContain("Fix &lt;login&gt;");
+    expect(html).toContain("Blocked");
+    expect(html).toContain('data-vm-delete-retry="vm"');
+    expect(html).toContain('data-vm-delete-force="vm"');
+    expect(html).toContain("the way Stop does");
+    const forced = memberVmMarkup(
+      { ...blocked, deleting: { ...blocked.deleting!, force: true } },
+      { busy: false, runner },
+    );
+    expect(forced).not.toContain("data-vm-delete-force");
+  });
+
+  test("a runner's page offers Delete VM for the VM behind it", () => {
+    const html = runnerVmMarkup(vm({ step: "ready", runnerId: runner.id }), { busy: false });
+    expect(html).toContain("exe.dev VM");
+    expect(html).toContain('data-vm-delete="vm"');
+    expect(runnerVmMarkup(deleting(), { busy: false })).toContain("data-vm-delete-step");
   });
 
   test("the runner row names its owner", () => {

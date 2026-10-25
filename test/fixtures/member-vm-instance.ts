@@ -2,12 +2,18 @@
 // in-memory fakes. Enrollment still goes through POST /api/runner-enrollments with the token Paws
 // minted, so the runner that appears is owned by the member who pressed Create VM.
 // PAWS_FIXTURE_NO_EXE_DEV=1 starts it without the fakes and without an exe.dev token.
-// Commands on stdin: fail-install, heartbeat, snapshot, stop.
+// Commands on stdin: fail-install, heartbeat, task (a running task on the member's runner),
+// snapshot, stop.
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
+import {
+  consumeWorkspaceBootstrap,
+  insertRun,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+} from "../../src/db";
 import { startPaws } from "../../src/index";
 import { createFakeBootstrap, createFakeExeDev } from "../../src/provisioning";
 import { initializeRunnerCoordinator } from "../../src/runner-coordinator";
@@ -172,12 +178,40 @@ for await (const line of lines) {
     paws.db.run("UPDATE runner SET last_seen_at=? WHERE owner_user_id=?", [Date.now(), member]);
     console.log(JSON.stringify({ done: line }));
   }
+  if (line === "task") {
+    const runner = paws.db
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM runner WHERE owner_user_id=? AND revoked_at IS NULL ORDER BY created_at DESC",
+      )
+      .get(member)!;
+    const at = Date.now();
+    paws.db.run(
+      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
+      VALUES('fixture-item','fixture-delegation','fixture-issue','PAS-901','Fix the login redirect','running','paws/pas-901',0,?)`,
+      [at],
+    );
+    const run = insertRun(paws.db, { itemId: "fixture-item", now: at, status: "active" });
+    paws.db.run(
+      `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence)
+      VALUES(?,?,?,1,0,'fixture-command',?,0)`,
+      [run.id, runner.id, workspace.id, at + 3_600_000],
+    );
+    console.log(JSON.stringify({ done: line }));
+  }
   if (line === "snapshot")
     console.log(
       JSON.stringify({
         snapshot: {
-          vm: paws.db.query("SELECT step,failure,runner_id AS runnerId FROM member_vm").all(),
-          runners: paws.db.query("SELECT id,name,owner_user_id AS ownerUserId FROM runner").all(),
+          vm: paws.db
+            .query(
+              "SELECT vm_name AS vmName,step,failure,runner_id AS runnerId,delete_step AS deleteStep,delete_failure AS deleteFailure FROM member_vm",
+            )
+            .all(),
+          runners: paws.db
+            .query("SELECT id,name,status,owner_user_id AS ownerUserId FROM runner")
+            .all(),
+          exeDev: [...exeDev.vms.keys()],
+          deleteVm: exeDev.calls.filter((call) => call.operation === "deleteVm").length,
           createVm: exeDev.calls.filter((call) => call.operation === "createVm").length,
           bootstrap: bootstrap.calls.map((call) => call.step),
         },
