@@ -423,7 +423,7 @@ describe("Delete VM", () => {
     const steps = ["drain", "tailnet", "revoke", "destroy"] as const;
     for (const [index, step] of steps.entries()) {
       await f.loop.tick();
-      const next = index === steps.length - 1 ? "clear" : steps[index + 1];
+      const next = index === steps.length - 1 ? "clear" : steps[index + 1]!;
       expect(getMemberVm(f.db, vm.id)!.deleteStep).toBe(next);
       // As if Paws restarted after the step's effect but before it recorded the next step.
       f.db.run("UPDATE member_vm SET delete_step=? WHERE id=?", [step, vm.id]);
