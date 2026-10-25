@@ -53,6 +53,22 @@ test("the fake creates, lists and records every call", async () => {
   ]);
 });
 
+test("the fake deletes a VM, answers missing for an unknown one, and fails when told to", async () => {
+  const exe = createFakeExeDev();
+  exe.addVm("ada-paws");
+  expect(await exe.deleteVm("ada-paws")).toBe("deleted");
+  expect(exe.vms.has("ada-paws")).toBe(false);
+  expect(await exe.deleteVm("ada-paws")).toBe("missing");
+  exe.addVm("bob-paws");
+  exe.fail("deleteVm", "missing", { vm: "bob-paws" });
+  expect(await exe.deleteVm("bob-paws")).toBe("missing");
+  exe.fail("deleteVm", "unauthorized");
+  expect(await code(exe.deleteVm("bob-paws"))).toBe("unauthorized");
+  expect(await code(exe.deleteVm("Bob"))).toBe("invalid_name");
+  expect(exe.calls.filter((call) => call.operation === "deleteVm")).toHaveLength(5);
+  expect(await exe.createVm("ada-paws")).toMatchObject({ name: "ada-paws" });
+});
+
 test("the fake returns scripted exec results per VM and command", async () => {
   const exe = createFakeExeDev();
   exe.addVm("ada-paws");

@@ -76,12 +76,7 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
       const at = now();
       db.run(
         "UPDATE member_vm SET failure=?,updated_at=? WHERE id=? AND step=? AND delete_step IS NULL",
-        [
-          text,
-          at,
-          row.id,
-          row.step,
-        ],
+        [text, at, row.id, row.step],
       );
       return;
     }
