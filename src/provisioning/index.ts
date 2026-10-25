@@ -5,6 +5,7 @@ export {
   BOOTSTRAP_MISE_PATH,
   BOOTSTRAP_STAGE_DIR,
   BOOTSTRAP_TOKEN_FILE,
+  BOOTSTRAP_TOKEN_KEY,
   BOOTSTRAP_UNIT,
   BootstrapError,
   createExeDevBootstrap,
