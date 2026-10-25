@@ -10,7 +10,6 @@ export {
   renderConfigToml,
   writeConfigFile,
   writeImplementer,
-  writeGitHubAuth,
   IMPLEMENTERS,
 } from "./file";
 export type {
@@ -22,7 +21,7 @@ export type {
   PawsSetupConfig,
   TrackerKind,
 } from "./file";
-export { PAWS_GITHUB_OAUTH_CLIENT_ID } from "./file";
+export { GITHUB_APP_ONLY_MESSAGE } from "./file";
 export { ensureLayout, pawsPaths } from "./paths";
 export type { PawsPaths } from "./paths";
 export { LINEAR_COMMENT_MODE_REMOVED, LINEAR_WORKSPACE_REQUIRED, loadRuntime } from "./runtime";

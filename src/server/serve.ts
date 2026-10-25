@@ -325,10 +325,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           session: access.session,
           origin: workspace.origin,
           now: Date.now,
-          check: (repository, signal) =>
-            runtime.githubAuth === "app"
-              ? check(repository, "write", signal)
-              : Promise.resolve(false),
+          check: (repository, signal) => check(repository, "write", signal),
         }))!;
       }
       csrfToken = access.session.csrfToken;

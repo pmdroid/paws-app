@@ -168,7 +168,7 @@ test("checkout config rejects unsafe folders and setup preserves project exclusi
     linearViewerId: "viewer",
     linearSecret: "secrets/linear",
     linearClientFile: null,
-    githubAuth: "gh" as const,
+    githubAuth: "app" as const,
     repo: "acme/demo",
     checkout: f.source,
     maxTurns: 5,

@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readSecretFile, writeSecretFile } from "../src/credentials";
-import { createTokenStore } from "../src/auth";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -58,23 +57,4 @@ test("legacy credentials migrate atomically and missing keys and tampering fail 
   envelope.value = data.toString("base64");
   writeFileSync(path, `paws-envelope-v1\n${JSON.stringify(envelope)}`);
   expect(() => readSecretFile(path)).toThrow("Could not decrypt Paws credentials");
-});
-
-test("GitHub file fallback remains readable after restarting the store and contains no plaintext token", async () => {
-  const home = directory();
-  const options = { home, platform: "linux" as const, which: () => null };
-  const token = {
-    accessToken: "synthetic-github-token",
-    refreshToken: null,
-    expiresAtMs: null,
-    scope: "repo read:org",
-    login: "octocat",
-    id: 1,
-    invalid: false,
-  };
-  await createTokenStore(options).save(token);
-  expect(await createTokenStore(options).load()).toEqual(token);
-  expect(readFileSync(join(home, "secrets", "github-oauth.json"), "utf8")).not.toContain(
-    token.accessToken,
-  );
 });

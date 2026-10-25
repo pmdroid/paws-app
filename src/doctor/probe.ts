@@ -3,15 +3,6 @@ import { readSecretFile } from "../credentials";
 import { existsSync } from "node:fs";
 import { resolveAdapter } from "../acp";
 import {
-  createGitHubTokenProvider,
-  createTokenStore,
-  DEVICE_SCOPE_MESSAGE,
-  GITHUB_REAUTH_MESSAGE,
-  missingGitHubClientId,
-  scopesGrantRepoAndOrg,
-  type GitHubTokenProvider,
-} from "../auth";
-import {
   closeoutPolicyRoot,
   exeDevTokenStatus,
   loadRuntime,
@@ -19,28 +10,28 @@ import {
   type AgentProfiles,
   type EnvSource,
   type ExeDevTokenStatus,
-  type GitHubConfigAuth,
   type RuntimeConfig,
   type TrackerKind,
 } from "../config";
 import { validate } from "../closeout-spec";
 import { latestGitHubDelivery, linearWebhookWarning, type LinearWebhookWarning } from "../db";
-import { checkGhAuthStatus, ghDoctorChecks } from "../github";
+import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../github";
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
 import { createLinearClient } from "../linear";
 import { doctorAgentProfiles } from "./agents";
 
-/** Core REST calls left after a signed-in doctor check. Below this, doctor reports no headroom. */
+/** Core REST calls left for the App installation. Below this, doctor reports no headroom. */
 export const GITHUB_RATE_HEADROOM = 100;
 
+/** GitHub App checks against the configured repository. */
 export type GitHubDoctorFacts = {
-  /** `github.oauth_client_id` is still the setup placeholder. */
-  placeholder: boolean;
-  storeKind: "keychain" | "libsecret" | "file" | "gh" | "app";
-  storeWarning: string | null;
-  signedIn: { ok: boolean; detail: string };
+  /** GitHub App id from the environment or `secrets/github-app.json`. */
+  appId: string | null;
+  /** Configured installation id. Doctor also finds it from the repository. */
+  installationId: string | null;
+  privateKeyPath: string | null;
+  installation: { ok: boolean; detail: string };
   push: { ok: boolean; detail: string };
-  label: { ok: boolean; detail: string };
   rate: { ok: boolean; detail: string };
 };
 
@@ -50,9 +41,7 @@ export type ProbeFacts = {
   grokLogin?: GrokLoginStatus | null;
   configured: boolean;
   linearCommentMode: boolean;
-  githubAuth: GitHubConfigAuth;
   trackerKind: TrackerKind;
-  oauthClientId: string | null;
   githubDoctor: GitHubDoctorFacts;
   webhooks: boolean;
   linearWebhook?: LinearWebhookWarning | null;
@@ -63,8 +52,6 @@ export type ProbeFacts = {
   repo: string | null;
   team: string | null;
   teamId: string | null;
-  ghLogin: { ok: boolean; detail: string };
-  ghPush: { ok: boolean; detail: string };
   claudeAdapter: { ok: boolean; detail: string };
   codexAdapter: { ok: boolean; detail: string };
   claudeLogin: { ok: boolean; detail: string };
@@ -95,8 +82,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     agentProfiles.flatMap((profile) => [profile.implementer.agent, profile.reviewer.agent]),
   );
   const unused = { ok: true, detail: "not required by configured agent profiles" };
-  const [gh, claudeLogin, codexLogin, grokLogin, linear, githubDoctor] = await Promise.all([
-    ghFacts(repo),
+  const [claudeLogin, codexLogin, grokLogin, linear, githubDoctor] = await Promise.all([
     agents.has("claude") ? loginFact("claude", env) : unused,
     agents.has("codex") ? loginFact("codex", env) : unused,
     agents.has("grok")
@@ -111,10 +97,8 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     grokLogin,
     configured: runtime.configured,
     linearCommentMode: runtime.linearCommentMode,
-    githubAuth: runtime.githubAuth,
     trackerKind: runtime.trackerKind,
-    oauthClientId: runtime.oauthClientId,
-    githubDoctor: applyGhFallback(runtime, githubDoctor, gh),
+    githubDoctor,
     webhooks: runtime.webhooks,
     linearWebhook: readPawsDb(runtime.env.home, (db) => linearWebhookWarning(db, Date.now())),
     githubDelivery: readPawsDb(runtime.env.home, latestGitHubDelivery),
@@ -129,8 +113,6 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     repo: runtime.repo,
     team: runtime.linearTeam,
     teamId: runtime.linearTeamId,
-    ghLogin: gh.login,
-    ghPush: gh.push,
     claudeAdapter: agents.has("claude") ? adapterFact("implementer") : unused,
     codexAdapter: agents.has("codex") ? adapterFact("reviewer") : unused,
     claudeLogin,
@@ -157,48 +139,6 @@ function readPawsDb<T>(home: string, read: (db: Database) => T): T | null {
     }
   } catch {
     return null;
-  }
-}
-
-async function ghFacts(repo: { owner: string; repo: string } | null): Promise<{
-  login: { ok: boolean; detail: string };
-  push: { ok: boolean; detail: string };
-}> {
-  if (repo === null) {
-    try {
-      const login = await checkGhAuthStatus({ owner: "paws", repo: "local" });
-      return {
-        login: { ok: login.ok, detail: login.message },
-        push: { ok: false, detail: "repository must be owner/name" },
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "gh auth status failed";
-      return {
-        login: { ok: false, detail: message },
-        push: { ok: false, detail: "repository must be owner/name" },
-      };
-    }
-  }
-  try {
-    const checks = await ghDoctorChecks(repo);
-    const login = checks[0];
-    const push = checks[1];
-    return {
-      login: {
-        ok: login?.ok === true,
-        detail: login?.message ?? "gh auth status did not return a result",
-      },
-      push: {
-        ok: push?.ok === true,
-        detail: push?.message ?? "gh push permission did not return a result",
-      },
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "gh auth status failed";
-    return {
-      login: { ok: false, detail: message },
-      push: { ok: false, detail: message },
-    };
   }
 }
 
@@ -340,88 +280,75 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function applyGhFallback(
-  runtime: RuntimeConfig,
-  facts: GitHubDoctorFacts,
-  gh: { login: { ok: boolean; detail: string }; push: { ok: boolean; detail: string } },
-): GitHubDoctorFacts {
-  if (runtime.githubAuth !== "gh" || facts.placeholder) {
-    return facts;
-  }
-  return {
-    ...facts,
-    signedIn: gh.login,
-    push: gh.push,
-  };
-}
-
 async function githubDoctorFact(
   runtime: RuntimeConfig,
   repo: { owner: string; repo: string } | null,
 ): Promise<GitHubDoctorFacts> {
-  const unused = idleGitHubFacts();
-  if (runtime.githubAuth === "gh") return unused;
-  const placeholder =
-    runtime.githubAuth === "oauth" && missingGitHubClientId(runtime.oauthClientId);
-  const store =
-    runtime.githubAuth === "oauth" ? createTokenStore({ home: runtime.env.home }) : null;
+  const env = runtime.env;
+  const name = repo === null ? null : `${repo.owner}/${repo.repo}`;
   const facts: GitHubDoctorFacts = {
-    placeholder,
-    storeKind:
-      store === null
-        ? runtime.githubAuth === "app"
-          ? "app"
-          : "gh"
-        : store.backend === "secret-tool"
-          ? "libsecret"
-          : store.backend,
-    storeWarning: store?.warning ?? null,
-    signedIn: { ok: false, detail: GITHUB_REAUTH_MESSAGE },
-    push: {
-      ok: false,
-      detail: repo === null ? "repository must be owner/name" : "repository is not pushable",
-    },
-    label: { ok: false, detail: "paws label is missing" },
+    appId: env.githubAppId,
+    installationId: env.githubAppInstallationId,
+    privateKeyPath: env.githubAppPrivateKeyPath,
+    installation: { ok: false, detail: "GitHub App credentials are missing" },
+    push: { ok: false, detail: "GitHub App installation was not checked" },
     rate: { ok: false, detail: "rate limit was not read" },
   };
-  if (placeholder || repo === null) return facts;
+  const appId = env.githubAppId;
+  if (appId === null || env.githubAppPrivateKeyPath === null) return facts;
+  if (repo === null || name === null) {
+    facts.installation = { ok: false, detail: "repository must be owner/name" };
+    return facts;
+  }
+  let privateKeyPem: string | null = null;
   try {
-    const provider = githubProvider(runtime, repo);
-    const token = await provider.token();
-    if (runtime.githubAuth === "app") {
-      const bot = await provider.user();
-      facts.signedIn = { ok: true, detail: `connected as ${bot.login}` };
-      const repository = await githubGet(token, `/repos/${repo.owner}/${repo.repo}`);
-      facts.push = {
-        ok: repository.ok,
-        detail: repository.ok
-          ? `app access to ${repo.owner}/${repo.repo}`
-          : `no app access to ${repo.owner}/${repo.repo}`,
-      };
+    privateKeyPem = readSecretFile(env.githubAppPrivateKeyPath, false);
+  } catch {
+    privateKeyPem = null;
+  }
+  if (!privateKeyPem) {
+    facts.installation = { ok: false, detail: "GitHub App private key could not be read" };
+    return facts;
+  }
+  try {
+    const client = createFetchGitHubClient((input, init) =>
+      fetch(input, { ...init, signal: AbortSignal.timeout(8_000) }),
+    );
+    const installed = await client.request({
+      method: "GET",
+      path: `/repos/${repo.owner}/${repo.repo}/installation`,
+      token: signAppJwt(appId, privateKeyPem),
+    });
+    const body = isRecord(installed.body) ? installed.body : {};
+    if (installed.status !== 200 || typeof body["id"] !== "number") {
+      facts.installation = { ok: false, detail: `the GitHub App is not installed on ${name}` };
+      return facts;
     }
-    if (runtime.githubAuth === "oauth") {
-      const user = await githubGet(token, "/user");
-      const login = readString(user.body, "login");
-      const scopes = user.header("x-oauth-scopes") ?? "";
-      if (!user.ok || !scopesGrantRepoAndOrg(scopes)) {
-        facts.signedIn = {
-          ok: false,
-          detail: user.ok ? DEVICE_SCOPE_MESSAGE : GITHUB_REAUTH_MESSAGE,
-        };
-      } else {
-        facts.signedIn = { ok: true, detail: `signed in as ${login ?? "github"}` };
-      }
-      const repoBody = await githubGet(token, `/repos/${repo.owner}/${repo.repo}`);
-      const permissions = isRecord(repoBody.body) ? repoBody.body["permissions"] : null;
-      const push = repoBody.ok && isRecord(permissions) && permissions["push"] === true;
-      facts.push = {
-        ok: push,
-        detail: push
-          ? `push access to ${repo.owner}/${repo.repo}`
-          : `no push access to ${repo.owner}/${repo.repo}`,
-      };
+    const installationId = String(body["id"]);
+    if (body["suspended_at"] != null) {
+      facts.installation = { ok: false, detail: `installation ${installationId} is suspended` };
+      return facts;
     }
-    const rate = await githubGet(token, "/rate_limit");
+    if (env.githubAppInstallationId !== null && env.githubAppInstallationId !== installationId) {
+      facts.installation = {
+        ok: false,
+        detail: `GITHUB_APP_INSTALLATION_ID ${env.githubAppInstallationId} does not match installation ${installationId} on ${name}`,
+      };
+      return facts;
+    }
+    facts.installation = { ok: true, detail: `installation ${installationId} on ${name}` };
+    facts.push = { ok: false, detail: `no push access to ${name}` };
+    const minted = await mintInstallationToken({
+      client,
+      appId,
+      installationId,
+      privateKeyPem,
+      owner: repo.owner,
+      repo: repo.repo,
+      access: "write",
+    });
+    facts.push = { ok: true, detail: `push access to ${name}` };
+    const rate = await githubGet(minted.token, "/rate_limit");
     const remaining = coreRemaining(rate.body);
     if (!rate.ok || remaining === null) {
       facts.rate = { ok: false, detail: "rate limit was not read" };
@@ -432,46 +359,10 @@ async function githubDoctorFact(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "GitHub could not be reached";
-    if (!facts.signedIn.ok) facts.signedIn = { ok: false, detail: message };
+    if (!facts.installation.ok) facts.installation = { ok: false, detail: message };
+    else if (!facts.push.ok) facts.push = { ok: false, detail: `${facts.push.detail}: ${message}` };
   }
   return facts;
-}
-
-function idleGitHubFacts(): GitHubDoctorFacts {
-  return {
-    placeholder: false,
-    storeKind: "gh",
-    storeWarning: null,
-    signedIn: { ok: true, detail: "not used" },
-    push: { ok: true, detail: "not used" },
-    label: { ok: true, detail: "not used" },
-    rate: { ok: true, detail: "not used" },
-  };
-}
-
-function githubProvider(
-  runtime: RuntimeConfig,
-  repo: { owner: string; repo: string },
-): GitHubTokenProvider {
-  const env = runtime.env;
-  let privateKeyPem: string | null = null;
-  if (runtime.githubAuth === "app" && env.githubAppPrivateKeyPath !== null) {
-    try {
-      privateKeyPem = readSecretFile(env.githubAppPrivateKeyPath, false);
-    } catch {
-      privateKeyPem = null;
-    }
-  }
-  return createGitHubTokenProvider({
-    auth: runtime.githubAuth,
-    oauthClientId: runtime.oauthClientId,
-    repo: `${repo.owner}/${repo.repo}`,
-    home: env.home,
-    env: process.env,
-    appId: env.githubAppId,
-    installationId: env.githubAppInstallationId,
-    privateKeyPem,
-  });
 }
 
 type GitHubGet = {

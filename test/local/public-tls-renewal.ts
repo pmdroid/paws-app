@@ -5,9 +5,21 @@ import { get } from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../../src/acp";
-import { beginImplementRun, getWorkItem, insertQueuedItem, openDatabase } from "../../src/db";
+import {
+  beginImplementRun,
+  saveRunCommitPolicy,
+  getWorkItem,
+  insertQueuedItem,
+  openDatabase,
+} from "../../src/db";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "../../src/deployment";
 import { startServer } from "../../src/server";
+
+/** App mode commits WIP only under a run commit policy. */
+const APP_POLICY = {
+  bot: { appId: "1", login: "paws-test[bot]", id: 1 },
+  credit: null,
+};
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 
@@ -341,7 +353,11 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     assert.equal(await fingerprint(cliPort), oldFingerprint);
     const db = openDatabase(join(home, "paws.db"));
     insertQueuedItem(db, { id: itemId, branchName: "paws/tls-1", now: Date.now() });
-    beginImplementRun(db, itemId, Date.now(), { phase: "running", turn: 1 });
+    saveRunCommitPolicy(
+      db,
+      beginImplementRun(db, itemId, Date.now(), { phase: "running", turn: 1 }).run.id,
+      APP_POLICY,
+    );
     db.close();
     const rejectedSignals: string[] = [];
     for (const [name, tls] of [

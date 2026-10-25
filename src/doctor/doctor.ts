@@ -1,6 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
-import { MISSING_GITHUB_CLIENT_ID_MESSAGE, missingGitHubClientId } from "../auth";
 import {
   LINEAR_COMMENT_MODE_REMOVED,
   LINEAR_WORKSPACE_REQUIRED,
@@ -48,8 +47,6 @@ const FIX = {
   team: "Choose the Linear teams in workspace settings.",
   workspace: LINEAR_WORKSPACE_REQUIRED,
   commentMode: LINEAR_COMMENT_MODE_REMOVED,
-  ghLogin: "Run gh auth login.",
-  ghPush: "Run gh auth login, then grant that login push access to the repository.",
   adapter: "Run bun install in the paws checkout.",
   claude: "Run claude auth login.",
   codex: "Run codex login.",
@@ -58,14 +55,17 @@ const FIX = {
   webhook: "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret.",
   publicUrl: "Set PAWS_PUBLIC_URL to the https tunnel origin.",
   ngrok: "Install ngrok and put it on PATH.",
-  githubApp: "Set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and a private key at mode 0600.",
-  githubLogin: "Run bun run paws login github.",
-  githubPush: "Grant this login push access to the repository.",
+  githubApp:
+    "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH (mode 0600), or save them in ~/.paws/secrets/github-app.json (docs/github-app.md).",
+  githubInstallation:
+    "Install the GitHub App on the repository and connect it in Settings > Integrations (docs/github-app.md).",
+  githubPush:
+    "Give the GitHub App Contents, Pull requests and Issues write permission and accept the new permissions on the installation (docs/github-app.md).",
   githubRate: "Wait for the GitHub rate limit to recover.",
   exeDev:
     "Generate an exe.dev API token that may run new, ls and ssh, and save it to ~/.paws/secrets/exe-dev-token.",
   githubWebhook:
-    "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews and Merge groups events (docs/github-login.md).",
+    "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews and Merge groups events (docs/github-app.md).",
 } as const;
 
 /** Prerequisite checks for a real local run. Missing tools are reported, not thrown. */
@@ -97,19 +97,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       teamCheck(facts),
     );
   }
-  if (facts.githubAuth !== "gh") {
-    checks.push(...githubAuthChecks(facts));
-  } else {
-    checks.push(
-      check("gh-login", facts.ghLogin.ok, facts.ghLogin.detail, FIX.ghLogin),
-      check(
-        "gh-push",
-        facts.ghPush.ok,
-        facts.ghPush.detail,
-        facts.ghPush.ok ? undefined : ghPushFix(facts),
-      ),
-    );
-  }
+  checks.push(...githubAppChecks(probe, facts.githubDoctor));
   checks.push(
     ...agentChecks(facts, context),
     closeoutCheck(facts),
@@ -157,16 +145,6 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       ),
     );
   }
-  if (facts.githubAuth === "app") {
-    checks.push(
-      githubAppCheck(
-        probe,
-        env.githubAppId,
-        env.githubAppInstallationId,
-        env.githubAppPrivateKeyPath,
-      ),
-    );
-  }
   return checks;
 }
 
@@ -209,46 +187,21 @@ export async function realProbe(env: EnvSource = process.env): Promise<DoctorPro
   };
 }
 
-function githubAuthChecks(facts: ProbeFacts): DoctorCheck[] {
-  if (
-    facts.githubAuth === "oauth" &&
-    (facts.githubDoctor.placeholder || missingGitHubClientId(facts.oauthClientId))
-  ) {
-    return [
-      check(
-        "github-auth",
-        false,
-        MISSING_GITHUB_CLIENT_ID_MESSAGE,
-        MISSING_GITHUB_CLIENT_ID_MESSAGE,
-      ),
-    ];
-  }
-  const github = facts.githubDoctor;
-  const loginFix = facts.githubAuth === "gh" ? FIX.ghLogin : FIX.githubLogin;
-  const checks: DoctorCheck[] = [
-    check("github-auth", github.signedIn.ok, github.signedIn.detail, loginFix),
-    tokenStoreCheck(github),
+/** `github-app` credentials, then the installation and push access on the repository. */
+function githubAppChecks(probe: DoctorProbe, github: GitHubDoctorFacts): DoctorCheck[] {
+  const credentials = githubAppCheck(probe, github.appId, github.privateKeyPath);
+  if (!credentials.ok) return [credentials];
+  return [
+    credentials,
     check(
-      "github-push",
-      github.push.ok,
-      github.push.detail,
-      github.push.ok ? undefined : FIX.githubPush,
+      "github-app-installation",
+      github.installation.ok,
+      github.installation.detail,
+      FIX.githubInstallation,
     ),
+    check("github-app-push", github.push.ok, github.push.detail, FIX.githubPush),
     check("github-rate", github.rate.ok, github.rate.detail, FIX.githubRate),
   ];
-  return checks;
-}
-
-function tokenStoreCheck(github: GitHubDoctorFacts): DoctorCheck {
-  if (github.storeKind === "file") {
-    return {
-      name: "github-token-store",
-      ok: true,
-      note: true,
-      detail: github.storeWarning ?? "token file",
-    };
-  }
-  return check("github-token-store", true, github.storeKind);
 }
 
 function linearCheck(facts: ProbeFacts): DoctorCheck {
@@ -309,27 +262,12 @@ function closeoutCheck(facts: ProbeFacts): DoctorCheck {
 function githubAppCheck(
   probe: DoctorProbe,
   appId: string | null,
-  installationId: string | null,
   keyPath: string | null,
 ): DoctorCheck {
   const keyStat = keyPath === null ? null : probe.stat(keyPath);
   const mode = keyStat === null ? null : keyStat.mode & 0o777;
-  const ok =
-    appId !== null &&
-    installationId !== null &&
-    keyStat !== null &&
-    (mode === 0o600 || mode === 0o400);
-  return check(
-    "github-app",
-    ok,
-    githubDetail(appId, installationId, keyStat !== null, mode),
-    FIX.githubApp,
-  );
-}
-
-function ghPushFix(facts: ProbeFacts): string {
-  if (facts.repo === null) return FIX.repo;
-  return FIX.ghPush;
+  const ok = appId !== null && keyStat !== null && (mode === 0o600 || mode === 0o400);
+  return check("github-app", ok, githubDetail(appId, keyStat !== null, mode), FIX.githubApp);
 }
 
 function agentChecks(facts: ProbeFacts, context: DoctorContext): DoctorCheck[] {
@@ -403,15 +341,9 @@ function check(name: string, ok: boolean, detail: string, fix?: string): DoctorC
   return fix === undefined ? { name, ok, detail } : { name, ok, detail, fix };
 }
 
-function githubDetail(
-  appId: string | null,
-  installationId: string | null,
-  keyExists: boolean,
-  mode: number | null,
-): string {
-  if (appId === null || installationId === null)
-    return "GitHub App id and installation id are required";
+function githubDetail(appId: string | null, keyExists: boolean, mode: number | null): string {
+  if (appId === null) return "GitHub App id is required";
   if (!keyExists) return "GitHub App private key file is missing";
   if (mode !== 0o600 && mode !== 0o400) return "GitHub App private key must be mode 0600";
-  return "app configured";
+  return `app ${appId} configured`;
 }
