@@ -124,10 +124,14 @@ async function fixture() {
     enroll: Promise<void> | null;
     /** The enrollment answers, then the step dies before runner_id is written. */
     enrollDies: boolean;
+    stalled: string | null;
+    enrollStalls: boolean;
   } = {
     create: null,
     enroll: null,
     enrollDies: false,
+    stalled: null,
+    enrollStalls: false,
   };
   const provisioningExeDev: ExeDev = {
     ...exeDev,
@@ -139,6 +143,10 @@ async function fixture() {
   const bootstrap = createFakeBootstrap({
     installPolls: 1,
     async enroll(vm, token) {
+      if (hold.enrollStalls) {
+        hold.stalled = token;
+        throw new Error("Paws stopped before the VM enrolled.");
+      }
       hosts += 1;
       const key = await createRunnerKey(join(root, `host-${hosts}`));
       const identity = await control.enroll({ token, name: vm, csr: key.csr });
@@ -688,6 +696,34 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(getRunner(f.db, laptop.runnerId)!.status).toBe("active");
     expect(
       f.db.query("SELECT 1 FROM member_vm_enrollment WHERE member_vm_id=?").get(row.id),
+    ).toBeNull();
+  });
+
+  test("a token the VM still holds cannot enroll a runner once the delete has run", async () => {
+    const f = await fixture();
+    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    f.hold.enrollStalls = true;
+    for (let index = 0; index < 100 && getMemberVm(f.db, row.id)!.failure === null; index++)
+      if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
+    const token = f.hold.stalled!;
+    expect(token).toBeTruthy();
+    expect(getMemberVm(f.db, row.id)!.step).toBe("enroll");
+
+    await f.remove(f.member, row.id);
+    for (let index = 0; index < 20 && getMemberVm(f.db, row.id)!.deleteStep !== "destroy"; index++)
+      await f.loop.tick();
+    expect(getMemberVm(f.db, row.id)!.deleteStep).toBe("destroy");
+
+    const key = await createRunnerKey(temp("paws-late-host-"));
+    await expect(
+      f.control.enroll({ token, name: "ada-lovelace-paws", csr: key.csr }),
+    ).rejects.toThrow();
+    await f.settle();
+    expect(getMemberVm(f.db, row.id)).toBeNull();
+    expect(
+      f.db
+        .query("SELECT 1 FROM runner WHERE name='ada-lovelace-paws' AND revoked_at IS NULL")
+        .get(),
     ).toBeNull();
   });
 
