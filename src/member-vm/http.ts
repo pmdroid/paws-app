@@ -222,7 +222,7 @@ export function createMemberVmHttp(options: {
         available: true,
         vm: own === null ? null : memberVmView(own, at),
         vms: listDeletableMemberVms(db, member).map((row) =>
-          memberVmView(row, at, ownerName(db, row.userId)),
+          memberVmView(row, at, memberName(db, row.userId)),
         ),
       } satisfies MemberVmResponse);
     } catch (error) {
@@ -234,7 +234,7 @@ export function createMemberVmHttp(options: {
   };
 }
 
-function ownerName(db: Database, userId: string): string | null {
+function memberName(db: Database, userId: string): string | null {
   return (
     db.query<{ name: string }, [string]>("SELECT name FROM workspace_user WHERE id=?").get(userId)
       ?.name ?? null
