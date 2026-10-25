@@ -81,7 +81,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   credentials: ["db"],
   slack: ["config", "credentials"],
   core: [],
-  db: ["core"],
+  db: ["core", "runner-protocol"],
   linear: ["core", "credentials"],
   intake: ["core", "db", "linear"],
   "execution-controls": ["core", "db", "workspace"],

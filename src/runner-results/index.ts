@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { immediate, recordRunnerAgentUsage } from "../db";
+import { immediate, recordRunnerAgentUsage, runnerLeaseCutoff } from "../db";
 import {
   RUNNER_RESULT_BODY_LIMIT,
   RunnerResultSchema,
@@ -184,7 +184,7 @@ export function createRunnerResults(options: {
              JOIN runner_host_status h ON h.runner_id=w.runner_id
              WHERE i.id=? AND w.ended_at IS NULL AND w.lease_until>?`,
           )
-          .get(itemId, now());
+          .get(itemId, runnerLeaseCutoff(now()));
         if (!row || !followUpsSupported(row.version)) return false;
         try {
           if (current(row.runId, row.generation).type !== "run") return false;

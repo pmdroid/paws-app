@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
@@ -33,7 +34,7 @@ export function runnerOccupancy(
      (SELECT count(*) FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>? AND run_id<>?) +
      (SELECT count(*) FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?) AS occupied`,
     )
-    .get(runnerId, runnerId, now, excludeRunId, runnerId, now)!;
+    .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now)!;
 }
 
 export function runnerSlotsHeldBetweenCommands(
@@ -48,7 +49,7 @@ export function runnerSlotsHeldBetweenCommands(
        WHERE w.runner_id=? AND w.run_id<>? AND (w.ended_at IS NOT NULL OR w.lease_until<=?)
        AND r.status IN ('active','provisioning')`,
     )
-    .get(runnerId, excludeRunId, now)!.held;
+    .get(runnerId, excludeRunId, runnerLeaseCutoff(now))!.held;
 }
 
 export function runnerSlotFree(db: Database, runnerIds: readonly string[], now: number): boolean {

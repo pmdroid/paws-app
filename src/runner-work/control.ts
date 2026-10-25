@@ -7,6 +7,7 @@ import {
   recordRunnerSkills,
   runnerAgentTargets,
   teamRepositoryAllowedSql,
+  runnerLeaseCutoff,
 } from "../db";
 import type { KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -448,7 +449,7 @@ export function createRunnerWork(options: {
               (w.runner_id=c.runner_id AND w.generation=c.generation AND w.ended_at IS NULL AND w.lease_until>?))
             ORDER BY c.ordinal LIMIT 64`,
           )
-          .all(runnerId, now(), ordinal, now());
+          .all(runnerId, now(), ordinal, runnerLeaseCutoff(now()));
         for (const row of rows) {
           ordinal = row.ordinal;
           const envelope = JSON.parse(row.envelope) as SignedRunnerCommand;

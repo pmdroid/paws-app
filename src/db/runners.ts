@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 import { listSkills, runnerSkillStates, type RunnerSkillView } from "./skills";
@@ -168,7 +169,7 @@ function listRunnerSessions(
     AND w.workspace_id=?
     ORDER BY r.created_at,w.run_id`,
     )
-    .all(now, workspaceId);
+    .all(runnerLeaseCutoff(now), workspaceId);
   const sessions = new Map<string, RunnerSession[]>();
   for (const { runnerId, ...session } of rows)
     sessions.set(runnerId, [...(sessions.get(runnerId) ?? []), session]);
@@ -300,7 +301,7 @@ export function listRunnerOverview(
     LEFT JOIN workspace_user o ON o.id=r.owner_user_id
     WHERE r.workspace_id=? ORDER BY r.created_at,r.id`,
     )
-    .all(now, now, now, workspaceId)
+    .all(now, runnerLeaseCutoff(now), now, workspaceId)
     .map((row) => ({
       id: row.id,
       workspaceId: row.workspaceId,
