@@ -77,24 +77,29 @@ test.each<RunnerCommand>([
   expect(verifyRunnerCommand(signed(command), context())).toEqual({ ok: true, command });
 });
 
-test("signed bot-only commit policies preserve explicit absent humans", () => {
+test("signed bot-only commit policies preserve an explicit absent credit", () => {
   const commitPolicy = {
     bot: { appId: "99", id: 88, login: "paws-test[bot]" },
-    projectLead: null,
-    taskSteerer: null,
+    credit: null,
   };
   const command = { ...run, commitPolicy };
   expect(verifyRunnerCommand(signed(command), context())).toEqual({ ok: true, command });
   expect(
     RunnerCommandSchema.safeParse({
       ...command,
-      commitPolicy: { ...commitPolicy, taskSteerer: undefined },
+      commitPolicy: { ...commitPolicy, credit: undefined },
     }).success,
   ).toBe(false);
   expect(
     RunnerCommandSchema.safeParse({
       ...command,
-      commitPolicy: { ...commitPolicy, taskSteerer: {} },
+      commitPolicy: { ...commitPolicy, credit: {} },
+    }).success,
+  ).toBe(false);
+  expect(
+    RunnerCommandSchema.safeParse({
+      ...command,
+      commitPolicy: { ...commitPolicy, projectLead: null },
     }).success,
   ).toBe(false);
 });

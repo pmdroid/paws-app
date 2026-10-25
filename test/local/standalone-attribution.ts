@@ -3,7 +3,12 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { git, runAgent, validateCandidateAttribution } from "../../src/acp";
-import { commitPolicyMessage, policyCoauthors, policyPullRequestCredit } from "../../src/core";
+import {
+  commitPolicyMessage,
+  policyCoauthors,
+  policyPullRequestCredit,
+  type GitCommitPolicy,
+} from "../../src/core";
 import {
   beginGitHubAttribution,
   beginImplementRun,
@@ -22,10 +27,9 @@ import {
   saveRunCommitPolicy,
   syncWorkspaceMember,
 } from "../../src/db";
-import { createLinearAttributionReads, createLinearClient } from "../../src/linear";
 import { FakeHostGitHubAuth, GitHubAuthQuestions } from "../../src/loop";
 import { signRunnerCommand, verifyRunnerCommand } from "../../src/runner-protocol";
-import { createCommitPolicyForItem, issueWorkspaceSession } from "../../src/workspace";
+import { delegatorCommitCredit, issueWorkspaceSession } from "../../src/workspace";
 
 export async function probeStandaloneAttribution(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -91,53 +95,20 @@ export async function probeStandaloneAttribution(root: string) {
   });
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "steerer" });
   const { run } = beginImplementRun(db, item.id, now);
-  let project: { id: string; lead: null } | null = null;
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request) {
-      const body = (await request.json()) as { variables: { id: string } };
-      assert.equal(body.variables.id, item.linearIssueId);
-      return Response.json({
-        data: {
-          viewer: { app: true, organization: { id: "org" } },
-          issue: { id: item.linearIssueId, team: { id: "team" }, project },
-        },
-      });
-    },
+  const bot = { appId: "99", id: 88, login: "paws-test[bot]" };
+  const policyForItem = (): GitCommitPolicy => ({
+    bot,
+    credit: delegatorCommitCredit(db, item.id),
   });
-  const tracker = createLinearAttributionReads(
-    createLinearClient({
-      auth: {
-        ensureFresh: async () => "synthetic",
-        forceRefresh: async () => "synthetic",
-        hasToken: () => true,
-      },
-      fetch: (_input, init) => fetch(`http://127.0.0.1:${server.port}`, init),
-    }),
-  );
-  const memberships: string[] = [];
-  const policyForItem = createCommitPolicyForItem({
-    db,
-    bot: { appId: "99", id: 88, login: "paws-test[bot]" },
-    clientId: "client",
-    tracker,
-    memberships: {
-      installation: async () => ({ id: "org", name: "Workspace" }),
-      member: async (organizationId, userId) => {
-        memberships.push(userId);
-        return {
-          organizationId,
-          userId,
-          active: true,
-          guest: false,
-          admin: false,
-          teamIds: ["team"],
-        };
-      },
+  const requests: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = Object.assign(
+    async (input: string | URL | Request) => {
+      requests.push(String(input instanceof Request ? input.url : input));
+      throw new Error("The commit policy must not make network requests.");
     },
-  });
-  let legacyConsentHold = true;
+    { preconnect: realFetch.preconnect },
+  ) as typeof fetch;
   const auth = new GitHubAuthQuestions(
     db,
     Object.assign(new FakeHostGitHubAuth(), {
@@ -146,48 +117,46 @@ export async function probeStandaloneAttribution(root: string) {
         identity: () => "workspace-repository",
         administrators: () => [],
         recoveryUrl: "https://paws.example/status/#/settings/account",
-        attributionReady: async (current: typeof item) => {
-          if (legacyConsentHold) return false;
-          await policyForItem(current);
-          return true;
-        },
       },
     }),
     () => now,
   );
   try {
-    const policy = await policyForItem(getWorkItem(db, item.id)!);
-    assert.equal(policy.projectLead, null);
-    assert.deepEqual(memberships, ["steerer"]);
+    const policy = policyForItem();
+    assert.deepEqual(policy, { bot, credit: null });
     assert.equal(policyCoauthors(policy).length, 0);
-    assert.equal(
-      await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
-      false,
-    );
-    assert.equal(getWorkItem(db, item.id)!.state, "awaiting_input");
-    legacyConsentHold = false;
-    await auth.recover();
-    await auth.recover();
-    assert.equal(getWorkItem(db, item.id)!.state, "running");
-    assert.equal(listJobs(db).filter((job) => job.queue === "run.resume").length, 1);
-    observations.push(
-      "legacy consent hold resumes once through the production App gate without personal GitHub consent",
-    );
-    project = { id: "project", lead: null };
-    assert.equal((await policyForItem(getWorkItem(db, item.id)!)).projectLead, null);
-    project = null;
-    consent();
-    assert.equal(policyCoauthors(await policyForItem(getWorkItem(db, item.id)!)).length, 1);
-    revokeGitHubAttribution(db, binding, now);
     assert.equal(
       await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
       true,
     );
-    await auth.recover();
     assert.equal(getWorkItem(db, item.id)!.state, "running");
-    assert.equal(listJobs(db).filter((job) => job.queue === "run.resume").length, 1);
+    assert.equal(listJobs(db).filter((job) => job.queue === "run.resume").length, 0);
     observations.push(
-      "project leads are optional and revoking personal credit does not create an authorization hold",
+      "an unlinked delegator gets a bot-only policy and the App gate starts work without waiting",
+    );
+    consent();
+    assert.deepEqual(policyCoauthors(policyForItem()), [
+      {
+        id: 8,
+        login: "steerer",
+        name: "Task Steerer",
+        email: "8+steerer@users.noreply.github.com",
+      },
+    ]);
+    assert.equal(
+      commitPolicyMessage("work", policyForItem()),
+      "work\n\nCo-authored-by: Task Steerer <8+steerer@users.noreply.github.com>\n",
+    );
+    revokeGitHubAttribution(db, binding, now);
+    assert.equal(policyForItem().credit, null);
+    assert.equal(
+      await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
+      true,
+    );
+    assert.equal(getWorkItem(db, item.id)!.state, "running");
+    assert.deepEqual(requests, []);
+    observations.push(
+      "linking credits exactly the delegator from a local lookup, and revoking credit creates no hold",
     );
     saveRunCommitPolicy(db, run.id, policy);
     const reopened = openDatabase(dbPath);
@@ -303,7 +272,7 @@ export async function probeStandaloneAttribution(root: string) {
     return observations;
   } finally {
     auth.close();
-    await server.stop(true);
+    globalThis.fetch = realFetch;
     db.close();
   }
 }

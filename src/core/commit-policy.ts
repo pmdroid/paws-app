@@ -6,38 +6,27 @@ import {
 } from "./commit-identity";
 
 export type VerifiedGitHubCoauthor = GitCommitIdentity & { id: number; login: string };
+/** The App bot authors every commit; `credit` is the delegating member's linked GitHub identity. */
 export type GitCommitPolicy = {
   bot: AppBotIdentity;
-  projectLead: VerifiedGitHubCoauthor | null;
-  taskSteerer: VerifiedGitHubCoauthor | null;
+  credit: VerifiedGitHubCoauthor | null;
 };
 
 export function policyCoauthors(policy: GitCommitPolicy): VerifiedGitHubCoauthor[] {
   appBotCommitIdentity(policy.bot);
-  const result: VerifiedGitHubCoauthor[] = [];
-  for (const human of [policy.projectLead, policy.taskSteerer]) {
-    if (human === null) continue;
-    if (
-      !human ||
-      !Number.isSafeInteger(human.id) ||
-      human.id <= 0 ||
-      !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(human.login)
-    )
-      throw new Error("Invalid verified GitHub coauthor identity.");
-    commitIdentityEnv(human);
-    if (!/^[^\s<>@]+@[^\s<>@]+$/.test(human.email))
-      throw new Error("Invalid verified GitHub coauthor email");
-    const existing = result.find((entry) => entry.id === human.id);
-    if (
-      existing &&
-      (existing.login !== human.login ||
-        existing.name !== human.name ||
-        existing.email !== human.email)
-    )
-      throw new Error("Conflicting verified GitHub identity for project lead and task steerer");
-    if (!existing) result.push(human);
-  }
-  return result;
+  const human = policy.credit;
+  if (human === null) return [];
+  if (
+    !human ||
+    !Number.isSafeInteger(human.id) ||
+    human.id <= 0 ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(human.login)
+  )
+    throw new Error("Invalid verified GitHub coauthor identity.");
+  commitIdentityEnv(human);
+  if (!/^[^\s<>@]+@[^\s<>@]+$/.test(human.email))
+    throw new Error("Invalid verified GitHub coauthor email");
+  return [human];
 }
 
 export function commitPolicyMessage(message: string, policy: GitCommitPolicy): string {
@@ -75,19 +64,8 @@ export function validateCommitAttribution(
 }
 
 export function policyPullRequestCredit(policy: GitCommitPolicy): string {
-  policyCoauthors(policy);
-  return [
-    ...(policy.projectLead
-      ? [
-          `Project lead: [@${policy.projectLead.login}](https://github.com/${policy.projectLead.login})`,
-        ]
-      : []),
-    ...(policy.taskSteerer
-      ? [
-          `Task steerer: [@${policy.taskSteerer.login}](https://github.com/${policy.taskSteerer.login})`,
-        ]
-      : []),
-  ].join("\n");
+  const [human] = policyCoauthors(policy);
+  return human ? `Credit: [@${human.login}](https://github.com/${human.login})` : "";
 }
 
 export function commitCoauthorTrailers(message: string): string[] {

@@ -204,7 +204,13 @@ import {
   type ReverifyInput,
 } from "../github";
 import { intakeDelegatedIssue, stopAdoptedParent, type IntakeResult } from "../intake";
-import { createAdmission, dispatch, type ItemAdmission, type SchedulerOptions } from "../scheduler";
+import {
+  createAdmission,
+  dispatch,
+  projectLeadId,
+  type ItemAdmission,
+  type SchedulerOptions,
+} from "../scheduler";
 import type {
   AcceptedLinearEvent,
   DependencyEdge,
@@ -3192,7 +3198,7 @@ export class Orchestrator {
       const review = getVisualReview(this.db, open.id);
       const item = getWorkItem(this.db, open.itemId);
       if (review === null || item === null) return "rejected";
-      if (!(await this.canAnswerVisualReview(item, answeredBy))) {
+      if (!this.canAnswerVisualReview(item, answeredBy)) {
         postNote(
           this.db,
           sessionId,
@@ -4555,7 +4561,7 @@ export class Orchestrator {
     if (open?.status !== "open" || review?.kind !== "review") return "rejected";
     const item = getWorkItem(this.db, open.itemId);
     if (item === null) return "rejected";
-    if (!(await this.canAnswerVisualReview(item, input.answeredBy))) return "forbidden";
+    if (!this.canAnswerVisualReview(item, input.answeredBy)) return "forbidden";
     return this.answerVisualReview(
       open,
       review,
@@ -4660,16 +4666,14 @@ export class Orchestrator {
   }
 
   /** The delegator and the project lead answer a visual review. */
-  private async canAnswerVisualReview(item: WorkItemRecord, actorId: string): Promise<boolean> {
-    const delegatorId = delegatedLinearUserId(this.db, item.id);
-    const user = { id: actorId };
-    if (canAnswer({ kind: "visual-review", delegatorId, leadId: null }, user)) return true;
-    const attribution = await this.tracker
-      ?.getIssueAttribution?.(item.linearIssueId)
-      .catch(() => null);
+  private canAnswerVisualReview(item: WorkItemRecord, actorId: string): boolean {
     return canAnswer(
-      { kind: "visual-review", delegatorId, leadId: attribution?.leadId ?? null },
-      user,
+      {
+        kind: "visual-review",
+        delegatorId: delegatedLinearUserId(this.db, item.id),
+        leadId: projectLeadId(this.db, item.id),
+      },
+      { id: actorId },
     );
   }
 

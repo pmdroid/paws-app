@@ -17,7 +17,6 @@ import { answer, ask, findOpenQuestion, getQuestion, type StoredQuestion } from 
 export const TASK_ACCESS_TTL_MS = 5 * 60_000;
 
 export type GitHubIntegration = {
-  attributionReady?(item: WorkItemRecord): Promise<boolean>;
   check(item: WorkItemRecord, signal: AbortSignal): Promise<boolean>;
   authorize?(item: WorkItemRecord, signal: AbortSignal): Promise<boolean>;
   administrators(item: WorkItemRecord): readonly string[];
@@ -283,7 +282,7 @@ export class GitHubIntegrationHolds {
     item: WorkItemRecord,
     signal: AbortSignal,
     retryMs: readonly number[] = this.integration.unavailableRetryMs ?? [],
-  ): Promise<"ready" | "installation" | "unavailable" | "denied" | "attribution"> {
+  ): Promise<"ready" | "installation" | "unavailable" | "denied"> {
     try {
       const result = await this.check(item, signal);
       if (result === "ready")
@@ -340,14 +339,11 @@ export class GitHubIntegrationHolds {
   private async check(
     item: WorkItemRecord,
     signal: AbortSignal,
-  ): Promise<"ready" | "installation" | "denied" | "attribution"> {
+  ): Promise<"ready" | "installation" | "denied"> {
     const ready = await this.integration.check(item, signal);
     if (this.integration.authorize && !(await this.integration.authorize(item, signal)))
       return "denied";
-    if (!ready) return "installation";
-    if (this.integration.attributionReady && !(await this.integration.attributionReady(item)))
-      return "attribution";
-    return "ready";
+    return ready ? "ready" : "installation";
   }
 
   private deny(itemId: string): void {
@@ -498,10 +494,8 @@ export class GitHubIntegrationHolds {
   }
 }
 
-function waitingMessage(result: "attribution" | "unavailable" | "installation"): string {
-  return result === "attribution"
-    ? "The GitHub App commit policy could not be verified. Paws will recheck automatically before continuing; personal GitHub credit is optional."
-    : result === "unavailable"
-      ? "Workspace authorization could not be checked. Paws will retry automatically before continuing; no personal GitHub sign-in is required."
-      : "Waiting for a workspace owner or administrator to restore the GitHub App installation and repository access. Your personal GitHub sign-in is not required.";
+function waitingMessage(result: "unavailable" | "installation"): string {
+  return result === "unavailable"
+    ? "Workspace authorization could not be checked. Paws will retry automatically before continuing; no personal GitHub sign-in is required."
+    : "Waiting for a workspace owner or administrator to restore the GitHub App installation and repository access. Your personal GitHub sign-in is not required.";
 }
