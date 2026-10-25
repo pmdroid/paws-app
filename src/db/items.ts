@@ -17,7 +17,9 @@ import {
   OUTBOX_ACTIVITY,
   transition,
   type Checkpoint,
+  type RestartReason,
   type WorkItemEvent,
+  type WorkItemEventKind,
   type WorkItemState,
   type WorkBrief,
 } from "../core";
@@ -129,29 +131,130 @@ export function listInFlightItems(db: Database): WorkItemRecord[] {
   return listWorkItemsByStates(db, IN_FLIGHT_ITEM_STATES);
 }
 
-/** The only writer of `work_item.state`. Throws when `transition` rejects the event. */
-export function applyWorkItemEvent(db: Database, id: string, event: WorkItemEvent): WorkItemRecord {
-  const current = getWorkItem(db, id);
-  if (current === null) {
-    throw new Error(`work item ${id} not found`);
-  }
-  const result = transition(current.state, event);
-  if (!result.ok) {
-    throw new TransitionRejectedError(result.reason);
-  }
-  const updated = db.run(
-    "UPDATE work_item SET state = ?, version = version + 1 WHERE id = ? AND state = ?",
-    [result.to, id, current.state],
-  );
-  if (updated.changes === 0) {
-    throw new Error(`work item ${id} changed before ${event}`);
-  }
-  const next = getWorkItem(db, id);
-  if (next === null) throw new Error(`work item ${id} not found`);
-  journal(
-    `transition ${next.linearIdentifier} ${current.state} --${event}--> ${next.state} v${next.version}`,
-  );
-  return next;
+/**
+ * What the `work_item_event` row of a transition records beyond the edge itself. A plain
+ * transition passes nothing. `restart()` passes kind `restart` with its reason and `ask()` passes
+ * kind `ask` with its reason (PAS-627).
+ */
+export type WorkItemEventRecord =
+  | { kind?: "transition"; reason?: string; payloadDigest?: string; actor?: string; now?: number }
+  | {
+      kind: "restart";
+      reason: RestartReason;
+      payloadDigest?: string;
+      actor?: string;
+      now?: number;
+    }
+  | { kind: "ask"; reason: string; payloadDigest?: string; actor?: string; now?: number };
+
+/**
+ * The only writer of `work_item.state`. Throws when `transition` rejects the event. The state
+ * change and its `work_item_event` row commit in one immediate transaction, or a savepoint of
+ * the caller's, so a rolled-back transition leaves no row.
+ */
+export function applyWorkItemEvent(
+  db: Database,
+  id: string,
+  event: WorkItemEvent,
+  record: WorkItemEventRecord = {},
+): WorkItemRecord {
+  return immediate(db, () => {
+    const current = getWorkItem(db, id);
+    if (current === null) {
+      throw new Error(`work item ${id} not found`);
+    }
+    const result = transition(current.state, event);
+    if (!result.ok) {
+      throw new TransitionRejectedError(result.reason);
+    }
+    const updated = db.run(
+      "UPDATE work_item SET state = ?, version = version + 1 WHERE id = ? AND state = ?",
+      [result.to, id, current.state],
+    );
+    if (updated.changes === 0) {
+      throw new Error(`work item ${id} changed before ${event}`);
+    }
+    const next = getWorkItem(db, id);
+    if (next === null) throw new Error(`work item ${id} not found`);
+    db.run(
+      `INSERT INTO work_item_event
+         (item_id, version, at, from_state, to_state, event, kind, reason, payload_digest, actor)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        next.version,
+        record.now ?? Date.now(),
+        current.state,
+        next.state,
+        event,
+        record.kind ?? "transition",
+        record.reason ?? null,
+        record.payloadDigest ?? null,
+        record.actor ?? null,
+      ],
+    );
+    journal(
+      `transition ${next.linearIdentifier} ${current.state} --${event}--> ${next.state} v${next.version}`,
+    );
+    return next;
+  });
+}
+
+/** One committed transition of a work item, from `work_item_event`. */
+export type WorkItemEventRow = {
+  id: number;
+  itemId: string;
+  version: number;
+  at: number;
+  fromState: WorkItemState;
+  toState: WorkItemState;
+  event: WorkItemEvent;
+  kind: WorkItemEventKind;
+  reason: string | null;
+  payloadDigest: string | null;
+  actor: string | null;
+};
+
+/** An item's history, oldest first. `limit` keeps the newest rows. */
+export function listWorkItemEventRows(
+  db: Database,
+  itemId: string,
+  limit = 200,
+): WorkItemEventRow[] {
+  return db
+    .query<
+      {
+        id: number;
+        item_id: string;
+        version: number;
+        at: number;
+        from_state: WorkItemState;
+        to_state: WorkItemState;
+        event: WorkItemEvent;
+        kind: WorkItemEventKind;
+        reason: string | null;
+        payload_digest: string | null;
+        actor: string | null;
+      },
+      [string, number]
+    >(
+      `SELECT * FROM (SELECT * FROM work_item_event WHERE item_id = ? ORDER BY id DESC LIMIT ?)
+       ORDER BY id`,
+    )
+    .all(itemId, limit)
+    .map((row) => ({
+      id: row.id,
+      itemId: row.item_id,
+      version: row.version,
+      at: row.at,
+      fromState: row.from_state,
+      toState: row.to_state,
+      event: row.event,
+      kind: row.kind,
+      reason: row.reason,
+      payloadDigest: row.payload_digest,
+      actor: row.actor,
+    }));
 }
 
 export function configureWorkItem(
