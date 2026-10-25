@@ -1,7 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
-import { migrate, migrations, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import {
+  insertQueuedItem,
+  migrate,
+  migrations,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+} from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerLogin } from "../src/runner-login";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
@@ -340,4 +346,27 @@ test("migration 091 drops member accounts and asks their runners to sign in agai
   ]);
   expect(db.query("SELECT user_id FROM agent_model_catalog").all()).toEqual([{ user_id: "owner" }]);
   expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+});
+
+test("a sign-in refused while the runner works says why", async () => {
+  const f = fixture();
+  insertQueuedItem(f.db, { id: "busy-item", now: 0 });
+  f.db.run(
+    "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('busy-run','busy-item','implement','claude','active',0,0)",
+  );
+  f.db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES('busy-run',?,?,1,0,'busy-command',?)",
+    [f.runnerId, f.owner.workspaceId, Date.now() + 60_000],
+  );
+  const response = (await f.login.browser(
+    new Request(`https://paws.example.invalid/api/runners/${f.runnerId}/accounts/grok/login`, {
+      method: "POST",
+    }),
+    f.owner,
+  ))!;
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({
+    error: "This runner is working on a task. Sign in once its work has finished.",
+  });
+  expect(f.db.query("SELECT 1 FROM runner_login").get()).toBeNull();
 });
