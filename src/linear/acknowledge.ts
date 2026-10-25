@@ -9,11 +9,23 @@ export const FIRST_ACTIVITY_BODY = "Picked up this issue.";
 
 export class LinearIntakePendingError extends Error {}
 
-export class LinearIntakeRefusedError extends Error {}
+export class LinearIntakeRefusedError extends Error {
+  /** True when Paws already told the session what happens next, so no error activity follows. */
+  readonly quiet: boolean;
+  constructor(message: string, options: { quiet?: boolean } = {}) {
+    super(message);
+    this.quiet = options.quiet === true;
+  }
+}
 
 export type IntakeDecision =
   | { outcome: "accepted" }
-  | { outcome: "refused" | "retry"; reason: string };
+  | {
+      outcome: "refused" | "retry";
+      reason: string;
+      /** The session already has its next step (a sign-in action), so post no error. */
+      quiet?: boolean;
+    };
 
 export function linearReadRetry(error: unknown): { outcome: "retry"; reason: string } {
   if (error instanceof LinearRateLimitError || error instanceof LinearEntityNotFoundError)
@@ -76,6 +88,7 @@ export async function acknowledgeNewSession(
     if (options.signal?.aborted) throw error;
     if (error instanceof LinearIntakeRefusedError) {
       if (
+        !error.quiet &&
         event.action === "created" &&
         event.sessionId !== null &&
         (first || options.acknowledgedOnArrival === true || options.reportFailure === false)

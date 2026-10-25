@@ -11,6 +11,8 @@ export type LinearIssueOwnership = {
   /** The issue's page in Linear, when the read included it. */
   url?: string;
   teamId: string;
+  /** The team's display name, when the read included it. */
+  teamName?: string;
   assigneeId: string | null;
   delegateId: string | null;
   projectId?: string | null;
@@ -42,7 +44,7 @@ export interface LinearIssueLifecycle {
 }
 
 const ISSUE = `query IssueOwnership($id: String!) {
-  issue(id: $id) { id identifier url team { id } state { type } assignee { id } delegate { id } project { id } }
+  issue(id: $id) { id identifier url team { id name } state { type } assignee { id } delegate { id } project { id } }
 }`;
 
 const PAGE = "pageInfo { hasNextPage endCursor }";
@@ -118,6 +120,9 @@ function createUnlabelledLifecycle(
       ...(readString(issue, "identifier") ? { identifier: readString(issue, "identifier")! } : {}),
       ...(readString(issue, "url") ? { url: readString(issue, "url")! } : {}),
       teamId,
+      ...(readString(child(issue, "team") ?? {}, "name")
+        ? { teamName: readString(child(issue, "team")!, "name")! }
+        : {}),
       stateType,
       assigneeId: nullableOwner(issue, "assignee"),
       delegateId: nullableOwner(issue, "delegate"),
