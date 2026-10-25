@@ -2859,7 +2859,87 @@ ALTER TABLE member_vm ADD COLUMN enrollments_tracked INTEGER NOT NULL DEFAULT 1
 UPDATE member_vm SET enrollments_tracked=0;
 `,
   },
+  {
+    // PAS-676. A write that can make a runner usable for a held delegator queues one pending
+    // `runner_setup.check` job per hold owner it could affect: a runner enrolls, a member VM
+    // reaches ready, a runner heartbeats back online, an agent becomes ready, or sharing turns
+    // on. A shared runner may serve any holder whose project it leads, so it wakes every holder,
+    // and the job checks each hold. Nothing is queued while no hold exists. `run_at` 0 makes the
+    // job due at once whatever the caller's clock. A hold remembers its run, and a released hold
+    // leaves `runner_setup_resume` so the start picks that run up again.
+    id: "144_runner_setup_check",
+    sql: `
+ALTER TABLE runner_setup_hold ADD COLUMN run_id TEXT;
+CREATE TABLE runner_setup_resume (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  run_id TEXT NOT NULL REFERENCES run(id),
+  released_at INTEGER NOT NULL
+) STRICT;
+CREATE TRIGGER runner_setup_resume_ends AFTER UPDATE OF cancel_requested ON work_item
+WHEN NEW.cancel_requested=1
+BEGIN
+  DELETE FROM runner_setup_resume WHERE item_id=NEW.id;
+END;
+CREATE TRIGGER runner_setup_check_enrolled AFTER INSERT ON runner
+WHEN EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+${runnerSetupCheckSql("NEW.id")}
+END;
+CREATE TRIGGER runner_setup_check_online AFTER UPDATE OF last_seen_at ON runner
+WHEN (OLD.last_seen_at IS NULL OR NEW.last_seen_at-OLD.last_seen_at>=60000)
+  AND EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+${runnerSetupCheckSql("NEW.id")}
+END;
+CREATE TRIGGER runner_setup_check_agent_added AFTER INSERT ON runner_agent_policy
+WHEN NEW.ready=1 AND NEW.auth_expired=0 AND EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+${runnerSetupCheckSql("NEW.runner_id")}
+END;
+CREATE TRIGGER runner_setup_check_agent_ready AFTER UPDATE OF ready,auth_expired ON runner_agent_policy
+WHEN NEW.ready=1 AND NEW.auth_expired=0 AND (OLD.ready<>1 OR OLD.auth_expired<>0)
+  AND EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+${runnerSetupCheckSql("NEW.runner_id")}
+END;
+CREATE TRIGGER runner_setup_check_shared AFTER INSERT ON runner_policy
+WHEN NEW.sharing=1 AND EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+${runnerSetupCheckSql("NEW.runner_id")}
+END;
+CREATE TRIGGER runner_setup_check_sharing AFTER UPDATE OF sharing ON runner_policy
+WHEN NEW.sharing=1 AND OLD.sharing<>1 AND EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+${runnerSetupCheckSql("NEW.runner_id")}
+END;
+CREATE TRIGGER runner_setup_check_vm_ready AFTER UPDATE OF step ON member_vm
+WHEN NEW.step='ready' AND OLD.step<>'ready' AND EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+${runnerSetupCheckSql("NEW.runner_id", "NEW.user_id")}
+END;
+`,
+  },
 ];
+
+/**
+ * The trigger body for migration 144: one pending `runner_setup.check` job (`JOB_KIND` in core)
+ * for each hold owner the runner may now serve, unless that owner already has one pending.
+ * `owner` names a person directly, for a member VM whose runner may not be linked yet.
+ */
+function runnerSetupCheckSql(runner: string, owner?: string): string {
+  const serves = [
+    `h.owner_user_id=(SELECT r.owner_user_id FROM runner r WHERE r.id=${runner})`,
+    `EXISTS(SELECT 1 FROM runner_policy p WHERE p.runner_id=${runner} AND p.sharing=1)`,
+    ...(owner ? [`h.owner_user_id=${owner}`] : []),
+  ].join(" OR ");
+  return `INSERT INTO job(queue,payload,run_at,max_attempts,created_at)
+  SELECT 'runner_setup.check',json_object('ownerUserId',owners.id),0,3,
+    CAST(strftime('%s','now') AS INTEGER)*1000
+  FROM (SELECT DISTINCT h.owner_user_id AS id FROM runner_setup_hold h
+    WHERE h.owner_user_id IS NOT NULL AND (${serves})) owners
+  WHERE NOT EXISTS(SELECT 1 FROM job j WHERE j.queue='runner_setup.check' AND j.status='pending'
+    AND json_extract(j.payload,'$.ownerUserId')=owners.id);`;
+}
 
 /**
  * 135 drops the GitHub sign-in tables. Every start before 135 moves a waiting sign-in to the
