@@ -11,6 +11,7 @@ export async function createWorkspaceAccessFromLinear(options: {
   db: Database;
   assignments?: WorkspaceAssignments;
   onboardingReadiness?: OnboardingReadinessReader;
+  createVmAvailable?: () => Promise<boolean>;
   publicUrl: string;
   clientId: string;
   memberships: LinearMembershipReads;
