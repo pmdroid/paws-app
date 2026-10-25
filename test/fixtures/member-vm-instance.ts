@@ -2,8 +2,7 @@
 // in-memory fakes. Enrollment still goes through POST /api/runner-enrollments with the token Paws
 // minted, so the runner that appears is owned by the member who pressed Create VM.
 // PAWS_FIXTURE_NO_EXE_DEV=1 starts it without the fakes and without an exe.dev token.
-// Commands on stdin: fail-install, heartbeat, task (a running task on the member's runner),
-// snapshot, stop.
+// Commands on stdin: fail-install, heartbeat, snapshot, stop.
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

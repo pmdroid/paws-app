@@ -127,7 +127,6 @@ export function createFakeExeDev(): FakeExeDev {
       try {
         failIfScripted("deleteVm", vm);
       } catch (error) {
-        // The real client maps exe.dev's "not found" to `missing` the same way.
         if (error instanceof ProvisioningError && error.code === "missing") return "missing";
         throw error;
       }

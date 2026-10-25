@@ -142,7 +142,6 @@ export type MemberVmDeleteStep = "drain" | "tailnet" | "revoke" | "destroy" | "c
 export type MemberVm = {
   id: string;
   vmName: string;
-  /** The member who created the VM, and their name. */
   userId?: string;
   ownerName?: string | null;
   step: "create" | "install" | "enroll" | "health" | "ready";
@@ -153,7 +152,6 @@ export type MemberVm = {
     state: StepState;
     elapsedMs: number | null;
   }[];
-  /** Delete VM progress once it is confirmed. */
   deleting?: {
     step: MemberVmDeleteStep;
     failure: string | null;
@@ -162,7 +160,6 @@ export type MemberVm = {
     steps: { step: MemberVmDeleteStep; state: StepState; elapsedMs: number | null }[];
   } | null;
 };
-/** `vms` lists every VM the caller may delete: their own, or all of them for an owner or admin. */
 export type MemberVmState =
   | { available: false }
   | { available: true; vm: MemberVm | null; vms?: MemberVm[] };
@@ -192,14 +189,12 @@ function deleteButton(vm: MemberVm, busy: boolean): string {
   return `<button class="btn" data-vm-delete="${esc(vm.id)}" aria-haspopup="dialog" data-focus="vm-delete:${esc(vm.id)}"${busy ? " disabled" : ""}>Delete VM</button>`;
 }
 
-/** The confirmation Delete VM opens. It names the VM and what deleting it does. */
 export function memberVmDeleteDialogMarkup(vm: MemberVm, view: { busy: boolean }): string {
   const name = esc(vm.vmName);
   const disabled = view.busy ? " disabled" : "";
   return `<dialog id="vm-delete-dialog" aria-labelledby="vm-delete-heading" aria-describedby="vm-delete-detail"><div class="dialog-body"><h2 id="vm-delete-heading">Delete VM <span class="mono">${name}</span>?</h2><p id="vm-delete-detail"><b class="mono">${name}</b> will be destroyed on exe.dev, with everything on its disk, and its runner removed from Paws.</p><p class="muted">A task running on the runner stops the delete and is named here. You can then wait for it or force the delete, which stops the task.</p><div class="settings-actions"><button class="btn" data-vm-delete-cancel data-focus="vm-delete-cancel">Cancel</button><button class="btn primary" data-vm-delete-confirm="${esc(vm.id)}" data-focus="vm-delete-confirm"${disabled}>Delete VM</button></div></div></dialog>`;
 }
 
-/** Delete VM progress: each step with its state and time, the failure or blocking tasks, Retry. */
 export function memberVmDeleteMarkup(vm: MemberVm, view: { busy: boolean; title: string }): string {
   const deleting = vm.deleting!;
   const id = esc(vm.id);
@@ -239,16 +234,11 @@ export function memberVmDeleteMarkup(vm: MemberVm, view: { busy: boolean; title:
   return `<section class="runner-section" data-member-vm-delete="${esc(deleting.step)}" aria-labelledby="vm-delete-progress-${id}"><div class="between"><h2 id="vm-delete-progress-${id}" tabindex="-1" data-focus="vm-delete-progress:${id}">${esc(view.title)} <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM delete steps">${rows}</ul>${actions}</section>`;
 }
 
-/** On a runner's page: the exe.dev VM behind it, with Delete VM or the delete's progress. */
 export function runnerVmMarkup(vm: MemberVm, view: { busy: boolean }): string {
   if (vm.deleting) return memberVmDeleteMarkup(vm, { busy: view.busy, title: "Deleting VM" });
   return `<section class="runner-section" aria-labelledby="runner-vm-${esc(vm.id)}"><div class="between"><h2 id="runner-vm-${esc(vm.id)}">exe.dev VM <span class="mono">${esc(vm.vmName)}</span></h2>${deleteButton(vm, view.busy)}</div><p class="muted">Created with Create VM. Deleting it destroys the VM on exe.dev and removes this runner from Paws.</p></section>`;
 }
 
-/**
- * For a workspace owner or admin: other members' Create VM VMs, with or without a runner, each
- * with Delete VM, or its delete progress once confirmed.
- */
 export function memberVmsMarkup(vms: readonly MemberVm[], view: { busy: boolean }): string {
   if (vms.length === 0) return "";
   const rows = vms
@@ -1075,7 +1065,6 @@ export function createRunners() {
   let hostName = "";
   let enrollment: HostEnrollment | null = null;
   let memberVm: MemberVmState = { available: false };
-  /** The VM whose Delete VM confirmation is open. */
   let confirmingDelete: string | null = null;
   let busy = false;
   let feedback = "";
@@ -1106,7 +1095,6 @@ export function createRunners() {
     memberVm = { available: false };
     confirmingDelete = null;
   }
-  /** Every VM the member may delete, their own first. */
   function deletableVms(): MemberVm[] {
     const state = memberVm;
     if (!state.available) return [];
@@ -1426,7 +1414,6 @@ export function createRunners() {
         confirmingDelete = null;
         void change(async () => {
           memberVm = await api<MemberVmState>("/api/runners/vm/delete", { id });
-          // The progress section reports each step, so focus moves to its heading.
           refocus(`vm-delete-progress:${id}`);
         }, false);
       });

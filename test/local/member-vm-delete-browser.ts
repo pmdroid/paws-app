@@ -1,7 +1,3 @@
-// Delete VM on the Runners page against a real Paws with the fake exe.dev client and bootstrap.
-// Creates a VM to ready, opens Delete VM and its confirmation, finds a running task blocking the
-// delete, forces it, waits for the VM and runner to go, then creates a VM with the same name.
-// Usage: bun run build:status && bun --no-env-file test/local/member-vm-delete-browser.ts [evidence-directory]
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -126,19 +122,16 @@ async function pageFor(
   page.setDefaultTimeout(15_000);
   page.on("pageerror", (error) => errors.push(`${identity}: ${error.message}`));
   await page.goto(`${manifest.origin}/status/runners`);
-  // Observers get the list without the member controls.
   if (identity !== "observer")
     await page.getByRole("button", { name: "Add a host", exact: true }).waitFor();
   else await page.locator("[data-runner-row]").first().waitFor();
   return page;
 }
 
-/** Desktop and 390 px screenshots; the narrow one must not scroll sideways. */
 async function capture(page: Page, name: string) {
   await page.screenshot({ path: join(output, `${name}.png`), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(200);
-  // The callback runs in the page; this file type-checks without the DOM library.
   const overflow = await page.evaluate(() => {
     const view = globalThis as unknown as {
       document: { documentElement: { scrollWidth: number } };
@@ -185,7 +178,6 @@ try {
   const vmName = created.vm[0]!.vmName;
   observe("the VM is ready", vmName);
 
-  // A workspace admin sees Ada's VM under Members' VMs, with its own Delete VM.
   const admin = await pageFor(browser, manifest, "admin");
   const listed = admin.locator(`[data-member-vm-other] >> text=${vmName}`);
   await listed.waitFor();

@@ -6,11 +6,9 @@ import { workspaceId as mintId } from "../workspace";
 export const MEMBER_VM_QUEUE = "member_vm.provision";
 export const MEMBER_VM_DELETE_QUEUE = "member_vm.delete";
 
-/** Delete VM runs these in order. After `clear` the row is gone. */
 export const MEMBER_VM_DELETE_STEPS = ["drain", "tailnet", "revoke", "destroy", "clear"] as const;
 export type MemberVmDeleteStep = (typeof MEMBER_VM_DELETE_STEPS)[number];
 
-/** A task that keeps Delete VM from draining the runner until it ends or the delete is forced. */
 export type MemberVmBlockingTask = { itemId: string; identifier: string; title: string };
 
 export const MEMBER_VM_STEPS = ["create", "install", "enroll", "health", "ready"] as const;
@@ -35,18 +33,13 @@ export type MemberVm = {
   readyAt: number | null;
   createdAt: number;
   updatedAt: number;
-  /** Null until Delete VM is confirmed; then the delete step the job is on. */
   deleteStep: MemberVmDeleteStep | null;
-  /** The runner the delete removes, kept after the revoke clears `runnerId`. */
   deleteRunnerId: string | null;
   deleteRequestedBy: string | null;
-  /** 1 when running tasks are stopped instead of blocking the delete. */
   deleteForce: number;
   deleteStepStartedAt: number | null;
-  /** JSON: when each delete step began. */
   deleteAt: string | null;
   deleteFailure: string | null;
-  /** JSON `MemberVmBlockingTask[]` while running tasks block the delete. */
   deleteBlocked: string | null;
 };
 
@@ -137,7 +130,6 @@ export function retryMemberVm(db: Database, input: MemberRef & { now?: number })
   });
 }
 
-/** Delete VM refuses with this; the route answers 403. */
 export class MemberVmDeleteDenied extends Error {
   constructor() {
     super("Only the VM's owner or a workspace owner or admin can delete this VM.");
@@ -145,7 +137,6 @@ export class MemberVmDeleteDenied extends Error {
   }
 }
 
-/** The VM is not in the caller's workspace, or is already gone; the route answers 404. */
 export class MemberVmMissing extends Error {
   constructor() {
     super("This VM no longer exists.");
@@ -153,7 +144,6 @@ export class MemberVmMissing extends Error {
   }
 }
 
-/** The VM's owner, or an active workspace owner or admin. Observers and other members may not. */
 export function mayDeleteMemberVm(db: Database, row: MemberVm, requester: MemberRef): boolean {
   if (row.workspaceId !== requester.workspaceId) return false;
   const member = db
@@ -165,7 +155,6 @@ export function mayDeleteMemberVm(db: Database, row: MemberVm, requester: Member
   return row.userId === requester.userId || member.role === "owner" || member.role === "admin";
 }
 
-/** The VMs in the workspace this member may delete: their own, or every one for an owner or admin. */
 export function listDeletableMemberVms(db: Database, requester: MemberRef): MemberVm[] {
   return db
     .query<MemberVm, [string]>(
@@ -175,11 +164,6 @@ export function listDeletableMemberVms(db: Database, requester: MemberRef): Memb
     .filter((row) => mayDeleteMemberVm(db, row, requester));
 }
 
-/**
- * Confirms Delete VM, or retries a failed or blocked one. Provisioning stops, the step starts at
- * `drain`, and one delete job is queued. `force` stops the tasks running on the runner; once set
- * it stays set for this delete.
- */
 export function startMemberVmDelete(
   db: Database,
   input: MemberRef & { id: string; force?: boolean; now?: number },
@@ -197,8 +181,6 @@ export function startMemberVmDelete(
         delete_blocked=NULL,updated_at=? WHERE id=?`,
         [input.userId, force, now, now, now, row.id],
       );
-      // Provisioning starts no further step. A step already running keeps its claim and finishes,
-      // so its outcome is recorded; the delete job waits for it before deciding what to remove.
       db.run(
         `UPDATE job SET status='cancelled',finished_at=?,locked_by=NULL,locked_until=NULL,
         last_error='member VM deleted' WHERE queue=? AND status='pending'

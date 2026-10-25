@@ -56,12 +56,10 @@ export type ExeDevExecOptions = {
   timeoutMs?: number;
 };
 
-/** `deleted` when exe.dev removed the VM; `missing` when it had no VM by that name. Both mean gone. */
 export type ExeDevDeleteResult = "deleted" | "missing";
 
 export type ExeDev = {
   createVm(name: string): Promise<ExeDevCreatedVm>;
-  /** Sends `rm <vm>`. A VM exe.dev does not know counts as deleted and answers `missing`. */
   deleteVm(name: string): Promise<ExeDevDeleteResult>;
   execVm(name: string, command: string, options?: ExeDevExecOptions): Promise<ExeDevExecResult>;
   getVm(name: string): Promise<ExeDevVm>;

@@ -2826,9 +2826,6 @@ ALTER TABLE github_attribution_request ADD COLUMN return_path TEXT CHECK (
 `,
   },
   {
-    // PAS-687. Delete VM: the step the delete job is on, the runner it removes (member_vm.runner_id
-    // is cleared once that runner is revoked), who asked, whether running tasks are stopped, when
-    // each step began (JSON), the stored failure, and the tasks that block it (JSON).
     id: "141_member_vm_delete",
     sql: `
 ALTER TABLE member_vm ADD COLUMN delete_step TEXT
@@ -2844,9 +2841,6 @@ ALTER TABLE member_vm ADD COLUMN delete_blocked TEXT
 `,
   },
   {
-    // PAS-687. The enrollment tokens Create VM minted for each VM, by the same hash as
-    // runner_enrollment.token_hash. Delete VM finds a runner the VM enrolled through them even when
-    // Paws stopped before member_vm.runner_id was written, and nothing a member paired by hand.
     id: "139_member_vm_enrollment",
     sql: `
 CREATE TABLE member_vm_enrollment (

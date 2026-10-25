@@ -60,9 +60,6 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
   return async (job: Job, context: JobContext): Promise<void> => {
     const id = memberVmId(job.payload);
     const row = id === null ? null : getMemberVm(db, id);
-    // Once Delete VM is confirmed no new step starts. A step already running still records what
-    // it did (the VM exe.dev created or refused, the runner that enrolled): the delete waits for
-    // it and relies on that to decide what is Paws's to remove.
     if (row === null || row.failure !== null || row.step === "ready" || row.deleteStep !== null)
       return;
     const minted: string[] = [];
@@ -85,7 +82,6 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
       return;
     }
     if (outcome.next === "done" || !context.isCurrent()) return;
-    // Delete VM waits for this step and starts no new one: the job ends here.
     if (getMemberVm(db, row.id)?.deleteStep != null) return;
     const at = now();
     parkLeasedJob(db, job, {
@@ -110,7 +106,6 @@ async function runStep(
   const mint = () => {
     const enrollment = options.mintEnrollment(member, { name: vm });
     minted(enrollment.token);
-    // Recorded before the token leaves Paws, so Delete VM can find the runner it enrolls.
     db.run(
       "INSERT OR IGNORE INTO member_vm_enrollment(token_hash,member_vm_id,created_at) VALUES(?,?,?)",
       [workspaceTokenHash(enrollment.token), row.id, now()],
