@@ -27,6 +27,8 @@ export type Runner = {
   id: string;
   name: string;
   ownerUserId: string;
+  /** The owner's display name; older Paws releases do not send it. */
+  ownerName?: string | null;
   status: RunnerStatus;
   metrics: {
     cpuPercent: number | null;
@@ -133,6 +135,81 @@ export type HostEnrollment = {
     allowedRepositories: readonly string[];
   } | null;
 };
+
+/** The member's exe.dev VM as `GET /api/runners/vm` describes it. */
+export type MemberVm = {
+  id: string;
+  vmName: string;
+  step: "create" | "install" | "enroll" | "health" | "ready";
+  failure: string | null;
+  runnerId: string | null;
+  steps: {
+    step: "create" | "install" | "enroll" | "health";
+    state: "done" | "running" | "failed" | "pending";
+    elapsedMs: number | null;
+  }[];
+};
+export type MemberVmState = { available: false } | { available: true; vm: MemberVm | null };
+
+const VM_STEPS: Record<MemberVm["steps"][number]["step"], string> = {
+  create: "Create the VM",
+  install: "Install the runner",
+  enroll: "Pair with Paws",
+  health: "First heartbeat",
+};
+const VM_STATES: Record<MemberVm["steps"][number]["state"], [string, string]> = {
+  done: ["ok", "Done"],
+  running: ["running", "Running"],
+  failed: ["bad", "Failed"],
+  pending: ["", "Waiting"],
+};
+
+/** The member's VM: each step with its state and time, the stored error and Retry. */
+export function memberVmMarkup(
+  vm: MemberVm,
+  view: { busy: boolean; runner: Pick<Runner, "id" | "name" | "status"> | null },
+): string {
+  const removed = vm.step === "ready" && (view.runner === null || view.runner.status === "revoked");
+  const ready = vm.step === "ready" && !removed;
+  const rows = vm.steps
+    .map((entry) => {
+      const [tone, label] = VM_STATES[entry.state];
+      const time =
+        entry.elapsedMs === null
+          ? ""
+          : `<span class="muted" data-vm-elapsed>${esc(durationLabel(entry.elapsedMs))}</span>`;
+      const error =
+        entry.state === "failed"
+          ? `<p class="runner-skill-error" role="alert">${esc(vm.failure ?? "The step failed without a reason.")}</p>`
+          : "";
+      return `<li class="runner-skill" data-vm-step="${esc(entry.step)}" data-vm-state="${esc(entry.state)}"><span class="runner-skill-name"><b>${esc(VM_STEPS[entry.step])}</b>${time}</span><span class="tag ${tone}">${esc(label)}</span>${error}</li>`;
+    })
+    .join("");
+  const disabled = view.busy ? " disabled" : "";
+  const retry =
+    vm.failure !== null
+      ? `<button class="btn primary" data-vm-retry data-focus="vm-retry"${disabled}>Retry</button>`
+      : removed
+        ? `<button class="btn primary" data-vm-create data-focus="vm-create"${disabled}>Pair again</button>`
+        : "";
+  const status = removed
+    ? "<p>The runner on this VM was removed. Pair again to enroll the VM as a new runner.</p>"
+    : ready
+      ? view.runner
+        ? `<p>The runner is ready and owned by you. <a href="${esc(routeHref({ view: "runners", id: view.runner.id }))}" data-focus="vm-open">Open ${esc(view.runner.name)}</a> to sign in to Claude and Codex.</p>`
+        : "<p>The runner is ready and owned by you.</p>"
+      : vm.failure === null
+        ? '<p class="muted">Paws creates the VM, installs the runner and pairs it to you. This takes a few minutes.</p>'
+        : '<p class="muted">Retry resumes from the failed step.</p>';
+  const pill = removed
+    ? '<span class="tag warn">Removed</span>'
+    : ready
+      ? '<span class="tag ok">Ready</span>'
+      : vm.failure === null
+        ? '<span class="tag running">Setting up</span>'
+        : '<span class="tag bad">Failed</span>';
+  return `<section class="runner-section" data-member-vm="${esc(vm.step)}" aria-labelledby="member-vm-heading"><div class="between"><h2 id="member-vm-heading" tabindex="-1" data-focus="vm-heading">Your VM <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM setup steps">${rows}</ul>${retry}</section>`;
+}
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -394,6 +471,7 @@ export function runnerRowMarkup(
     runner.metrics
       ? `Seen ${seenLabel(runner.metrics.reportedAt, view.now).replace(/^Just now$/, "just now")}`
       : "Never reported",
+    runner.ownerName ? `Owned by ${runner.ownerName}` : "",
     os,
     runner.version ? `Runner ${runner.version}` : "",
     runner.slots && runner.status !== "revoked"
@@ -880,6 +958,7 @@ export function createRunners() {
   let addingHost = false;
   let hostName = "";
   let enrollment: HostEnrollment | null = null;
+  let memberVm: MemberVmState = { available: false };
   let busy = false;
   let feedback = "";
   let error = "";
@@ -906,6 +985,7 @@ export function createRunners() {
     usageRunner = null;
     addingHost = false;
     enrollment = null;
+    memberVm = { available: false };
   }
   /** Any active member who is not an observer may add a host, and owns it. */
   function addsHosts() {
@@ -974,6 +1054,13 @@ export function createRunners() {
         ),
       ]);
       if (current !== generation) return;
+      // Observers cannot create a VM, so they never ask; a failed refresh keeps the last state.
+      const vm: MemberVmState =
+        identity.role === "observer"
+          ? { available: false }
+          : await api<MemberVmState>("/api/runners/vm").catch(() => memberVm);
+      if (current !== generation) return;
+      memberVm = vm;
       runners = list.runners;
       loaded = true;
       serverVersion = list.serverVersion ?? null;
@@ -1000,6 +1087,7 @@ export function createRunners() {
         session = null;
         addingHost = false;
         enrollment = null;
+        memberVm = { available: false };
       }
     } finally {
       if (current === generation) {
@@ -1048,7 +1136,21 @@ export function createRunners() {
     const empty = addsHosts()
       ? "<p>No runners are paired. Select <b>Add a host</b> to connect a Linux host.</p>"
       : "<p>No runners are paired. A workspace member adds a Linux host with <b>Add a host</b>.</p>";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${addsHosts() ? `<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a host</button>` : ""}</div>${adding ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}`;
+    const vm = addsHosts() && memberVm.available ? memberVm.vm : null;
+    const createVm =
+      addsHosts() && memberVm.available && memberVm.vm === null
+        ? `<button class="btn" data-vm-create data-focus="vm-create"${disabled}>Create VM</button>`
+        : "";
+    const actions = addsHosts()
+      ? `<div class="settings-actions">${createVm}<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a host</button></div>`
+      : "";
+    const vmSection = vm
+      ? memberVmMarkup(vm, {
+          busy,
+          runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
+        })
+      : "";
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1143,6 +1245,19 @@ export function createRunners() {
       box.addEventListener("change", () =>
         savePolicy(box.dataset.runnerSharing!, { sharing: box.checked }),
       );
+    root!.querySelector("[data-vm-create]")?.addEventListener("click", () => {
+      void change(async () => {
+        memberVm = await api<MemberVmState>("/api/runners/vm", {});
+        feedback = "Paws is creating your VM.";
+        refocus("vm-heading");
+      }, false);
+    });
+    root!.querySelector("[data-vm-retry]")?.addEventListener("click", () => {
+      void change(async () => {
+        memberVm = await api<MemberVmState>("/api/runners/vm/retry", {});
+        feedback = "Paws is retrying the failed step.";
+      }, false);
+    });
     root!.querySelector<HTMLElement>("[data-runner-add]")?.addEventListener("click", () => {
       addingHost = true;
       enrollment = null;
