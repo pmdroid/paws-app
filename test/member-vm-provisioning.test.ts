@@ -5,7 +5,12 @@ import {
   type MemberVmProvisioningSource,
   type MemberVmRunnerControl,
 } from "../src/member-vm";
-import { createFakeExeDev, isBootstrapError, PINNED_MISE } from "../src/provisioning";
+import {
+  createFakeExeDev,
+  isBootstrapError,
+  latestRunnerRelease,
+  PINNED_MISE,
+} from "../src/provisioning";
 
 const INSTALLER = readFileSync(
   new URL("../deploy/linux/install-runner.sh", import.meta.url),
@@ -32,6 +37,7 @@ function source(overrides: Partial<MemberVmProvisioningSource> = {}) {
     publicUrl: "https://paws.example.invalid",
     repositories: () => ["acme/app"],
     runnerControl: async () => control,
+    latestRelease: async () => null,
     exeDev,
     ...overrides,
   };
@@ -59,7 +65,7 @@ test("each missing prerequisite is named before any exe.dev call", async () => {
           mintEnrollment: () => ({ token: "x", expiresAt: 0 }),
         }),
       },
-      /installed Paws release/,
+      /latest runner release/,
     ],
     [{ installer: () => null }, /install-runner\.sh/],
   ];
@@ -84,4 +90,30 @@ test("the bootstrap points the VM at this Paws and the runner API port", async (
   expect(staged).toContain('"runnerApiUrl":"https://paws.example.invalid:8788"');
   expect(staged).toContain('"allowedRepositories":["acme/app"]');
   expect(staged).toContain("'1.4.0'");
+});
+
+test("a source checkout installs the latest runner release on the VM", async () => {
+  const { value, exeDev, control } = source({ latestRelease: async () => "0.1.40" });
+  control.serverVersion = null;
+  const provisioning = await createMemberVmProvisioning(value)();
+  await provisioning.bootstrap.startInstall(VM, "t".repeat(43)).catch(() => undefined);
+  const commands = exeDev.calls.map((call) => (call.operation === "execVm" ? call.command : ""));
+  expect(commands.some((command) => command.includes("'0.1.40'"))).toBe(true);
+});
+
+test("the latest runner release is read from the GitHub release tag", async () => {
+  const urls: string[] = [];
+  const reply = (status: number, body: unknown) => async (url: string) => {
+    urls.push(url);
+    return new Response(JSON.stringify(body), { status });
+  };
+  expect(await latestRunnerRelease(reply(200, { tag_name: "v0.1.40" }))).toBe("0.1.40");
+  expect(urls).toEqual(["https://api.github.com/repos/pmdroid/paws-app/releases/latest"]);
+  expect(await latestRunnerRelease(reply(200, { tag_name: "nightly" }))).toBeNull();
+  expect(await latestRunnerRelease(reply(404, { message: "Not Found" }))).toBeNull();
+  expect(
+    await latestRunnerRelease(async () => {
+      throw new Error("offline");
+    }),
+  ).toBeNull();
 });
