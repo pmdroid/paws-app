@@ -18,14 +18,49 @@ export const TASK_ACCESS_TTL_MS = 5 * 60_000;
 
 export type GitHubInstallationPhase = "initial" | "publication";
 
+/**
+ * A refusal that says why. The reason ends the Linear session in place of the default
+ * "Cancelled from Linear." response.
+ */
+export type GitHubDenial = { denied: true; reason: string };
+
+type Denied = { denied: true; reason: string | null };
+
+/** The team has no repository Paws may use: no mapping and none in the catalog. */
+export function noRepositoryDenial(team: string, administrators: readonly string[]): GitHubDenial {
+  return {
+    denied: true,
+    reason: `${team} has no repository in Paws yet. Ask ${people(administrators)} to map one in Integrations, then delegate again.`,
+  };
+}
+
+/** The team has repository mappings, and the item's repository is not one of them. */
+export function unmappedRepositoryDenial(repository: string, team: string): GitHubDenial {
+  return { denied: true, reason: `${repository} isn't mapped to ${team} in Paws.` };
+}
+
+/** The delegator is not in the issue's team in Paws, or is an observer. */
+export function notTeamMemberDenial(team: string): GitHubDenial {
+  return { denied: true, reason: `You're not a member of ${team} in Paws.` };
+}
+
+function people(names: readonly string[]): string {
+  const unique = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+  if (unique.length === 0) return "a Paws owner or admin";
+  if (unique.length === 1) return unique[0]!;
+  return `${unique.slice(0, -1).join(", ")} or ${unique.at(-1)}`;
+}
+
 /** What the host knows about the workspace GitHub App installation for an item. */
 export type GitHubIntegration = {
   check(item: WorkItemRecord, signal: AbortSignal): Promise<boolean>;
-  authorize?(item: WorkItemRecord, signal: AbortSignal): Promise<boolean>;
+  /** False, or a `GitHubDenial` with its reason, cancels the item. */
+  authorize?(item: WorkItemRecord, signal: AbortSignal): Promise<boolean | GitHubDenial>;
   administrators(item: WorkItemRecord): readonly string[];
   recoveryUrl: string;
   identity(item: WorkItemRecord): string;
-  current?(item: WorkItemRecord): boolean;
+  /** False, or a `GitHubDenial` with its reason, cancels the item without a read. */
+  current?(item: WorkItemRecord): boolean | GitHubDenial;
   unavailableRetryMs?: readonly number[];
 };
 
@@ -119,8 +154,9 @@ export class GitHubInstallationCheck {
     const checkpoint = JSON.stringify(item.checkpoint);
     const runId = item.currentRunId;
     if (this.closed || signal.aborted) return false;
-    if (!this.permitted(item)) {
-      this.deny(item.id);
+    const before = this.permission(item);
+    if (before !== true) {
+      this.deny(item.id, before.reason);
       return false;
     }
     const result =
@@ -140,8 +176,13 @@ export class GitHubInstallationCheck {
       this.integration.identity(current) !== authority
     )
       return false;
-    if (!this.permitted(current) || result === "denied") {
-      this.deny(current.id);
+    const permission = this.permission(current);
+    if (permission !== true) {
+      this.deny(current.id, permission.reason);
+      return false;
+    }
+    if (typeof result === "object") {
+      this.deny(current.id, result.reason);
       return false;
     }
     if (result === "ready") return true;
@@ -157,8 +198,9 @@ export class GitHubInstallationCheck {
         this.integration.identity(latest) !== authority
       )
         return;
-      if (!this.permitted(latest)) {
-        this.deny(latest.id);
+      const latestPermission = this.permission(latest);
+      if (latestPermission !== true) {
+        this.deny(latest.id, latestPermission.reason);
         return;
       }
       if (findOpenQuestion(this.db, latest.sessionKey) !== null) return;
@@ -212,8 +254,8 @@ export class GitHubInstallationCheck {
       const item = getWorkItem(this.db, hold.item_id)!;
       const result = await this.probe(item, signal, []);
       if (this.closed || signal.aborted) return;
-      if (result === "denied") {
-        if (this.current(hold)) this.deny(item.id);
+      if (typeof result === "object") {
+        if (this.current(hold)) this.deny(item.id, result.reason);
         continue;
       }
       if (result !== "ready") {
@@ -292,7 +334,7 @@ export class GitHubInstallationCheck {
     item: WorkItemRecord,
     signal: AbortSignal,
     retryMs: readonly number[] = this.integration.unavailableRetryMs ?? [],
-  ): Promise<"ready" | "installation" | "unavailable" | "denied"> {
+  ): Promise<"ready" | "installation" | "unavailable" | Denied> {
     try {
       const result = await this.check(item, signal);
       if (result === "ready")
@@ -349,19 +391,23 @@ export class GitHubInstallationCheck {
   private async check(
     item: WorkItemRecord,
     signal: AbortSignal,
-  ): Promise<"ready" | "installation" | "denied"> {
+  ): Promise<"ready" | "installation" | Denied> {
     const ready = await this.integration.check(item, signal);
-    if (this.integration.authorize && !(await this.integration.authorize(item, signal)))
-      return "denied";
+    const authorized = this.integration.authorize
+      ? denial(await this.integration.authorize(item, signal))
+      : true;
+    if (authorized !== true) return authorized;
     return ready ? "ready" : "installation";
   }
 
-  private deny(itemId: string): void {
+  /** Cancels the item once. A reason replaces the default "Cancelled from Linear." response. */
+  private deny(itemId: string, reason: string | null = null): void {
     immediate(this.db, () => {
       applyLinearCommand(
         this.db,
         { type: "cancel", source: "linear", itemId, requestedAt: this.now() },
         this.now(),
+        reason ?? undefined,
       );
       this.revoke(itemId);
     });
@@ -408,7 +454,12 @@ export class GitHubInstallationCheck {
   }
 
   private permitted(item: WorkItemRecord): boolean {
-    return this.allowed(item) && (this.integration.current?.(item) ?? true);
+    return this.permission(item) === true;
+  }
+
+  private permission(item: WorkItemRecord): true | Denied {
+    if (!this.allowed(item)) return { denied: true, reason: null };
+    return denial(this.integration.current?.(item) ?? true);
   }
 
   private generation(item: WorkItemRecord): number {
@@ -436,6 +487,11 @@ export class GitHubInstallationCheck {
         .get(hold.question_id)?.status === "pending"
     );
   }
+}
+
+function denial(result: boolean | GitHubDenial): true | Denied {
+  if (result === true) return true;
+  return { denied: true, reason: result === false ? null : result.reason };
 }
 
 function waitingMessage(result: "unavailable" | "installation"): string {
