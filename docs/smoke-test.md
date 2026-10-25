@@ -62,15 +62,15 @@ Prepare the instance as an admin first:
 3. Invite a fresh Linear user to the workspace as a member, not a guest, and add them to the sandbox team. They must never have signed in to this Paws.
 4. Create a small issue in the sandbox team, such as "Add a `HELLO.md` that says hello."
 
-Run it as the fresh user, in a private browser window. Take a screenshot of the Linear session after each numbered step, and of the onboarding page at steps 3 to 6.
+Run it as the fresh user, in a private browser window. Take a screenshot of the Linear session after each numbered step, and of the onboarding page at steps 3 to 6. Link GitHub before the runner is ready. Paws starts without the credit link, so a later link would miss this run.
 
 1. **Delegate.** Delegate the issue to the Paws app. Within 10 seconds the session shows "Picked up this issue." Then it shows one **Sign in to Paws** action with the welcome text and the optional GitHub line. It shows no error.
 2. **Wait and reply.** Reply "Use a short file." in the session. Paws posts nothing. Wait at least 15 minutes and confirm the session still shows a single sign-in action.
 3. **Sign in.** Select the action and sign in with Linear. The browser lands on `/onboard/<link id>`. **Linear** and **Membership** are done, **Runner** is needed, and the page says how many steps remain. The session gets "You don't have a runner Paws can use yet…" once.
-4. **Runner.** Select **Create VM** and watch the four VM steps finish, or select **Add a host** and run the printed command on a Linux host. The runner step then names your runner: "<runner> will run this task."
-5. **Agent sign-in.** The **Claude and Codex** step is now needed. Select **Sign in on <runner>** and sign in to Claude and Codex on the Runners page. The step turns to **Connected**. The session posts nothing new here, because the hold already said once what was missing.
-6. **GitHub credit.** On the onboarding page, check the consent box and select **Link GitHub**. GitHub returns you to the onboarding page, which shows "Commits will credit @login." The lead says "You're set up."
-7. **Automatic start.** Without delegating again, the session shows "Starting <issue> on <runner>." The run follows the earlier reply, then Closeout runs and a pull request opens.
+4. **GitHub credit.** On the onboarding page, check the consent box and select **Link GitHub**. GitHub returns you to the onboarding page, which shows "Commits will credit @login." The session posts nothing.
+5. **Runner.** Select **Create VM** and watch the four VM steps finish, or select **Add a host** and run the printed command on a Linux host. The runner step then names your runner: "<runner> will run this task." The **Claude and Codex** step is now needed, so the task does not start yet. The session posts nothing new, because the hold already said once what was missing.
+6. **Agent sign-in and automatic start.** Select **Sign in on <runner>** and sign in to Claude and Codex on the Runners page. The step turns to **Connected**, and the onboarding page says "You're set up." Without delegating again, the session shows "Starting <issue> on <runner>." This is the step that makes the runner usable.
+7. **Run.** The run follows the earlier reply, then Closeout runs and a pull request opens.
 8. **Merged with credit.** Paws merges the pull request. Each commit has a `Co-authored-by` trailer with the fresh user's GitHub noreply address, and the pull request body credits their login.
 
 Check the edges with a second issue delegated by the same fresh user, or by a second fresh user:
