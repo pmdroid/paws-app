@@ -109,6 +109,8 @@ export {
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
+  RunnerSetupRequired,
+  type RunnerSetupNeed,
   TRANSIENT_RETRY_BASE_MS,
   isTransientFailure,
   placementWaitMs,

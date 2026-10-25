@@ -61,6 +61,7 @@ import {
 import {
   PawsShutdown,
   RunnerCapacityWait,
+  RunnerSetupRequired,
   WORKSPACE_HOOK_LIMIT,
   type WorkspaceHook,
 } from "../core";
@@ -234,6 +235,12 @@ export function createRemoteAgentRunner(options: {
     const offered: string[] = [];
     const selected = await place(itemId, placement, rejected, offered);
     if (selected) return { ...selected, offered };
+    // No runner the delegator may use, as opposed to usable runners that are busy: a first start
+    // holds the task until the delegator sets a runner up. Later runs wait as before.
+    if (offered.length === 0 && options.placement?.setupNeed && !startedWork(itemId)) {
+      const need = options.placement.setupNeed(placement);
+      if (need) throw new RunnerSetupRequired(need);
+    }
     const agent = placement.profile?.agent;
     const resetsAt = agent
       ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
@@ -261,6 +268,14 @@ export function createRemoteAgentRunner(options: {
         `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
       );
     throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
+  }
+  /** Whether any runner has already run work, not just preparation, for the item. */
+  function startedWork(itemId: string): boolean {
+    return (
+      db
+        .query("SELECT 1 FROM runner_execution_usage WHERE item_id=? AND purpose='work' LIMIT 1")
+        .get(itemId) !== null
+    );
   }
   /** Reservations per runner whose run has no runner_work row there yet. */
   function unassigned() {

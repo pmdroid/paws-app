@@ -403,6 +403,14 @@ export {
 } from "./queue-wait";
 export type { QueuePosition } from "./queue-wait";
 export { listItemHolds, saveItemHolds } from "./item-hold";
+export {
+  getRunnerSetupHold,
+  holdForRunnerSetup,
+  listRunnerSetupHolds,
+  markRunnerSetupNotified,
+  releaseRunnerSetupHold,
+} from "./runner-setup-hold";
+export type { RunnerSetupHold } from "./runner-setup-hold";
 export type { ItemHold, ItemHoldChange, ItemHoldReason } from "./item-hold";
 export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
 export {
@@ -495,6 +503,7 @@ export type {
 export {
   listRunnerAgents,
   recordRunnerAgents,
+  runnerAgentName,
   requestAllRunnerAgentUpdates,
   requestRunnerAgentUpdate,
   runnerAgentTargets,
