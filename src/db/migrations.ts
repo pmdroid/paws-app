@@ -2657,6 +2657,37 @@ CREATE TABLE agent_catalog_refresh (
 ) STRICT;
 `,
   },
+  {
+    // Each runner's coding agent versions as its heartbeat reports them (PAS-620): the current
+    // and previous version, and how the version Paws asked for is going. runner_agent_target is
+    // the version someone chose on the Runners page, sent until the runner runs it.
+    id: "132_runner_agent",
+    sql: `
+CREATE TABLE runner_agent (
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  agent TEXT NOT NULL,
+  version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('current','previous','installing','waiting','failed')),
+  error TEXT,
+  sessions INTEGER,
+  target_id TEXT,
+  reported_at INTEGER NOT NULL,
+  PRIMARY KEY (runner_id, agent, status)
+) STRICT;
+CREATE TABLE runner_agent_target (
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  agent TEXT NOT NULL,
+  id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  integrity TEXT,
+  native_version TEXT,
+  rollback INTEGER NOT NULL CHECK (rollback IN (0,1)),
+  requested_by TEXT NOT NULL,
+  requested_at INTEGER NOT NULL,
+  PRIMARY KEY (runner_id, agent)
+) STRICT;
+`,
+  },
 ];
 
 /**

@@ -21,6 +21,14 @@ import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
 import { openRunnerRuntimeInventory } from "./runtimes";
+export {
+  openRunnerAgents,
+  RUNNER_AGENT_REQUESTS,
+  RUNNER_AGENT_STATUS,
+  RUNNER_AGENTS_BASE,
+  type RunnerAgents,
+} from "./agents";
+import type { RunnerAgents } from "./agents";
 
 export {
   openRunnerRuntimeInventory,
@@ -116,6 +124,8 @@ export async function openRunnerRuntime(options: {
   broker?: RunnerBrokerClient;
   /** Installs registered skills from the heartbeat manifest and reports what is installed. */
   skills?: RunnerSkillInstaller;
+  /** Reports the coding agent versions and forwards the ones Paws asks for to the installer. */
+  agents?: RunnerAgents;
   networkGit?: Parameters<typeof createRunnerRepositories>[0]["networkGit"];
   now?: () => number;
   monotonic?: () => number;
@@ -366,11 +376,24 @@ export async function openRunnerRuntime(options: {
     pulsing = (async () => {
       const started = monotonic();
       for (const entry of active.values()) collectRuntimes(entry);
+      let agents: ReturnType<RunnerAgents["installed"]>;
+      try {
+        agents = options.agents?.installed();
+      } catch (error) {
+        report(error);
+      }
       const response = await options.daemon.heartbeat(
         options.skills?.installed(),
         runtimes.installed(),
+        agents,
       );
       if (closed) return;
+      if (response.agents && options.agents)
+        try {
+          options.agents.apply(response.agents);
+        } catch (error) {
+          report(error);
+        }
       // Downloads can take longer than a heartbeat, so they run beside the lease renewal.
       if (response.skills && options.skills)
         void options.skills.sync(response.skills).catch(report);

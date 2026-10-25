@@ -3,6 +3,7 @@ import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 import { listSkills, runnerSkillStates, type RunnerSkillView } from "./skills";
 import { listRunnerRuntimes, type RunnerRuntimeStatus } from "./runner-runtimes";
+import { listRunnerAgents, type RunnerAgentView } from "./runner-agents";
 
 export type RunnerRecord = {
   id: string;
@@ -131,6 +132,8 @@ export type RunnerOverview = RunnerRecord & {
   skills: RunnerSkillView[];
   /** Runtimes mise installed for tasks on this runner, and failed installs, as last reported. */
   runtimes: RunnerRuntimeStatus[];
+  /** Coding agent versions as last reported, and the version asked for from the Runners page. */
+  codingAgents: RunnerAgentView[];
 };
 
 export type RunnerSessionPhase = "working" | "closeout" | "fixing" | "merging";
@@ -334,6 +337,7 @@ export function listRunnerOverview(
       running: sessions.get(row.id) ?? [],
       skills: runnerSkillStates(db, row.id, pins),
       runtimes: listRunnerRuntimes(db, row.id),
+      codingAgents: listRunnerAgents(db, row.id),
     }));
 }
 
