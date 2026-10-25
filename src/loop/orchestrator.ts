@@ -339,7 +339,7 @@ import {
 import { createRepositoryGit } from "./repository-git";
 import { RUNTIME_FILES, runtimeList, type RuntimeList } from "../runtimes";
 import { questionEffects } from "./question-effects";
-import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
+import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
 import {
   interpretRepositoryAnswer,
   chooseRepository,
@@ -372,7 +372,8 @@ export type OrchestratorOptions = {
     snapshot: EpicSnapshot,
     edges: readonly DependencyEdge[],
   ) => boolean;
-  githubAuth?: HostGitHubAuth;
+  /** The workspace GitHub App installation. Repository reads and pull requests wait for it. */
+  githubInstallation?: GitHubIntegration;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
   /**
@@ -487,7 +488,7 @@ export class Orchestrator {
   private readonly updates = createUpdateLimiter(() => this.now());
   private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
   private readonly taskPlanner: ReturnType<typeof createTaskPlanner>;
-  private readonly githubAuth: GitHubAuthQuestions | null;
+  private readonly githubAuth: GitHubInstallationCheck | null;
   private readonly authRecoveryController = new AbortController();
   private authRecovery: Promise<void> | null = null;
   private readonly admission: ItemAdmission;
@@ -495,10 +496,10 @@ export class Orchestrator {
   constructor(private readonly options: OrchestratorOptions) {
     this.tracker = options.tracker ?? null;
     this.admission = options.admission ?? createAdmission({ db: options.db });
-    this.githubAuth = options.githubAuth
-      ? new GitHubAuthQuestions(
+    this.githubAuth = options.githubInstallation
+      ? new GitHubInstallationCheck(
           options.db,
-          options.githubAuth,
+          options.githubInstallation,
           () => this.now(),
           (item) =>
             !this.taskAccess() ||
@@ -2760,7 +2761,9 @@ export class Orchestrator {
         if (fresh) freshReads.add(purpose);
         const auth = this.authorization(current);
         if (auth && !(await auth.ensure(current, "publication", live.controller.signal, { fresh })))
-          throw new Error("GitHub sign-in is required before publication.");
+          throw new Error(
+            "The GitHub App installation must cover the repository before publication.",
+          );
       },
     });
     const candidate = await this.candidateForItem(item);
@@ -3212,15 +3215,8 @@ export class Orchestrator {
       }
       return this.answerVisualReview(open, review, event.dedupeKey, answer, answeredBy);
     }
-    if (open.kind === "github-auth") {
-      const accepted =
-        (await this.githubAuth?.retry(open.id, answeredBy, () => {
-          if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
-            applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
-        })) ?? false;
-      await this.flush();
-      return accepted ? "answered" : "rejected";
-    }
+    // The installation check answers its own waiting question when the App returns.
+    if (open.kind === "github-auth") return "rejected";
     if (!canAnswer({ kind: open.kind === "closeout-help" ? "closeout-bypass" : open.kind }, user))
       return "rejected";
     if (open.kind === "runner-wait" || open.kind === "closeout-help") {
@@ -4012,12 +4008,14 @@ export class Orchestrator {
         });
         const auth = this.authorization(current);
         if (auth && !(await auth.ensure(current, "initial", signal)))
-          throw new Error("GitHub sign-in is required before reading the repository.");
+          throw new Error(
+            "The GitHub App installation must cover the repository before reading it.",
+          );
       },
     });
   }
 
-  private authorization(item: WorkItemRecord): GitHubAuthQuestions | null {
+  private authorization(item: WorkItemRecord): GitHubInstallationCheck | null {
     return item.sessionKey !== null ? this.githubAuth : null;
   }
 

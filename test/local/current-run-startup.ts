@@ -14,7 +14,7 @@ import {
   OutboxDispatcher,
   saveTaskMode,
 } from "../../src/db";
-import { FakeHostGitHubAuth, Orchestrator } from "../../src/loop";
+import { Orchestrator } from "../../src/loop";
 import { migratedDatabase } from "../helpers";
 import { workspaceAdmission } from "../fake-workspace";
 
@@ -46,14 +46,12 @@ export async function probeCurrentRunStartup(root: string) {
     if (mode !== "clarified-artifact") bindWorkItemRepository(db, item.id, repository);
     let probes = 0;
     let launches = 0;
-    const host = Object.assign(new FakeHostGitHubAuth(), {
-      integration: {
-        check: async () => ++probes === 1 && mode === "artifact",
-        identity: () => "workspace-installation-repository",
-        administrators: () => [],
-        recoveryUrl: "https://paws.example/status/#/settings/integrations",
-      },
-    });
+    const host = {
+      check: async () => ++probes === 1 && mode === "artifact",
+      identity: () => "workspace-installation-repository",
+      administrators: () => [],
+      recoveryUrl: "https://paws.example/status/#/settings/integrations",
+    };
     const orchestrator = new Orchestrator({
       db,
       admission: workspaceAdmission(db),
@@ -62,7 +60,7 @@ export async function probeCurrentRunStartup(root: string) {
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: home,
       home,
-      githubAuth: host,
+      githubInstallation: host,
       repositories: [repository],
       ...(mode === "clarified-artifact"
         ? {

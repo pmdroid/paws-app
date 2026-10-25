@@ -2734,7 +2734,42 @@ CREATE TABLE runner_enrollment (
 CREATE INDEX runner_enrollment_expiry ON runner_enrollment(expires_at) WHERE used_at IS NULL;
 `,
   },
+  {
+    // PAS-642. Paws is GitHub App only, so the per-item GitHub sign-in and its account binding go.
+    // Waiting questions for a missing App installation live in github_integration_hold.
+    id: "135_drop_github_sign_in",
+    guard: requireNoOpenGitHubSignIn,
+    sql: `
+DROP TABLE linear_github_task_account;
+DROP TABLE linear_github_auth;
+`,
+  },
 ];
+
+/**
+ * 135 drops the GitHub sign-in tables. Every start before 135 moves a waiting sign-in to the
+ * installation check, so an open one means the previous version never started on this database.
+ * The migration stops and names the item until a person starts that version once or cancels it.
+ */
+function requireNoOpenGitHubSignIn(db: Database): void {
+  const item = db
+    .query<{ id: string; identifier: string }, []>(
+      `SELECT work_item.id, work_item.linear_identifier AS identifier
+       FROM linear_github_auth
+       JOIN work_item ON work_item.id = linear_github_auth.item_id
+       JOIN question ON question.id = linear_github_auth.question_id
+       WHERE linear_github_auth.status IN ('pending','expired')
+         AND question.status = 'open' AND question.cancelled_at IS NULL
+         AND work_item.cancel_requested = 0
+         AND work_item.state NOT IN ('completed','merged','cancelled','failed')
+       ORDER BY work_item.created_at, work_item.id LIMIT 1`,
+    )
+    .get();
+  if (item)
+    throw new Error(
+      `Work item ${item.id} (${item.identifier}) is waiting on a GitHub sign-in. Start the previous Paws version once so it moves the wait to the GitHub App installation check, or cancel the item, then start Paws again.`,
+    );
+}
 
 /**
  * 130 drops the Paws project start. An item still running under a project start

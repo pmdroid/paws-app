@@ -17,7 +17,7 @@ import {
   type AcceptedLinearEvent,
   type LinearSessionSnapshot,
 } from "../src/linear";
-import { attachOrchestrator, FakeHostGitHubAuth, GitHubAuthQuestions } from "../src/loop";
+import { attachOrchestrator, GitHubInstallationCheck } from "../src/loop";
 import * as workspace from "../src/workspace";
 
 test("onboarded authoritative creator resumes once with current App and no personal GitHub consent", async () => {
@@ -186,7 +186,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     return { assignments, access, orchestrator };
   };
   let runtime = build();
-  let auth: GitHubAuthQuestions | undefined;
+  let auth: GitHubInstallationCheck | undefined;
   try {
     expect(await runtime.assignments.authorize(event)).toMatchObject({ outcome: "refused" });
     expect(
@@ -298,16 +298,16 @@ test("onboarded authoritative creator resumes once with current App and no perso
       bot: await botProvider.botIdentity!(),
       credit: workspace.delegatorCommitCredit(db, current().id),
     });
-    const host = Object.assign(new FakeHostGitHubAuth(), {
-      integration: {
-        check: (_item: unknown, signal: AbortSignal) =>
-          installation("acme/widgets", "write", signal),
+    auth = new GitHubInstallationCheck(
+      db,
+      {
+        check: (_item, signal) => installation("acme/widgets", "write", signal),
         administrators: () => ["owner"],
         recoveryUrl: `${origin}/status`,
         identity: () => "creator:acme/widgets",
       },
-    });
-    auth = new GitHubAuthQuestions(db, host, now);
+      now,
+    );
     const signal = new AbortController().signal;
     expect(await auth.ensure(current(), "initial", signal)).toBe(false);
     expect(current().state).toBe("awaiting_input");

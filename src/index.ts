@@ -133,7 +133,7 @@ import {
   type Orchestrator,
   type OrchestratorOptions,
   type RepositoryBinding,
-  type HostGitHubAuth,
+  type GitHubIntegration,
 } from "./loop";
 import {
   createItemReconciler,
@@ -896,7 +896,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         publicationReady: (
           ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
         ) => Promise.resolve(publication?.publicationReady(...args) ?? false),
-        githubAuth: createLinearGitHubAuth({
+        githubInstallation: createGitHubIntegration({
           runtime,
           env: envSource,
           resolveApp,
@@ -1053,7 +1053,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           signal.throwIfAborted();
           const provider = authProvider(runtime, candidate, access, resolveApp);
           if (!provider)
-            throw new Error("GitHub sign-in is required before reading the repository.");
+            throw new Error("The GitHub App installation does not cover this repository.");
           const token = await provider.token();
           signal.throwIfAborted();
           return token;
@@ -1407,7 +1407,11 @@ export function authProvider(
   }
 }
 
-export function createLinearGitHubAuth(input: {
+/**
+ * The workspace GitHub App installation as the loop sees it: does the App cover the item's
+ * repository with the access it needs, and may the delegating member still use it.
+ */
+export function createGitHubIntegration(input: {
   runtime: RuntimeConfig;
   env: EnvSource;
   resolveApp?: (repository: string) => ActiveGitHubApp;
@@ -1422,45 +1426,38 @@ export function createLinearGitHubAuth(input: {
   currentIntegrationItem?: (item: WorkItemRecord) => boolean;
   administratorsForItem?: (item: WorkItemRecord) => readonly string[];
   accessForItem?: (item: WorkItemRecord) => "read" | "write";
-}): HostGitHubAuth {
+}): GitHubIntegration {
   const installation = createGitHubInstallationCheck({
     home: input.runtime.env.home,
     env: input.env,
     ...(input.resolveApp ? { resolve: input.resolveApp } : {}),
   });
   return {
-    integration: {
-      recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/settings/integrations`,
-      administrators: input.administratorsForItem ?? (() => []),
-      current: input.currentIntegrationItem ?? (() => true),
-      unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
-      identity:
-        input.integrationIdentity ??
-        ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
-      authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
-        const selected = input.repositoryForItem(item);
-        return (
-          selected !== null &&
-          (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
-        );
-      },
-      async check(item: WorkItemRecord, signal: AbortSignal) {
-        const selected = input.repositoryForItem(item);
-        return (
-          selected !== null &&
-          (await installation(
-            `${selected.owner}/${selected.repo}`,
-            input.accessForItem?.(item) ?? "write",
-            signal,
-          ))
-        );
-      },
+    recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/settings/integrations`,
+    administrators: input.administratorsForItem ?? (() => []),
+    current: input.currentIntegrationItem ?? (() => true),
+    unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
+    identity:
+      input.integrationIdentity ??
+      ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
+    authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
+      const selected = input.repositoryForItem(item);
+      return (
+        selected !== null &&
+        (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
+      );
     },
-    owner: input.actorForItem,
-    // The App integration answers every check. No member GitHub account is linked.
-    linkedAccount: async () => null,
-    check: async () => null,
-    begin: () => Promise.reject(new Error("GitHub sign-in was removed. Paws uses the GitHub App.")),
+    async check(item: WorkItemRecord, signal: AbortSignal) {
+      const selected = input.repositoryForItem(item);
+      return (
+        selected !== null &&
+        (await installation(
+          `${selected.owner}/${selected.repo}`,
+          input.accessForItem?.(item) ?? "write",
+          signal,
+        ))
+      );
+    },
   };
 }
 
