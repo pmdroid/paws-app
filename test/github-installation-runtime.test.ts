@@ -16,12 +16,11 @@ import {
   saveTaskMode,
 } from "../src/db";
 import { createFakeTracker, parseAgentEvent } from "../src/linear";
-import { FakeHostGitHubAuth, attachOrchestrator, type AgentLaunch } from "../src/loop";
+import { FakeGitHubIntegration, attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import { tempDb, tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 
-const settled = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const turns = (db: ReturnType<typeof tempDb>) =>
   db.query<{ state: string }, []>("SELECT state FROM linear_turn ORDER BY rowid").all();
 
@@ -34,7 +33,9 @@ function fixture(launch?: AgentLaunch) {
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "linear-owner" });
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
-  const host = new FakeHostGitHubAuth();
+  const host = new FakeGitHubIntegration();
+  host.installed = false;
+  host.admins = ["linear-admin"];
   const tracker = createFakeTracker();
   const orchestrator = attachOrchestrator({
     db,
@@ -44,7 +45,7 @@ function fixture(launch?: AgentLaunch) {
     pawsRoot: home,
     clock,
     tracker,
-    githubAuth: host,
+    githubInstallation: host,
     linearTaskModes: true,
     launch,
     repository: { owner: "acme", repo: "app", remoteUrl: "https://github.example/acme/app.git" },
@@ -85,48 +86,49 @@ function prompt(userId: string, id: string, body = "I signed in") {
   )!;
 }
 
-test("expired host credentials block before Git or workflow and text cannot authenticate", async () => {
+test("a missing installation holds the item before Git and a reply cannot release it", async () => {
   const f = fixture();
   try {
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
+    expect(question.kind).toBe("github-auth");
+    expect(question.body).toContain("Waiting for a workspace owner or administrator");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
     expect(existsSync(join(f.home, "worktrees"))).toBe(false);
     expect(f.tracker.statuses).toEqual([]);
-    expect(listOutbox(f.db).find((row) => row.op === "elicitation")?.payload).toMatchObject({
-      questionId: question.id,
-      auth: { userId: "linear-owner", providerName: "GitHub" },
-    });
+    expect(
+      listOutbox(f.db)
+        .filter((row) => row.op === "elicitation")
+        .map((row) => row.payload),
+    ).toEqual([
+      expect.objectContaining({
+        questionId: question.id,
+        auth: expect.objectContaining({ userId: "linear-admin", providerName: "GitHub" }),
+      }),
+    ]);
     await f.orchestrator.onLinearEvent(prompt("linear-owner", "text-claim"));
     expect(getQuestion(f.db, question.id)?.status).toBe("open");
     expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
     expect(turns(f.db)[0]?.state).toBe("cancelled");
-    expect(f.host.account).toBeNull();
   } finally {
     await f.orchestrator.shutdown();
     f.db.close();
   }
 });
 
-test("only the task owner retries, and verified native completion resumes once", async () => {
+test("the item resumes once by itself when the installation returns", async () => {
   const f = fixture();
   try {
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
-    f.host.challenges[0]!.fail(new Error("Provider unavailable"));
-    await settled();
-    await f.orchestrator.onLinearEvent(prompt("another-user", "wrong-owner", "retry"));
-    expect(f.host.challenges).toHaveLength(1);
-    await f.orchestrator.onLinearEvent(prompt("linear-owner", "retry", "retry"));
-    expect(f.host.challenges).toHaveLength(2);
-    expect(getQuestion(f.db, question.id)?.status).toBe("open");
-    expect(turns(f.db).map((turn) => turn.state)).toEqual(["cancelled", "applied"]);
-    f.host.challenges[1]!.complete({ id: 7, login: "owner" });
-    await settled();
-    expect(getQuestion(f.db, question.id)?.answeredBy).toBe("linear-owner");
+    await f.orchestrator.recoverGitHubAuth();
+    expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
+    f.host.installed = true;
+    await f.orchestrator.recoverGitHubAuth();
+    expect(getQuestion(f.db, question.id)?.answeredBy).toBe("paws");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("running");
     expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
-    await f.orchestrator.onLinearEvent(prompt("linear-owner", "retry", "retry"));
+    await f.orchestrator.recoverGitHubAuth();
     expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
   } finally {
     await f.orchestrator.shutdown();
@@ -134,17 +136,16 @@ test("only the task owner retries, and verified native completion resumes once",
   }
 });
 
-test("Stop through the question handler prevents a late native login from resuming", async () => {
+test("Stop prevents a returning installation from resuming the item", async () => {
   const f = fixture();
   try {
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
     await f.orchestrator.onLinearEvent({ ...prompt("linear-owner", "stop"), signal: "stop" });
-    f.host.challenges[0]!.complete({ id: 7, login: "owner" });
-    await settled();
+    f.host.installed = true;
+    await f.orchestrator.recoverGitHubAuth();
     expect(getQuestion(f.db, question.id)?.status).toBe("cancelled");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
-    expect(f.host.account).toBeNull();
     expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
   } finally {
     await f.orchestrator.shutdown();
@@ -153,7 +154,7 @@ test("Stop through the question handler prevents a late native login from resumi
 });
 
 test.each(["pending", "rejected"] as const)(
-  "%s auth recovery cannot prevent another owned ACP writer from stopping",
+  "%s installation recovery cannot prevent another owned ACP writer from stopping",
   async (outcome) => {
     const home = tempHome();
     const trace = join(home, "trace.json");
@@ -170,14 +171,14 @@ test.each(["pending", "rejected"] as const)(
       args: [wrapper, trace, script],
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
     }));
-    const linked = Promise.withResolvers<number | null>();
+    const linked = Promise.withResolvers<boolean>();
     const reading = Promise.withResolvers<void>();
     let released = false;
     let running: Promise<unknown> | undefined;
     let shutting: Promise<unknown> | undefined;
     try {
       await f.jobs.tick();
-      f.host.linkedAccount = () => {
+      f.host.check = () => {
         reading.resolve();
         return linked.promise;
       };
@@ -200,18 +201,16 @@ test.each(["pending", "rejected"] as const)(
       shutting = f.orchestrator.shutdown();
       void shutting.catch(() => undefined);
       await until(() => JSON.parse(readFileSync(trace, "utf8")).methods.includes("session/cancel"));
-      if (outcome === "rejected") linked.reject(new Error("Account store unavailable"));
-      else linked.resolve(7);
+      if (outcome === "rejected") linked.reject(new Error("Installation lookup unavailable"));
+      else linked.resolve(true);
       released = true;
-      if (outcome === "rejected")
-        await expect(shutting).rejects.toThrow("Account store unavailable");
-      else await shutting;
+      await shutting;
       await running;
       const pid = Number(readFileSync(pidFile, "utf8"));
       expect(() => process.kill(pid, 0)).toThrow();
       expect(getWorkItem(f.db, writer.id)?.state).toBe("running");
     } finally {
-      if (!released) linked.resolve(7);
+      if (!released) linked.resolve(true);
       await Promise.allSettled([shutting, running]);
       await f.orchestrator.shutdown();
       f.db.close();

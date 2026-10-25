@@ -11,7 +11,12 @@ import {
   runAgent,
 } from "../src/acp";
 import { createGitHubTokenProvider } from "../src/auth";
-import { attachOrchestrator, createRepositoryGit, LinearTaskAccess } from "../src/loop";
+import {
+  attachOrchestrator,
+  createRepositoryGit,
+  FakeGitHubIntegration,
+  LinearTaskAccess,
+} from "../src/loop";
 import {
   createFakeLinearAccessReads,
   createFakeLinearIssueLifecycle,
@@ -36,7 +41,6 @@ const token = "synthetic-host-git-token";
 test("host credentials reach real host clone and fetch without reaching repository or ACP", async () => {
   const home = tempHome();
   const provider = { token: async () => token };
-  const owner = { id: 7, login: "owner" };
   const source = join(home, "source");
   const bare = join(home, "private.git");
   const cert = join(home, "cert.pem");
@@ -267,14 +271,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
           throw new Error("Unexpected access removal");
         },
       }),
-      githubAuth: {
-        owner: () => "human",
-        linkedAccount: async () => owner.id,
-        check: async () => owner,
-        begin: async () => {
-          throw new Error("Valid host credentials must not request sign-in");
-        },
-      },
+      githubInstallation: new FakeGitHubIntegration(),
       repositoryAccess: async (_repository, _signal, purpose) => {
         expect(purpose).toBe("read");
         checkedReads++;

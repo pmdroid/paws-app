@@ -11,12 +11,11 @@ export {
 export { deliverLinearOutbox, type EvidenceUploads } from "./dispatch";
 export { hintedRepository, repositoryAnswer, rankRepositories } from "./repository-selection";
 export {
-  GitHubAuthQuestions,
-  type HostGitHubAuth,
-  type GitHubAuthPhase,
-  type VerifiedGitHubAccount,
-} from "./github-auth";
-export { FakeHostGitHubAuth } from "./fake-auth";
+  GitHubInstallationCheck,
+  type GitHubIntegration,
+  type GitHubInstallationPhase,
+} from "./github-integration";
+export { FakeGitHubIntegration } from "./fake-installation";
 export {
   createAcpCodexReviewer,
   createAcpFixRunner,

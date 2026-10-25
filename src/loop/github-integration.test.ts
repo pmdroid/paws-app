@@ -16,8 +16,7 @@ import {
 } from "../db";
 import { LinearRateLimitError } from "../linear";
 import { getQuestion } from "../questions";
-import { FakeHostGitHubAuth } from "./fake-auth";
-import { GitHubAuthQuestions } from "./github-auth";
+import { GitHubInstallationCheck } from "./github-integration";
 
 function fixture(path = ":memory:") {
   const db = openDatabase(path);
@@ -25,10 +24,6 @@ function fixture(path = ":memory:") {
   let ready = false;
   let allowed = true;
   let authority = "requester:repository:candidate:evidence";
-  const host = new FakeHostGitHubAuth();
-  host.check = async () => {
-    throw new Error("Personal account lookup is forbidden");
-  };
   const integration = {
     async check() {
       return ready && allowed;
@@ -37,18 +32,9 @@ function fixture(path = ":memory:") {
     recoveryUrl: "https://paws.example/status/settings/integrations",
     identity: () => authority,
   };
-  const auth = new GitHubAuthQuestions(
+  const auth = new GitHubInstallationCheck(
     db,
-    {
-      ...host,
-      integration,
-      owner: () => null,
-      linkedAccount: async () => {
-        throw new Error("Personal token lookup is forbidden");
-      },
-      check: host.check,
-      begin: host.begin.bind(host),
-    },
+    integration,
     () => 1000,
     () => allowed,
   );
@@ -75,14 +61,42 @@ function fixture(path = ":memory:") {
   };
 }
 
-test("two members use one App without personal GitHub sign-in", async () => {
+test("ready: two members use one App installation and proceed without any question", async () => {
   const f = fixture();
   try {
     f.ready();
     for (const id of ["member-a", "member-b"])
       expect(await f.auth.ensure(f.item(id), "initial", f.signal)).toBe(true);
+    expect(await f.auth.ensure(f.item("publisher"), "publication", f.signal)).toBe(true);
     expect(listJobs(f.db)).toHaveLength(0);
-    expect(f.db.query("SELECT * FROM linear_github_task_account").all()).toHaveLength(0);
+    expect(listOutbox(f.db)).toHaveLength(0);
+    expect(f.db.query("SELECT * FROM question").all()).toHaveLength(0);
+  } finally {
+    f.auth.close();
+    f.db.close();
+  }
+});
+
+test("missing installation: the waiting message shows once and the item resumes by itself", async () => {
+  const f = fixture();
+  try {
+    const item = f.item("member");
+    expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
+    expect(await f.auth.ensure(getWorkItem(f.db, item.id)!, "initial", f.signal)).toBe(false);
+    await f.auth.recover();
+    const waiting = listOutbox(f.db).filter(
+      (entry) =>
+        entry.op === "activity" &&
+        JSON.stringify(entry.payload).includes("Waiting for a workspace owner or administrator"),
+    );
+    expect(waiting).toHaveLength(1);
+    expect(f.db.query("SELECT * FROM question").all()).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    f.ready();
+    await f.auth.recover();
+    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect(listJobs(f.db).map((job) => job.queue)).toEqual(["run.resume"]);
+    expect(f.db.query("SELECT * FROM question WHERE status='open'").all()).toHaveLength(0);
   } finally {
     f.auth.close();
     f.db.close();
@@ -127,17 +141,12 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   const hold = f.db
     .query<{ question_id: string }, []>("SELECT question_id FROM github_integration_hold")
     .get()!;
-  expect(await f.auth.retry(hold.question_id, "member")).toBe(false);
+  expect(getQuestion(f.db, hold.question_id)?.status).toBe("open");
   f.auth.close();
   f.db.close();
   const reopened = openDatabase(path);
-  const host = new FakeHostGitHubAuth();
   f.ready();
-  const recovered = new GitHubAuthQuestions(
-    reopened,
-    Object.assign(host, { integration: f.integration }),
-    () => 1000000,
-  );
+  const recovered = new GitHubInstallationCheck(reopened, f.integration, () => 1000000);
   try {
     await Promise.all([recovered.recover(), recovered.recover()]);
     await recovered.recover();
@@ -192,26 +201,6 @@ for (const invalidation of [
   });
 }
 
-test("App recovery migrates legacy personal-auth waits without requiring the old human account", async () => {
-  const f = fixture();
-  const item = f.item("legacy");
-  const personal = new GitHubAuthQuestions(f.db, new FakeHostGitHubAuth(), () => 1000);
-  await personal.ensure(item, "initial", f.signal);
-  personal.close();
-  f.ready();
-  try {
-    await f.auth.recover();
-    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
-    expect(listJobs(f.db)).toHaveLength(1);
-    expect(
-      f.db.query<{ status: string }, []>("SELECT status FROM linear_github_auth").get()?.status,
-    ).toBe("revoked");
-  } finally {
-    f.auth.close();
-    f.db.close();
-  }
-});
-
 test("App preflight refuses a checkpoint changed during installation lookup", async () => {
   const f = fixture();
   const item = f.item("member");
@@ -228,23 +217,38 @@ test("App preflight refuses a checkpoint changed during installation lookup", as
   }
 });
 
-test("stale legacy question cannot revoke a newer integration hold", async () => {
+test("unavailable: a failed check holds the item with the retry message and no admin prompt", async () => {
   const f = fixture();
-  const item = f.item("member");
-  await f.auth.ensure(item, "initial", f.signal);
-  f.db.run(
-    "INSERT INTO question(id,item_id,session_id,body,status,created_at,answered_at,answer) VALUES('old',?,'old-session','old','answered',0,1,'old')",
-    [item.id],
-  );
-  f.db.run(
-    "INSERT INTO linear_github_auth(question_id,item_id,actor_id,github_account_id,phase,expires_at,status) VALUES('old',?,'owner',7,'initial',1,'expired')",
-    [item.id],
-  );
-  f.ready();
+  Object.assign(f.integration, {
+    unavailableRetryMs: [],
+    async check() {
+      throw new Error("Linear unavailable");
+    },
+  });
   try {
+    const item = f.item("outage");
+    expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(f.db.query<{ body: string }, []>("SELECT body FROM question").get()?.body).toContain(
+      "could not be checked",
+    );
+    expect(listOutbox(f.db).filter((entry) => entry.op === "elicitation")).toHaveLength(0);
+  } finally {
+    f.auth.close();
+    f.db.close();
+  }
+});
+
+test("denied: a member who loses access while held is cancelled on recovery", async () => {
+  const f = fixture();
+  try {
+    const item = f.item("member");
+    expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
+    f.deny();
+    f.ready();
     await f.auth.recover();
-    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
-    expect(listJobs(f.db)).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("cancelled");
+    expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
   } finally {
     f.auth.close();
     f.db.close();
@@ -289,18 +293,16 @@ test("App publication recovery queues fresh verification, not publication", asyn
 });
 
 for (const source of ["local", "live"] as const) {
-  test(`denied ${source} authority before a hold canonically cancels instead of stranding running work`, async () => {
+  test(`denied: ${source} loss of access before a hold cancels instead of stranding running work`, async () => {
     const f = fixture();
     const item = f.item("denied");
-    const auth = new GitHubAuthQuestions(
+    const auth = new GitHubInstallationCheck(
       f.db,
-      Object.assign(new FakeHostGitHubAuth(), {
-        integration: {
-          ...f.integration,
-          current: () => source !== "local",
-          authorize: async () => source !== "live",
-        },
-      }),
+      {
+        ...f.integration,
+        current: () => source !== "local",
+        authorize: async () => source !== "live",
+      },
       () => 1000,
     );
     try {

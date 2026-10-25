@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakeLinearAccessReads, createFakeLinearIssueLifecycle } from "../src/linear";
 import { loadRuntime } from "../src/config";
-import { createLinearGitHubAuth } from "../src/index";
+import { createGitHubIntegration } from "../src/index";
 import {
-  GitHubAuthQuestions,
+  GitHubInstallationCheck,
   LinearTaskAccess,
   TASK_ACCESS_TTL_MS,
   authorizeLinearTask,
@@ -31,7 +31,7 @@ test("transient production authorization persists a wait, survives restart and r
   const signal = new AbortController().signal;
   let unavailable = true;
   const env = { GITHUB_AUTH: "app", PAWS_HOME: root };
-  const host = createLinearGitHubAuth({
+  const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
     repositoryForItem: () => ({
@@ -45,9 +45,9 @@ test("transient production authorization persists a wait, survives restart and r
       return true;
     },
   });
-  host.integration!.check = async () => true;
-  host.integration!.unavailableRetryMs = [];
-  const auth = new GitHubAuthQuestions(db, host, () => 1000);
+  host.check = async () => true;
+  host.unavailableRetryMs = [];
+  const auth = new GitHubInstallationCheck(db, host, () => 1000);
   insertQueuedItem(db, { id: "unavailable", sessionKey: "unavailable", title: "unavailable" });
   beginImplementRun(db, "unavailable", 1000);
   const first = getWorkItem(db, "unavailable")!;
@@ -66,18 +66,18 @@ test("transient production authorization persists a wait, survives restart and r
   }
   const reopened = openDatabase(path);
   let denied = false;
-  host.integration!.authorize = async (item) => {
+  host.authorize = async (item) => {
     if (item.id === first.id && unavailable) throw new Error("Scripted Linear outage");
     return !denied;
   };
-  const recovered = new GitHubAuthQuestions(reopened, host, () => 2000);
+  const recovered = new GitHubInstallationCheck(reopened, host, () => 2000);
   try {
     insertQueuedItem(reopened, { id: "sibling", sessionKey: "sibling", title: "sibling" });
     beginImplementRun(reopened, "sibling", 2000);
-    host.integration!.check = async (item) => item.id !== "sibling";
+    host.check = async (item) => item.id !== "sibling";
     await recovered.ensure(getWorkItem(reopened, "sibling")!, "initial", signal);
-    host.integration!.check = async () => true;
-    host.integration!.unavailableRetryMs = [];
+    host.check = async () => true;
+    host.unavailableRetryMs = [];
     await recovered.recover();
     expect(getWorkItem(reopened, first.id)?.state).toBe("awaiting_input");
     expect(getWorkItem(reopened, "sibling")?.state).toBe("running");
@@ -88,7 +88,7 @@ test("transient production authorization persists a wait, survives restart and r
     expect(listJobs(reopened).filter((job) => job.queue === "run.resume")).toHaveLength(2);
     insertQueuedItem(reopened, { id: "revoked", sessionKey: "revoked", title: "revoked" });
     beginImplementRun(reopened, "revoked", 2000);
-    host.integration!.check = async () => false;
+    host.check = async () => false;
     await recovered.ensure(getWorkItem(reopened, "revoked")!, "initial", signal);
     denied = true;
     await recovered.recover();
@@ -133,7 +133,7 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     if (unavailable) return Promise.reject(new Error("Scripted outage"));
     return sessionRead(...args);
   };
-  const host = createLinearGitHubAuth({
+  const host = createGitHubIntegration({
     runtime: loadRuntime({ GITHUB_AUTH: "app" }),
     env: {},
     repositoryForItem: () => ({
@@ -144,9 +144,9 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     actorForItem: () => "human",
     authorizeItem: (current, signal) => authorizeLinearTask(gate, current, signal),
   });
-  host.integration!.check = async () => true;
-  host.integration!.unavailableRetryMs = [];
-  const auth = new GitHubAuthQuestions(db, host, () => 1000);
+  host.check = async () => true;
+  host.unavailableRetryMs = [];
+  const auth = new GitHubInstallationCheck(db, host, () => 1000);
   try {
     await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
@@ -167,7 +167,7 @@ test("an App task with a selected repository starts without an attribution wait"
   const db = openDatabase(":memory:");
   migrate(db);
   const env = { GITHUB_AUTH: "app" };
-  const host = createLinearGitHubAuth({
+  const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
     repositoryForItem: () => ({
@@ -177,10 +177,10 @@ test("an App task with a selected repository starts without an attribution wait"
     }),
     actorForItem: () => "member",
   });
-  expect(Object.keys(host.integration!)).not.toContain("attributionReady");
-  host.integration!.check = async () => true;
-  host.integration!.unavailableRetryMs = [];
-  const auth = new GitHubAuthQuestions(db, host, () => 1000);
+  expect(Object.keys(host!)).not.toContain("attributionReady");
+  host.check = async () => true;
+  host.unavailableRetryMs = [];
+  const auth = new GitHubInstallationCheck(db, host, () => 1000);
   const item = insertQueuedItem(db, { id: "unlinked", sessionKey: "session" });
   beginImplementRun(db, item.id, 1000);
   try {
@@ -205,7 +205,7 @@ for (const [later, outcome] of [
     const db = openDatabase(":memory:");
     migrate(db);
     const env = { GITHUB_AUTH: "app" };
-    const host = createLinearGitHubAuth({
+    const host = createGitHubIntegration({
       runtime: loadRuntime(env),
       env,
       repositoryForItem: () => ({
@@ -216,16 +216,16 @@ for (const [later, outcome] of [
       actorForItem: () => "member",
       authorizeItem: async () => true,
     });
-    host.integration!.check = async () => true;
-    host.integration!.unavailableRetryMs = [];
+    host.check = async () => true;
+    host.unavailableRetryMs = [];
     let now = 1_000;
-    const auth = new GitHubAuthQuestions(db, host, () => now);
+    const auth = new GitHubInstallationCheck(db, host, () => now);
     insertQueuedItem(db, { id: "cached", sessionKey: "cached", title: "cached" });
     beginImplementRun(db, "cached", now);
     const signal = new AbortController().signal;
     try {
       expect(await auth.ensure(getWorkItem(db, "cached")!, "initial", signal)).toBe(true);
-      host.integration!.check = async () => {
+      host.check = async () => {
         throw new Error("GitHub API request failed with 502");
       };
       now += later;
@@ -245,7 +245,7 @@ test("a denied authorization after an issue change still stops the task", async 
   migrate(db);
   const env = { GITHUB_AUTH: "app" };
   let allowed = true;
-  const host = createLinearGitHubAuth({
+  const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
     repositoryForItem: () => ({
@@ -256,9 +256,9 @@ test("a denied authorization after an issue change still stops the task", async 
     actorForItem: () => "member",
     authorizeItem: async () => allowed,
   });
-  host.integration!.check = async () => true;
-  host.integration!.unavailableRetryMs = [];
-  const auth = new GitHubAuthQuestions(db, host, () => 1_000);
+  host.check = async () => true;
+  host.unavailableRetryMs = [];
+  const auth = new GitHubInstallationCheck(db, host, () => 1_000);
   insertQueuedItem(db, { id: "revoked", sessionKey: "revoked", title: "revoked" });
   beginImplementRun(db, "revoked", 1_000);
   const signal = new AbortController().signal;
@@ -276,13 +276,13 @@ test("a denied authorization after an issue change still stops the task", async 
 
 test("production App authorization retries an unavailable check for about a minute", () => {
   const env = { GITHUB_AUTH: "app", PAWS_HOME: mkdtempSync(join(tmpdir(), "paws-retry-")) };
-  const host = createLinearGitHubAuth({
+  const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
     repositoryForItem: () => null,
     actorForItem: () => "member",
   });
-  const total = (host.integration!.unavailableRetryMs ?? []).reduce((sum, ms) => sum + ms, 0);
+  const total = (host.unavailableRetryMs ?? []).reduce((sum, ms) => sum + ms, 0);
   expect(total).toBeGreaterThanOrEqual(60_000);
   rmSync(env.PAWS_HOME, { recursive: true, force: true });
 });
@@ -293,7 +293,7 @@ function cachedAuthorization() {
   const env = { GITHUB_AUTH: "app" };
   const reads = { membership: 0, installation: 0 };
   let ready = true;
-  const host = createLinearGitHubAuth({
+  const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
     repositoryForItem: () => ({
@@ -307,13 +307,13 @@ function cachedAuthorization() {
       return true;
     },
   });
-  host.integration!.check = async () => {
+  host.check = async () => {
     reads.installation++;
     return ready;
   };
-  host.integration!.unavailableRetryMs = [];
+  host.unavailableRetryMs = [];
   const clock = { now: 1_000 };
-  const auth = new GitHubAuthQuestions(db, host, () => clock.now);
+  const auth = new GitHubInstallationCheck(db, host, () => clock.now);
   insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
   beginImplementRun(db, "task", clock.now);
   const ensure = (options?: { fresh?: boolean }) =>
@@ -397,7 +397,7 @@ test("an invalidation still keeps the recent ready check as a fallback for a tra
   try {
     await f.ensure();
     f.auth.invalidate();
-    f.host.integration!.check = async () => {
+    f.host.check = async () => {
       throw new Error("GitHub API request failed with 502");
     };
     expect(await f.ensure()).toBe(true);
