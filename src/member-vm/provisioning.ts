@@ -3,6 +3,7 @@ import {
   createExeDevBootstrap,
   PINNED_MISE,
   type ExeDev,
+  type ExeDevBootstrap,
   type ExeDevTokenReader,
 } from "../provisioning";
 import type { MemberVmProvisioning, MintEnrollment } from "./job";
@@ -21,6 +22,8 @@ export type MemberVmProvisioningSource = {
   repositories: () => readonly string[];
   runnerControl: () => Promise<MemberVmRunnerControl | null | undefined>;
   exeDev?: ExeDev;
+  /** Replaces the bootstrap built from the release and installer. Tests pass the fake. */
+  bootstrap?: ExeDevBootstrap;
 };
 
 export function createMemberVmProvisioning(
@@ -32,6 +35,8 @@ export function createMemberVmProvisioning(
       throw new Error("Create VM needs PAWS_PUBLIC_URL so the VM can reach this Paws.");
     const control = await source.runnerControl();
     if (!control) throw new Error("Create VM needs runner control to be configured.");
+    if (source.bootstrap)
+      return { exeDev, bootstrap: source.bootstrap, mintEnrollment: control.mintEnrollment };
     if (control.serverVersion === null)
       throw new Error(
         "Create VM needs an installed Paws release; a source checkout has no runner version to install.",

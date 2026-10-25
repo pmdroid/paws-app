@@ -18,3 +18,10 @@ export {
 export type { MemberRef, MemberVm, MemberVmStep } from "./store";
 export { createMemberVmProvisioning } from "./provisioning";
 export type { MemberVmProvisioningSource, MemberVmRunnerControl } from "./provisioning";
+export { createMemberVmHttp, MEMBER_VM_PROGRESS_STEPS, memberVmView } from "./http";
+export type {
+  MemberVmProgressStep,
+  MemberVmResponse,
+  MemberVmStepView,
+  MemberVmView,
+} from "./http";
