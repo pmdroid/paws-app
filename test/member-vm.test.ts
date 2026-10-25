@@ -39,7 +39,7 @@ import {
   type WorkspacePrincipal,
 } from "../src/workspace";
 
-const EXE_DEV_TOKEN = "exe0_SecretExeDevTokenValue_ABCDEFGHIJKLMNOP";
+const EXE_DEV_TOKEN = "fake_exe_dev_token_for_tests_ABCDEFGHIJKLMNOP";
 const LEASE_MS = 60_000;
 
 const roots: string[] = [];
@@ -49,7 +49,6 @@ afterEach(() => {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-/** A workspace with an owner and a member, a real runner control and the fake exe.dev pair. */
 async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-member-vm-"));
   roots.push(root);
@@ -110,7 +109,6 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const exeDev = createFakeExeDev();
   const bootstrap = createFakeBootstrap({
     installPolls: input.installPolls ?? 2,
-    // The VM posts its staged token with a CSR, exactly as `paws-runner runner enroll` does.
     async enroll(vm, token) {
       hosts += 1;
       const key = await createRunnerKey(join(root, `host-${hosts}`));
@@ -133,7 +131,6 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   return { db, clock, workspace, member, owner, control, exeDev, bootstrap, person, jobs };
 }
 
-/** Claim until the job is gone or parked for later, moving the clock one poll at a time. */
 async function drive(f: Fixture, loop: JobLoop, until: (row: MemberVm) => boolean, limit = 2_000) {
   for (let index = 0; index < limit; index++) {
     const row = findMemberVm(f.db, f.member)!;
@@ -208,7 +205,6 @@ describe("member VM", () => {
   test("a restart mid-step resumes the recorded step without a second VM", async () => {
     const f = await fixture();
     startMemberVm(f.db, { ...f.member, now: f.clock.now() });
-    // The first Paws dies right after exe.dev created the VM, before recording the next step.
     const dying: ExeDev = {
       ...f.exeDev,
       async createVm(name) {
@@ -226,7 +222,6 @@ describe("member VM", () => {
     const row = await drive(f, restarted, (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
     expect(f.exeDev.vms.size).toBe(1);
-    // The second createVm answered conflict, which is this row's own VM.
     expect(f.exeDev.calls.filter((call) => call.operation === "createVm")).toHaveLength(2);
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
   });
@@ -245,7 +240,6 @@ describe("member VM", () => {
     startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     let leaked = "";
-    // Echo the enrollment token and the exe.dev token back, as a noisy failure might.
     const original = f.bootstrap.startInstall;
     f.bootstrap.startInstall = async (_vm, token) => {
       leaked = token;
@@ -258,7 +252,6 @@ describe("member VM", () => {
     expect(failed.failure).not.toContain(EXE_DEV_TOKEN);
     expect(f.exeDev.vms.has(failed.vmName)).toBe(true);
     expect(openJobs(f.db)).toHaveLength(0);
-    // A failed row is not restarted by another Create VM.
     expect(startMemberVm(f.db, f.member).failure).not.toBeNull();
     expect(openJobs(f.db)).toHaveLength(0);
 
@@ -324,7 +317,6 @@ describe("member VM", () => {
     f.control.setStatus(f.owner, ready.runnerId!, "revoked");
     expect(findMemberVm(f.db, f.member)!.runnerId).toBeNull();
 
-    // The VM still holds the removed runner's certificate: enrolling must not adopt it.
     const stale = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(stale.step).toBe("enroll");
     const refused = await drive(f, loop, settled);

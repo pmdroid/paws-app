@@ -589,7 +589,6 @@ export function updateRunnerStatus(
         input.now,
         input.runnerId,
       ]);
-      // A member's VM keeps its row; the next Create VM enrolls it again (PAS-637).
       db.run("UPDATE member_vm SET runner_id=NULL,updated_at=? WHERE runner_id=?", [
         input.now,
         input.runnerId,

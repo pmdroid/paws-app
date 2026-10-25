@@ -3,7 +3,6 @@ import { immediate, parkLeasedJob, type Job, type JobContext, type JobLoop } fro
 import { isProvisioningError, type ExeDev, type ExeDevBootstrap } from "../provisioning";
 import { getMemberVm, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from "./store";
 
-/** A single-use enrollment token for the member, from `createEnrollment` (PAS-643). */
 export type MintEnrollment = (
   member: MemberRef,
   input: { name: string },
@@ -13,23 +12,19 @@ export type MemberVmJobOptions = {
   exeDev: ExeDev;
   bootstrap: ExeDevBootstrap;
   mintEnrollment: MintEnrollment;
-  /** Secrets that must never reach a stored failure, like the exe.dev token. */
   secrets?: () => readonly (string | null | undefined)[];
   now?: () => number;
-  /** Delay between install and heartbeat polls. */
   pollMs?: number;
 };
 
 export const MEMBER_VM_POLL_MS = 5_000;
 export const MEMBER_VM_INSTALL_TIMEOUT_MS = 30 * 60_000;
 export const MEMBER_VM_HEALTH_TIMEOUT_MS = 10 * 60_000;
-/** A staged token this close to expiry is replaced before `enroll`. */
 const TOKEN_MARGIN_MS = 60_000;
 const MAX_FAILURE = 500;
 
 type Outcome = { next: "advance" | "poll" | "done" };
 
-/** Register the member VM job on `jobs`. Each claim runs one step, then parks for the next. */
 export function registerMemberVmJob(jobs: JobLoop, options: MemberVmJobOptions): void {
   const handler = createMemberVmHandler(jobs.db, options);
   jobs.register(MEMBER_VM_QUEUE, handler);
@@ -88,7 +83,6 @@ async function runStep(
 
   switch (row.step) {
     case "create": {
-      // Recorded before the call: a conflict after a restart is the VM this row asked for.
       const asked = row.createRequestedAt;
       update(db, row, { create_requested_at: asked ?? now() }, now());
       try {
@@ -116,7 +110,6 @@ async function runStep(
           row,
           {
             install_started_at: now(),
-            // Only a fresh start staged this token; otherwise the VM keeps whatever it had.
             ...(started === "started" ? { token_expires_at: enrollment.expiresAt } : {}),
           },
           now(),
@@ -140,12 +133,10 @@ async function runStep(
 
     case "enroll": {
       if (row.tokenExpiresAt === null || row.tokenExpiresAt - TOKEN_MARGIN_MS <= now()) {
-        // The install outlived the token, or an earlier enroll used it up: stage a fresh one.
         const enrollment = mint();
         await bootstrap.stageToken(vm, enrollment.token);
         update(db, row, { token_expires_at: enrollment.expiresAt }, now());
       }
-      // `enroll` removes the token file whatever the outcome.
       update(db, row, { token_expires_at: null }, now());
       const enrolled = await bootstrap.enroll(vm);
       const runner = db
@@ -202,7 +193,6 @@ type Columns = {
   runner_id?: string;
 };
 
-/** Commit a fact about the current step before the next exe.dev call. */
 function update(db: Database, row: MemberVm, columns: Columns, at: number): void {
   const entries = Object.entries(columns);
   if (entries.length === 0) return;
@@ -240,10 +230,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Remove every known secret, then anything shaped like a minted token (a long base64url run with
- * an uppercase letter or underscore, which VM names never have), and cap the length.
- */
 export function redact(text: string, secrets: readonly (string | null | undefined)[]): string {
   let value = text;
   for (const secret of secrets)
