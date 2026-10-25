@@ -216,6 +216,19 @@ describe("deleteVm", () => {
     }
   });
 
+  test("an unreadable answer to rm is settled by listing the VM", async () => {
+    for (const [listed, result] of [
+      [{ vms: [] }, "missing"],
+      [{ error: "not found" }, "missing"],
+    ] as const) {
+      const { exe, sent } = client(({ body }) =>
+        body.startsWith("ls ") ? json(listed) : new Response("VM ada-paws not found\n"),
+      );
+      expect(await exe.deleteVm("ada-paws")).toBe(result);
+      expect(sent.map((entry) => entry.body)).toEqual(["rm ada-paws", "ls ada-paws"]);
+    }
+  });
+
   test("names, tokens and other errors are checked like the other calls", async () => {
     const { exe, sent } = client(() => new Response(""));
     expectCode(await failure(exe.deleteVm("a;rm -rf /")), "deleteVm", "invalid_name");
@@ -228,7 +241,9 @@ describe("deleteVm", () => {
       const { exe: failing } = client(() => json({ error: "nope" }, status));
       expectCode(await failure(failing.deleteVm("ada-paws")), "deleteVm", code);
     }
-    const { exe: odd } = client(() => new Response("not json"));
+    const { exe: odd } = client(({ body }) =>
+      body.startsWith("ls ") ? json(LISTED) : new Response("not json"),
+    );
     expectCode(await failure(odd.deleteVm("ada-paws")), "deleteVm", "invalid_response");
     const { exe: tokenless } = client(() => new Response(""), { token: () => null });
     expectCode(await failure(tokenless.deleteVm("ada-paws")), "deleteVm", "no_token");
