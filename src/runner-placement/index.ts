@@ -3,6 +3,48 @@ import type { RunnerProfile, RunnerResult, RunnerHelperResult } from "../runner-
 export { quotaSignal, type QuotaSignal } from "./quota";
 
 export type PlacementPurpose = "prepare" | "work" | "helper";
+
+/** Why a runner may or may not run a person's work. `own` and `lead-shared` are eligible. */
+export type EligibleRunnerReason =
+  | "own"
+  | "lead-shared"
+  | "not-yours"
+  | "not-shared"
+  | "no-project-lead"
+  | "offline"
+  | "paused"
+  | "agent-not-signed-in"
+  | "auth-expired"
+  | "owner-not-in-team"
+  | "owner-inactive";
+export type EligibleRunnersInput = {
+  workspaceId: string;
+  /** The Linear team of the issue. */
+  teamId: string;
+  /** The `workspace_user` who owns the work. */
+  ownerUserId: string | null;
+  /** The `workspace_user` ids of the Linear project leads across the delegation. */
+  leadUserIds: readonly string[];
+  agent: string;
+  purpose: PlacementPurpose;
+  now?: number;
+};
+export type EligibleRunner = {
+  id: string;
+  workspaceId: string;
+  ownerId: string;
+  sharing: number;
+  ready: number;
+  authExpired: number;
+  quotaState: string;
+  cooldownUntil: number;
+  virtualFinish: number;
+  lastUsedAt: number;
+  resolvedModel: string | null;
+  eligible: boolean;
+  reason: EligibleRunnerReason;
+};
+export { eligibleRunners, RUNNER_ONLINE_MS } from "./eligible";
 export type PlacementProfile = Pick<RunnerProfile, "agent"> & { model?: string | null };
 export type PlacementRequest = {
   itemId?: string;
