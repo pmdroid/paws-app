@@ -137,8 +137,8 @@ nav a:first-child{background:#ff7a3d}
 .host input{font:inherit;border:2px solid #17151f;padding:6px 8px}
 pre{white-space:pre-wrap;word-break:break-all;background:#17151f;color:#fdfcf8;padding:12px;font-size:.8rem;margin:0}
 .error{color:#a1300b;font-weight:600}
-.credit{margin:10px 0 0;display:grid;gap:8px;font-size:.85rem}
-.credit button{justify-self:start;font:inherit;font-weight:600;border:2px solid #17151f;padding:6px 12px;background:#ff7a3d;cursor:pointer}
+form[method="post"]{margin:10px 0 0;display:grid;gap:8px;font-size:.85rem}
+form[method="post"] button{justify-self:start;font:inherit;font-weight:600;border:2px solid #17151f;padding:6px 12px;background:#ff7a3d;cursor:pointer}
 `;
 
 /**
@@ -489,7 +489,7 @@ export function onboardingSteps(input: OnboardingPageInput): Step[] {
           ...(input.githubLink
             ? {
                 // Skipping is fine: Paws starts without it, and commits are by the Paws App.
-                form: `<form class="credit" method="post" action="${escape(
+                form: `<form method="post" action="${escape(
                   input.githubLink.action,
                 )}"><input type="hidden" name="csrf" value="${escape(
                   input.githubLink.csrf,
