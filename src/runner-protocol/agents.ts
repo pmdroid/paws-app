@@ -15,23 +15,18 @@ const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 /**
  * An agent version Paws asks a runner to run, sent in the heartbeat reply. `integrity` is the npm
  * sha512 of the agent package from the Paws catalog; the root installer refuses a lockfile that
- * resolves anything else. A null `integrity` switches back to a version already installed on the
- * runner (a rollback) and never downloads. `id` changes with every request, so a failed request is
- * retried only when someone asks again.
+ * resolves anything else. `id` changes with every request, so a failed request is retried only
+ * when someone asks again.
  */
 export const RunnerAgentTargetSchema = z.strictObject({
   id,
   agent,
   version: RunnerAgentVersionSchema,
-  integrity: z
-    .string()
-    .regex(/^sha512-[A-Za-z0-9+/]{86}==$/)
-    .nullable(),
+  integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/),
   nativeVersion: RunnerAgentVersionSchema.nullable(),
   /**
    * The native build package and the platform packages it pins, each with the integrity the
    * catalog checked. The installer refuses a lockfile that resolves any of them with other bytes.
-   * Empty for a rollback.
    */
   packages: z
     .array(
@@ -44,6 +39,7 @@ export const RunnerAgentTargetSchema = z.strictObject({
         integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/),
       }),
     )
+    .min(1)
     .max(64),
 });
 
@@ -54,8 +50,7 @@ export const RunnerAgentTargetsSchema = z
 
 /**
  * An agent version as the runner reports it in its heartbeat. `current` is the version new
- * sessions start; `previous` is the one it ran before, which a rollback switches back to. The
- * others answer the target `target`: `installing`, `waiting` while `sessions` still run on the old
+ * sessions start. `previous` is only sent by older runners, and Paws ignores it. The others answer the target `target`: `installing`, `waiting` while `sessions` still run on the old
  * version, or `failed` with `error`.
  */
 export const RunnerInstalledAgentSchema = z.strictObject({

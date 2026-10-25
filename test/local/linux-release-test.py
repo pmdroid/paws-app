@@ -777,12 +777,19 @@ class AgentInstallation(unittest.TestCase):
         return self.registry.packuments[release.AGENT_PACKAGES[agent]]["versions"][version]["dist"]["integrity"]
 
     def request(self, agent, version, request_id, integrity=True, native=None, packages=None):
-        """A request as Paws sends it: the catalog's integrity for the agent and for its native build package."""
+        """A request as Paws sends it: the catalog's integrity for the agent and for its native build package.
+
+        Paws never sends an empty package list. Where these fake packages have no separate native build,
+        the agent package itself stands in as the one checked pin.
+        """
         name = release.AGENT_NATIVE_PACKAGE[agent]
         if packages is None:
             published = self.registry.packuments.get(name, {}).get("versions", {}).get(native)
-            packages = [{"name": name, "version": native, "integrity": published["dist"]["integrity"] if published else "sha512-" + "Q" * 86 + "=="}] if native is not None and name != release.AGENT_PACKAGES[agent] and integrity is not None else []
+            packages = [{"name": name, "version": native, "integrity": published["dist"]["integrity"] if published else "sha512-" + "Q" * 86 + "=="}] if native is not None and name != release.AGENT_PACKAGES[agent] else [self.agent_pin(agent, version)]
         return {"id": request_id, "agent": agent, "version": version, "integrity": self.published_integrity(agent, version) if integrity is True else integrity, "nativeVersion": native, "packages": packages}
+
+    def agent_pin(self, agent, version):
+        return {"name": release.AGENT_PACKAGES[agent], "version": version, "integrity": self.published_integrity(agent, version)}
 
     def process(self, requests, sleep=None):
         """Run `install.py agent-requests` against this case's folders, as paws-runner-agents.service does."""
@@ -801,7 +808,7 @@ class AgentInstallation(unittest.TestCase):
         status = self.process([self.request("codex", "2.0.0", "update-1", native="2.0.0")])
         self.assertEqual(self.current("codex"), "2.0.0")
         self.assertEqual(self.current("claude"), "1.0.0")
-        self.assertEqual(status["agents"]["codex"], {"current": "2.0.0", "previous": "1.0.0", "request": {"id": "update-1", "version": "2.0.0", "status": "installed"}})
+        self.assertEqual(status["agents"]["codex"], {"current": "2.0.0", "request": {"id": "update-1", "version": "2.0.0", "status": "installed"}})
         self.assertEqual(json.loads((self.work / "status/status.json").read_text()), status)
         process, answer = self.session("codex-acp")
         self.assertEqual(answer["result"]["version"], "2.0.0")
@@ -825,6 +832,11 @@ class AgentInstallation(unittest.TestCase):
         self.assertEqual(self.current("codex"), "1.0.0")
         self.assertEqual(self.current("claude"), "1.0.0")
         for content in ('{"format": 1, "requests": [{"id": "x", "agent": "left-pad", "version": "1.0.0", "integrity": null, "nativeVersion": null, "packages": []}]}', '{"format": 1, "requests": [{"id": "x", "agent": "codex", "version": "../1", "integrity": null, "nativeVersion": null, "packages": []}]}', '{"format": 1, "requests": [{"id": "x", "agent": "codex", "version": "2.0.0", "integrity": "sha1-abc", "nativeVersion": null, "packages": []}]}'):
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                release.parse_agent_requests(content)
+        # Every request carries the agent package's sha512 and at least one checked package.
+        for request in ({**self.request("grok", "2.0.0", "x"), "integrity": None}, {**self.request("grok", "2.0.0", "x"), "packages": []}):
+            content = json.dumps({"format": 1, "requests": [request]})
             with self.subTest(content=content), self.assertRaises(ValueError):
                 release.parse_agent_requests(content)
 
@@ -875,7 +887,7 @@ class AgentInstallation(unittest.TestCase):
         self.assertIn("@openai/codex@2.0.0 does not carry the integrity Paws checked", status["agents"]["codex"]["request"]["error"])
         self.assertFalse((self.base / "agents/codex/2.0.0").exists())
         # Paws must name the native package's integrity, not only its version.
-        status = self.process([self.request("codex", "2.0.0", "native-missing", native="2.0.0", packages=[])])
+        status = self.process([self.request("codex", "2.0.0", "native-missing", native="2.0.0", packages=[self.agent_pin("codex", "2.0.0")])])
         self.assertIn("Paws sent no integrity for @openai/codex@2.0.0", status["agents"]["codex"]["request"]["error"])
         self.assertEqual(self.current("codex"), "1.0.0")
         with self.assertRaises(ValueError):
@@ -922,21 +934,6 @@ class AgentInstallation(unittest.TestCase):
         self.assertEqual(len(checks), 2)
         self.assertEqual(status["agents"]["claude"]["request"], {"id": "update-2", "version": "2.0.0", "status": "installed"})
         self.assertEqual(self.current("claude"), "2.0.0")
-
-    def test_rollback_switches_back_to_the_previous_installed_version(self):
-        self.installed_one()
-        self.process([self.request("grok", "2.0.0", "update-3")])
-        self.assertEqual(self.current("grok"), "2.0.0")
-        self.registry.requests.clear()
-        status = self.process([self.request("grok", "1.0.0", "rollback-1", integrity=None)])
-        self.assertEqual(self.registry.requests, [])
-        self.assertEqual(self.current("grok"), "1.0.0")
-        self.assertEqual(status["agents"]["grok"]["previous"], "2.0.0")
-        self.assertEqual(status["agents"]["grok"]["request"]["status"], "installed")
-        status = self.process([self.request("grok", "3.0.0", "rollback-2", integrity=None)])
-        self.assertEqual(status["agents"]["grok"]["request"]["status"], "failed")
-        self.assertIn("not installed on this runner", status["agents"]["grok"]["request"]["error"])
-        self.assertEqual(self.current("grok"), "1.0.0")
 
 
 if __name__ == "__main__":

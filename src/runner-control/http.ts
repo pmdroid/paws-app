@@ -18,7 +18,7 @@ const runnerConcurrency = z.object({ concurrency: z.number().int().min(1).max(16
 const agentUpdate = z.object({ version: RunnerAgentVersionSchema }).strict();
 const agentNames = RUNNER_CODING_AGENTS.join("|");
 const agentPath = new RegExp(
-  `^/api/runners/([0-9A-HJKMNP-TV-Z]{26})/coding-agents/(${agentNames})/(update|rollback)$`,
+  `^/api/runners/([0-9A-HJKMNP-TV-Z]{26})/coding-agents/(${agentNames})/update$`,
 );
 
 export function createRunnerHttp(
@@ -92,13 +92,10 @@ export function createRunnerHttp(
           return json({ requested: control.updateAllAgents(principal) });
         const agent = agentPath.exec(path);
         if (agent && request.method === "POST") {
-          const [, runnerId, name, action] = agent;
-          if (action === "update") {
-            const { version } = agentUpdate.parse(await readJson(request));
-            control.updateAgent(principal, runnerId!, name!, version);
-            return json({ ok: true, version });
-          }
-          return json({ ok: true, version: control.rollbackAgent(principal, runnerId!, name!) });
+          const [, runnerId, name] = agent;
+          const { version } = agentUpdate.parse(await readJson(request));
+          control.updateAgent(principal, runnerId!, name!, version);
+          return json({ ok: true, version });
         }
         return null;
       } catch (error) {
