@@ -395,3 +395,196 @@ async function makeServerIdentity(root: string) {
   );
   assert.equal(await child.exited, 0);
 }
+
+/** Paws approves a pairing it started on a VM it created, owned by the member who asked for it. */
+export async function probeProvisionedPairing(
+  root: string,
+  observe: (name: string, passed: boolean, observed: unknown) => void,
+) {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const db = openDatabase(join(root, "paws.sqlite"));
+  migrate(db);
+  const authorityRoot = join(root, "issuer");
+  const authority = await initializeRunnerAuthority(authorityRoot);
+  const client = await createRunnerKey(join(root, "client"));
+  let now = Date.now();
+  const ownerUserId = putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: "provision-owner",
+    name: "Fixture owner",
+    email: "provision-owner@example.invalid",
+  });
+  const token = issueWorkspaceBootstrap(db, "provision-org", now);
+  const workspace = consumeWorkspaceBootstrap(db, {
+    id: workspaceId(),
+    organizationId: "provision-org",
+    name: "provision-org",
+    userId: ownerUserId,
+    tokenHash: workspaceTokenHash(token),
+    now,
+  });
+  function person(name: string, role: "member" | "observer", active: boolean) {
+    const userId = putWorkspaceUser(db, {
+      id: workspaceId(),
+      linearUserId: `provision-${name}`,
+      name,
+      email: `${name}@example.invalid`,
+    });
+    syncWorkspaceMember(db, {
+      workspaceId: workspace.id,
+      userId,
+      role,
+      active,
+      teamIds: [],
+      now,
+    });
+    return userId;
+  }
+  const memberUserId = person("member", "member", true);
+  const observerUserId = person("observer", "observer", true);
+  const formerUserId = person("former", "member", false);
+  const ownerPrincipal: WorkspacePrincipal = {
+    workspaceId: workspace.id,
+    userId: ownerUserId,
+    role: "owner",
+    authenticatedAt: now,
+    teamIds: [],
+  };
+  const memberPrincipal: WorkspacePrincipal = {
+    ...ownerPrincipal,
+    userId: memberUserId,
+    role: "member",
+  };
+  const control = createRunnerControl({
+    db,
+    authority,
+    certificateRoot: authorityRoot,
+    disconnect: () => {},
+    now: () => now,
+  });
+  const pairingRunner = (id: string) =>
+    db
+      .query<{ runner_id: string | null }, [string]>(
+        "SELECT runner_id FROM runner_pairing WHERE id=?",
+      )
+      .get(id)?.runner_id ?? null;
+  try {
+    const pending = await control.beginPairing({ name: "member-paws", csr: client.csr });
+    const other = await createRunnerKey(join(root, "other"));
+    const wrongFingerprint = (await control.beginPairing({ name: "other", csr: other.csr }))
+      .requestFingerprint;
+    await assert.rejects(
+      () =>
+        control.approveProvisionedPairing({
+          workspaceId: workspace.id,
+          userId: memberUserId,
+          code: pending.code,
+          requestFingerprint: wrongFingerprint,
+        }),
+      /fingerprint does not match/,
+    );
+    assert.equal(pairingRunner(pending.id), null);
+    assert.equal(control.claimPairing(pending.id, pending.claim).status, "pending");
+    observe("a provisioned pairing with another fingerprint stays pending", true, {
+      pairingId: pending.id,
+    });
+
+    for (const userId of [observerUserId, formerUserId]) {
+      await assert.rejects(
+        () =>
+          control.approveProvisionedPairing({
+            workspaceId: workspace.id,
+            userId,
+            code: pending.code,
+            requestFingerprint: pending.requestFingerprint,
+          }),
+        /Active workspace membership/,
+      );
+    }
+    assert.equal(pairingRunner(pending.id), null);
+    observe("observers and inactive members cannot own a provisioned runner", true, {
+      observerDenied: true,
+      inactiveDenied: true,
+    });
+
+    await assert.rejects(
+      () =>
+        control.approveProvisionedPairing({
+          workspaceId: workspace.id,
+          userId: memberUserId,
+          code: "0000000000000000",
+          requestFingerprint: pending.requestFingerprint,
+        }),
+      /invalid or expired/,
+    );
+    const expired = await control.beginPairing({ name: "expired-paws", csr: client.csr });
+    now = expired.expiresAt;
+    await assert.rejects(
+      () =>
+        control.approveProvisionedPairing({
+          workspaceId: workspace.id,
+          userId: memberUserId,
+          code: expired.code,
+          requestFingerprint: expired.requestFingerprint,
+        }),
+      /invalid or expired/,
+    );
+    now = Date.now();
+    observe("an unknown or expired provisioned pairing code is refused", true, {
+      unknownDenied: true,
+      expiredDenied: true,
+    });
+
+    const approved = await control.approveProvisionedPairing({
+      workspaceId: workspace.id,
+      userId: memberUserId,
+      code: pending.code,
+      requestFingerprint: pending.requestFingerprint,
+    });
+    assert.equal(approved.pairingId, pending.id);
+    assert.equal(getRunner(db, approved.runnerId)!.ownerUserId, memberUserId);
+    const received = control.claimPairing(pending.id, pending.claim);
+    assert.equal(received.status, "approved");
+    if (received.status !== "approved") throw new Error("Runner approval missing");
+    const certificate = describeRunnerCertificate(received.certificate);
+    assert.equal(control.authenticate(certificate).ownerUserId, memberUserId);
+    await assert.rejects(
+      () =>
+        control.approveProvisionedPairing({
+          workspaceId: workspace.id,
+          userId: memberUserId,
+          code: pending.code,
+          requestFingerprint: pending.requestFingerprint,
+        }),
+      /invalid or expired/,
+    );
+    const audit = db
+      .query<{ user_id: string; action: string; subject: string }, [string]>(
+        "SELECT user_id,action,subject FROM workspace_access_audit WHERE workspace_id=? AND action LIKE 'runner.%' ORDER BY id",
+      )
+      .all(workspace.id);
+    assert.deepEqual(audit, [
+      { user_id: memberUserId, action: "runner.paired", subject: approved.runnerId },
+      { user_id: memberUserId, action: "runner.pairing_provisioned", subject: pending.id },
+    ]);
+    observe("Paws approves its own VM's pairing as the member, who owns the runner", true, {
+      runnerId: approved.runnerId,
+      ownerUserId: memberUserId,
+      audited: audit.length,
+    });
+
+    const dashboard = await control.beginPairing({ name: "dashboard", csr: client.csr });
+    assert.throws(() => control.inspectPairing(memberPrincipal, dashboard.code), /administrator/);
+    await assert.rejects(
+      () => control.approvePairing(memberPrincipal, dashboard.code),
+      /administrator/,
+    );
+    const viaDashboard = await control.approvePairing(ownerPrincipal, dashboard.code);
+    assert.equal(getRunner(db, viaDashboard.runnerId)!.ownerUserId, ownerUserId);
+    observe("dashboard inspect and approve still require an owner or administrator", true, {
+      memberDenied: true,
+    });
+  } finally {
+    db.close();
+  }
+}
