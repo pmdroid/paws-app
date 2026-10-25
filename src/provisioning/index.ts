@@ -11,6 +11,7 @@ export {
   createExeDevBootstrap,
   isBootstrapError,
   RUNNER_CONFIG_PATH,
+  RUNNER_STATE_DIR,
 } from "./bootstrap";
 export type {
   BootstrapStep,
