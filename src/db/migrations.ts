@@ -2825,6 +2825,24 @@ ALTER TABLE github_attribution_request ADD COLUMN return_path TEXT CHECK (
 );
 `,
   },
+  {
+    // PAS-687. Delete VM: the step the delete job is on, the runner it removes (member_vm.runner_id
+    // is cleared once that runner is revoked), who asked, whether running tasks are stopped, when
+    // each step began (JSON), the stored failure, and the tasks that block it (JSON).
+    id: "141_member_vm_delete",
+    sql: `
+ALTER TABLE member_vm ADD COLUMN delete_step TEXT
+  CHECK(delete_step IS NULL OR delete_step IN ('drain','tailnet','revoke','destroy','clear'));
+ALTER TABLE member_vm ADD COLUMN delete_runner_id TEXT;
+ALTER TABLE member_vm ADD COLUMN delete_requested_by TEXT;
+ALTER TABLE member_vm ADD COLUMN delete_force INTEGER NOT NULL DEFAULT 0 CHECK(delete_force IN (0,1));
+ALTER TABLE member_vm ADD COLUMN delete_step_started_at INTEGER;
+ALTER TABLE member_vm ADD COLUMN delete_at TEXT CHECK(delete_at IS NULL OR json_valid(delete_at));
+ALTER TABLE member_vm ADD COLUMN delete_failure TEXT;
+ALTER TABLE member_vm ADD COLUMN delete_blocked TEXT
+  CHECK(delete_blocked IS NULL OR json_valid(delete_blocked));
+`,
+  },
 ];
 
 /**
