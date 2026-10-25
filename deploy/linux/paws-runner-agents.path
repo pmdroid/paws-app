@@ -1,0 +1,10 @@
+[Unit]
+Description=Paws coding agent versions sent to this runner
+
+[Path]
+# The runner daemon replaces this file with the agent versions Paws asked it to run.
+PathChanged=/var/lib/paws-runner/agent-requests.json
+Unit=paws-runner-agents.service
+
+[Install]
+WantedBy=paths.target

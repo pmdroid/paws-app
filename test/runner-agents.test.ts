@@ -3,6 +3,8 @@ import { expect, test } from "bun:test";
 // The agent installer tests in linux-release-test.py, run against a local fake npm registry with
 // this Bun: an integrity mismatch is refused, install scripts don't run, a second version installs
 // beside the first, `current` waits for sessions on the old one, and every launcher runs a fake task.
+// The update tests apply requests forwarded from Paws: only the version and integrity Paws sent install,
+// a running session keeps its version until it ends, and a rollback switches back without npm.
 test("the runner installer installs the coding agents from pinned, integrity-checked lockfiles", async () => {
   const child = Bun.spawn(
     [
@@ -25,7 +27,7 @@ test("the runner installer installs the coding agents from pinned, integrity-che
     child.exited,
   ]);
   expect(stdout + stderr).not.toContain("skipped");
-  expect(stderr).toMatch(/Ran 5 tests[\s\S]*\nOK\n?$/);
+  expect(stderr).toMatch(/Ran 9 tests[\s\S]*\nOK\n?$/);
   expect(code).toBe(0);
 });
 

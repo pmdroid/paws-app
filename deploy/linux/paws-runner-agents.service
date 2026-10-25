@@ -1,0 +1,13 @@
+[Unit]
+Description=Install the coding agent versions Paws sent to this runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Installs each requested version from npm with its integrity checked, then moves the agent's
+# current pointer once no session holds the old version. It keeps checking while sessions run.
+ExecStart=/usr/bin/python3 -I -B /usr/lib/paws-runner-package/install.py agent-requests
+TimeoutStartSec=infinity
+UMask=0022
+NoNewPrivileges=yes

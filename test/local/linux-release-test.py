@@ -773,5 +773,89 @@ class AgentInstallation(unittest.TestCase):
         self.finish(process)
 
 
+    def published_integrity(self, agent, version):
+        return self.registry.packuments[release.AGENT_PACKAGES[agent]]["versions"][version]["dist"]["integrity"]
+
+    def request(self, agent, version, request_id, integrity=True, native=None):
+        return {"id": request_id, "agent": agent, "version": version, "integrity": self.published_integrity(agent, version) if integrity is True else integrity, "nativeVersion": native}
+
+    def process(self, requests, sleep=None):
+        """Run `install.py agent-requests` against this case's folders, as paws-runner-agents.service does."""
+        path = self.work / "agent-requests.json"
+        path.write_text(json.dumps({"format": 1, "requests": requests}))
+        lock = self.work / "agents.lock"
+        with mock.patch.object(self.installer, "lock_agents", lambda: os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)):
+            return self.installer.process_agent_requests(BUN, self.base, self.registry.url, path, self.work / "status/status.json", sleep or (lambda _: self.fail("nothing should wait")))
+
+    def installed_one(self):
+        self.install("1.0.0")
+        self.installer.activate_agents(self.manifest("1.0.0"), self.base)
+
+    def test_an_update_request_installs_the_version_paws_sent_and_reports_it(self):
+        self.installed_one()
+        status = self.process([self.request("codex", "2.0.0", "update-1", native="2.0.0")])
+        self.assertEqual(self.current("codex"), "2.0.0")
+        self.assertEqual(self.current("claude"), "1.0.0")
+        self.assertEqual(status["agents"]["codex"], {"current": "2.0.0", "previous": "1.0.0", "request": {"id": "update-1", "version": "2.0.0", "status": "installed"}})
+        self.assertEqual(json.loads((self.work / "status/status.json").read_text()), status)
+        process, answer = self.session("codex-acp")
+        self.assertEqual(answer["result"]["version"], "2.0.0")
+        self.finish(process)
+        # A request already applied is not applied again.
+        self.registry.requests.clear()
+        self.process([self.request("codex", "2.0.0", "update-1", native="2.0.0")])
+        self.assertEqual(self.registry.requests, [])
+
+    def test_a_version_or_integrity_paws_did_not_send_is_refused(self):
+        self.installed_one()
+        other = self.published_integrity("codex", "1.0.0")
+        status = self.process([
+            self.request("codex", "2.0.0", "wrong-integrity", integrity=other),
+            self.request("claude", "2.0.0", "wrong-native", native="9.9.9"),
+        ])
+        self.assertEqual(status["agents"]["codex"]["request"]["status"], "failed")
+        self.assertIn("is not the one Paws sent", status["agents"]["codex"]["request"]["error"])
+        self.assertEqual(status["agents"]["claude"]["request"]["status"], "failed")
+        self.assertFalse((self.base / "agents/codex/2.0.0").exists())
+        self.assertEqual(self.current("codex"), "1.0.0")
+        self.assertEqual(self.current("claude"), "1.0.0")
+        for content in ('{"format": 1, "requests": [{"id": "x", "agent": "left-pad", "version": "1.0.0", "integrity": null, "nativeVersion": null}]}', '{"format": 1, "requests": [{"id": "x", "agent": "codex", "version": "../1", "integrity": null, "nativeVersion": null}]}', '{"format": 1, "requests": [{"id": "x", "agent": "codex", "version": "2.0.0", "integrity": "sha1-abc", "nativeVersion": null}]}'):
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                release.parse_agent_requests(content)
+
+    def test_a_running_session_keeps_its_version_until_it_ends(self):
+        self.installed_one()
+        process, answer = self.session("claude-agent-acp")
+        self.assertEqual(answer["result"]["version"], "1.0.0")
+        checks = []
+        def sleep(_):
+            status = json.loads((self.work / "status/status.json").read_text())
+            checks.append(status["agents"]["claude"]["request"])
+            self.assertEqual(self.current("claude"), "1.0.0")
+            if len(checks) == 2:
+                self.finish(process)
+        status = self.process([self.request("claude", "2.0.0", "update-2")], sleep)
+        self.assertEqual(checks[0]["status"], "waiting")
+        self.assertEqual(checks[0].get("sessions"), 1)
+        self.assertEqual(len(checks), 2)
+        self.assertEqual(status["agents"]["claude"]["request"], {"id": "update-2", "version": "2.0.0", "status": "installed"})
+        self.assertEqual(self.current("claude"), "2.0.0")
+
+    def test_rollback_switches_back_to_the_previous_installed_version(self):
+        self.installed_one()
+        self.process([self.request("grok", "2.0.0", "update-3")])
+        self.assertEqual(self.current("grok"), "2.0.0")
+        self.registry.requests.clear()
+        status = self.process([self.request("grok", "1.0.0", "rollback-1", integrity=None)])
+        self.assertEqual(self.registry.requests, [])
+        self.assertEqual(self.current("grok"), "1.0.0")
+        self.assertEqual(status["agents"]["grok"]["previous"], "2.0.0")
+        self.assertEqual(status["agents"]["grok"]["request"]["status"], "installed")
+        status = self.process([self.request("grok", "3.0.0", "rollback-2", integrity=None)])
+        self.assertEqual(status["agents"]["grok"]["request"]["status"], "failed")
+        self.assertIn("not installed on this runner", status["agents"]["grok"]["request"]["error"])
+        self.assertEqual(self.current("grok"), "1.0.0")
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], *sys.argv[2:]], verbosity=2)
