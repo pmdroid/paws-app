@@ -9,7 +9,7 @@ import {
   type JobContext,
   type JobLoop,
 } from "../db";
-import type { ExeDev } from "../provisioning";
+import { isProvisioningError, type ExeDev } from "../provisioning";
 import { redact } from "./job";
 import {
   getMemberVm,
@@ -97,9 +97,9 @@ async function runDeleteStep(
   now: () => number,
 ): Promise<Outcome> {
   const vm = row.vmName;
-  // Before exe.dev was asked to create it, a VM by this name is not Paws's to touch: it may be
-  // the one a create refused with `conflict`.
-  const ours = !(row.step === "create" && row.createRequestedAt === null);
+  // The VM is Paws's only once exe.dev answered the create and provisioning moved past it. A VM
+  // by this name before then may be someone else's, e.g. the one a create refused as `conflict`.
+  const created = row.step !== "create";
   const actor = row.deleteRequestedBy ?? row.userId;
   switch (row.deleteStep) {
     case "drain": {
@@ -113,16 +113,22 @@ async function runDeleteStep(
           runnerId,
           row.id,
         ]);
-      const runner = runnerId === null ? null : liveRunner(db, runnerId);
-      if (runner !== null && runner.status !== "draining")
-        updateRunnerStatus(db, {
-          runnerId: runner.id,
-          workspaceId: runner.workspaceId,
-          userId: actor,
-          status: "draining",
-          now: now(),
-        });
-      const tasks = runnerId === null ? [] : blockingTasks(db, runnerId, now());
+      // Every runner the VM enrolled, including one whose runner_id was never recorded, is
+      // drained and checked for running tasks before anything is revoked.
+      const runners = vmRunners(db, row);
+      for (const runner of runners)
+        if (runner.status !== "draining")
+          updateRunnerStatus(db, {
+            runnerId: runner.id,
+            workspaceId: runner.workspaceId,
+            userId: actor,
+            status: "draining",
+            now: now(),
+          });
+      const seen = new Set<string>();
+      const tasks = runners
+        .flatMap((runner) => blockingTasks(db, runner.id, now()))
+        .filter((task) => !seen.has(task.itemId) && seen.add(task.itemId));
       if (tasks.length > 0 && row.deleteForce !== 1) {
         const names = tasks.map((task) => task.identifier).join(", ");
         const changed = db.run(
@@ -153,7 +159,8 @@ async function runDeleteStep(
     }
 
     case "tailnet": {
-      if (ours) {
+      // The VM joins the tailnet only after its create, during enrollment.
+      if (created) {
         try {
           const exeDev = await resolve(options.exeDev);
           await exeDev.execVm(vm, MEMBER_VM_TAILNET_LOGOUT, {
@@ -171,16 +178,9 @@ async function runDeleteStep(
       // The same path as removing a paired runner: revoke the runner and its certificates, then
       // drop their connections. Also every runner that enrolled with a token minted for this VM,
       // so an enrollment whose runner_id was never recorded (Paws stopped mid-step) is revoked too.
-      const ids = new Set(
-        [row.deleteRunnerId, row.runnerId, ...enrolledRunners(db, row)].filter(
-          (value) => value !== null,
-        ),
-      );
-      for (const runnerId of ids) {
-        const runner = liveRunner(db, runnerId);
-        if (runner === null) continue;
+      for (const runner of vmRunners(db, row)) {
         const fingerprints = updateRunnerStatus(db, {
-          runnerId,
+          runnerId: runner.id,
           workspaceId: runner.workspaceId,
           userId: actor,
           status: "revoked",
@@ -193,7 +193,24 @@ async function runDeleteStep(
     }
 
     case "destroy": {
-      if (ours) await (await resolve(options.exeDev)).deleteVm(vm);
+      const exeDev = await resolve(options.exeDev);
+      if (created) await exeDev.deleteVm(vm);
+      else if (row.createRequestedAt !== null) {
+        // The create was asked but never answered: Paws stopped while it was out, or it failed
+        // without a clear refusal. If exe.dev has no VM by this name there is nothing to remove.
+        // If it has one, Paws cannot tell whether it created it, so it leaves it in place.
+        const exists = await exeDev.getVm(vm).then(
+          () => true,
+          (error: unknown) => {
+            if (isProvisioningError(error) && error.code === "missing") return false;
+            throw error;
+          },
+        );
+        if (exists)
+          throw new Error(
+            `exe.dev has a VM named ${vm}, but its create was interrupted before exe.dev answered, so Paws cannot tell whether it made it. Paws left it in place. If it is yours, remove it on exe.dev, then Retry.`,
+          );
+      }
       advance(db, row, "clear", now());
       return "advance";
     }
@@ -212,6 +229,7 @@ async function runDeleteStep(
           [row.id],
         ).changes;
         if (removed !== 1) throw new StepMoved();
+        db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [row.id]);
         auditWorkspaceAccess(db, {
           workspaceId: row.workspaceId,
           userId: actor,
@@ -253,17 +271,30 @@ function provisioningInFlight(db: Database, id: string, now: number): boolean {
 }
 
 /**
- * Runners enrolled with a Create VM token for this VM: the enrollment names the VM, belongs to
- * the VM's member and was used after the row was created.
+ * The live runners of this VM: the one recorded on the row and every runner that enrolled with a
+ * token Create VM minted for it. A host the member paired by hand is never among them.
  */
-function enrolledRunners(db: Database, row: MemberVm): string[] {
-  return db
-    .query<{ runnerId: string }, [string, string, string, number]>(
-      `SELECT runner_id AS runnerId FROM runner_enrollment WHERE workspace_id=? AND user_id=?
-      AND name=? AND runner_id IS NOT NULL AND used_at>=?`,
+function vmRunners(
+  db: Database,
+  row: MemberVm,
+): { id: string; workspaceId: string; status: string }[] {
+  const enrolled = db
+    .query<{ runnerId: string }, [string]>(
+      `SELECT e.runner_id AS runnerId FROM member_vm_enrollment m
+      JOIN runner_enrollment e ON e.token_hash=m.token_hash
+      WHERE m.member_vm_id=? AND e.runner_id IS NOT NULL`,
     )
-    .all(row.workspaceId, row.userId, row.vmName, row.createdAt)
+    .all(row.id)
     .map((entry) => entry.runnerId);
+  const ids = new Set(
+    [row.deleteRunnerId, row.runnerId, ...enrolled].filter((value) => value !== null),
+  );
+  return [...ids]
+    .map((id) => liveRunner(db, id))
+    .filter(
+      (runner): runner is NonNullable<typeof runner> =>
+        runner !== null && runner.workspaceId === row.workspaceId,
+    );
 }
 
 function liveRunner(

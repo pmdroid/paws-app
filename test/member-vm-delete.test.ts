@@ -119,9 +119,15 @@ async function fixture() {
   let hosts = 0;
   const exeDev = createFakeExeDev();
   /** Set a gate to hold provisioning's create, or its enrollment after the runner exists. */
-  const hold: { create: Promise<void> | null; enroll: Promise<void> | null } = {
+  const hold: {
+    create: Promise<void> | null;
+    enroll: Promise<void> | null;
+    /** The enrollment answers, then the step dies before runner_id is written. */
+    enrollDies: boolean;
+  } = {
     create: null,
     enroll: null,
+    enrollDies: false,
   };
   const provisioningExeDev: ExeDev = {
     ...exeDev,
@@ -137,6 +143,7 @@ async function fixture() {
       const key = await createRunnerKey(join(root, `host-${hosts}`));
       const identity = await control.enroll({ token, name: vm, csr: key.csr });
       await hold.enroll;
+      if (hold.enrollDies) throw new Error("Paws stopped before it recorded the runner.");
       return { runnerId: identity.runnerId, workspaceId: identity.workspaceId };
     },
   });
@@ -638,35 +645,73 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(live).toBe(0);
   });
 
-  test("revokes a runner enrolled for this VM that the row never recorded", async () => {
+  test("drains, blocks on and revokes a runner the VM enrolled that the row never recorded", async () => {
     const f = await fixture();
-    const vm = await f.ready();
-    // As if Paws stopped after an earlier enrollment answered but before runner_id was written.
-    const enrollment = f.control.createEnrollment(f.principal(f.member.userId, "member"), {
-      name: vm.vmName,
-    });
-    const key = await createRunnerKey(temp("paws-orphan-host-"));
-    const orphan = await f.control.enroll({
-      token: enrollment.token,
-      name: vm.vmName,
-      csr: key.csr,
-    });
-    // A host the member added by hand under another name stays.
+    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    f.hold.enrollDies = true;
+    for (let index = 0; index < 100 && getMemberVm(f.db, row.id)!.failure === null; index++)
+      if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
+    const stuck = getMemberVm(f.db, row.id)!;
+    expect(stuck.step).toBe("enroll");
+    expect(stuck.runnerId).toBeNull();
+    const orphan = f.db
+      .query<{ id: string }, []>(
+        "SELECT id FROM runner WHERE name='ada-lovelace-paws' AND revoked_at IS NULL",
+      )
+      .get()!;
+    expect(getRunner(f.db, orphan.id)!.status).toBe("active");
+    const itemId = f.task(orphan.id, "PAS-902");
+
+    // A host the member paired by hand, even under the VM's own name, is not the VM's.
     const manual = f.control.createEnrollment(f.principal(f.member.userId, "member"), {
-      name: "laptop",
+      name: "ada-lovelace-paws",
     });
-    const laptopKey = await createRunnerKey(temp("paws-laptop-host-"));
     const laptop = await f.control.enroll({
       token: manual.token,
-      name: "laptop",
-      csr: laptopKey.csr,
+      name: "ada-lovelace-paws",
+      csr: (await createRunnerKey(temp("paws-same-name-host-"))).csr,
     });
 
-    await f.remove(f.member, vm.id);
+    await f.remove(f.member, row.id);
     await f.settle();
-    expect(getMemberVm(f.db, vm.id)).toBeNull();
-    expect(getRunner(f.db, vm.runnerId!)!.status).toBe("revoked");
-    expect(getRunner(f.db, orphan.runnerId)!.status).toBe("revoked");
+    const blocked = viewOf((await f.call(f.member, "/api/runners/vm")).body);
+    expect(blocked.deleting!.step).toBe("drain");
+    expect(blocked.deleting!.blocked.map((task) => task.identifier)).toEqual(["PAS-902"]);
+    expect(getRunner(f.db, orphan.id)!.status).toBe("draining");
+    expect(f.stopped).toEqual([]);
+
+    await f.remove(f.member, row.id, true);
+    await f.settle();
+    expect(f.stopped).toEqual([itemId]);
+    expect(getMemberVm(f.db, row.id)).toBeNull();
+    expect(getRunner(f.db, orphan.id)!.status).toBe("revoked");
     expect(getRunner(f.db, laptop.runnerId)!.status).toBe("active");
+    expect(
+      f.db.query("SELECT 1 FROM member_vm_enrollment WHERE member_vm_id=?").get(row.id),
+    ).toBeNull();
+  });
+
+  test("a create cut off by a restart never removes a VM Paws cannot prove it made", async () => {
+    const f = await fixture();
+    // exe.dev already has a VM by the name; Paws stopped with the create still out.
+    f.exeDev.addVm("ada-lovelace-paws");
+    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    f.db.run("UPDATE member_vm SET create_requested_at=? WHERE id=?", [f.clock.now(), row.id]);
+    f.db.run("UPDATE job SET status='cancelled' WHERE queue=?", [MEMBER_VM_QUEUE]);
+
+    await f.remove(f.member, row.id);
+    await f.settle();
+    const failed = getMemberVm(f.db, row.id)!;
+    expect(failed.deleteStep).toBe("destroy");
+    expect(failed.deleteFailure).toContain("Paws left it in place");
+    expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
+    expect(f.exeDev.calls.map((call) => call.operation)).toEqual(["getVm"]);
+
+    // Once it is gone from exe.dev, Retry finishes without sending rm.
+    f.exeDev.vms.delete("ada-lovelace-paws");
+    await f.remove(f.member, row.id);
+    await f.settle();
+    expect(getMemberVm(f.db, row.id)).toBeNull();
+    expect(f.exeDev.calls.map((call) => call.operation)).toEqual(["getVm", "getVm"]);
   });
 });
