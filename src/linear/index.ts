@@ -186,5 +186,3 @@ export { createLinearIssueContextReads, type LinearIssueContext } from "./issue-
 export { cacheLinearMemberships, createLinearMembershipReads } from "./membership";
 export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
 
-export { createLinearAttributionReads } from "./attribution";
-export type { LinearAttributionContext } from "./attribution";

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { readCheckpoint } from "./checkpoint";
 import { randomUUID } from "node:crypto";
 import type { Checkpoint, RunKind, RunStatus, GitCommitPolicy } from "../core";
 
@@ -106,7 +107,7 @@ function mapRun(row: RunSql): StoredRun {
     kind: row.kind,
     agent: row.agent,
     status: row.status,
-    checkpoint: row.checkpoint === null ? null : (JSON.parse(row.checkpoint) as Checkpoint),
+    checkpoint: row.checkpoint === null ? null : readCheckpoint(row.checkpoint),
     freshSession: row.fresh_session === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

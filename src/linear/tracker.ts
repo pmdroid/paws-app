@@ -1,4 +1,3 @@
-import { createLinearAttributionReads } from "./attribution";
 import { createIssuePullRequestReads } from "./issue-pulls";
 import { createLinearProjectScopeReads } from "./project-scope";
 import { createLinearAttachmentMethods } from "./attachments";
@@ -69,7 +68,6 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
 type LinearTracker = LinearSessionAdapter &
   ReturnType<typeof createLinearSessionReads> &
   LinearRepositoryAdapter &
-  ReturnType<typeof createLinearAttributionReads> &
   ReturnType<typeof createLinearMergeReads>;
 
 type TrackerMethod = {
@@ -88,7 +86,6 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   createSessionOnIssue: "session-create",
   createSessionOnComment: "session-create",
   projectOverview: "project-overview",
-  getIssueAttribution: "issue-attribution",
   issueRepositorySuggestions: "repository-suggestions",
   issueRepositoryHints: "repository-hints",
   addRepositoryLabel: "repository-label",
@@ -114,7 +111,6 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
     supportsActivityReconciliation: true,
     ...sessions,
     ...createLinearProjectScopeReads(client),
-    ...createLinearAttributionReads(client),
     ...createLinearRepositoryMethods(client),
     ...createLinearMergeReads(client, starts),
     ...createLinearAttachmentMethods(client),
