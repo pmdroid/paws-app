@@ -51,6 +51,38 @@ Configure the Linear app callbacks described in [Workspace access](workspace-acc
 
 Sign in on the website and authorize the app as a workspace admin. Delegate the sandbox issue and verify its first activity, questions, Closeout result and GitHub pull request.
 
+## First delegation by a new Linear user
+
+This run proves that a Linear user who has never used Paws can delegate an issue and see it merged, all in one Linear session. Run it on a disposable Paws instance, with a fresh `~/.paws`, so no membership, runner or GitHub link exists yet. The flow it checks is in [Workspace access](workspace-access.md#first-time-members) and [Linear agent sessions](linear-agent-sessions.md#a-first-delegation).
+
+Prepare the instance as an admin first:
+
+1. Start a disposable Paws with HTTPS workspace access and agent session webhooks, as above. Point it at a sandbox Linear workspace.
+2. Sign in as a Linear workspace admin, connect GitHub in Integrations, and map a demo repository to the sandbox team. For Create VM, save an exe.dev token as in [Create a runner VM on exe.dev](create-vm.md).
+3. Invite a fresh Linear user to the workspace as a member, not a guest, and add them to the sandbox team. They must never have signed in to this Paws.
+4. Create a small issue in the sandbox team, such as "Add a `HELLO.md` that says hello."
+
+Run it as the fresh user, in a private browser window. Take a screenshot of the Linear session after each numbered step, and of the onboarding page at steps 3 to 6.
+
+1. **Delegate.** Delegate the issue to the Paws app. Within 10 seconds the session shows "Picked up this issue." Then it shows one **Sign in to Paws** action with the welcome text and the optional GitHub line. It shows no error.
+2. **Wait and reply.** Reply "Use a short file." in the session. Paws posts nothing. Wait at least 15 minutes and confirm the session still shows a single sign-in action.
+3. **Sign in.** Select the action and sign in with Linear. The browser lands on `/onboard/<link id>`. **Linear** and **Membership** are done, **Runner** is needed, and the page says how many steps remain. The session gets "You don't have a runner Paws can use yet…" once.
+4. **Runner.** Select **Create VM** and watch the four VM steps finish, or select **Add a host** and run the printed command on a Linux host. The runner step then names your runner: "<runner> will run this task."
+5. **Agent sign-in.** The **Claude and Codex** step is now needed. Select **Sign in on <runner>** and sign in to Claude and Codex on the Runners page. The step turns to **Connected**. The session posts nothing new here, because the hold already said once what was missing.
+6. **GitHub credit.** On the onboarding page, check the consent box and select **Link GitHub**. GitHub returns you to the onboarding page, which shows "Commits will credit @login." The lead says "You're set up."
+7. **Automatic start.** Without delegating again, the session shows "Starting <issue> on <runner>." The run follows the earlier reply, then Closeout runs and a pull request opens.
+8. **Merged with credit.** Paws merges the pull request. Each commit has a `Co-authored-by` trailer with the fresh user's GitHub noreply address, and the pull request body credits their login.
+
+Check the edges with a second issue delegated by the same fresh user, or by a second fresh user:
+
+- Open the sign-in link while signed in to Linear as someone else. The page says "This link belongs to <name>." and the session does not change.
+- Open `/auth/linear?assignment=x`. It answers 410.
+- After onboarding finishes, open the `/onboard/<link id>` address in a private window. It answers 404.
+
+After the merge, read `/health` on the instance. Under `linear.items`, the issue shows at most 30 requests for the last hour.
+
+Record the run on the pull request that changes this flow. List the Paws commit, the Linear workspace, and whether the runner came from Create VM or Add a host. Attach one screenshot per session state: the first thought, the sign-in action, the no-runner thought, the start thought, and the merged pull request. Also attach the onboarding page before setup and after "You're set up."
+
 ## Runtimes
 
 This run proves a runner installs a repository's runtimes and puts them on `PATH`. How a repository declares them is in [Declare a repository's runtimes](runtimes.md).
