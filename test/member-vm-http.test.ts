@@ -164,7 +164,7 @@ describe("member VM routes", () => {
     const f = await fixture();
     expect(await f.call(f.member, "GET")).toEqual({
       status: 200,
-      body: { available: true, vm: null },
+      body: { available: true, vm: null, vms: [] },
     });
 
     const started = vmOf((await f.call(f.member, "POST")).body);

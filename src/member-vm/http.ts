@@ -139,7 +139,9 @@ function parseRecord(text: string | null): Record<string, number> {
     const value: unknown = JSON.parse(text ?? "{}");
     if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(
-      Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
+      Object.entries(value).filter(
+        (entry): entry is [string, number] => typeof entry[1] === "number",
+      ),
     );
   } catch {
     return {};
@@ -155,11 +157,7 @@ function parseBlocked(text: string | null): MemberVmBlockingTask[] {
   }
 }
 
-const ROUTES = new Set([
-  "/api/runners/vm",
-  "/api/runners/vm/retry",
-  "/api/runners/vm/delete",
-]);
+const ROUTES = new Set(["/api/runners/vm", "/api/runners/vm/retry", "/api/runners/vm/delete"]);
 const MAX_BODY = 4096;
 
 /**
@@ -203,7 +201,8 @@ export function createMemberVmHttp(options: {
     const member = { workspaceId: principal.workspaceId, userId: principal.userId };
     const at = now();
     try {
-      if (method === "POST" && path === "/api/runners/vm") startMemberVm(db, { ...member, now: at });
+      if (method === "POST" && path === "/api/runners/vm")
+        startMemberVm(db, { ...member, now: at });
       else if (path === "/api/runners/vm/retry") retryMemberVm(db, { ...member, now: at });
       else if (path === "/api/runners/vm/delete") {
         const body = await deleteBody(request);

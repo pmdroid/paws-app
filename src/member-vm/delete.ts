@@ -76,7 +76,12 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
     }
     if (outcome === "done" || !context.isCurrent()) return;
     const at = now();
-    parkLeasedJob(db, job, { runAt: at, payload: job.payload, attempts: job.attempts - 1, now: at });
+    parkLeasedJob(db, job, {
+      runAt: at,
+      payload: job.payload,
+      attempts: job.attempts - 1,
+      now: at,
+    });
   };
 }
 
