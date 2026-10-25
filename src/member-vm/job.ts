@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { immediate, parkLeasedJob, type Job, type JobContext, type JobLoop } from "../db";
-import { isProvisioningError, type ExeDev, type ExeDevBootstrap } from "../provisioning";
+import {
+  isProvisioningError,
+  type ExeDev,
+  type ExeDevBootstrap,
+  type ProvisioningErrorCode,
+} from "../provisioning";
 import { getMemberVm, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from "./store";
 
 export type MintEnrollment = (
@@ -8,11 +13,19 @@ export type MintEnrollment = (
   input: { name: string },
 ) => { token: string; expiresAt: number };
 
-export type MemberVmJobOptions = {
+type Secrets = readonly (string | null | undefined | Promise<string | null>)[];
+
+export type MemberVmProvisioning = {
   exeDev: ExeDev;
   bootstrap: ExeDevBootstrap;
   mintEnrollment: MintEnrollment;
-  secrets?: () => readonly (string | null | undefined)[];
+};
+
+export type MemberVmJobOptions = (
+  | MemberVmProvisioning
+  | { provision: () => MemberVmProvisioning | Promise<MemberVmProvisioning> }
+) & {
+  secrets?: () => Secrets | Promise<Secrets>;
   now?: () => number;
   pollMs?: number;
 };
@@ -22,6 +35,15 @@ export const MEMBER_VM_INSTALL_TIMEOUT_MS = 30 * 60_000;
 export const MEMBER_VM_HEALTH_TIMEOUT_MS = 10 * 60_000;
 const TOKEN_MARGIN_MS = 60_000;
 const MAX_FAILURE = 500;
+const REJECTED: ReadonlySet<ProvisioningErrorCode> = new Set([
+  "invalid_name",
+  "invalid_command",
+  "no_token",
+  "unauthorized",
+  "conflict",
+  "missing",
+  "rate_limited",
+]);
 
 type Outcome = { next: "advance" | "poll" | "done" };
 
@@ -41,10 +63,15 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
     const minted: string[] = [];
     let outcome: Outcome;
     try {
-      outcome = await runStep(db, row, options, now, (token) => minted.push(token));
+      const provisioning = "provision" in options ? await options.provision() : options;
+      outcome = await runStep(db, row, provisioning, now, (token) => minted.push(token));
     } catch (error) {
       if (error instanceof StepMoved || !context.isCurrent()) return;
-      const text = redact(errorText(error), [...minted, ...(options.secrets?.() ?? [])]);
+      const secrets = await Promise.resolve()
+        .then(() => options.secrets?.())
+        .then((list) => Promise.all(list ?? []))
+        .catch(() => []);
+      const text = redact(errorText(error), [...minted, ...secrets]);
       const at = now();
       db.run("UPDATE member_vm SET failure=?,updated_at=? WHERE id=? AND step=?", [
         text,
@@ -68,7 +95,7 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
 async function runStep(
   db: Database,
   row: MemberVm,
-  options: MemberVmJobOptions,
+  options: MemberVmProvisioning,
   now: () => number,
   minted: (token: string) => void,
 ): Promise<Outcome> {
@@ -88,16 +115,19 @@ async function runStep(
       try {
         await exeDev.createVm(vm);
       } catch (error) {
-        if (!(isProvisioningError(error) && error.code === "conflict")) throw error;
-        if (asked === null) {
-          db.run(
-            "UPDATE member_vm SET create_requested_at=NULL WHERE id=? AND step='create' AND failure IS NULL",
-            [row.id],
-          );
-          throw new Error(
-            `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
-            { cause: error },
-          );
+        const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
+        if (!ours) {
+          if (rejected(error))
+            db.run(
+              "UPDATE member_vm SET create_requested_at=? WHERE id=? AND step='create' AND failure IS NULL",
+              [asked, row.id],
+            );
+          if (isProvisioningError(error) && error.code === "conflict")
+            throw new Error(
+              `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
+              { cause: error },
+            );
+          throw error;
         }
       }
       advance(db, row, "install", now());
@@ -228,6 +258,12 @@ class StepMoved extends Error {
   constructor() {
     super("The member VM moved on while this step ran.");
   }
+}
+
+function rejected(error: unknown): boolean {
+  if (!isProvisioningError(error)) return false;
+  if (REJECTED.has(error.code)) return true;
+  return error.status !== null && error.status >= 400 && error.status < 500;
 }
 
 function memberVmId(payload: unknown): string | null {

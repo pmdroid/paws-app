@@ -29,6 +29,7 @@ import {
   type ExeDev,
   type FakeBootstrap,
   type FakeExeDev,
+  ProvisioningError,
 } from "../src/provisioning";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -241,6 +242,76 @@ describe("member VM", () => {
     expect(again.failure).toMatch(/did not create/);
     expect(f.bootstrap.calls).toHaveLength(0);
     expect(f.bootstrap.tokens).toHaveLength(0);
+  });
+
+  test("a rejected first request does not make a later conflict look like Paws' own VM", async () => {
+    const exeDev = createFakeExeDev();
+    exeDev.addVm("ada-lovelace-paws");
+    exeDev.fail("createVm", "rate_limited");
+    const f = await fixture({ exeDev });
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const loop = f.jobs();
+    const limited = await drive(f, loop, settled);
+    expect(limited.failure).toMatch(/rate_limited/);
+    expect(limited.createRequestedAt).toBeNull();
+    retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const refused = await drive(f, loop, settled);
+    expect(refused.step).toBe("create");
+    expect(refused.failure).toMatch(/did not create/);
+    expect(f.bootstrap.calls).toHaveLength(0);
+  });
+
+  test("an ambiguous create error keeps the marker, so the retry's conflict is Paws' own VM", async () => {
+    const exeDev = createFakeExeDev();
+    const f = await fixture({
+      exeDev: {
+        ...exeDev,
+        async createVm(name) {
+          if (!exeDev.vms.has(name)) {
+            exeDev.addVm(name);
+            throw new ProvisioningError("createVm", "timeout", "exe.dev createVm timed out.");
+          }
+          return exeDev.createVm(name);
+        },
+      },
+    });
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const loop = f.jobs();
+    const timedOut = await drive(f, loop, settled);
+    expect(timedOut.failure).toMatch(/timed out/);
+    expect(timedOut.createRequestedAt).not.toBeNull();
+    retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await drive(f, loop, (value) => value.step === "install" || !!value.failure);
+    expect(row.failure).toBeNull();
+  });
+
+  test("provisioning resolved per claim drives the chain, and a missing prerequisite fails the step", async () => {
+    const f = await fixture();
+    let ready = false;
+    const loop = new JobLoop(f.db, f.clock, { leaseMs: LEASE_MS });
+    registerMemberVmJob(loop, {
+      provision: () => {
+        if (!ready) throw new Error("Create VM needs runner control to be configured.");
+        return {
+          exeDev: f.exeDev,
+          bootstrap: f.bootstrap,
+          mintEnrollment: (ref, request) =>
+            f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),
+        };
+      },
+      secrets: async () => [EXE_DEV_TOKEN],
+      now: () => f.clock.now(),
+    });
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const failed = await drive(f, loop, settled);
+    expect(failed.step).toBe("create");
+    expect(failed.failure).toMatch(/runner control/);
+    expect(f.exeDev.calls).toHaveLength(0);
+    ready = true;
+    retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
+    expect(row.failure).toBeNull();
+    expect(getRunner(f.db, row.runnerId!)!.ownerUserId).toBe(f.member.userId);
   });
 
   test("a failed step keeps the row and VM, hides secrets, and retry reruns it", async () => {
