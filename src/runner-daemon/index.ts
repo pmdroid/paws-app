@@ -1,5 +1,10 @@
-export { openRunnerDaemon, type RunnerDaemon, type RunnerDaemonOptions } from "./daemon";
-export { RunnerRequestError } from "./transport";
+export {
+  EnrollmentTokenSchema,
+  openRunnerDaemon,
+  type RunnerDaemon,
+  type RunnerDaemonOptions,
+} from "./daemon";
+export { RunnerRequestError, RunnerTransportError, transportFailure } from "./transport";
 export { createRunnerHostSampler, type RunnerHostSamplerOptions } from "./host";
 export type {
   RunnerHeartbeat,
