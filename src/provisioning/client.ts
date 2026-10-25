@@ -105,6 +105,22 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
     }
   }
 
+  async function unlisted(vm: string): Promise<boolean> {
+    try {
+      const { status, text } = await call(
+        "getVm",
+        vm,
+        `ls ${vm}`,
+        "application/json",
+        timeout.getVm,
+      );
+      parseListed(vm, status, text);
+      return false;
+    } catch (error) {
+      return error instanceof ProvisioningError && error.code === "missing";
+    }
+  }
+
   return {
     async createVm(name) {
       const vm = assertVmName("createVm", name);
@@ -131,6 +147,12 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
         return parseDeleted(vm, status, text);
       } catch (error) {
         if (error instanceof ProvisioningError && error.code === "missing") return "missing";
+        if (
+          error instanceof ProvisioningError &&
+          error.code === "invalid_response" &&
+          (await unlisted(vm))
+        )
+          return "missing";
         throw error;
       }
     },
