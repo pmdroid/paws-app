@@ -2812,6 +2812,19 @@ BEGIN
 END;
 `,
   },
+  {
+    // PAS-681. Where the GitHub credit callback returns. The server writes it when the link
+    // starts and never reads it from the URL. NULL means Settings → Account.
+    id: "140_github_attribution_return_path",
+    sql: `
+ALTER TABLE github_attribution_request ADD COLUMN return_path TEXT CHECK (
+  return_path IS NULL OR return_path = '/status/settings/account' OR (
+    length(return_path) = 35 AND substr(return_path, 1, 9) = '/onboard/'
+    AND substr(return_path, 10) NOT GLOB '*[^0-9A-Za-z]*'
+  )
+);
+`,
+  },
 ];
 
 /**
