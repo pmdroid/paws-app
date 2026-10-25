@@ -35,6 +35,8 @@ import {
   createWorkspaceAssignments,
   delegatorCommitCredit,
   issueWorkspaceBootstrap,
+  ONBOARDING_EXPIRED_BODY,
+  ONBOARDING_HOLD_MS,
   WORKSPACE_COOKIE,
   workspaceTokenHash,
 } from "../src/workspace";
@@ -108,6 +110,8 @@ function fixture({
   let failContinue = false;
   let changeAtIntake: (() => void) | undefined;
   let calls = 0;
+  let linearRequests = 0;
+  const logs: string[] = [];
   let memberRead: (() => Promise<void>) | undefined;
   const githubCalls: string[] = [];
   const memberships = {
@@ -115,6 +119,7 @@ function fixture({
       return { id: "org", name: "Workspace" };
     },
     async member(organizationId: string, userId: string) {
+      linearRequests++;
       await memberRead?.();
       return { organizationId, userId, active, guest, admin: false, teamIds: teams };
     },
@@ -253,6 +258,7 @@ function fixture({
       ...(createVm === undefined ? {} : { createVmAvailable: async () => createVm }),
       githubAttributionClient: { clientId: "github-client", clientSecret: "github-secret" },
       now: () => clock.now(),
+      log: (line) => logs.push(line),
       fetch: (async (input, init) => {
         // A fake GitHub OAuth: Paws never reaches github.com in tests.
         if (String(input) === "https://github.com/login/oauth/access_token") {
@@ -263,6 +269,7 @@ function fixture({
           githubCalls.push("user");
           return Response.json({ id: 4242, login: "morgan-gh", type: "User", name: "Morgan" });
         }
+        linearRequests++;
         if (String(input).endsWith("/oauth/token")) {
           const code = new URLSearchParams(String(init?.body)).get("code");
           return Response.json({ access_token: `fixture-${code}` });
@@ -287,7 +294,7 @@ function fixture({
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    async fetch(request) {
+    async fetch(request, current): Promise<Response> {
       const url = new URL(request.url);
       const headers = new Headers(request.headers);
       headers.set("host", new URL(origin).host);
@@ -300,6 +307,7 @@ function fixture({
               ? {}
               : { body: await request.arrayBuffer() }),
           }),
+          { ip: request.headers.get("x-test-ip") ?? current.requestIP(request)?.address },
         )) ?? new Response(null, { status: 404 })
       );
     },
@@ -311,16 +319,16 @@ function fixture({
     expect(payload.auth.userId).toBe("member");
     return payload.auth.url;
   }
-  async function begin(url = link()) {
+  async function begin(url = link(), headers: Record<string, string> = {}) {
     const target = new URL(url);
-    return fetch(`${local}${target.pathname}${target.search}`, { redirect: "manual" });
+    return fetch(`${local}${target.pathname}${target.search}`, { redirect: "manual", headers });
   }
-  async function callback(start: Response, user = "member") {
+  async function callback(start: Response, user = "member", headers: Record<string, string> = {}) {
     const provider = new URL(start.headers.get("location")!);
     const url = `${local}/auth/linear/callback?state=${provider.searchParams.get("state")}&code=${user}`;
     return fetch(url, {
       redirect: "manual",
-      headers: { cookie: start.headers.get("set-cookie")!.split(";")[0]! },
+      headers: { cookie: start.headers.get("set-cookie")!.split(";")[0]!, ...headers },
     });
   }
   const delivered = new Set<number>();
@@ -368,6 +376,10 @@ function fixture({
     get calls() {
       return calls;
     },
+    get linearRequests() {
+      return linearRequests;
+    },
+    logs,
     get sessionReads() {
       return sessionReads;
     },
@@ -1024,23 +1036,21 @@ test("the runner step offers Create VM when Paws can create one", async () => {
   }
 });
 
-test("the creator without a Paws session signs in again and returns to the same page", async () => {
+test("a finished link opened without a Paws session is 404, even for its creator", async () => {
   const f = fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
     await f.callback(await f.begin(link));
-    const start = await f.begin(link);
-    expect(start.status).toBe(303);
-    expect(new URL(start.headers.get("location")!).origin).toBe("https://linear.app");
-    expect(await start.text()).toBe("");
-    const back = await f.callback(start);
+    const opened = await f.begin(link);
+    expect(opened.status).toBe(404);
+    expect(opened.headers.get("location")).toBeNull();
+    expect(opened.headers.get("set-cookie")).toBeNull();
+    expect(await opened.text()).not.toContain("TEST-1");
+    // The creator signs in from the dashboard and the link shows their page again.
+    const back = await f.callback(await fetch(`${f.local}/auth/linear`, { redirect: "manual" }));
     expect(back.status).toBe(303);
-    expect(back.headers.get("location")).toBe(onboardPath(link));
-    const page = await fetch(`${f.local}${onboardPath(link)}`, {
-      redirect: "manual",
-      headers: { cookie: sessionCookie(back) },
-    });
+    const page = await f.begin(link, { cookie: sessionCookie(back) });
     expect(page.status).toBe(200);
     expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
       status: "ready",
@@ -1063,22 +1073,13 @@ test("another member opening the onboarding link sees nothing about the issue", 
     expect(dashboard.headers.get("location")).toBe("/status/");
     const cookie = sessionCookie(dashboard);
     for (const headers of [{ cookie }, {}] as Record<string, string>[]) {
-      const opened = await fetch(`${f.local}${onboardPath(link)}`, {
-        redirect: "manual",
-        headers,
-      });
-      expect(opened.status).toBe(303);
-      expect(new URL(opened.headers.get("location")!).origin).toBe("https://linear.app");
-      expect(await opened.text()).not.toContain("TEST-1");
-      const refused = await f.callback(opened, "other");
-      expect(refused.status).toBe(403);
-      const body = await refused.text();
-      expect(body).toContain("This link belongs to Morgan Member.");
-      expect(body).not.toContain("TEST-1");
-      expect(refused.headers.get("location")).toBeNull();
+      const opened = await f.begin(link, headers);
+      expect(opened.status).toBe(404);
+      expect(opened.headers.get("location")).toBeNull();
       expect(
-        refused.headers.getSetCookie().some((value) => value.startsWith(`${WORKSPACE_COOKIE}=`)),
+        opened.headers.getSetCookie().some((value) => value.startsWith(`${WORKSPACE_COOKIE}=`)),
       ).toBe(false);
+      expect(await opened.text()).not.toContain("TEST-1");
     }
     expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
       status: "ready",
@@ -1359,6 +1360,233 @@ test("the onboarding credit form needs the creator, CSRF and consent, and calls 
     });
     expect(f.githubCalls).toEqual([]);
   } finally {
+    await f.close();
+  }
+});
+
+const holdStatus = (f: ReturnType<typeof fixture>) =>
+  f.db.query<{ status: string }, []>("SELECT status FROM workspace_assignment").get()!.status;
+
+test("a pending hold past one day posts one final response, ends the session and cancels the hold", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const start = await f.begin(link);
+    await f.deliver();
+    expect(f.tracker.questions).toHaveLength(1);
+    const jobs = f.jobs();
+    f.clock.advance(ONBOARDING_HOLD_MS - 60_000);
+    await jobs.tick();
+    expect(holdStatus(f)).toBe("pending");
+    expect(listOutbox(f.db)).toHaveLength(1);
+
+    f.clock.advance(2 * 60_000);
+    for (let minute = 0; minute < 5; minute++) {
+      await jobs.tick();
+      f.clock.advance(60_000);
+    }
+    await f.deliver();
+    const responses = f.tracker.progress.filter((update) => update.kind === "response");
+    expect(responses.map((update) => update.body)).toEqual([ONBOARDING_EXPIRED_BODY]);
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(getLinearSession(f.db, "session")!.stoppedAt).not.toBeNull();
+    expect(holdStatus(f)).toBe("invalid");
+    expect(listWorkItems(f.db)).toHaveLength(0);
+
+    // The link, a late callback and a later sign-in from the dashboard cannot start the work.
+    expect((await f.begin(link)).status).toBe(404);
+    expect((await f.callback(start)).status).toBe(400);
+    const dashboard = await fetch(`${f.local}/auth/linear`, { redirect: "manual" });
+    expect((await f.callback(dashboard)).status).toBe(303);
+    await jobs.tick();
+    await jobs.tick();
+    expect(f.continuations).toEqual([]);
+    expect(listOutbox(f.db).filter((row) => row.status !== "dropped")).toHaveLength(1);
+    expect(holdStatus(f)).toBe("invalid");
+  } finally {
+    await f.close();
+  }
+});
+
+test("a completed link shows the task only to its creator and is 404 for anyone else", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const done = await f.callback(await f.begin(link));
+    expect(done.status).toBe(303);
+    const creator = sessionCookie(done);
+    const jobs = f.jobs();
+    await jobs.tick();
+    await jobs.tick();
+    expect(f.continuations).toEqual([f.event.dedupeKey]);
+
+    const mine = await f.begin(link, { cookie: creator });
+    expect(mine.status).toBe(200);
+    expect(await mine.text()).toContain("<strong>TEST-1</strong>");
+
+    const anonymous = await f.begin(link);
+    expect(anonymous.status).toBe(404);
+    expect(anonymous.headers.get("location")).toBeNull();
+    expect(anonymous.headers.get("set-cookie")).toBeNull();
+    expect(await anonymous.text()).not.toContain("TEST-1");
+
+    const other = await f.callback(
+      await fetch(`${f.local}/auth/linear`, { redirect: "manual" }),
+      "wrong",
+    );
+    expect(other.status).toBe(303);
+    const someoneElse = await f.begin(link, { cookie: sessionCookie(other) });
+    expect(someoneElse.status).toBe(404);
+    expect(someoneElse.headers.get("location")).toBeNull();
+    expect(await someoneElse.text()).not.toContain("TEST-1");
+  } finally {
+    await f.close();
+  }
+});
+
+test("onboarding starts are limited per client IP and per link, and a 429 writes nothing", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const outbox = listOutbox(f.db).length;
+    const linear = f.linearRequests;
+    const ip = { "x-test-ip": "203.0.113.7" };
+    for (let attempt = 0; attempt < 10; attempt++)
+      expect((await f.begin(link, ip)).status).toBe(303);
+    const limited = await f.begin(link, ip);
+    expect(limited.status).toBe(429);
+    const retryAfter = Number(limited.headers.get("retry-after"));
+    expect(retryAfter).toBeGreaterThanOrEqual(1);
+    expect(retryAfter).toBeLessThanOrEqual(60);
+    expect(limited.headers.get("set-cookie")).toBeNull();
+    // Unknown links count against the same address, so ids cannot be guessed past the limit.
+    expect(
+      (await f.begin("https://paws.example.invalid/onboard/AAAAAAAAAAAAAAAAAAAAAAAAAA", ip)).status,
+    ).toBe(429);
+    expect((await f.begin(link, { "x-test-ip": "203.0.113.8" })).status).toBe(303);
+    f.clock.advance(60_000);
+    expect((await f.begin(link, ip)).status).toBe(303);
+
+    // 12 starts so far for this link; 8 more reach its daily limit from fresh addresses.
+    for (let attempt = 0; attempt < 8; attempt++)
+      expect((await f.begin(link, { "x-test-ip": `198.51.100.${attempt}` })).status).toBe(303);
+    const perLink = await f.begin(link, { "x-test-ip": "198.51.100.200" });
+    expect(perLink.status).toBe(429);
+    expect(Number(perLink.headers.get("retry-after"))).toBeGreaterThan(60);
+    expect(Number(perLink.headers.get("retry-after"))).toBeLessThanOrEqual(24 * 60 * 60);
+
+    expect(listOutbox(f.db)).toHaveLength(outbox);
+    expect(f.linearRequests).toBe(linear);
+    expect(f.tracker.questions).toHaveLength(0);
+    expect(f.tracker.progress).toHaveLength(0);
+    expect(f.logs).toEqual([
+      "Paws rate limit reached: onboarding.start.ip",
+      "Paws rate limit reached: onboarding.start.ip",
+      "Paws rate limit reached: onboarding.start.link",
+    ]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("five failed callbacks from one IP in ten minutes block the sixth without a Linear request", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const ip = { "x-test-ip": "203.0.113.9" };
+    const start = await f.begin(f.link(), ip);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const failed = await fetch(`${f.local}/auth/linear/callback?state=bad${attempt}&code=bad`, {
+        redirect: "manual",
+        headers: ip,
+      });
+      expect(failed.status).toBe(400);
+    }
+    const outbox = listOutbox(f.db).length;
+    const linear = f.linearRequests;
+    const limited = await f.callback(start, "member", ip);
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+    expect(Number(limited.headers.get("retry-after"))).toBeLessThanOrEqual(600);
+    expect(f.linearRequests).toBe(linear);
+    expect(listOutbox(f.db)).toHaveLength(outbox);
+    expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(0);
+    expect(holdStatus(f)).toBe("pending");
+    expect(f.logs).toEqual(["Paws rate limit reached: linear.callback.failed.ip"]);
+
+    // The state stays unused, so the same start completes once the window has passed.
+    f.clock.advance(5 * 60_000);
+    const later = await f.begin(f.link(), ip);
+    f.clock.advance(5 * 60_000 + 1);
+    expect((await f.callback(later, "member", ip)).status).toBe(303);
+  } finally {
+    await f.close();
+  }
+});
+
+test("no log line contains the link path, an OAuth code or state, or a cookie value", async () => {
+  const captured: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const original = methods.map((method) => console[method]);
+  for (const method of methods)
+    console[method] = (...args: unknown[]) => {
+      captured.push(
+        args.map((arg) => (typeof arg === "string" ? arg : Bun.inspect(arg))).join(" "),
+      );
+    };
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const path = new URL(link).pathname;
+    const secrets = [path, path.slice("/onboard/".length)];
+    const ip = { "x-test-ip": "203.0.113.10" };
+    const starts: Response[] = [];
+    for (let attempt = 0; attempt < 11; attempt++) starts.push(await f.begin(link, ip));
+    for (const start of starts.slice(0, 10)) {
+      const provider = new URL(start.headers.get("location")!);
+      secrets.push(
+        provider.searchParams.get("state")!,
+        provider.searchParams.get("code_challenge")!,
+      );
+      secrets.push(start.headers.get("set-cookie")!.split(";")[0]!.split("=")[1]!);
+    }
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const state = `STATE${attempt}x${"q".repeat(20)}`;
+      const code = `CODE${attempt}x${"z".repeat(20)}`;
+      const cookie = `COOKIE${attempt}x${"k".repeat(20)}`;
+      secrets.push(state, code, cookie);
+      await fetch(`${f.local}/auth/linear/callback?state=${state}&code=${code}`, {
+        redirect: "manual",
+        headers: { cookie: `__Host-paws-login=${cookie}`, "x-test-ip": "203.0.113.11" },
+      });
+    }
+    const done = await f.callback(starts[0]!, "member", ip);
+    expect(done.status).toBe(303);
+    const session = sessionCookie(done);
+    secrets.push(session.split("=")[1]!);
+    const jobs = f.jobs();
+    await jobs.tick();
+    await jobs.tick();
+    await f.deliver();
+    await f.begin(link, { cookie: session, "x-test-ip": "203.0.113.12" });
+    await f.begin(link, { "x-test-ip": "203.0.113.12" });
+    expect(f.continuations).toEqual([f.event.dedupeKey]);
+
+    const lines = [...captured, ...f.logs];
+    expect(f.logs).toEqual([
+      "Paws rate limit reached: onboarding.start.ip",
+      "Paws rate limit reached: linear.callback.failed.ip",
+    ]);
+    for (const line of lines) {
+      expect(line).not.toContain("/onboard/");
+      for (const secret of secrets) expect(line).not.toContain(secret);
+    }
+  } finally {
+    methods.forEach((method, index) => (console[method] = original[index]!));
     await f.close();
   }
 });
