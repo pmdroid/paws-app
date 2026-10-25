@@ -155,11 +155,23 @@ export function listAgentVersions(db: Database, agent?: string): AgentVersionRow
         .all(agent);
 }
 
-/** When the agent catalog was last evaluated, or null before the first refresh. */
-export function lastAgentCatalogCheck(db: Database): number | null {
+/** When the last complete refresh of the agent catalog ran, or null before the first one. */
+export function lastAgentCatalogRefresh(db: Database): number | null {
   return (
-    db.query<{ at: number | null }, []>("SELECT max(checked_at) AS at FROM agent_version").get()
-      ?.at ?? null
+    db
+      .query<{ at: number }, []>(
+        "SELECT completed_at AS at FROM agent_catalog_refresh WHERE id = 1",
+      )
+      .get()?.at ?? null
+  );
+}
+
+/** Record a refresh in which every agent was evaluated on fresh npm reads. */
+export function markAgentCatalogRefreshed(db: Database, at: number): void {
+  db.run(
+    `INSERT INTO agent_catalog_refresh(id, completed_at) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET completed_at = excluded.completed_at`,
+    [at],
   );
 }
 

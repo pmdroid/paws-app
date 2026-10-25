@@ -469,7 +469,8 @@ export {
 } from "./linear-webhook";
 export {
   agentCatalogSummary,
-  lastAgentCatalogCheck,
+  lastAgentCatalogRefresh,
+  markAgentCatalogRefreshed,
   listAgentVersions,
   readAgentVersion,
   readNpmIntegrity,

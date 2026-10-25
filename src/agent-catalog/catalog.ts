@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
-  lastAgentCatalogCheck,
+  lastAgentCatalogRefresh,
+  markAgentCatalogRefreshed,
   listAgentVersions,
   readAgentVersion,
   readNpmIntegrity,
@@ -84,16 +85,24 @@ export function createAgentCatalog(options: {
       if (!pending) loaded.set(name, (pending = read(name, at, signal)));
       return pending;
     };
+    let complete = true;
     for (const [agent, spec] of Object.entries(agents)) {
       try {
         const versions = await load(spec.package);
-        if (versions === null) continue;
+        if (versions === null) {
+          complete = false;
+          continue;
+        }
         const rows = await evaluateAgent(agent, spec, versions, load, at);
         saveAgentVersions(db, rows);
       } catch (error) {
+        complete = false;
         onError(error);
       }
     }
+    // Only a refresh in which every agent was evaluated on fresh npm reads counts as the day's
+    // refresh. A failed read, an error or a crash part way leaves it due at the next hourly check.
+    if (complete && staleReads.size === 0) markAgentCatalogRefreshed(db, at);
   }
 
   async function read(name: string, at: number, signal?: AbortSignal): Promise<Versions | null> {
@@ -206,10 +215,14 @@ export function createAgentCatalog(options: {
       // selection stand until npm answers, so nothing passes a check on a document npm may have
       // changed: a pulled or deprecated version, or a native build never validated as a whole.
       if (usedStale)
-        ({ verdict, nativeVersion } = keepUnlessStricter(agent, spec, version, {
-          verdict,
-          nativeVersion,
-        }));
+        ({ verdict, nativeVersion } = await keepUnlessStricter(
+          agent,
+          spec,
+          version,
+          metadata,
+          { own, load, at },
+          { verdict, nativeVersion },
+        ));
       const record = readNpmIntegrity(db, spec.package, version);
       const integrity = record?.integrity ?? metadata.integrity;
       if (integrity === null) continue;
@@ -243,26 +256,57 @@ export function createAgentCatalog(options: {
    * The previous verdict and native selection, unless the new verdict is stricter. With no
    * previous row, the version waits for a fresh read.
    */
-  function keepUnlessStricter(
+  async function keepUnlessStricter(
     agent: string,
     spec: AgentPackage,
     version: string,
+    metadata: NpmVersionMetadata,
+    current: { own: Verdict; load: (name: string) => Promise<Versions | null>; at: number },
     next: { verdict: Verdict; nativeVersion: string | null },
-  ): { verdict: Verdict; nativeVersion: string | null } {
+  ): Promise<{ verdict: Verdict; nativeVersion: string | null }> {
     const previous = readAgentVersion(db, agent, version);
-    const kept = previous
-      ? {
-          verdict: { status: previous.status, reason: previous.reason },
-          nativeVersion: previous.nativeVersion,
-        }
-      : {
-          verdict: {
-            status: "waiting" as const,
+    if (!previous)
+      return {
+        verdict: worst([
+          next.verdict,
+          {
+            status: "waiting",
             reason: `Paws could not read npm to confirm ${spec.package}@${version}; it waits for the next successful read.`,
           },
-          nativeVersion: null,
-        };
-    return RANK[next.verdict.status] > RANK[kept.verdict.status] ? next : kept;
+        ]),
+        nativeVersion: null,
+      };
+    // The kept selection is checked again against what npm reports now: a native version that
+    // was refused, pulled or deprecated since does not stay on offer.
+    const verdicts: Verdict[] = [
+      { status: previous.status, reason: previous.reason },
+      current.own,
+      next.verdict,
+    ];
+    if (previous.nativeVersion !== null) {
+      const native = await checkNative(
+        spec.native,
+        previous.nativeVersion,
+        current.load,
+        current.at,
+      );
+      const range = metadata.dependencies[spec.native];
+      const ranged = spec.native !== spec.package && range !== undefined && !EXACT.test(range);
+      verdicts.push(
+        ranged && native.status === "refused"
+          ? { status: "ineligible", reason: native.reason }
+          : native,
+      );
+    }
+    const verdict = worst(verdicts);
+    // A stricter new verdict carries its own selection; otherwise the validated one stands.
+    return {
+      verdict,
+      nativeVersion:
+        RANK[next.verdict.status] > RANK[previous.status]
+          ? next.nativeVersion
+          : previous.nativeVersion,
+    };
   }
 
   async function resolveNative(
@@ -321,7 +365,7 @@ export function createAgentCatalog(options: {
   return {
     refresh,
     async refreshIfDue(signal) {
-      const last = lastAgentCatalogCheck(db);
+      const last = lastAgentCatalogRefresh(db);
       if (last !== null && now() - last < AGENT_CATALOG_REFRESH_MS) return false;
       await refresh(signal);
       return true;
