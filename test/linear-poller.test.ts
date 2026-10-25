@@ -38,6 +38,80 @@ const NOW = 1_700_000_000_000;
 const TEAM = "team_1";
 
 describe("linear intake poll", () => {
+  test.each(["webhook", "poller"] as const)(
+    "%s holds the shared claim while the other delivery path sees the same event",
+    async (first) => {
+      const db = tempDb();
+      const store = createInboxStore(db);
+      const body = JSON.stringify({
+        type: "AgentSessionEvent",
+        action: "created",
+        webhookTimestamp: NOW,
+        agentSession: { id: "shared-session", issueId: "shared-issue" },
+      });
+      const seen: string[] = [];
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const onEvent = async (event: AcceptedLinearEvent) => {
+        seen.push(event.dedupeKey);
+        await held;
+      };
+      const webhook = () =>
+        handleLinearWebhook(
+          new Request("http://localhost/webhooks/linear", {
+            method: "POST",
+            body,
+            headers: {
+              "linear-signature": createHmac("sha256", "secret").update(body).digest("hex"),
+              "linear-delivery": "shared-delivery",
+            },
+          }),
+          "secret",
+          { store, onEvent, now: () => NOW },
+        );
+      if (first === "webhook") await webhook();
+      else
+        store.commit({
+          dedupeKey: "session:shared-session:created",
+          deliveryId: null,
+          source: "poll",
+          action: "created",
+          sessionId: "shared-session",
+          issueId: "shared-issue",
+          activityId: null,
+          body: null,
+          signal: null,
+          updatedAtMs: NOW,
+          payload: "{}",
+        });
+      const waits: number[] = [];
+      const poller = startCatchUpPoller({
+        source: sourceFrom(async () => emptyPage()),
+        store,
+        onEvent,
+        sleeper: recordingSleeper(waits, hold()),
+        now: () => NOW,
+      });
+      try {
+        await waitFor(() => seen.length === 1);
+        if (first === "poller") expect((await webhook()).status).toBe(200);
+        else await waitFor(() => waits.length > 0);
+        expect(seen).toEqual(["session:shared-session:created"]);
+        expect(store.listUnhandled()).toHaveLength(1);
+        release();
+        await waitFor(() => store.listUnhandled().length === 0);
+        await poller.pollNow();
+        expect(seen).toHaveLength(1);
+      } finally {
+        release();
+        await poller.stop();
+        db.close();
+      }
+    },
+  );
+
   test("preserves every own active session without any agent activities", async () => {
     const db = tempDb();
     const seen: AcceptedLinearEvent[] = [];
