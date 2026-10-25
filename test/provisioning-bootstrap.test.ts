@@ -18,6 +18,8 @@ import {
   type ExeDevBootstrapOptions,
   type FakeExeDev,
 } from "../src/provisioning";
+import { runnerFailureLine } from "../src/runner-cli";
+import { transportFailure } from "../src/runner-daemon";
 
 const VM = "ada-paws";
 const TOKEN = "tok_0123456789abcdefABCDEF-_xyz";
@@ -391,6 +393,24 @@ test("enroll fails with BootstrapError('enroll') on anything but a paired runner
   expect((await bootstrapError(createExeDevBootstrap(options(transport)).enroll(VM))).step).toBe(
     "enroll",
   );
+});
+
+test("an enroll failure keeps the runner's cause in the step error", async () => {
+  const url = new URL("https://paws.example.com/api/runner-enrollments");
+  const dns = Object.assign(new Error(`getaddrinfo ENOTFOUND ${TOKEN}`), { code: "ENOTFOUND" });
+  const line = runnerFailureLine(transportFailure(dns, url, "POST", url.pathname, 5), [TOKEN]);
+  const exe = setup();
+  exe.scriptExec(VM, ENROLL, { exitCode: 1, stderr: `${line}\n` });
+  const error = await bootstrapError(createExeDevBootstrap(options(exe)).enroll(VM));
+  expect(error.step).toBe("enroll");
+  expect(error.message).toContain("Cause: DNS lookup failed for paws.example.com (ENOTFOUND).");
+  expect(error.message).not.toContain(TOKEN);
+  // The longest cause still survives the stderr tail the step error keeps.
+  const long = `${line.slice(0, line.indexOf("Cause: "))}Cause: ${"x".repeat(299)}.`;
+  const tail = setup();
+  tail.scriptExec(VM, ENROLL, { exitCode: 1, stderr: `${long}\n` });
+  const trimmed = await bootstrapError(createExeDevBootstrap(options(tail)).enroll(VM));
+  expect(trimmed.message).toContain(`${"x".repeat(299)}.`);
 });
 
 test("startRunner enables and starts the runner service", async () => {
