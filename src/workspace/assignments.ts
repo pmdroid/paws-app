@@ -45,12 +45,29 @@ export function assignmentSignInBody(identifier: string): string {
   ].join("\n\n");
 }
 
+/** A signed-in hold: whose onboarding it is and for which issue. Shown only to its creator. */
+export type AssignmentOnboarding = {
+  hash: string;
+  linkId: string;
+  workspaceId: string;
+  /** The Linear user who started the session. Only they may see the page. */
+  actorId: string;
+  identifier: string;
+  teamId: string;
+  teamName: string | null;
+  issueUrl: string | null;
+  /** Paws handed the session back to intake. */
+  started: boolean;
+};
+
 export type AssignmentLink =
   | { state: "pending"; hash: string }
-  | { state: "done"; identifier: string };
+  | (AssignmentOnboarding & {
+      state: "done";
+    });
 
 export type AssignmentCompletion =
-  | { outcome: "resumed"; identifier: string }
+  | { outcome: "resumed"; identifier: string; linkId: string | null }
   | { outcome: "other-user"; creatorName: string };
 
 type Refusal = Exclude<IntakeDecision, { outcome: "accepted" }>;
@@ -98,6 +115,22 @@ type Hold = {
 const HOLD_COLUMNS = `session_id AS sessionId,generation,workspace_id AS workspaceId,actor_id AS actorId,
     token_hash AS tokenHash,link_id AS linkId,link_expires_at AS linkExpiresAt,fingerprint,event,
     expires_at AS expiresAt,status`;
+
+/** The issue's team and page as Linear reported them when the hold was written. */
+function holdIssue(hold: Pick<Hold, "fingerprint">) {
+  const fingerprint = JSON.parse(hold.fingerprint) as {
+    installation?: { teamId?: unknown };
+    issue?: { teamName?: unknown; url?: unknown };
+  };
+  const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
+  const url = text(fingerprint.issue?.url);
+  return {
+    teamId: text(fingerprint.installation?.teamId) ?? "",
+    teamName: text(fingerprint.issue?.teamName),
+    // Only Linear's own pages become a link on the onboarding page.
+    issueUrl: url !== null && url.startsWith("https://linear.app/") ? url : null,
+  };
+}
 
 function holdIdentifier(hold: Pick<Hold, "fingerprint">): string {
   const value = (JSON.parse(hold.fingerprint) as { spec?: { identifier?: unknown } }).spec
@@ -462,11 +495,23 @@ export function createWorkspaceAssignments(options: {
       if (!hold) return null;
       if (hold.status === "pending")
         return !expired(hold) && current(hold) ? { state: "pending", hash: hold.tokenHash } : null;
-      return hold.status === "invalid" ? null : { state: "done", identifier: holdIdentifier(hold) };
+      // A stopped or replaced session ends its onboarding page too.
+      if (hold.status === "invalid" || !current(hold)) return null;
+      return {
+        state: "done",
+        hash: hold.tokenHash,
+        linkId: link,
+        workspaceId: hold.workspaceId,
+        actorId: hold.actorId,
+        identifier: holdIdentifier(hold),
+        ...holdIssue(hold),
+        started: hold.status === "continued",
+      };
     },
     /**
      * Finishes a link sign-in. Only the session creator moves the hold; anyone else learns whose
-     * link it is and changes nothing. Throws when the hold can no longer continue.
+     * link it is and changes nothing. A creator who signs in again after the hold moved on is sent
+     * back to their onboarding page. Throws when the hold can no longer continue.
      */
     complete(hash: string, workspaceId: string, linearUserId: string): AssignmentCompletion {
       return immediate(db, (): AssignmentCompletion => {
@@ -474,15 +519,16 @@ export function createWorkspaceAssignments(options: {
         if (
           !hold ||
           hold.workspaceId !== workspaceId ||
-          hold.status !== "pending" ||
-          expired(hold) ||
-          !current(hold)
+          hold.status === "invalid" ||
+          !current(hold) ||
+          (hold.status === "pending" && expired(hold))
         )
           throw new Error("Assignment sign-in is unavailable.");
         if (hold.actorId !== linearUserId)
           return { outcome: "other-user", creatorName: creatorName(hold) };
-        if (!release(hold)) throw new Error("Assignment membership is unavailable.");
-        return { outcome: "resumed", identifier: holdIdentifier(hold) };
+        if (hold.status === "pending" && !release(hold))
+          throw new Error("Assignment membership is unavailable.");
+        return { outcome: "resumed", identifier: holdIdentifier(hold), linkId: hold.linkId };
       });
     },
     /** A dashboard sign-in releases the signer's own pending holds without a new action. */

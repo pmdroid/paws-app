@@ -22,7 +22,15 @@ export {
 export { createWorkspaceIdentityLinks } from "./identity-links";
 
 export { createWorkspaceAssignments } from "./assignments";
-export type { WorkspaceAssignments } from "./assignments";
+export type { AssignmentLink, AssignmentOnboarding, WorkspaceAssignments } from "./assignments";
+export { onboardingPage, onboardingSteps } from "./onboarding-page";
+export type {
+  OnboardingAgent,
+  OnboardingPageInput,
+  OnboardingReadiness,
+  OnboardingReadinessReader,
+  OnboardingRunner,
+} from "./onboarding-page";
 export { handleWorkspaceGitHubIntegration } from "./github-integration";
 export { createGitHubAttributionLink } from "./github-attribution";
 export { delegatorCommitCredit } from "./commit-attribution";
