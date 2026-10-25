@@ -16,7 +16,14 @@ import { isProvisioningError, type ExeDev, type ExeDevExecResult } from "./types
  * root-owned mode 0600 token file. Only ciphertext crosses a command line.
  */
 
-export type BootstrapStep = "config" | "install" | "status" | "token" | "enroll" | "start";
+export type BootstrapStep =
+  | "config"
+  | "install"
+  | "status"
+  | "token"
+  | "enroll"
+  | "reset"
+  | "start";
 
 export class BootstrapError extends Error {
   readonly step: BootstrapStep;
@@ -79,6 +86,7 @@ export type ExeDevBootstrap = {
   enroll(vm: string): Promise<EnrolledRunner>;
   /** Enable and start the runner service. */
   startRunner(vm: string): Promise<void>;
+  resetIdentity(vm: string): Promise<void>;
 };
 
 export const BOOTSTRAP_STAGE_DIR = "/var/lib/paws-bootstrap";
@@ -89,6 +97,7 @@ export const RUNNER_CONFIG_PATH = "/etc/paws-runner/config.json";
 export const BOOTSTRAP_MISE_PATH = "/usr/local/bin/mise";
 const RUNNER_BINARY = "/opt/paws-runner/bin/paws-runner";
 const RUNNER_SERVICE = "paws-runner.service";
+export const RUNNER_STATE_DIR = "/var/lib/paws-runner";
 
 const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -102,6 +111,7 @@ const PROBE_TIMEOUT_MS = 30_000;
 const STAGE_TIMEOUT_MS = 60_000;
 const ENROLL_TIMEOUT_MS = 120_000;
 const START_TIMEOUT_MS = 60_000;
+const RESET_TIMEOUT_MS = 60_000;
 
 const Enrolled = z.strictObject({
   paired: z.literal(true),
@@ -194,6 +204,13 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
       const result = await exec("start", vm, START_RUNNER_COMMAND, START_TIMEOUT_MS);
       if (result.exitCode !== 0)
         throw failure("start", vm, "could not start the runner service", result);
+    },
+
+    async resetIdentity(vm) {
+      checkVm("reset", vm);
+      const result = await exec("reset", vm, RESET_IDENTITY_COMMAND, RESET_TIMEOUT_MS);
+      if (result.exitCode !== 0)
+        throw failure("reset", vm, "could not remove the runner identity", result);
     },
   };
 }
@@ -307,6 +324,11 @@ const START_INSTALL_COMMAND = [
 ].join("; ");
 
 const START_RUNNER_COMMAND = `sudo systemctl enable --now ${RUNNER_SERVICE}`;
+
+const RESET_IDENTITY_COMMAND = [
+  `sudo systemctl stop ${RUNNER_SERVICE}`,
+  `sudo rm -rf ${RUNNER_STATE_DIR}/identity ${RUNNER_STATE_DIR}/commands.db ${RUNNER_STATE_DIR}/commands.db-wal ${RUNNER_STATE_DIR}/commands.db-shm`,
+].join(" && ");
 
 /** Enroll, then remove the token file whether or not enrollment succeeded, keeping its status. */
 function enrollCommand(vm: string): string {

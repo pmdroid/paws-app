@@ -12,7 +12,8 @@ export type FakeBootstrapCall =
   | { step: "installStatus"; vm: string }
   | { step: "stageToken"; vm: string }
   | { step: "enroll"; vm: string }
-  | { step: "startRunner"; vm: string };
+  | { step: "startRunner"; vm: string }
+  | { step: "resetIdentity"; vm: string };
 
 export type FakeBootstrapOptions = {
   enroll?: (vm: string, token: string) => Promise<EnrolledRunner> | EnrolledRunner;
@@ -26,7 +27,6 @@ export type FakeBootstrap = ExeDevBootstrap & {
   readonly installed: Set<string>;
   fail(step: FakeBootstrapCall["step"], message: string, times?: number): void;
   scriptInstallStatus(status: InstallStatus, times?: number): void;
-  forgetIdentity(vm: string): void;
 };
 
 const STEP: Record<FakeBootstrapCall["step"], BootstrapStep> = {
@@ -35,6 +35,7 @@ const STEP: Record<FakeBootstrapCall["step"], BootstrapStep> = {
   stageToken: "token",
   enroll: "enroll",
   startRunner: "start",
+  resetIdentity: "reset",
 };
 
 export function createFakeBootstrap(options: FakeBootstrapOptions = {}): FakeBootstrap {
@@ -77,10 +78,6 @@ export function createFakeBootstrap(options: FakeBootstrapOptions = {}): FakeBoo
 
     scriptInstallStatus(status, times = 1) {
       statuses.push({ status, times });
-    },
-
-    forgetIdentity(vm) {
-      enrolled.delete(vm);
     },
 
     async startInstall(vm, token): Promise<StartInstallResult> {
@@ -138,6 +135,11 @@ export function createFakeBootstrap(options: FakeBootstrapOptions = {}): FakeBoo
 
     async startRunner(vm) {
       record("startRunner", vm);
+    },
+
+    async resetIdentity(vm) {
+      record("resetIdentity", vm);
+      enrolled.delete(vm);
     },
   };
 }

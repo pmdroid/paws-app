@@ -123,6 +123,8 @@ const ENROLL =
   'code=$?; sudo rm -f /var/lib/paws-bootstrap/enrollment-token; exit "$code"';
 
 const START_RUNNER = "sudo systemctl enable --now paws-runner.service";
+const RESET_IDENTITY =
+  "sudo systemctl stop paws-runner.service && sudo rm -rf /var/lib/paws-runner/identity /var/lib/paws-runner/commands.db /var/lib/paws-runner/commands.db-wal /var/lib/paws-runner/commands.db-shm";
 
 function probe(state: {
   active?: string;
@@ -405,6 +407,25 @@ test("startRunner enables and starts the runner service", async () => {
   expect(error.step).toBe("start");
 });
 
+test("resetIdentity stops the runner and removes its identity and command store", async () => {
+  const exe = setup();
+  exe.scriptExec(VM, RESET_IDENTITY, {});
+  await createExeDevBootstrap(options(exe)).resetIdentity(VM);
+  expect(exe.calls).toEqual([
+    { operation: "execVm", vm: VM, command: RESET_IDENTITY, timeoutMs: 60_000 },
+  ]);
+
+  const failing = setup();
+  failing.scriptExec(VM, RESET_IDENTITY, { exitCode: 1, stderr: "permission denied\n" });
+  const error = await bootstrapError(createExeDevBootstrap(options(failing)).resetIdentity(VM));
+  expect(error.step).toBe("reset");
+  expect(error.message).toContain("permission denied");
+  const invalid = await bootstrapError(
+    createExeDevBootstrap(options(setup())).resetIdentity("Bad VM"),
+  );
+  expect(invalid.step).toBe("reset");
+});
+
 test("unpinned or invalid inputs are refused before any command runs", () => {
   const exe = setup();
   const base = options(exe);
@@ -549,7 +570,15 @@ test("the staged files land with the right modes and the commands are valid shel
       "\n",
     ),
   );
-  for (const script of [RUN_SCRIPT, PROBE, TOKEN_KEY, START_INSTALL, ENROLL, START_RUNNER]) {
+  for (const script of [
+    RUN_SCRIPT,
+    PROBE,
+    TOKEN_KEY,
+    START_INSTALL,
+    ENROLL,
+    START_RUNNER,
+    RESET_IDENTITY,
+  ]) {
     expect(Bun.spawnSync(["/bin/sh", "-n", "-c", script]).exitCode).toBe(0);
   }
 });
