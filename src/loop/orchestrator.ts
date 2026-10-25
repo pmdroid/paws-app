@@ -641,7 +641,8 @@ export class Orchestrator {
     }
     if (decision.outcome === "accepted") return true;
     if (decision.outcome === "retry") throw new LinearIntakePendingError(decision.reason);
-    if (created) throw new LinearIntakeRefusedError(decision.reason);
+    if (created)
+      throw new LinearIntakeRefusedError(decision.reason, { quiet: decision.quiet === true });
     return false;
   }
 
