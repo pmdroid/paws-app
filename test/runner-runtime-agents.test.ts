@@ -68,7 +68,7 @@ test("a host without installed agents reports none", () => {
   expect(runner.open().installed()).toBeUndefined();
 });
 
-test("the heartbeat reports each agent's current and previous version", () => {
+test("the heartbeat reports each agent's current version", () => {
   const runner = host();
   runner.install("claude", "2.0.0", "1.8.0");
   runner.point("claude", "2.0.0");
@@ -76,10 +76,9 @@ test("the heartbeat reports each agent's current and previous version", () => {
   runner.point("codex", "0.9.0");
   runner.install("grok", "1.0.0");
   runner.status({ claude: { previous: "1.8.0", request: null }, codex: { previous: "0.1.0" } });
+  // An older installer's status file still names the version before the last switch; it is not reported.
   expect(runner.open().installed()).toEqual([
     { agent: "claude", version: "2.0.0", status: "current" },
-    { agent: "claude", version: "1.8.0", status: "previous" },
-    // 0.1.0 is not on disk any more, so it is not offered as a rollback.
     { agent: "codex", version: "0.9.0", status: "current" },
   ]);
 });
@@ -129,19 +128,13 @@ test("only the versions Paws sent are forwarded to the installer, and its progre
   });
   expect(agents.installed()).toContainEqual(expect.objectContaining({ status: "installing" }));
 
-  // Once current moves, only the new current and previous remain.
+  // Once current moves, only the new current remains.
   runner.install("claude", "2.1.0");
   runner.point("claude", "2.1.0");
   runner.status({
-    claude: {
-      previous: "2.0.0",
-      request: { id: update.id, version: "2.1.0", status: "installed" },
-    },
+    claude: { request: { id: update.id, version: "2.1.0", status: "installed" } },
   });
-  expect(agents.installed()).toEqual([
-    { agent: "claude", version: "2.1.0", status: "current" },
-    { agent: "claude", version: "2.0.0", status: "previous" },
-  ]);
+  expect(agents.installed()).toEqual([{ agent: "claude", version: "2.1.0", status: "current" }]);
 });
 
 test("a target that is not a valid catalog version or integrity is refused", () => {
@@ -153,32 +146,11 @@ test("a target that is not a valid catalog version or integrity is refused", () 
     { ...update, integrity: "sha1-abc" },
     { ...update, version: "latest" },
     { ...update, agent: "left-pad" },
+    { ...update, integrity: null },
+    { ...update, packages: [] },
   ])
     expect(() => agents.apply([target as RunnerAgentTarget])).toThrow();
   expect(() => readFileSync(join(runner.state, "agent-requests.json"))).toThrow();
-});
-
-test("a rollback is forwarded only to a version installed on the runner", () => {
-  const runner = host();
-  runner.install("claude", "2.0.0", "1.8.0");
-  runner.point("claude", "2.0.0");
-  const agents = runner.open();
-  const rollback = {
-    id: "01KROLLBACK",
-    agent: "claude",
-    version: "1.8.0",
-    integrity: null,
-    nativeVersion: null,
-    packages: [],
-  } satisfies RunnerAgentTarget;
-  agents.apply([rollback, { ...rollback, id: "01KMISSING", agent: "codex", version: "0.1.0" }]);
-  expect(runner.requests().requests).toEqual([rollback]);
-  expect(agents.installed()).toContainEqual({
-    agent: "claude",
-    version: "1.8.0",
-    status: "installing",
-    target: rollback.id,
-  });
 });
 
 test("the request file is written once per change, and again after a restart", () => {

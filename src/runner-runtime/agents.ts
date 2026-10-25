@@ -1,13 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  existsSync,
-  lstatSync,
-  readFileSync,
-  readlinkSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import {
@@ -15,7 +7,6 @@ import {
   RunnerAgentTargetSchema,
   RunnerAgentVersionSchema,
   type RunnerAgentTarget,
-  type RunnerCodingAgent,
   type RunnerInstalledAgent,
 } from "../runner-protocol";
 
@@ -35,20 +26,13 @@ const request = z.object({
 });
 const StatusSchema = z.object({
   format: z.literal(1),
-  agents: z.record(
-    z.string(),
-    z.object({
-      previous: RunnerAgentVersionSchema.nullable().optional(),
-      request: request.nullable().optional(),
-    }),
-  ),
+  agents: z.record(z.string(), z.object({ request: request.nullable().optional() })),
 });
 
 /**
  * The runner's coding agents: what the heartbeat reports, and the hand-off of the versions Paws
  * sends to the root installer. The runner forwards only targets from the heartbeat reply, and the
- * installer refuses a lockfile whose agent package integrity is not the one Paws sent. A rollback
- * (no integrity) is forwarded only for a version folder that is already installed.
+ * installer refuses a lockfile whose agent package integrity is not the one Paws sent.
  */
 export function openRunnerAgents(
   options: {
@@ -64,7 +48,6 @@ export function openRunnerAgents(
   /** The request file as this process last wrote it; null until the first write after start. */
   let written: string | null = null;
   let forwarded: RunnerAgentTarget[] = [];
-  const refused = new Map<RunnerCodingAgent, { target: string; version: string; error: string }>();
 
   const folder = (agent: string) => join(base, "agents", agent);
   function current(agent: string): string | null {
@@ -73,13 +56,6 @@ export function openRunnerAgents(
       return RunnerAgentVersionSchema.safeParse(target).success ? target : null;
     } catch {
       return null;
-    }
-  }
-  function installedVersion(agent: string, version: string): boolean {
-    try {
-      return lstatSync(join(folder(agent), version)).isDirectory();
-    } catch {
-      return false;
     }
   }
   function readStatus(): z.infer<typeof StatusSchema>["agents"] {
@@ -102,20 +78,6 @@ export function openRunnerAgents(
         const version = current(agent);
         if (version === null) continue;
         rows.push({ agent, version, status: "current" });
-        const previous = status[agent]?.previous;
-        if (previous && previous !== version && installedVersion(agent, previous))
-          rows.push({ agent, version: previous, status: "previous" });
-        const refusal = refused.get(agent);
-        if (refusal) {
-          rows.push({
-            agent,
-            version: refusal.version,
-            status: "failed",
-            target: refusal.target,
-            error: refusal.error,
-          });
-          continue;
-        }
         const target = forwarded.find((entry) => entry.agent === agent);
         if (!target || target.version === version) continue;
         const done = status[agent]?.request;
@@ -142,20 +104,7 @@ export function openRunnerAgents(
     },
     /** Forward the versions Paws sent to the root installer. Only these are ever installed. */
     apply(targets: readonly RunnerAgentTarget[]): void {
-      refused.clear();
-      const accepted: RunnerAgentTarget[] = [];
-      for (const candidate of targets) {
-        const target = RunnerAgentTargetSchema.parse(candidate);
-        if (target.integrity === null && !installedVersion(target.agent, target.version)) {
-          refused.set(target.agent, {
-            target: target.id,
-            version: target.version,
-            error: `${target.version} is not installed on this runner, so it cannot be rolled back to.`,
-          });
-          continue;
-        }
-        accepted.push(target);
-      }
+      const accepted = targets.map((candidate) => RunnerAgentTargetSchema.parse(candidate));
       forwarded = accepted;
       const content = JSON.stringify({
         format: 1,

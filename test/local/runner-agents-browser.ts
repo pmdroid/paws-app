@@ -21,13 +21,11 @@ function codingAgents(now: number) {
   const claude = {
     agent: "claude",
     current: stage === "after" ? "0.31.0" : "0.30.2",
-    previous: stage === "after" ? "0.30.2" : "0.29.4",
     pending:
       stage === "before" || stage === "after"
         ? null
         : {
             version: "0.31.0",
-            rollback: false,
             status: stage,
             sessions: stage === "waiting" ? 2 : null,
             error:
@@ -40,11 +38,10 @@ function codingAgents(now: number) {
   };
   return [
     claude,
-    { agent: "codex", current: "0.12.0", previous: null, pending: null, reportedAt: now - 5_000 },
+    { agent: "codex", current: "0.12.0", pending: null, reportedAt: now - 5_000 },
     {
       agent: "grok",
       current: "1.4.1",
-      previous: "1.3.0",
       pending: null,
       reportedAt: now - 5_000,
     },

@@ -61,10 +61,8 @@ export type Runner = {
 export type RunnerCodingAgent = {
   agent: string;
   current: string | null;
-  previous: string | null;
   pending: {
     version: string;
-    rollback: boolean;
     status: "requested" | "installing" | "waiting" | "failed";
     sessions: number | null;
     error: string | null;
@@ -307,17 +305,17 @@ export function runnerCodingAgentsMarkup(
       let detail = "";
       let error = "";
       if (pending?.status === "failed") {
-        tag = ["bad", pending.rollback ? "Rollback failed" : "Install failed"];
+        tag = ["bad", "Install failed"];
         error = `<p class="runner-skill-error" role="note">${esc(pending.error ?? "The runner did not report why.")}</p>`;
       } else if (pending?.status === "waiting") {
         tag = ["running", sessionsLabel(pending.sessions)];
-        detail = `${pending.rollback ? "Switches back to" : "Switches to"} ${pending.version} when they end. They keep ${current}.`;
+        detail = `Switches to ${pending.version} when they end. They keep ${current}.`;
       } else if (pending) {
-        tag = ["running", pending.rollback ? "Rolling back" : "Installing"];
+        tag = ["running", "Installing"];
         detail =
           pending.status === "requested"
-            ? `${pending.rollback ? "Switching back to" : "Installing"} ${pending.version} at the runner's next heartbeat.`
-            : `${pending.rollback ? "Switching back to" : "Installing"} ${pending.version}. Sessions use ${current} until it is in place.`;
+            ? `Installing ${pending.version} at the runner's next heartbeat.`
+            : `Installing ${pending.version}. Sessions use ${current} until it is in place.`;
       } else if (update) tag = ["warn", "Update available"];
       else tag = ["ok", "Up to date"];
       const newest =
@@ -326,17 +324,10 @@ export function runnerCodingAgentsMarkup(
           : offered === entry.current
             ? ""
             : `<span class="muted">Newest eligible <span class="mono">${esc(offered)}</span></span>`;
-      const busyHere = pending !== null && pending.status !== "failed";
-      const actions = !view.manages
-        ? ""
-        : [
-            update
-              ? `<button class="btn" data-agent-update="${esc(entry.agent)}" data-runner="${runner}" data-version="${esc(update)}" data-focus="agent-update:${runner}:${esc(entry.agent)}"${disabled}>Update to ${esc(update)}</button>`
-              : "",
-            entry.previous && !busyHere
-              ? `<button class="btn" data-agent-rollback="${esc(entry.agent)}" data-runner="${runner}" data-focus="agent-rollback:${runner}:${esc(entry.agent)}"${disabled}>Roll back to ${esc(entry.previous)}</button>`
-              : "",
-          ].join("");
+      const actions =
+        view.manages && update
+          ? `<button class="btn" data-agent-update="${esc(entry.agent)}" data-runner="${runner}" data-version="${esc(update)}" data-focus="agent-update:${runner}:${esc(entry.agent)}"${disabled}>Update to ${esc(update)}</button>`
+          : "";
       return `<li class="runner-skill" data-coding-agent="${esc(entry.agent)}"><span class="runner-skill-name"><b>${esc(name)}</b><span class="mono">${esc(current)}</span>${newest}</span><span class="tag ${tag[0]}">${esc(tag[1])}</span>${detail ? `<p class="muted">${esc(detail)}</p>` : ""}${error}${actions ? `<div class="runner-agent-actions">${actions}</div>` : ""}</li>`;
     })
     .join("");
@@ -1225,17 +1216,6 @@ export function createRunners() {
             { version },
           );
           feedback = `${AGENT_NAMES[agent!] ?? agent} ${version} was sent to the runner. It installs at the next heartbeat and switches once no session uses the old version.`;
-        });
-      });
-    for (const button of root!.querySelectorAll<HTMLElement>("[data-agent-rollback]"))
-      button.addEventListener("click", () => {
-        const { agentRollback: agent, runner } = button.dataset;
-        void change(async () => {
-          const result = await api<{ version: string }>(
-            `/api/runners/${encodeURIComponent(runner!)}/coding-agents/${encodeURIComponent(agent!)}/rollback`,
-            {},
-          );
-          feedback = `The runner switches ${AGENT_NAMES[agent!] ?? agent} back to ${result.version} once no session uses the current version.`;
         });
       });
     root!.querySelector("[data-agents-update-all]")?.addEventListener(
