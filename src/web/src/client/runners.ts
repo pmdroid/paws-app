@@ -122,12 +122,39 @@ export type Usage = {
   startedAt: number;
   endedAt: number | null;
 };
-type Inspection = {
-  code: string;
-  name: string;
-  requestFingerprint: string;
+/** What Paws returns when a member asks to add a host. */
+export type HostEnrollment = {
+  token: string;
   expiresAt: number;
+  name: string;
+  config: {
+    controlPlaneUrl: string;
+    runnerApiUrl: string;
+    allowedRepositories: readonly string[];
+  } | null;
 };
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * The one command a member runs on a fresh Linux host: install the runner, write its config for
+ * this Paws, stage the token in a root-owned mode 0600 file, enroll and start the daemon. The
+ * token reaches the file through the shell's printf builtin, never through a process's argv.
+ */
+export function hostEnrollmentCommand(enrollment: HostEnrollment & { config: object }): string {
+  const config = JSON.stringify({ ...enrollment.config, concurrency: 2 });
+  return [
+    "curl -fsSL https://get.paws.boo | sudo sh",
+    `printf '%s\\n' ${shellQuote(enrollment.token)} | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token`,
+    `printf '%s\\n' ${shellQuote(config)} | sudo install -o root -g paws-runner -m 0640 /dev/stdin /etc/paws-runner/config.json`,
+    `sudo /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name ${shellQuote(enrollment.name)} --token-file /etc/paws-runner/enrollment-token`,
+    "sudo rm -f /etc/paws-runner/enrollment-token",
+    "sudo systemctl enable --now paws-runner.service",
+  ].join(" && \\\n  ");
+}
+
 type Timers = {
   setInterval: (handler: () => void, ms: number) => unknown;
   clearInterval: (id: never) => void;
@@ -850,9 +877,9 @@ export function createRunners() {
   let workspaceReady = false;
   let usage: Usage[] = [];
   let usageRunner: string | null = null;
-  let inspection: Inspection | null = null;
-  let pairingOpen = false;
-  let code = "";
+  let addingHost = false;
+  let hostName = "";
+  let enrollment: HostEnrollment | null = null;
   let busy = false;
   let feedback = "";
   let error = "";
@@ -877,8 +904,12 @@ export function createRunners() {
     agentCatalog = [];
     usage = [];
     usageRunner = null;
-    inspection = null;
-    pairingOpen = false;
+    addingHost = false;
+    enrollment = null;
+  }
+  /** Any active member who is not an observer may add a host, and owns it. */
+  function addsHosts() {
+    return session !== null && session.role !== "observer";
   }
   async function api<T>(path: string, body?: unknown): Promise<T> {
     if (!available) throw new Error("Connect to your Paws dashboard to see runners.");
@@ -952,9 +983,9 @@ export function createRunners() {
       usage = activity.usage;
       usageRunner = target;
       stale = "";
-      if (!manages()) {
-        inspection = null;
-        pairingOpen = false;
+      if (!addsHosts()) {
+        addingHost = false;
+        enrollment = null;
       }
     } catch (caught) {
       if (current !== generation) return;
@@ -967,8 +998,8 @@ export function createRunners() {
         [401, 403].includes(Number(caught.status))
       ) {
         session = null;
-        inspection = null;
-        pairingOpen = false;
+        addingHost = false;
+        enrollment = null;
       }
     } finally {
       if (current === generation) {
@@ -1001,14 +1032,23 @@ export function createRunners() {
   function listView(now: number, disabled: string, status: string): string {
     const rows = runners.map((runner) => runnerRowMarkup(runner, { now, serverVersion })).join("");
     const alert = error ? `<p role="alert" class="err">${esc(error)}</p>` : "";
-    const pairing = manages() && pairingOpen;
-    const dialog = pairing
-      ? `<dialog id="runner-pair-dialog" aria-labelledby="runner-pair-heading"><div class="dialog-body"><div class="between"><h2 id="runner-pair-heading">Pair a host</h2><button class="btn" data-runner-pair-close data-focus="pair-close">Close</button></div><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</p>${alert}<form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" data-focus="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit" data-focus="inspect"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve data-focus="approve"${disabled}>Approve runner</button></div>` : ""}</div></dialog>`
+    const adding = addsHosts() && addingHost;
+    const expired = enrollment !== null && enrollment.expiresAt <= now;
+    const command =
+      enrollment?.config && !expired
+        ? `<p>Run this on the Linux host. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
+        : enrollment && !expired
+          ? '<p role="alert" class="err">Paws has no public HTTPS address for hosts. Set PAWS_PUBLIC_URL and restart Paws.</p>'
+          : expired
+            ? '<p class="muted">The token expired. Create a new command.</p>'
+            : "";
+    const dialog = adding
+      ? `<dialog id="runner-add-dialog" aria-labelledby="runner-add-heading"><div class="dialog-body"><div class="between"><h2 id="runner-add-heading">Add a host</h2><button class="btn" data-runner-add-close data-focus="add-close">Close</button></div>${alert}<form id="runner-enrollment"><label class="field"><span>Host name</span><input name="host-name" data-focus="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${esc(hostName)}"${disabled}></label><button class="btn primary" type="submit" data-focus="enroll"${disabled}>${enrollment ? "Create a new command" : "Create command"}</button></form>${command}</div></dialog>`
       : "";
-    const empty = manages()
-      ? "<p>No runners are paired. Select <b>Pair a host</b> to connect a Linux host.</p>"
-      : "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair">Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}`;
+    const empty = addsHosts()
+      ? "<p>No runners are paired. Select <b>Add a host</b> to connect a Linux host.</p>"
+      : "<p>No runners are paired. A workspace member adds a Linux host with <b>Add a host</b>.</p>";
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${addsHosts() ? `<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a host</button>` : ""}</div>${adding ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1031,7 +1071,7 @@ export function createRunners() {
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
-      return `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li><li>On the Linux host, install the runner: <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</li></ol><p>Sign in as a workspace owner or admin to approve the host's pairing code.</p><button class="btn" data-runners-setup data-focus="setup"${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
+      return `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li></ol><p>Then select <b>Add a host</b> and run its command on the Linux host.</p><button class="btn" data-runners-setup data-focus="setup"${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
     const disabled = busy ? " disabled" : "";
     const now = Date.now();
     const status = `${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !loaded ? "Loading runners…" : esc(feedback)}</p>`;
@@ -1103,60 +1143,61 @@ export function createRunners() {
       box.addEventListener("change", () =>
         savePolicy(box.dataset.runnerSharing!, { sharing: box.checked }),
       );
-    root!.querySelector<HTMLElement>("[data-runner-pair]")?.addEventListener("click", () => {
-      pairingOpen = true;
-      refocus("code");
+    root!.querySelector<HTMLElement>("[data-runner-add]")?.addEventListener("click", () => {
+      addingHost = true;
+      enrollment = null;
+      refocus("host-name");
       paint();
     });
-    const dialog = root!.querySelector<HTMLDialogElement>("#runner-pair-dialog");
+    const dialog = root!.querySelector<HTMLDialogElement>("#runner-add-dialog");
     if (dialog) {
       dialog.showModal();
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
       dialog.addEventListener("close", () => {
-        if (!dialog.isConnected || !pairingOpen) return;
-        pairingOpen = false;
+        if (!dialog.isConnected || !addingHost) return;
+        addingHost = false;
+        enrollment = null;
         error = "";
-        refocus("pair");
+        refocus("add");
         paint();
       });
       dialog.addEventListener("click", (event) => {
         if (event.target === dialog) dialog.close();
       });
       dialog
-        .querySelector("[data-runner-pair-close]")
+        .querySelector("[data-runner-add-close]")
         ?.addEventListener("click", () => dialog.close());
     }
     root!
-      .querySelector<HTMLInputElement>('input[name="code"]')
+      .querySelector<HTMLInputElement>('input[name="host-name"]')
       ?.addEventListener("input", (event) => {
-        code = (event.target as HTMLInputElement).value.toUpperCase();
-        inspection = null;
-        root!.querySelector("#runner-inspection")?.remove();
+        hostName = (event.target as HTMLInputElement).value;
       });
-    root!.querySelector("#runner-pairing")?.addEventListener("submit", (event) => {
+    root!.querySelector("#runner-enrollment")?.addEventListener("submit", (event) => {
       event.preventDefault();
       void change(async () => {
-        const result = await api<Omit<Inspection, "code">>("/api/runners/pairings/inspect", {
-          code,
+        enrollment = await api<HostEnrollment>("/api/runners/enrollments", {
+          name: hostName.trim(),
         });
-        inspection = { ...result, code };
-      });
+        refocus("enroll-copy");
+      }, false);
     });
-    root!.querySelector("[data-runner-approve]")?.addEventListener(
-      "click",
-      () =>
-        void change(async () => {
-          if (inspection === null) return;
-          await api("/api/runners/pairings/approve", {
-            code: inspection.code,
-          });
-          inspection = null;
-          code = "";
-          pairingOpen = false;
-          refocus("pair");
-          feedback = "Runner approved. The host can complete pairing.";
-        }),
-    );
+    root!.querySelector("[data-runner-enroll-copy]")?.addEventListener("click", () => {
+      if (!enrollment?.config) return;
+      const value = hostEnrollmentCommand({ ...enrollment, config: enrollment.config });
+      void Promise.resolve()
+        .then(() => navigator.clipboard.writeText(value))
+        .then(
+          () => {
+            error = "";
+            feedback = "Command copied. Run it on the host.";
+          },
+          () => {
+            error = "The command could not be copied. Select it and copy it by hand.";
+          },
+        )
+        .finally(paint);
+    });
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-copy]"))
       button.addEventListener("click", () => {
         const value = button.dataset.runnerCopy!;
