@@ -241,6 +241,7 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
     {
       list: () => [{ id: runnerId, name: "Runner active", status: "active" }],
       serverVersion: () => null,
+      agentVersions: () => [],
     } as unknown as RunnerControl,
     { agents: (principal, id) => f.health.agents(principal, id) },
   );
