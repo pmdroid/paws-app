@@ -3,6 +3,7 @@ import {
   agentCatalogMarkup,
   compareVersions,
   hostEnrollmentCommand,
+  listedRunners,
   livePoll,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
@@ -103,6 +104,11 @@ describe("runner list rows", () => {
     expect(html).toContain('<span class="tag bad">Codex signed out</span>');
     expect(html).toContain("Update available");
     expect(html).toContain("No agent signed in");
+  });
+
+  test("the list leaves out revoked runners", () => {
+    const revoked = { ...runner, id: "01JRUNNER0000000000000000B", status: "revoked" as const };
+    expect(listedRunners([runner, revoked]).map((entry) => entry.id)).toEqual([runner.id]);
   });
 
   test("a revoked runner without reports says so", () => {
