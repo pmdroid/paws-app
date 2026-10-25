@@ -679,7 +679,11 @@ def resolve_requested_agent(request, bun, registry):
     package = release.AGENT_PACKAGES[agent]
     with tempfile.TemporaryDirectory(prefix="agent-resolve-", dir=STATE) as workspace:
         try:
-            entry = release.agent_entry(bun, agent, version, pathlib.Path(workspace), registry=registry)
+            # The catalog checked one native build version inside the adapter's range; resolve exactly
+            # that one, not a newer release that may still be inside its 48 hours.
+            native = release.AGENT_NATIVE_PACKAGE[agent]
+            pins = {native: request["nativeVersion"]} if request["nativeVersion"] is not None and native != package else None
+            entry = release.agent_entry(bun, agent, version, pathlib.Path(workspace), registry=registry, pins=pins)
         except subprocess.TimeoutExpired as error:
             raise AgentInstallError(agent, version, "resolving its lockfile timed out") from error
         except ValueError as error:

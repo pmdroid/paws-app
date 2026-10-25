@@ -383,3 +383,43 @@ test("Update all runners sends every runner the newest eligible version it lacks
   // Asking again does not replace a request already on its way.
   expect((await runner.updateAll()).body).toEqual({ requested: 0 });
 });
+
+test("Update all runners never moves a runner back, and asks again after a failed update", async () => {
+  const runner = await fixture();
+  const ahead = await runner.pair("silverbox");
+  // silverbox already runs 2.2.0, newer than the newest eligible 2.1.0 (it is inside its 48 hours).
+  const aheadAgents = [{ agent: "claude", version: "2.2.0", status: "current" }] as const;
+  await runner.heartbeat({ agents: aheadAgents }, ahead);
+  await runner.heartbeat({ agents: installed });
+  expect((await runner.updateAll()).body).toEqual({ requested: 1 });
+  expect((await runner.heartbeat({ agents: aheadAgents }, ahead)).body!.agents).toEqual([]);
+
+  const [first] = (await runner.heartbeat({ agents: installed })).body!.agents as {
+    id: string;
+  }[];
+  // While the request is on its way, Update all leaves it alone.
+  expect((await runner.updateAll()).body).toEqual({ requested: 0 });
+  const failed = [
+    ...installed,
+    {
+      agent: "claude",
+      version: "2.1.0",
+      status: "failed",
+      target: first!.id,
+      error: "Coding agent claude 2.1.0 was not installed: bun install timed out",
+    },
+  ];
+  await runner.heartbeat({ agents: failed });
+  runner.advance(1000);
+  // After it failed, Update all asks again under a new id, which the installer treats as new.
+  expect((await runner.updateAll()).body).toEqual({ requested: 1 });
+  const [second] = (await runner.heartbeat({ agents: failed })).body!.agents as {
+    id: string;
+    version: string;
+  }[];
+  expect(second!.version).toBe("2.1.0");
+  expect(second!.id).not.toBe(first!.id);
+  expect(listRunnerAgents(runner.db, runner.runnerId)[0]!.pending).toMatchObject({
+    status: "requested",
+  });
+});

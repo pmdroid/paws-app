@@ -331,13 +331,24 @@ export function requestAllRunnerAgentUpdates(
     let count = 0;
     for (const row of rows) {
       const version = offered.get(row.agent);
-      if (!version || version === row.version) continue;
+      // Only forward: a runner already on a newer version (one still inside its 48 hours, say)
+      // is never moved back to the catalog's newest eligible one.
+      if (!version || Bun.semver.order(version, row.version) <= 0) continue;
       const pending = db
-        .query<{ version: string; rollback: number }, [string, string]>(
-          "SELECT version,rollback FROM runner_agent_target WHERE runner_id=? AND agent=?",
+        .query<{ id: string; version: string; rollback: number }, [string, string]>(
+          "SELECT id,version,rollback FROM runner_agent_target WHERE runner_id=? AND agent=?",
         )
         .get(row.runnerId, row.agent);
-      if (pending?.version === version && !pending.rollback) continue;
+      // A request on its way is left alone; a failed one is asked again under a new id, which
+      // the installer treats as a new request.
+      const failed =
+        pending !== null &&
+        db
+          .query<{ one: number }, [string, string, string]>(
+            "SELECT 1 AS one FROM runner_agent WHERE runner_id=? AND agent=? AND status='failed' AND target_id=?",
+          )
+          .get(row.runnerId, row.agent, pending.id) !== null;
+      if (pending?.version === version && !pending.rollback && !failed) continue;
       const catalog = readAgentVersion(db, row.agent, version)!;
       saveTarget(
         db,

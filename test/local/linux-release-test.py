@@ -823,6 +823,22 @@ class AgentInstallation(unittest.TestCase):
             with self.subTest(content=content), self.assertRaises(ValueError):
                 release.parse_agent_requests(content)
 
+    def test_a_ranged_native_dependency_resolves_the_version_the_catalog_checked(self):
+        """codex-acp 3.0.0 accepts any @openai/codex ^2.0.0; npm also has 2.1.0, still inside its 48 hours."""
+        vendor_packages = fake_packages("2.1.0", self.marker)
+        metadata, files = vendor_packages["@openai/codex"]
+        self.registry.publish("@openai/codex", "2.1.0", metadata, files)
+        adapter_metadata, adapter_files = fake_packages("3.0.0", self.marker)["@agentclientprotocol/codex-acp"]
+        adapter_metadata = {**adapter_metadata, "dependencies": {"@openai/codex": "^2.0.0", f"@openai/codex-linux-{ARCH}": "2.0.0"}}
+        self.registry.publish("@agentclientprotocol/codex-acp", "3.0.0", adapter_metadata, adapter_files)
+        self.addCleanup(lambda: [self.registry.packuments[name]["versions"].pop(version, None) for name, version in (("@openai/codex", "2.1.0"), ("@agentclientprotocol/codex-acp", "3.0.0"))])
+        self.installed_one()
+        status = self.process([self.request("codex", "3.0.0", "ranged", native="2.0.0")])
+        self.assertEqual(status["agents"]["codex"]["request"], {"id": "ranged", "version": "3.0.0", "status": "installed"})
+        installed = json.loads((self.base / "agents/codex/3.0.0/node_modules/@openai/codex/package.json").read_text())
+        self.assertEqual(installed["version"], "2.0.0")
+        self.assertEqual(self.current("codex"), "3.0.0")
+
     def test_a_running_session_keeps_its_version_until_it_ends(self):
         self.installed_one()
         process, answer = self.session("claude-agent-acp")
