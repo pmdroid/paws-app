@@ -13,21 +13,8 @@ import {
   workspaceMember,
 } from "../db";
 import type { PlacementRequest, RunnerPlacement } from "./index";
+import { eligibleRunners } from "./eligible";
 import { quotaSignal } from "./quota";
-
-type Candidate = {
-  id: string;
-  workspaceId: string;
-  ownerId: string;
-  sharing: number;
-  ready: number;
-  authExpired: number;
-  quotaState: string;
-  cooldownUntil: number;
-  virtualFinish: number;
-  lastUsedAt: number;
-  resolvedModel: string | null;
-};
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
 const RETRYABLE_OUTCOMES = new Set([
@@ -245,21 +232,17 @@ export function createRunnerPlacement(options: {
       )
         throw new Error("Runner requester is not an active workspace member");
       const at = now();
-      const rows = db
-        .query<Candidate, [string, string, number]>(
-          `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerId,
-         COALESCE(p.sharing,0) AS sharing,
-         COALESCE(a.ready,0) AS ready,COALESCE(a.auth_expired,0) AS authExpired,
-         COALESCE(a.quota_state,'ok') AS quotaState,COALESCE(a.cooldown_until,0) AS cooldownUntil,
-         COALESCE(a.virtual_finish,0) AS virtualFinish,COALESCE(a.last_used_at,0) AS lastUsedAt,a.resolved_model AS resolvedModel
-         FROM runner r JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-         LEFT JOIN runner_policy p ON p.runner_id=r.id
-         LEFT JOIN runner_agent_policy a ON a.runner_id=r.id AND a.agent=?
-         WHERE r.workspace_id=? AND r.status='active' AND r.revoked_at IS NULL AND m.active=1
-         AND m.role<>'observer' AND r.last_seen_at>?
-         AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL))`,
-        )
-        .all(input.profile?.agent ?? "", current.workspace.id, at - 60_000);
+      // A task runs on the runners of the person who delegated it, then on the shared runners
+      // of its Linear project leads.
+      const rows = eligibleRunners(db, {
+        workspaceId: current.workspace.id,
+        teamId,
+        ownerUserId: current.placement?.ownerUserId ?? requester,
+        leadUserIds: current.placement?.leadUserIds ?? [],
+        agent: input.profile.agent,
+        purpose: input.purpose,
+        now: at,
+      }).filter((runner) => runner.eligible);
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(
@@ -281,26 +264,8 @@ export function createRunnerPlacement(options: {
         )
           return [];
         if (input.excludeRunnerIds?.includes(runner.id)) return [];
-        const member = workspaceMember(db, current.workspace.id, runner.ownerId);
-        if (
-          !member ||
-          (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(teamId))
-        )
-          return [];
-        // A task runs on the runners of the person who delegated it, then on the shared runners
-        // of its Linear project leads.
-        const own = runner.ownerId === (current.placement?.ownerUserId ?? requester);
-        const lead =
-          runner.sharing === 1 &&
-          (current.placement?.leadUserIds.includes(runner.ownerId) ?? false);
-        if (!own && !lead) return [];
-        if (
-          input.profile &&
-          input.purpose !== "prepare" &&
-          (runner.authExpired === 1 || (input.purpose === "work" && runner.ready !== 1))
-        )
-          return [];
-        if (input.profile && runner.cooldownUntil > at) return [];
+        const own = runner.reason === "own";
+        if (runner.cooldownUntil > at) return [];
         if (
           input.role === "reviewer" &&
           lastImplementation?.model &&
