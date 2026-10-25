@@ -3,6 +3,7 @@ import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
+import { createOnboardingReadiness } from "./onboarding-readiness";
 import { createMemberVmHttp, createMemberVmProvisioning, registerMemberVmJob } from "./member-vm";
 import {
   exeDevTokenReader,
@@ -567,6 +568,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       }
       workspace = startWorkspaceAccess({
         assignments,
+        onboardingReadiness: createOnboardingReadiness(db),
         githubAttributionClient: (() => {
           try {
             const { clientId, clientSecret } = appActivation.template();
