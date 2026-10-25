@@ -66,6 +66,31 @@ describe("local agent settings API", () => {
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
   });
 
+  test("applyToWaiting is a per-save boolean and is never stored", async () => {
+    const { options } = fixture();
+    let calls = 0;
+    options.applyToWaiting = () => {
+      calls++;
+      return 3;
+    };
+    for (const applyToWaiting of ["true", 1, null]) {
+      expect(
+        (await handleAgentSettingsRequest(
+          request(undefined, "PUT", { ...settings, applyToWaiting }),
+          options,
+        ))!.status,
+      ).toBe(400);
+    }
+    expect(calls).toBe(0);
+    const saved = await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, applyToWaiting: true }),
+      options,
+    );
+    expect(await saved!.json()).toMatchObject({ waitingRuns: 3 });
+    expect(calls).toBe(1);
+    expect(readFileSync(options.configPath, "utf8")).not.toContain("applyToWaiting");
+  });
+
   test("PUT persists and reloads validated profiles while preserving config", async () => {
     const { options } = fixture();
     writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
