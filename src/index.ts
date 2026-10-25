@@ -4,8 +4,14 @@ import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createOnboardingReadiness } from "./onboarding-readiness";
-import { createMemberVmHttp, createMemberVmProvisioning, registerMemberVmJob } from "./member-vm";
 import {
+  createMemberVmHttp,
+  createMemberVmProvisioning,
+  registerMemberVmDeleteJob,
+  registerMemberVmJob,
+} from "./member-vm";
+import {
+  createExeDev,
   exeDevTokenReader,
   tailscaleAuthKeyReader,
   latestRunnerRelease,
@@ -647,6 +653,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
+  const memberVmExeDev = createExeDev({ readToken: exeDevToken });
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
@@ -913,6 +920,27 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         provision: memberVmProvisioning,
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
+      });
+      // Delete VM needs only exe.dev, not the Create VM prerequisites.
+      registerMemberVmDeleteJob(created.jobs, {
+        exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
+        // A forced delete stops each running task the way Stop on the run page does.
+        stopTask: async (itemId) => {
+          if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
+          submitCommand(db, orchestrator.bus, {
+            type: "stop",
+            source: "dashboard",
+            itemId,
+            requestedAt: Date.now(),
+          });
+          await orchestrator.interruptItem(itemId);
+        },
+        // Revoked certificates lose their connection at once, as when a runner is removed.
+        disconnect: () =>
+          void runnerReady
+            .then((coordinator) => coordinator?.control.expireConnections())
+            .catch(() => {}),
+        secrets: () => [exeDevToken(), tailscaleAuthKey()],
       });
       const attached = attachOrchestrator({
         db,

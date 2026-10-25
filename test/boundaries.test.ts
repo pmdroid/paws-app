@@ -245,7 +245,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-models": ["db", "runner-work", "runner-protocol"],
   provisioning: ["config"],
-  "member-vm": ["db", "provisioning", "workspace"],
+  "member-vm": ["core", "db", "provisioning", "workspace"],
 };
 
 describe("module boundaries", () => {

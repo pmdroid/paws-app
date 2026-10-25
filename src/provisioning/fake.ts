@@ -11,6 +11,7 @@ import {
 
 export type FakeExeDevCall =
   | { operation: "createVm"; vm: string }
+  | { operation: "deleteVm"; vm: string }
   | { operation: "getVm"; vm: string }
   | { operation: "execVm"; vm: string; command: string; timeoutMs: number | null };
 
@@ -118,6 +119,19 @@ export function createFakeExeDev(): FakeExeDev {
       }
       const created = addVm(vm);
       return { name: created.name, sshDest: created.sshDest, httpsUrl: created.httpsUrl };
+    },
+
+    async deleteVm(name) {
+      calls.push({ operation: "deleteVm", vm: String(name) });
+      const vm = assertVmName("deleteVm", name);
+      try {
+        failIfScripted("deleteVm", vm);
+      } catch (error) {
+        // The real client maps exe.dev's "not found" to `missing` the same way.
+        if (error instanceof ProvisioningError && error.code === "missing") return "missing";
+        throw error;
+      }
+      return vms.delete(vm) ? "deleted" : "missing";
     },
 
     async getVm(name) {

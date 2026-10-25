@@ -3,6 +3,7 @@ import {
   ProvisioningError,
   type ExeDev,
   type ExeDevCreatedVm,
+  type ExeDevDeleteResult,
   type ExeDevExecOptions,
   type ExeDevExecResult,
   type ExeDevVm,
@@ -25,12 +26,14 @@ export type ExeDevOptions = {
 
 export const DEFAULT_TIMEOUT_MS: Readonly<Record<ProvisioningOperation, number>> = {
   createVm: 120_000,
+  deleteVm: 120_000,
   getVm: 15_000,
   execVm: 600_000,
 };
 
 export const DEFAULT_MAX_RESPONSE_BYTES: Readonly<Record<ProvisioningOperation, number>> = {
   createVm: 64 * 1024,
+  deleteVm: 64 * 1024,
   getVm: 64 * 1024,
   execVm: 8 * 1024 * 1024,
 };
@@ -113,6 +116,23 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
         timeout.createVm,
       );
       return parseCreated(vm, status, text);
+    },
+
+    async deleteVm(name) {
+      const vm = assertVmName("deleteVm", name);
+      try {
+        const { status, text } = await call(
+          "deleteVm",
+          vm,
+          `rm ${vm}`,
+          "application/json",
+          timeout.deleteVm,
+        );
+        return parseDeleted(vm, status, text);
+      } catch (error) {
+        if (error instanceof ProvisioningError && error.code === "missing") return "missing";
+        throw error;
+      }
     },
 
     async getVm(name) {
@@ -259,6 +279,14 @@ function parseCreated(vm: string, status: number, text: string): ExeDevCreatedVm
   const httpsUrl = body["https_url"];
   if (!isDest(sshDest) || !isHttpsUrl(httpsUrl)) throw invalid("createVm", vm, status);
   return { name: vm, sshDest, httpsUrl };
+}
+
+function parseDeleted(vm: string, status: number, text: string): ExeDevDeleteResult {
+  if (text.trim().length === 0) return "deleted";
+  const body = parseJson(text);
+  if (body === undefined) throw invalid("deleteVm", vm, status);
+  commandFailure("deleteVm", vm, status, body);
+  return "deleted";
 }
 
 function parseListed(vm: string, status: number, text: string): ExeDevVm {

@@ -65,7 +65,7 @@ const FIX = {
     "Give the GitHub App Contents, Pull requests and Issues write permission and accept the new permissions on the installation (docs/github-app.md).",
   githubRate: "Wait for the GitHub rate limit to recover.",
   exeDev:
-    "Generate an exe.dev API token that may run new, ls and ssh, and save it to ~/.paws/secrets/exe-dev-token.",
+    "Generate an exe.dev API token that may run new, ls, ssh and rm, and save it to ~/.paws/secrets/exe-dev-token.",
   tailscaleAuthKey:
     "Create a reusable, pre-authorized Tailscale auth key tagged tag:paws-runner and save it to ~/.paws/secrets/tailscale-authkey (docs/create-vm.md).",
   githubWebhook:

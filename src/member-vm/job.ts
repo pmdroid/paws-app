@@ -59,7 +59,8 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
   return async (job: Job, context: JobContext): Promise<void> => {
     const id = memberVmId(job.payload);
     const row = id === null ? null : getMemberVm(db, id);
-    if (row === null || row.failure !== null || row.step === "ready") return;
+    if (row === null || row.failure !== null || row.step === "ready" || row.deleteStep !== null)
+      return;
     const minted: string[] = [];
     let outcome: Outcome;
     try {
@@ -73,12 +74,15 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
         .catch(() => []);
       const text = redact(errorText(error), [...minted, ...secrets]);
       const at = now();
-      db.run("UPDATE member_vm SET failure=?,updated_at=? WHERE id=? AND step=?", [
-        text,
-        at,
-        row.id,
-        row.step,
-      ]);
+      db.run(
+        "UPDATE member_vm SET failure=?,updated_at=? WHERE id=? AND step=? AND delete_step IS NULL",
+        [
+          text,
+          at,
+          row.id,
+          row.step,
+        ],
+      );
       return;
     }
     if (outcome.next === "done" || !context.isCurrent()) return;
@@ -119,7 +123,7 @@ async function runStep(
         if (!ours) {
           if (rejected(error))
             db.run(
-              "UPDATE member_vm SET create_requested_at=? WHERE id=? AND step='create' AND failure IS NULL",
+              "UPDATE member_vm SET create_requested_at=? WHERE id=? AND step='create' AND failure IS NULL AND delete_step IS NULL",
               [asked, row.id],
             );
           if (isProvisioningError(error) && error.code === "conflict")
@@ -241,7 +245,7 @@ function update(db: Database, row: MemberVm, columns: Columns, at: number): void
   if (entries.length === 0) return;
   const changed = db.run(
     `UPDATE member_vm SET ${entries.map(([name]) => `${name}=?`).join(",")},updated_at=?
-    WHERE id=? AND step=? AND failure IS NULL`,
+    WHERE id=? AND step=? AND failure IS NULL AND delete_step IS NULL`,
     [...entries.map(([, value]) => value ?? null), at, row.id, row.step],
   ).changes;
   if (changed !== 1) throw new StepMoved();
@@ -256,7 +260,7 @@ function advance(
   immediate(db, () => {
     const changed = db.run(
       `UPDATE member_vm SET step=?,step_started_at=?,${STEP_AT[step]}=?,updated_at=?
-      WHERE id=? AND step=? AND failure IS NULL`,
+      WHERE id=? AND step=? AND failure IS NULL AND delete_step IS NULL`,
       [step, at, at, at, row.id, row.step],
     ).changes;
     if (changed !== 1) throw new StepMoved();
