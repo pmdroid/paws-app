@@ -44,7 +44,7 @@ export type EligibleRunner = {
   eligible: boolean;
   reason: EligibleRunnerReason;
 };
-export { eligibleRunners, RUNNER_ONLINE_MS } from "./eligible";
+export { eligibleRunners, itemOwnerHasEligibleRunner, RUNNER_ONLINE_MS } from "./eligible";
 export type PlacementProfile = Pick<RunnerProfile, "agent"> & { model?: string | null };
 export type PlacementRequest = {
   itemId?: string;

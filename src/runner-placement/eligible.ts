@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { workspaceMember } from "../db";
+import { delegatedLinearUserId, workspaceMember } from "../db";
 import type { EligibleRunner, EligibleRunnerReason, EligibleRunnersInput } from "./index";
 
 /** A runner that has not sent a heartbeat for this long is offline. */
@@ -67,4 +67,61 @@ export function eligibleRunners(db: Database, input: EligibleRunnersInput): Elig
     })();
     return { ...runner, eligible: reason === "own" || reason === "lead-shared", reason };
   });
+}
+
+/**
+ * Whether the person who owns a work item has a runner they may use for its work right now, by
+ * the same check placement uses. Reads SQLite only. Null when the item has no Linear session,
+ * workspace, team or owner yet, so the caller keeps its usual behavior.
+ */
+export function itemOwnerHasEligibleRunner(
+  db: Database,
+  input: { itemId: string; agent: string; now?: number },
+): boolean | null {
+  const scope = db
+    .query<
+      {
+        workspaceId: string | null;
+        teamId: string | null;
+        ownerUserId: string | null;
+        delegationId: string;
+      },
+      [string]
+    >(
+      `SELECT w.id AS workspaceId,s.team_id AS teamId,i.owner_user_id AS ownerUserId,i.delegation_id AS delegationId
+       FROM work_item i
+       LEFT JOIN linear_session s ON s.session_id=i.session_key
+       LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
+       WHERE i.id=?`,
+    )
+    .get(input.itemId);
+  if (!scope?.workspaceId || !scope.teamId) return null;
+  const delegator = delegatedLinearUserId(db, input.itemId);
+  const ownerUserId =
+    scope.ownerUserId ??
+    (delegator
+      ? (db
+          .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
+          .get(delegator)?.id ?? null)
+      : null);
+  if (!ownerUserId) return null;
+  // The leads of the Linear projects across the item's delegation lend their shared runners.
+  const leadUserIds = db
+    .query<{ id: string }, [string]>(
+      `SELECT DISTINCT u.id FROM work_item i
+       JOIN work_item_scheduling c ON c.item_id=i.id
+       JOIN workspace_user u ON u.linear_user_id=c.project_lead_id
+       WHERE i.delegation_id=? ORDER BY u.id`,
+    )
+    .all(scope.delegationId)
+    .map((row) => row.id);
+  return eligibleRunners(db, {
+    workspaceId: scope.workspaceId,
+    teamId: scope.teamId,
+    ownerUserId,
+    leadUserIds,
+    agent: input.agent,
+    purpose: "work",
+    ...(input.now === undefined ? {} : { now: input.now }),
+  }).some((runner) => runner.eligible);
 }
