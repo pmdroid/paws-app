@@ -2,13 +2,22 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureLayout, exeDevTokenPath, exeDevTokenStatus, pawsPaths } from "../src/config";
+import {
+  ensureLayout,
+  exeDevTokenPath,
+  exeDevTokenStatus,
+  pawsPaths,
+  tailscaleAuthKeyPath,
+  tailscaleAuthKeyStatus,
+} from "../src/config";
 import { writeSecretFile } from "../src/credentials";
 import {
   createFakeExeDev,
   exeDevTokenReader,
   FAKE_UNSCRIPTED_EXIT,
+  isTailnetUrl,
   ProvisioningError,
+  tailscaleAuthKeyReader,
 } from "../src/provisioning";
 
 async function code(promise: Promise<unknown>): Promise<string> {
@@ -112,4 +121,32 @@ test("the token reader reads ~/.paws/secrets/exe-dev-token through readSecretFil
   writeFileSync(join(pawsPaths(home).secretsDir, ".envelope-key"), Buffer.alloc(32, 1));
   expect(exeDevTokenStatus(home)).toBe("unreadable");
   expect(() => read()).toThrow(/Could not decrypt/);
+});
+
+test("the auth key reader reads ~/.paws/secrets/tailscale-authkey through readSecretFile", () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-tailscale-"));
+  ensureLayout(pawsPaths(home));
+  const read = tailscaleAuthKeyReader(home);
+  expect(tailscaleAuthKeyPath(home)).toBe(join(pawsPaths(home).secretsDir, "tailscale-authkey"));
+  expect(tailscaleAuthKeyStatus(home)).toBe("absent");
+  expect(read()).toBeNull();
+
+  writeFileSync(tailscaleAuthKeyPath(home), "\n", { mode: 0o600 });
+  expect(tailscaleAuthKeyStatus(home)).toBe("empty");
+  expect(read()).toBeNull();
+
+  writeSecretFile(tailscaleAuthKeyPath(home), "tskey-auth-first\n");
+  expect(tailscaleAuthKeyStatus(home)).toBe("readable");
+  expect(read()).toBe("tskey-auth-first");
+
+  writeFileSync(join(pawsPaths(home).secretsDir, ".envelope-key"), Buffer.alloc(32, 1));
+  expect(tailscaleAuthKeyStatus(home)).toBe("unreadable");
+});
+
+test("only a *.ts.net host counts as a tailnet URL", () => {
+  expect(isTailnetUrl("https://agentbox.taile07e4.ts.net:8787")).toBe(true);
+  expect(isTailnetUrl("https://paws.example.com")).toBe(false);
+  expect(isTailnetUrl("https://ts.net.example.com")).toBe(false);
+  expect(isTailnetUrl("not a url")).toBe(false);
+  expect(isTailnetUrl(null)).toBe(false);
 });

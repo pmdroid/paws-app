@@ -4,6 +4,7 @@ import {
   type EnrolledRunner,
   type ExeDevBootstrap,
   type InstallStatus,
+  type JoinTailnetResult,
   type StartInstallResult,
 } from "./bootstrap";
 
@@ -11,6 +12,7 @@ export type FakeBootstrapCall =
   | { step: "startInstall"; vm: string }
   | { step: "installStatus"; vm: string }
   | { step: "stageToken"; vm: string }
+  | { step: "joinTailnet"; vm: string }
   | { step: "enroll"; vm: string }
   | { step: "startRunner"; vm: string }
   | { step: "resetIdentity"; vm: string };
@@ -18,6 +20,8 @@ export type FakeBootstrapCall =
 export type FakeBootstrapOptions = {
   enroll?: (vm: string, token: string) => Promise<EnrolledRunner> | EnrolledRunner;
   installPolls?: number;
+  /** What `joinTailnet` answers when it does not fail. Defaults to `skipped`. */
+  tailnet?: JoinTailnetResult;
 };
 
 export type FakeBootstrap = ExeDevBootstrap & {
@@ -33,6 +37,7 @@ const STEP: Record<FakeBootstrapCall["step"], BootstrapStep> = {
   startInstall: "install",
   installStatus: "status",
   stageToken: "token",
+  joinTailnet: "tailnet",
   enroll: "enroll",
   startRunner: "start",
   resetIdentity: "reset",
@@ -114,6 +119,11 @@ export function createFakeBootstrap(options: FakeBootstrapOptions = {}): FakeBoo
       record("stageToken", vm);
       tokens.push(token);
       staged.set(vm, token);
+    },
+
+    async joinTailnet(vm) {
+      record("joinTailnet", vm);
+      return options.tailnet ?? "skipped";
     },
 
     async enroll(vm) {

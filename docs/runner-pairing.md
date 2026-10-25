@@ -2,6 +2,8 @@
 
 Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-runner` user. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Paws gives you one command with a single-use token to run on the VM.
 
+To have Paws make and pair an exe.dev VM for you, including on a Paws reachable only on Tailscale, see [Create a runner VM on exe.dev](create-vm.md).
+
 ## Prepare Paws and the host
 
 Set up [HTTPS workspace access](workspace-access.md) on the Paws machine and sign in as a workspace owner or administrator. For the first workspace, use the setup-code form described in that guide.

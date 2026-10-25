@@ -165,6 +165,9 @@ async function runStep(
     }
 
     case "enroll": {
+      // The runner enrolls with this Paws, so a Paws reachable only on Tailscale needs the VM on
+      // its tailnet first. Without an auth key this is a no-op; on a joined VM only a reach check.
+      await bootstrap.joinTailnet(vm);
       let tokenExpiresAt = row.tokenExpiresAt;
       for (let attempt = 0; ; attempt++) {
         if (tokenExpiresAt === null || tokenExpiresAt - TOKEN_MARGIN_MS <= now()) {
