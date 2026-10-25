@@ -495,9 +495,9 @@ export async function probeRunnerDaemon(
       );
       // A Paws release without coding agent updates refuses the agents; the rest still goes through.
       const agent = { agent: "claude" as const, version: "2.0.0", status: "current" as const };
-      const before = heartbeatBodies.length;
+      const agentStart = heartbeatBodies.length;
       await configured.heartbeat([reported], [runtime], [agent]);
-      const withAgents = heartbeatBodies.slice(before) as {
+      const withAgents = heartbeatBodies.slice(agentStart) as {
         skills?: unknown;
         runtimes?: unknown;
         agents?: unknown;
