@@ -11,6 +11,7 @@ import {
   getLinearSessionInstallation,
   immediate,
   listWorkspaceRepositories,
+  recordLinearTurn,
   workspaceForOrganization,
   workspaceLinearMember,
   syncWorkspaceMember,
@@ -434,6 +435,33 @@ export function createWorkspaceAssignments(options: {
       return refused(`Observers in the Paws workspace cannot delegate issues to Paws. ${ask}`);
     return member.teamIds.includes(verified.teamId) ? null : refused(TEAM);
   }
+  /**
+   * A reply from the session creator while the hold waits is kept as a pending
+   * Linear turn, so the resumed request delivers it. It posts nothing to Linear.
+   * Replies from anyone else are refused and recorded nowhere.
+   */
+  function keepCreatorReply(event: AcceptedLinearEvent, hold: Hold) {
+    if (
+      event.action !== "prompted" ||
+      !event.sessionId ||
+      !event.body?.trim() ||
+      !event.actorId ||
+      event.actorId !== hold.actorId ||
+      hold.status === "invalid" ||
+      !current(hold)
+    )
+      return;
+    recordLinearTurn(db, {
+      eventKey: event.dedupeKey,
+      activityId: event.activityId,
+      sessionId: event.sessionId,
+      actorId: event.actorId,
+      body: event.body,
+      payload: event.payload,
+      createdAtMs: event.activityCreatedAtMs ?? event.updatedAtMs,
+      now: now(),
+    });
+  }
   return {
     authorizeIntake(sessionId: string, spec: EpicSnapshot): boolean {
       const hold = holds(sessionId);
@@ -467,8 +495,11 @@ export function createWorkspaceAssignments(options: {
         if (hold) invalidate(hold);
         return ACCEPTED;
       }
-      if (event.action !== "created")
-        return !hold || hold.status === "continued" ? ACCEPTED : refused(SIGN_IN);
+      if (event.action !== "created") {
+        if (!hold || hold.status === "continued") return ACCEPTED;
+        keepCreatorReply(event, hold);
+        return refused(SIGN_IN);
+      }
       if (hold) {
         if (!continuations.has(event) || hold.status !== "accepted" || !current(hold))
           return hold.status === "invalid" ? refused(ENDED) : HELD;
