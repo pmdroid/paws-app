@@ -426,6 +426,101 @@ export function approveRunnerPairing(
   });
 }
 
+export function createRunnerEnrollment(
+  db: Database,
+  input: {
+    id: string;
+    tokenHash: string;
+    workspaceId: string;
+    userId: string;
+    name: string;
+    expiresAt: number;
+    now: number;
+  },
+): void {
+  immediate(db, () => {
+    db.run("DELETE FROM runner_enrollment WHERE used_at IS NULL AND expires_at<=?", [input.now]);
+    const pending = db
+      .query<{ count: number }, [string, number]>(
+        "SELECT count(*) AS count FROM runner_enrollment WHERE workspace_id=? AND used_at IS NULL AND expires_at>?",
+      )
+      .get(input.workspaceId, input.now)!.count;
+    if (pending >= 100) throw new Error("Too many runner enrollments. Try again shortly.");
+    db.run(
+      `INSERT INTO runner_enrollment(id,token_hash,workspace_id,user_id,name,expires_at)
+      VALUES(?,?,?,?,?,?)`,
+      [input.id, input.tokenHash, input.workspaceId, input.userId, input.name, input.expiresAt],
+    );
+  });
+}
+
+export type RunnerEnrollment = {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  name: string;
+  expiresAt: number;
+};
+
+/**
+ * The unused, unexpired enrollment for `tokenHash` whose member is still active and not an
+ * observer, or null.
+ */
+export function findRunnerEnrollment(
+  db: Database,
+  tokenHash: string,
+  now: number,
+): RunnerEnrollment | null {
+  return db
+    .query<RunnerEnrollment, [string, number]>(
+      `SELECT e.id,e.workspace_id AS workspaceId,e.user_id AS userId,e.name,e.expires_at AS expiresAt
+      FROM runner_enrollment e JOIN workspace_member m
+      ON m.workspace_id=e.workspace_id AND m.user_id=e.user_id
+      WHERE e.token_hash=? AND e.used_at IS NULL AND e.runner_id IS NULL AND e.expires_at>?
+      AND m.active=1 AND m.role<>'observer'`,
+    )
+    .get(tokenHash, now);
+}
+
+/**
+ * Use an enrollment: create the runner owned by the enrollment's member, store its certificate,
+ * mark the token used and audit `runner.paired` with that member as actor. Throws, writing
+ * nothing, when the token is used, expired or its member may no longer own a runner.
+ */
+export function enrollRunner(
+  db: Database,
+  input: {
+    tokenHash: string;
+    runnerId: string;
+    name: string;
+    certificate: StoredRunnerCertificate;
+    now: number;
+  },
+): RunnerEnrollment {
+  return immediate(db, () => {
+    const enrollment = findRunnerEnrollment(db, input.tokenHash, input.now);
+    if (!enrollment) throw new Error("Runner enrollment is invalid or expired.");
+    db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
+      [input.runnerId, enrollment.workspaceId, enrollment.userId, input.name, input.now],
+    );
+    insertCertificate(db, input.runnerId, input.certificate);
+    const used = db.run(
+      "UPDATE runner_enrollment SET used_at=?,runner_id=? WHERE id=? AND used_at IS NULL",
+      [input.now, input.runnerId, enrollment.id],
+    ).changes;
+    if (used !== 1) throw new Error("Runner enrollment is invalid or expired.");
+    auditWorkspaceAccess(db, {
+      workspaceId: enrollment.workspaceId,
+      userId: enrollment.userId,
+      action: "runner.paired",
+      subject: input.runnerId,
+      now: input.now,
+    });
+    return enrollment;
+  });
+}
+
 export function isCurrentRunnerCertificate(db: Database, fingerprint: string): boolean {
   return (
     db

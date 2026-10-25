@@ -2715,6 +2715,25 @@ DROP TABLE runner_agent_target;
 ALTER TABLE runner_agent_target_update RENAME TO runner_agent_target;
 `,
   },
+  {
+    // Single-use enrollment tokens (PAS-643). A member mints one; the host posts it with its CSR
+    // and gets a certificate in one round trip. Only the token's hash is stored.
+    id: "134_runner_enrollment",
+    sql: `
+CREATE TABLE runner_enrollment (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  runner_id TEXT REFERENCES runner(id),
+  FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_member(workspace_id,user_id)
+) STRICT;
+CREATE INDEX runner_enrollment_expiry ON runner_enrollment(expires_at) WHERE used_at IS NULL;
+`,
+  },
 ];
 
 /**

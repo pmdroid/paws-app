@@ -147,8 +147,11 @@ export {
 } from "./linear-project";
 export { immediate } from "./tx";
 export {
+  createRunnerEnrollment,
   createRunnerPairing,
+  enrollRunner,
   expireRunnerPairings,
+  findRunnerEnrollment,
   findRunnerPairing,
   getRunner,
   runRunnerName,
@@ -171,6 +174,7 @@ export {
   type RunnerSessionPhase,
   type RunnerHostSample,
   type RunnerAgentLimit,
+  type RunnerEnrollment,
   type RunnerPairing,
   type StoredRunnerCertificate,
 } from "./runners";
