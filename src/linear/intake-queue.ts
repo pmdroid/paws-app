@@ -1,6 +1,6 @@
 import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
-import { linearCaller, LinearRateLimitError, type LinearLedger } from "./budget";
+import { linearCaller, linearItem, LinearRateLimitError, type LinearLedger } from "./budget";
 import type { AcceptedLinearEvent } from "./events";
 import { LinearEntityNotFoundError } from "./graphql";
 import type { InboxStore, QueuedLinearEvent } from "./inbox";
@@ -218,42 +218,48 @@ export function createLinearIntake(options: {
     if (mode.phase === "intake") arrived.delete(event.dedupeKey);
     const request = checked ? undefined : initialActivityRequest(event);
     const reportProgress = progressReporter?.(event);
-    const work = linearCaller("events", async () => {
-      signal.throwIfAborted();
-      if (!checked && beforeEvent !== undefined && !(await beforeEvent(event, request)))
-        return false;
-      signal.throwIfAborted();
-      request?.signal?.throwIfAborted();
-      if (tracker === null) {
-        if (mode.phase === "arrive") return true;
-        if (event.signal === "stop") {
-          return followUp?.(event, null);
+    const identifier = eventIssueIdentifier(event);
+    const forIssue = <T>(task: () => T): T => (identifier ? linearItem(identifier, task) : task());
+    const work = forIssue(() =>
+      linearCaller("events", async () => {
+        signal.throwIfAborted();
+        if (!checked && beforeEvent !== undefined && !(await beforeEvent(event, request)))
+          return false;
+        signal.throwIfAborted();
+        request?.signal?.throwIfAborted();
+        if (tracker === null) {
+          if (mode.phase === "arrive") return true;
+          if (event.signal === "stop") {
+            return followUp?.(event, null);
+          }
+          throw new Error("Linear is not connected.");
         }
-        throw new Error("Linear is not connected.");
-      }
-      const acknowledger = reportProgress ? { ...tracker, postProgress: reportProgress } : tracker;
-      if (mode.phase === "arrive") {
-        await acknowledgeNewSession(acknowledger, event, undefined, request, {
-          acknowledged,
-          signal,
-        });
-        arrived.add(event.dedupeKey);
-        return true;
-      }
-      return acknowledgeNewSession(
-        acknowledger,
-        event,
-        (accepted) =>
-          linearCaller("intake", () => followUp?.(accepted, tracker) ?? Promise.resolve()),
-        request,
-        {
-          acknowledged,
-          signal,
-          acknowledgedOnArrival: checked,
-          reportFailure: mode.attempts === 0,
-        },
-      );
-    }).finally(() => {
+        const acknowledger = reportProgress
+          ? { ...tracker, postProgress: reportProgress }
+          : tracker;
+        if (mode.phase === "arrive") {
+          await acknowledgeNewSession(acknowledger, event, undefined, request, {
+            acknowledged,
+            signal,
+          });
+          arrived.add(event.dedupeKey);
+          return true;
+        }
+        return acknowledgeNewSession(
+          acknowledger,
+          event,
+          (accepted) =>
+            linearCaller("intake", () => followUp?.(accepted, tracker) ?? Promise.resolve()),
+          request,
+          {
+            acknowledged,
+            signal,
+            acknowledgedOnArrival: checked,
+            reportFailure: mode.attempts === 0,
+          },
+        );
+      }),
+    ).finally(() => {
       inflight.delete(key);
     });
     inflight.set(key, work);
@@ -285,4 +291,20 @@ function initialActivityRequest(event: AcceptedLinearEvent): TrackerRequestOptio
   return event.action === "created" && event.sessionId !== null && event.signal !== "stop"
     ? { signal: AbortSignal.timeout(10_000) }
     : undefined;
+}
+
+/**
+ * The issue identifier from the webhook payload, so the requests an event makes before its work
+ * item exists still count toward that issue under `/health` `linear.items`.
+ */
+function eventIssueIdentifier(event: AcceptedLinearEvent): string | null {
+  try {
+    const parsed = JSON.parse(event.payload) as {
+      agentSession?: { issue?: { identifier?: unknown } };
+    };
+    const identifier = parsed?.agentSession?.issue?.identifier;
+    return typeof identifier === "string" && identifier.trim() !== "" ? identifier : null;
+  } catch {
+    return null;
+  }
 }

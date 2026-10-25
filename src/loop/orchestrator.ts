@@ -1162,7 +1162,10 @@ export class Orchestrator {
   private forItem<T>(payload: unknown, run: () => T): T {
     const itemId = readString(payload, "itemId");
     const item = itemId ? getWorkItem(this.db, itemId) : null;
-    return item ? linearItem(item.linearIdentifier, run, item.id) : run();
+    if (item) return linearItem(item.linearIdentifier, run, item.id);
+    // A write for a session that has no item yet, such as a first delegation's sign-in action.
+    const identifier = readString(payload, "linearIdentifier");
+    return identifier ? linearItem(identifier, run) : run();
   }
 
   private register(): void {
