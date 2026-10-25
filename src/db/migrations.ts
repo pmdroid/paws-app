@@ -2790,6 +2790,28 @@ ALTER TABLE workspace_assignment ADD COLUMN completed_at INTEGER;
 CREATE UNIQUE INDEX workspace_assignment_link_id ON workspace_assignment(link_id);
 `,
   },
+  {
+    // PAS-675. A first start that finds no runner the delegator may use holds the queued item
+    // here instead of retrying. The hold has no timer. It ends when the item leaves the queue,
+    // which covers resume, Stop and undelegation.
+    id: "139_runner_setup_hold",
+    sql: `
+CREATE TABLE runner_setup_hold (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  owner_user_id TEXT REFERENCES workspace_user(id),
+  reason TEXT NOT NULL CHECK(reason IN ('no-runner','agent-not-signed-in')),
+  runner_id TEXT,
+  agent TEXT,
+  since INTEGER NOT NULL,
+  notified_at INTEGER
+) STRICT;
+CREATE TRIGGER runner_setup_hold_ends AFTER UPDATE OF state,cancel_requested ON work_item
+WHEN NEW.state<>'queued' OR NEW.cancel_requested=1
+BEGIN
+  DELETE FROM runner_setup_hold WHERE item_id=NEW.id;
+END;
+`,
+  },
 ];
 
 /**

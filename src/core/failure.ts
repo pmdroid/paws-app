@@ -7,6 +7,7 @@ const TRANSIENT_ERROR_NAMES = new Set([
   "RunnerWorkFencedError",
   "RunnerUnavailableError",
   "RunnerCapacityWait",
+  "RunnerSetupRequired",
   "PawsShutdown",
   "TimeoutError",
   "GitTransportError",
@@ -58,6 +59,31 @@ export class RunnerCapacityWait extends Error {
       runnerIds.length
         ? `Waiting for a free slot on runner ${runnerIds.join(", ")}`
         : "Waiting for a paired runner to come online",
+    );
+  }
+}
+
+/**
+ * Why the person who delegated a task has no runner Paws may start it on. `no-runner` means no
+ * runner of theirs, or shared with them, could take the work. `agent-not-signed-in` names their
+ * own runner whose agent still needs a sign-in.
+ */
+export type RunnerSetupNeed =
+  | { reason: "no-runner" }
+  | { reason: "agent-not-signed-in"; runnerId: string; runnerName: string; agent: string };
+
+/**
+ * A first start found no runner the delegator may use, as opposed to usable runners that are
+ * busy. The orchestrator holds the item until the delegator sets a runner up. It counts as
+ * transient only so that the run's error handling hands it back to the orchestrator.
+ */
+export class RunnerSetupRequired extends Error {
+  override readonly name = "RunnerSetupRequired";
+  constructor(readonly need: RunnerSetupNeed) {
+    super(
+      need.reason === "no-runner"
+        ? "The delegator has no runner Paws can use"
+        : `Runner ${need.runnerName} needs ${need.agent} signed in`,
     );
   }
 }

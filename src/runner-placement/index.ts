@@ -44,7 +44,19 @@ export type EligibleRunner = {
   eligible: boolean;
   reason: EligibleRunnerReason;
 };
-export { eligibleRunners, itemOwnerHasEligibleRunner, RUNNER_ONLINE_MS } from "./eligible";
+export {
+  eligibleRunners,
+  itemOwnerHasEligibleRunner,
+  itemOwnerRunnerSetupNeed,
+  RUNNER_ONLINE_MS,
+} from "./eligible";
+/**
+ * Why the owner of the work has no runner Paws may use: no runner of theirs or shared with them,
+ * or their own runner whose agent is not signed in. Same shape as `RunnerSetupNeed` in core.
+ */
+export type RunnerSetupNeed =
+  | { reason: "no-runner" }
+  | { reason: "agent-not-signed-in"; runnerId: string; runnerName: string; agent: string };
 export type PlacementProfile = Pick<RunnerProfile, "agent"> & { model?: string | null };
 export type PlacementRequest = {
   itemId?: string;
@@ -61,6 +73,11 @@ export type PlacementRequest = {
 };
 export type RunnerPlacement = {
   candidates(input: PlacementRequest): Promise<readonly { id: string; workspaceId: string }[]>;
+  /**
+   * Why the person who owns the work has no runner Paws may use, or null when one is eligible
+   * (busy or not) or one of theirs is only offline or paused. Reads SQLite only.
+   */
+  setupNeed?(input: PlacementRequest): RunnerSetupNeed | null;
   started(input: {
     commandId: string;
     runnerId: string;
