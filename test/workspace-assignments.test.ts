@@ -34,8 +34,10 @@ import {
   createWorkspaceAccess,
   createWorkspaceAssignments,
   issueWorkspaceBootstrap,
+  WORKSPACE_COOKIE,
   workspaceTokenHash,
 } from "../src/workspace";
+import { createOnboardingReadiness } from "../src/onboarding-readiness";
 
 function fixture({ installed = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-assignment-"));
@@ -87,6 +89,7 @@ function fixture({ installed = true } = {}) {
   };
   const ownership = {
     id: "issue",
+    url: "https://linear.app/acme/issue/TEST-1",
     teamId: "team",
     teamName: "Platform",
     assigneeId: "member",
@@ -239,6 +242,7 @@ function fixture({ installed = true } = {}) {
       clientId: "client",
       installedOrganization: { id: "org", name: "Workspace" },
       memberships,
+      onboardingReadiness: createOnboardingReadiness(db),
       now: () => clock.now(),
       fetch: (async (input, init) => {
         if (String(input).endsWith("/oauth/token")) {
@@ -843,29 +847,163 @@ test("an unknown delegator sees the first thought, then one sign-in action, and 
   }
 });
 
-test("the creator's link sign-in resumes the held session and lands on its issue page", async () => {
+/** The Paws session cookie a callback set, ready for a cookie header. */
+function sessionCookie(response: Response): string {
+  const cookie = response.headers
+    .getSetCookie()
+    .find((value) => value.startsWith(`${WORKSPACE_COOKIE}=`));
+  expect(cookie).toBeDefined();
+  return cookie!.split(";")[0]!;
+}
+
+const onboardPath = (link: string) => new URL(link).pathname;
+
+test("the creator's link sign-in resumes the held session and lands on its onboarding page", async () => {
   const f = fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
     const done = await f.callback(await f.begin(link));
     expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toBe("/status/issues/TEST-1");
+    expect(done.headers.get("location")).toBe(onboardPath(link));
     const hold = f.db
       .query<{ status: string; completedAt: number | null }, []>(
         "SELECT status,completed_at AS completedAt FROM workspace_assignment",
       )
       .get()!;
     expect(hold).toEqual({ status: "ready", completedAt: f.clock.now() });
+    const cookie = sessionCookie(done);
+    const page = await fetch(`${f.local}${onboardPath(link)}`, {
+      redirect: "manual",
+      headers: { cookie },
+    });
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(page.headers.get("cache-control")).toBe("no-store");
+    expect(page.headers.get("content-security-policy")).toContain("default-src 'none'");
+    expect(page.headers.get("content-security-policy")).not.toContain("unsafe-inline");
+    const html = await page.text();
+    expect(html).toContain("Welcome, member");
+    expect(html).toContain("<strong>TEST-1</strong>");
+    expect(html).toMatch(
+      /<h2>Linear<\/h2><p class="detail">Signed in as member@example\.invalid\.<\/p><\/div><span class="label">Done<\/span>/,
+    );
+    expect(html).toMatch(
+      /<h2>Membership<\/h2><p class="detail">Member of Platform\.<\/p><\/div><span class="label">Done<\/span>/,
+    );
+    expect(html).toContain(
+      '<li class="needed"><span class="mark" aria-hidden="true">3</span><div><h2>Your runner</h2>',
+    );
+    expect(html).toContain(
+      '<li class="later"><span class="mark" aria-hidden="true">4</span><div><h2>Claude and Codex</h2>',
+    );
+    expect(html).toContain("<h2>GitHub credit</h2>");
+    expect(html).toContain(
+      '<a href="https://linear.app/acme/issue/TEST-1">Open TEST-1 in Linear</a>',
+    );
+    expect(html).toContain("You can close this tab.");
+    expect(html).toContain('<meta http-equiv="refresh" content="15">');
+
+    // Closing the page changes nothing: the hold continues on its own and Linear hears nothing new.
     const jobs = f.jobs();
     await jobs.tick();
     await jobs.tick();
     expect(f.continuations).toEqual([f.event.dedupeKey]);
     expect(listWorkItems(f.db)).toHaveLength(1);
     expect(elicitations(f)).toHaveLength(1);
-    const again = await f.begin(link);
-    expect(again.status).toBe(303);
-    expect(again.headers.get("location")).toBe("/status/issues/TEST-1");
+
+    // Reopening after a restart shows the current state from SQLite.
+    await f.restart();
+    const outbox = listOutbox(f.db).length;
+    const reopened = await fetch(`${f.local}${onboardPath(link)}`, {
+      redirect: "manual",
+      headers: { cookie },
+    });
+    expect(reopened.status).toBe(200);
+    expect(await reopened.text()).toContain("Welcome, member");
+    expect(listOutbox(f.db)).toHaveLength(outbox);
+  } finally {
+    await f.close();
+  }
+});
+
+test("the creator without a Paws session signs in again and returns to the same page", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    await f.callback(await f.begin(link));
+    const start = await f.begin(link);
+    expect(start.status).toBe(303);
+    expect(new URL(start.headers.get("location")!).origin).toBe("https://linear.app");
+    expect(await start.text()).toBe("");
+    const back = await f.callback(start);
+    expect(back.status).toBe(303);
+    expect(back.headers.get("location")).toBe(onboardPath(link));
+    const page = await fetch(`${f.local}${onboardPath(link)}`, {
+      redirect: "manual",
+      headers: { cookie: sessionCookie(back) },
+    });
+    expect(page.status).toBe(200);
+    expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
+      status: "ready",
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test("another member opening the onboarding link sees nothing about the issue", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    await f.callback(await f.begin(link));
+    const dashboard = await f.callback(
+      await fetch(`${f.local}/auth/linear`, { redirect: "manual" }),
+      "other",
+    );
+    expect(dashboard.headers.get("location")).toBe("/status/");
+    const cookie = sessionCookie(dashboard);
+    for (const headers of [{ cookie }, {}] as Record<string, string>[]) {
+      const opened = await fetch(`${f.local}${onboardPath(link)}`, {
+        redirect: "manual",
+        headers,
+      });
+      expect(opened.status).toBe(303);
+      expect(new URL(opened.headers.get("location")!).origin).toBe("https://linear.app");
+      expect(await opened.text()).not.toContain("TEST-1");
+      const refused = await f.callback(opened, "other");
+      expect(refused.status).toBe(403);
+      const body = await refused.text();
+      expect(body).toContain("This link belongs to Morgan Member.");
+      expect(body).not.toContain("TEST-1");
+      expect(refused.headers.get("location")).toBeNull();
+      expect(
+        refused.headers.getSetCookie().some((value) => value.startsWith(`${WORKSPACE_COOKIE}=`)),
+      ).toBe(false);
+    }
+    expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
+      status: "ready",
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test("a stopped session closes its onboarding page", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const cookie = sessionCookie(await f.callback(await f.begin(link)));
+    advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+    const opened = await fetch(`${f.local}${onboardPath(link)}`, {
+      redirect: "manual",
+      headers: { cookie },
+    });
+    expect(opened.status).toBe(404);
+    expect(await opened.text()).not.toContain("TEST-1");
   } finally {
     await f.close();
   }
@@ -952,7 +1090,7 @@ test("at deploy a pending hold without a link gets one link and one new-form act
     expect(hold.tokenHash).toBe(workspaceTokenHash(hold.linkId));
     expect(hold.linkExpiresAt).toBeGreaterThan(f.clock.now());
     expect((await f.callback(await f.begin(link))).headers.get("location")).toBe(
-      "/status/issues/TEST-1",
+      new URL(link).pathname,
     );
   } finally {
     await f.close();
