@@ -66,7 +66,7 @@ import {
   createAcpCodexReviewer,
   KEEPALIVE_MS,
   LinearTaskAccess,
-  FakeHostGitHubAuth,
+  FakeGitHubIntegration,
   type AgentLaunch,
 } from "../src/loop";
 import {
@@ -2241,18 +2241,12 @@ test("an issue rule for the task's Linear label runs Closeout again after a bran
 
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
   let checks = 0;
-  const host = Object.assign(new FakeHostGitHubAuth(), {
-    integration: {
-      check: async () => {
-        checks += 1;
-        return true;
-      },
-      administrators: () => [],
-      recoveryUrl: "http://127.0.0.1:8787/status",
-      identity: () => "human",
+  const host = new FakeGitHubIntegration({
+    check: async () => {
+      checks += 1;
+      return true;
     },
   });
-  host.account = { id: 7, login: "owner" };
   const result = await withGitIdentity(() => runRebaseConflict("clean", host, true));
   expect(result.state, result.detail).toBe("merged");
   expect(result.merged, result.detail).toBe(1);
@@ -3563,7 +3557,7 @@ test.each([
 
 async function runRebaseConflict(
   mode: "clean" | "linear",
-  githubAuth?: FakeHostGitHubAuth,
+  githubInstallation?: FakeGitHubIntegration,
   closeoutAfterUpdate?: boolean,
   merging?: {
     toml: string;
@@ -3630,7 +3624,7 @@ async function runRebaseConflict(
       privateKeyPem: PRIVATE_KEY,
       client: (merging?.client ?? ((inner) => inner))(githubClient(layout.bare, github)),
     },
-    ...(githubAuth ? { githubAuth } : {}),
+    ...(githubInstallation ? { githubInstallation } : {}),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `rebase-${mode}-${sequence}.json`);

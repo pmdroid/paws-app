@@ -16,6 +16,9 @@ import { answer, ask, findOpenQuestion, getQuestion, type StoredQuestion } from 
 
 export const TASK_ACCESS_TTL_MS = 5 * 60_000;
 
+export type GitHubInstallationPhase = "initial" | "publication";
+
+/** What the host knows about the workspace GitHub App installation for an item. */
 export type GitHubIntegration = {
   check(item: WorkItemRecord, signal: AbortSignal): Promise<boolean>;
   authorize?(item: WorkItemRecord, signal: AbortSignal): Promise<boolean>;
@@ -29,7 +32,7 @@ export type GitHubIntegration = {
 type Hold = {
   question_id: string;
   item_id: string;
-  phase: "initial" | "publication";
+  phase: GitHubInstallationPhase;
   item_version: number;
   session_generation: number;
   current_run_id: string | null;
@@ -42,7 +45,15 @@ const RECENT_READY_MS = 10 * 60_000;
 const TRANSIENT_CHECK_ERROR =
   /fetch failed|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket|network|rate.?limit|\b429\b|\b5\d\d\b|temporarily unavailable/i;
 
-export class GitHubIntegrationHolds {
+/**
+ * Holds an item until the workspace GitHub App installation covers its repository.
+ *
+ * `ensure` returns true when the installation covers the repository with the needed access and
+ * the delegating member is still permitted. Otherwise it posts one `github-auth` waiting question
+ * and returns false; `recover` resumes the item when the installation returns. An item whose
+ * member lost access is cancelled.
+ */
+export class GitHubInstallationCheck {
   private closed = false;
   private readonly lastReady = new Map<
     string,
@@ -59,8 +70,8 @@ export class GitHubIntegrationHolds {
   constructor(
     private readonly db: Database,
     private readonly integration: GitHubIntegration,
-    private readonly allowed: (item: WorkItemRecord) => boolean,
     private readonly now: () => number,
+    private readonly allowed: (item: WorkItemRecord) => boolean = () => true,
   ) {}
 
   owns(questionId: string): boolean {
@@ -98,7 +109,7 @@ export class GitHubIntegrationHolds {
 
   async ensure(
     item: WorkItemRecord,
-    phase: "initial" | "publication",
+    phase: GitHubInstallationPhase,
     signal: AbortSignal,
     options: { fresh?: boolean } = {},
   ): Promise<boolean> {
@@ -187,9 +198,8 @@ export class GitHubIntegrationHolds {
     return false;
   }
 
-  async recover(signal: AbortSignal): Promise<void> {
+  async recover(signal: AbortSignal = new AbortController().signal): Promise<void> {
     if (this.closed || signal.aborted) return;
-    this.migrateLegacy();
     const holds = this.db
       .query<Hold, []>("SELECT * FROM github_integration_hold WHERE status='pending'")
       .all();
@@ -395,72 +405,6 @@ export class GitHubIntegrationHolds {
         );
       }
     });
-  }
-
-  private migrateLegacy(): void {
-    const requests = this.db
-      .query<
-        {
-          question_id: string;
-          item_id: string;
-          phase: "initial" | "publication";
-          session_generation: number;
-        },
-        []
-      >(
-        "SELECT question_id,item_id,phase,session_generation FROM linear_github_auth WHERE status IN ('pending','expired')",
-      )
-      .all();
-    for (const request of requests)
-      immediate(this.db, () => {
-        const item = getWorkItem(this.db, request.item_id);
-        this.db.run(
-          "UPDATE linear_github_auth SET status='revoked',generation=generation+1 WHERE question_id=? AND status IN ('pending','expired')",
-          [request.question_id],
-        );
-        if (
-          !item ||
-          item.cancelRequested ||
-          item.state !== "awaiting_input" ||
-          !this.permitted(item) ||
-          this.generation(item) !== request.session_generation ||
-          getQuestion(this.db, request.question_id)?.status !== "open"
-        ) {
-          this.cancelObsolete(request.item_id, request.question_id);
-          return;
-        }
-        this.db.run(
-          "INSERT INTO github_integration_hold(question_id,item_id,phase,item_version,session_generation,current_run_id,checkpoint,authority) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(question_id) DO NOTHING",
-          [
-            request.question_id,
-            item.id,
-            request.phase,
-            item.version,
-            request.session_generation,
-            item.currentRunId,
-            JSON.stringify(item.checkpoint),
-            this.integration.identity(item),
-          ],
-        );
-        this.db.run(
-          "UPDATE outbox SET status='dropped',locked_by=NULL,locked_until=NULL WHERE op='elicitation' AND status IN ('pending','dead') AND json_extract(payload,'$.questionId')=?",
-          [request.question_id],
-        );
-        const question = getQuestion(this.db, request.question_id)!;
-        this.notifyAdministrators(item, question.id, question.sessionId);
-        enqueueOutboxOnce(this.db, {
-          target: "linear",
-          op: "activity",
-          orderingKey: question.sessionId,
-          idempotencyKey: `github-integration:migrated:${question.id}`,
-          payload: {
-            sessionId: question.sessionId,
-            kind: "thought",
-            body: "Waiting for a workspace administrator to restore GitHub App access. Personal GitHub sign-in is no longer required.",
-          },
-          now: this.now(),
-        });
-      });
   }
 
   private permitted(item: WorkItemRecord): boolean {

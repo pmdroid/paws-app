@@ -17,7 +17,8 @@ import {
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import {
   attachOrchestrator,
-  FakeHostGitHubAuth,
+  FakeGitHubIntegration,
+  type GitHubIntegration,
   hintedRepository,
   repositoryAnswer,
 } from "../src/loop";
@@ -75,7 +76,7 @@ function fixture(
   options: {
     issueId?: string;
     defaultRepository?: boolean;
-    auth?: FakeHostGitHubAuth;
+    auth?: GitHubIntegration;
     interpretation?: { output: string; hang?: boolean; removeAccess?: string };
     confidence?: number;
   } = {},
@@ -115,7 +116,7 @@ function fixture(
       tracker,
       pawsRoot,
       clock,
-      githubAuth: options.auth,
+      githubInstallation: options.auth,
       repository: options.defaultRepository ? repositories[0] : undefined,
       repositories: [...repositories, repositories[0]!],
       repositoryAccess: async (repository) => {
@@ -173,9 +174,9 @@ function fixture(
   };
 }
 
-test("a natural-language repository choice survives host sign-in recovery before access or binding", async () => {
-  const host = new FakeHostGitHubAuth();
-  host.actorId = "human";
+test("a natural-language repository choice survives an installation wait and restart before access or binding", async () => {
+  const host = new FakeGitHubIntegration();
+  host.installed = false;
   const f = fixture({
     auth: host,
     interpretation: { output: '{"repositoryFullName":"acme/two"}' },
@@ -186,7 +187,6 @@ test("a natural-language repository choice survives host sign-in recovery before
     await f.jobs.tick();
     const repositoryQuestion = findOpenQuestion(f.db, "session")!;
     expect(f.checked).toEqual([]);
-    expect(host.challenges).toEqual([]);
     expect(f.tracker.statuses).toEqual([]);
     await orchestrator.onLinearEvent(event("Use the backend one, acme/two."));
     await f.jobs.tick();
@@ -200,9 +200,9 @@ test("a natural-language repository choice survives host sign-in recovery before
     await orchestrator.shutdown();
     orchestrator = f.attach();
     await orchestrator.recoverGitHubAuth();
-    expect(host.challenges).toHaveLength(2);
-    host.challenges[1]!.complete({ id: 7, login: "owner" });
-    await new Promise((done) => setTimeout(done, 0));
+    expect(getWorkItemRepository(f.db, repositoryQuestion.itemId)).toBeNull();
+    host.installed = true;
+    await orchestrator.recoverGitHubAuth();
     await f.jobs.tick();
     expect(getWorkItemRepository(f.db, repositoryQuestion.itemId)).toEqual(repositories[1]!);
     expect(f.checked).toEqual(["two"]);
@@ -213,10 +213,8 @@ test("a natural-language repository choice survives host sign-in recovery before
   }
 });
 
-test("verified sign-in cannot bind a provisionally chosen inaccessible repository", async () => {
-  const host = new FakeHostGitHubAuth();
-  host.actorId = "human";
-  host.account = { id: 7, login: "owner" };
+test("a ready installation cannot bind a provisionally chosen inaccessible repository", async () => {
+  const host = new FakeGitHubIntegration();
   const f = fixture({ auth: host });
   const orchestrator = f.attach();
   try {
@@ -690,17 +688,9 @@ test("a repository the app can access is chosen from Linear's suggestion without
 });
 
 test("a confident suggestion passes an integration that checks the item's repository", async () => {
-  const host = Object.assign(new FakeHostGitHubAuth(), {
-    integration: {
-      check: async () => true,
-      authorize: async (item: WorkItemRecord) => getWorkItemRepository(f.db, item.id) !== null,
-      administrators: () => [],
-      recoveryUrl: "http://127.0.0.1:8787/status",
-      identity: () => "human",
-    },
+  const host = new FakeGitHubIntegration({
+    authorize: async (item: WorkItemRecord) => getWorkItemRepository(f.db, item.id) !== null,
   });
-  host.actorId = "human";
-  host.account = { id: 7, login: "owner" };
   const f = fixture({ auth: host, confidence: 0.95 });
   try {
     await f.attach().onLinearEvent(event());
