@@ -20,7 +20,11 @@ import {
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
-import { verifyRunnerCommand, type RunnerCommand } from "../../src/runner-protocol";
+import {
+  RUNNER_LEASE_GRACE_MS,
+  verifyRunnerCommand,
+  type RunnerCommand,
+} from "../../src/runner-protocol";
 import { createRunnerWorkHttp, createRunnerWork } from "../../src/runner-work";
 import { createRunnerHelpers } from "../../src/runner-helpers";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
@@ -622,7 +626,8 @@ export async function probeRunnerWork(
       assert.throws(() => helpers.dispatch(helperInput), /busy/);
       work.finish(winner.runId, 1);
       work.assign(waiting);
-      now += 60_000;
+      // The runner keeps the slot through the lease grace, so the next assignment waits it out.
+      now += 60_000 + RUNNER_LEASE_GRACE_MS;
       const released = {
         ...winner,
         id: workspaceId(),

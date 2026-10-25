@@ -11,6 +11,7 @@ import { enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
+import { runnerLeaseCutoff } from "./runner-lease";
 import { markRun, releaseRunCapacity } from "./runs";
 import { getTaskMode } from "./tasks";
 import { immediate } from "./tx";
@@ -130,7 +131,7 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
          (?3=0 AND EXISTS(SELECT 1 FROM runner_result r
            WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)))`,
       )
-      .get(item.currentRunId, now, item.cancelRequested ? 1 : 0) !== null
+      .get(item.currentRunId, runnerLeaseCutoff(now), item.cancelRequested ? 1 : 0) !== null
   );
 }
 
@@ -147,7 +148,7 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
          AND w.ended_at IS NULL AND w.lease_until > ?1)
        AND (SELECT MAX(j.finished_at) FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id) < ?2`,
     )
-    .all(now, now - ORPHAN_GRACE_MS);
+    .all(runnerLeaseCutoff(now), now - ORPHAN_GRACE_MS);
   const requeued: string[] = [];
   for (const { id } of orphans) {
     const item = getWorkItem(db, id);

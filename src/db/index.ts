@@ -118,6 +118,7 @@ export {
   type OutboxTarget,
 } from "./outbox";
 export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
+export { runnerLeaseCutoff, runnerLeaseLive, runnerWorkSettled } from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
   getRun,
