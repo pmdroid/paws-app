@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { constants, createHash, createPublicKey, publicEncrypt } from "node:crypto";
 import { z } from "zod";
 import { isExeDevVmName, shellQuote } from "./names";
 import { isProvisioningError, type ExeDev, type ExeDevExecResult } from "./types";
@@ -8,9 +8,15 @@ import { isProvisioningError, type ExeDev, type ExeDevExecResult } from "./types
  * enroll it with a member's single-use token and start the runner service. Every step is one
  * command through `execVm`, idempotent and safe to re-run after a Paws restart. The exe.dev token
  * stays in the client; nothing here sends it to the VM.
+ *
+ * The enrollment token never appears in a command line. exe.dev runs each command through SSH,
+ * so the remote shell's argv holds the whole command and any process on the VM could read it.
+ * Instead the VM makes an RSA key pair in its root-only stage directory and prints the public
+ * key. Paws sends the token encrypted to that key, and the VM decrypts it through a pipe into the
+ * root-owned mode 0600 token file. Only ciphertext crosses a command line.
  */
 
-export type BootstrapStep = "config" | "install" | "status" | "enroll" | "start";
+export type BootstrapStep = "config" | "install" | "status" | "token" | "enroll" | "start";
 
 export class BootstrapError extends Error {
   readonly step: BootstrapStep;
@@ -64,7 +70,12 @@ export type ExeDevBootstrap = {
   startInstall(vm: string, token: string): Promise<StartInstallResult>;
   /** Read the unit's state and confirm the installed runner, config and mise are the pinned ones. */
   installStatus(vm: string): Promise<InstallStatus>;
-  /** Enroll the runner with the staged token, then delete the token file. */
+  /**
+   * Stage a fresh enrollment token without touching the install, for a retry after `enroll`
+   * failed and removed the previous one. `startInstall` stages the first token itself.
+   */
+  stageToken(vm: string, token: string): Promise<void>;
+  /** Enroll the runner with the staged token, then delete the token file whatever the outcome. */
   enroll(vm: string): Promise<EnrolledRunner>;
   /** Enable and start the runner service. */
   startRunner(vm: string): Promise<void>;
@@ -73,6 +84,7 @@ export type ExeDevBootstrap = {
 export const BOOTSTRAP_STAGE_DIR = "/var/lib/paws-bootstrap";
 export const BOOTSTRAP_UNIT = "paws-bootstrap-install.service";
 export const BOOTSTRAP_TOKEN_FILE = `${BOOTSTRAP_STAGE_DIR}/enrollment-token`;
+export const BOOTSTRAP_TOKEN_KEY = `${BOOTSTRAP_STAGE_DIR}/token-key.pem`;
 export const RUNNER_CONFIG_PATH = "/etc/paws-runner/config.json";
 export const BOOTSTRAP_MISE_PATH = "/usr/local/bin/mise";
 const RUNNER_BINARY = "/opt/paws-runner/bin/paws-runner";
@@ -84,6 +96,7 @@ const TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
 const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 const MAX_INSTALLER_BYTES = 48 * 1024;
 const MAX_CA_BYTES = 32768;
+const MIN_TOKEN_KEY_BITS = 3072;
 
 const PROBE_TIMEOUT_MS = 30_000;
 const STAGE_TIMEOUT_MS = 60_000;
@@ -121,15 +134,29 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
     return classify(parseProbe(result.stdout), pinned);
   }
 
+  /** Make the VM's token key, encrypt `token` to it, and have the VM decrypt it into its file. */
+  async function stageToken(vm: string, token: string): Promise<void> {
+    const key = await exec("token", vm, TOKEN_KEY_COMMAND, STAGE_TIMEOUT_MS);
+    if (key.exitCode !== 0) throw failure("token", vm, "could not create the token key", key);
+    const ciphertext = encryptToken(vm, key.stdout, token);
+    const staged = await exec("token", vm, tokenCommand(ciphertext), STAGE_TIMEOUT_MS);
+    if (staged.exitCode !== 0) throw failure("token", vm, "could not stage the token", staged);
+  }
+
+  function checkToken(step: BootstrapStep, token: unknown): asserts token is string {
+    if (typeof token !== "string" || !TOKEN.test(token))
+      throw new BootstrapError(step, "The enrollment token is not a minted token.");
+  }
+
   return {
     async startInstall(vm, token) {
       checkVm("install", vm);
-      if (typeof token !== "string" || !TOKEN.test(token))
-        throw new BootstrapError("install", "The enrollment token is not a minted token.");
+      checkToken("install", token);
       const status = await probe("install", vm);
       if (status !== "failed") return status;
-      const stage = await exec("install", vm, stageCommand(pinned, token), STAGE_TIMEOUT_MS);
+      const stage = await exec("install", vm, stageCommand(pinned), STAGE_TIMEOUT_MS);
       if (stage.exitCode !== 0) throw failure("install", vm, "could not stage the install", stage);
+      await stageToken(vm, token);
       const start = await exec("install", vm, START_INSTALL_COMMAND, STAGE_TIMEOUT_MS);
       if (start.exitCode !== 0) throw failure("install", vm, "could not start the install", start);
       return "started";
@@ -138,6 +165,12 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
     async installStatus(vm) {
       checkVm("status", vm);
       return probe("status", vm);
+    },
+
+    async stageToken(vm, token) {
+      checkVm("token", vm);
+      checkToken("token", token);
+      await stageToken(vm, token);
     },
 
     async enroll(vm) {
@@ -275,11 +308,63 @@ const START_INSTALL_COMMAND = [
 
 const START_RUNNER_COMMAND = `sudo systemctl enable --now ${RUNNER_SERVICE}`;
 
+/** Enroll, then remove the token file whether or not enrollment succeeded, keeping its status. */
 function enrollCommand(vm: string): string {
   return [
     `sudo ${RUNNER_BINARY} runner enroll --config ${RUNNER_CONFIG_PATH} --name ${shellQuote(vm)} --token-file ${BOOTSTRAP_TOKEN_FILE}`,
+    "code=$?",
     `sudo rm -f ${BOOTSTRAP_TOKEN_FILE}`,
+    'exit "$code"',
+  ].join("; ");
+}
+
+/** Replace any earlier token key with a fresh RSA key the VM keeps root-only, and print its public half. */
+const TOKEN_KEY_COMMAND = [
+  `sudo install -d -o root -g root -m 0700 ${BOOTSTRAP_STAGE_DIR}`,
+  `sudo rm -f ${BOOTSTRAP_TOKEN_KEY}`,
+  `sudo sh -c ${shellQuote(`umask 077 && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:${MIN_TOKEN_KEY_BITS} -out ${BOOTSTRAP_TOKEN_KEY} 2>/dev/null`)}`,
+  `sudo openssl pkey -in ${BOOTSTRAP_TOKEN_KEY} -pubout`,
+].join(" && ");
+
+const OAEP =
+  "-pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256";
+
+/**
+ * Decrypt the token on the VM straight into its root-owned mode 0600 file, drop the key, and fail
+ * when the file came out empty (a pipeline's status is only its last command's).
+ */
+function tokenCommand(ciphertext: string): string {
+  return [
+    `printf '%s' ${shellQuote(ciphertext)} | base64 -d | sudo openssl pkeyutl -decrypt -inkey ${BOOTSTRAP_TOKEN_KEY} ${OAEP} | sudo install -o root -g root -m 0600 /dev/stdin ${BOOTSTRAP_TOKEN_FILE}`,
+    `sudo rm -f ${BOOTSTRAP_TOKEN_KEY}`,
+    `sudo test -s ${BOOTSTRAP_TOKEN_FILE}`,
   ].join(" && ");
+}
+
+/** RSA-OAEP (SHA-256) the token to the public key the VM printed, as base64. */
+function encryptToken(vm: string, stdout: string, token: string): string {
+  const pem = /-----BEGIN PUBLIC KEY-----[A-Za-z0-9+/=\s]+-----END PUBLIC KEY-----/.exec(
+    stdout,
+  )?.[0];
+  let key: ReturnType<typeof createPublicKey>;
+  try {
+    if (pem === undefined) throw new Error("no PEM public key");
+    key = createPublicKey(pem);
+  } catch (error) {
+    throw new BootstrapError("token", `${vm}: the token key is not a public key.`, {
+      cause: error,
+    });
+  }
+  const bits = key.asymmetricKeyDetails?.modulusLength ?? 0;
+  if (key.asymmetricKeyType !== "rsa" || bits < MIN_TOKEN_KEY_BITS)
+    throw new BootstrapError(
+      "token",
+      `${vm}: the token key must be RSA of at least ${MIN_TOKEN_KEY_BITS} bits.`,
+    );
+  return publicEncrypt(
+    { key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
+    Buffer.from(token, "utf8"),
+  ).toString("base64");
 }
 
 /** What the transient unit runs as root: the runner package, the pinned mise, then the config. */
@@ -302,12 +387,8 @@ function runScript(pinned: Pinned): string {
   ].join("\n");
 }
 
-/**
- * Write the installer, unit script, config and token into the root-only stage directory. Each
- * reaches its file through the shell's printf builtin piped into `install`, so the token is never
- * in a child process's argv and its file is root-owned mode 0600 from the start.
- */
-function stageCommand(pinned: Pinned, token: string): string {
+/** Write the installer, unit script and config into the root-only stage directory. */
+function stageCommand(pinned: Pinned): string {
   const write = (format: string, content: string, mode: string, name: string) =>
     `printf '${format}' ${shellQuote(content)} | sudo install -o root -g root -m ${mode} /dev/stdin ${BOOTSTRAP_STAGE_DIR}/${name}`;
   return [
@@ -315,7 +396,6 @@ function stageCommand(pinned: Pinned, token: string): string {
     write("%s", pinned.installer, "0700", "install-runner.sh"),
     write("%s", runScript(pinned), "0700", "run.sh"),
     write("%s\\n", pinned.config, "0600", "config.json"),
-    write("%s\\n", token, "0600", "enrollment-token"),
   ].join(" && ");
 }
 

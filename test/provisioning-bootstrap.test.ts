@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { constants, createHash, generateKeyPairSync, privateDecrypt } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -57,8 +64,54 @@ const STAGE = [
   `printf '%s' ${q(INSTALLER)} | sudo install -o root -g root -m 0700 /dev/stdin /var/lib/paws-bootstrap/install-runner.sh`,
   `printf '%s' ${q(RUN_SCRIPT)} | sudo install -o root -g root -m 0700 /dev/stdin /var/lib/paws-bootstrap/run.sh`,
   `printf '%s\\n' ${q(CONFIG)} | sudo install -o root -g root -m 0600 /dev/stdin /var/lib/paws-bootstrap/config.json`,
-  `printf '%s\\n' '${TOKEN}' | sudo install -o root -g root -m 0600 /dev/stdin /var/lib/paws-bootstrap/enrollment-token`,
 ].join(" && ");
+
+const TOKEN_KEY = [
+  "sudo install -d -o root -g root -m 0700 /var/lib/paws-bootstrap",
+  "sudo rm -f /var/lib/paws-bootstrap/token-key.pem",
+  `sudo sh -c 'umask 077 && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /var/lib/paws-bootstrap/token-key.pem 2>/dev/null'`,
+  "sudo openssl pkey -in /var/lib/paws-bootstrap/token-key.pem -pubout",
+].join(" && ");
+
+const TOKEN_PREFIX = "printf '%s' '";
+const TOKEN_SUFFIX =
+  "' | base64 -d | sudo openssl pkeyutl -decrypt -inkey /var/lib/paws-bootstrap/token-key.pem " +
+  "-pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 " +
+  "| sudo install -o root -g root -m 0600 /dev/stdin /var/lib/paws-bootstrap/enrollment-token" +
+  " && sudo rm -f /var/lib/paws-bootstrap/token-key.pem" +
+  " && sudo test -s /var/lib/paws-bootstrap/enrollment-token";
+const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** The token command: fixed text around base64 ciphertext, which RSA-OAEP makes random. */
+const TOKEN_COMMAND = new RegExp(
+  `^${escape(TOKEN_PREFIX)}([A-Za-z0-9+/=]+)${escape(TOKEN_SUFFIX)}$`,
+);
+
+/** The VM's token key pair, as the token key command would print its public half. */
+const KEY = generateKeyPairSync("rsa", { modulusLength: 3072 });
+const PUBLIC_PEM = KEY.publicKey.export({ type: "spki", format: "pem" }).toString();
+
+/** The token the token command carries, decrypted with the VM's private key. */
+function decryptToken(command: string): string {
+  const ciphertext = TOKEN_COMMAND.exec(command)?.[1];
+  if (ciphertext === undefined) throw new Error(`not a token command: ${command}`);
+  return privateDecrypt(
+    { key: KEY.privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
+    Buffer.from(ciphertext, "base64"),
+  ).toString("utf8");
+}
+
+function scriptToken(exe: FakeExeDev): void {
+  exe.scriptExec(VM, TOKEN_KEY, { stdout: PUBLIC_PEM });
+  exe.scriptExec(VM, TOKEN_COMMAND, {});
+}
+
+/** Every command carries no token, and exactly one carries its RSA-OAEP ciphertext. */
+function expectTokenOnlyEncrypted(sent: string[]): void {
+  expect(sent.filter((command) => command.includes(TOKEN))).toEqual([]);
+  const encrypted = sent.filter((command) => TOKEN_COMMAND.test(command));
+  expect(encrypted).toHaveLength(1);
+  expect(decryptToken(encrypted[0]!)).toBe(TOKEN);
+}
 
 const START_INSTALL =
   "sudo systemctl stop paws-bootstrap-install.service 2>/dev/null || true; " +
@@ -66,7 +119,8 @@ const START_INSTALL =
   "sudo systemd-run --unit=paws-bootstrap-install.service --description='Paws runner bootstrap' --property=RemainAfterExit=yes /bin/sh /var/lib/paws-bootstrap/run.sh";
 
 const ENROLL =
-  "sudo /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name 'ada-paws' --token-file /var/lib/paws-bootstrap/enrollment-token && sudo rm -f /var/lib/paws-bootstrap/enrollment-token";
+  "sudo /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name 'ada-paws' --token-file /var/lib/paws-bootstrap/enrollment-token; " +
+  'code=$?; sudo rm -f /var/lib/paws-bootstrap/enrollment-token; exit "$code"';
 
 const START_RUNNER = "sudo systemctl enable --now paws-runner.service";
 
@@ -127,18 +181,24 @@ test("startInstall stages the installer, run script, config and token, then star
   const exe = setup();
   exe.scriptExec(VM, PROBE, { stdout: probe({}) });
   exe.scriptExec(VM, STAGE, {});
+  scriptToken(exe);
   exe.scriptExec(VM, START_INSTALL, {
     stdout: "Running as unit: paws-bootstrap-install.service\n",
   });
 
   expect(await createExeDevBootstrap(options(exe)).startInstall(VM, TOKEN)).toBe("started");
+  const sent = commands(exe);
+  expect(sent).toHaveLength(5);
+  expect(sent[3]).toMatch(TOKEN_COMMAND);
   expect(exe.calls).toEqual([
     { operation: "execVm", vm: VM, command: PROBE, timeoutMs: 30_000 },
     { operation: "execVm", vm: VM, command: STAGE, timeoutMs: 60_000 },
+    { operation: "execVm", vm: VM, command: TOKEN_KEY, timeoutMs: 60_000 },
+    { operation: "execVm", vm: VM, command: sent[3]!, timeoutMs: 60_000 },
     { operation: "execVm", vm: VM, command: START_INSTALL, timeoutMs: 60_000 },
   ]);
-  // The token is only ever an argument to the shell's printf builtin, piped into a 0600 file.
-  expect(commands(exe).filter((command) => command.includes(TOKEN))).toEqual([STAGE]);
+  // No command line carries the token: only its ciphertext for the VM's own key.
+  expectTokenOnlyEncrypted(sent);
 });
 
 test("startInstall is a no-op while the install runs or after it succeeded", async () => {
@@ -169,9 +229,12 @@ test("startInstall restarts a failed install or one that installed something els
     const exe = setup();
     exe.scriptExec(VM, PROBE, { stdout: probe(state) });
     exe.scriptExec(VM, STAGE, {});
+    scriptToken(exe);
     exe.scriptExec(VM, START_INSTALL, {});
     expect(await createExeDevBootstrap(options(exe)).startInstall(VM, TOKEN)).toBe("started");
-    expect(commands(exe)).toEqual([PROBE, STAGE, START_INSTALL]);
+    const sent = commands(exe);
+    expect(sent).toEqual([PROBE, STAGE, TOKEN_KEY, sent[3]!, START_INSTALL]);
+    expectTokenOnlyEncrypted(sent);
   }
 });
 
@@ -188,6 +251,7 @@ test("startInstall fails with BootstrapError('install') when staging or the unit
   const unit = setup();
   unit.scriptExec(VM, PROBE, { stdout: probe({}) });
   unit.scriptExec(VM, STAGE, {});
+  scriptToken(unit);
   unit.scriptExec(VM, START_INSTALL, { exitCode: 1 });
   expect(
     (await bootstrapError(createExeDevBootstrap(options(unit)).startInstall(VM, TOKEN))).step,
@@ -199,6 +263,56 @@ test("startInstall fails with BootstrapError('install') when staging or the unit
     createExeDevBootstrap(options(transport)).startInstall(VM, TOKEN),
   );
   expect(wrapped.step).toBe("install");
+});
+
+test("token staging fails with BootstrapError('token') and never sends the token to a bad key", async () => {
+  const weak = generateKeyPairSync("rsa", { modulusLength: 2048 })
+    .publicKey.export({ type: "spki", format: "pem" })
+    .toString();
+  const ec = generateKeyPairSync("ec", { namedCurve: "P-256" })
+    .publicKey.export({ type: "spki", format: "pem" })
+    .toString();
+  for (const key of [
+    { exitCode: 1, stderr: "openssl: not found\n" },
+    { stdout: "" },
+    { stdout: "-----BEGIN PUBLIC KEY-----\nnot a key\n-----END PUBLIC KEY-----\n" },
+    { stdout: weak },
+    { stdout: ec },
+  ]) {
+    const exe = setup();
+    exe.scriptExec(VM, PROBE, { stdout: probe({}) });
+    exe.scriptExec(VM, STAGE, {});
+    exe.scriptExec(VM, TOKEN_KEY, key);
+    const error = await bootstrapError(createExeDevBootstrap(options(exe)).startInstall(VM, TOKEN));
+    expect(error.step).toBe("token");
+    expect(commands(exe)).toEqual([PROBE, STAGE, TOKEN_KEY]);
+  }
+
+  const decrypt = setup();
+  decrypt.scriptExec(VM, TOKEN_KEY, { stdout: PUBLIC_PEM });
+  decrypt.scriptExec(VM, TOKEN_COMMAND, { exitCode: 1 });
+  const error = await bootstrapError(createExeDevBootstrap(options(decrypt)).stageToken(VM, TOKEN));
+  expect(error.step).toBe("token");
+  expect(error.message).toBe("ada-paws: could not stage the token (exit 1).");
+});
+
+test("stageToken stages a fresh token without touching the install", async () => {
+  const exe = setup();
+  scriptToken(exe);
+  const bootstrap = createExeDevBootstrap(options(exe));
+  await bootstrap.stageToken(VM, TOKEN);
+  const sent = commands(exe);
+  expect(exe.calls).toEqual([
+    { operation: "execVm", vm: VM, command: TOKEN_KEY, timeoutMs: 60_000 },
+    { operation: "execVm", vm: VM, command: sent[1]!, timeoutMs: 60_000 },
+  ]);
+  expectTokenOnlyEncrypted(sent);
+
+  for (const token of ["short", `${TOKEN}'; reboot`]) {
+    expect((await bootstrapError(bootstrap.stageToken(VM, token))).step).toBe("token");
+  }
+  expect((await bootstrapError(bootstrap.stageToken("Bad VM", TOKEN))).step).toBe("token");
+  expect(exe.calls).toHaveLength(2);
 });
 
 test("startInstall refuses a token that is not a minted token before any command", async () => {
@@ -325,7 +439,8 @@ test("the config carries the server CA and allowed repositories but no secret", 
   const exe = setup();
   const ca = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
   exe.scriptExec(VM, PROBE, { stdout: probe({}) });
-  exe.scriptExec(VM, /^sudo install -d /, {});
+  exe.scriptExec(VM, /\/var\/lib\/paws-bootstrap\/install-runner\.sh/, {});
+  scriptToken(exe);
   exe.scriptExec(VM, START_INSTALL, {});
   await createExeDevBootstrap({
     ...options(exe),
@@ -351,31 +466,45 @@ test("the exe.dev token never appears in a command sent to the VM", async () => 
   const exe = createExeDev({
     readToken: () => secret,
     fetch: async (_url, init) => {
-      bodies.push(String(init.body));
+      const body = String(init.body);
+      bodies.push(body);
       headers.push(new Headers(init.headers).get("authorization") ?? "");
-      const stdout = Buffer.from(probe({})).toString("base64");
+      const output = body.includes("-pubout") ? PUBLIC_PEM : probe({});
+      const stdout = Buffer.from(output).toString("base64");
       return new Response(`{"stdout":"${stdout}"}\n{"exit_code":0}\n`, { status: 200 });
     },
   });
   expect(await createExeDevBootstrap(options(exe)).startInstall(VM, TOKEN)).toBe("started");
-  expect(bodies).toHaveLength(3);
+  expect(bodies).toHaveLength(5);
+  expect(bodies.some((body) => body.includes(TOKEN))).toBe(false);
   expect(bodies.every((body) => body.startsWith(`ssh ${VM} `) && !body.includes(secret))).toBe(
     true,
   );
   expect(headers.every((header) => header === `Bearer ${secret}`)).toBe(true);
 });
 
-test("the staged files land with the right modes and the commands are valid shell", () => {
+/**
+ * A scratch root with stand-ins for `sudo` and `install` (no root needed), and `run` to execute
+ * a bootstrap command locally with the stage directory moved under that root. `openssl`, `base64`
+ * and the shell are real. The stand-in `sudo` makes the runner's enroll fail.
+ */
+function localVm() {
   const root = mkdtempSync(join(tmpdir(), "paws-bootstrap-"));
   const bin = join(root, "bin");
   mkdirSync(bin);
-  const files = join(root, "files");
-  mkdirSync(files);
   const executable = (name: string, body: string) => {
     writeFileSync(join(bin, name), body);
     chmodSync(join(bin, name), 0o755);
   };
-  executable("sudo", '#!/bin/sh\nexec "$@"\n');
+  executable(
+    "sudo",
+    [
+      "#!/bin/sh",
+      'if [ "$1" = /opt/paws-runner/bin/paws-runner ]; then echo "Runner command failed." >&2; exit 1; fi',
+      'exec "$@"',
+      "",
+    ].join("\n"),
+  );
   executable(
     "install",
     [
@@ -385,31 +514,64 @@ test("the staged files land with the right modes and the commands are valid shel
       "  case $1 in -d) dir=1 ;; -o|-g) shift ;; -m) shift; mode=$1 ;; *) break ;; esac",
       "  shift",
       "done",
-      'if [ "$dir" = 1 ]; then mkdir -p "$FAKE_ROOT$1"; exit 0; fi',
-      'cat "$1" > "$FAKE_ROOT$2"',
-      'printf \'%s %s\\n\' "$mode" "$2" >> "$FAKE_ROOT/modes"',
+      'if [ "$dir" = 1 ]; then mkdir -p "$1"; exit 0; fi',
+      'cat "$1" > "$2"',
+      `printf '%s %s\\n' "$mode" "$2" >> ${q(join(root, "modes"))}`,
       "",
     ].join("\n"),
   );
-  const result = Bun.spawnSync(["/bin/sh", "-c", STAGE], {
-    env: { PATH: `${bin}:/usr/bin:/bin`, FAKE_ROOT: files },
-  });
-  expect(result.exitCode).toBe(0);
-  const stage = join(files, "var/lib/paws-bootstrap");
-  expect(readFileSync(join(stage, "install-runner.sh"), "utf8")).toBe(INSTALLER);
-  expect(readFileSync(join(stage, "run.sh"), "utf8")).toBe(RUN_SCRIPT);
-  expect(readFileSync(join(stage, "config.json"), "utf8")).toBe(`${CONFIG}\n`);
-  expect(readFileSync(join(stage, "enrollment-token"), "utf8")).toBe(`${TOKEN}\n`);
-  expect(readFileSync(join(files, "modes"), "utf8")).toBe(
-    [
-      "0700 /var/lib/paws-bootstrap/install-runner.sh",
-      "0700 /var/lib/paws-bootstrap/run.sh",
-      "0600 /var/lib/paws-bootstrap/config.json",
-      "0600 /var/lib/paws-bootstrap/enrollment-token",
-      "",
-    ].join("\n"),
+  const stage = join(root, "var/lib/paws-bootstrap");
+  const run = (command: string) => {
+    const result = Bun.spawnSync(
+      ["/bin/sh", "-c", command.replaceAll("/var/lib/paws-bootstrap", stage)],
+      { env: { PATH: `${bin}:/usr/bin:/bin` } },
+    );
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  };
+  const modes = () => readFileSync(join(root, "modes"), "utf8").replaceAll(stage, "<stage>");
+  return { stage, run, modes };
+}
+
+test("the staged files land with the right modes and the commands are valid shell", () => {
+  const vm = localVm();
+  expect(vm.run(STAGE).exitCode).toBe(0);
+  expect(readFileSync(join(vm.stage, "install-runner.sh"), "utf8")).toBe(INSTALLER);
+  expect(readFileSync(join(vm.stage, "run.sh"), "utf8")).toBe(
+    RUN_SCRIPT.replaceAll("/var/lib/paws-bootstrap", vm.stage),
   );
-  for (const script of [RUN_SCRIPT, PROBE, START_INSTALL, ENROLL, START_RUNNER]) {
+  expect(readFileSync(join(vm.stage, "config.json"), "utf8")).toBe(`${CONFIG}\n`);
+  expect(vm.modes()).toBe(
+    ["0700 <stage>/install-runner.sh", "0700 <stage>/run.sh", "0600 <stage>/config.json", ""].join(
+      "\n",
+    ),
+  );
+  for (const script of [RUN_SCRIPT, PROBE, TOKEN_KEY, START_INSTALL, ENROLL, START_RUNNER]) {
     expect(Bun.spawnSync(["/bin/sh", "-n", "-c", script]).exitCode).toBe(0);
   }
+});
+
+test("the VM's own openssl key receives the token, and a failed enroll still removes it", async () => {
+  const vm = localVm();
+  const exe = setup();
+  exe.scriptExec(VM, /.*/, (command) => vm.run(command));
+  const bootstrap = createExeDevBootstrap(options(exe));
+
+  await bootstrap.stageToken(VM, TOKEN);
+  // Encrypted to the key openssl made in the stage directory, so only the VM can read it.
+  const sent = commands(exe);
+  expect(sent[0]).toBe(TOKEN_KEY);
+  expect(sent[1]).toMatch(TOKEN_COMMAND);
+  expect(sent.some((command) => command.includes(TOKEN))).toBe(false);
+  expect(readFileSync(join(vm.stage, "enrollment-token"), "utf8")).toBe(TOKEN);
+  expect(vm.modes()).toBe("0600 <stage>/enrollment-token\n");
+  expect(existsSync(join(vm.stage, "token-key.pem"))).toBe(false);
+
+  const error = await bootstrapError(bootstrap.enroll(VM));
+  expect(error.step).toBe("enroll");
+  expect(error.message).toBe("ada-paws: enrollment failed (exit 1): Runner command failed.");
+  expect(existsSync(join(vm.stage, "enrollment-token"))).toBe(false);
 });
