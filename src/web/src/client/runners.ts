@@ -1,6 +1,6 @@
 import { renderMarkup } from "./theme";
 import { durationLabel, esc, skillVersionLabel, statePill } from "./format";
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 import { openAgentAccounts } from "./agent-accounts";
 import { routeHref } from "./route";
 

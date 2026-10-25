@@ -7,7 +7,7 @@ import type {
   MergeSettingsView,
 } from "../merge-settings";
 import { esc } from "./format";
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 
 const ORDERS: Record<MergeOrder, string> = {
   queue: "Merge queue: one pull request at a time, in order",

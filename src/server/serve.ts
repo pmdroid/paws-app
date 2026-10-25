@@ -3,11 +3,7 @@ import { createHostedGitHubConnect } from "./github-connect";
 import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
-import {
-  createDashboardGitHubAuth,
-  createGitHubInstallationCheck,
-  createWorkspaceGitHubActivation,
-} from "../auth";
+import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import {
@@ -115,7 +111,6 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;
   const evidenceRoot = options.evidenceRoot;
-  const githubAuth = createDashboardGitHubAuth({ env: process.env });
   const csrfToken = crypto.randomUUID();
   let workspaceAccess: WorkspaceAccess | null | undefined =
     options.workspaceAccess === undefined ? undefined : null;
@@ -144,7 +139,6 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           linearWebhook,
           linearUsage: options.linearUsage,
           webhooks,
-          githubAuth,
           csrfToken,
           ...(workspaceAccess === undefined ? {} : { workspaceAccess }),
           ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
@@ -196,7 +190,6 @@ type Secrets = {
   linearWebhook: LinearWebhookDeps | undefined;
   linearUsage?: (() => LinearUsage) | undefined;
   webhooks: boolean;
-  githubAuth: ReturnType<typeof createDashboardGitHubAuth>;
   csrfToken: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
@@ -293,7 +286,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       const privileged =
         path.startsWith("/api/settings/") ||
-        path.startsWith("/api/auth/github") ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       // Admins manage skills and merging next to owners; every other setting stays with owners.
@@ -464,7 +456,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         }
       : {}),
     ...(secrets.startLinearSession ? { startLinearSession: secrets.startLinearSession } : {}),
-    githubAuth: secrets.githubAuth,
     ...(secrets.db
       ? {
           db: secrets.db,

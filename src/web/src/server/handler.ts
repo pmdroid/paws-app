@@ -15,7 +15,7 @@ import {
 } from "../live/provider";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
-import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
+import { injectCsrf } from "./csrf";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
 import { handleAgentTranscriptRequest } from "./transcript";
 
@@ -41,8 +41,6 @@ export interface StatusServerOptions {
   staticDir?: string | null;
   /** Defaults to `process.env`. `PAWS_STATUS_DEMO=1` forces the sample snapshot. */
   env?: Record<string, string | undefined>;
-  /** Loopback GitHub sign-in. Omit it and GET /api/auth/github reports no user. */
-  githubAuth?: GitHubSignIn;
   csrfToken?: string;
   closeoutHome?: string;
   evidenceRoot?: string;
@@ -106,8 +104,6 @@ export async function handleStatusRequest(
   if (artifact !== null) return artifact;
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
-  const auth = await handleGitHubAuthRequest(request, options.githubAuth, options.csrfToken);
-  if (auth !== null) return auth;
   if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(url, options));
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {

@@ -63,7 +63,6 @@ const ControllerRegions = memo(function ControllerRegions() {
       <main id="content" tabIndex={-1} className="min-w-0 space-y-8 focus:outline-none">
         <div id="page-content" />
         <section id="workspace-access" hidden aria-label="Workspace settings" />
-        <div id="github-auth" hidden />
       </main>
     </>
   );
