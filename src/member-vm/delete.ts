@@ -99,6 +99,7 @@ async function runDeleteStep(
           row.id,
         ]);
       const runners = vmRunners(db, row);
+      if (row.enrollmentsTracked !== 1) untrackedEnrollments(db, row, runners, now());
       for (const runner of runners)
         if (runner.status !== "draining")
           updateRunnerStatus(db, {
@@ -249,6 +250,37 @@ function revokeUnusedEnrollments(db: Database, row: MemberVm): void {
     (SELECT token_hash FROM member_vm_enrollment WHERE member_vm_id=?)`,
     [row.id],
   );
+}
+
+function untrackedEnrollments(
+  db: Database,
+  row: MemberVm,
+  known: readonly { id: string }[],
+  now: number,
+): void {
+  const ids = new Set(known.map((runner) => runner.id));
+  const runners = db
+    .query<{ id: string; name: string }, [string, string, string, number]>(
+      `SELECT DISTINCT r.id,r.name FROM runner_enrollment e JOIN runner r ON r.id=e.runner_id
+      WHERE e.workspace_id=? AND e.user_id=? AND e.name=? AND e.expires_at>?
+      AND r.status<>'revoked' AND r.revoked_at IS NULL ORDER BY r.created_at,r.id`,
+    )
+    .all(row.workspaceId, row.userId, row.vmName, row.createdAt)
+    .filter((runner) => !ids.has(runner.id));
+  if (runners.length > 0)
+    throw new Error(
+      `${row.vmName} was created before Paws recorded which runners a VM enrolls, so Paws cannot tell whether ${runners.map((runner) => `runner ${runner.name} (${runner.id})`).join(", ")} belongs to it or was paired by hand. Ask a workspace owner or admin to revoke it on its runner page, then Retry. A host paired by hand under this name has to be revoked and paired again.`,
+    );
+  const pending = db
+    .query<{ expiresAt: number }, [string, string, string, number]>(
+      `SELECT MAX(expires_at) AS expiresAt FROM runner_enrollment WHERE workspace_id=? AND user_id=?
+      AND name=? AND used_at IS NULL AND expires_at>?`,
+    )
+    .get(row.workspaceId, row.userId, row.vmName, now);
+  if (pending?.expiresAt)
+    throw new Error(
+      `${row.vmName} was created before Paws recorded which tokens a VM enrolls with, and an enrollment token for that name is still valid until ${new Date(pending.expiresAt).toISOString()}. Retry after it expires.`,
+    );
 }
 
 function vmRunners(

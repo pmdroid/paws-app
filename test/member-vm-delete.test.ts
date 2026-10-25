@@ -708,6 +708,53 @@ describe("Delete VM while a provisioning step is still running", () => {
     ).toBeNull();
   });
 
+  test("a VM made before tokens were recorded stops while an unrecorded runner of its name lives", async () => {
+    const f = await fixture();
+    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    f.hold.enrollDies = true;
+    for (let index = 0; index < 100 && getMemberVm(f.db, row.id)!.failure === null; index++)
+      if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
+    const orphan = f.db
+      .query<{ id: string }, []>(
+        "SELECT id FROM runner WHERE name='ada-lovelace-paws' AND revoked_at IS NULL",
+      )
+      .get()!;
+    f.db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [row.id]);
+    f.db.run("UPDATE member_vm SET enrollments_tracked=0 WHERE id=?", [row.id]);
+
+    await f.remove(f.member, row.id);
+    await f.settle();
+    const stopped = getMemberVm(f.db, row.id)!;
+    expect(stopped.deleteStep).toBe("drain");
+    expect(stopped.deleteFailure).toContain(orphan.id);
+    expect(getRunner(f.db, orphan.id)!.status).toBe("active");
+    expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
+
+    f.control.setStatus(f.owner, orphan.id, "revoked");
+    await f.remove(f.member, row.id);
+    await f.settle();
+    expect(getMemberVm(f.db, row.id)).toBeNull();
+    expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(false);
+  });
+
+  test("a VM made before tokens were recorded waits out a valid token for its name", async () => {
+    const f = await fixture();
+    const vm = await f.ready();
+    f.db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [vm.id]);
+    f.db.run("UPDATE member_vm SET enrollments_tracked=0 WHERE id=?", [vm.id]);
+    f.control.createEnrollment(f.principal(f.member.userId, "member"), { name: vm.vmName });
+
+    await f.remove(f.member, vm.id);
+    await f.settle();
+    expect(getMemberVm(f.db, vm.id)!.deleteFailure).toContain("Retry after it expires");
+
+    f.clock.advance(11 * 60_000);
+    await f.remove(f.member, vm.id);
+    await f.settle();
+    expect(getMemberVm(f.db, vm.id)).toBeNull();
+    expect(getRunner(f.db, vm.runnerId!)!.status).toBe("revoked");
+  });
+
   test("a create cut off by a restart never removes a VM Paws cannot prove it made", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");

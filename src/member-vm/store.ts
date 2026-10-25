@@ -41,6 +41,7 @@ export type MemberVm = {
   deleteAt: string | null;
   deleteFailure: string | null;
   deleteBlocked: string | null;
+  enrollmentsTracked: number;
 };
 
 export type MemberRef = { workspaceId: string; userId: string };
@@ -60,7 +61,8 @@ const COLUMNS = `id,workspace_id AS workspaceId,user_id AS userId,vm_name AS vmN
   created_at AS createdAt,updated_at AS updatedAt,delete_step AS deleteStep,
   delete_runner_id AS deleteRunnerId,delete_requested_by AS deleteRequestedBy,
   delete_force AS deleteForce,delete_step_started_at AS deleteStepStartedAt,delete_at AS deleteAt,
-  delete_failure AS deleteFailure,delete_blocked AS deleteBlocked`;
+  delete_failure AS deleteFailure,delete_blocked AS deleteBlocked,
+  enrollments_tracked AS enrollmentsTracked`;
 
 export function getMemberVm(db: Database, id: string): MemberVm | null {
   return db.query<MemberVm, [string]>(`SELECT ${COLUMNS} FROM member_vm WHERE id=?`).get(id);
