@@ -25,7 +25,7 @@ import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 import { readyItems, syncItemDependencies } from "../../src/intake";
 import { Orchestrator, type OrchestratorOptions } from "../../src/loop";
-import { workspaceAdmission } from "../fake-workspace";
+import { confirmFakeMerge, workspaceAdmission } from "../fake-workspace";
 import { runDir } from "../../src/acp";
 import { guardGitHubPublication } from "../../src/loop/publication";
 
@@ -681,6 +681,7 @@ export async function probePublicationStop(
           [itemId, present],
         );
         if (state === "merged") {
+          confirmFakeMerge(db, itemId);
           const producer = insertRun(db, {
             itemId,
             kind: "implement",

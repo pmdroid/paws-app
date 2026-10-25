@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { recordLinearInstallation, saveTaskMode } from "../src/db";
 import { createAdmission } from "../src/scheduler";
-import { joinFakeWorkspace, workspaceAdmission } from "./fake-workspace";
+import { confirmFakeMerge, joinFakeWorkspace, workspaceAdmission } from "./fake-workspace";
 import { tempDb } from "./helpers";
 
 function item(
@@ -44,6 +44,8 @@ test("an Item starts once its blocker in the delegation merged", () => {
     const admission = workspaceAdmission(db);
     assert.deepEqual(admission.canStart("blocked"), { ok: false, held: "blocked" });
     setState(db, "blocker", "merged");
+    assert.deepEqual(admission.canStart("blocked"), { ok: false, held: "blocked" });
+    confirmFakeMerge(db, "blocker");
     assert.deepEqual(admission.canStart("blocked"), { ok: true });
   } finally {
     db.close();
@@ -74,6 +76,7 @@ test("a merge waits for an unmerged blocker and passes once it merged", () => {
     const admission = workspaceAdmission(db);
     assert.deepEqual(admission.canMerge("blocked"), { ok: false, held: "blocked" });
     setState(db, "blocker", "merged");
+    confirmFakeMerge(db, "blocker");
     assert.deepEqual(admission.canMerge("blocked"), { ok: true });
   } finally {
     db.close();

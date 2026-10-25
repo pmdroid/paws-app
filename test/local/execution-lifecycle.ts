@@ -18,7 +18,7 @@ import {
 import { Orchestrator } from "../../src/loop";
 import { readyItems, syncItemDependencies } from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
-import { workspaceAdmission } from "../fake-workspace";
+import { confirmFakeMerge, workspaceAdmission } from "../fake-workspace";
 
 export async function probeExecutionLifecycle(
   root: string,
@@ -120,6 +120,7 @@ export async function probeExecutionLifecycle(
       { state: state("failed"), notices: notices("failed"), stallQuestions },
     );
     seed("handoff", ["merged", "queued"]);
+    confirmFakeMerge(db, "handoff-0");
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff-0','handoff-1')",
     );
