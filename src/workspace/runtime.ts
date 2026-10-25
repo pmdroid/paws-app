@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { MEMBERSHIP_BACKSTOP_MS } from "../db";
 import type { WorkspaceAssignments } from "./assignments";
+import type { OnboardingReadinessReader } from "./onboarding-page";
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceAccess } from "./access";
@@ -9,6 +10,7 @@ import { issueWorkspaceBootstrap } from "./session";
 export async function createWorkspaceAccessFromLinear(options: {
   db: Database;
   assignments?: WorkspaceAssignments;
+  onboardingReadiness?: OnboardingReadinessReader;
   publicUrl: string;
   clientId: string;
   memberships: LinearMembershipReads;

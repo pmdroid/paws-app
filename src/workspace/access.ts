@@ -7,6 +7,7 @@ import {
   consumeWorkspaceBootstrap,
   deleteWorkspaceSession,
   getWorkspace,
+  githubAttribution,
   listUserWorkspaces,
   listWorkspaceMembers,
   membershipFresh,
@@ -20,6 +21,7 @@ import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceIdentityLinks } from "./identity-links";
 import { createWorkspaceLinearActions } from "./linear-actions";
 import { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
+import { onboardingPage, type OnboardingReadinessReader } from "./onboarding-page";
 import { handleWorkspaceAdministration, readWorkspaceJson } from "./administration";
 import {
   clearWorkspaceSessionCookie,
@@ -35,6 +37,8 @@ import {
 export type WorkspaceAccessOptions = {
   db: Database;
   assignments?: WorkspaceAssignments;
+  /** Runner and coding-agent state for the onboarding page. */
+  onboardingReadiness?: OnboardingReadinessReader;
   publicUrl: string;
   clientId: string;
   installedOrganization: { id: string; name: string };
@@ -178,15 +182,33 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
       const link = options.assignments?.open(path.slice("/onboard/".length)) ?? null;
       if (link === null) return page("This sign-in link is not active.", 404);
-      if (link.state === "done")
-        return new Response(null, {
-          status: 303,
-          headers: {
-            location: issuePage(link.identifier),
-            "cache-control": "no-store",
-            "referrer-policy": "no-referrer",
-          },
-        });
+      // Only the session creator's own sign-in shows the page. Anyone else, or a creator whose
+      // sign-in ended, goes through Linear OAuth again, which says nothing about the issue.
+      if (link.state === "done") {
+        const viewer = requestWorkspaceSession(options.db, request, now());
+        const member =
+          viewer?.principal.workspaceId === link.workspaceId
+            ? workspaceMember(options.db, link.workspaceId, viewer.principal.userId)
+            : null;
+        if (member?.active && member.linearUserId === link.actorId)
+          return onboardingPage({
+            identifier: link.identifier,
+            issueUrl: link.issueUrl,
+            teamName: link.teamName,
+            member: { name: member.name, email: member.email },
+            memberOfTeam: member.role !== "observer" && member.teamIds.includes(link.teamId),
+            readiness: options.onboardingReadiness?.({
+              workspaceId: link.workspaceId,
+              userId: member.userId,
+              teamId: link.teamId,
+              now: now(),
+            }) ?? {
+              runner: { state: "needed" },
+              agents: { claude: "waiting", codex: "waiting" },
+            },
+            github: githubAttribution(options.db, link.workspaceId, member.userId),
+          });
+      }
       return beginWorkspaceOAuth(options.db, {
         clientId: options.clientId,
         origin,
@@ -312,8 +334,10 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             );
             return refusal;
           }
-          // Until the onboarding page exists, the issue page shows what happens next.
-          location = issuePage(completion.identifier);
+          location =
+            completion.linkId === null
+              ? issuePage(completion.identifier)
+              : `/onboard/${completion.linkId}`;
         } else options.assignments?.releaseFor(workspace.id, result.identity.userId);
         await links.syncUser(workspace.id, userId);
         const previous = requestWorkspaceSession(options.db, request, now());
