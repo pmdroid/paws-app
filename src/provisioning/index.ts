@@ -2,6 +2,27 @@ import { readExeDevToken } from "../config";
 import type { ExeDevTokenReader } from "./client";
 
 export {
+  BOOTSTRAP_MISE_PATH,
+  BOOTSTRAP_STAGE_DIR,
+  BOOTSTRAP_TOKEN_FILE,
+  BOOTSTRAP_TOKEN_KEY,
+  BOOTSTRAP_UNIT,
+  BootstrapError,
+  createExeDevBootstrap,
+  isBootstrapError,
+  RUNNER_CONFIG_PATH,
+} from "./bootstrap";
+export type {
+  BootstrapStep,
+  EnrolledRunner,
+  ExeDevBootstrap,
+  ExeDevBootstrapOptions,
+  InstallStatus,
+  MisePlatform,
+  MiseRelease,
+  StartInstallResult,
+} from "./bootstrap";
+export {
   createExeDev,
   DEFAULT_MAX_RESPONSE_BYTES,
   DEFAULT_TIMEOUT_MS,
