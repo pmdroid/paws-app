@@ -1,3 +1,4 @@
+import { shutdownPaws, stopPawsComponents } from "./shutdown";
 import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
@@ -1339,30 +1340,41 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return running.tunnelUrl;
     },
     stop() {
-      stopping ??= (async () => {
-        runnerStopping = true;
-        abort.abort();
-        host.stop();
-        const linearStopped = running.stop();
-        const serverStopped = server.stop(true);
-        const reconciliationStopped = reconciler?.close();
-        await orchestrator?.shutdown();
-        await reconciliationStopped;
-        await Promise.all([loops.stop(), linearStopped, serverStopped]);
-        await workspace?.stop();
-        await stopRunner();
-        prepareShutdown(db, Date.now(), (item) => {
-          const policy = getItemRunCommitPolicy(db, item.id);
-          if (policy)
-            commitCheckpointSync(
-              worktreePath(paths.home, itemPathId(item)),
-              "wip: shutdown",
-              undefined,
-              policy,
-            );
-        });
-        db.close();
-      })();
+      stopping ??= stopPawsComponents({
+        groups: [
+          [
+            {
+              name: "abort",
+              stop: () => {
+                runnerStopping = true;
+                abort.abort();
+              },
+            },
+            { name: "host", stop: () => host.stop() },
+          ],
+          [
+            { name: "Linear", stop: () => running.stop() },
+            { name: "server", stop: () => server.stop(true) },
+            { name: "reconciler", stop: () => reconciler?.close() },
+            { name: "orchestrator", stop: () => orchestrator?.shutdown() },
+          ],
+          [{ name: "job and outbox loops", stop: () => loops.stop() }],
+          [{ name: "workspace", stop: () => workspace?.stop() }],
+          [{ name: "runner", stop: stopRunner }],
+        ],
+        flush: () =>
+          prepareShutdown(db, Date.now(), (item) => {
+            const policy = getItemRunCommitPolicy(db, item.id);
+            if (policy)
+              commitCheckpointSync(
+                worktreePath(paths.home, itemPathId(item)),
+                "wip: shutdown",
+                undefined,
+                policy,
+              );
+          }),
+        close: () => db.close(),
+      });
       return stopping;
     },
   };
@@ -1717,10 +1729,7 @@ if (import.meta.main) {
   const shutdown = (exitCode = 0) => {
     if (exiting) return;
     exiting = true;
-    void (async () => {
-      await paws.stop();
-      process.exit(exitCode);
-    })().catch(() => process.exit(1));
+    void shutdownPaws(paws, exitCode);
   };
   process.on("SIGINT", () => shutdown());
   process.on("SIGTERM", () => shutdown());
@@ -1739,7 +1748,7 @@ if (import.meta.main) {
     await paws.ready;
   } catch {
     console.error("Paws startup failed.");
-    await paws.stop();
+    await shutdownPaws(paws, 1);
     process.exit(1);
   }
   const origin = `${paws.server.protocol}://${paws.server.hostname}:${paws.server.port}`;
