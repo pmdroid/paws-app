@@ -487,3 +487,17 @@ export type {
   NpmVersionMetadata,
   StoredNpmPackage,
 } from "./agent-versions";
+export {
+  listRunnerAgents,
+  recordRunnerAgents,
+  requestAllRunnerAgentUpdates,
+  requestRunnerAgentRollback,
+  requestRunnerAgentUpdate,
+  runnerAgentTargets,
+  RunnerAgentUpdateError,
+  type CatalogPackage,
+  type CatalogPackages,
+  type RunnerAgentReport,
+  type RunnerAgentTargetRow,
+  type RunnerAgentView,
+} from "./runner-agents";

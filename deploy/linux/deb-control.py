@@ -52,6 +52,8 @@ def configure():
         installed = installer.install(manifest, artifact, fingerprint, reinstall=True)
         installed["agents"] = installer.finish_agents(agents)
     restore()
+    # Agent versions sent from the Runners page install through this path unit (install.py agent-requests).
+    installer.release.command(["/usr/bin/systemctl", "enable", "--now", "--", "paws-runner-agents.path"])
     print(json.dumps(installed))
 
 

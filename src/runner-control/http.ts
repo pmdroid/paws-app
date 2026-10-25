@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { RunnerConcurrencyError } from "../db";
+import { RunnerAgentUpdateError, RunnerConcurrencyError } from "../db";
+import { RUNNER_CODING_AGENTS, RunnerAgentVersionSchema } from "../runner-protocol";
 import type { RunnerPeer } from "../runner-identity";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerControl } from "./pairing";
@@ -14,6 +15,11 @@ const runnerStatus = z
   .object({ status: z.enum(["active", "paused", "draining", "revoked"]) })
   .strict();
 const runnerConcurrency = z.object({ concurrency: z.number().int().min(1).max(16) }).strict();
+const agentUpdate = z.object({ version: RunnerAgentVersionSchema }).strict();
+const agentNames = RUNNER_CODING_AGENTS.join("|");
+const agentPath = new RegExp(
+  `^/api/runners/([0-9A-HJKMNP-TV-Z]{26})/coding-agents/(${agentNames})/(update|rollback)$`,
+);
 
 export function createRunnerHttp(
   control: RunnerControl,
@@ -82,9 +88,22 @@ export function createRunnerHttp(
           );
           return json({ ok: true });
         }
+        if (path === "/api/runners/coding-agents/update-all" && request.method === "POST")
+          return json({ requested: control.updateAllAgents(principal) });
+        const agent = agentPath.exec(path);
+        if (agent && request.method === "POST") {
+          const [, runnerId, name, action] = agent;
+          if (action === "update") {
+            const { version } = agentUpdate.parse(await readJson(request));
+            control.updateAgent(principal, runnerId!, name!, version);
+            return json({ ok: true, version });
+          }
+          return json({ ok: true, version: control.rollbackAgent(principal, runnerId!, name!) });
+        }
         return null;
       } catch (error) {
-        if (error instanceof RunnerConcurrencyError) return json({ error: error.message }, 400);
+        if (error instanceof RunnerConcurrencyError || error instanceof RunnerAgentUpdateError)
+          return json({ error: error.message }, 400);
         return json({ error: "Runner access denied or request is invalid." }, 403);
       }
     },

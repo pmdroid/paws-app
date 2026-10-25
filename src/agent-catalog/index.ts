@@ -2,6 +2,7 @@ export {
   AGENT_CATALOG_REFRESH_MS,
   AGENT_PACKAGES,
   AGENT_VERSION_MIN_AGE_MS,
+  agentCatalogPackages,
   createAgentCatalog,
   type AgentCatalog,
   type AgentPackage,

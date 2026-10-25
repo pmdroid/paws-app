@@ -55,6 +55,22 @@ export type Runner = {
   skills?: RunnerSkill[];
   /** Runtimes mise installed for tasks on this runner; older Paws releases do not list them. */
   runtimes?: RunnerRuntime[];
+  /** Coding agent versions the runner reports; older Paws releases do not list them. */
+  codingAgents?: RunnerCodingAgent[];
+};
+export type RunnerCodingAgent = {
+  agent: string;
+  current: string | null;
+  previous: string | null;
+  pending: {
+    version: string;
+    rollback: boolean;
+    status: "requested" | "installing" | "waiting" | "failed";
+    sessions: number | null;
+    error: string | null;
+    requestedAt: number;
+  } | null;
+  reportedAt: number | null;
 };
 export type RunnerRuntime = {
   tool: string;
@@ -206,7 +222,11 @@ function availability(runner: Runner, now: number): [string, string] {
 const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 
 /** The agent versions Paws offers: published on npm at least 48 hours ago, integrity unchanged. */
-export function agentCatalogMarkup(entries: readonly AgentCatalogEntry[], now: number): string {
+export function agentCatalogMarkup(
+  entries: readonly AgentCatalogEntry[],
+  now: number,
+  update?: { manages: boolean; busy: boolean; behind: number },
+): string {
   if (!entries.length) return "";
   const rows = entries
     .map((entry) => {
@@ -223,7 +243,104 @@ export function agentCatalogMarkup(entries: readonly AgentCatalogEntry[], now: n
       return `<li class="runner-skill" data-agent-catalog="${esc(entry.agent)}"><span class="runner-skill-name"><b>${esc(name)}</b>${offered}</span><span class="muted">Checked ${esc(updatedLabel(entry.checkedAt, now))}</span>${refused}</li>`;
     })
     .join("");
-  return `<section class="runner-section" aria-labelledby="agent-catalog-heading"><h2 id="agent-catalog-heading">Coding agent versions</h2><p class="muted">Paws offers a version once it has been on npm for 2 days, is not deprecated or a prerelease, and its integrity has not changed.</p><ul class="runner-skill-list" role="list" aria-label="Coding agent versions">${rows}</ul></section>`;
+  const all =
+    update?.manages && update.behind > 0
+      ? `<button class="btn primary" data-agents-update-all data-focus="agents-update-all"${update.busy ? " disabled" : ""}>Update all runners</button>`
+      : "";
+  const behind = update?.behind
+    ? `<p class="muted">${update.behind === 1 ? "1 coding agent on your runners is" : `${update.behind} coding agents on your runners are`} behind the newest eligible version.</p>`
+    : "";
+  return `<section class="runner-section" aria-labelledby="agent-catalog-heading"><div class="between"><h2 id="agent-catalog-heading">Coding agent versions</h2>${all}</div><p class="muted">Paws offers a version once it has been on npm for 2 days, is not deprecated or a prerelease, and its integrity has not changed.</p>${behind}<ul class="runner-skill-list" role="list" aria-label="Coding agent versions">${rows}</ul></section>`;
+}
+
+/** The newest eligible version of `agent` when the runner runs an older one and has not asked for it. */
+export function codingAgentUpdate(
+  entry: RunnerCodingAgent,
+  catalog: readonly AgentCatalogEntry[],
+): string | null {
+  const offered = catalog.find((item) => item.agent === entry.agent)?.offered ?? null;
+  if (offered === null || entry.current === null || offered === entry.current) return null;
+  if ((compareVersions(offered, entry.current) ?? 1) < 0) return null;
+  const pending = entry.pending;
+  if (pending && pending.version === offered && pending.status !== "failed") return null;
+  return offered;
+}
+
+/** How many agents across these runners are behind the newest eligible version. */
+export function codingAgentsBehind(
+  runners: readonly Runner[],
+  catalog: readonly AgentCatalogEntry[],
+): number {
+  return runners
+    .filter((runner) => runner.status !== "revoked")
+    .flatMap((runner) => runner.codingAgents ?? [])
+    .filter((entry) => codingAgentUpdate(entry, catalog) !== null).length;
+}
+
+export function sessionsLabel(sessions: number | null): string {
+  if (!sessions) return "Waiting for sessions to finish";
+  return `Waiting for ${sessions} ${sessions === 1 ? "session" : "sessions"} to finish`;
+}
+
+/** Each coding agent on a runner card: its version, the newest eligible one, and an update in flight. */
+export function runnerCodingAgentsMarkup(
+  agents: readonly RunnerCodingAgent[],
+  view: {
+    runnerId: string;
+    catalog: readonly AgentCatalogEntry[];
+    manages: boolean;
+    busy: boolean;
+  },
+): string {
+  if (!agents.length)
+    return '<p class="muted">This runner does not report its coding agent versions. Update the runner package to manage them here.</p>';
+  const runner = esc(view.runnerId);
+  const disabled = view.busy ? " disabled" : "";
+  const rows = agents
+    .map((entry) => {
+      const name = AGENT_NAMES[entry.agent] ?? entry.agent;
+      const offered = view.catalog.find((item) => item.agent === entry.agent)?.offered ?? null;
+      const update = codingAgentUpdate(entry, view.catalog);
+      const pending = entry.pending;
+      const current = entry.current ?? "not reported";
+      let tag: [string, string];
+      let detail = "";
+      let error = "";
+      if (pending?.status === "failed") {
+        tag = ["bad", pending.rollback ? "Rollback failed" : "Install failed"];
+        error = `<p class="runner-skill-error" role="note">${esc(pending.error ?? "The runner did not report why.")}</p>`;
+      } else if (pending?.status === "waiting") {
+        tag = ["running", sessionsLabel(pending.sessions)];
+        detail = `${pending.rollback ? "Switches back to" : "Switches to"} ${pending.version} when they end. They keep ${current}.`;
+      } else if (pending) {
+        tag = ["running", pending.rollback ? "Rolling back" : "Installing"];
+        detail =
+          pending.status === "requested"
+            ? `${pending.rollback ? "Switching back to" : "Installing"} ${pending.version} at the runner's next heartbeat.`
+            : `${pending.rollback ? "Switching back to" : "Installing"} ${pending.version}. Sessions use ${current} until it is in place.`;
+      } else if (update) tag = ["warn", "Update available"];
+      else tag = ["ok", "Up to date"];
+      const newest =
+        offered === null
+          ? '<span class="muted">No eligible version yet</span>'
+          : offered === entry.current
+            ? ""
+            : `<span class="muted">Newest eligible <span class="mono">${esc(offered)}</span></span>`;
+      const busyHere = pending !== null && pending.status !== "failed";
+      const actions = !view.manages
+        ? ""
+        : [
+            update
+              ? `<button class="btn" data-agent-update="${esc(entry.agent)}" data-runner="${runner}" data-version="${esc(update)}" data-focus="agent-update:${runner}:${esc(entry.agent)}"${disabled}>Update to ${esc(update)}</button>`
+              : "",
+            entry.previous && !busyHere
+              ? `<button class="btn" data-agent-rollback="${esc(entry.agent)}" data-runner="${runner}" data-focus="agent-rollback:${runner}:${esc(entry.agent)}"${disabled}>Roll back to ${esc(entry.previous)}</button>`
+              : "",
+          ].join("");
+      return `<li class="runner-skill" data-coding-agent="${esc(entry.agent)}"><span class="runner-skill-name"><b>${esc(name)}</b><span class="mono">${esc(current)}</span>${newest}</span><span class="tag ${tag[0]}">${esc(tag[1])}</span>${detail ? `<p class="muted">${esc(detail)}</p>` : ""}${error}${actions ? `<div class="runner-agent-actions">${actions}</div>` : ""}</li>`;
+    })
+    .join("");
+  return `<ul class="runner-skill-list" role="list" aria-label="Coding agent versions on this runner">${rows}</ul>`;
 }
 
 export function runnerRowMarkup(
@@ -614,6 +731,8 @@ export function runnerDetailMarkup(
     busy: boolean;
     open?: ReadonlySet<string>;
     concurrencyDraft?: string;
+    /** The agent catalog, for the newest eligible versions. */
+    catalog?: readonly AgentCatalogEntry[];
   },
 ): string {
   const id = esc(runner.id);
@@ -676,6 +795,20 @@ export function runnerDetailMarkup(
             ? `<span class="muted">${runner.skills.filter((skill) => skill.state === "up_to_date").length} of ${runner.skills.length} up to date</span>`
             : "",
           runnerSkillsMarkup(runner.skills, runner.name),
+        )
+  }${
+    revoked || runner.codingAgents === undefined
+      ? ""
+      : block(
+          "coding-agents",
+          "Coding agents",
+          "",
+          runnerCodingAgentsMarkup(runner.codingAgents, {
+            runnerId: runner.id,
+            catalog: view.catalog ?? [],
+            manages,
+            busy: view.busy,
+          }),
         )
   }${
     revoked || runner.runtimes === undefined
@@ -884,7 +1017,7 @@ export function createRunners() {
     const empty = manages()
       ? "<p>No runners are paired. Select <b>Pair a host</b> to connect a Linux host.</p>"
       : "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair">Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now)}${dialog}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair">Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -899,6 +1032,7 @@ export function createRunners() {
       userId: session?.userId ?? null,
       role: session?.role ?? null,
       busy,
+      catalog: agentCatalog,
       ...(concurrencyDrafts.has(runner.id)
         ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
         : {}),
@@ -1082,6 +1216,41 @@ export function createRunners() {
         });
       });
     }
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-agent-update]"))
+      button.addEventListener("click", () => {
+        const { agentUpdate: agent, runner, version } = button.dataset;
+        void change(async () => {
+          await api(
+            `/api/runners/${encodeURIComponent(runner!)}/coding-agents/${encodeURIComponent(agent!)}/update`,
+            { version },
+          );
+          feedback = `${AGENT_NAMES[agent!] ?? agent} ${version} was sent to the runner. It installs at the next heartbeat and switches once no session uses the old version.`;
+        });
+      });
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-agent-rollback]"))
+      button.addEventListener("click", () => {
+        const { agentRollback: agent, runner } = button.dataset;
+        void change(async () => {
+          const result = await api<{ version: string }>(
+            `/api/runners/${encodeURIComponent(runner!)}/coding-agents/${encodeURIComponent(agent!)}/rollback`,
+            {},
+          );
+          feedback = `The runner switches ${AGENT_NAMES[agent!] ?? agent} back to ${result.version} once no session uses the current version.`;
+        });
+      });
+    root!.querySelector("[data-agents-update-all]")?.addEventListener(
+      "click",
+      () =>
+        void change(async () => {
+          const result = await api<{ requested: number }>(
+            "/api/runners/coding-agents/update-all",
+            {},
+          );
+          feedback = result.requested
+            ? `Sent ${result.requested} coding agent ${result.requested === 1 ? "update" : "updates"} to your runners.`
+            : "Every runner already runs or is installing the newest eligible versions.";
+        }),
+    );
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-status]"))
       button.addEventListener(
         "click",
