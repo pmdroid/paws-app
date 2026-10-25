@@ -77,6 +77,9 @@ export type { QueueSettings } from "./queue";
 
 export { loadRunnerControl } from "./runner-control";
 
+export { EXE_DEV_TOKEN_FILE, exeDevTokenPath, exeDevTokenStatus, readExeDevToken } from "./exe-dev";
+export type { ExeDevTokenStatus } from "./exe-dev";
+
 export { projectSkillsRoot } from "./skills";
 export type { ProjectSkills } from "./skills";
 export type { CheckoutProjects } from "./checkout";
