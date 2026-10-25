@@ -98,7 +98,7 @@ function vm(db: Database, step: string, failure: string | null = null) {
   );
 }
 
-const WAITING = { claude: "waiting", codex: "waiting" };
+const WAITING = { claude: "waiting", codex: "waiting" } as const;
 
 test("a member with no runner needs one, and another member's runner does not count", () => {
   const w = workspace();
