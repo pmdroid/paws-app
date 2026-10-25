@@ -42,6 +42,7 @@ function accounts() {
   return {
     runnerUid,
     agentUid: runnerUid,
+    runnerGid: account("group", "paws-runner"),
     agentGid: account("group", "paws-agent"),
     resultsGid: account("group", "paws-results"),
   };
@@ -72,6 +73,52 @@ function loadConfig(path: string, runnerUid: number) {
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * The enrollment token from a root-owned mode 0600 file, or null when the file is gone (a retried
+ * bootstrap on a host that already enrolled). The token never travels through argv.
+ */
+function readTokenFile(path: string): string | null {
+  if (!isAbsolute(path)) throw new Error("Enrollment token must use an absolute path");
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const info = fstatSync(fd);
+    if (
+      !info.isFile() ||
+      info.nlink !== 1 ||
+      info.size > 4096 ||
+      info.uid !== 0 ||
+      (info.mode & 0o7777) !== 0o600
+    )
+      throw new Error("Enrollment token must be a root-owned mode 0600 file");
+    const bytes = Buffer.alloc(4097);
+    let size = 0;
+    while (size < bytes.length) {
+      const count = readSync(fd, bytes, size, bytes.length - size, size);
+      if (count === 0) break;
+      size += count;
+    }
+    if (size > 4096) throw new Error("Enrollment token exceeds its size limit");
+    return bytes.subarray(0, size).toString("utf8").trim();
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Run as root only to read the token, then continue as the runner account. */
+function dropToRunner(ids: { runnerUid: number; runnerGid: number }) {
+  process.setgroups!([ids.runnerGid]);
+  process.setgid!(ids.runnerGid);
+  process.setuid!(ids.runnerUid);
+  if (process.getuid?.() !== ids.runnerUid || process.getgid?.() !== ids.runnerGid)
+    throw new Error("Runner identity could not be assumed");
 }
 
 export async function runRunnerCli(
@@ -122,6 +169,40 @@ export async function runRunnerCli(
       });
       abort.signal.throwIfAborted();
       return 0;
+    }
+    if (operation === "enroll") {
+      if (
+        args.length !== 6 ||
+        args[0] !== "--config" ||
+        !args[1] ||
+        args[2] !== "--name" ||
+        !args[3] ||
+        args[4] !== "--token-file" ||
+        !args[5]
+      )
+        throw new Error("Invalid enrollment command");
+      if (process.getuid?.() !== 0) throw new Error("Enrollment must start as root");
+      const token = readTokenFile(args[5]);
+      dropToRunner(ids);
+      const daemon = openRunnerDaemon({
+        root: "/var/lib/paws-runner",
+        ...loadConfig(args[1], ids.runnerUid),
+      });
+      try {
+        const status = await daemon.enroll(args[3], token ?? "");
+        abort.signal.throwIfAborted();
+        if (status.phase !== "paired") throw new Error("Enrollment did not pair the runner");
+        write(
+          JSON.stringify({
+            paired: true,
+            runnerId: status.runnerId,
+            workspaceId: status.workspaceId,
+          }),
+        );
+        return 0;
+      } finally {
+        daemon.close();
+      }
     }
     const daemonCommand =
       operation === "daemon" && args.length === 2 && args[0] === "--config" && Boolean(args[1]);

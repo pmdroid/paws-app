@@ -68,6 +68,10 @@ export async function openRunnerCoordinator(options: {
   checkSignIn?: boolean;
   /** Registered skill bundles runners download, `<name>/<version>/skill.tar.gz`. */
   skillsRoot?: string;
+  /** The dashboard's public HTTPS origin, written into a new host's config on Add a host. */
+  publicUrl?: string | null;
+  /** The repositories a new host may run, written into its config on Add a host. */
+  repositories?: () => readonly string[];
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -110,6 +114,16 @@ export async function openRunnerCoordinator(options: {
   });
   const http = createRunnerHttp(control, {
     agents: (principal, runnerId) => health.agents(principal, runnerId),
+    hostConfig: () => {
+      if (!options.publicUrl || !listener) return null;
+      const runnerApi = new URL(options.publicUrl);
+      runnerApi.port = String(listener.port);
+      return {
+        controlPlaneUrl: new URL(options.publicUrl).origin,
+        runnerApiUrl: runnerApi.origin,
+        allowedRepositories: (options.repositories?.() ?? []).slice(0, 256),
+      };
+    },
   });
   const models = createRunnerModels({ db: options.db, work, now: options.now });
   const artifacts = createRunnerArtifactStore({ root: join(options.root, "artifacts"), work });
@@ -203,6 +217,10 @@ export async function openRunnerCoordinator(options: {
     },
     async enrollment(request: Request) {
       return withSigningKeys(await http.enrollment(request), signing.signingKeys);
+    },
+    /** `POST /api/runner-enrollments`: a host enrolls itself with a member's token. */
+    async hostEnrollment(request: Request) {
+      return withSigningKeys(await http.hostEnrollment(request), signing.signingKeys);
     },
     async stop() {
       login.stop();
