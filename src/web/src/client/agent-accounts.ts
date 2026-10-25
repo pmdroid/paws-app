@@ -1,4 +1,4 @@
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 

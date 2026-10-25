@@ -7,7 +7,6 @@ import { join } from "node:path";
 import {
   createGitHubTokenProvider,
   createGitHubInstallationCheck,
-  createDashboardGitHubAuth,
   createVerifiedGitHubLogin,
   createTokenStore,
   githubOAuthPath,
@@ -16,7 +15,6 @@ import {
 } from "../src/auth";
 import { loadRuntime, pawsPaths } from "../src/config";
 import { INSTALLATION_PERMISSIONS } from "../src/github";
-import { handleStatusRequest } from "../src/web";
 
 const roots: string[] = [];
 const key = generateKeyPairSync("rsa", {
@@ -96,30 +94,6 @@ test("GitHub App login rejects mismatched credentials and missing installations 
     expect(await scene.store.load()).toBeNull();
     expect(existsSync(join(scene.home, "secrets/github-app.json"))).toBe(false);
   }
-});
-
-test("dashboard App sign-in provides a browser URL and completes through the callback", async () => {
-  const scene = fixture();
-  const githubAuth = createDashboardGitHubAuth(scene.options);
-  const response = await handleStatusRequest(
-    new Request("http://127.0.0.1/api/auth/github/device", {
-      method: "POST",
-      headers: { "x-paws-csrf": "fake-csrf" },
-    }),
-    { githubAuth, csrfToken: "fake-csrf" },
-  );
-  expect(response?.status).toBe(200);
-  const started = (await response!.json()) as { userCode: string; verificationUri: string };
-  expect(started.userCode).toBe("");
-  const auth = new URL(started.verificationUri);
-  const url = new URL(auth.searchParams.get("redirect_uri")!);
-  url.searchParams.set("state", auth.searchParams.get("state")!);
-  url.searchParams.set("code", "fake-code");
-  expect((await fetch(url)).status).toBe(200);
-  for (let attempt = 0; attempt < 100 && (await githubAuth.user()) === null; attempt += 1)
-    await Bun.sleep(5);
-  expect(await githubAuth.user()).toEqual({ login: "octocat", id: 7 });
-  expect(scene.opened()).toBe(0);
 });
 
 test("Linear host sign-in verifies the saved human through the configured App callback", async () => {

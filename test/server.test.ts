@@ -48,6 +48,11 @@ describe("server", () => {
       const nested = await fetch(`${base}/webhooks/linear/extra`);
       expect(nested.status).toBe(404);
 
+      const githubSignIn = await fetch(`${base}/api/auth/github`);
+      expect(githubSignIn.status).toBe(404);
+      const githubDevice = await fetch(`${base}/api/auth/github/device`, { method: "POST" });
+      expect(githubDevice.status).toBe(404);
+
       const other = await fetch(`${base}/metrics`);
       expect(other.status).toBe(404);
       expect(server.hostname).toBe("127.0.0.1");

@@ -2,7 +2,7 @@ import { routeHref } from "./route";
 import { renderMarkup } from "./theme";
 import type { AgentModelCatalog, AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
 import { esc } from "./format";
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 
 const ROLES: AgentRole[] = ["implementer", "reviewer"];
 const CI_FIX_ATTEMPTS_DEFAULT = 3;

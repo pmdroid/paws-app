@@ -1,5 +1,5 @@
 import { renderMarkup } from "./theme";
-import { readCsrfToken } from "./github-auth";
+import { readCsrfToken } from "./csrf";
 import { esc } from "./format";
 
 const LABELS: Record<string, string> = {
