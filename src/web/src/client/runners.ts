@@ -208,7 +208,7 @@ export function memberVmMarkup(
       : vm.failure === null
         ? '<span class="tag running">Setting up</span>'
         : '<span class="tag bad">Failed</span>';
-  return `<section class="runner-section" data-member-vm="${esc(vm.step)}" aria-labelledby="member-vm-heading"><div class="between"><h2 id="member-vm-heading" tabindex="-1" data-focus="vm-heading">Your VM <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM setup steps">${rows}</ul>${retry}</section>`;
+  return `<section class="runner-section" data-member-vm="${esc(vm.step)}" aria-labelledby="member-vm-heading"><div class="between"><h2 id="member-vm-heading" tabindex="-1" data-focus="vm-heading">Your VM <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM setup steps">${rows}</ul>${retry ? `<div class="settings-actions">${retry}</div>` : ""}</section>`;
 }
 
 function shellQuote(value: string): string {
@@ -1248,14 +1248,14 @@ export function createRunners() {
     root!.querySelector("[data-vm-create]")?.addEventListener("click", () => {
       void change(async () => {
         memberVm = await api<MemberVmState>("/api/runners/vm", {});
-        feedback = "Paws is creating your VM.";
+        // The VM section reports progress itself, so focus moves there instead of a notice.
         refocus("vm-heading");
       }, false);
     });
     root!.querySelector("[data-vm-retry]")?.addEventListener("click", () => {
       void change(async () => {
         memberVm = await api<MemberVmState>("/api/runners/vm/retry", {});
-        feedback = "Paws is retrying the failed step.";
+        refocus("vm-heading");
       }, false);
     });
     root!.querySelector<HTMLElement>("[data-runner-add]")?.addEventListener("click", () => {
