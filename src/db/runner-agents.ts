@@ -26,8 +26,8 @@ export type RunnerAgentTargetRow = {
   id: string;
   agent: string;
   version: string;
-  /** Null for a rollback: the runner switches back to a version it already has. */
-  integrity: string | null;
+  /** The npm sha512 of the agent package, as the catalog checked it. */
+  integrity: string;
   nativeVersion: string | null;
   /** The native and platform packages the runner must install with exactly these integrities. */
   packages: CatalogPackage[];
@@ -38,12 +38,9 @@ export type RunnerAgentView = {
   agent: string;
   /** The version new sessions start; null before the runner reports one. */
   current: string | null;
-  /** The version it ran before, which Roll back switches to. */
-  previous: string | null;
   /** The version asked for and how it is going, until the runner runs it. */
   pending: {
     version: string;
-    rollback: boolean;
     /** `requested` until the runner picks it up. */
     status: "requested" | "installing" | "waiting" | "failed";
     /** Sessions still on the old version while `waiting`. */
@@ -92,12 +89,12 @@ export function recordRunnerAgents(
   );
 }
 
-type TargetRecord = RunnerAgentTargetRow & { rollback: number; requestedAt: number };
+type TargetRecord = RunnerAgentTargetRow & { requestedAt: number };
 
 function targets(db: Database, runnerId: string): TargetRecord[] {
   return db
     .query<Omit<TargetRecord, "packages"> & { packages: string }, [string]>(
-      `SELECT id,agent,version,integrity,native_version AS nativeVersion,packages,rollback,
+      `SELECT id,agent,version,integrity,native_version AS nativeVersion,packages,
        requested_at AS requestedAt FROM runner_agent_target WHERE runner_id=? ORDER BY agent`,
     )
     .all(runnerId)
@@ -105,16 +102,11 @@ function targets(db: Database, runnerId: string): TargetRecord[] {
 }
 
 /**
- * Why Paws no longer sends a target, or null. An update must still be eligible in the catalog
- * with the integrity it was chosen with; a rollback must not be to a version Paws refused.
+ * Why Paws no longer sends a target, or null. It must still be eligible in the catalog with the
+ * integrity it was chosen with.
  */
 function blocked(db: Database, target: TargetRecord): string | null {
   const row = readAgentVersion(db, target.agent, target.version);
-  if (target.rollback) {
-    return row?.status === "refused"
-      ? `Paws refused ${name(target.agent)} ${target.version}: ${row.reason ?? "its integrity changed."}`
-      : null;
-  }
   if (!row || row.status !== "eligible" || row.integrity !== target.integrity)
     return `Paws no longer offers ${name(target.agent)} ${target.version}${row?.reason ? `: ${row.reason}` : "."}`;
   return null;
@@ -156,17 +148,13 @@ export function listRunnerAgents(db: Database, runnerId: string): RunnerAgentVie
   const view = (agent: string) => {
     let entry = views.get(agent);
     if (!entry)
-      views.set(
-        agent,
-        (entry = { agent, current: null, previous: null, pending: null, reportedAt: null }),
-      );
+      views.set(agent, (entry = { agent, current: null, pending: null, reportedAt: null }));
     return entry;
   };
   for (const row of rows) {
     const entry = view(row.agent);
     entry.reportedAt = Math.max(entry.reportedAt ?? 0, row.reportedAt);
     if (row.status === "current") entry.current = row.version;
-    if (row.status === "previous") entry.previous = row.version;
   }
   for (const target of targets(db, runnerId)) {
     const reported = rows.find(
@@ -178,7 +166,6 @@ export function listRunnerAgents(db: Database, runnerId: string): RunnerAgentVie
     const refusal = blocked(db, target);
     view(target.agent).pending = {
       version: target.version,
-      rollback: target.rollback === 1,
       status: refusal ? "failed" : ((reported?.status as "installing") ?? "requested"),
       sessions: !refusal && reported?.status === "waiting" ? reported.sessions : null,
       error: refusal ?? (reported?.status === "failed" ? reported.error : null),
@@ -199,32 +186,32 @@ function activeRunner(db: Database, runnerId: string, workspaceId: string): void
   if (!row) throw new Error("Runner is unavailable.");
 }
 
-function reportedVersion(
-  db: Database,
-  runnerId: string,
-  agent: string,
-  status: "current" | "previous",
-) {
+function currentVersion(db: Database, runnerId: string, agent: string) {
   return (
     db
-      .query<{ version: string }, [string, string, string]>(
-        "SELECT version FROM runner_agent WHERE runner_id=? AND agent=? AND status=?",
+      .query<{ version: string }, [string, string]>(
+        "SELECT version FROM runner_agent WHERE runner_id=? AND agent=? AND status='current'",
       )
-      .get(runnerId, agent, status)?.version ?? null
+      .get(runnerId, agent)?.version ?? null
   );
 }
 
 function saveTarget(
   db: Database,
   runnerId: string,
-  target: RunnerAgentTargetRow & { rollback: boolean },
+  target: RunnerAgentTargetRow,
   request: Omit<Request, "id">,
 ): void {
+  // The runner refuses a target without the native and platform packages to check.
+  if (!target.packages.length)
+    throw new RunnerAgentUpdateError(
+      `Paws has no checked native build for ${name(target.agent)} ${target.version}, so it cannot send this version.`,
+    );
   db.run(
-    `INSERT INTO runner_agent_target(runner_id,agent,id,version,integrity,native_version,packages,rollback,requested_by,requested_at)
-     VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(runner_id,agent) DO UPDATE SET id=excluded.id,
+    `INSERT INTO runner_agent_target(runner_id,agent,id,version,integrity,native_version,packages,requested_by,requested_at)
+     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(runner_id,agent) DO UPDATE SET id=excluded.id,
        version=excluded.version,integrity=excluded.integrity,native_version=excluded.native_version,
-       packages=excluded.packages,rollback=excluded.rollback,requested_by=excluded.requested_by,
+       packages=excluded.packages,requested_by=excluded.requested_by,
        requested_at=excluded.requested_at`,
     [
       runnerId,
@@ -234,7 +221,6 @@ function saveTarget(
       target.integrity,
       target.nativeVersion,
       JSON.stringify(target.packages),
-      target.rollback ? 1 : 0,
       request.userId,
       request.now,
     ],
@@ -242,7 +228,7 @@ function saveTarget(
   auditWorkspaceAccess(db, {
     workspaceId: request.workspaceId,
     userId: request.userId,
-    action: target.rollback ? "runner.agent_rollback" : "runner.agent_update",
+    action: "runner.agent_update",
     subject: `${runnerId}:${target.agent}@${target.version}`,
     now: request.now,
   });
@@ -260,7 +246,7 @@ export function requestRunnerAgentUpdate(
 ): void {
   immediate(db, () => {
     activeRunner(db, input.runnerId, input.workspaceId);
-    const current = reportedVersion(db, input.runnerId, input.agent, "current");
+    const current = currentVersion(db, input.runnerId, input.agent);
     if (current === null)
       throw new RunnerAgentUpdateError(
         `This runner does not report ${name(input.agent)}. Update the runner package first.`,
@@ -284,45 +270,9 @@ export function requestRunnerAgentUpdate(
         integrity: row.integrity,
         nativeVersion: row.nativeVersion,
         packages: input.catalogPackages(input.agent, row.nativeVersion),
-        rollback: false,
       },
       input,
     );
-  });
-}
-
-/** Ask a runner to switch `agent` back to the version it ran before. */
-export function requestRunnerAgentRollback(
-  db: Database,
-  input: Request & { runnerId: string; agent: string },
-): string {
-  return immediate(db, () => {
-    activeRunner(db, input.runnerId, input.workspaceId);
-    const previous = reportedVersion(db, input.runnerId, input.agent, "previous");
-    if (previous === null)
-      throw new RunnerAgentUpdateError(
-        `This runner has no earlier ${name(input.agent)} version to roll back to.`,
-      );
-    const row = readAgentVersion(db, input.agent, previous);
-    if (row?.status === "refused")
-      throw new RunnerAgentUpdateError(
-        `Paws refused ${name(input.agent)} ${previous}, so it cannot be rolled back to: ${row.reason ?? "its integrity changed."}`,
-      );
-    saveTarget(
-      db,
-      input.runnerId,
-      {
-        id: input.id,
-        agent: input.agent,
-        version: previous,
-        integrity: null,
-        nativeVersion: null,
-        packages: [],
-        rollback: true,
-      },
-      input,
-    );
-    return previous;
   });
 }
 
@@ -354,8 +304,8 @@ export function requestAllRunnerAgentUpdates(
       // is never moved back to the catalog's newest eligible one.
       if (!version || Bun.semver.order(version, row.version) <= 0) continue;
       const pending = db
-        .query<{ id: string; version: string; rollback: number }, [string, string]>(
-          "SELECT id,version,rollback FROM runner_agent_target WHERE runner_id=? AND agent=?",
+        .query<{ id: string; version: string }, [string, string]>(
+          "SELECT id,version FROM runner_agent_target WHERE runner_id=? AND agent=?",
         )
         .get(row.runnerId, row.agent);
       // A request on its way is left alone; a failed one is asked again under a new id, which
@@ -367,7 +317,7 @@ export function requestAllRunnerAgentUpdates(
             "SELECT 1 AS one FROM runner_agent WHERE runner_id=? AND agent=? AND status='failed' AND target_id=?",
           )
           .get(row.runnerId, row.agent, pending.id) !== null;
-      if (pending?.version === version && !pending.rollback && !failed) continue;
+      if (pending?.version === version && !failed) continue;
       const catalog = readAgentVersion(db, row.agent, version)!;
       saveTarget(
         db,
@@ -379,7 +329,6 @@ export function requestAllRunnerAgentUpdates(
           integrity: catalog.integrity,
           nativeVersion: catalog.nativeVersion,
           packages: input.catalogPackages(row.agent, catalog.nativeVersion),
-          rollback: false,
         },
         input,
       );

@@ -15,6 +15,7 @@ import {
   type RunnerAgentView,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
+import { RunnerAgentTargetSchema, type RunnerAgentTarget } from "../src/runner-protocol";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
 import {
@@ -170,8 +171,6 @@ async function fixture() {
       ))!.json()) as { runners: { id: string; codingAgents: RunnerAgentView[] }[] },
     update: (agent: string, version: string, id = runnerId) =>
       post(`/api/runners/${id}/coding-agents/${agent}/update`, { version }),
-    rollback: (agent: string, id = runnerId) =>
-      post(`/api/runners/${id}/coding-agents/${agent}/rollback`),
     updateAll: () => post("/api/runners/coding-agents/update-all"),
     advance(ms: number) {
       now += ms;
@@ -180,6 +179,7 @@ async function fixture() {
   };
 }
 
+// Older runners also report the version they ran before; Paws accepts it and shows only `current`.
 const installed = [
   { agent: "claude", version: "2.0.0", status: "current" },
   { agent: "claude", version: "1.8.0", status: "previous" },
@@ -197,11 +197,10 @@ test("a heartbeat with agents is stored and shown on the runner card", async () 
     {
       agent: "claude",
       current: "2.0.0",
-      previous: "1.8.0",
       pending: null,
       reportedAt: runner.now(),
     },
-    { agent: "codex", current: "0.9.0", previous: null, pending: null, reportedAt: runner.now() },
+    { agent: "codex", current: "0.9.0", pending: null, reportedAt: runner.now() },
   ];
   expect(listRunnerAgents(runner.db, runner.runnerId)).toEqual(expected);
   expect((await runner.list()).runners[0]!.codingAgents).toEqual(expected);
@@ -281,7 +280,6 @@ test("Update sends the eligible version with its integrity, and the card follows
   expect(done.body!.agents).toEqual([]);
   expect(listRunnerAgents(runner.db, runner.runnerId)[0]).toMatchObject({
     current: "2.1.0",
-    previous: "2.0.0",
     pending: null,
   });
 });
@@ -353,50 +351,15 @@ test("a version that is not eligible cannot be chosen", async () => {
   });
 });
 
-test("Roll back sends the previous version without an integrity, so nothing downloads", async () => {
+test("a target always carries the agent's sha512 and the packages the catalog checked", async () => {
   const runner = await fixture();
   await runner.heartbeat({ agents: installed });
-  expect(await runner.rollback("claude")).toEqual({
-    status: 200,
-    body: { ok: true, version: "1.8.0" },
-  });
-  expect((await runner.heartbeat({ agents: installed })).body!.agents).toEqual([
-    {
-      id: expect.any(String),
-      agent: "claude",
-      version: "1.8.0",
-      integrity: null,
-      nativeVersion: null,
-      packages: [],
-    },
-  ]);
-  expect(listRunnerAgents(runner.db, runner.runnerId)[0]!.pending).toMatchObject({
-    version: "1.8.0",
-    rollback: true,
-  });
-  await runner.heartbeat({
-    agents: [
-      { agent: "claude", version: "1.8.0", status: "current" },
-      { agent: "claude", version: "2.0.0", status: "previous" },
-    ],
-  });
-  expect(listRunnerAgents(runner.db, runner.runnerId)[0]).toMatchObject({
-    current: "1.8.0",
-    previous: "2.0.0",
-    pending: null,
-  });
-  expect((await runner.rollback("codex")).body).toEqual({
-    error: "This runner has no earlier Codex version to roll back to.",
-  });
-  await runner.heartbeat({
-    agents: [
-      { agent: "claude", version: "2.0.0", status: "current" },
-      { agent: "claude", version: "1.9.0", status: "previous" },
-    ],
-  });
-  expect((await runner.rollback("claude")).body).toEqual({
-    error: "Paws refused Claude 1.9.0, so it cannot be rolled back to: claude@1.9.0 is refused.",
-  });
+  await runner.update("claude", "2.1.0");
+  const [sent] = (await runner.heartbeat({ agents: installed })).body!
+    .agents as RunnerAgentTarget[];
+  expect(RunnerAgentTargetSchema.safeParse(sent).success).toBe(true);
+  expect(RunnerAgentTargetSchema.safeParse({ ...sent, integrity: null }).success).toBe(false);
+  expect(RunnerAgentTargetSchema.safeParse({ ...sent, packages: [] }).success).toBe(false);
 });
 
 test("Update all runners sends every runner the newest eligible version it lacks", async () => {

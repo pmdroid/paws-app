@@ -2689,6 +2689,32 @@ CREATE TABLE runner_agent_target (
 ) STRICT;
 `,
   },
+  {
+    // Coding agents are only updated to an eligible catalog version (PAS-639). A target always
+    // carries the agent package's sha512 and the packages the catalog checked; a target that
+    // switched back to an installed version without them is dropped.
+    id: "133_runner_agent_target_updates_only",
+    sql: `
+CREATE TABLE runner_agent_target_update (
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  agent TEXT NOT NULL,
+  id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  integrity TEXT NOT NULL,
+  native_version TEXT,
+  packages TEXT NOT NULL CHECK (json_valid(packages) AND json_array_length(packages) > 0),
+  requested_by TEXT NOT NULL,
+  requested_at INTEGER NOT NULL,
+  PRIMARY KEY (runner_id, agent)
+) STRICT;
+INSERT INTO runner_agent_target_update
+SELECT runner_id,agent,id,version,integrity,native_version,packages,requested_by,requested_at
+FROM runner_agent_target
+WHERE rollback=0 AND integrity IS NOT NULL AND json_valid(packages) AND json_array_length(packages) > 0;
+DROP TABLE runner_agent_target;
+ALTER TABLE runner_agent_target_update RENAME TO runner_agent_target;
+`,
+  },
 ];
 
 /**
