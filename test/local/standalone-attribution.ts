@@ -27,7 +27,7 @@ import {
   saveRunCommitPolicy,
   syncWorkspaceMember,
 } from "../../src/db";
-import { FakeHostGitHubAuth, GitHubAuthQuestions } from "../../src/loop";
+import { GitHubInstallationCheck } from "../../src/loop";
 import { signRunnerCommand, verifyRunnerCommand } from "../../src/runner-protocol";
 import { delegatorCommitCredit, issueWorkspaceSession } from "../../src/workspace";
 
@@ -109,16 +109,14 @@ export async function probeStandaloneAttribution(root: string) {
     },
     { preconnect: realFetch.preconnect },
   ) as typeof fetch;
-  const auth = new GitHubAuthQuestions(
+  const auth = new GitHubInstallationCheck(
     db,
-    Object.assign(new FakeHostGitHubAuth(), {
-      integration: {
-        check: async () => true,
-        identity: () => "workspace-repository",
-        administrators: () => [],
-        recoveryUrl: "https://paws.example/status/#/settings/account",
-      },
-    }),
+    {
+      check: async () => true,
+      identity: () => "workspace-repository",
+      administrators: () => [],
+      recoveryUrl: "https://paws.example/status/#/settings/account",
+    },
     () => now,
   );
   try {

@@ -34,7 +34,7 @@ import { createFakeTracker, LinearRateLimitError } from "../../src/linear";
 import { findOpenQuestion } from "../../src/questions";
 import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
-import { attachOrchestrator, FakeHostGitHubAuth } from "../../src/loop";
+import { attachOrchestrator } from "../../src/loop";
 import { saveSchedulingContext } from "../../src/scheduler";
 import { migratedDatabase } from "../helpers";
 import { workspaceAdmission } from "../fake-workspace";
@@ -344,20 +344,18 @@ export async function probeRunnerOrchestration(
       repository: { owner: "acme", repo: "fixture", remoteUrl: origin },
       ...(scenario === "success"
         ? {
-            githubAuth: Object.assign(new FakeHostGitHubAuth(), {
-              integration: {
-                check: async (current: WorkItemRecord) => {
-                  appChecks.push({
-                    currentRunId: current.currentRunId,
-                    checkpoint: current.checkpoint,
-                  });
-                  return true;
-                },
-                identity: () => "workspace-installation-repository",
-                administrators: () => [],
-                recoveryUrl: "https://paws.example/status/#/settings/integrations",
+            githubInstallation: {
+              check: async (current: WorkItemRecord) => {
+                appChecks.push({
+                  currentRunId: current.currentRunId,
+                  checkpoint: current.checkpoint,
+                });
+                return true;
               },
-            }),
+              identity: () => "workspace-installation-repository",
+              administrators: () => [],
+              recoveryUrl: "https://paws.example/status/#/settings/integrations",
+            },
             repositoryToken: async () => "fixture",
           }
         : {}),
