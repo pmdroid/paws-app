@@ -3,8 +3,8 @@ import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { createMemberVmProvisioning, registerMemberVmJob } from "./member-vm";
-import { exeDevTokenReader } from "./provisioning";
+import { createMemberVmHttp, createMemberVmProvisioning, registerMemberVmJob } from "./member-vm";
+import { exeDevTokenReader, type ExeDev, type ExeDevBootstrap } from "./provisioning";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
@@ -205,6 +205,8 @@ export type StartOptions = {
   refreshRepositories?: boolean;
   /** Read npm once a day for the coding agent version catalog. Off in tests. */
   refreshAgentCatalog?: boolean;
+  /** Replaces the exe.dev client and VM bootstrap behind Create VM. Tests pass the fakes. */
+  memberVm?: { exeDev: ExeDev; bootstrap: ExeDevBootstrap; pollMs?: number };
 };
 
 const LOOPBACK = "127.0.0.1";
@@ -629,6 +631,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const exeDevToken = exeDevTokenReader(paths.home);
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
+    ...(options?.memberVm
+      ? { exeDev: options.memberVm.exeDev, bootstrap: options.memberVm.bootstrap }
+      : {}),
     installer: () => {
       try {
         return readFileSync(new URL("../deploy/linux/install-runner.sh", import.meta.url), "utf8");
@@ -682,6 +687,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     ? createRunnerPlacement({ db, ...(parents ? { sessionActor: parents.actor } : {}) })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
+  // Create VM is offered only once an exe.dev token is in ~/.paws/secrets.
+  const memberVmHttp = createMemberVmHttp({
+    db,
+    available: async () => options?.memberVm !== undefined || (await exeDevToken()) !== null,
+  });
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
@@ -781,6 +791,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     Response.json({ error: "Runner control is starting." }, { status: 503 }),
                   ),
             runnerControl: async (request: Request, principal: WorkspacePrincipal) =>
+              (await memberVmHttp(request, principal)) ??
               (await placementBrowser(request, principal)) ??
               (runner
                 ? await runner.browser(request, principal)
@@ -885,6 +896,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       registerMemberVmJob(created.jobs, {
         provision: memberVmProvisioning,
         secrets: () => [exeDevToken()],
+        ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
       });
       const attached = attachOrchestrator({
         db,

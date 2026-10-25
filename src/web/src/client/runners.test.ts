@@ -4,6 +4,8 @@ import {
   compareVersions,
   hostEnrollmentCommand,
   livePoll,
+  memberVmMarkup,
+  type MemberVm,
   RUNNER_POLL_MS,
   runnerActionsMarkup,
   runnerDetailMarkup,
@@ -809,5 +811,74 @@ describe("hostEnrollmentCommand", () => {
     expect(carrying).toEqual([
       "printf '%s\\n' 'tok_en-123' | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token",
     ]);
+  });
+});
+
+describe("member VM", () => {
+  const vm = (patch: Partial<MemberVm> = {}): MemberVm => ({
+    id: "vm",
+    vmName: "ada-paws",
+    step: "install",
+    failure: null,
+    runnerId: null,
+    steps: [
+      { step: "create", state: "done", elapsedMs: 12_000 },
+      { step: "install", state: "running", elapsedMs: 95_000 },
+      { step: "enroll", state: "pending", elapsedMs: null },
+      { step: "health", state: "pending", elapsedMs: null },
+    ],
+    ...patch,
+  });
+
+  test("shows the four steps with their state and elapsed time", () => {
+    const html = memberVmMarkup(vm(), { busy: false, runner: null });
+    expect(html).toContain("ada-paws");
+    expect(html.match(/data-vm-step=/g)).toHaveLength(4);
+    expect(html).toContain('data-vm-step="create" data-vm-state="done"');
+    expect(html).toContain('data-vm-step="install" data-vm-state="running"');
+    expect(html).toContain("12s");
+    expect(html).toContain("1m 35s");
+    expect(html).toContain("Setting up");
+    expect(html).not.toContain("data-vm-retry");
+  });
+
+  test("a failed step shows the stored error, escaped, and Retry", () => {
+    const failed = vm({
+      failure: "ada-paws: <install> failed",
+      steps: vm().steps.map((entry) =>
+        entry.step === "install" ? { ...entry, state: "failed" } : entry,
+      ),
+    });
+    const html = memberVmMarkup(failed, { busy: false, runner: null });
+    expect(html).toContain("ada-paws: &lt;install&gt; failed");
+    expect(html).toContain("data-vm-retry");
+    expect(memberVmMarkup(failed, { busy: true, runner: null })).toMatch(
+      /data-vm-retry[^>]*disabled/,
+    );
+  });
+
+  test("ready links to the runner for agent sign-in, and a removed runner offers pairing again", () => {
+    const ready = vm({
+      step: "ready",
+      runnerId: runner.id,
+      steps: vm().steps.map((entry) => ({ ...entry, state: "done", elapsedMs: 1000 })),
+    });
+    const html = memberVmMarkup(ready, { busy: false, runner });
+    expect(html).toContain(routeHref({ view: "runners", id: runner.id }));
+    expect(html).toContain("sign in to Claude and Codex");
+    const removed = memberVmMarkup(ready, {
+      busy: false,
+      runner: { ...runner, status: "revoked" },
+    });
+    expect(removed).toContain("data-vm-create");
+    expect(removed).toContain("Removed");
+  });
+
+  test("the runner row names its owner", () => {
+    const html = runnerRowMarkup(
+      { ...runner, ownerName: "Ada Lovelace" },
+      { now, serverVersion: null },
+    );
+    expect(html).toContain("Owned by Ada Lovelace");
   });
 });
