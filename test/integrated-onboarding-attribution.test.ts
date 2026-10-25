@@ -95,7 +95,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       agentSession: { creatorId: "creator" },
     }),
   };
-  let active = true;
+  const active = true;
   const memberships = {
     async installation() {
       return { id: "org", name: "Workspace" };
@@ -294,34 +294,14 @@ test("onboarded authoritative creator resumes once with current App and no perso
       ...app(),
       fetch: githubFetch,
     });
-    const policy = async () =>
-      workspace.createCommitPolicyForItem({
-        db,
-        bot: await botProvider.botIdentity!(),
-        clientId: "client",
-        memberships,
-        now,
-        tracker: {
-          async getIssueAttribution(issueId) {
-            return {
-              issueId,
-              organizationId: "org",
-              teamId: "team",
-              projectId: "project",
-              leadId: "creator",
-            };
-          },
-        },
-      })(current());
-    let captured: GitCommitPolicy | undefined;
+    const policy = async (): Promise<GitCommitPolicy> => ({
+      bot: await botProvider.botIdentity!(),
+      credit: workspace.delegatorCommitCredit(db, current().id),
+    });
     const host = Object.assign(new FakeHostGitHubAuth(), {
       integration: {
         check: (_item: unknown, signal: AbortSignal) =>
           installation("acme/widgets", "write", signal),
-        async attributionReady() {
-          captured = await policy();
-          return true;
-        },
         administrators: () => ["owner"],
         recoveryUrl: `${origin}/status`,
         identity: () => "creator:acme/widgets",
@@ -368,18 +348,19 @@ test("onboarded authoritative creator resumes once with current App and no perso
     await auth.recover();
     expect(current().state).toBe("running");
     expect(dbApi.listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
-    expect(appBotCommitIdentity(captured!.bot)).toEqual({
+    const captured = await policy();
+    expect(appBotCommitIdentity(captured.bot)).toEqual({
       name: "Paws",
       email: "88+paws-test[bot]@users.noreply.github.com",
     });
     expect(policyCoauthors(await policy())).toEqual([
       { id: 7, login: "creator", name: "Creator", email: "7+creator@users.noreply.github.com" },
     ]);
-    dbApi.saveRunCommitPolicy(db, current().currentRunId!, captured!);
+    dbApi.saveRunCommitPolicy(db, current().currentRunId!, captured);
     const persisted = dbApi.openDatabase(path);
     try {
       expect(dbApi.getRun(persisted, current().currentRunId!)!.checkpoint!.commitPolicy).toEqual(
-        captured!,
+        captured,
       );
     } finally {
       persisted.close();
@@ -393,14 +374,6 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(await auth.ensure(current(), "publication", signal)).toBe(true);
     await auth.recover();
     expect(current().state).toBe("running");
-    expect(dbApi.listJobs(db).filter((job) => job.queue === "run.reverify")).toHaveLength(0);
-    active = false;
-    clock.advance(1);
-    await expect(policy()).rejects.toThrow("membership");
-    expect(dbApi.workspaceLinearMember(db, "workspace", "creator")!.active).toBe(false);
-    expect(await auth.ensure(current(), "publication", signal, { fresh: true })).toBe(false);
-    await auth.recover();
-    expect(current().state).toBe("awaiting_input");
     expect(dbApi.listJobs(db).filter((job) => job.queue === "run.reverify")).toHaveLength(0);
     expect(requests).toContain("/app/installations/22/access_tokens");
     expect(requests).not.toContain("/user");

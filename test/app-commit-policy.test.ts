@@ -22,61 +22,40 @@ import {
 } from "../src/db";
 import type { RunnerCommand } from "../src/runner-protocol";
 
-const policy: GitCommitPolicy = {
-  bot: { appId: "99", id: 88, login: "paws-test[bot]" },
-  projectLead: {
-    id: 7,
-    login: "lead",
-    name: "Project Lead",
-    email: "7+lead@users.noreply.github.com",
-  },
-  taskSteerer: {
-    id: 8,
-    login: "steerer",
-    name: "Task Steerer",
-    email: "8+steerer@users.noreply.github.com",
-  },
+const credit = {
+  id: 8,
+  login: "steerer",
+  name: "Task Steerer",
+  email: "8+steerer@users.noreply.github.com",
 };
+const policy: GitCommitPolicy = { bot: { appId: "99", id: 88, login: "paws-test[bot]" }, credit };
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("roles remain distinct and matching verified identities deduplicate; missing roles cannot invent credit", () => {
-  expect(policyCoauthors(policy)).toHaveLength(2);
-  expect(policyCoauthors({ ...policy, taskSteerer: policy.projectLead! })).toHaveLength(1);
-  expect(() => policyCoauthors({ ...policy, taskSteerer: undefined! })).toThrow(
+test("the policy credits exactly the delegating member with one trailer and one PR line", () => {
+  expect(policyCoauthors(policy)).toEqual([credit]);
+  expect(commitPolicyMessage("change", policy)).toBe(
+    "change\n\nCo-authored-by: Task Steerer <8+steerer@users.noreply.github.com>\n",
+  );
+  expect(policyPullRequestCredit(policy)).toBe("Credit: [@steerer](https://github.com/steerer)");
+  expect(() => policyCoauthors({ ...policy, credit: undefined! })).toThrow(
+    "Invalid verified GitHub coauthor",
+  );
+  expect(() => policyCoauthors({ ...policy, credit: { ...credit, login: "-bad" } })).toThrow(
     "Invalid verified GitHub coauthor",
   );
   expect(() =>
-    policyCoauthors({
-      ...policy,
-      taskSteerer: { ...policy.projectLead!, email: "invented@example.invalid" },
-    }),
-  ).toThrow("Conflicting");
-  expect(policyPullRequestCredit(policy)).toContain("https://github.com/lead");
-  expect(policyPullRequestCredit(policy)).toContain("https://github.com/steerer");
-});
-
-test("standalone attribution keeps exactly its verified task steerer and requires explicit absent lead", () => {
-  const standalone = { ...policy, projectLead: null };
-  expect(policyCoauthors(standalone)).toEqual([policy.taskSteerer!]);
-  expect(commitPolicyMessage("change", standalone)).toBe(
-    "change\n\nCo-authored-by: Task Steerer <8+steerer@users.noreply.github.com>\n",
-  );
-  expect(policyPullRequestCredit(standalone)).toBe(
-    "Task steerer: [@steerer](https://github.com/steerer)",
-  );
-  expect(() => policyCoauthors({ ...standalone, taskSteerer: undefined! })).toThrow();
-  expect(() => policyCoauthors({ ...policy, projectLead: undefined! })).toThrow();
+    policyCoauthors({ ...policy, credit: { ...credit, email: "not an email" } }),
+  ).toThrow();
 });
 
 test("bot-only policy omits human credit and still rejects malformed identities", () => {
-  const botOnly = { ...policy, projectLead: null, taskSteerer: null };
+  const botOnly = { ...policy, credit: null };
   expect(policyCoauthors(botOnly)).toEqual([]);
   expect(commitPolicyMessage("change", botOnly)).toBe("change\n");
   expect(policyPullRequestCredit(botOnly)).toBe("");
-  expect(() => policyCoauthors({ ...botOnly, taskSteerer: undefined! })).toThrow();
   expect(() => policyCoauthors({ ...botOnly, bot: { ...policy.bot, id: 0 } })).toThrow();
 });
 
@@ -152,7 +131,7 @@ async function agent(
   });
 }
 
-test("real ACP normal agent commit and recovery checkpoint share bot and two human trailers", async () => {
+test("real ACP normal agent commit and recovery checkpoint share bot and one human trailer", async () => {
   const f = await fixture();
   const result = await agent(f);
   expect(result.errorMessage).toBeUndefined();
@@ -168,12 +147,12 @@ test("real ACP normal agent commit and recovery checkpoint share bot and two hum
   expect((await f.invoke(["show", "-s", "--format=%an", f.base])).trim()).toBe("Original Human");
   expect(
     (await f.invoke(["log", "--format=%B", `${f.base}..HEAD`])).match(/Co-authored-by:/g),
-  ).toHaveLength(4);
+  ).toHaveLength(2);
 });
 
 test("bot-only ACP commits and checkpoints validate without granting unconsented credit", async () => {
   const f = await fixture();
-  const botOnly = { ...policy, projectLead: null, taskSteerer: null };
+  const botOnly = { ...policy, credit: null };
   const result = await agent(f, false, botOnly);
   expect(result.errorMessage).toBeUndefined();
   const transcript = JSON.parse(await Bun.file(join(f.root, "result-false.json")).text());
@@ -278,8 +257,37 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
     insertRun(db, { itemId: item.id, now: 2 });
     expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
     expect(() =>
-      saveRunCommitPolicy(db, run.id, { ...policy, taskSteerer: policy.projectLead! }),
+      saveRunCommitPolicy(db, run.id, { ...policy, credit: { ...credit, id: 9 } }),
     ).toThrow("cannot change");
+  } finally {
+    db.close();
+  }
+});
+
+test("a run stored with the old lead and steerer policy keeps crediting only the steerer", () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  try {
+    const item = insertQueuedItem(db, { id: "item", now: 1 });
+    const { run } = beginImplementRun(db, item.id, 1);
+    db.run("UPDATE run SET checkpoint=? WHERE id=?", [
+      JSON.stringify({
+        phase: "running",
+        commitPolicy: {
+          bot: policy.bot,
+          projectLead: { ...credit, id: 7, login: "lead" },
+          taskSteerer: credit,
+        },
+      }),
+      run.id,
+    ]);
+    expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
+    saveRunCommitPolicy(db, run.id, policy);
+    db.run("UPDATE run SET checkpoint=? WHERE id=?", [
+      JSON.stringify({ phase: "running", commitPolicy: { bot: policy.bot, projectLead: null } }),
+      run.id,
+    ]);
+    expect(getRun(db, run.id)?.checkpoint?.commitPolicy).toEqual({ bot: policy.bot, credit: null });
   } finally {
     db.close();
   }

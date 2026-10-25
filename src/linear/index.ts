@@ -185,4 +185,3 @@ export type { LinearAccessReads, LinearSessionInstallation } from "./access";
 export { createLinearIssueContextReads, type LinearIssueContext } from "./issue-context";
 export { cacheLinearMemberships, createLinearMembershipReads } from "./membership";
 export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
-
