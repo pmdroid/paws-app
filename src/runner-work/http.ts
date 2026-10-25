@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   RunnerHostStatusSchema,
+  RunnerInstalledAgentsSchema,
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
@@ -16,6 +17,7 @@ const heartbeat = RunnerHostStatusSchema.extend({
   ceiling: z.number().int().min(1).max(16).optional(),
   skills: RunnerInstalledSkillsSchema.optional(),
   runtimes: RunnerInstalledRuntimesSchema.optional(),
+  agents: RunnerInstalledAgentsSchema.optional(),
 });
 const grant = z.strictObject({ commandId: id, generation });
 const event = z.strictObject({
@@ -33,10 +35,12 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       if (path === "/v1/commands" && request.method === "GET")
         return json({ commands: work.commands(runnerId) });
       if (path === "/v1/heartbeat" && request.method === "POST") {
-        const { capacity, ceiling, skills, runtimes, ...host } = heartbeat.parse(
+        const { capacity, ceiling, skills, runtimes, agents, ...host } = heartbeat.parse(
           await body(request),
         );
-        return json(work.heartbeat(runnerId, capacity ?? 1, host, ceiling, skills, runtimes));
+        return json(
+          work.heartbeat(runnerId, capacity ?? 1, host, ceiling, skills, runtimes, agents),
+        );
       }
       const download = /^\/v1\/skills\/([^/]+)\/([^/]+)$/.exec(path);
       if (download && request.method === "GET" && options.skillsRoot) {

@@ -2,8 +2,10 @@ import {
   listSkills,
   recordRunAgentSetup,
   recordRunnerCapacity,
+  recordRunnerAgents,
   recordRunnerRuntimes,
   recordRunnerSkills,
+  runnerAgentTargets,
   teamRepositoryAllowedSql,
 } from "../db";
 import type { KeyObject } from "node:crypto";
@@ -29,6 +31,9 @@ import {
   type RunnerEvent,
   signRunnerCommand,
   type RunnerCommand,
+  RunnerAgentTargetSchema,
+  type RunnerAgentTarget,
+  type RunnerInstalledAgent,
   type RunnerInstalledRuntime,
   type RunnerInstalledSkill,
   type RunnerSkill,
@@ -477,7 +482,8 @@ export function createRunnerWork(options: {
     /**
      * `ceiling` comes from runners that apply the desired concurrency from the reply. `installed`
      * comes from runners that install skills; only they get the skill manifest back. `runtimes`
-     * comes from runners that have installed task runtimes with mise.
+     * comes from runners that have installed task runtimes with mise. `agents` comes from runners
+     * whose coding agents the installer manages; only they get the agent versions asked for back.
      */
     heartbeat(
       runnerId: string,
@@ -486,6 +492,7 @@ export function createRunnerWork(options: {
       ceiling?: number,
       installed?: readonly RunnerInstalledSkill[],
       runtimes?: readonly RunnerInstalledRuntime[],
+      agents?: readonly RunnerInstalledAgent[],
     ) {
       return immediate(db, () => {
         runner(runnerId);
@@ -497,6 +504,13 @@ export function createRunnerWork(options: {
         const skills: RunnerSkill[] | undefined = installed && skillManifest();
         if (installed) recordRunnerSkills(db, runnerId, installed, at);
         if (runtimes) recordRunnerRuntimes(db, runnerId, runtimes, at);
+        if (agents) recordRunnerAgents(db, runnerId, agents, at);
+        const targets: RunnerAgentTarget[] | undefined =
+          agents &&
+          runnerAgentTargets(db, runnerId).flatMap((target) => {
+            const parsed = RunnerAgentTargetSchema.safeParse(target);
+            return parsed.success ? [parsed.data] : [];
+          });
         const rows = db
           .query<Assignment, [string]>(
             `SELECT ${columns} FROM runner_work WHERE runner_id=? AND ended_at IS NULL`,
@@ -524,6 +538,7 @@ export function createRunnerWork(options: {
           fenced,
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
+          ...(targets === undefined ? {} : { agents: targets }),
         };
       });
     },

@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { createRunnerSkillInstaller } from "../runner-execution";
-import { openRunnerRuntime } from "../runner-runtime";
+import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
 
 export async function runPairedDaemon(
   daemon: RunnerDaemon,
@@ -49,6 +49,7 @@ export async function runPairedDaemon(
     repositoryRoot: join(root, "repositories"),
     home: root,
     skills,
+    agents: openRunnerAgents({ onError: report }),
     concurrency: () => daemon.capacity(),
   });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;

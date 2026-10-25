@@ -20,11 +20,13 @@ import {
   type RunnerHealthResult,
   type RunnerHelperResult,
   type RunnerHostStatus,
+  type RunnerInstalledAgent,
   type RunnerInstalledRuntime,
   type RunnerInstalledSkill,
   type RunnerResult,
   type RunnerSkill,
   RUNNER_SKILL_BUNDLE_LIMIT,
+  RunnerInstalledAgentsSchema,
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
@@ -379,10 +381,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     /**
      * `skills` is what this runner has installed; sending it asks Paws for the skill manifest.
      * `runtimes` is what mise installed for tasks on this runner, sent once there is any.
+     * `agents` is the coding agent versions the installer manages; sending it asks Paws for the
+     * versions chosen on the Runners page.
      */
     async heartbeat(
       skills?: readonly RunnerInstalledSkill[],
       runtimes?: readonly RunnerInstalledRuntime[],
+      agents?: readonly RunnerInstalledAgent[],
     ) {
       const body = {
         ...options.sampleHost?.(),
@@ -392,11 +397,15 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       const installed = runtimes?.length
         ? RunnerInstalledRuntimesSchema.parse(runtimes)
         : undefined;
+      const coding = agents && RunnerInstalledAgentsSchema.parse(agents);
       const withSkills = reported === undefined ? body : { ...body, skills: reported };
-      // A Paws release without runtimes or skills refuses the unknown field with 403. Drop the
-      // newest fields one at a time so the leases still renew.
+      const withRuntimes =
+        installed === undefined ? withSkills : { ...withSkills, runtimes: installed };
+      // A Paws release without agents, runtimes or skills refuses the unknown field with 403.
+      // Drop the newest fields one at a time so the leases still renew.
       const attempts: unknown[] = [
-        installed === undefined ? withSkills : { ...withSkills, runtimes: installed },
+        coding === undefined ? withRuntimes : { ...withRuntimes, agents: coding },
+        ...(coding === undefined ? [] : [withRuntimes]),
         ...(installed === undefined ? [] : [withSkills]),
         ...(reported?.some((skill) => skill.waiting)
           ? [{ ...body, skills: reported.map(({ waiting: _, ...skill }) => skill) }]

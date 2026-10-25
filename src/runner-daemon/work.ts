@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  RunnerAgentTargetsSchema,
   RunnerEventSchema,
   RunnerResultSchema,
   RunnerSkillManifestSchema,
@@ -17,6 +18,8 @@ export const RunnerHeartbeatSchema = z.strictObject({
   concurrency: z.number().int().min(1).max(16).optional(),
   /** Registered skills, sent only to runners that report the skills they have installed. */
   skills: RunnerSkillManifestSchema.optional(),
+  /** Agent versions Paws asks for, sent only to runners that report their coding agents. */
+  agents: RunnerAgentTargetsSchema.optional(),
 });
 export const RunnerGrantRequestSchema = z.strictObject({ commandId: identifier, generation });
 export const RunnerGrantTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);

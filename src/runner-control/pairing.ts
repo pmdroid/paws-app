@@ -11,6 +11,9 @@ import {
   immediate,
   listRunnerOverview,
   renewRunnerCertificate,
+  requestAllRunnerAgentUpdates,
+  requestRunnerAgentRollback,
+  requestRunnerAgentUpdate,
   isCurrentRunnerCertificate,
   runnerForCertificate,
   setRunnerConcurrency,
@@ -195,6 +198,50 @@ export function createRunnerControl(options: {
         });
       });
       for (const fingerprint of fingerprints) options.disconnect(fingerprint);
+    },
+    /** Send `version` of `agent` to the runner. Only an eligible catalog version is accepted. */
+    updateAgent(principal: WorkspacePrincipal, runnerId: string, agent: string, version: string) {
+      immediate(db, () => {
+        admin(principal);
+        const at = now();
+        requestRunnerAgentUpdate(db, {
+          runnerId,
+          agent,
+          version,
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          now: at,
+          id: workspaceId(at),
+        });
+      });
+    },
+    /** Switch the runner's `agent` back to the version it ran before. Returns that version. */
+    rollbackAgent(principal: WorkspacePrincipal, runnerId: string, agent: string) {
+      return immediate(db, () => {
+        admin(principal);
+        const at = now();
+        return requestRunnerAgentRollback(db, {
+          runnerId,
+          agent,
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          now: at,
+          id: workspaceId(at),
+        });
+      });
+    },
+    /** Send each runner the newest eligible version of every agent it is behind on. */
+    updateAllAgents(principal: WorkspacePrincipal) {
+      return immediate(db, () => {
+        admin(principal);
+        const at = now();
+        return requestAllRunnerAgentUpdates(db, {
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          now: at,
+          id: () => workspaceId(at),
+        });
+      });
     },
     setConcurrency(principal: WorkspacePrincipal, runnerId: string, concurrency: number) {
       immediate(db, () => {
