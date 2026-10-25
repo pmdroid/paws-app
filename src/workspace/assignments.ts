@@ -18,7 +18,9 @@ import {
   type JobLoop,
 } from "../db";
 import {
+  linearItem,
   linearReadRetry,
+  LinearIntakeRefusedError,
   type AcceptedLinearEvent,
   type EpicSnapshot,
   type IntakeDecision,
@@ -102,6 +104,7 @@ const ENDED = "Paws stopped waiting for this sign-in. Delegate the issue again t
 const STOPPED = "This session was stopped or replaced by a newer delegation.";
 const ELSEWHERE = "This session belongs to a different Paws installation.";
 const TEAM = "You are not a member of this issue's Linear team.";
+export const ASSIGNMENT_CHANGED = "This issue changed while Paws waited for you to sign in.";
 const UNRECORDED = retry(
   "Paws has not recorded this session's Linear installation yet. It will try again automatically.",
 );
@@ -176,6 +179,11 @@ export function createWorkspaceAssignments(options: {
   origin: string;
   clientId: string;
   memberships: LinearMembershipReads;
+  /**
+   * Uncached membership reads for the one re-check before a held delegation resumes, so a
+   * membership lost after sign-in is seen. Defaults to `memberships`.
+   */
+  resumeMemberships?: LinearMembershipReads;
   lifecycle: LinearIssueLifecycle;
   tracker: TrackerAdapter;
   accept: (event: AcceptedLinearEvent, signal: AbortSignal) => Promise<boolean>;
@@ -231,6 +239,7 @@ export function createWorkspaceAssignments(options: {
         kind: "response",
         body: ONBOARDING_EXPIRED_BODY,
         id: crypto.randomUUID(),
+        linearIdentifier: holdIdentifier(hold),
       },
       now: at,
     });
@@ -320,6 +329,7 @@ export function createWorkspaceAssignments(options: {
       generation: hold.generation,
       payload: {
         sessionId: hold.sessionId,
+        linearIdentifier: holdIdentifier(hold),
         body: assignmentSignInBody(holdIdentifier(hold)),
         auth: {
           url: `${origin.origin}/onboard/${link}`,
@@ -404,13 +414,13 @@ export function createWorkspaceAssignments(options: {
         postSignIn(hold, link);
       });
   }
-  async function ineligible(verified: Verified, signal: AbortSignal): Promise<Refusal | null> {
+  async function ineligible(
+    verified: Verified,
+    signal: AbortSignal,
+    reads: LinearMembershipReads = options.memberships,
+  ): Promise<Refusal | null> {
     const before = now();
-    const identity = await options.memberships.member(
-      verified.organizationId,
-      verified.actorId,
-      signal,
-    );
+    const identity = await reads.member(verified.organizationId, verified.actorId, signal);
     signal.throwIfAborted();
     if (identity.organizationId !== verified.organizationId || identity.userId !== verified.actorId)
       return refused("Linear returned a different person for this session.");
@@ -434,6 +444,83 @@ export function createWorkspaceAssignments(options: {
     if (member.role === "observer")
       return refused(`Observers in the Paws workspace cannot delegate issues to Paws. ${ask}`);
     return member.teamIds.includes(verified.teamId) ? null : refused(TEAM);
+  }
+  /**
+   * The one re-check before a held delegation resumes. It reuses the snapshot stored with the
+   * hold and reads only two things from Linear: the issue (team, state and delegate) and a fresh
+   * membership. Everything else is a database fact. The epic is compared again at intake, which
+   * reads it anyway (`authorizeIntake`).
+   */
+  async function resumeCheck(
+    hold: Hold,
+    event: AcceptedLinearEvent,
+    signal: AbortSignal,
+  ): Promise<Verified | Refusal> {
+    const stored = JSON.parse(hold.fingerprint) as {
+      installation: { organizationId: string; teamId: string };
+      issue: { teamName?: string | null };
+      repositories: unknown;
+    };
+    if (!event.issueId) return refused("Paws could not match this session to an issue.");
+    if (!current(hold)) return refused(STOPPED);
+    const installation = getLinearSessionInstallation(db, hold.sessionId);
+    if (!installation) return UNRECORDED;
+    if (installation.oauthClientId !== options.clientId) return refused(ELSEWHERE);
+    if (workspaceForOrganization(db, installation.organizationId)?.id !== hold.workspaceId)
+      return refused("This Linear workspace is not connected to Paws.");
+    if (
+      JSON.stringify({ ...installation, observedAtMs: undefined }) !==
+        JSON.stringify(stored.installation) ||
+      JSON.stringify(listWorkspaceRepositories(db, hold.workspaceId)) !==
+        JSON.stringify(stored.repositories)
+    )
+      return refused(ASSIGNMENT_CHANGED);
+    const issue = await options.lifecycle.inspect(event.issueId, { signal });
+    signal.throwIfAborted();
+    if (JSON.stringify(issue) !== JSON.stringify(stored.issue)) return refused(ASSIGNMENT_CHANGED);
+    const verified: Verified = {
+      workspaceId: hold.workspaceId,
+      actorId: hold.actorId,
+      generation: hold.generation,
+      teamId: stored.installation.teamId,
+      teamName: stored.issue.teamName ?? null,
+      identifier: holdIdentifier(hold),
+      organizationId: stored.installation.organizationId,
+      fingerprint: hold.fingerprint,
+    };
+    const refusal = await ineligible(
+      verified,
+      signal,
+      options.resumeMemberships ?? options.memberships,
+    );
+    if (refusal) return refusal;
+    return current(hold) ? verified : refused(STOPPED);
+  }
+  /**
+   * Ends a hold that may not resume and tells the session why, once. A stopped or replaced
+   * session hears nothing: its generation moved on.
+   */
+  function refuseHold(hold: Hold, reason: string) {
+    immediate(db, () => {
+      const latest = holds(hold.sessionId);
+      if (latest?.tokenHash !== hold.tokenHash || latest.status === "invalid") return;
+      invalidate(hold);
+      if (!current(hold)) return;
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: hold.sessionId,
+        generation: hold.generation,
+        idempotencyKey: `assignment-refused:${hold.tokenHash}`,
+        payload: {
+          sessionId: hold.sessionId,
+          kind: "error",
+          body: `Paws did not start this work. ${reason}`,
+          linearIdentifier: holdIdentifier(hold),
+        },
+        now: now(),
+      });
+    });
   }
   /**
    * A reply from the session creator while the hold waits is kept as a pending
@@ -503,13 +590,14 @@ export function createWorkspaceAssignments(options: {
       if (hold) {
         if (!continuations.has(event) || hold.status !== "accepted" || !current(hold))
           return hold.status === "invalid" ? refused(ENDED) : HELD;
-        const signal = AbortSignal.timeout(30_000);
-        const verified = await snapshot(event, signal).catch(linearReadRetry);
-        if ("outcome" in verified) return verified;
-        if (verified.fingerprint !== hold.fingerprint)
-          return refused("This issue changed while Paws waited for you to sign in.");
-        const refusal = await ineligible(verified, signal).catch(linearReadRetry);
-        if (refusal) return refusal;
+        // The job that runs this continuation just re-checked the issue and the membership
+        // against the stored snapshot, so this reads only the database.
+        const { teamId } = holdIssue(hold);
+        const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
+        if (!member?.active) return refused("Your Paws workspace membership is not active.");
+        if (member.role === "observer")
+          return refused("Observers in the Paws workspace cannot delegate issues to Paws.");
+        if (!member.teamIds.includes(teamId)) return refused(TEAM);
         return current(hold) && holds(hold.sessionId)?.status === "accepted"
           ? ACCEPTED
           : refused(STOPPED);
@@ -655,49 +743,44 @@ export function createWorkspaceAssignments(options: {
         )
           return;
         const event: AcceptedLinearEvent = JSON.parse(hold.event);
-        const verified = await snapshot(event, context.signal);
-        if ("outcome" in verified && verified.outcome === "retry") throw new Error(verified.reason);
-        if (
-          "outcome" in verified ||
-          verified.fingerprint !== hold.fingerprint ||
-          verified.actorId !== hold.actorId ||
-          verified.workspaceId !== hold.workspaceId ||
-          (await ineligible(verified, context.signal)) !== null
-        ) {
-          invalidate(hold);
-          return;
-        }
-        const accepted = immediate(db, () => {
-          if (!context.isCurrent()) throw new Error("Assignment job claim is no longer current.");
-          if (!current(hold) || holds(hold.sessionId)?.status === "invalid") {
-            invalidate(hold);
-            return false;
+        // Every Linear request of the resume counts toward the issue under /health linear.items.
+        await linearItem(holdIdentifier(hold), async () => {
+          const verified = await resumeCheck(hold, event, context.signal).catch(linearReadRetry);
+          if ("outcome" in verified) {
+            if (verified.outcome === "retry") throw new Error(verified.reason);
+            return refuseHold(hold, verified.reason);
           }
-          const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
-          if (
-            !member?.active ||
-            member.role === "observer" ||
-            !member.teamIds.includes(verified.teamId)
-          ) {
-            invalidate(hold);
-            return false;
-          }
-          if (hold.status === "ready") {
-            db.run(
-              "UPDATE workspace_assignment SET status='accepted' WHERE token_hash=? AND status='ready'",
-              [hold.tokenHash],
-            );
-            auditWorkspaceAccess(db, {
-              workspaceId: hold.workspaceId,
-              userId: member.userId,
-              action: "assignment.resumed",
-              subject: hold.sessionId,
-              now: now(),
-            });
-          }
-          return true;
-        });
-        if (accepted) {
+          const accepted = immediate(db, () => {
+            if (!context.isCurrent()) throw new Error("Assignment job claim is no longer current.");
+            if (!current(hold) || holds(hold.sessionId)?.status === "invalid") {
+              invalidate(hold);
+              return false;
+            }
+            const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
+            if (
+              !member?.active ||
+              member.role === "observer" ||
+              !member.teamIds.includes(verified.teamId)
+            ) {
+              invalidate(hold);
+              return false;
+            }
+            if (hold.status === "ready") {
+              db.run(
+                "UPDATE workspace_assignment SET status='accepted' WHERE token_hash=? AND status='ready'",
+                [hold.tokenHash],
+              );
+              auditWorkspaceAccess(db, {
+                workspaceId: hold.workspaceId,
+                userId: member.userId,
+                action: "assignment.resumed",
+                subject: hold.sessionId,
+                now: now(),
+              });
+            }
+            return true;
+          });
+          if (!accepted) return;
           continuations.add(event);
           try {
             const result = await options.continue(event);
@@ -706,10 +789,15 @@ export function createWorkspaceAssignments(options: {
               "UPDATE workspace_assignment SET status='continued' WHERE token_hash=? AND status='accepted'",
               [hold.tokenHash],
             );
+          } catch (error) {
+            // A refusal is final for this hold: say why once instead of retrying the job.
+            if (!(error instanceof LinearIntakeRefusedError)) throw error;
+            if (error.quiet) invalidate(hold);
+            else refuseHold(hold, error.message);
           } finally {
             continuations.delete(event);
           }
-        }
+        });
       });
     },
   };
