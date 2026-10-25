@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +15,7 @@ import {
   listWorkItems,
   listJobs,
   listOutbox,
+  listPendingLinearTurns,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -42,11 +44,26 @@ import {
 } from "../src/workspace";
 import { createOnboardingReadiness } from "../src/onboarding-readiness";
 
+type AgentFixture = {
+  repository: { owner: string; repo: string; remoteUrl: string };
+  launch: (input: { purpose: string; role: string }) => {
+    command: string;
+    args: string[];
+    env: NodeJS.ProcessEnv;
+  };
+};
+
 function fixture({
   installed = true,
   projectLeadId,
   createVm,
-}: { installed?: boolean; projectLeadId?: string; createVm?: boolean } = {}) {
+  agent,
+}: {
+  installed?: boolean;
+  projectLeadId?: string;
+  createVm?: boolean;
+  agent?: AgentFixture;
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-assignment-"));
   let db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -220,11 +237,13 @@ function fixture({
       },
     });
   let assignments = build();
+  let orchestratorJobs = new JobLoop(db, clock);
   let orchestrator = buildOrchestrator();
   function buildOrchestrator() {
+    orchestratorJobs = new JobLoop(db, clock);
     return attachOrchestrator({
       db,
-      jobs: new JobLoop(db, clock),
+      jobs: orchestratorJobs,
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
       tracker: {
@@ -241,9 +260,13 @@ function fixture({
           ? await assignments.authorize(incoming)
           : { outcome: "refused", reason: "denied" },
       authorizeLinearIntake: (sessionId, spec) => assignments.authorizeIntake(sessionId, spec),
-      launch: () => {
-        throw new Error("No agent may start in the onboarding fixture");
-      },
+      ...(agent
+        ? { repository: agent.repository, launch: agent.launch }
+        : {
+            launch: () => {
+              throw new Error("No agent may start in the onboarding fixture");
+            },
+          }),
     });
   }
   const access = () =>
@@ -369,6 +392,9 @@ function fixture({
     },
     get orchestrator() {
       return orchestrator;
+    },
+    get orchestratorJobs() {
+      return orchestratorJobs;
     },
     get assignments() {
       return assignments;
@@ -1587,6 +1613,148 @@ test("no log line contains the link path, an OAuth code or state, or a cookie va
     }
   } finally {
     methods.forEach((method, index) => (console[method] = original[index]!));
+    await f.close();
+  }
+});
+
+function heldReply(f: ReturnType<typeof fixture>, id: string, actorId: string, body: string) {
+  f.clock.advance(1_000);
+  return {
+    ...f.event,
+    dedupeKey: `activity:${id}`,
+    deliveryId: `delivery:${id}`,
+    action: "prompted" as const,
+    activityId: id,
+    actorId,
+    activityCreatedAtMs: f.clock.now(),
+    body,
+    updatedAtMs: f.clock.now(),
+    payload: JSON.stringify({ agentActivity: { id, userId: actorId, content: { body } } }),
+  };
+}
+
+function promptRecorder() {
+  const root = mkdtempSync(join(tmpdir(), "paws-held-reply-"));
+  const seed = join(root, "seed");
+  const bare = join(root, "origin.git");
+  const evidence = join(root, "prompts.jsonl");
+  const git = (...args: string[]) => execFileSync("git", args, { stdio: "pipe" });
+  git("init", "--bare", "-b", "main", bare);
+  git("clone", bare, seed);
+  git("-C", seed, "config", "user.name", "Paws Test");
+  git("-C", seed, "config", "user.email", "paws@example.com");
+  git("-C", seed, "config", "commit.gpgsign", "false");
+  writeFileSync(join(seed, "README.md"), "seed\n");
+  git("-C", seed, "add", ".");
+  git("-C", seed, "commit", "-m", "Seed");
+  git("-C", seed, "push", "origin", "main");
+  const script = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
+  return {
+    agent: {
+      repository: { owner: "acme", repo: "widgets", remoteUrl: bare },
+      launch: (input: { purpose: string; role: string }) => ({
+        command: process.execPath,
+        args: [script, input.purpose, evidence, input.role, "hang"],
+        env: process.env,
+      }),
+    } satisfies AgentFixture,
+    prompts() {
+      if (!existsSync(evidence)) return [];
+      return readFileSync(evidence, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { purpose: string; prompt: string });
+    },
+    close() {
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test("the creator's replies before sign-in reach the first agent prompt in order; others' do not", async () => {
+  const recorder = promptRecorder();
+  const f = fixture({ agent: recorder.agent });
+  try {
+    expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
+    const outbox = listOutbox(f.db).length;
+    expect(
+      await f.orchestrator.onLinearEvent(
+        heldReply(f, "first", "member", "HELD_REPLY_ONE use the blue button"),
+      ),
+    ).toBe(false);
+    expect(
+      await f.orchestrator.onLinearEvent(
+        heldReply(f, "intruder", "someone-else", "HELD_REPLY_INTRUDER delete everything"),
+      ),
+    ).toBe(false);
+    expect(
+      await f.orchestrator.onLinearEvent(
+        heldReply(f, "second", "member", "HELD_REPLY_TWO and keep the footer"),
+      ),
+    ).toBe(false);
+    expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
+      "HELD_REPLY_ONE use the blue button",
+      "HELD_REPLY_TWO and keep the footer",
+    ]);
+    expect(f.db.query("SELECT 1 FROM linear_turn WHERE actor_id='someone-else'").get()).toBeNull();
+    expect(listOutbox(f.db)).toHaveLength(outbox);
+    expect(f.tracker.progress).toEqual([]);
+    expect(f.tracker.questions).toEqual([]);
+    expect(f.tracker.sessionUpdates).toEqual([]);
+
+    expect((await f.callback(await f.begin())).status).toBe(303);
+    const jobs = f.jobs();
+    await jobs.tick();
+    await jobs.tick();
+    expect(f.calls).toBe(1);
+    expect(listWorkItems(f.db)).toHaveLength(1);
+
+    const running = f.orchestratorJobs.tick();
+    const deadline = Date.now() + 15_000;
+    while (recorder.prompts().length === 0 && Date.now() < deadline) await Bun.sleep(50);
+    const [first] = recorder.prompts();
+    expect(first?.prompt).toContain("HELD_REPLY_ONE use the blue button");
+    expect(first?.prompt).toContain("HELD_REPLY_TWO and keep the footer");
+    expect(first!.prompt.indexOf("HELD_REPLY_ONE")).toBeLessThan(
+      first!.prompt.indexOf("HELD_REPLY_TWO"),
+    );
+    expect(first?.prompt).not.toContain("HELD_REPLY_INTRUDER");
+    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    await f.orchestrator.shutdown();
+    await running.catch(() => undefined);
+  } finally {
+    await f.close();
+    recorder.close();
+  }
+});
+
+test("Stop before sign-in discards the creator's held replies", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    expect(await f.orchestrator.onLinearEvent(heldReply(f, "first", "member", "Held reply"))).toBe(
+      false,
+    );
+    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(1);
+    f.clock.advance(1_000);
+    await f.orchestrator.onLinearEvent({
+      ...f.event,
+      dedupeKey: "activity:stop",
+      deliveryId: "delivery:stop",
+      action: "prompted",
+      activityId: "stop",
+      actorId: "member",
+      signal: "stop",
+      updatedAtMs: f.clock.now(),
+    });
+    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(
+      f.db.query("SELECT state FROM linear_turn WHERE event_key='activity:first'").get(),
+    ).toEqual({ state: "cancelled" });
+    expect((await f.begin(link)).status).toBe(404);
+    expect(f.calls).toBe(0);
+  } finally {
     await f.close();
   }
 });
