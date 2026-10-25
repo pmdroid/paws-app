@@ -22,7 +22,6 @@ export type {
   ProvisioningOperation,
 } from "./types";
 
-/** Reads `~/.paws/secrets/exe-dev-token` through `readSecretFile` on every call. */
 export function exeDevTokenReader(home: string): ExeDevTokenReader {
   return () => readExeDevToken(home);
 }
