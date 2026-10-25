@@ -16,6 +16,52 @@ export class RunnerRequestError extends Error {
   }
 }
 
+/**
+ * A request that never got an HTTP response: DNS, connect, TLS or timeout. `host` is the endpoint's
+ * `hostname:port` and `code` is the system or TLS error code (`ENOTFOUND`, `ECONNREFUSED`,
+ * `ETIMEDOUT`, `CERT_HAS_EXPIRED`, ...), so a caller can say why without echoing a body or header.
+ */
+export class RunnerTransportError extends Error {
+  constructor(
+    message: string,
+    readonly host: string,
+    readonly code: string | undefined,
+    cause: unknown,
+  ) {
+    super(message, { cause });
+    this.name = "RunnerTransportError";
+  }
+}
+
+/** The `hostname:port` an HTTPS request to `url` connects to. */
+export function endpointHost(url: URL): string {
+  return `${url.hostname}:${url.port || "443"}`;
+}
+
+/** Wrap a request-level failure, keeping only a well-formed error code. */
+export function transportFailure(
+  error: unknown,
+  url: URL,
+  method: string,
+  path: string,
+  elapsedMs: number,
+  timedOut = false,
+): RunnerTransportError {
+  const raw = (error as { code?: unknown } | null)?.code;
+  const code = timedOut
+    ? "ETIMEDOUT"
+    : typeof raw === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(raw)
+      ? raw
+      : undefined;
+  const detail = error instanceof Error ? error.message : String(error);
+  return new RunnerTransportError(
+    `Runner request ${method} ${path} failed after ${elapsedMs} ms: ${detail}`,
+    endpointHost(url),
+    code,
+    error,
+  );
+}
+
 export function httpsOrigin(value: string): string {
   const url = new URL(value);
   if (
@@ -60,8 +106,10 @@ export function requestBytes(
   const elapsed = () => Math.round(performance.now() - started);
   return new Promise((resolve, reject) => {
     const body = input.body === undefined ? undefined : Buffer.from(JSON.stringify(input.body));
+    const url = new URL(input.path, input.origin);
+    let timedOut = false;
     const req = request(
-      new URL(input.path, input.origin),
+      url,
       {
         method: input.method,
         agent: false,
@@ -98,14 +146,13 @@ export function requestBytes(
         });
       },
     );
-    const timer = setTimeout(() => req.destroy(new Error("Runner request timed out.")), timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      req.destroy(new Error("Runner request timed out."));
+    }, timeoutMs);
     req.on("close", () => clearTimeout(timer));
     req.on("error", (error) =>
-      reject(
-        new Error(
-          `Runner request ${input.method} ${input.path} failed after ${elapsed()} ms: ${error.message}`,
-        ),
-      ),
+      reject(transportFailure(error, url, input.method, input.path, elapsed(), timedOut)),
     );
     req.end(body);
   });
