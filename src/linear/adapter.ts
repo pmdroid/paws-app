@@ -1,4 +1,3 @@
-import type { LinearAttributionContext } from "./attribution";
 import type { LinearIssueContext } from "./issue-context";
 import type { LinearSessionSnapshot, LinearActivitySnapshot } from "./history";
 import type {
@@ -28,10 +27,6 @@ export type TrackerRequestOptions = {
  */
 export interface TrackerAdapter {
   listIssuePullRequests?(id: string, options?: TrackerRequestOptions): Promise<IssuePullRequest[]>;
-  getIssueAttribution?(
-    id: string,
-    options?: TrackerRequestOptions,
-  ): Promise<LinearAttributionContext>;
   getIssueContext?(id: string, options?: TrackerRequestOptions): Promise<LinearIssueContext>;
   createIssueAttachment?(input: IssueAttachment, options?: TrackerRequestOptions): Promise<void>;
   getSession?(id: string, options?: TrackerRequestOptions): Promise<LinearSessionSnapshot>;

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { readCheckpoint } from "./checkpoint";
 import {
   awakeCategory,
   capActivityText,
@@ -688,5 +689,5 @@ function mapItem(row: ItemSql): WorkItemRecord {
 
 function parseCheckpoint(value: string | null): Checkpoint | null {
   if (value === null) return null;
-  return JSON.parse(value) as Checkpoint;
+  return readCheckpoint(value);
 }
