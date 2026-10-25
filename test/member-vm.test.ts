@@ -186,6 +186,7 @@ describe("member VM", () => {
       "installStatus",
       "installStatus",
       "installStatus",
+      "joinTailnet",
       "enroll",
       "startRunner",
     ]);
@@ -356,6 +357,23 @@ describe("member VM", () => {
     expect(getRunner(f.db, row.runnerId!)!.ownerUserId).toBe(f.member.userId);
   });
 
+  test("a VM that cannot join the tailnet fails before enrollment with a tailnet message", async () => {
+    const f = await fixture();
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const loop = f.jobs();
+    f.bootstrap.fail("joinTailnet", "tailnet: the VM cannot reach this Paws (exit 2)");
+    const failed = await drive(f, loop, settled);
+    expect(failed.step).toBe("enroll");
+    expect(failed.failure).toContain("tailnet: the VM cannot reach this Paws");
+    const steps = f.bootstrap.calls.map((call) => call.step);
+    expect(steps.at(-1)).toBe("joinTailnet");
+    expect(steps).not.toContain("enroll");
+    retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
+    expect(row.failure).toBeNull();
+    expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
+  });
+
   test("a failed enroll restages a fresh token on retry", async () => {
     const f = await fixture();
     startMemberVm(f.db, { ...f.member, now: f.clock.now() });
@@ -406,6 +424,7 @@ describe("member VM", () => {
     expect(f.exeDev.calls.filter((call) => call.operation === "createVm")).toHaveLength(1);
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
     expect(f.bootstrap.calls.slice(before).map((call) => call.step)).toEqual([
+      "joinTailnet",
       "stageToken",
       "enroll",
       "resetIdentity",

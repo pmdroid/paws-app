@@ -10,6 +10,7 @@ import {
   isBootstrapError,
   latestRunnerRelease,
   PINNED_MISE,
+  PINNED_TAILSCALE,
 } from "../src/provisioning";
 
 const INSTALLER = readFileSync(
@@ -116,4 +117,40 @@ test("the latest runner release is read from the GitHub release tag", async () =
       throw new Error("offline");
     }),
   ).toBeNull();
+});
+
+test("a Paws on a .ts.net host without a Tailscale auth key is refused before any exe.dev call", async () => {
+  for (const publicUrl of [
+    "https://agentbox.taile07e4.ts.net:8787",
+    "https://AGENTBOX.TAILE07E4.TS.NET",
+  ]) {
+    const { value, exeDev } = source({ publicUrl, tailscaleAuthKey: () => null });
+    await expect(createMemberVmProvisioning(value)()).rejects.toThrow(
+      /~\/\.paws\/secrets\/tailscale-authkey/,
+    );
+    const absent = source({ publicUrl });
+    await expect(createMemberVmProvisioning(absent.value)()).rejects.toThrow(/tailscale-authkey/);
+    expect(exeDev.calls).toHaveLength(0);
+    expect(absent.exeDev.calls).toHaveLength(0);
+  }
+});
+
+test("a public Paws without an auth key provisions as before and skips the tailnet step", async () => {
+  const { value, exeDev } = source({ tailscaleAuthKey: () => null });
+  const provisioning = await createMemberVmProvisioning(value)();
+  expect(await provisioning.bootstrap.joinTailnet(VM)).toBe("skipped");
+  expect(exeDev.calls).toHaveLength(0);
+});
+
+test("with an auth key the bootstrap joins the VM to the tailnet with the pinned Tailscale", async () => {
+  const { value, exeDev } = source({
+    publicUrl: "https://agentbox.taile07e4.ts.net:8787",
+    tailscaleAuthKey: () => "tskey-auth-kAbCdEf1CNTRL-0123456789",
+  });
+  const provisioning = await createMemberVmProvisioning(value)();
+  // The catch-all script answers every command with no output, so the join stops at the key.
+  await provisioning.bootstrap.joinTailnet(VM).catch(() => undefined);
+  const commands = exeDev.calls.map((call) => (call.operation === "execVm" ? call.command : ""));
+  expect(commands.some((command) => command.includes(PINNED_TAILSCALE.amd64.sha256))).toBe(true);
+  expect(commands.some((command) => command.includes("tskey-"))).toBe(false);
 });
