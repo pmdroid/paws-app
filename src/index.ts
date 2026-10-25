@@ -157,6 +157,7 @@ import {
   createRunnerPlacement,
   createRunnerPlacementBrowser,
   itemOwnerHasEligibleRunner,
+  itemOwnerRunnerSetupNeed,
 } from "./runner-placement";
 import { startServer } from "./server";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
@@ -929,6 +930,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 (await runnerReady)?.results.deliverFollowUp(itemId, body) ?? false,
               ownerHasRunner: (itemId: string, agent: string, now: number) =>
                 itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
+              runnerSetupNeed: (itemId: string, agent: string, now: number) =>
+                itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
             }
           : {}),
         linearAccess: linearTaskAccess ?? undefined,

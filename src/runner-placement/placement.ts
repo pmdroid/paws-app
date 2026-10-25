@@ -13,7 +13,7 @@ import {
   workspaceMember,
 } from "../db";
 import type { PlacementRequest, RunnerPlacement } from "./index";
-import { eligibleRunners } from "./eligible";
+import { eligibleRunners, runnerSetupNeed } from "./eligible";
 import { quotaSignal } from "./quota";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
@@ -338,29 +338,7 @@ export function createRunnerPlacement(options: {
         purpose: "work",
         now: now(),
       });
-      if (runners.some((runner) => runner.eligible)) return null;
-      const own = runners.filter((runner) => runner.ownerId === owner.ownerUserId);
-      const signIn = own.find(
-        (runner) => runner.reason === "agent-not-signed-in" || runner.reason === "auth-expired",
-      );
-      if (signIn)
-        return {
-          reason: "agent-not-signed-in",
-          runnerId: signIn.id,
-          runnerName:
-            db
-              .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
-              .get(signIn.id)?.name ?? signIn.id,
-          agent: input.profile.agent,
-        };
-      // A runner the delegator may use that is offline or paused comes back on its own, so the
-      // start waits for it as before instead of asking for a new runner.
-      const usable = (runner: (typeof runners)[number]) =>
-        runner.ownerId === owner.ownerUserId ||
-        (runner.sharing === 1 && owner.leadUserIds.includes(runner.ownerId));
-      if (runners.some((runner) => usable(runner) && ["offline", "paused"].includes(runner.reason)))
-        return null;
-      return { reason: "no-runner" };
+      return runnerSetupNeed(db, runners, owner, input.profile.agent);
     },
     started(input) {
       immediate(db, () => {
