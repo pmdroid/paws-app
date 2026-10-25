@@ -11,6 +11,8 @@ import {
   getWorkItemRepository,
   getWorkItemRepositoryChoice,
   listJobs,
+  listOutbox,
+  listWorkspaceRepositories,
   saveConversation,
   type WorkItemRecord,
 } from "../src/db";
@@ -18,9 +20,11 @@ import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import {
   attachOrchestrator,
   FakeGitHubIntegration,
+  GitHubInstallationCheck,
   type GitHubIntegration,
   hintedRepository,
   repositoryAnswer,
+  teamRepositoryDenial,
 } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { tempDb, tempHome } from "./helpers";
@@ -702,6 +706,124 @@ test("a confident suggestion passes an integration that checks the item's reposi
     expect(item.state).not.toBe("cancelled");
     expect(getWorkItemRepository(f.db, item.id)).toEqual(repositories[1]!);
   } finally {
+    f.db.close();
+  }
+});
+
+/** The host's repository rule over the fake workspace: the session's team and the chosen repository. */
+function teamRepositoryIntegration(db: ReturnType<typeof tempDb>) {
+  const decisions: unknown[] = [];
+  const integration = new FakeGitHubIntegration({
+    authorize: async (item: WorkItemRecord) => {
+      const scope = db
+        .query<{ workspaceId: string; teamId: string }, [string]>(
+          `SELECT w.id AS workspaceId,s.team_id AS teamId FROM linear_session s
+           JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE s.session_id=?`,
+        )
+        .get(item.sessionKey ?? "");
+      const repository =
+        getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id);
+      const decision =
+        scope && repository ? (teamRepositoryDenial(db, item, scope, repository) ?? true) : false;
+      decisions.push(decision);
+      return decision;
+    },
+  });
+  return Object.assign(integration, { decisions });
+}
+
+for (const source of ["a repo label", "a confident Linear suggestion"] as const) {
+  test(`an unmapped team's delegation binds a catalog repository from ${source} and starts`, async () => {
+    let integration: ReturnType<typeof teamRepositoryIntegration> | undefined;
+    const f = fixture({
+      confidence: 0.95,
+      get auth() {
+        return integration;
+      },
+    });
+    integration = teamRepositoryIntegration(f.db);
+    try {
+      await refreshRepositoryCatalog(f.db, async () => [
+        {
+          owner: "acme",
+          repo: "four",
+          remoteUrl: "/synthetic-paws-remotes/four.git",
+          defaultBranch: "main",
+        },
+      ]);
+      if (source === "a repo label") {
+        f.tracker.repositoryHints.set("issue", hints({ issueLabels: ["acme/four"] }));
+        f.tracker.repositorySuggestions.set("issue", []);
+      } else
+        f.tracker.repositorySuggestions.set("issue", [
+          { hostname: "github.com", repositoryFullName: "acme/four", confidence: 0.95 },
+        ]);
+      await f.attach().onLinearEvent(event());
+      await f.jobs.tick();
+      const item = f.db.query("SELECT id, state FROM work_item").get() as {
+        id: string;
+        state: string;
+      };
+      expect(listWorkspaceRepositories(f.db, "workspace")).toEqual([]);
+      expect(item.state).not.toBe("cancelled");
+      expect(getWorkItemRepository(f.db, item.id)).toEqual({
+        owner: "acme",
+        repo: "four",
+        remoteUrl: "/synthetic-paws-remotes/four.git",
+      });
+      expect(integration.decisions.length).toBeGreaterThan(0);
+      expect(integration.decisions.every((decision) => decision === true)).toBe(true);
+      expect(
+        f.db.query("SELECT 1 FROM question WHERE body LIKE 'Which repository%'").get(),
+      ).toBeNull();
+      expect(f.tracker.progress.map((update) => update.body)).toContain("Working in acme/four.");
+      if (source === "a repo label") expect(f.tracker.repositorySuggestionRequests).toEqual([]);
+    } finally {
+      f.db.close();
+    }
+  });
+}
+
+test("a bound repository outside the team's new links is explained once, not cancelled from Linear", async () => {
+  let integration: ReturnType<typeof teamRepositoryIntegration> | undefined;
+  const f = fixture({
+    get auth() {
+      return integration;
+    },
+  });
+  integration = teamRepositoryIntegration(f.db);
+  const check = new GitHubInstallationCheck(f.db, integration, () => f.clock.now());
+  try {
+    await refreshRepositoryCatalog(f.db, async () => [
+      {
+        owner: "acme",
+        repo: "four",
+        remoteUrl: "/synthetic-paws-remotes/four.git",
+        defaultBranch: "main",
+      },
+    ]);
+    f.tracker.repositoryHints.set("issue", hints({ issueLabels: ["acme/four"] }));
+    await f.attach().onLinearEvent(event());
+    await f.jobs.tick();
+    const id = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, id)?.repo).toBe("four");
+    f.db.run(
+      "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('workspace','acme/one','team')",
+    );
+    const signal = new AbortController().signal;
+    expect(await check.ensure(getWorkItem(f.db, id)!, "publication", signal, { fresh: true })).toBe(
+      false,
+    );
+    expect(await check.ensure(getWorkItem(f.db, id)!, "publication", signal, { fresh: true })).toBe(
+      false,
+    );
+    expect(getWorkItem(f.db, id)?.state).toBe("cancelled");
+    const responses = listOutbox(f.db)
+      .filter((entry) => entry.delivery === "stop")
+      .map((entry) => (entry.payload as { body: string }).body);
+    expect(responses).toEqual(["acme/four isn't mapped to ENG in Paws."]);
+  } finally {
+    check.close();
     f.db.close();
   }
 });
