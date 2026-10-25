@@ -80,6 +80,25 @@ describe("issue page", () => {
     expect(html).not.toMatch(/style="[^"]*width:\s*\d{3,}px/);
   });
 
+  test("the item timeline lists every state change from the fake, the restart with its reason", () => {
+    const snapshot = parseStatusSnapshot(JSON.parse(JSON.stringify(demoStatus())));
+    if (!snapshot.ok) throw new Error(snapshot.error);
+    const html = page(snapshot.snapshot);
+    const section = html.slice(html.indexOf('id="item-timeline-heading"'));
+    expect(section).toContain(">Item timeline</h2>");
+    const entries = section.slice(0, section.indexOf("</ol>")).match(/<li /g);
+    expect(entries).toHaveLength(6);
+    expect(section).toContain("<strong>queued</strong> Back to the agent for Closeout findings.");
+    expect(section).toContain('<li data-kind="restart">');
+    expect(section).toContain("<strong>merge queue</strong>");
+    expect(section).toContain("from verifying · closeout_accepted");
+    expect(html.indexOf('id="merge-heading"')).toBeLessThan(html.indexOf("item-timeline-heading"));
+  });
+
+  test("an item without recorded state changes has no item timeline", () => {
+    expect(page(demoStatus(), "ENG-102")).not.toContain("item-timeline");
+  });
+
   test("an internal path id reads as the issue identifier", () => {
     expect(plainTask("Task: PAS-367-01M5NDWPQZ0JQ91E1MFMVEY6EP")).toBe("Task: PAS-367");
     expect(plainTask("PAS-367 and PAS-3670")).toBe("PAS-367 and PAS-3670");
