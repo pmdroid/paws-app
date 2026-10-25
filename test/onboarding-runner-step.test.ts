@@ -539,3 +539,22 @@ test("the page's inline script and style are the only ones its policy allows", a
   // Without the script, the page still refreshes itself.
   expect(html).toContain('<noscript><meta http-equiv="refresh" content="15"></noscript>');
 });
+
+test("a poll updates the runner step but keeps a GitHub consent the member is filling in", async () => {
+  const githubLink = { action: "/onboard/link/github", csrf: CSRF };
+  let readiness: OnboardingReadiness = base.readiness;
+  const page = load(await onboardingPage({ ...base, githubLink }).text(), async () =>
+    onboardingPage({ ...base, githubLink, readiness }),
+  );
+  const consent = () =>
+    page.document.querySelector('input[name="consent"]') as unknown as { checked: boolean };
+  consent().checked = true;
+  readiness = {
+    runner: { state: "ready", id: "R1", name: "mia-box" },
+    agents: WAITING,
+    memberVm: false,
+  };
+  await page.poll();
+  expect(page.detail()).toBe("mia-box will run this task.");
+  expect(consent().checked).toBe(true);
+});

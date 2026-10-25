@@ -353,6 +353,7 @@ test("the optional GitHub step offers a consent form that posts to this page, an
   ]) {
     const page = onboardingPage(input);
     expect(page.headers.get("content-security-policy")).toContain("form-action 'none'");
-    expect(await page.text()).not.toContain("<form");
+    // No credit form; the Add a host form never submits, so form-action stays 'none'.
+    expect(await page.text()).not.toContain('<form method="post"');
   }
 });
