@@ -250,6 +250,47 @@ describe("agent version catalog", () => {
     expect(status("demo", "3.0.0")).toBe("eligible");
   });
 
+  test("a failed native read never moves an eligible adapter to a newer native version", async () => {
+    const agents = { wrap: { package: "wrap-acp", native: "core-cli" } };
+    const { db, npm, catalog, errors, row } = setup(agents);
+    const old = NOW - 72 * HOUR;
+    npm.publish("wrap-acp", "1.0.0", {
+      publishedAt: old,
+      integrity: sha(1),
+      dependencies: { "core-cli": "^0.5.0" },
+    });
+    npm.publish("core-cli", "0.5.0", { publishedAt: old, integrity: sha(2) });
+    npm.publish("core-cli", "0.5.1", { publishedAt: NOW - 47 * HOUR, integrity: sha(3) });
+    await catalog.refresh();
+    expect(row("wrap", "1.0.0")).toMatchObject({ status: "eligible", nativeVersion: "0.5.0" });
+
+    // npm pulls 0.5.1, but a day later the core-cli read fails and only the cached document is left.
+    npm.unpublish("core-cli", "0.5.1");
+    const flaky = createAgentCatalog({
+      db,
+      agents,
+      now: () => NOW + 24 * HOUR,
+      registry: {
+        fetchPackage: (name, etag, signal) =>
+          name === "core-cli"
+            ? Promise.reject(new Error("offline"))
+            : npm.registry.fetchPackage(name, etag, signal),
+      },
+      onError: (error) => errors.push(error),
+    });
+    await flaky.refresh();
+    expect(row("wrap", "1.0.0")).toMatchObject({ status: "eligible", nativeVersion: "0.5.0" });
+
+    // A fresh read sees that 0.5.1 is gone, so 0.5.0 stays the native version.
+    await createAgentCatalog({
+      db,
+      agents,
+      now: () => NOW + 25 * HOUR,
+      registry: npm.registry,
+    }).refresh();
+    expect(row("wrap", "1.0.0")).toMatchObject({ status: "eligible", nativeVersion: "0.5.0" });
+  });
+
   test("a prerelease platform pin is not a platform build", async () => {
     const agents = { core: { package: "core-cli", native: "core-cli" } };
     const { npm, catalog, status, row } = setup(agents);

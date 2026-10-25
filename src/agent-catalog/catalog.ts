@@ -67,14 +67,17 @@ export function createAgentCatalog(options: {
   const now = options.now ?? Date.now;
   const onError = options.onError ?? ((error) => console.error(`agent catalog: ${message(error)}`));
   let running: Promise<void> | null = null;
-  /** Packages whose read failed in the current refresh; their stored document may be out of date. */
-  let staleReads = new Set<string>();
+  /**
+   * Packages whose read failed in the current refresh, with when npm last confirmed their stored
+   * document. Their versions are aged as of that time, so none crosses 48 hours on cached data.
+   */
+  let staleReads = new Map<string, number>();
   /** Set when the version being evaluated consulted a stale package. */
   let usedStale = false;
 
   async function run(signal?: AbortSignal): Promise<void> {
     const at = now();
-    staleReads = new Set();
+    staleReads = new Map();
     const loaded = new Map<string, Promise<Versions | null>>();
     const load = (name: string): Promise<Versions | null> => {
       let pending = loaded.get(name);
@@ -109,11 +112,11 @@ export function createAgentCatalog(options: {
         saveNpmPackage(db, name, null, {}, at);
         return {};
       }
-      staleReads.add(name);
+      staleReads.set(name, stored?.fetchedAt ?? 0);
       return stored?.versions ?? null;
     } catch (error) {
       onError(new Error(`reading ${name} from npm failed: ${message(error)}`));
-      staleReads.add(name);
+      staleReads.set(name, stored?.fetchedAt ?? 0);
       return stored?.versions ?? null;
     }
   }
@@ -149,10 +152,14 @@ export function createAgentCatalog(options: {
       };
     if (metadata.publishedAt === null)
       return { status: "ineligible", reason: `npm lists no publish time for ${label}.` };
-    if (at - metadata.publishedAt < AGENT_VERSION_MIN_AGE_MS)
+    const confirmedAt = staleReads.get(name);
+    if ((confirmedAt ?? at) - metadata.publishedAt < AGENT_VERSION_MIN_AGE_MS)
       return {
         status: "waiting",
-        reason: `${label} was published less than 48 hours ago; it is offered from ${new Date(metadata.publishedAt + AGENT_VERSION_MIN_AGE_MS).toISOString()}.`,
+        reason:
+          confirmedAt === undefined || at - metadata.publishedAt < AGENT_VERSION_MIN_AGE_MS
+            ? `${label} was published less than 48 hours ago; it is offered from ${new Date(metadata.publishedAt + AGENT_VERSION_MIN_AGE_MS).toISOString()}.`
+            : `${label} was published less than 48 hours before Paws last read it from npm; it waits for the next successful read.`,
       };
     return ELIGIBLE;
   }
