@@ -15,31 +15,17 @@ export type FakeBootstrapCall =
   | { step: "startRunner"; vm: string };
 
 export type FakeBootstrapOptions = {
-  /**
-   * What the VM does with its staged token on `enroll`, like posting it to the runner control.
-   * Defaults to a runner id derived from the VM name.
-   */
   enroll?: (vm: string, token: string) => Promise<EnrolledRunner> | EnrolledRunner;
-  /** How many `installStatus` polls answer `running` before `succeeded`. Defaults to 1. */
   installPolls?: number;
 };
 
 export type FakeBootstrap = ExeDevBootstrap & {
   readonly calls: FakeBootstrapCall[];
-  /** The token currently staged on each VM. `enroll` removes it, as the real bootstrap does. */
   readonly staged: Map<string, string>;
-  /** Every token the fake was handed, in order. */
   readonly tokens: string[];
-  /** VMs whose install finished. */
   readonly installed: Set<string>;
-  /** Fail the next `times` calls of `step` with `message`. */
   fail(step: FakeBootstrapCall["step"], message: string, times?: number): void;
-  /** Answer `installStatus` with `status` for the next `times` polls. */
   scriptInstallStatus(status: InstallStatus, times?: number): void;
-  /**
-   * Drop the VM's runner identity. Until then `enroll` returns the identity it already holds
-   * without using the staged token, as a runner with a valid certificate does.
-   */
   forgetIdentity(vm: string): void;
 };
 

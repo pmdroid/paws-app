@@ -14,15 +14,11 @@ export type MemberVm = {
   userId: string;
   vmName: string;
   step: MemberVmStep;
-  /** Why the current step stopped, or null while it runs or once ready. */
   failure: string | null;
   runnerId: string | null;
   stepStartedAt: number;
-  /** Set once Paws has asked exe.dev to create the VM, so a later `conflict` is its own VM. */
   createRequestedAt: number | null;
-  /** Set once `startInstall` has answered, so later claims poll `installStatus`. */
   installStartedAt: number | null;
-  /** When the enrollment token staged on the VM expires, or null when none is staged. */
   tokenExpiresAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -47,11 +43,6 @@ export function findMemberVm(db: Database, member: MemberRef): MemberVm | null {
     .get(member.workspaceId, member.userId);
 }
 
-/**
- * The member's VM row, inserted at `create` with its job on the first call. A later call returns
- * the existing row; when its runner was removed after enrollment it goes back to `enroll` on the
- * same VM. A row whose job was lost while it was neither failed nor ready gets its job back.
- */
 export function startMemberVm(db: Database, input: MemberRef & { now?: number }): MemberVm {
   const now = input.now ?? Date.now();
   return immediate(db, () => {
@@ -85,10 +76,6 @@ export function startMemberVm(db: Database, input: MemberRef & { now?: number })
   });
 }
 
-/**
- * Rerun a failed step and the ones after it on the same row and VM. A row that has not failed is
- * returned unchanged.
- */
 export function retryMemberVm(db: Database, input: MemberRef & { now?: number }): MemberVm {
   const now = input.now ?? Date.now();
   return immediate(db, () => {
@@ -108,7 +95,6 @@ export function retryMemberVm(db: Database, input: MemberRef & { now?: number })
   });
 }
 
-/** The member's row, with `runner_id` cleared when that runner was revoked by any path. */
 function current(db: Database, member: MemberRef, now: number): MemberVm | null {
   db.run(
     `UPDATE member_vm SET runner_id=NULL,updated_at=? WHERE workspace_id=? AND user_id=?
@@ -118,7 +104,6 @@ function current(db: Database, member: MemberRef, now: number): MemberVm | null 
   return findMemberVm(db, member);
 }
 
-/** One open job per row: the job carries the row through every step. */
 function ensureJob(db: Database, id: string, now: number): void {
   const open = db
     .query<{ id: number }, [string, string]>(
@@ -140,7 +125,6 @@ function requireOwner(db: Database, member: MemberRef): void {
     throw new Error("Active workspace membership is required to own a runner.");
 }
 
-/** `<member>-paws`, from the member's name or email, made unique among recorded VMs. */
 function freeVmName(db: Database, member: MemberRef): string {
   const user = db
     .query<{ name: string; email: string }, [string]>(
