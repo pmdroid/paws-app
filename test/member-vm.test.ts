@@ -17,6 +17,7 @@ import {
 import {
   findMemberVm,
   MEMBER_VM_POLL_MS,
+  memberVmView,
   MEMBER_VM_QUEUE,
   registerMemberVmJob,
   retryMemberVm,
@@ -24,6 +25,7 @@ import {
   type MemberVm,
 } from "../src/member-vm";
 import {
+  BootstrapError,
   createFakeBootstrap,
   createFakeExeDev,
   type ExeDev,
@@ -31,6 +33,7 @@ import {
   type FakeExeDev,
   ProvisioningError,
 } from "../src/provisioning";
+import { RUNNER_FAILURE } from "../src/runner-cli";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import {
@@ -313,6 +316,25 @@ describe("member VM", () => {
     const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
     expect(getRunner(f.db, row.runnerId!)!.ownerUserId).toBe(f.member.userId);
+  });
+
+  test("the runner's enroll cause reaches the Runners page", async () => {
+    const f = await fixture();
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const loop = f.jobs();
+    const cause = "Cause: DNS lookup failed for paws.example.com (ENOTFOUND).";
+    f.bootstrap.enroll = async (vm) => {
+      throw new BootstrapError(
+        "enroll",
+        `${vm}: enrollment failed (exit 1): ${RUNNER_FAILURE} ${cause}`,
+      );
+    };
+    const failed = await drive(f, loop, settled);
+    expect(failed.step).toBe("enroll");
+    expect(failed.failure).toContain(cause);
+    const view = memberVmView(failed, f.clock.now());
+    expect(view.failure).toContain(cause);
+    expect(view.steps.find((step) => step.step === "enroll")?.state).toBe("failed");
   });
 
   test("a failed step keeps the row and VM, hides secrets, and retry reruns it", async () => {

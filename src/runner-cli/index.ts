@@ -3,10 +3,19 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { createRunnerHostSampler, openRunnerDaemon } from "../runner-daemon";
+import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from "../runner-daemon";
 import { ExecutionIdSchema, RUNNER_SKILLS_ENV } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
+import { describeRunnerFailure, RunnerCliFailure, runnerFailureLine } from "./cause";
 import { runPairedDaemon } from "./daemon";
+
+export {
+  CAUSE_LIMIT,
+  describeRunnerFailure,
+  RUNNER_FAILURE,
+  RunnerCliFailure,
+  runnerFailureLine,
+} from "./cause";
 
 const configuration = z.strictObject({
   controlPlaneUrl: z.string().max(2048),
@@ -28,17 +37,20 @@ function account(kind: "user" | "group", name: string): number {
           encoding: "utf8",
         }).split(":")[2];
   if (!value || !/^[1-9][0-9]*$/.test(value.trim()))
-    throw new Error("Runner service identity is invalid");
+    throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
   const id = Number(value.trim());
-  if (!Number.isSafeInteger(id)) throw new Error("Runner service identity is invalid");
+  if (!Number.isSafeInteger(id))
+    throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
   return id;
 }
 
 function accounts() {
-  if (process.platform !== "linux") throw new Error("Runner commands require Linux");
+  if (process.platform !== "linux")
+    throw new RunnerCliFailure("identity", "Runner commands require Linux.");
   const runnerUid = account("user", "paws-runner");
   const agentUid = account("user", "paws-agent");
-  if (runnerUid === 0 || agentUid === 0) throw new Error("Runner identities must be non-root");
+  if (runnerUid === 0 || agentUid === 0)
+    throw new RunnerCliFailure("identity", "Runner identities must be non-root.");
   return {
     runnerUid,
     agentUid: runnerUid,
@@ -48,9 +60,42 @@ function accounts() {
   };
 }
 
-function loadConfig(path: string, runnerUid: number) {
-  if (!isAbsolute(path)) throw new Error("Runner configuration must use an absolute path");
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+/** Why an open of a protected file failed, by error code only. */
+function openFailure(what: string, error: unknown): string {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ENOENT") return `${what} is missing.`;
+  if (code === "ELOOP") return `${what} must not be a symbolic link.`;
+  if (code === "EACCES" || code === "EPERM") return `${what} is not readable by this account.`;
+  const safe = typeof code === "string" && /^E[A-Z]{1,15}$/.test(code) ? code : "unknown error";
+  return `${what} could not be opened (${safe}).`;
+}
+
+/** The configuration keys a validation error names: known keys only, never a value. */
+function configFields(error: z.ZodError): string {
+  const known = new Set(Object.keys(configuration.shape));
+  const fields = [
+    ...new Set(
+      error.issues.flatMap((issue) =>
+        issue.code === "unrecognized_keys"
+          ? ["an unknown key"]
+          : typeof issue.path[0] === "string" && known.has(issue.path[0])
+            ? [issue.path[0]]
+            : [],
+      ),
+    ),
+  ];
+  return fields.length > 0 ? `: ${fields.join(", ")}` : "";
+}
+
+export function loadConfig(path: string, runnerUid: number) {
+  if (!isAbsolute(path))
+    throw new RunnerCliFailure("config", "Runner configuration must use an absolute path.");
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    throw new RunnerCliFailure("config", openFailure("Runner configuration", error));
+  }
   try {
     const info = fstatSync(fd);
     if (
@@ -60,7 +105,10 @@ function loadConfig(path: string, runnerUid: number) {
       ![0, runnerUid].includes(info.uid) ||
       ![0o600, 0o640].includes(info.mode & 0o7777)
     )
-      throw new Error("Runner configuration must be a protected regular file");
+      throw new RunnerCliFailure(
+        "config",
+        "Runner configuration must be a protected regular file owned by root or the runner, mode 0600 or 0640.",
+      );
     const bytes = Buffer.alloc(65537);
     let size = 0;
     while (size < bytes.length) {
@@ -68,8 +116,21 @@ function loadConfig(path: string, runnerUid: number) {
       if (count === 0) break;
       size += count;
     }
-    if (size > 65536) throw new Error("Runner configuration exceeds its size limit");
-    return configuration.parse(JSON.parse(bytes.subarray(0, size).toString("utf8")));
+    if (size > 65536)
+      throw new RunnerCliFailure("config", "Runner configuration exceeds its size limit.");
+    let value: unknown;
+    try {
+      value = JSON.parse(bytes.subarray(0, size).toString("utf8"));
+    } catch {
+      throw new RunnerCliFailure("config", "Runner configuration is not valid JSON.");
+    }
+    const parsed = configuration.safeParse(value);
+    if (!parsed.success)
+      throw new RunnerCliFailure(
+        "config",
+        `Runner configuration has invalid fields${configFields(parsed.error)}.`,
+      );
+    return parsed.data;
   } finally {
     closeSync(fd);
   }
@@ -79,14 +140,15 @@ function loadConfig(path: string, runnerUid: number) {
  * The enrollment token from a root-owned mode 0600 file, or null when the file is gone (a retried
  * bootstrap on a host that already enrolled). The token never travels through argv.
  */
-function readTokenFile(path: string): string | null {
-  if (!isAbsolute(path)) throw new Error("Enrollment token must use an absolute path");
+export function readTokenFile(path: string): string | null {
+  if (!isAbsolute(path))
+    throw new RunnerCliFailure("token", "Enrollment token must use an absolute path.");
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
+    throw new RunnerCliFailure("token", openFailure("Enrollment token file", error));
   }
   try {
     const info = fstatSync(fd);
@@ -97,7 +159,7 @@ function readTokenFile(path: string): string | null {
       info.uid !== 0 ||
       (info.mode & 0o7777) !== 0o600
     )
-      throw new Error("Enrollment token must be a root-owned mode 0600 file");
+      throw new RunnerCliFailure("token", "Enrollment token must be a root-owned mode 0600 file.");
     const bytes = Buffer.alloc(4097);
     let size = 0;
     while (size < bytes.length) {
@@ -105,8 +167,12 @@ function readTokenFile(path: string): string | null {
       if (count === 0) break;
       size += count;
     }
-    if (size > 4096) throw new Error("Enrollment token exceeds its size limit");
-    return bytes.subarray(0, size).toString("utf8").trim();
+    if (size > 4096)
+      throw new RunnerCliFailure("token", "Enrollment token exceeds its size limit.");
+    const token = bytes.subarray(0, size).toString("utf8").trim();
+    if (!EnrollmentTokenSchema.safeParse(token).success)
+      throw new RunnerCliFailure("token", "Enrollment token file does not hold a valid token.");
+    return token;
   } finally {
     closeSync(fd);
   }
@@ -118,7 +184,7 @@ function dropToRunner(ids: { runnerUid: number; runnerGid: number }) {
   process.setgid!(ids.runnerGid);
   process.setuid!(ids.runnerUid);
   if (process.getuid?.() !== ids.runnerUid || process.getgid?.() !== ids.runnerGid)
-    throw new Error("Runner identity could not be assumed");
+    throw new RunnerCliFailure("identity", "Runner identity could not be assumed.");
 }
 
 export async function runRunnerCli(
@@ -137,6 +203,8 @@ export async function runRunnerCli(
   process.once("SIGTERM", stop);
   options.signal?.addEventListener("abort", stop, { once: true });
   if (options.signal?.aborted) stop();
+  /** Values a printed cause must never contain. */
+  const secrets: string[] = [];
   try {
     const [operation, ...args] = argv;
     const ids = accounts();
@@ -146,9 +214,10 @@ export async function runRunnerCli(
         args[0] !== "--execution-id" ||
         !(args.length === 2 || (args.length === 3 && args[2] === "--resume"))
       )
-        throw new Error("Invalid worker command");
+        throw new RunnerCliFailure("usage", "Invalid worker command.");
       const executionId = ExecutionIdSchema.parse(args[1]);
-      if (process.getuid?.() !== ids.agentUid) throw new Error("Worker identity is invalid");
+      if (process.getuid?.() !== ids.agentUid)
+        throw new RunnerCliFailure("identity", "Worker identity is invalid.");
       await runRunnerWorker({
         executionId,
         spool: {
@@ -180,15 +249,22 @@ export async function runRunnerCli(
         args[4] !== "--token-file" ||
         !args[5]
       )
-        throw new Error("Invalid enrollment command");
-      if (process.getuid?.() !== 0) throw new Error("Enrollment must start as root");
+        throw new RunnerCliFailure("usage", "Invalid enrollment command.");
+      if (process.getuid?.() !== 0)
+        throw new RunnerCliFailure("identity", "Enrollment must start as root.");
       const token = readTokenFile(args[5]);
+      if (token !== null) secrets.push(token);
       dropToRunner(ids);
       const daemon = openRunnerDaemon({
         root: "/var/lib/paws-runner",
         ...loadConfig(args[1], ids.runnerUid),
       });
       try {
+        if (token === null && daemon.status().phase !== "paired")
+          throw new RunnerCliFailure(
+            "token",
+            "Enrollment token file is missing and the runner is not paired.",
+          );
         const status = await daemon.enroll(args[3], token ?? "");
         abort.signal.throwIfAborted();
         if (status.phase !== "paired") throw new Error("Enrollment did not pair the runner");
@@ -215,8 +291,9 @@ export async function runRunnerCli(
         args[2] !== "--name" ||
         !args[3])
     )
-      throw new Error("Invalid pairing command");
-    if (process.getuid?.() !== ids.runnerUid) throw new Error("Pairing identity is invalid");
+      throw new RunnerCliFailure("usage", "Invalid pairing command.");
+    if (process.getuid?.() !== ids.runnerUid)
+      throw new RunnerCliFailure("identity", "Pairing identity is invalid.");
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...loadConfig(args[1]!, ids.runnerUid),
@@ -225,7 +302,7 @@ export async function runRunnerCli(
     try {
       if (daemonCommand) {
         await runPairedDaemon(daemon, ids, abort.signal, (failure) =>
-          error(`Runner operation failed: ${failure.message.slice(0, 300)}`),
+          error(`Runner operation failed: ${describeRunnerFailure(failure)}`),
         );
         abort.signal.throwIfAborted();
         return 0;
@@ -253,9 +330,9 @@ export async function runRunnerCli(
     } finally {
       daemon.close();
     }
-  } catch {
+  } catch (caught) {
     if (abort.signal.aborted) return 130;
-    error("Runner command failed. Check the service identity, configuration and pairing.");
+    error(runnerFailureLine(caught, secrets));
     return 1;
   } finally {
     process.removeListener("SIGINT", stop);
