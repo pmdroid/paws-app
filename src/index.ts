@@ -654,7 +654,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmExeDev = createExeDev({ readToken: exeDevToken });
-  // How long a forced Delete VM waits for a stopped task's runner to confirm the cleanup.
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
@@ -923,10 +922,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
       });
-      // Delete VM needs only exe.dev, not the Create VM prerequisites.
       registerMemberVmDeleteJob(created.jobs, {
         exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
-        // A forced delete stops each running task the way Stop on the run page does.
         stopTask: async (itemId) => {
           if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
           submitCommand(db, orchestrator.bus, {
@@ -935,14 +932,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             itemId,
             requestedAt: Date.now(),
           });
-          // Stop is committed above. A runner that is offline never confirms the cleanup, and
-          // the revoke and destroy steps end its work anyway, so the delete waits only so long.
           await Promise.race([
             orchestrator.interruptItem(itemId).catch(() => {}),
             Bun.sleep(MEMBER_VM_STOP_WAIT_MS),
           ]);
         },
-        // Revoked certificates lose their connection at once, as when a runner is removed.
         disconnect: () =>
           void runnerReady
             .then((coordinator) => coordinator?.control.expireConnections())

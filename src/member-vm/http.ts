@@ -32,7 +32,6 @@ export type MemberVmDeleteStepView = {
   elapsedMs: number | null;
 };
 
-/** Delete VM progress: the step, a failure or the tasks that block it, and Retry's force flag. */
 export type MemberVmDeleteView = {
   step: MemberVmDeleteStep;
   failure: string | null;
@@ -44,22 +43,16 @@ export type MemberVmDeleteView = {
 export type MemberVmView = {
   id: string;
   vmName: string;
-  /** The member who created the VM and owns its runner. */
   userId: string;
-  /** That member's display name, so an owner or admin can tell whose VM it is. */
   ownerName: string | null;
   step: MemberVm["step"];
   failure: string | null;
   runnerId: string | null;
   steps: MemberVmStepView[];
-  /** Null until Delete VM is confirmed. */
   deleting: MemberVmDeleteView | null;
 };
 
-/**
- * What `GET /api/runners/vm` and the POST routes answer. `vm` is the caller's own VM; `vms` is
- * every VM the caller may delete, so an owner or admin sees Delete VM on other members' runners.
- */
+/** What `GET /api/runners/vm` and the two POST routes answer. */
 export type MemberVmResponse =
   | { available: false }
   | { available: true; vm: MemberVmView | null; vms: MemberVmView[] };
@@ -168,11 +161,9 @@ const ROUTES = new Set(["/api/runners/vm", "/api/runners/vm/retry", "/api/runner
 const MAX_BODY = 4096;
 
 /**
- * `GET /api/runners/vm`, `POST /api/runners/vm`, `POST /api/runners/vm/retry` and
- * `POST /api/runners/vm/delete` (`{ id, force? }`, which also retries a failed or blocked
- * delete). The server checks the workspace session and CSRF before this runs; this refuses
- * observers and inactive members, and Delete VM to anyone but the VM's owner or a workspace owner
- * or admin. Without an exe.dev token every route answers `{ available: false }`.
+ * `GET /api/runners/vm`, `POST /api/runners/vm` and `POST /api/runners/vm/retry`. The server
+ * checks the workspace session and CSRF before this runs; this refuses observers and inactive
+ * members. Without an exe.dev token every route answers `{ available: false }`.
  */
 export function createMemberVmHttp(options: {
   db: Database;

@@ -118,11 +118,9 @@ async function fixture() {
   });
   let hosts = 0;
   const exeDev = createFakeExeDev();
-  /** Set a gate to hold provisioning's create, or its enrollment after the runner exists. */
   const hold: {
     create: Promise<void> | null;
     enroll: Promise<void> | null;
-    /** The enrollment answers, then the step dies before runner_id is written. */
     enrollDies: boolean;
     stalled: string | null;
     enrollStalls: boolean;
@@ -166,7 +164,6 @@ async function fixture() {
   });
   registerMemberVmDeleteJob(loop, {
     exeDev,
-    // Stop marks the item cancelled; the runner's lease ends on its own later.
     async stopTask(itemId) {
       stopped.push(itemId);
       db.run("UPDATE work_item SET cancel_requested=1,state='cancelled' WHERE id=?", [itemId]);
@@ -192,7 +189,6 @@ async function fixture() {
   const remove = (who: WorkspacePrincipal, id: string, force?: boolean) =>
     call(who, "/api/runners/vm/delete", force === undefined ? { id } : { id, force });
 
-  /** Provision Ada's VM through to ready with a heartbeating runner. */
   const ready = async (): Promise<MemberVm> => {
     startMemberVm(db, { ...member, now: clock.now() });
     for (let index = 0; index < 500; index++) {
@@ -205,7 +201,6 @@ async function fixture() {
     }
     throw new Error("member VM did not turn ready");
   };
-  /** Tick until the delete job has nothing left to do. */
   const settle = async () => {
     for (let index = 0; index < 50; index++) if ((await loop.tick()) === null) return;
     throw new Error("delete job did not settle");
@@ -316,7 +311,6 @@ describe("Delete VM", () => {
       "destroy:running",
       "clear:pending",
     ]);
-    // The view keeps the runner it removes even after the revoke clears member_vm.runner_id.
     expect(midway.runnerId).toBe(runnerId);
 
     await f.loop.tick();
@@ -348,12 +342,10 @@ describe("Delete VM", () => {
       { itemId, identifier: "PAS-901", title: "Fix the login page" },
     ]);
     expect(deleteStates(blocked)[0]).toBe("drain:failed");
-    // Placement already skips it, but nothing else happened.
     expect(getRunner(f.db, vm.runnerId!)!.status).toBe("draining");
     expect(f.stopped).toEqual([]);
     expect(f.exeDev.vms.has(vm.vmName)).toBe(true);
 
-    // Retry without force is blocked again by the same task.
     await f.remove(f.member, vm.id);
     await f.settle();
     expect(getMemberVm(f.db, vm.id)!.deleteFailure).toContain("PAS-901");
@@ -379,7 +371,6 @@ describe("Delete VM", () => {
     expect(getMemberVm(f.db, vm.id)).toBeNull();
     expect(f.exeDev.calls.at(-1)).toEqual({ operation: "deleteVm", vm: vm.vmName });
 
-    // exe.dev answering "not found" is the same.
     const g = await fixture();
     const other = await g.ready();
     g.exeDev.fail("deleteVm", "missing", { vm: other.vmName });
@@ -434,7 +425,6 @@ describe("Delete VM", () => {
     expect((await f.remove(f.member, "01NOSUCHVM0000000000000000")).status).toBe(404);
     expect((await f.call(f.member, "/api/runners/vm/delete", { id: 7 })).status).toBe(400);
 
-    // Owners and admins see every VM they may delete; members only their own.
     const listed = (body: Record<string, unknown>) =>
       (body as Extract<MemberVmResponse, { available: true }>).vms.map((entry) => entry.id);
     expect(listed((await f.call(f.admin, "/api/runners/vm")).body)).toEqual([vm.id]);
@@ -457,7 +447,6 @@ describe("Delete VM", () => {
     const f = await fixture();
     const vm = await f.ready();
     await f.remove(f.member, vm.id);
-    // A second confirm while it runs queues no second job.
     await f.remove(f.member, vm.id);
     expect(openJobs(f.db, MEMBER_VM_DELETE_QUEUE)).toHaveLength(1);
 
@@ -466,7 +455,6 @@ describe("Delete VM", () => {
       await f.loop.tick();
       const next = index === steps.length - 1 ? "clear" : steps[index + 1]!;
       expect(getMemberVm(f.db, vm.id)!.deleteStep).toBe(next);
-      // As if Paws restarted after the step's effect but before it recorded the next step.
       f.db.run("UPDATE member_vm SET delete_step=? WHERE id=?", [step, vm.id]);
       enqueueJob(f.db, {
         queue: MEMBER_VM_DELETE_QUEUE,
@@ -484,7 +472,6 @@ describe("Delete VM", () => {
 
     await f.settle();
     expect(getMemberVm(f.db, vm.id)).toBeNull();
-    // A leftover job for the cleared row is a no-op.
     enqueueJob(f.db, {
       queue: MEMBER_VM_DELETE_QUEUE,
       payload: { memberVmId: vm.id },
@@ -514,7 +501,6 @@ describe("Delete VM", () => {
 
   test("deleting before exe.dev was asked to create stops provisioning and touches nothing", async () => {
     const f = await fixture();
-    // Someone else already owns the name on exe.dev; Paws must not remove it.
     f.exeDev.addVm("ada-lovelace-paws");
     const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(1);
@@ -560,13 +546,11 @@ test("an owner or admin sees and deletes another member's VM that never got a ru
 });
 
 describe("Delete VM while a provisioning step is still running", () => {
-  /** A gate the test opens later, and the promise of a tick that runs into it. */
   const gate = () => {
     let open!: () => void;
     const promise = new Promise<void>((resolve) => (open = resolve));
     return { promise, open };
   };
-  /** Tick the delete job, moving the clock past its poll, until it settles or `limit` runs out. */
   const pump = async (f: Fixture, limit = 20) => {
     for (let index = 0; index < limit; index++)
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_DELETE_POLL_MS);
@@ -574,7 +558,6 @@ describe("Delete VM while a provisioning step is still running", () => {
 
   test("waits for an outstanding create and leaves a VM exe.dev refused as taken", async () => {
     const f = await fixture();
-    // Someone else already has the name on exe.dev, so the create will answer conflict.
     f.exeDev.addVm("ada-lovelace-paws");
     const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const held = gate();
@@ -585,7 +568,6 @@ describe("Delete VM while a provisioning step is still running", () => {
 
     expect((await f.remove(f.member, row.id)).status).toBe(200);
     await pump(f, 3);
-    // The delete holds at drain while the create call is outstanding.
     expect(getMemberVm(f.db, row.id)!.deleteStep).toBe("drain");
     expect(f.exeDev.calls.filter((call) => call.operation !== "createVm")).toEqual([]);
 
@@ -670,7 +652,6 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(getRunner(f.db, orphan.id)!.status).toBe("active");
     const itemId = f.task(orphan.id, "PAS-902");
 
-    // A host the member paired by hand, even under the VM's own name, is not the VM's.
     const manual = f.control.createEnrollment(f.principal(f.member.userId, "member"), {
       name: "ada-lovelace-paws",
     });
@@ -729,7 +710,6 @@ describe("Delete VM while a provisioning step is still running", () => {
 
   test("a create cut off by a restart never removes a VM Paws cannot prove it made", async () => {
     const f = await fixture();
-    // exe.dev already has a VM by the name; Paws stopped with the create still out.
     f.exeDev.addVm("ada-lovelace-paws");
     const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     f.db.run("UPDATE member_vm SET create_requested_at=? WHERE id=?", [f.clock.now(), row.id]);
@@ -743,7 +723,6 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
     expect(f.exeDev.calls.map((call) => call.operation)).toEqual(["getVm"]);
 
-    // Once it is gone from exe.dev, Retry finishes without sending rm.
     f.exeDev.vms.delete("ada-lovelace-paws");
     await f.remove(f.member, row.id);
     await f.settle();

@@ -24,22 +24,15 @@ type Secrets = readonly (string | null | undefined | Promise<string | null>)[];
 
 export type MemberVmDeleteJobOptions = {
   exeDev: ExeDev | (() => ExeDev | Promise<ExeDev>);
-  /** Stops a task the way Stop on the run page does. Called only for a forced delete. */
   stopTask: (itemId: string) => Promise<void>;
-  /** Drops the live connection of a revoked runner certificate, as removing a runner does. */
   disconnect?: (fingerprint: string) => void;
   secrets?: () => Secrets | Promise<Secrets>;
   now?: () => number;
-  /** How often the delete checks again while a provisioning step is still running. */
   pollMs?: number;
 };
 
 export const MEMBER_VM_DELETE_POLL_MS = 2_000;
 
-/**
- * Leaves the tailnet when the VM joined it (PAS-656 installs `/usr/bin/tailscale` only to join),
- * so the node does not linger in the admin console. A VM that never joined does nothing.
- */
 export const MEMBER_VM_TAILNET_LOGOUT =
   "if [ -x /usr/bin/tailscale ]; then sudo tailscale logout; fi";
 const TAILNET_LOGOUT_TIMEOUT_MS = 60_000;
@@ -50,10 +43,6 @@ export function registerMemberVmDeleteJob(jobs: JobLoop, options: MemberVmDelete
   jobs.register(MEMBER_VM_DELETE_QUEUE, createMemberVmDeleteHandler(jobs.db, options));
 }
 
-/**
- * Runs one delete step per lease and parks the job for the next. Every step checks what is
- * already done first, so a re-run after a restart, a retry or a duplicate job is a no-op.
- */
 export function createMemberVmDeleteHandler(db: Database, options: MemberVmDeleteJobOptions) {
   const now = options.now ?? Date.now;
   const pollMs = options.pollMs ?? MEMBER_VM_DELETE_POLL_MS;
@@ -97,15 +86,10 @@ async function runDeleteStep(
   now: () => number,
 ): Promise<Outcome> {
   const vm = row.vmName;
-  // The VM is Paws's only once exe.dev answered the create and provisioning moved past it. A VM
-  // by this name before then may be someone else's, e.g. the one a create refused as `conflict`.
   const created = row.step !== "create";
   const actor = row.deleteRequestedBy ?? row.userId;
   switch (row.deleteStep) {
     case "drain": {
-      // A provisioning step that was already running when the delete was confirmed keeps its
-      // claim until its exe.dev or enrollment call answers. Its outcome decides whether the VM is
-      // Paws's and which runner it enrolled, so nothing is decided before it finishes.
       if (provisioningInFlight(db, row.id, now())) return "wait";
       revokeUnusedEnrollments(db, row);
       const runnerId = row.deleteRunnerId ?? row.runnerId;
@@ -114,8 +98,6 @@ async function runDeleteStep(
           runnerId,
           row.id,
         ]);
-      // Every runner the VM enrolled, including one whose runner_id was never recorded, is
-      // drained and checked for running tasks before anything is revoked.
       const runners = vmRunners(db, row);
       for (const runner of runners)
         if (runner.status !== "draining")
@@ -160,25 +142,19 @@ async function runDeleteStep(
     }
 
     case "tailnet": {
-      // The VM joins the tailnet only after its create, during enrollment.
       if (created) {
         try {
           const exeDev = await resolve(options.exeDev);
           await exeDev.execVm(vm, MEMBER_VM_TAILNET_LOGOUT, {
             timeoutMs: TAILNET_LOGOUT_TIMEOUT_MS,
           });
-        } catch {
-          // Leaving the tailnet is best effort: a VM that is gone or unreachable still gets deleted.
-        }
+        } catch {}
       }
       advance(db, row, "revoke", now());
       return "advance";
     }
 
     case "revoke": {
-      // The same path as removing a paired runner: revoke the runner and its certificates, then
-      // drop their connections. Also every runner that enrolled with a token minted for this VM,
-      // so an enrollment whose runner_id was never recorded (Paws stopped mid-step) is revoked too.
       revokeUnusedEnrollments(db, row);
       for (const runner of vmRunners(db, row)) {
         const fingerprints = updateRunnerStatus(db, {
@@ -198,9 +174,6 @@ async function runDeleteStep(
       const exeDev = await resolve(options.exeDev);
       if (created) await exeDev.deleteVm(vm);
       else if (row.createRequestedAt !== null) {
-        // The create was asked but never answered: Paws stopped while it was out, or it failed
-        // without a clear refusal. If exe.dev has no VM by this name there is nothing to remove.
-        // If it has one, Paws cannot tell whether it created it, so it leaves it in place.
         const exists = await exeDev.getVm(vm).then(
           () => true,
           (error: unknown) => {
@@ -246,7 +219,6 @@ async function runDeleteStep(
   return "done";
 }
 
-/** The tasks holding work on the runner that have not been stopped, oldest first. */
 export function blockingTasks(db: Database, runnerId: string, now: number): MemberVmBlockingTask[] {
   const terminal = TERMINAL_WORK_ITEM_STATES as readonly string[];
   return db
@@ -260,7 +232,6 @@ export function blockingTasks(db: Database, runnerId: string, now: number): Memb
     .all(runnerId, now, ...terminal);
 }
 
-/** True while a provisioning job for this VM holds a live claim, so its step is still running. */
 function provisioningInFlight(db: Database, id: string, now: number): boolean {
   return (
     db
@@ -272,10 +243,6 @@ function provisioningInFlight(db: Database, id: string, now: number): boolean {
   );
 }
 
-/**
- * The live runners of this VM: the one recorded on the row and every runner that enrolled with a
- * token Create VM minted for it. A host the member paired by hand is never among them.
- */
 function revokeUnusedEnrollments(db: Database, row: MemberVm): void {
   db.run(
     `DELETE FROM runner_enrollment WHERE used_at IS NULL AND token_hash IN
