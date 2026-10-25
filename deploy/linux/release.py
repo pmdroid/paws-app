@@ -40,6 +40,12 @@ PROVIDER_EXECUTABLES = {
     "codex": ("codex", "node_modules/@openai/codex/bin/codex.js", True),
     "grok": ("grok", "node_modules/@xai-official/grok/bin/grok", True),
 }
+# The package that carries each agent's native builds; the Paws catalog names the version it expects.
+AGENT_NATIVE_PACKAGE = {
+    "claude": "@anthropic-ai/claude-agent-sdk",
+    "codex": "@openai/codex",
+    "grok": "@xai-official/grok",
+}
 # Native files each agent needs, which must be executable after install.
 AGENT_NATIVE = {
     "claude": (f"node_modules/@anthropic-ai/claude-agent-sdk-linux-{ARCHITECTURE[0]}/claude",),
@@ -63,6 +69,8 @@ ASSETS = {
     "agents.json",
     "paws-agent@.service",
     "paws-runner.service",
+    "paws-runner-agents.path",
+    "paws-runner-agents.service",
     "paws-runner.sysusers",
     "paws-runner.tmpfiles",
 }
@@ -269,6 +277,40 @@ def agent_package_json(agent, version):
     return {"name": f"paws-agent-{agent}", "private": True, "dependencies": {AGENT_PACKAGES[agent]: version}}
 
 
+def check_agent_entry(agent, entry):
+    """Check one agents.json entry: every package its lockfile can install is listed with its exact version and sha512."""
+    if not isinstance(entry, dict) or set(entry) != {"package", "version", "packages", "lockfile"}:
+        raise ValueError(f"Invalid agent manifest entry for {agent}")
+    if entry["package"] != AGENT_PACKAGES[agent] or not isinstance(entry["version"], str) or len(entry["version"]) > 64 or not EXACT_VERSION.fullmatch(entry["version"]):
+        raise ValueError(f"Invalid agent package or version for {agent}")
+    lockfile = entry["lockfile"]
+    if not isinstance(lockfile, dict) or set(lockfile) - {"lockfileVersion", "configVersion", "workspaces", "packages"} or not isinstance(lockfile.get("packages"), dict):
+        raise ValueError(f"Invalid lockfile for {agent}")
+    expected = agent_package_json(agent, entry["version"])
+    if lockfile.get("workspaces") != {"": {"name": expected["name"], "dependencies": expected["dependencies"]}}:
+        raise ValueError(f"The {agent} lockfile does not pin {entry['package']}@{entry['version']}")
+    listed = entry["packages"]
+    if not isinstance(listed, list) or not listed:
+        raise ValueError(f"Invalid package list for {agent}")
+    packages = {}
+    for item in listed:
+        if not isinstance(item, dict) or set(item) != {"path", "name", "version", "integrity"} or not all(isinstance(item[key], str) for key in item):
+            raise ValueError(f"Invalid package entry for {agent}")
+        if not PACKAGE_PATH.fullmatch(item["path"]) or not PACKAGE_PATH.fullmatch(item["name"]) or not EXACT_VERSION.fullmatch(item["version"]) or not INTEGRITY.fullmatch(item["integrity"]) or item["path"] in packages:
+            raise ValueError(f"Invalid package entry for {agent}: {item.get('path')}")
+        packages[item["path"]] = item
+    if set(packages) != set(lockfile["packages"]):
+        raise ValueError(f"The {agent} lockfile and package list differ")
+    for path, locked in lockfile["packages"].items():
+        item = packages[path]
+        # [name@version, registry tarball ("" = the default registry), metadata, integrity]
+        if not isinstance(locked, list) or len(locked) != 4 or locked[0] != f"{item['name']}@{item['version']}" or locked[1] != "" or not isinstance(locked[2], dict) or locked[3] != item["integrity"]:
+            raise ValueError(f"The {agent} lockfile entry {path} does not match its pinned version and integrity")
+    if packages.get(entry["package"], {}).get("version") != entry["version"]:
+        raise ValueError(f"The {agent} lockfile does not install {entry['package']}@{entry['version']}")
+    return entry
+
+
 def parse_agent_manifest(content):
     """Check agents.json: every package the lockfile can install is listed with its exact version and sha512."""
     manifest = json.loads(content, object_pairs_hook=unique_object)
@@ -278,36 +320,85 @@ def parse_agent_manifest(content):
     if not isinstance(agents, dict) or set(agents) != set(AGENT_PACKAGES):
         raise ValueError("The agent manifest must list exactly the claude, codex and grok agents")
     for agent, entry in agents.items():
-        if not isinstance(entry, dict) or set(entry) != {"package", "version", "packages", "lockfile"}:
-            raise ValueError(f"Invalid agent manifest entry for {agent}")
-        if entry["package"] != AGENT_PACKAGES[agent] or not isinstance(entry["version"], str) or len(entry["version"]) > 64 or not EXACT_VERSION.fullmatch(entry["version"]):
-            raise ValueError(f"Invalid agent package or version for {agent}")
-        lockfile = entry["lockfile"]
-        if not isinstance(lockfile, dict) or set(lockfile) - {"lockfileVersion", "configVersion", "workspaces", "packages"} or not isinstance(lockfile.get("packages"), dict):
-            raise ValueError(f"Invalid lockfile for {agent}")
-        expected = agent_package_json(agent, entry["version"])
-        if lockfile.get("workspaces") != {"": {"name": expected["name"], "dependencies": expected["dependencies"]}}:
-            raise ValueError(f"The {agent} lockfile does not pin {entry['package']}@{entry['version']}")
-        listed = entry["packages"]
-        if not isinstance(listed, list) or not listed:
-            raise ValueError(f"Invalid package list for {agent}")
-        packages = {}
-        for item in listed:
-            if not isinstance(item, dict) or set(item) != {"path", "name", "version", "integrity"} or not all(isinstance(item[key], str) for key in item):
-                raise ValueError(f"Invalid package entry for {agent}")
-            if not PACKAGE_PATH.fullmatch(item["path"]) or not PACKAGE_PATH.fullmatch(item["name"]) or not EXACT_VERSION.fullmatch(item["version"]) or not INTEGRITY.fullmatch(item["integrity"]) or item["path"] in packages:
-                raise ValueError(f"Invalid package entry for {agent}: {item.get('path')}")
-            packages[item["path"]] = item
-        if set(packages) != set(lockfile["packages"]):
-            raise ValueError(f"The {agent} lockfile and package list differ")
-        for path, locked in lockfile["packages"].items():
-            item = packages[path]
-            # [name@version, registry tarball ("" = the default registry), metadata, integrity]
-            if not isinstance(locked, list) or len(locked) != 4 or locked[0] != f"{item['name']}@{item['version']}" or locked[1] != "" or not isinstance(locked[2], dict) or locked[3] != item["integrity"]:
-                raise ValueError(f"The {agent} lockfile entry {path} does not match its pinned version and integrity")
-        if packages.get(entry["package"], {}).get("version") != entry["version"]:
-            raise ValueError(f"The {agent} lockfile does not install {entry['package']}@{entry['version']}")
+        check_agent_entry(agent, entry)
     return manifest
+
+
+def agent_entry(bun, agent, version, workspace, seed=None, registry=None, pins=None):
+    """Resolve one agent version's lockfile into an agents.json entry.
+
+    `seed` is a bun.lock whose resolutions are kept; `registry` replaces npm (tests, or the registry
+    the runner installs from). `pins` maps package names to the exact versions the resolution must
+    take, such as the native build version the Paws catalog checked inside an adapter's range. They
+    resolve as overrides, which are then left out of the lockfile: the resolved versions stay pinned
+    in it, and the installed package.json still names only the agent. No install script runs and
+    nothing is installed: only the lockfile is written.
+    """
+    package = agent_package_json(agent, version)
+    (workspace / "package.json").write_text(json.dumps({**package, **({"overrides": dict(pins)} if pins else {})}))
+    if seed is not None:
+        (workspace / "bun.lock").write_bytes(seed)
+    home = workspace / "home"
+    home.mkdir()
+    completed = subprocess.run(
+        [str(bun), "install", "--lockfile-only", "--ignore-scripts"],
+        cwd=workspace,
+        env={**COMMAND_ENV, "HOME": str(home), "BUN_INSTALL_CACHE_DIR": str(home / "cache"), **({"BUN_CONFIG_REGISTRY": registry} if registry else {})},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=600,
+    )
+    if completed.returncode != 0:
+        raise ValueError(f"Could not resolve the {agent} lockfile: {completed.stderr.decode(errors='replace')[-800:]}")
+    lockfile = parse_lockfile((workspace / "bun.lock").read_text())
+    lockfile["workspaces"] = {"": {"name": package["name"], "dependencies": package["dependencies"]}}
+    lockfile.pop("trustedDependencies", None)
+    lockfile.pop("overrides", None)
+    packages = []
+    for path, locked in sorted(lockfile["packages"].items()):
+        # The installer always names the registry itself; a lockfile entry never points at a tarball URL.
+        if registry and isinstance(locked, list) and len(locked) > 1 and isinstance(locked[1], str) and locked[1].startswith(registry):
+            locked[1] = ""
+        name, _, exact = locked[0].rpartition("@")
+        packages.append({"path": path, "name": name, "version": exact, "integrity": locked[3]})
+    return {"package": AGENT_PACKAGES[agent], "version": version, "packages": packages, "lockfile": lockfile}
+
+
+AGENT_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+
+
+def parse_agent_requests(content):
+    """The agent versions Paws sent the runner: {"format": 1, "requests": [{id, agent, version, integrity, nativeVersion, packages}]}.
+
+    `integrity` is the npm sha512 of the agent package from the Paws catalog, or null to switch back to
+    a version already installed (a rollback). `packages` lists the native build package and the
+    platform packages it pins, each with the sha512 the catalog checked. At most one request per agent.
+    """
+    document = json.loads(content, object_pairs_hook=unique_object)
+    if not isinstance(document, dict) or set(document) != {"format", "requests"} or document["format"] != 1 or type(document["format"]) is not int or not isinstance(document["requests"], list):
+        raise ValueError("Invalid agent request file")
+    seen = set()
+    for request in document["requests"]:
+        if not isinstance(request, dict) or set(request) != {"id", "agent", "version", "integrity", "nativeVersion", "packages"}:
+            raise ValueError("Invalid agent request")
+        if not isinstance(request["id"], str) or not AGENT_REQUEST_ID.fullmatch(request["id"]) or request["agent"] not in AGENT_PACKAGES or request["agent"] in seen:
+            raise ValueError("Invalid agent request")
+        for key in ("version", "nativeVersion"):
+            value = request[key]
+            if (value is not None or key == "version") and (not isinstance(value, str) or len(value) > 64 or not EXACT_VERSION.fullmatch(value)):
+                raise ValueError(f"Invalid agent request {key}")
+        if request["integrity"] is not None and (not isinstance(request["integrity"], str) or not INTEGRITY.fullmatch(request["integrity"])):
+            raise ValueError("Invalid agent request integrity")
+        packages = request["packages"]
+        if not isinstance(packages, list) or len(packages) > 64:
+            raise ValueError("Invalid agent request packages")
+        for item in packages:
+            if not isinstance(item, dict) or set(item) != {"name", "version", "integrity"} or not all(isinstance(item[key], str) for key in item):
+                raise ValueError("Invalid agent request package")
+            if not PACKAGE_PATH.fullmatch(item["name"]) or item["name"].count("/") > (1 if item["name"].startswith("@") else 0) or len(item["version"]) > 64 or not EXACT_VERSION.fullmatch(item["version"]) or not INTEGRITY.fullmatch(item["integrity"]):
+                raise ValueError("Invalid agent request package")
+        seen.add(request["agent"])
+    return document["requests"]
 
 
 def agent_launcher(name, base="/opt/paws-runner"):

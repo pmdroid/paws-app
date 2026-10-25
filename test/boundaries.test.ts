@@ -175,7 +175,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-mise": [],
   "runner-answers": ["runner-execution"],
-  "runner-control": ["db", "workspace", "runner-identity", "runner-protocol"],
+  "runner-control": ["db", "workspace", "runner-identity", "runner-protocol", "agent-catalog"],
   "runner-daemon": [
     "db",
     "credentials",

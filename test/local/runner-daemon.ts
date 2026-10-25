@@ -128,7 +128,7 @@ export async function probeRunnerDaemon(
       if (path === "/v1/heartbeat") {
         const body = await request.json();
         heartbeatBodies.push(body);
-        if (/"waiting"|"runtimes"/.test(JSON.stringify(body)))
+        if (/"waiting"|"runtimes"|"agents"/.test(JSON.stringify(body)))
           return Response.json({}, { status: 403 });
         return deliver(heartbeatResponse);
       }
@@ -491,6 +491,24 @@ export async function probeRunnerDaemon(
           [[reported], [runtime]],
           [[reported], undefined],
           [[pending], undefined],
+        ],
+      );
+      // A Paws release without coding agent updates refuses the agents; the rest still goes through.
+      const agent = { agent: "claude" as const, version: "2.0.0", status: "current" as const };
+      const agentStart = heartbeatBodies.length;
+      await configured.heartbeat([reported], [runtime], [agent]);
+      const withAgents = heartbeatBodies.slice(agentStart) as {
+        skills?: unknown;
+        runtimes?: unknown;
+        agents?: unknown;
+      }[];
+      assert.deepEqual(
+        withAgents.map((body) => [body.skills, body.runtimes, body.agents]),
+        [
+          [[reported], [runtime], [agent]],
+          [[reported], [runtime], undefined],
+          [[reported], undefined, undefined],
+          [[pending], undefined, undefined],
         ],
       );
     } finally {
