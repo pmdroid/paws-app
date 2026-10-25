@@ -4,7 +4,12 @@ import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createMemberVmHttp, createMemberVmProvisioning, registerMemberVmJob } from "./member-vm";
-import { exeDevTokenReader, type ExeDev, type ExeDevBootstrap } from "./provisioning";
+import {
+  exeDevTokenReader,
+  latestRunnerRelease,
+  type ExeDev,
+  type ExeDevBootstrap,
+} from "./provisioning";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
@@ -643,6 +648,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     },
     publicUrl: runtime.publicUrl,
     repositories: () => listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
+    latestRelease: () => latestRunnerRelease(),
     runnerControl: async () => {
       const coordinator = await runnerReady;
       if (!coordinator) return null;
