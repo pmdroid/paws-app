@@ -6,11 +6,13 @@ import {
   closeoutPolicyRoot,
   exeDevTokenStatus,
   loadRuntime,
+  tailscaleAuthKeyStatus,
   pawsPaths,
   type AgentProfiles,
   type EnvSource,
   type ExeDevTokenStatus,
   type RuntimeConfig,
+  type TailscaleAuthKeyStatus,
   type TrackerKind,
 } from "../config";
 import { validate } from "../closeout-spec";
@@ -48,6 +50,7 @@ export type ProbeFacts = {
   workspace?: string | null;
   githubDelivery?: { event: string; receivedAt: number } | null;
   exeDevToken?: ExeDevTokenStatus;
+  tailscaleAuthKey?: TailscaleAuthKeyStatus;
   publicUrl: string | null;
   repo: string | null;
   team: string | null;
@@ -124,6 +127,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     ),
     linear,
     exeDevToken: exeDevTokenStatus(runtime.env.home),
+    tailscaleAuthKey: tailscaleAuthKeyStatus(runtime.env.home),
   };
 }
 

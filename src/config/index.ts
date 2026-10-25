@@ -78,6 +78,14 @@ export { loadRunnerControl } from "./runner-control";
 
 export { EXE_DEV_TOKEN_FILE, exeDevTokenPath, exeDevTokenStatus, readExeDevToken } from "./exe-dev";
 export type { ExeDevTokenStatus } from "./exe-dev";
+export {
+  isTailnetUrl,
+  readTailscaleAuthKey,
+  TAILSCALE_AUTHKEY_FILE,
+  tailscaleAuthKeyPath,
+  tailscaleAuthKeyStatus,
+} from "./tailscale";
+export type { TailscaleAuthKeyStatus } from "./tailscale";
 
 export { projectSkillsRoot } from "./skills";
 export type { ProjectSkills } from "./skills";

@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { createMemberVmHttp, createMemberVmProvisioning, registerMemberVmJob } from "./member-vm";
 import {
   exeDevTokenReader,
+  tailscaleAuthKeyReader,
   latestRunnerRelease,
   type ExeDev,
   type ExeDevBootstrap,
@@ -634,8 +635,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
   const exeDevToken = exeDevTokenReader(paths.home);
+  const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
+    tailscaleAuthKey,
     ...(options?.memberVm
       ? { exeDev: options.memberVm.exeDev, bootstrap: options.memberVm.bootstrap }
       : {}),
@@ -901,7 +904,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       parents?.register(created.jobs);
       registerMemberVmJob(created.jobs, {
         provision: memberVmProvisioning,
-        secrets: () => [exeDevToken()],
+        secrets: () => [exeDevToken(), tailscaleAuthKey()],
         ...(options?.memberVm?.pollMs === undefined ? {} : { pollMs: options.memberVm.pollMs }),
       });
       const attached = attachOrchestrator({

@@ -78,6 +78,30 @@ test("doctor reports whether the exe.dev token is present and readable", () => {
   }
 });
 
+test("doctor reports the Tailscale auth key like the exe.dev token", () => {
+  const tailscale = (status: ProbeFacts["tailscaleAuthKey"], publicUrl?: string) => {
+    const ready = probe(true);
+    if (status !== undefined) ready.facts.tailscaleAuthKey = status;
+    if (publicUrl !== undefined) ready.facts.publicUrl = publicUrl;
+    return doctorChecks(ready).find((item) => item.name === "tailscale-authkey");
+  };
+  expect(tailscale(undefined)).toBeUndefined();
+  expect(tailscale("readable")).toEqual({
+    name: "tailscale-authkey",
+    ok: true,
+    detail: "auth key present and readable",
+  });
+  expect(tailscale("absent", "https://paws.example.com")).toMatchObject({ ok: true, note: true });
+  const tailnet = tailscale("absent", "https://agentbox.taile07e4.ts.net:8787");
+  expect(tailnet?.ok).toBe(false);
+  expect(tailnet?.fix).toContain("~/.paws/secrets/tailscale-authkey");
+  for (const status of ["empty", "unreadable"] as const) {
+    const item = tailscale(status);
+    expect(item?.ok).toBe(false);
+    expect(item?.fix).toContain("tag:paws-runner");
+  }
+});
+
 test("doctor fails without a Linear workspace and says how to configure one", () => {
   const unconfigured = probe(true);
   delete unconfigured.env.PAWS_PUBLIC_DASHBOARD;
