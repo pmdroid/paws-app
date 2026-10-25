@@ -62,6 +62,14 @@ export type SchedulerOptions = {
   handoffForItem?: (itemId: string) => string | undefined;
   sessionFor?: (itemId: string) => string | null;
   onWaiting?: (itemIds: readonly string[]) => void;
+  /**
+   * Whether the item's owner has a runner they may use. False keeps the item out of the slot
+   * line: no runner slot would ever be theirs, so it waits for runner setup instead. Null or
+   * unset counts as true. Reads SQLite only.
+   */
+  ownerHasRunner?: (itemId: string) => boolean | null;
+  /** Queued items whose owner has no runner they may use, after every admission pass. */
+  onRunnerSetup?: (itemIds: readonly string[]) => void;
   ownerCap?: number | null;
   log?: (line: string) => void;
 };
@@ -483,9 +491,16 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       running,
       cap,
     );
+    // Only checked while runners exist, so a workspace without runners behaves as before.
+    const ownerHasRunner = slots === null ? undefined : options.ownerHasRunner;
+    const setup = new Set(
+      ownerHasRunner
+        ? order.filter(({ item }) => ownerHasRunner(item.id) === false).map(({ item }) => item.id)
+        : [],
+    );
     const admitted: string[] = [];
     for (const { item, capped } of order) {
-      if (capped) continue;
+      if (capped || setup.has(item.id)) continue;
       if (free <= 0) break;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
@@ -509,7 +524,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       admitted.push(item.id);
       free -= 1;
     }
-    const waiting = order.filter(({ item }) => !admitted.includes(item.id));
+    const waiting = order.filter(({ item }) => !admitted.includes(item.id) && !setup.has(item.id));
     saveQueuePositions(
       db,
       [...waiting.filter(({ capped }) => !capped), ...waiting.filter(({ capped }) => capped)].map(
@@ -550,10 +565,16 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         ? `item ${name} held: ${holdLine(change.held)}`
         : `item ${name} no longer held`;
     });
-    return { admitted, waiting: waiting.map(({ item }) => item.id), changes };
+    return {
+      admitted,
+      waiting: waiting.map(({ item }) => item.id),
+      setup: [...setup],
+      changes,
+    };
   });
   if (options.log) for (const line of result.changes) options.log(line);
   options.onWaiting?.(result.waiting);
+  options.onRunnerSetup?.(result.setup);
   return result.admitted;
 }
 
