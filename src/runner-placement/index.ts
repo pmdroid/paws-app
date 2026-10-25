@@ -46,6 +46,7 @@ export type EligibleRunner = {
 };
 export {
   eligibleRunners,
+  itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
   itemOwnerRunnerSetupNeed,
   RUNNER_ONLINE_MS,
