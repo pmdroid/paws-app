@@ -5,7 +5,6 @@ import type {
   StatusLink,
   StatusItem,
   StatusQueuePosition,
-  StatusSnapshot,
   VerdictDecision,
 } from "../contract";
 
@@ -260,20 +259,11 @@ export function mergeQueueLine(queue: { position: number; repository: string }):
   return `${PLACES[queue.position - 1] ?? `${queue.position}${suffix}`} in the ${queue.repository} queue`;
 }
 
-export function unmergedBlockers(snapshot: StatusSnapshot, item: StatusItem): string[] {
-  return item.blockers.filter(
-    (id) =>
-      !["merged", "completed"].includes(
-        snapshot.items.find((entry) => entry.id === id)?.state ?? "queued",
-      ),
-  );
-}
-
-export function waitReason(snapshot: StatusSnapshot, item: StatusItem): string | null {
+export function waitReason(item: StatusItem): string | null {
   if (item.state !== "queued") return null;
   const held = heldLine(item);
   if (held) return held;
-  const blockers = unmergedBlockers(snapshot, item);
+  const blockers = item.blockers;
   if (blockers.length) return `Blocked by ${blockers.join(", ")}`;
   return item.queue?.ownerCap
     ? `Waiting: ${capLine(item, item.queue.ownerCap)}`

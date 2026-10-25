@@ -1,3 +1,5 @@
+export { holdsExecution, isBlockerSatisfied } from "../../core";
+
 /**
  * Read-only status snapshot served by the local Paws engine.
  *
@@ -101,6 +103,7 @@ export interface StatusItem {
   assignee: string;
   owner: string | null;
   project: { id: string; name: string } | null;
+  /** Unresolved blockers, evaluated by core before rendering. */
   blockers: string[];
   attempts: number;
   branch: string | null;

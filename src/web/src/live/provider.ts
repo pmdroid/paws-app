@@ -48,6 +48,7 @@ import {
   listVisualReviewMarks,
   listVisualReviews,
   getTaskMergeSettings,
+  getTaskMode,
   getRun,
   listAgentCloseout,
   listCloseoutProgress,
@@ -79,6 +80,7 @@ import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
 import {
   STATUS_API_VERSION,
+  isBlockerSatisfied,
   type ActivityKind,
   type CheckKind,
   type CheckState,
@@ -691,6 +693,14 @@ function blockersFor(
   for (const issueId of listTaskBlockers(db, record.linearIssueId)) {
     const blocker = itemsByIssue.get(issueId);
     if (blocker === undefined) continue;
+    if (
+      isBlockerSatisfied({
+        state: blocker.state,
+        mode: getTaskMode(db, blocker.id),
+        mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
+      })
+    )
+      continue;
     const id = publicId(blocker);
     if (!ids.includes(id)) ids.push(id);
   }

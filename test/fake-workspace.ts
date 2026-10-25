@@ -1,6 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { isBlockerSatisfied, type WorkItemState } from "../src/core";
-import { bindLinearSessionTask, getTaskMode, recordLinearInstallation } from "../src/db";
+import {
+  bindLinearSessionTask,
+  getTaskMode,
+  getConfirmedRemoteMerge,
+  recordConfirmedRemoteMerge,
+  recordLinearInstallation,
+} from "../src/db";
 import { itemDependenciesCurrent, recordItemDependencies } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 
@@ -155,9 +161,27 @@ function reads(db: Database, itemId: string) {
         )
         .get(id, itemId);
       const satisfied =
-        !blocker || isBlockerSatisfied({ ...blocker, mode: getTaskMode(db, blocker.id) });
+        !blocker ||
+        isBlockerSatisfied({
+          ...blocker,
+          mode: getTaskMode(db, blocker.id),
+          mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
+        });
       return [id, satisfied ? "completed" : "started"] as const;
     }),
   );
   return { edges, states, identifiers: new Map<string, string>(), evidence: {} };
+}
+
+/** Record the evidence a real merge writes before a fixture enters merged. */
+export function confirmFakeMerge(db: Database, itemId: string): void {
+  recordConfirmedRemoteMerge(db, {
+    itemId,
+    repositoryOwner: "owner",
+    repositoryName: "repo",
+    pullNumber: 1,
+    pullUrl: null,
+    mergeSha: `merge-${itemId}`,
+    confirmedAt: 1000,
+  });
 }

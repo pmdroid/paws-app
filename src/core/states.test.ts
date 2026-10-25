@@ -19,9 +19,13 @@ describe("isBlockerSatisfied", () => {
   ]);
   for (const state of WORK_ITEM_STATES)
     for (const mode of [...TASK_MODES, null] as (TaskMode | null)[])
-      test(`${state} ${mode} blocker`, () => {
-        expect(isBlockerSatisfied({ state, mode })).toBe(satisfied.has(`${state}:${mode}`));
-      });
+      for (const mergeSha of [null, "", "merge-sha"]) {
+        test(`${state} ${mode} blocker with merge SHA ${mergeSha}`, () => {
+          expect(isBlockerSatisfied({ state, mode, mergeSha })).toBe(
+            satisfied.has(`${state}:${mode}`) && (state !== "merged" || !!mergeSha),
+          );
+        });
+      }
 });
 
 describe("holdsExecution", () => {
@@ -33,6 +37,9 @@ describe("holdsExecution", () => {
     test(`${state} with a live run or a live job`, () => {
       expect(holdsExecution({ state, liveRun: true, liveJob: false })).toBe(true);
       expect(holdsExecution({ state, liveRun: false, liveJob: true })).toBe(true);
+      expect(holdsExecution({ state, liveRun: true, liveJob: true })).toBe(true);
+      expect(holdsExecution({ state, liveRun: 1, liveJob: 0 })).toBe(true);
+      expect(holdsExecution({ state, liveRun: 0, liveJob: 0 })).toBe(executing.has(state));
     });
   }
 });

@@ -1,3 +1,4 @@
+import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import { ensureLinearSession } from "../src/db";
 import type { EpicSnapshot } from "../src/linear";
@@ -149,6 +150,10 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
     expect(
       parents.progress(admitted.delegation.id).find((sub) => sub.issueId === "child-b"),
     ).toMatchObject({ sessionId: null, waitingFor: ["PAR-2"] });
+    const merged = db
+      .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='child-a'")
+      .get()!;
+    confirmFakeMerge(db, merged.id);
     db.run("UPDATE work_item SET state='merged' WHERE linear_issue_id='child-a'");
     fixture.clock.advance(30_000);
     await jobs.tick();
