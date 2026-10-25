@@ -6,7 +6,7 @@ import {
   type ExeDevBootstrap,
   type ProvisioningErrorCode,
 } from "../provisioning";
-import { getMemberVm, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from "./store";
+import { getMemberVm, MEMBER_VM_QUEUE, STEP_AT, type MemberRef, type MemberVm } from "./store";
 
 export type MintEnrollment = (
   member: MemberRef,
@@ -244,11 +244,17 @@ function update(db: Database, row: MemberVm, columns: Columns, at: number): void
   if (changed !== 1) throw new StepMoved();
 }
 
-function advance(db: Database, row: MemberVm, step: MemberVm["step"], at: number): void {
+function advance(
+  db: Database,
+  row: MemberVm,
+  step: Exclude<MemberVm["step"], "create">,
+  at: number,
+): void {
   immediate(db, () => {
     const changed = db.run(
-      `UPDATE member_vm SET step=?,step_started_at=?,updated_at=? WHERE id=? AND step=? AND failure IS NULL`,
-      [step, at, at, row.id, row.step],
+      `UPDATE member_vm SET step=?,step_started_at=?,${STEP_AT[step]}=?,updated_at=?
+      WHERE id=? AND step=? AND failure IS NULL`,
+      [step, at, at, at, row.id, row.step],
     ).changes;
     if (changed !== 1) throw new StepMoved();
   });

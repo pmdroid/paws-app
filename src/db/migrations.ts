@@ -2766,6 +2766,17 @@ CREATE TABLE member_vm (
 ) STRICT;
 `,
   },
+  {
+    // PAS-638. When each later step began, so the Runners page can show how long a finished
+    // step took. The create step begins at created_at.
+    id: "137_member_vm_step_times",
+    sql: `
+ALTER TABLE member_vm ADD COLUMN install_at INTEGER;
+ALTER TABLE member_vm ADD COLUMN enroll_at INTEGER;
+ALTER TABLE member_vm ADD COLUMN health_at INTEGER;
+ALTER TABLE member_vm ADD COLUMN ready_at INTEGER;
+`,
+  },
 ];
 
 /**
