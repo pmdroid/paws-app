@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -37,7 +38,7 @@ export async function handleHookSettingsRequest(
   if (new URL(request.url).pathname !== HOOK_SETTINGS_PATH) return null;
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Hook settings are only available on the local Paws origin" }, 403);
-  if (options.role !== undefined && !["owner", "admin"].includes(options.role))
+  if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace owners and admins can change hooks." }, 403);
   const skills = () =>
     listSkills(options.db)

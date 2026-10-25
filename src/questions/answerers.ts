@@ -1,4 +1,6 @@
-export type Answerer = { id: string };
+import { canAct, type ActionActor } from "../workspace";
+
+export type Answerer = ActionActor;
 
 export type AnswerableQuestion =
   | { kind: "agent" }
@@ -18,25 +20,28 @@ type Policy = {
   ) => boolean;
 };
 
-export const ANSWER_POLICY: Policy = {
-  agent: () => true,
-  clarification: () => true,
-  repository: () => true,
-  "runner-wait": () => true,
-  "time-limit": () => true,
-  "closeout-bypass": () => true,
-  "ci-help": () => true,
-  "visual-review": (question, user) =>
-    user.id === question.delegatorId || user.id === question.leadId,
-  "github-auth": (question, user) => user.id === question.actorId,
-};
-
 export const answerer = (id: string): Answerer | null =>
-  id === "unknown" || id === "linear" || !id.trim() ? null : { id };
+  canAct({ id }, { kind: "answer" }).allowed ? { id } : null;
 
 export const canAnswer = (question: AnswerableQuestion, user: Answerer): boolean =>
-  answerer(user.id) !== null &&
-  (ANSWER_POLICY[question.kind] as (question: AnswerableQuestion, user: Answerer) => boolean)(
-    question,
-    user,
-  );
+  canAct(user, {
+    kind: "answer",
+    ...(question.kind === "visual-review"
+      ? { allowedIds: [question.delegatorId, question.leadId] }
+      : question.kind === "github-auth"
+        ? { allowedIds: [question.actorId] }
+        : {}),
+  }).allowed;
+
+/** Kept for policy consumers; every entry uses the same actor and answer checks. */
+export const ANSWER_POLICY: Policy = {
+  agent: canAnswer,
+  clarification: canAnswer,
+  repository: canAnswer,
+  "runner-wait": canAnswer,
+  "time-limit": canAnswer,
+  "closeout-bypass": canAnswer,
+  "ci-help": canAnswer,
+  "visual-review": canAnswer,
+  "github-auth": canAnswer,
+};

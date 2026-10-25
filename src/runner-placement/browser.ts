@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { auditWorkspaceAccess, immediate, workspaceMember } from "../db";
@@ -67,7 +68,7 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
       const current = member(principal);
       if (path === "/api/runners/usage") {
         if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-        const all = ["owner", "admin"].includes(current.role);
+        const all = isWorkspaceAdmin(current.role);
         const host = new URL(request.url).searchParams.get("runner") ?? "";
         return json({
           usage: db

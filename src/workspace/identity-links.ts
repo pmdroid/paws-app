@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "./eligibility";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
@@ -72,8 +73,7 @@ export function createWorkspaceIdentityLinks(options: {
         });
         return reply({ error: message }, 403);
       }
-      if (!["owner", "admin"].includes(principal.role))
-        return deny("Workspace administration is required.");
+      if (!isWorkspaceAdmin(principal.role)) return deny("Workspace administration is required.");
       if (request.method === "GET")
         return reply({
           slackTeamId: options.slack?.teamId ?? null,
@@ -89,7 +89,7 @@ export function createWorkspaceIdentityLinks(options: {
       try {
         const body = await readWorkspaceJson(request);
         const actor = workspaceMember(options.db, principal.workspaceId, principal.userId);
-        if (!actor?.active || !["owner", "admin"].includes(actor.role))
+        if (!actor?.active || !isWorkspaceAdmin(actor.role))
           return deny("Workspace administration is required.");
         if (
           typeof body !== "object" ||
@@ -126,7 +126,7 @@ export function createWorkspaceIdentityLinks(options: {
         return reply({ ok: true });
       } catch (error) {
         const actor = workspaceMember(options.db, principal.workspaceId, principal.userId);
-        if (!actor?.active || !["owner", "admin"].includes(actor.role))
+        if (!actor?.active || !isWorkspaceAdmin(actor.role))
           return deny("Workspace administration is required.");
         return reply(
           { error: error instanceof Error ? error.message : "Identity link could not be saved." },
