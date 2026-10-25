@@ -6,6 +6,7 @@ import {
   livePoll,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
+  memberVmsMarkup,
   runnerVmMarkup,
   type MemberVm,
   RUNNER_POLL_MS,
@@ -960,6 +961,28 @@ describe("member VM", () => {
       { busy: false, runner },
     );
     expect(forced).not.toContain("data-vm-delete-force");
+  });
+
+  test("owners and admins see other members' VMs, with or without a runner, with Delete VM", () => {
+    const failed = vm({
+      id: "grace-vm",
+      vmName: "grace-paws",
+      ownerName: "Grace Hopper",
+      step: "create",
+      failure: "rate limited",
+    });
+    const html = memberVmsMarkup([failed, { ...deleting(), id: "alan-vm", ownerName: "Alan" }], {
+      busy: false,
+    });
+    expect(html).toContain("Members' VMs");
+    expect(html).toContain('data-member-vm-other="grace-vm"');
+    expect(html).toContain("grace-paws");
+    expect(html).toContain("Created by Grace Hopper");
+    expect(html).toContain("Setup failed");
+    expect(html).toContain('data-vm-delete="grace-vm"');
+    expect(html).toContain("Deleting Alan&#39;s VM");
+    expect(html).not.toContain('data-member-vm-other="alan-vm"');
+    expect(memberVmsMarkup([], { busy: false })).toBe("");
   });
 
   test("a runner's page offers Delete VM for the VM behind it", () => {

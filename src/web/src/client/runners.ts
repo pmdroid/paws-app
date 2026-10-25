@@ -142,8 +142,9 @@ export type MemberVmDeleteStep = "drain" | "tailnet" | "revoke" | "destroy" | "c
 export type MemberVm = {
   id: string;
   vmName: string;
-  /** The member who created the VM. */
+  /** The member who created the VM, and their name. */
   userId?: string;
+  ownerName?: string | null;
   step: "create" | "install" | "enroll" | "health" | "ready";
   failure: string | null;
   runnerId: string | null;
@@ -242,6 +243,40 @@ export function memberVmDeleteMarkup(vm: MemberVm, view: { busy: boolean; title:
 export function runnerVmMarkup(vm: MemberVm, view: { busy: boolean }): string {
   if (vm.deleting) return memberVmDeleteMarkup(vm, { busy: view.busy, title: "Deleting VM" });
   return `<section class="runner-section" aria-labelledby="runner-vm-${esc(vm.id)}"><div class="between"><h2 id="runner-vm-${esc(vm.id)}">exe.dev VM <span class="mono">${esc(vm.vmName)}</span></h2>${deleteButton(vm, view.busy)}</div><p class="muted">Created with Create VM. Deleting it destroys the VM on exe.dev and removes this runner from Paws.</p></section>`;
+}
+
+/**
+ * For a workspace owner or admin: other members' Create VM VMs, with or without a runner, each
+ * with Delete VM, or its delete progress once confirmed.
+ */
+export function memberVmsMarkup(vms: readonly MemberVm[], view: { busy: boolean }): string {
+  if (vms.length === 0) return "";
+  const rows = vms
+    .filter((vm) => !vm.deleting)
+    .map((vm) => {
+      const [tone, label] =
+        vm.failure !== null
+          ? ["bad", "Setup failed"]
+          : vm.step === "ready"
+            ? ["ok", "Ready"]
+            : ["running", "Setting up"];
+      const owner = vm.ownerName ? `Created by ${vm.ownerName}` : "Created with Create VM";
+      return `<li class="runner-skill" data-member-vm-other="${esc(vm.id)}"><span class="runner-skill-name"><b class="mono">${esc(vm.vmName)}</b><span class="muted">${esc(owner)}</span></span><span class="tag ${tone}">${esc(label)}</span><div class="runner-agent-actions">${deleteButton(vm, view.busy)}</div></li>`;
+    })
+    .join("");
+  const list = rows
+    ? `<section class="runner-section" aria-labelledby="member-vms-heading"><h2 id="member-vms-heading">Members' VMs</h2><p class="muted">VMs other members created with Create VM. As a workspace owner or admin you can delete them.</p><ul class="runner-skill-list" role="list" aria-label="Members' VMs">${rows}</ul></section>`
+    : "";
+  const deleting = vms
+    .filter((vm) => vm.deleting)
+    .map((vm) =>
+      memberVmDeleteMarkup(vm, {
+        busy: view.busy,
+        title: vm.ownerName ? `Deleting ${vm.ownerName}'s VM` : "Deleting VM",
+      }),
+    )
+    .join("");
+  return `${list}${deleting}`;
 }
 
 /** The member's VM: each step with its state and time, the stored error and Retry. */
@@ -1239,12 +1274,21 @@ export function createRunners() {
     const actions = addsHosts()
       ? `<div class="settings-actions">${createVm}<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a host</button></div>`
       : "";
-    const vmSection = vm
-      ? memberVmMarkup(vm, {
-          busy,
-          runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
-        })
-      : "";
+    const vmSection = `${
+      vm
+        ? memberVmMarkup(vm, {
+            busy,
+            runner: runners.find((entry) => entry.id === vm.runnerId) ?? null,
+          })
+        : ""
+    }${
+      manages()
+        ? memberVmsMarkup(
+            deletableVms().filter((entry) => entry.id !== vm?.id),
+            { busy },
+          )
+        : ""
+    }`;
     return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
