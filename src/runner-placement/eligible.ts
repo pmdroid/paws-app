@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { delegatedLinearUserId, workspaceMember } from "../db";
-import type { EligibleRunner, EligibleRunnerReason, EligibleRunnersInput } from "./index";
+import type {
+  EligibleRunner,
+  EligibleRunnerReason,
+  EligibleRunnersInput,
+  RunnerSetupNeed,
+} from "./index";
 
 /** A runner that has not sent a heartbeat for this long is offline. */
 export const RUNNER_ONLINE_MS = 60_000;
@@ -70,14 +75,41 @@ export function eligibleRunners(db: Database, input: EligibleRunnersInput): Elig
 }
 
 /**
- * Whether the person who owns a work item has a runner they may use for its work right now, by
- * the same check placement uses. Reads SQLite only. Null when the item has no Linear session,
- * workspace, team or owner yet, so the caller keeps its usual behavior.
+ * Why `ownerUserId` has no runner Paws may use for `agent`, from `eligibleRunners` with purpose
+ * `work`. Null when a runner is eligible, busy or not, or one the owner may use is only offline
+ * or paused and comes back on its own.
  */
-export function itemOwnerHasEligibleRunner(
+export function runnerSetupNeed(
   db: Database,
-  input: { itemId: string; agent: string; now?: number },
-): boolean | null {
+  runners: readonly EligibleRunner[],
+  owner: { ownerUserId: string | null; leadUserIds: readonly string[] },
+  agent: string,
+): RunnerSetupNeed | null {
+  if (runners.some((runner) => runner.eligible)) return null;
+  const signIn = runners.find(
+    (runner) =>
+      runner.ownerId === owner.ownerUserId &&
+      (runner.reason === "agent-not-signed-in" || runner.reason === "auth-expired"),
+  );
+  if (signIn)
+    return {
+      reason: "agent-not-signed-in",
+      runnerId: signIn.id,
+      runnerName:
+        db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(signIn.id)
+          ?.name ?? signIn.id,
+      agent,
+    };
+  const usable = (runner: EligibleRunner) =>
+    runner.ownerId === owner.ownerUserId ||
+    (runner.sharing === 1 && owner.leadUserIds.includes(runner.ownerId));
+  if (runners.some((runner) => usable(runner) && ["offline", "paused"].includes(runner.reason)))
+    return null;
+  return { reason: "no-runner" };
+}
+
+/** The workspace, team, owner and project leads of a work item, or null when one is unknown. */
+function itemOwnerScope(db: Database, itemId: string) {
   const scope = db
     .query<
       {
@@ -94,9 +126,9 @@ export function itemOwnerHasEligibleRunner(
        LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
        WHERE i.id=?`,
     )
-    .get(input.itemId);
+    .get(itemId);
   if (!scope?.workspaceId || !scope.teamId) return null;
-  const delegator = delegatedLinearUserId(db, input.itemId);
+  const delegator = delegatedLinearUserId(db, itemId);
   const ownerUserId =
     scope.ownerUserId ??
     (delegator
@@ -115,13 +147,43 @@ export function itemOwnerHasEligibleRunner(
     )
     .all(scope.delegationId)
     .map((row) => row.id);
+  return { workspaceId: scope.workspaceId, teamId: scope.teamId, ownerUserId, leadUserIds };
+}
+
+/**
+ * Whether the person who owns a work item has a runner they may use for its work right now, by
+ * the same check placement uses. Reads SQLite only. Null when the item has no Linear session,
+ * workspace, team or owner yet, so the caller keeps its usual behavior.
+ */
+export function itemOwnerHasEligibleRunner(
+  db: Database,
+  input: { itemId: string; agent: string; now?: number },
+): boolean | null {
+  const scope = itemOwnerScope(db, input.itemId);
+  if (!scope) return null;
   return eligibleRunners(db, {
-    workspaceId: scope.workspaceId,
-    teamId: scope.teamId,
-    ownerUserId,
-    leadUserIds,
+    ...scope,
     agent: input.agent,
     purpose: "work",
     ...(input.now === undefined ? {} : { now: input.now }),
   }).some((runner) => runner.eligible);
+}
+
+/**
+ * Why the owner of a work item has no runner Paws may use, as `runnerSetupNeed` decides it. Null
+ * when a runner is usable or only offline, or when the item's scope is not known yet.
+ */
+export function itemOwnerRunnerSetupNeed(
+  db: Database,
+  input: { itemId: string; agent: string; now?: number },
+): RunnerSetupNeed | null {
+  const scope = itemOwnerScope(db, input.itemId);
+  if (!scope) return null;
+  const runners = eligibleRunners(db, {
+    ...scope,
+    agent: input.agent,
+    purpose: "work",
+    ...(input.now === undefined ? {} : { now: input.now }),
+  });
+  return runnerSetupNeed(db, runners, scope, input.agent);
 }

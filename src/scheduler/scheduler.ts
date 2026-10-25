@@ -406,10 +406,14 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const byId = new Map(items.map((item) => [item.id, item]));
     const starts = items
       // A runner-setup hold waits for the delegator, not for a slot: it is neither started nor
-      // counted as waiting, so no queue notice or start timeout reaches it.
+      // counted as waiting, so no queue notice or start timeout reaches it, until the owner has
+      // a runner they may use.
       .filter(
         (item) =>
-          item.state === "queued" && !item.cancelRequested && !item.absent && !item.setupHeld,
+          item.state === "queued" &&
+          !item.cancelRequested &&
+          !item.absent &&
+          (!item.setupHeld || options.ownerHasRunner?.(item.id) === true),
       )
       .map((item) => ({ item, start: admission.canStart(item.id) }));
     const ready = new Set(starts.filter(({ start }) => start.ok).map(({ item }) => item.id));

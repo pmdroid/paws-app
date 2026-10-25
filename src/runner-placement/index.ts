@@ -44,7 +44,12 @@ export type EligibleRunner = {
   eligible: boolean;
   reason: EligibleRunnerReason;
 };
-export { eligibleRunners, itemOwnerHasEligibleRunner, RUNNER_ONLINE_MS } from "./eligible";
+export {
+  eligibleRunners,
+  itemOwnerHasEligibleRunner,
+  itemOwnerRunnerSetupNeed,
+  RUNNER_ONLINE_MS,
+} from "./eligible";
 /**
  * Why the owner of the work has no runner Paws may use: no runner of theirs or shared with them,
  * or their own runner whose agent is not signed in. Same shape as `RunnerSetupNeed` in core.
