@@ -7,6 +7,7 @@ import {
   loadEnv,
   pawsPaths,
   type EnvSource,
+  type ExeDevTokenStatus,
 } from "../config";
 import { describeLinearWebhookWarning, LINEAR_WEBHOOK_FIX, type LinearWebhookWarning } from "../db";
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
@@ -61,6 +62,8 @@ const FIX = {
   githubLogin: "Run bun run paws login github.",
   githubPush: "Grant this login push access to the repository.",
   githubRate: "Wait for the GitHub rate limit to recover.",
+  exeDev:
+    "Generate an exe.dev API token that may run new, ls and ssh, and save it to ~/.paws/secrets/exe-dev-token.",
   githubWebhook:
     "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews and Merge groups events (docs/github-login.md).",
 } as const;
@@ -117,6 +120,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       FIX.repo,
     ),
   );
+  if (facts.exeDevToken !== undefined) checks.push(exeDevCheck(facts.exeDevToken));
   if (facts.webhooks) {
     checks.push(
       check(
@@ -365,6 +369,19 @@ function grokCheck(status: GrokLoginStatus | null | undefined): DoctorCheck {
     );
   }
   return check("grok", true, status.detail);
+}
+
+function exeDevCheck(status: ExeDevTokenStatus): DoctorCheck {
+  switch (status) {
+    case "readable":
+      return check("exe-dev", true, "token present and readable");
+    case "absent":
+      return note("exe-dev", "no exe.dev token; Paws cannot create runner VMs");
+    case "empty":
+      return check("exe-dev", false, "exe.dev token file is empty", FIX.exeDev);
+    case "unreadable":
+      return check("exe-dev", false, "exe.dev token file cannot be read", FIX.exeDev);
+  }
 }
 
 function note(name: string, detail: string): DoctorCheck {

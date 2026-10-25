@@ -54,6 +54,26 @@ test("doctor reports the local prerequisites and skips tunnel checks", () => {
   expect(text).not.toContain("\n  fix:");
 });
 
+test("doctor reports whether the exe.dev token is present and readable", () => {
+  const exeDev = (status: ProbeFacts["exeDevToken"]) => {
+    const ready = probe(true);
+    if (status !== undefined) ready.facts.exeDevToken = status;
+    return doctorChecks(ready).find((item) => item.name === "exe-dev");
+  };
+  expect(exeDev(undefined)).toBeUndefined();
+  expect(exeDev("readable")).toEqual({
+    name: "exe-dev",
+    ok: true,
+    detail: "token present and readable",
+  });
+  expect(exeDev("absent")).toMatchObject({ ok: true, note: true });
+  for (const status of ["empty", "unreadable"] as const) {
+    const item = exeDev(status);
+    expect(item?.ok).toBe(false);
+    expect(item?.fix).toContain("~/.paws/secrets/exe-dev-token");
+  }
+});
+
 test("doctor fails without a Linear workspace and says how to configure one", () => {
   const unconfigured = probe(true);
   delete unconfigured.env.PAWS_PUBLIC_DASHBOARD;
