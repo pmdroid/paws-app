@@ -187,3 +187,32 @@ export function itemOwnerRunnerSetupNeed(
   });
   return runnerSetupNeed(db, runners, scope, input.agent);
 }
+
+/**
+ * A runner the owner of a work item may use for its work right now, for the line that says where
+ * a held item starts. The owner's own runner comes first, then by name. Placement still makes
+ * its own choice among every eligible runner. Null when none is eligible or the scope is unknown.
+ */
+export function itemOwnerEligibleRunner(
+  db: Database,
+  input: { itemId: string; agent: string; now?: number },
+): { id: string; name: string } | null {
+  const scope = itemOwnerScope(db, input.itemId);
+  if (!scope) return null;
+  const eligible = eligibleRunners(db, {
+    ...scope,
+    agent: input.agent,
+    purpose: "work",
+    ...(input.now === undefined ? {} : { now: input.now }),
+  }).filter((runner) => runner.eligible);
+  const named = eligible
+    .map((runner) => ({
+      id: runner.id,
+      own: runner.ownerId === scope.ownerUserId,
+      name:
+        db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(runner.id)
+          ?.name ?? runner.id,
+    }))
+    .sort((a, b) => Number(b.own) - Number(a.own) || a.name.localeCompare(b.name));
+  return named[0] ? { id: named[0].id, name: named[0].name } : null;
+}

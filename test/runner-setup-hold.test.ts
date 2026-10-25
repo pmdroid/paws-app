@@ -28,7 +28,7 @@ import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { createRunnerPlacement } from "../src/runner-placement";
+import { createRunnerPlacement, itemOwnerEligibleRunner } from "../src/runner-placement";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { dispatch } from "../src/scheduler";
@@ -190,7 +190,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
       return { appId: "1", login: "paws[bot]", id: 1 };
     },
   });
-  const tracker = createFakeTracker([
+  const fake = createFakeTracker([
     {
       linearIssueId: "issue-1",
       identifier: "ENG-1",
@@ -199,6 +199,20 @@ async function delegate(delegatorRunner: DelegatorRunner) {
       subIssues: [],
     },
   ]);
+  // Counts every Linear call made while a runner-setup hold exists.
+  const linearWhileHeld: string[] = [];
+  const linearCalls: string[] = [];
+  const tracker = new Proxy(fake, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        linearCalls.push(String(key));
+        if (db.query("SELECT 1 FROM runner_setup_hold").get()) linearWhileHeld.push(String(key));
+        return value.apply(target, args);
+      };
+    },
+  });
   const jobs = new JobLoop(db, systemClock, { concurrency: 2, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
@@ -211,6 +225,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
     scheduling: () => ({}),
     runnersUrl: RUNNERS_URL,
+    eligibleRunner: (itemId, agent, at) => itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },
@@ -297,6 +312,8 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     memberId,
     memberRunner,
     tracker,
+    linearWhileHeld,
+    linearCalls,
     thoughts: () =>
       listOutbox(db, "session-1")
         .map((row) => row.payload as { kind?: string; body?: string })
@@ -448,6 +465,40 @@ test("undelegation cancels a held item and ends its hold", async () => {
     );
     expect(getWorkItem(db, itemId)!.state).toBe("cancelled");
     expect(getRunnerSetupHold(db, itemId)).toBeNull();
+  } finally {
+    await fixture.close();
+  }
+}, 60_000);
+
+test("signing the agent in resumes the held item in the same run and session, without reading Linear", async () => {
+  const fixture = await delegate("unsigned");
+  try {
+    const { db, itemId } = fixture;
+    const hold = getRunnerSetupHold(db, itemId)!;
+    const item = getWorkItem(db, itemId)!;
+    expect(hold.runId).not.toBeNull();
+    expect(item.currentRunId).toBe(hold.runId);
+
+    db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id=?", [fixture.memberRunner]);
+    const deadline = Date.now() + 20_000;
+    const active = () =>
+      db.query("SELECT 1 FROM run WHERE id=? AND status='active'").get(hold.runId!) !== null;
+    while (Date.now() < deadline && !active()) await Bun.sleep(10);
+
+    const resumed = getWorkItem(db, itemId)!;
+    expect(getRunnerSetupHold(db, itemId)).toBeNull();
+    expect(active()).toBe(true);
+    expect(resumed.currentRunId).toBe(hold.runId);
+    expect(resumed.sessionKey).toBe("session-1");
+    expect(db.query("SELECT count(*) AS n FROM run WHERE item_id=?").get(itemId)).toEqual({ n: 1 });
+    expect(fixture.thoughts().slice(0, 2)).toEqual([
+      `Your runner member-vm needs Claude signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
+      "Starting ENG-1 on member-vm.",
+    ]);
+    expect(fixture.thoughts().filter((body) => body?.startsWith("Starting "))).toHaveLength(1);
+    // The counting fake saw the intake's calls, and none while the item was held.
+    expect(fixture.linearCalls.length).toBeGreaterThan(0);
+    expect(fixture.linearWhileHeld).toEqual([]);
   } finally {
     await fixture.close();
   }

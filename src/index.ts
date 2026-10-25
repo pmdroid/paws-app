@@ -164,6 +164,7 @@ import { createAdmission, registerScheduler, saveSchedulingContext } from "./sch
 import {
   createRunnerPlacement,
   createRunnerPlacementBrowser,
+  itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
   itemOwnerRunnerSetupNeed,
 } from "./runner-placement";
@@ -963,6 +964,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
+              eligibleRunner: (itemId: string, agent: string, now: number) =>
+                itemOwnerEligibleRunner(db, { itemId, agent, now }),
             }
           : {}),
         linearAccess: linearTaskAccess ?? undefined,
