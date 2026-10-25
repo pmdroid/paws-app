@@ -25,7 +25,13 @@ const JOIN = new RegExp(
 
 type Vm = {
   version: string;
+  /** The backend state tailscaled reports once it runs. */
   backend: string;
+  /** Whether tailscaled runs and answers `tailscale status`. */
+  daemon: boolean;
+  /** Whether `systemctl enable --now tailscaled` brings the daemon up. */
+  startable: boolean;
+  starts: number;
   /** Whether the decrypted auth key file exists on the VM. */
   authFile: boolean;
   joins: string[];
@@ -42,6 +48,9 @@ function simulate(state: Partial<Vm> = {}): { exe: FakeExeDev; vm: Vm } {
   const vm: Vm = {
     version: "",
     backend: "",
+    daemon: false,
+    startable: true,
+    starts: 0,
     authFile: false,
     joins: [],
     upExit: 0,
@@ -51,12 +60,22 @@ function simulate(state: Partial<Vm> = {}): { exe: FakeExeDev; vm: Vm } {
   const exe = createFakeExeDev();
   exe.addVm(VM);
   exe.scriptExec(VM, /tailscale version/, () => ({
-    stdout: `Version=${vm.version}\n${vm.backend ? JSON.stringify({ BackendState: vm.backend }) : ""}`,
+    stdout: `Version=${vm.version}\n${vm.daemon ? status(vm) : ""}`,
   }));
   exe.scriptExec(VM, /pkgs\.tailscale\.com/, () => {
     vm.version = PINNED_TAILSCALE.amd64.version;
     vm.backend = vm.backend || "NeedsLogin";
+    vm.daemon = true;
     return {};
+  });
+  exe.scriptExec(VM, /systemctl enable --now tailscaled\.service/, () => {
+    vm.starts += 1;
+    if (vm.startable) vm.daemon = true;
+    if (vm.daemon) return { stdout: `${status(vm)}\n` };
+    return {
+      exitCode: 4,
+      stderr: `${"tailscaled[812]: wgengine: router: ".repeat(30)}\n${STOPPED}\n`,
+    };
   });
   exe.scriptExec(VM, new RegExp(`${escape(BOOTSTRAP_TAILNET_KEY)} -pubout$`), (command) => {
     if (command.includes(`rm -f ${BOOTSTRAP_TAILNET_KEY} ${BOOTSTRAP_AUTHKEY_FILE}`))
@@ -82,6 +101,12 @@ function simulate(state: Partial<Vm> = {}): { exe: FakeExeDev; vm: Vm } {
         },
   );
   return { exe, vm };
+}
+
+const STOPPED = "     Active: failed (Result: exit-code) since Sun 2026-10-25 18:19:02 UTC";
+
+function status(vm: Vm): string {
+  return JSON.stringify({ BackendState: vm.backend || "NeedsLogin" });
 }
 
 function decrypt(command: string): string {
@@ -126,7 +151,7 @@ test("a fresh VM installs the pinned Tailscale, joins, then checks it reaches Pa
   const { exe, vm } = simulate();
   expect(await createExeDevBootstrap(options(exe)).joinTailnet(VM)).toBe("joined");
   const sent = commands(exe);
-  expect(sent).toHaveLength(5);
+  expect(sent).toHaveLength(6);
   expect(sent[0]).toContain("tailscale version");
   expect(sent[1]).toContain(
     `https://pkgs.tailscale.com/stable/tailscale_${PINNED_TAILSCALE.amd64.version}_amd64.tgz`,
@@ -136,12 +161,13 @@ test("a fresh VM installs the pinned Tailscale, joins, then checks it reaches Pa
   expect(sent[1]).not.toMatch(/\| *(sudo )?sh\b/);
   // The checksum is checked before the archive is unpacked.
   expect(sent[1]!.indexOf("sha256sum")).toBeLessThan(sent[1]!.indexOf("tar -xzf"));
-  expect(sent[2]).toMatch(/tailnet-key\.pem -pubout$/);
-  expect(sent[3]).toMatch(JOIN);
-  expect(sent[3]).toContain(`--auth-key=file:${BOOTSTRAP_AUTHKEY_FILE} --hostname='ada-paws'`);
-  expect(sent[3]).toContain(`-m 0600 /dev/stdin ${BOOTSTRAP_AUTHKEY_FILE}`);
-  expect(sent[4]).toContain("host='agentbox.taile07e4.ts.net'");
-  expect(sent[4]).toContain("url='https://agentbox.taile07e4.ts.net:8787/health'");
+  expect(sent[2]).toContain("systemctl enable --now tailscaled.service");
+  expect(sent[3]).toMatch(/tailnet-key\.pem -pubout$/);
+  expect(sent[4]).toMatch(JOIN);
+  expect(sent[4]).toContain(`--auth-key=file:${BOOTSTRAP_AUTHKEY_FILE} --hostname='ada-paws'`);
+  expect(sent[4]).toContain(`-m 0600 /dev/stdin ${BOOTSTRAP_AUTHKEY_FILE}`);
+  expect(sent[5]).toContain("host='agentbox.taile07e4.ts.net'");
+  expect(sent[5]).toContain("url='https://agentbox.taile07e4.ts.net:8787/health'");
   expect(vm.backend).toBe("Running");
 });
 
@@ -192,6 +218,50 @@ test("a re-run on a joined VM only checks that it still reaches Paws", async () 
   expect(again[0]).toContain("tailscale version");
   expect(again[1]).toContain("/health'");
   expect(vm.joins).toHaveLength(1);
+});
+
+test("a pinned Tailscale with a stopped daemon starts tailscaled, then joins, without reinstalling", async () => {
+  const { exe, vm } = simulate({ version: PINNED_TAILSCALE.amd64.version, backend: "NeedsLogin" });
+  expect(await createExeDevBootstrap(options(exe)).joinTailnet(VM)).toBe("joined");
+  const sent = commands(exe);
+  expect(sent.filter((command) => command.includes("pkgs.tailscale.com"))).toEqual([]);
+  expect(sent).toHaveLength(5);
+  expect(sent[0]).toContain("tailscale version");
+  expect(sent[1]).toContain("systemctl enable --now tailscaled.service");
+  expect(sent[1]).toContain("status --json");
+  expect(sent[2]).toMatch(/tailnet-key\.pem -pubout$/);
+  expect(sent[3]).toMatch(JOIN);
+  expect(sent[4]).toContain("/health'");
+  expect(vm.starts).toBe(1);
+  expect(vm.daemon).toBe(true);
+  expect(vm.joins).toEqual([AUTHKEY]);
+  expect(vm.backend).toBe("Running");
+});
+
+test("a daemon that comes back logged in after a reboot is a member and gets no join", async () => {
+  const { exe, vm } = simulate({ version: PINNED_TAILSCALE.amd64.version, backend: "Running" });
+  expect(await createExeDevBootstrap(options(exe)).joinTailnet(VM)).toBe("member");
+  expect(vm.starts).toBe(1);
+  expect(vm.joins).toEqual([]);
+  expect(commands(exe).at(-1)).toContain("/health'");
+});
+
+test("a tailscaled that never answers fails clearly and the auth key is never staged", async () => {
+  const { exe, vm } = simulate({ version: PINNED_TAILSCALE.amd64.version, startable: false });
+  const error = await bootstrapError(createExeDevBootstrap(options(exe)).joinTailnet(VM));
+  expect(error.step).toBe("tailnet");
+  const prefix = "ada-paws: tailnet: tailscaled did not start (exit 4): ";
+  expect(error.message.startsWith(prefix)).toBe(true);
+  // The last lines of the journal and the unit state, capped at 300 characters.
+  const detail = error.message.slice(prefix.length);
+  expect(detail.length).toBeLessThanOrEqual(300);
+  expect(detail).toEndWith(STOPPED.trim());
+  expect(error.message).not.toContain(AUTHKEY);
+  const sent = commands(exe);
+  expect(sent).toHaveLength(2);
+  expect(sent.filter((command) => command.includes(BOOTSTRAP_TAILNET_KEY))).toEqual([]);
+  expect(vm.joins).toEqual([]);
+  expect(vm.authFile).toBe(false);
 });
 
 test("a VM that cannot reach Paws after the join is a clear tailnet failure", async () => {

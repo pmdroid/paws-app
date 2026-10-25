@@ -157,6 +157,8 @@ const START_TIMEOUT_MS = 60_000;
 const RESET_TIMEOUT_MS = 60_000;
 const TAILSCALE_INSTALL_TIMEOUT_MS = 300_000;
 const TAILSCALE_JOIN_TIMEOUT_MS = 180_000;
+/** `systemctl enable --now` plus about 30 s for the tailscaled socket to answer. */
+const TAILSCALED_START_TIMEOUT_MS = 90_000;
 const TAILNET_REACH_TIMEOUT_MS = 240_000;
 
 const Enrolled = z.strictObject({
@@ -283,8 +285,21 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
       }
       let result: JoinTailnetResult = "member";
       if (state.backend !== "Running") {
-        await join(vm, authKey);
-        result = "joined";
+        // A matching version skips the install, which is what starts tailscaled. On a retry, after a
+        // reboot, or with a stopped daemon, start it here and wait for its socket before the join.
+        const started = await exec(
+          "tailnet",
+          vm,
+          TAILSCALED_START_COMMAND,
+          TAILSCALED_START_TIMEOUT_MS,
+        );
+        if (started.exitCode !== 0)
+          throw failure("tailnet", vm, "tailnet: tailscaled did not start", started, authKey);
+        // A daemon that kept its login (a reboot) can come back already on the tailnet.
+        if (parseTailscaleStatus(started.stdout) !== "Running") {
+          await join(vm, authKey);
+          result = "joined";
+        }
       }
       const reached = await exec(
         "tailnet",
@@ -545,16 +560,38 @@ function parseTailnetProbe(stdout: string): TailnetProbe {
   const newline = stdout.indexOf("\n");
   const first = newline === -1 ? stdout : stdout.slice(0, newline);
   const version = first.startsWith("Version=") ? first.slice("Version=".length).trim() : "";
-  let backend = "";
+  return {
+    version,
+    backend: parseTailscaleStatus(newline === -1 ? "" : stdout.slice(newline + 1)),
+  };
+}
+
+/** `BackendState` from `tailscale status --json`, or empty when it printed none. */
+function parseTailscaleStatus(json: string): string {
   try {
-    const status: unknown = JSON.parse(newline === -1 ? "" : stdout.slice(newline + 1));
+    const status: unknown = JSON.parse(json);
     const state = (status as { BackendState?: unknown } | null)?.BackendState;
-    if (typeof state === "string") backend = state;
+    if (typeof state === "string") return state;
   } catch {
     // No tailscaled yet, or it printed no status: the VM is not on the tailnet.
   }
-  return { version, backend };
+  return "";
 }
+
+/**
+ * Enable and start tailscaled (a no-op when it already runs), then try 15 times, two seconds
+ * apart, for `tailscale status --json` to answer and print it. When the daemon never answers, print
+ * the last journal lines and the unit's state to stderr; the failure keeps only their last 300
+ * characters. The auth key is not on the VM yet, so these lines cannot hold it.
+ */
+const TAILSCALED_START_COMMAND = `sudo sh -c ${shellQuote(
+  [
+    `systemctl enable --now ${TAILSCALED_SERVICE} >/dev/null 2>&1`,
+    "i=0",
+    `until out=$(${TAILSCALE_BINARY} status --json --peers=false 2>/dev/null); do i=$((i+1)); if [ "$i" -ge 15 ]; then { journalctl -u ${TAILSCALED_SERVICE} --no-pager --lines=3 --output=cat; systemctl status ${TAILSCALED_SERVICE} --no-pager --lines=0 | head -n 3; } >&2 2>&1; exit 4; fi; sleep 2; done`,
+    `printf '%s\\n' "$out"`,
+  ].join("; "),
+)}`;
 
 /**
  * Download the pinned static release, check its SHA-256 before unpacking, install the two
