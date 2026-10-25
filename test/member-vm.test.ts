@@ -230,9 +230,17 @@ describe("member VM", () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
     startMemberVm(f.db, { ...f.member, now: f.clock.now() });
-    const row = await drive(f, f.jobs(), settled);
+    const loop = f.jobs();
+    const row = await drive(f, loop, settled);
     expect(row.step).toBe("create");
     expect(row.failure).toMatch(/conflict/);
+    expect(row.createRequestedAt).toBeNull();
+    retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const again = await drive(f, loop, settled);
+    expect(again.step).toBe("create");
+    expect(again.failure).toMatch(/did not create/);
+    expect(f.bootstrap.calls).toHaveLength(0);
+    expect(f.bootstrap.tokens).toHaveLength(0);
   });
 
   test("a failed step keeps the row and VM, hides secrets, and retry reruns it", async () => {
@@ -319,18 +327,37 @@ describe("member VM", () => {
 
     const stale = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(stale.step).toBe("enroll");
-    const refused = await drive(f, loop, settled);
-    expect(refused.failure).toMatch(/identity of a removed runner/);
-    expect(refused.runnerId).toBeNull();
-
-    f.bootstrap.forgetIdentity(ready.vmName);
-    retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const before = f.bootstrap.calls.length;
     const again = await drive(f, loop, (row) => row.step === "health" || !!row.failure);
     expect(again.failure).toBeNull();
     expect(again.runnerId).not.toBe(ready.runnerId);
     expect(getRunner(f.db, again.runnerId!)!.ownerUserId).toBe(f.member.userId);
     expect(f.exeDev.calls.filter((call) => call.operation === "createVm")).toHaveLength(1);
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
+    expect(f.bootstrap.calls.slice(before).map((call) => call.step)).toEqual([
+      "stageToken",
+      "enroll",
+      "resetIdentity",
+      "stageToken",
+      "enroll",
+      "startRunner",
+    ]);
+  });
+
+  test("a VM that keeps a removed runner's identity after a reset fails the enroll step", async () => {
+    const f = await fixture();
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const loop = f.jobs();
+    const health = await drive(f, loop, (row) => row.step === "health");
+    heartbeat(f.db, health.runnerId!, f.clock.now());
+    await drive(f, loop, settled);
+    f.control.setStatus(f.owner, health.runnerId!, "revoked");
+    f.bootstrap.resetIdentity = async () => {};
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const failed = await drive(f, loop, settled);
+    expect(failed.step).toBe("enroll");
+    expect(failed.failure).toMatch(/kept the identity of a removed runner/);
+    expect(failed.runnerId).toBeNull();
   });
 
   test("a failure that a fake exe.dev raises is stored without the exe.dev token", async () => {

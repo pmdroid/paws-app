@@ -89,13 +89,16 @@ async function runStep(
         await exeDev.createVm(vm);
       } catch (error) {
         if (!(isProvisioningError(error) && error.code === "conflict")) throw error;
-        if (asked === null)
+        if (asked === null) {
+          db.run(
+            "UPDATE member_vm SET create_requested_at=NULL WHERE id=? AND step='create' AND failure IS NULL",
+            [row.id],
+          );
           throw new Error(
             `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
-            {
-              cause: error,
-            },
+            { cause: error },
           );
+        }
       }
       advance(db, row, "install", now());
       return { next: "advance" };
@@ -132,33 +135,40 @@ async function runStep(
     }
 
     case "enroll": {
-      if (row.tokenExpiresAt === null || row.tokenExpiresAt - TOKEN_MARGIN_MS <= now()) {
-        const enrollment = mint();
-        await bootstrap.stageToken(vm, enrollment.token);
-        update(db, row, { token_expires_at: enrollment.expiresAt }, now());
-      }
-      update(db, row, { token_expires_at: null }, now());
-      const enrolled = await bootstrap.enroll(vm);
-      const runner = db
-        .query<{ workspaceId: string; ownerUserId: string; status: string }, [string]>(
-          "SELECT workspace_id AS workspaceId,owner_user_id AS ownerUserId,status FROM runner WHERE id=?",
+      let tokenExpiresAt = row.tokenExpiresAt;
+      for (let attempt = 0; ; attempt++) {
+        if (tokenExpiresAt === null || tokenExpiresAt - TOKEN_MARGIN_MS <= now()) {
+          const enrollment = mint();
+          await bootstrap.stageToken(vm, enrollment.token);
+          update(db, row, { token_expires_at: enrollment.expiresAt }, now());
+        }
+        update(db, row, { token_expires_at: null }, now());
+        tokenExpiresAt = null;
+        const enrolled = await bootstrap.enroll(vm);
+        const runner = db
+          .query<{ workspaceId: string; ownerUserId: string; revoked: number }, [string]>(
+            `SELECT workspace_id AS workspaceId,owner_user_id AS ownerUserId,
+            (status='revoked' OR revoked_at IS NOT NULL) AS revoked FROM runner WHERE id=?`,
+          )
+          .get(enrolled.runnerId);
+        if (
+          runner === null ||
+          enrolled.workspaceId !== row.workspaceId ||
+          runner.workspaceId !== row.workspaceId ||
+          runner.ownerUserId !== row.userId
         )
-        .get(enrolled.runnerId);
-      if (
-        runner === null ||
-        enrolled.workspaceId !== row.workspaceId ||
-        runner.workspaceId !== row.workspaceId ||
-        runner.ownerUserId !== row.userId
-      )
-        throw new Error(`${vm}: enrollment returned a runner this member does not own.`);
-      if (runner.status === "revoked")
-        throw new Error(
-          `${vm}: the VM still holds the identity of a removed runner and did not enroll again.`,
-        );
-      update(db, row, { runner_id: enrolled.runnerId }, now());
-      await bootstrap.startRunner(vm);
-      advance(db, row, "health", now());
-      return { next: "advance" };
+          throw new Error(`${vm}: enrollment returned a runner this member does not own.`);
+        if (runner.revoked) {
+          if (attempt > 0)
+            throw new Error(`${vm}: the VM kept the identity of a removed runner after a reset.`);
+          await bootstrap.resetIdentity(vm);
+          continue;
+        }
+        update(db, row, { runner_id: enrolled.runnerId }, now());
+        await bootstrap.startRunner(vm);
+        advance(db, row, "health", now());
+        return { next: "advance" };
+      }
     }
 
     case "health": {
