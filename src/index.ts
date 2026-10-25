@@ -2,6 +2,9 @@ import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { createMemberVmProvisioning, registerMemberVmJob } from "./member-vm";
+import { exeDevTokenReader } from "./provisioning";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
@@ -75,6 +78,7 @@ import {
   type WorkItemRecord,
   runnerHasCapacity,
   applyLinearIssueProject,
+  workspaceMember,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import {
@@ -622,6 +626,38 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
+  const exeDevToken = exeDevTokenReader(paths.home);
+  const memberVmProvisioning = createMemberVmProvisioning({
+    readToken: exeDevToken,
+    installer: () => {
+      try {
+        return readFileSync(new URL("../deploy/linux/install-runner.sh", import.meta.url), "utf8");
+      } catch {
+        return null;
+      }
+    },
+    publicUrl: runtime.publicUrl,
+    repositories: () => listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
+    runnerControl: async () => {
+      const coordinator = await runnerReady;
+      if (!coordinator) return null;
+      return {
+        port: coordinator.port,
+        serverVersion: coordinator.control.serverVersion(),
+        mintEnrollment: (member, input) =>
+          coordinator.control.createEnrollment(
+            {
+              workspaceId: member.workspaceId,
+              userId: member.userId,
+              role: workspaceMember(db, member.workspaceId, member.userId)?.role ?? "member",
+              authenticatedAt: Date.now(),
+              teamIds: [],
+            },
+            input,
+          ),
+      };
+    },
+  });
   // A delegated parent runs each sub-issue in its own Linear session.
   const parents =
     workspace && linear?.tracker && linear.issueLifecycle
@@ -846,6 +882,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     prepare(created) {
       assignments?.register(created.jobs);
       parents?.register(created.jobs);
+      registerMemberVmJob(created.jobs, {
+        provision: memberVmProvisioning,
+        secrets: () => [exeDevToken()],
+      });
       const attached = attachOrchestrator({
         db,
         jobs: created.jobs,
