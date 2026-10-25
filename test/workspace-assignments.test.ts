@@ -33,6 +33,7 @@ import {
 import {
   createWorkspaceAccess,
   createWorkspaceAssignments,
+  delegatorCommitCredit,
   issueWorkspaceBootstrap,
   WORKSPACE_COOKIE,
   workspaceTokenHash,
@@ -108,6 +109,7 @@ function fixture({
   let changeAtIntake: (() => void) | undefined;
   let calls = 0;
   let memberRead: (() => Promise<void>) | undefined;
+  const githubCalls: string[] = [];
   const memberships = {
     async installation() {
       return { id: "org", name: "Workspace" };
@@ -249,8 +251,18 @@ function fixture({
       memberships,
       onboardingReadiness: createOnboardingReadiness(db),
       ...(createVm === undefined ? {} : { createVmAvailable: async () => createVm }),
+      githubAttributionClient: { clientId: "github-client", clientSecret: "github-secret" },
       now: () => clock.now(),
       fetch: (async (input, init) => {
+        // A fake GitHub OAuth: Paws never reaches github.com in tests.
+        if (String(input) === "https://github.com/login/oauth/access_token") {
+          githubCalls.push("token");
+          return Response.json({ access_token: "ghu_onboardingFixture", scope: "" });
+        }
+        if (String(input) === "https://api.github.com/user") {
+          githubCalls.push("user");
+          return Response.json({ id: 4242, login: "morgan-gh", type: "User", name: "Morgan" });
+        }
         if (String(input).endsWith("/oauth/token")) {
           const code = new URLSearchParams(String(init?.body)).get("code");
           return Response.json({ access_token: `fixture-${code}` });
@@ -281,7 +293,13 @@ function fixture({
       headers.set("host", new URL(origin).host);
       return (
         (await currentAccess.handle(
-          new Request(`${origin}${url.pathname}${url.search}`, { headers, method: request.method }),
+          new Request(`${origin}${url.pathname}${url.search}`, {
+            headers,
+            method: request.method,
+            ...(["GET", "HEAD"].includes(request.method)
+              ? {}
+              : { body: await request.arrayBuffer() }),
+          }),
         )) ?? new Response(null, { status: 404 })
       );
     },
@@ -326,6 +344,8 @@ function fixture({
     ownership,
     clock,
     continuations,
+    githubCalls,
+    origin,
     begin,
     callback,
     deliver,
@@ -1169,6 +1189,175 @@ test("at deploy a pending hold without a link gets one link and one new-form act
     expect((await f.callback(await f.begin(link))).headers.get("location")).toBe(
       new URL(link).pathname,
     );
+  } finally {
+    await f.close();
+  }
+});
+
+/** Signs the creator in through their link and lets the held session resume. */
+async function onboarded(f: ReturnType<typeof fixture>) {
+  await f.assignments.authorize(f.event);
+  const link = f.link();
+  const done = await f.callback(await f.begin(link));
+  expect(done.status).toBe(303);
+  const jobs = f.jobs();
+  await jobs.tick();
+  await jobs.tick();
+  expect(f.continuations).toEqual([f.event.dedupeKey]);
+  const items = listWorkItems(f.db);
+  expect(items).toHaveLength(1);
+  return { path: onboardPath(link), cookie: sessionCookie(done), itemId: items[0]!.id };
+}
+
+function formFields(html: string) {
+  const form = html.match(/<form method="post" action="([^"]+)">/);
+  const csrf = html.match(/<input type="hidden" name="csrf" value="([^"]+)">/);
+  return form && csrf ? { action: form[1]!, csrf: csrf[1]! } : null;
+}
+
+function postCredit(
+  f: ReturnType<typeof fixture>,
+  path: string,
+  cookie: string,
+  body: Record<string, string>,
+  query = "",
+) {
+  return fetch(`${f.local}${path}/github${query}`, {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      cookie,
+      origin: f.origin,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams(body).toString(),
+  });
+}
+
+test("an onboarding without a GitHub link resumes and starts with no commit credit", async () => {
+  const f = fixture();
+  try {
+    const { path, cookie, itemId } = await onboarded(f);
+    const html = await (await fetch(`${f.local}${path}`, { headers: { cookie } })).text();
+    expect(html).toContain("Link GitHub to get credit on commits and pull requests (optional).");
+    expect(formFields(html)).toEqual({ action: `${path}/github`, csrf: expect.any(String) });
+    // The optional step never counts as remaining work.
+    expect(html).toContain("2 more steps before Paws starts");
+    expect(delegatorCommitCredit(f.db, itemId)).toBeNull();
+    expect(f.githubCalls).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("linking GitHub from the onboarding page returns to it and credits that run's commits", async () => {
+  const f = fixture();
+  try {
+    const { path, cookie, itemId } = await onboarded(f);
+    const html = await (await fetch(`${f.local}${path}`, { headers: { cookie } })).text();
+    const { csrf } = formFields(html)!;
+
+    const start = await postCredit(f, path, cookie, { csrf, consent: "yes" });
+    expect(start.status).toBe(303);
+    const authorize = new URL(start.headers.get("location")!);
+    expect(`${authorize.origin}${authorize.pathname}`).toBe(
+      "https://github.com/login/oauth/authorize",
+    );
+    expect(authorize.searchParams.get("redirect_uri")).toBe(
+      `${f.origin}/auth/github-attribution/callback`,
+    );
+    expect(
+      f.db.query("SELECT return_path AS returnPath FROM github_attribution_request").get(),
+    ).toEqual({ returnPath: path });
+    expect(f.githubCalls).toEqual([]);
+
+    const attribution = start.headers.get("set-cookie")!.split(";")[0]!;
+    const back = await fetch(
+      `${f.local}/auth/github-attribution/callback?state=${authorize.searchParams.get("state")}&code=fixture`,
+      { redirect: "manual", headers: { cookie: `${cookie}; ${attribution}` } },
+    );
+    expect(back.status).toBe(303);
+    expect(back.headers.get("location")).toBe(`${f.origin}${path}`);
+    expect(f.githubCalls).toEqual(["token", "user"]);
+
+    const linked = await (await fetch(`${f.local}${path}`, { headers: { cookie } })).text();
+    expect(linked).toContain("Commits will credit @morgan-gh.");
+    expect(linked).toMatch(/<h2>GitHub credit<\/h2>.*<span class="label">Linked<\/span>/);
+    expect(formFields(linked)).toBeNull();
+    expect(delegatorCommitCredit(f.db, itemId)).toEqual({
+      id: 4242,
+      login: "morgan-gh",
+      name: "Morgan",
+      email: "4242+morgan-gh@users.noreply.github.com",
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test("a forged return_path in the request cannot move where the GitHub credit callback returns", async () => {
+  const f = fixture();
+  try {
+    const { path, cookie } = await onboarded(f);
+    const { csrf } = formFields(
+      await (await fetch(`${f.local}${path}`, { headers: { cookie } })).text(),
+    )!;
+    const forged = "https://evil.example/steal";
+    const start = await postCredit(
+      f,
+      path,
+      cookie,
+      { csrf, consent: "yes", return_path: forged, returnPath: forged },
+      `?return_path=${encodeURIComponent(forged)}`,
+    );
+    expect(start.status).toBe(303);
+    expect(
+      f.db.query("SELECT return_path AS returnPath FROM github_attribution_request").get(),
+    ).toEqual({ returnPath: path });
+    const authorize = new URL(start.headers.get("location")!);
+    const back = await fetch(
+      `${f.local}/auth/github-attribution/callback?state=${authorize.searchParams.get("state")}&code=fixture&return_path=${encodeURIComponent(forged)}`,
+      {
+        redirect: "manual",
+        headers: { cookie: `${cookie}; ${start.headers.get("set-cookie")!.split(";")[0]!}` },
+      },
+    );
+    expect(back.headers.get("location")).toBe(`${f.origin}${path}`);
+  } finally {
+    await f.close();
+  }
+});
+
+test("the onboarding credit form needs the creator, CSRF and consent, and calls GitHub for none", async () => {
+  const f = fixture();
+  try {
+    const { path, cookie } = await onboarded(f);
+    const { csrf } = formFields(
+      await (await fetch(`${f.local}${path}`, { headers: { cookie } })).text(),
+    )!;
+    expect((await postCredit(f, path, cookie, { csrf: "wrong", consent: "yes" })).status).toBe(403);
+    expect((await postCredit(f, path, cookie, { csrf })).status).toBe(400);
+    expect((await postCredit(f, path, "", { csrf, consent: "yes" })).status).toBe(404);
+    expect(
+      (await postCredit(f, "/onboard/AAAAAAAAAAAAAAAAAAAAAAAAAA", cookie, { csrf, consent: "yes" }))
+        .status,
+    ).toBe(404);
+    const crossSite = await fetch(`${f.local}${path}/github`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        cookie,
+        origin: "https://evil.example",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf, consent: "yes" }).toString(),
+    });
+    expect(crossSite.status).toBe(403);
+    expect((await fetch(`${f.local}${path}/github`, { headers: { cookie } })).status).toBe(405);
+    expect(f.db.query("SELECT count(*) AS n FROM github_attribution_request").get()).toEqual({
+      n: 0,
+    });
+    expect(f.githubCalls).toEqual([]);
   } finally {
     await f.close();
   }

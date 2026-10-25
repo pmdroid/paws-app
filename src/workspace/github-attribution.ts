@@ -1,8 +1,9 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
+  attributionReturnPath,
   beginGitHubAttribution,
-  consumeGitHubAttribution,
+  consumeGitHubAttributionRequest,
   githubAttribution,
   requireAttributionSession,
   revokeGitHubAttribution,
@@ -21,6 +22,8 @@ import {
 const PATH = "/api/workspaces/github-attribution";
 const CALLBACK = "/auth/github-attribution/callback";
 const COOKIE = "__Host-paws-attribution";
+const NOT_CONFIGURED =
+  "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.";
 
 export function createGitHubAttributionLink(options: {
   db: Database;
@@ -35,7 +38,99 @@ export function createGitHubAttributionLink(options: {
   const origin = new URL(options.origin).origin;
   if (options.client && (!options.client.clientId || !options.client.clientSecret))
     throw new Error("Configured GitHub App client metadata is required.");
+  /** Records one pending link and builds GitHub's authorize address for it. */
+  function begin(
+    client: { clientId: string; clientSecret: string },
+    binding: AttributionBinding,
+    returnPath?: string,
+  ) {
+    const state = workspaceSecret();
+    const browser = workspaceSecret();
+    beginGitHubAttribution(options.db, binding, {
+      stateHash: workspaceTokenHash(state),
+      browserHash: workspaceTokenHash(browser),
+      now: now(),
+      ...(returnPath === undefined ? {} : { returnPath }),
+    });
+    const target = new URL("https://github.com/login/oauth/authorize");
+    target.search = new URLSearchParams({
+      client_id: client.clientId,
+      redirect_uri: `${origin}${CALLBACK}`,
+      state,
+      code_challenge: createHash("sha256").update(verifier(browser, state)).digest("base64url"),
+      code_challenge_method: "S256",
+    }).toString();
+    return {
+      authorizeUrl: target.href,
+      cookie: `${COOKIE}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
+    };
+  }
   return {
+    /** The page offers the link only when the server has GitHub App client metadata. */
+    configured: options.client !== undefined,
+    /**
+     * Starts a consented link from a server-rendered page form (the onboarding page). The caller
+     * decides `returnPath` from the route it verified; nothing in the request names it. The form
+     * carries the session's CSRF token and the consent box, and the answer is a redirect to GitHub.
+     */
+    async startFromPage(request: Request, returnPath: string): Promise<Response> {
+      const url = new URL(request.url);
+      if (request.method !== "POST") return reply({ error: "Method not allowed" }, 405);
+      if (attributionReturnPath(returnPath) !== returnPath)
+        throw new Error("GitHub credit can only return to Settings or an onboarding page.");
+      if (
+        url.origin !== origin ||
+        request.headers.get("origin") !== origin ||
+        (request.headers.has("host") &&
+          request.headers.get("host")?.toLowerCase() !== url.host.toLowerCase())
+      )
+        return reply({ error: "Use the configured Paws origin." }, 403);
+      let access = requestWorkspaceSession(options.db, request, now());
+      if (!access) return reply({ error: "Sign in to Paws." }, 401);
+      const form = await readForm(request).catch(() => null);
+      if (form === null || !sameSecret(form.get("csrf"), access.session.csrfToken))
+        return reply({ error: "CSRF token required." }, 403);
+      if (form.get("consent") !== "yes")
+        return reply(
+          { error: "Explicit consent to public commit and pull request attribution is required." },
+          400,
+        );
+      if (!options.client) return reply({ error: NOT_CONFIGURED }, 503);
+      const binding: AttributionBinding = {
+        workspaceId: access.principal.workspaceId,
+        userId: access.principal.userId,
+        sessionHash: access.session.tokenHash,
+      };
+      try {
+        await options.refresh(binding.workspaceId, binding.userId);
+        access = requestWorkspaceSession(options.db, request, now());
+        if (
+          !access ||
+          access.session.tokenHash !== binding.sessionHash ||
+          access.principal.workspaceId !== binding.workspaceId ||
+          access.principal.role === "observer"
+        )
+          throw new Error("Session changed.");
+        requireAttributionSession(options.db, binding, now());
+        const started = begin(options.client, binding, returnPath);
+        return new Response(null, {
+          status: 303,
+          headers: {
+            location: started.authorizeUrl,
+            "set-cookie": started.cookie,
+            "cache-control": "no-store",
+            "referrer-policy": "no-referrer",
+          },
+        });
+      } catch {
+        return reply(
+          {
+            error: "GitHub attribution could not be verified. Check membership and sign in again.",
+          },
+          403,
+        );
+      }
+    },
     async handle(request: Request): Promise<Response | null> {
       const url = new URL(request.url);
       if (![PATH, CALLBACK].includes(url.pathname)) return null;
@@ -88,14 +183,7 @@ export function createGitHubAttributionLink(options: {
             revokeGitHubAttribution(options.db, binding, now());
             return reply({ ok: true });
           }
-          if (!options.client)
-            return reply(
-              {
-                error:
-                  "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
-              },
-              503,
-            );
+          if (!options.client) return reply({ error: NOT_CONFIGURED }, 503);
           const body = await readWorkspaceJson(request);
           if (!record(body) || Object.keys(body).length !== 1 || body["consent"] !== true)
             return reply(
@@ -105,25 +193,9 @@ export function createGitHubAttributionLink(options: {
               },
               400,
             );
-          const state = workspaceSecret();
-          const browser = workspaceSecret();
-          beginGitHubAttribution(options.db, binding, {
-            stateHash: workspaceTokenHash(state),
-            browserHash: workspaceTokenHash(browser),
-            now: now(),
-          });
-          const target = new URL("https://github.com/login/oauth/authorize");
-          target.search = new URLSearchParams({
-            client_id: options.client.clientId,
-            redirect_uri: `${origin}${CALLBACK}`,
-            state,
-            code_challenge: createHash("sha256")
-              .update(verifier(browser, state))
-              .digest("base64url"),
-            code_challenge_method: "S256",
-          }).toString();
-          return reply({ authorizeUrl: target.href }, 200, {
-            "set-cookie": `${COOKIE}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
+          const started = begin(options.client, binding);
+          return reply({ authorizeUrl: started.authorizeUrl }, 200, {
+            "set-cookie": started.cookie,
           });
         }
         const state = url.searchParams.get("state");
@@ -135,19 +207,12 @@ export function createGitHubAttributionLink(options: {
           !/^[A-Za-z0-9_-]{43}$/.test(browser)
         )
           throw new Error("Invalid request.");
-        const revision = consumeGitHubAttribution(options.db, binding, {
+        const { revision, returnPath } = consumeGitHubAttributionRequest(options.db, binding, {
           stateHash: workspaceTokenHash(state),
           browserHash: workspaceTokenHash(browser),
           now: now(),
         });
-        if (!options.client)
-          return reply(
-            {
-              error:
-                "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
-            },
-            503,
-          );
+        if (!options.client) return reply({ error: NOT_CONFIGURED }, 503);
         const code = url.searchParams.get("code");
         if (url.searchParams.has("error") || !code || code.length > 4096)
           throw new Error("Authorization not completed.");
@@ -217,7 +282,8 @@ export function createGitHubAttributionLink(options: {
         return new Response(null, {
           status: 303,
           headers: {
-            location: `${origin}/status/settings/account`,
+            // Stored when the link started; checked against the allow-list once more here.
+            location: `${origin}${attributionReturnPath(returnPath)}`,
             "cache-control": "no-store",
             "referrer-policy": "no-referrer",
             "set-cookie": `${COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
@@ -237,6 +303,37 @@ export function createGitHubAttributionLink(options: {
 
 function verifier(browser: string, state: string) {
   return createHmac("sha256", browser).update(state).digest("base64url");
+}
+function sameSecret(received: string | null, expected: string): boolean {
+  const a = Buffer.from(received ?? "");
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+/** A small `application/x-www-form-urlencoded` body from a page form. */
+async function readForm(request: Request): Promise<URLSearchParams> {
+  if (
+    request.headers.get("content-type")?.split(";")[0]?.trim() !==
+    "application/x-www-form-urlencoded"
+  )
+    throw new Error("Expected a form.");
+  const reader = request.body?.getReader();
+  if (reader === undefined) throw new Error("Missing body");
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+      length += result.value.byteLength;
+      if (length > 4096) {
+        await reader.cancel();
+        throw new Error("Request too large");
+      }
+      chunks.push(result.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
