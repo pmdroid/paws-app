@@ -13,7 +13,9 @@ export {
 } from "./session";
 export type { WorkspacePrincipal } from "./session";
 export { createWorkspaceAccess } from "./access";
-export type { WorkspaceAccess, WorkspaceAccessOptions } from "./access";
+export type { WorkspaceAccess, WorkspaceAccessOptions, WorkspaceClient } from "./access";
+export { createRateLimiter, ONBOARDING_RATE_LIMITS } from "./rate-limit";
+export type { RateLimiter, RateLimitRule } from "./rate-limit";
 export {
   createWorkspaceAccessFromLinear,
   issueVerifiedWorkspaceBootstrap,
@@ -21,7 +23,11 @@ export {
 } from "./runtime";
 export { createWorkspaceIdentityLinks } from "./identity-links";
 
-export { createWorkspaceAssignments } from "./assignments";
+export {
+  createWorkspaceAssignments,
+  ONBOARDING_EXPIRED_BODY,
+  ONBOARDING_HOLD_MS,
+} from "./assignments";
 export type { AssignmentLink, AssignmentOnboarding, WorkspaceAssignments } from "./assignments";
 export { onboardingPage, onboardingSteps } from "./onboarding-page";
 export type {
