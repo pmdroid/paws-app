@@ -956,7 +956,7 @@ test("the creator's link sign-in resumes the held session and lands on its onboa
       /<h2>Membership<\/h2><p class="detail">Member of Platform\.<\/p><\/div><span class="label">Done<\/span>/,
     );
     expect(html).toContain(
-      '<li class="needed"><span class="mark" aria-hidden="true">3</span><div><h2>Your runner</h2>',
+      '<li class="needed" data-runner="needed"><span class="mark" aria-hidden="true">3</span><div><h2>Runner</h2>',
     );
     expect(html).toContain(
       '<li class="later"><span class="mark" aria-hidden="true">4</span><div><h2>Claude and Codex</h2>',
@@ -1029,14 +1029,14 @@ test("the runner step uses the issue's project lead's shared runner, never anoth
       ).text();
     const needed = await open();
     expect(needed).toMatch(
-      /<h2>Your runner<\/h2><p class="detail">Paws runs your issues on a runner you own\. Add a host with an enrollment token\. This step completes when it pairs\.<\/p><a class="action" href="\/status\/runners">Add a host<\/a><\/div><span class="label">Needed<\/span>/,
+      /<h2>Runner<\/h2><p class="detail">You have no runner Paws can use for this task\. Add a host with an enrollment token\. This step completes when it pairs\.<\/p><div class="actions"><button type="button" class="action" data-action="add-host">Add a host<\/button><\/div><\/div><span class="label">Needed<\/span>/,
     );
     expect(needed).not.toContain("colleague-box");
     // The lead shares a runner: the step is ready on the next load, without restarting anything.
     const outbox = listOutbox(f.db).length;
     addRunner("lead-box", "lead", 1);
     expect(await open()).toMatch(
-      /<h2>Your runner<\/h2><p class="detail">Paws runs TEST-1 on lead-box-host, shared by Lena Lead\.<\/p><\/div><span class="label">Ready<\/span>/,
+      /<h2>Runner<\/h2><p class="detail">Lena Lead&#39;s shared runner lead-box-host will run this task\.<\/p><\/div><span class="label">Ready<\/span>/,
     );
     expect(listOutbox(f.db)).toHaveLength(outbox);
   } finally {
@@ -1056,7 +1056,48 @@ test("the runner step offers Create VM when Paws can create one", async () => {
         headers: { cookie: sessionCookie(done) },
       })
     ).text();
-    expect(html).toContain('<a class="action" href="/status/runners">Create VM or add a host</a>');
+    expect(html).toContain(
+      '<button type="button" class="action" data-action="create-vm">Create VM</button>',
+    );
+    expect(html).toContain('<button type="button" class="action" data-action="add-host">');
+  } finally {
+    await f.close();
+  }
+});
+
+test("the onboarding page reads no Linear data and hides runner setup from observers", async () => {
+  const f = fixture({ createVm: true });
+  try {
+    await f.assignments.authorize(f.event);
+    const link = f.link();
+    const done = await f.callback(await f.begin(link));
+    const cookie = sessionCookie(done);
+    let memberReads = 0;
+    f.onMemberRead(async () => {
+      memberReads++;
+    });
+    const sessionReads = f.sessionReads;
+    const open = async () => {
+      const page = await fetch(`${f.local}${onboardPath(link)}`, {
+        redirect: "manual",
+        headers: { cookie },
+      });
+      expect(page.status).toBe(200);
+      return page.text();
+    };
+    const member = await open();
+    expect(member).toContain('data-action="create-vm"');
+    expect(member).toMatch(/<meta name="paws-csrf" content="[^"]+">/);
+    await open();
+    f.db.run(
+      "UPDATE workspace_member SET role='observer',manual_role='observer',source='manual' WHERE user_id=(SELECT id FROM workspace_user WHERE linear_user_id='member')",
+    );
+    const observer = await open();
+    expect(observer).not.toContain('class="action" data-action=');
+    expect(observer).not.toContain('id="host"');
+    expect(observer).toContain("Observers cannot own a runner.");
+    expect(memberReads).toBe(0);
+    expect(f.sessionReads).toBe(sessionReads);
   } finally {
     await f.close();
   }

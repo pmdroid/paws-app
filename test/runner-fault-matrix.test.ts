@@ -280,7 +280,9 @@ async function runRemoteFault(fault: Fault) {
         runner.faultedAttempts++;
         db.run(
           "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES(?,?,?,'session',0,0,'{}',?)",
-          [`helper-${runner.faultedAttempts}`, runnerId, workspace.id, Date.now() + 50],
+          // Held until `recover` sees the deferred start, so a slow machine cannot free the slot
+          // before placement looks at it.
+          [`helper-${runner.faultedAttempts}`, runnerId, workspace.id, Date.now() + 60_000],
         );
       }
       if (fault === "linear-503" && runner.faulty) {
@@ -374,6 +376,8 @@ async function runRemoteFault(fault: Fault) {
     if (fault === "unpaired") runner.faultedAttempts++;
     runner.faulty = false;
     runner.deferredState = getWorkItem(db, (deferred.payload as { itemId: string }).itemId)!.state;
+    if (fault === "busy")
+      db.run("UPDATE runner_helper SET ended_at=? WHERE ended_at IS NULL", [Date.now()]);
     runner.heldSlots = db
       .query<{ held: number }, [number]>(
         "SELECT count(*) AS held FROM runner_work WHERE ended_at IS NULL AND lease_until>?",
