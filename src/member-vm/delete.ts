@@ -107,6 +107,7 @@ async function runDeleteStep(
       // claim until its exe.dev or enrollment call answers. Its outcome decides whether the VM is
       // Paws's and which runner it enrolled, so nothing is decided before it finishes.
       if (provisioningInFlight(db, row.id, now())) return "wait";
+      revokeUnusedEnrollments(db, row);
       const runnerId = row.deleteRunnerId ?? row.runnerId;
       if (row.deleteRunnerId === null && runnerId !== null)
         db.run("UPDATE member_vm SET delete_runner_id=? WHERE id=? AND delete_step='drain'", [
@@ -178,6 +179,7 @@ async function runDeleteStep(
       // The same path as removing a paired runner: revoke the runner and its certificates, then
       // drop their connections. Also every runner that enrolled with a token minted for this VM,
       // so an enrollment whose runner_id was never recorded (Paws stopped mid-step) is revoked too.
+      revokeUnusedEnrollments(db, row);
       for (const runner of vmRunners(db, row)) {
         const fingerprints = updateRunnerStatus(db, {
           runnerId: runner.id,
@@ -274,6 +276,14 @@ function provisioningInFlight(db: Database, id: string, now: number): boolean {
  * The live runners of this VM: the one recorded on the row and every runner that enrolled with a
  * token Create VM minted for it. A host the member paired by hand is never among them.
  */
+function revokeUnusedEnrollments(db: Database, row: MemberVm): void {
+  db.run(
+    `DELETE FROM runner_enrollment WHERE used_at IS NULL AND token_hash IN
+    (SELECT token_hash FROM member_vm_enrollment WHERE member_vm_id=?)`,
+    [row.id],
+  );
+}
+
 function vmRunners(
   db: Database,
   row: MemberVm,
