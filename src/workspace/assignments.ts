@@ -56,6 +56,8 @@ export type AssignmentOnboarding = {
   teamId: string;
   teamName: string | null;
   issueUrl: string | null;
+  /** Linear user ids of the leads of the issue's Linear projects, who may share a runner. */
+  projectLeadIds: string[];
   /** Paws handed the session back to intake. */
   started: boolean;
 };
@@ -121,14 +123,23 @@ function holdIssue(hold: Pick<Hold, "fingerprint">) {
   const fingerprint = JSON.parse(hold.fingerprint) as {
     installation?: { teamId?: unknown };
     issue?: { teamName?: unknown; url?: unknown };
+    spec?: { projectLeadId?: unknown; subIssues?: unknown };
   };
   const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
   const url = text(fingerprint.issue?.url);
+  // The leads of the Linear projects across the delegation, as placement reads them.
+  const subIssues = Array.isArray(fingerprint.spec?.subIssues) ? fingerprint.spec.subIssues : [];
+  const leads = [fingerprint.spec, ...subIssues].map((issue: unknown) =>
+    issue !== null && typeof issue === "object"
+      ? text((issue as { projectLeadId?: unknown }).projectLeadId)
+      : null,
+  );
   return {
     teamId: text(fingerprint.installation?.teamId) ?? "",
     teamName: text(fingerprint.issue?.teamName),
     // Only Linear's own pages become a link on the onboarding page.
     issueUrl: url !== null && url.startsWith("https://linear.app/") ? url : null,
+    projectLeadIds: [...new Set(leads.filter((id) => id !== null))].sort(),
   };
 }
 

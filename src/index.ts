@@ -546,6 +546,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       },
     });
 
+  const exeDevToken = exeDevTokenReader(paths.home);
+  // Create VM is offered only once an exe.dev token is in ~/.paws/secrets.
+  const createVmAvailable = async () =>
+    options?.memberVm !== undefined || (await exeDevToken()) !== null;
   if (linear?.memberships) members = cacheLinearMemberships(linear.memberships);
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
@@ -570,6 +574,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       workspace = startWorkspaceAccess({
         assignments,
         onboardingReadiness: createOnboardingReadiness(db),
+        createVmAvailable,
         githubAttributionClient: (() => {
           try {
             const { clientId, clientSecret } = appActivation.template();
@@ -641,7 +646,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
-  const exeDevToken = exeDevTokenReader(paths.home);
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
@@ -703,11 +707,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     ? createRunnerPlacement({ db, ...(parents ? { sessionActor: parents.actor } : {}) })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
-  // Create VM is offered only once an exe.dev token is in ~/.paws/secrets.
-  const memberVmHttp = createMemberVmHttp({
-    db,
-    available: async () => options?.memberVm !== undefined || (await exeDevToken()) !== null,
-  });
+  const memberVmHttp = createMemberVmHttp({ db, available: createVmAvailable });
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
