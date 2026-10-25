@@ -1,6 +1,7 @@
 import { readCsrfToken } from "./csrf";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
+import { ansiToHtml } from "./ansi";
 
 type Agent = "claude" | "codex" | "grok";
 type Login = {
@@ -34,6 +35,27 @@ export function accountStatus(account: Account, runnerStatus: string | undefined
   if (login?.state === "failed") return "Sign-in failed. Start again to try another sign-in.";
   if (login?.state === "cancelled") return "Sign-in cancelled";
   return "Not connected";
+}
+
+const CLAUDE_HOSTS = ["claude.ai", "claude.com", "console.anthropic.com", "platform.claude.com"];
+const TERMINAL_URL = /https:\/\/[\w\-.~:/?#[\]@!$&()*+,;=%]+/g;
+
+export function terminalMarkup(terminal: string): string {
+  return ansiToHtml(terminal);
+}
+
+export function loginChallenge(
+  agent: Agent,
+  authorization: { url: string; message: string } | null,
+  terminal: string,
+): { url: string; message: string } | null {
+  if (authorization || agent !== "claude") return authorization;
+  const url = [...terminal.matchAll(TERMINAL_URL)]
+    .map((match) => match[0])
+    .find(
+      (candidate) => URL.canParse(candidate) && CLAUDE_HOSTS.includes(new URL(candidate).hostname),
+    );
+  return url ? { url, message: "Sign in to Claude, then paste the code it shows below." } : null;
 }
 
 export function openAgentAccounts(runner: { id: string; name: string }, onClose: () => void): void {
@@ -92,11 +114,15 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
       }
       const terminal = row.querySelector<HTMLElement>("[data-agent-terminal]")!;
       const output = active ? (login?.terminal ?? "") : "";
-      if (terminal.textContent !== output) terminal.textContent = output;
+      if (terminal.dataset.output !== output) {
+        renderMarkup(terminal, terminalMarkup(output));
+        terminal.dataset.output = output;
+      }
       terminal.hidden = !output;
       row.querySelector<HTMLElement>("[data-agent-input]")!.hidden = !active || agent !== "claude";
       const authorization = row.querySelector<HTMLElement>("[data-agent-authorization]")!;
-      const challenge = active ? login?.authorization : null;
+      const challenge =
+        active && login ? loginChallenge(agent, login.authorization, login.terminal) : null;
       const challengeKey = JSON.stringify(challenge);
       if (authorization.dataset.challenge !== challengeKey) {
         if (challenge) {
@@ -244,7 +270,7 @@ function providerUrl(value: string, agent: Agent): string {
       ? ["auth.openai.com", "chatgpt.com"]
       : agent === "grok"
         ? ["accounts.x.ai", "auth.x.ai"]
-        : ["claude.ai", "console.anthropic.com", "platform.claude.com"];
+        : CLAUDE_HOSTS;
   if (
     url.protocol !== "https:" ||
     url.username ||
