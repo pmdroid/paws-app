@@ -1,9 +1,10 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 import {
   agentCatalogSummary,
   approveRunnerPairing,
+  auditWorkspaceAccess,
   createRunnerPairing,
   expireRunnerPairings,
   findRunnerPairing,
@@ -132,6 +133,56 @@ export function createRunnerControl(options: {
         });
       });
       return { runnerId };
+    },
+    /**
+     * Approve a pairing Paws started itself on a VM it created, with `userId` as the runner's owner.
+     * Paws vouches for the host, so any active member qualifies; observers do not. The request
+     * fingerprint read off the VM must match the pending pairing, or nothing changes.
+     */
+    async approveProvisionedPairing(input: {
+      workspaceId: string;
+      userId: string;
+      code: string;
+      requestFingerprint: string;
+    }) {
+      function provisioningMember() {
+        const member = workspaceMember(db, input.workspaceId, input.userId);
+        if (!member?.active || member.role === "observer")
+          throw new Error("Active workspace membership is required to own a runner.");
+      }
+      function pending() {
+        const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(input.code) });
+        if (!pairing || pairing.expiresAt <= now() || pairing.runnerId !== null)
+          throw new Error("Runner pairing is invalid or expired.");
+        if (!sameFingerprint(pairing.requestFingerprint, input.requestFingerprint))
+          throw new Error("Runner pairing fingerprint does not match.");
+        return pairing;
+      }
+      provisioningMember();
+      const pairing = pending();
+      const certificate = await options.authority.issue(pairing.csr, undefined, now());
+      const at = now();
+      const runnerId = workspaceId(at);
+      immediate(db, () => {
+        provisioningMember();
+        if (pending().id !== pairing.id) throw new Error("Runner pairing is invalid or expired.");
+        approveRunnerPairing(db, {
+          pairingId: pairing.id,
+          runnerId,
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          certificate,
+          now: at,
+        });
+        auditWorkspaceAccess(db, {
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          action: "runner.pairing_provisioned",
+          subject: pairing.id,
+          now: at,
+        });
+      });
+      return { runnerId, pairingId: pairing.id };
     },
     claimPairing(id: string, claim: string) {
       const result = immediate(db, () => {
@@ -282,6 +333,12 @@ export function createRunnerControl(options: {
 }
 
 export type RunnerControl = ReturnType<typeof createRunnerControl>;
+
+function sameFingerprint(expected: string, actual: string) {
+  const left = Buffer.from(expected);
+  const right = Buffer.from(actual.trim().toLowerCase());
+  return left.length === right.length && timingSafeEqual(left, right);
+}
 
 function installedVersion() {
   try {
