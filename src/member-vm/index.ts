@@ -6,7 +6,7 @@ export {
   redact as redactMemberVmFailure,
   registerMemberVmJob,
 } from "./job";
-export type { MemberVmJobOptions, MintEnrollment } from "./job";
+export type { MemberVmJobOptions, MemberVmProvisioning, MintEnrollment } from "./job";
 export {
   findMemberVm,
   getMemberVm,
@@ -16,3 +16,5 @@ export {
   startMemberVm,
 } from "./store";
 export type { MemberRef, MemberVm, MemberVmStep } from "./store";
+export { createMemberVmProvisioning } from "./provisioning";
+export type { MemberVmProvisioningSource, MemberVmRunnerControl } from "./provisioning";
