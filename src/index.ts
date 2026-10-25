@@ -68,6 +68,7 @@ import {
   prepareShutdown,
   recoverOnStartup,
   listSkills,
+  listRepositoryCatalog,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -619,6 +620,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           repositoryAccess,
           transcriptObjects,
           skillsRoot: paths.skillsDir,
+          publicUrl: runtime.publicUrl,
+          repositories: () =>
+            listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
           onError: () => console.error("Paws runner connection failed."),
         }).then(async (value) => {
           if (runnerStopping) {

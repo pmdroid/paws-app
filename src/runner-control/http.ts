@@ -33,11 +33,19 @@ const agentPath = new RegExp(
   `^/api/runners/([0-9A-HJKMNP-TV-Z]{26})/coding-agents/(${agentNames})/update$`,
 );
 
+export type RunnerHostConfig = {
+  controlPlaneUrl: string;
+  runnerApiUrl: string;
+  allowedRepositories: readonly string[];
+};
+
 export function createRunnerHttp(
   control: RunnerControl,
   options: {
     /** Per-agent sign-in status added to each runner in the list. */
     agents?: (principal: WorkspacePrincipal, runnerId: string) => readonly unknown[];
+    /** What a new host's config needs: this Paws's endpoints and the repositories it may run. */
+    hostConfig?: () => RunnerHostConfig | null;
   } = {},
 ) {
   let enrolling = 0;
@@ -99,9 +107,13 @@ export function createRunnerHttp(
             agentVersions: control.agentVersions(),
           });
         if (path === "/api/runners/enrollments" && request.method === "POST")
-          return json(
-            control.createEnrollment(principal, enrollmentRequest.parse(await readJson(request))),
-          );
+          return json({
+            ...control.createEnrollment(
+              principal,
+              enrollmentRequest.parse(await readJson(request)),
+            ),
+            config: options.hostConfig?.() ?? null,
+          });
         if (path === "/api/runners/pairings/inspect" && request.method === "POST")
           return json(control.inspectPairing(principal, code.parse(await readJson(request)).code));
         if (path === "/api/runners/pairings/approve" && request.method === "POST")
