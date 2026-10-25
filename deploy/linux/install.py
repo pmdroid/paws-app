@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 
 spec = importlib.util.spec_from_file_location("paws_release", pathlib.Path(__file__).with_name("release.py"))
@@ -19,6 +20,13 @@ spec.loader.exec_module(release)
 BASE = pathlib.Path("/opt/paws-runner")
 STATE = pathlib.Path("/var/lib/paws-runner-install")
 DEFAULT_REGISTRY = "https://registry.npmjs.org/"
+# The runner daemon writes the agent versions Paws sent it here; paws-runner-agents.path starts
+# `install.py agent-requests` when it changes. Root writes what happened to AGENT_STATUS, which the
+# daemon reads and reports in its heartbeat.
+AGENT_REQUESTS = pathlib.Path("/var/lib/paws-runner/agent-requests.json")
+AGENT_STATUS = pathlib.Path("/var/lib/paws-runner-agents/status.json")
+AGENT_REQUEST_LIMIT = 65_536
+AGENT_POLL_SECONDS = 5
 
 
 def sync_directory(path):
@@ -287,7 +295,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             deployed_assets = destination / "deploy/linux"
             root_directory(deployed_assets)
             for name in sorted(release.ASSETS):
-                target = pathlib.Path("/etc/systemd/system") / name if name.endswith((".service", ".socket")) else pathlib.Path("/etc/sysusers.d/paws-runner.conf") if name.endswith(".sysusers") else pathlib.Path("/etc/tmpfiles.d/paws-runner.conf") if name.endswith(".tmpfiles") else None
+                target = pathlib.Path("/etc/systemd/system") / name if name.endswith((".service", ".socket", ".path")) else pathlib.Path("/etc/sysusers.d/paws-runner.conf") if name.endswith(".sysusers") else pathlib.Path("/etc/tmpfiles.d/paws-runner.conf") if name.endswith(".tmpfiles") else None
                 if target is not None:
                     write_atomic(target, (assets / name).read_bytes(), 0o644)
             release.command(["/usr/bin/systemd-sysusers", "/etc/sysusers.d/paws-runner.conf"])
@@ -606,9 +614,168 @@ def agents_from_current(base=BASE):
         os.close(lock)
 
 
+def current_agent_version(folder):
+    """The version folder/current points at, or None."""
+    current = folder / "current"
+    if not current.is_symlink():
+        return None
+    target = os.readlink(current)
+    return target if release.EXACT_VERSION.fullmatch(target) else None
+
+
+def holders(path, locks=pathlib.Path("/proc/locks")):
+    """How many sessions hold a shared flock on the version folder: one per launcher, inherited by what it starts."""
+    try:
+        info = os.stat(path)
+        lines = locks.read_text().splitlines()
+    except OSError:
+        return 0
+    wanted = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+    count = 0
+    for line in lines:
+        # "1: FLOCK  ADVISORY  READ  1234 fd:01:5678 0 EOF"; a blocked request reads "1: -> FLOCK ...".
+        fields = line.split()
+        if len(fields) < 6 or fields[1] != "FLOCK" or fields[3] != "READ":
+            continue
+        try:
+            major, minor, inode = fields[5].split(":")
+            key = (int(major, 16), int(minor, 16), int(inode))
+        except ValueError:
+            continue
+        if key == wanted:
+            count += 1
+    return count
+
+
+def read_agent_requests(path=AGENT_REQUESTS):
+    """The requests the runner forwarded from Paws, or [] when there are none."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return []
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > AGENT_REQUEST_LIMIT:
+            raise ValueError("Invalid agent request file")
+        content = os.read(descriptor, AGENT_REQUEST_LIMIT + 1)
+    finally:
+        os.close(descriptor)
+    return release.parse_agent_requests(content)
+
+
+def read_agent_status(path=AGENT_STATUS):
+    try:
+        status = json.loads(release.read_regular(path, AGENT_REQUEST_LIMIT))
+    except (FileNotFoundError, ValueError):
+        return {"format": 1, "agents": {}}
+    if not isinstance(status, dict) or status.get("format") != 1 or not isinstance(status.get("agents"), dict):
+        return {"format": 1, "agents": {}}
+    return status
+
+
+def resolve_requested_agent(request, bun, registry):
+    """Resolve the requested version's lockfile and check it installs exactly what Paws sent."""
+    agent, version = request["agent"], request["version"]
+    package = release.AGENT_PACKAGES[agent]
+    with tempfile.TemporaryDirectory(prefix="agent-resolve-", dir=STATE) as workspace:
+        try:
+            entry = release.agent_entry(bun, agent, version, pathlib.Path(workspace), registry=registry)
+        except subprocess.TimeoutExpired as error:
+            raise AgentInstallError(agent, version, "resolving its lockfile timed out") from error
+        except ValueError as error:
+            raise AgentInstallError(agent, version, str(error)) from error
+    try:
+        release.check_agent_entry(agent, entry)
+    except ValueError as error:
+        raise AgentInstallError(agent, version, str(error)) from error
+    pinned = {item["path"]: item for item in entry["packages"]}
+    top = pinned.get(package)
+    if top is None or top["version"] != version or top["integrity"] != request["integrity"]:
+        raise AgentInstallError(agent, version, f"npm's integrity for {package}@{version} is not the one Paws sent")
+    native = release.AGENT_NATIVE_PACKAGE[agent]
+    if request["nativeVersion"] is not None and pinned.get(native, {}).get("version") != request["nativeVersion"]:
+        raise AgentInstallError(agent, version, f"it resolves {native}@{pinned.get(native, {}).get('version')}, not {request['nativeVersion']} as Paws checked")
+    return entry
+
+
+def apply_agent_request(request, state, bun, base, registry, save):
+    """Install the requested version beside the others, then point current at it once no session holds the old one."""
+    agent, version = request["agent"], request["version"]
+    folder = base / "agents" / agent
+    earlier = state.get("request") or {}
+    # A request already waiting for sessions stays "waiting" between checks.
+    outcome = {"id": request["id"], "version": version, "status": "waiting" if earlier.get("id") == request["id"] and earlier.get("status") == "waiting" else "installing"}
+    if earlier.get("sessions") is not None and outcome["status"] == "waiting":
+        outcome["sessions"] = earlier["sessions"]
+    state["request"] = outcome
+    if outcome["status"] == "installing":
+        save()
+    try:
+        if request["integrity"] is None:
+            if not (folder / version).is_dir() or (folder / version).is_symlink():
+                raise AgentInstallError(agent, version, "it is not installed on this runner, so it cannot be switched back to")
+        elif not (folder / version).is_dir():
+            install_agent_version(agent, resolve_requested_agent(request, bun, registry), bun, base, registry)
+        before = current_agent_version(folder)
+        if switch_current(folder, version) == "waiting":
+            outcome.update(status="waiting", sessions=holders(folder / before))
+        else:
+            if before is not None and before != version:
+                state["previous"] = before
+            outcome.pop("sessions", None)
+            outcome["status"] = "installed"
+    except (ValueError, OSError) as error:
+        outcome.clear()
+        outcome.update(id=request["id"], version=version, status="failed", error=" ".join(str(error).split())[:500] or "The install failed.")
+    save()
+    return outcome["status"]
+
+
+def process_agent_requests(bun, base=BASE, registry=DEFAULT_REGISTRY, requests=AGENT_REQUESTS, status_path=AGENT_STATUS, sleep=time.sleep):
+    """Apply what the runner forwarded from Paws. While a session holds an old version, check again every few seconds.
+
+    A request is applied once: a finished or failed request id is not retried until Paws sends a new one.
+    Requests the runner withdraws stop waiting; the version folder they installed stays.
+    """
+    status = read_agent_status(status_path)
+    for agent in release.AGENT_PACKAGES:
+        current = current_agent_version(base / "agents" / agent)
+        entry = status["agents"].setdefault(agent, {"previous": None, "request": None})
+        entry["current"] = current
+    save = lambda: write_atomic(status_path, json.dumps(status, sort_keys=True).encode(), 0o644)
+    while True:
+        try:
+            pending = read_agent_requests(requests)
+        except (OSError, ValueError) as error:
+            print(json.dumps({"event": "agent_requests_invalid", "message": str(error)[:200]}), file=sys.stderr)
+            pending = []
+        waiting = False
+        lock = lock_agents()
+        try:
+            for request in pending:
+                state = status["agents"][request["agent"]]
+                done = state.get("request")
+                if done and done.get("id") == request["id"] and done.get("status") in ("installed", "failed"):
+                    continue
+                if apply_agent_request(request, state, bun, base, registry, save) == "waiting":
+                    waiting = True
+            for agent in release.AGENT_PACKAGES:
+                status["agents"][agent]["current"] = current_agent_version(base / "agents" / agent)
+            save()
+        finally:
+            os.close(lock)
+        if not waiting:
+            return status
+        sleep(AGENT_POLL_SECONDS)
+
+
 def main():
     if sys.argv[1:] == ["agents"]:
         print(json.dumps({"agents": agents_from_current()}))
+        return
+    if sys.argv[1:] == ["agent-requests"]:
+        prerequisites()
+        print(json.dumps(process_agent_requests(BASE / "bin/bun")))
         return
     parser = argparse.ArgumentParser()
     for name in ("manifest", "signature", "artifact", "release-key"):

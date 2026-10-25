@@ -10,7 +10,6 @@ import argparse
 import importlib.util
 import json
 import pathlib
-import subprocess
 import tempfile
 
 
@@ -22,33 +21,7 @@ spec.loader.exec_module(release)
 
 def agent_entry(bun, agent, version, workspace, seed=None, registry=None):
     """Resolve one agent's lockfile. `seed` is a bun.lock whose resolutions are kept; `registry` replaces npm (tests)."""
-    package = release.agent_package_json(agent, version)
-    (workspace / "package.json").write_text(json.dumps(package))
-    if seed is not None:
-        (workspace / "bun.lock").write_bytes(seed)
-    home = workspace / "home"
-    home.mkdir()
-    completed = subprocess.run(
-        [str(bun), "install", "--lockfile-only", "--ignore-scripts"],
-        cwd=workspace,
-        env={**release.COMMAND_ENV, "HOME": str(home), **({"BUN_CONFIG_REGISTRY": registry} if registry else {})},
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        timeout=600,
-    )
-    if completed.returncode != 0:
-        raise ValueError(f"Could not resolve the {agent} lockfile: {completed.stderr.decode(errors='replace')[-800:]}")
-    lockfile = release.parse_lockfile((workspace / "bun.lock").read_text())
-    lockfile["workspaces"] = {"": {"name": package["name"], "dependencies": package["dependencies"]}}
-    lockfile.pop("trustedDependencies", None)
-    packages = []
-    for path, locked in sorted(lockfile["packages"].items()):
-        # The installer always names the registry itself; a lockfile entry never points at a tarball URL.
-        if registry and isinstance(locked[1], str) and locked[1].startswith(registry):
-            locked[1] = ""
-        name, _, exact = locked[0].rpartition("@")
-        packages.append({"path": path, "name": name, "version": exact, "integrity": locked[3]})
-    return {"package": release.AGENT_PACKAGES[agent], "version": version, "packages": packages, "lockfile": lockfile}
+    return release.agent_entry(bun, agent, version, workspace, seed, registry)
 
 
 def build(arguments):
