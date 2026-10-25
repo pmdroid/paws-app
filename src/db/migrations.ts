@@ -2651,6 +2651,10 @@ CREATE TABLE agent_version (
   checked_at INTEGER NOT NULL,
   PRIMARY KEY (agent, version)
 ) STRICT;
+CREATE TABLE agent_catalog_refresh (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  completed_at INTEGER NOT NULL
+) STRICT;
 `,
   },
 ];

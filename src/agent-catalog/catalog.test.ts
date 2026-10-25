@@ -289,6 +289,53 @@ describe("agent version catalog", () => {
     expect(row("wrap", "1.0.0")).toMatchObject({ status: "eligible", nativeVersion: "0.5.0" });
   });
 
+  test("a failed read revalidates the kept native version", async () => {
+    const agents = { wrap: { package: "wrap-acp", native: "core-cli" } };
+    const { db, npm, catalog, errors, row } = setup(agents);
+    const old = NOW - 72 * HOUR;
+    npm.publish("wrap-acp", "1.0.0", {
+      publishedAt: old,
+      integrity: sha(1),
+      dependencies: { "core-cli": "^0.5.0" },
+    });
+    npm.publish("core-cli", "0.5.0", { publishedAt: old, integrity: sha(2) });
+    npm.publish("core-cli", "0.5.1", {
+      publishedAt: old,
+      integrity: sha(3),
+      optionalDependencies: { "core-cli-linux-x64": "0.5.1" },
+    });
+    npm.publish("core-cli-linux-x64", "0.5.1", { publishedAt: old, integrity: sha(4) });
+    await catalog.refresh();
+    expect(row("wrap", "1.0.0")).toMatchObject({ status: "eligible", nativeVersion: "0.5.1" });
+
+    // 0.5.1's tarball is replaced while its platform package cannot be read.
+    npm.replaceIntegrity("core-cli", "0.5.1", sha(9));
+    const flaky = createAgentCatalog({
+      db,
+      agents,
+      now: () => NOW + HOUR,
+      registry: {
+        fetchPackage: (name, etag, signal) =>
+          name === "core-cli-linux-x64"
+            ? Promise.reject(new Error("offline"))
+            : npm.registry.fetchPackage(name, etag, signal),
+      },
+      onError: (error) => errors.push(error),
+    });
+    await flaky.refresh();
+    expect(row("wrap", "1.0.0")?.status).toBe("ineligible");
+    expect(row("wrap", "1.0.0")?.reason).toContain("integrity of core-cli@0.5.1 changed");
+
+    // With every read fresh again, the adapter moves to the native version that still passes.
+    await createAgentCatalog({
+      db,
+      agents,
+      now: () => NOW + 2 * HOUR,
+      registry: npm.registry,
+    }).refresh();
+    expect(row("wrap", "1.0.0")).toMatchObject({ status: "eligible", nativeVersion: "0.5.0" });
+  });
+
   test("a failed read still lets a fresh refusal through", async () => {
     const agents = { wrap: { package: "wrap-acp", native: "core-cli" } };
     const { db, npm, catalog, errors, row } = setup(agents);
@@ -407,6 +454,40 @@ describe("agent version catalog", () => {
     expect(listAgentVersions(db).map((row) => [row.version, row.status])).toEqual([
       ["1.0.0", "eligible"],
     ]);
+  });
+
+  test("a refresh that did not finish on fresh reads stays due", async () => {
+    const agents = {
+      first: { package: "first-agent", native: "first-agent" },
+      second: { package: "second-agent", native: "second-agent" },
+    };
+    const { db, npm, errors } = setup(agents);
+    const old = NOW - 72 * HOUR;
+    npm.publish("first-agent", "1.0.0", { publishedAt: old, integrity: sha(1) });
+    npm.publish("second-agent", "1.0.0", { publishedAt: old, integrity: sha(2) });
+    let clock = NOW;
+    let failSecond = true;
+    const catalog = createAgentCatalog({
+      db,
+      agents,
+      now: () => clock,
+      registry: {
+        fetchPackage: (name, etag, signal) =>
+          failSecond && name === "second-agent"
+            ? Promise.reject(new Error("offline"))
+            : npm.registry.fetchPackage(name, etag, signal),
+      },
+      onError: (error) => errors.push(error),
+    });
+    // The first agent is saved, but the second could not be read: the day's refresh is not done.
+    expect(await catalog.refreshIfDue()).toBe(true);
+    expect(listAgentVersions(db).map((entry) => entry.agent)).toEqual(["first"]);
+    clock += HOUR;
+    failSecond = false;
+    expect(await catalog.refreshIfDue()).toBe(true);
+    expect(listAgentVersions(db).map((entry) => entry.agent)).toEqual(["first", "second"]);
+    clock += HOUR;
+    expect(await catalog.refreshIfDue()).toBe(false);
   });
 
   test("refreshIfDue reads the registry once a day", async () => {
