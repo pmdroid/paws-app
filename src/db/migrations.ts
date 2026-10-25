@@ -2700,7 +2700,7 @@ function requireFinishedProjectItems(db: Database): void {
   const item = db
     .query<{ id: string; identifier: string; state: string }, []>(
       `SELECT id, linear_identifier AS identifier, state FROM work_item
-       WHERE project_approval_id IS NOT NULL AND state NOT IN ('completed','merged','cancelled')
+       WHERE project_approval_id IS NOT NULL AND state NOT IN ('completed','merged','cancelled','failed')
        ORDER BY created_at, id LIMIT 1`,
     )
     .get();
