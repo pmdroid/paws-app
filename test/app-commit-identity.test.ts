@@ -189,10 +189,10 @@ test("async and recovery checkpoints override ambient identities and preserve re
   expect((await invoke(["config", "user.name"])).trim()).toBe("VM Administrator");
 });
 
-test("explicit OAuth and gh modes do not acquire an App commit policy", () => {
-  for (const auth of ["oauth", "gh"] as const) {
-    const provider = createGitHubTokenProvider({ auth, repo: "acme/widgets" });
-    expect(provider.source).toBe(auth);
-    expect(provider.botIdentity).toBeUndefined();
+test("removed OAuth and gh modes are rejected instead of skipping the App commit policy", () => {
+  for (const auth of ["oauth", "gh"]) {
+    expect(() => createGitHubTokenProvider({ auth: auth as never, repo: "acme/widgets" })).toThrow(
+      'github.auth must be "app"',
+    );
   }
 });

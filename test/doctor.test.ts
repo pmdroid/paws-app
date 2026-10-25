@@ -6,8 +6,7 @@ import { join } from "node:path";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
 import type { AgentsConfig } from "../src/config";
-import { emptyConfigFile, PAWS_GITHUB_OAUTH_CLIENT_ID } from "../src/config";
-import { FILE_TOKEN_STORE_DOCTOR_WARNING, MISSING_GITHUB_CLIENT_ID_MESSAGE } from "../src/auth";
+import { emptyConfigFile } from "../src/config";
 import {
   doctorChecks,
   formatDoctor,
@@ -28,8 +27,10 @@ const NAMES = [
   "linear-mode",
   "linear-workspace",
   "linear-team",
-  "gh-login",
-  "gh-push",
+  "github-app",
+  "github-app-installation",
+  "github-app-push",
+  "github-rate",
   "claude-acp",
   "codex-acp",
   "claude",
@@ -45,11 +46,14 @@ test("doctor reports the local prerequisites and skips tunnel checks", () => {
   const text = formatDoctor(checks);
   expect(text.startsWith("paws doctor\n")).toBe(true);
   expect(text).toContain("ok claude:");
-  expect(text).toContain("ok gh-login:");
+  expect(text).toContain("ok github-app: app 99 configured");
+  expect(text).toContain("ok github-app-installation: installation 22 on pmdroid/paws-demo");
+  expect(text).toContain("ok github-app-push: push access to pmdroid/paws-demo");
+  expect(text).not.toContain("token-store");
+  expect(text).not.toContain("github-auth");
   expect(text).not.toContain("ngrok");
   expect(text).not.toContain("linear-webhook");
   expect(text).not.toContain("public-url");
-  expect(text).not.toContain("github-app");
   expect(text).not.toContain("BEGIN OPENSSH");
   expect(text).not.toContain("\n  fix:");
 });
@@ -111,7 +115,7 @@ test("doctor names what is missing and does not print secret values", () => {
         LINEAR_WEBHOOK_SECRET: "whsec_do_not_print",
         GITHUB_APP_PRIVATE_KEY_PATH: "/tmp/missing.pem",
       },
-      { webhooks: true, githubAuth: "app" },
+      { webhooks: true },
     ),
   );
   expect(checks.every((item) => item.ok)).toBe(false);
@@ -356,13 +360,10 @@ test("doctor uses role profiles and Grok status carried by the real probe", () =
   expect(checks.find((item) => item.name === "codex")?.note).toBe(true);
 });
 
-test("doctor requires Linear credentials even with GitHub OAuth", () => {
+test("doctor requires Linear credentials alongside the GitHub App checks", () => {
   const ready = probe(true);
   ready.facts = {
     ...ready.facts,
-    trackerKind: "linear",
-    githubAuth: "oauth",
-    oauthClientId: "Iv1.real-client",
     team: null,
     teamId: null,
     linear: {
@@ -373,93 +374,56 @@ test("doctor requires Linear credentials even with GitHub OAuth", () => {
       teamFound: false,
       error: null,
     },
-    githubDoctor: githubReady(),
   };
   const checks = doctorChecks(ready);
   expect(checks.find((item) => item.name === "linear")?.ok).toBe(false);
   const names = checks.map((item) => item.name);
-  expect(names).toContain("github-auth");
-  expect(names).toContain("github-push");
-  expect(names).not.toContain("github-label");
-  expect(names).toContain("github-rate");
-  expect(names).toContain("github-token-store");
-  expect(names).toContain("linear");
-  expect(names).toContain("linear-mode");
-  expect(names).toContain("linear-team");
-  expect(names).not.toContain("gh-login");
-  expect(names).not.toContain("gh-push");
-  const text = formatDoctor(checks);
-  expect(text).toContain("ok github-auth: signed in as octocat");
-  expect(text).toContain("ok github-rate: 4800 remaining");
-  expect(text).toContain("ok github-token-store: keychain");
-  expect(text).toContain("missing linear:");
-  expect(text).not.toContain("gho_");
+  for (const name of ["github-app", "github-app-installation", "github-app-push", "linear"])
+    expect(names).toContain(name);
+  for (const name of ["github-auth", "github-token-store", "gh-login", "gh-push"])
+    expect(names).not.toContain(name);
+  expect(formatDoctor(checks)).not.toContain("ghs_");
 });
 
-test("a placeholder GitHub client id is one actionable line", () => {
+test("missing App credentials are one actionable line that names the GitHub App doc", () => {
   const ready = probe(true);
-  ready.facts = {
-    ...ready.facts,
-    trackerKind: "linear",
-    githubAuth: "oauth",
-    oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID,
-    githubDoctor: { ...githubReady(), placeholder: true },
-  };
+  ready.facts = { ...ready.facts, githubDoctor: { ...githubReady(), appId: null } };
   const checks = doctorChecks(ready);
-  const missing = formatDoctor(checks)
-    .split("\n")
-    .filter((line) => line.startsWith("missing"));
-  expect(missing).toEqual([`missing github-auth: ${MISSING_GITHUB_CLIENT_ID_MESSAGE}`]);
-  expect(formatDoctor(checks)).toContain(`fix: ${MISSING_GITHUB_CLIENT_ID_MESSAGE}`);
-  expect(formatDoctor(checks)).not.toContain("login github");
-  expect(formatDoctor(checks)).not.toContain(PAWS_GITHUB_OAUTH_CLIENT_ID);
-
-  const empty = probe(true);
-  empty.facts = {
-    ...ready.facts,
-    trackerKind: "linear",
-    githubAuth: "oauth",
-    oauthClientId: "",
-    githubDoctor: { ...githubReady(), placeholder: false },
-  };
-  expect(formatDoctor(doctorChecks(empty))).toContain(MISSING_GITHUB_CLIENT_ID_MESSAGE);
+  const text = formatDoctor(checks);
+  const missing = text.split("\n").filter((line) => line.startsWith("missing"));
+  expect(missing).toEqual(["missing github-app: GitHub App id is required"]);
+  expect(text).toContain("docs/github-app.md");
+  expect(checks.map((item) => item.name)).not.toContain("github-app-installation");
+  expect(text).not.toContain("login github");
 });
 
-test("a file token store is a note and does not fail doctor", () => {
-  const ready = probe(true);
-  ready.facts = {
-    ...ready.facts,
-    trackerKind: "linear",
-    githubAuth: "oauth",
-    oauthClientId: "Iv1.real-client",
+test("a missing installation or push access fails with the App fix", () => {
+  const notInstalled = probe(true);
+  notInstalled.facts = {
+    ...notInstalled.facts,
     githubDoctor: {
       ...githubReady(),
-      storeKind: "file",
-      storeWarning: FILE_TOKEN_STORE_DOCTOR_WARNING,
+      installation: { ok: false, detail: "the GitHub App is not installed on pmdroid/paws-demo" },
+      push: { ok: false, detail: "GitHub App installation was not checked" },
     },
   };
-  const checks = doctorChecks(ready);
-  expect(checks.every((item) => item.ok)).toBe(true);
-  const text = formatDoctor(checks);
-  expect(text).toContain("note github-token-store:");
-  expect(text).toContain("github-oauth.json");
-  expect(text).not.toContain("missing");
-});
+  const installation = doctorChecks(notInstalled).find(
+    (item) => item.name === "github-app-installation",
+  );
+  expect(installation?.ok).toBe(false);
+  expect(installation?.fix).toContain("Settings > Integrations");
 
-test("Linear tracking keeps independent GitHub OAuth checks", () => {
-  const ready = probe(true);
-  ready.facts = {
-    ...ready.facts,
-    trackerKind: "linear",
-    githubAuth: "oauth",
-    oauthClientId: "Iv1.real-client",
-    githubDoctor: githubReady(),
+  const readOnly = probe(true);
+  readOnly.facts = {
+    ...readOnly.facts,
+    githubDoctor: {
+      ...githubReady(),
+      push: { ok: false, detail: "no push access to pmdroid/paws-demo" },
+    },
   };
-  const names = doctorChecks(ready).map((item) => item.name);
-  expect(names).toContain("linear");
-  expect(names).toContain("github-auth");
-  expect(names).not.toContain("github-label");
-  expect(names).not.toContain("gh-login");
+  const push = doctorChecks(readOnly).find((item) => item.name === "github-app-push");
+  expect(push?.ok).toBe(false);
+  expect(push?.fix).toContain("Contents, Pull requests and Issues write");
 });
 
 test("doctor fails with one actionable line when grok has no auth method", async () => {
@@ -521,12 +485,11 @@ function probe(
 
 function githubReady(): GitHubDoctorFacts {
   return {
-    placeholder: false,
-    storeKind: "keychain",
-    storeWarning: null,
-    signedIn: { ok: true, detail: "signed in as octocat" },
+    appId: "99",
+    installationId: "22",
+    privateKeyPath: "/tmp/paws-home/.paws/secrets/github-app.pem",
+    installation: { ok: true, detail: "installation 22 on pmdroid/paws-demo" },
     push: { ok: true, detail: "push access to pmdroid/paws-demo" },
-    label: { ok: true, detail: "paws" },
     rate: { ok: true, detail: "4800 remaining" },
   };
 }
@@ -536,26 +499,14 @@ function greenFacts(): ProbeFacts {
     configError: null,
     configured: true,
     linearCommentMode: false,
-    githubAuth: "gh",
     trackerKind: "linear",
-    oauthClientId: null,
-    githubDoctor: {
-      placeholder: false,
-      storeKind: "gh",
-      storeWarning: null,
-      signedIn: { ok: true, detail: "not used" },
-      push: { ok: true, detail: "not used" },
-      label: { ok: true, detail: "not used" },
-      rate: { ok: true, detail: "not used" },
-    },
+    githubDoctor: githubReady(),
     webhooks: false,
     workspace: "Paws Demo",
     publicUrl: null,
     repo: "pmdroid/paws-demo",
     team: "ENG",
     teamId: "team_eng",
-    ghLogin: { ok: true, detail: "logged in as paws" },
-    ghPush: { ok: true, detail: "push access to pmdroid/paws-demo" },
     claudeAdapter: { ok: true, detail: "claude-agent-acp 0.88.0" },
     codexAdapter: { ok: true, detail: "codex-acp 2.1.1" },
     claudeLogin: { ok: true, detail: "claude.ai" },
@@ -577,16 +528,13 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
     configError: null,
     configured: false,
     linearCommentMode: false,
-    githubAuth: "gh",
     trackerKind: "linear",
-    oauthClientId: null,
     githubDoctor: {
-      placeholder: false,
-      storeKind: "gh",
-      storeWarning: null,
-      signedIn: { ok: false, detail: "not signed in" },
-      push: { ok: false, detail: "repository is not pushable" },
-      label: { ok: false, detail: "paws label is missing" },
+      appId: null,
+      installationId: null,
+      privateKeyPath: "/tmp/missing.pem",
+      installation: { ok: false, detail: "GitHub App credentials are missing" },
+      push: { ok: false, detail: "GitHub App installation was not checked" },
       rate: { ok: false, detail: "rate limit was not read" },
     },
     webhooks: false,
@@ -594,8 +542,6 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
     repo: null,
     team: null,
     teamId: null,
-    ghLogin: { ok: false, detail: "gh auth status failed" },
-    ghPush: { ok: false, detail: "repository must be owner/name" },
     claudeAdapter: { ok: false, detail: "claude-agent-acp is not installed" },
     codexAdapter: { ok: false, detail: "codex-acp is not installed" },
     claudeLogin: { ok: false, detail: "claude auth login" },

@@ -9,7 +9,6 @@ import {
   loadEnv,
   loadRuntime,
   parseConfigToml,
-  PAWS_GITHUB_OAUTH_CLIENT_ID,
   pawsPaths,
   renderConfigToml,
   writeConfigFile,
@@ -28,7 +27,7 @@ describe("config", () => {
       linearViewerId: "human",
       linearSecret: "secrets/linear-api-key",
       linearClientFile: null,
-      githubAuth: "gh" as const,
+      githubAuth: "app" as const,
       repo: "acme/one",
       checkout: paths.home,
       maxTurns: 40,
@@ -141,7 +140,7 @@ describe("config", () => {
       linearViewerId: "viewer_1",
       linearSecret: "secrets/linear-oauth.json",
       linearClientFile: null,
-      githubAuth: "gh",
+      githubAuth: "app",
       repo: "pmdroid/paws-demo",
       checkout: home,
       maxTurns: 40,
@@ -170,7 +169,7 @@ describe("config", () => {
     expect(runtime.linearCommentMode).toBe(false);
     expect(runtime.linearAccessToken).toBe("lin_oauth_from_file");
     expect(runtime.repo).toBe("other/repo");
-    expect(runtime.githubAuth).toBe("gh");
+    expect(runtime.githubAuth).toBe("app");
     expect(runtime.maxTurns).toBe(40);
     expect(runtime.webhooks).toBe(false);
 
@@ -255,7 +254,7 @@ describe("config", () => {
     expect(statSync(paths.configFile).mode & 0o777).toBe(0o600);
   });
 
-  test("old configs without github.auth or tracker load as gh and linear", () => {
+  test("old configs without github.auth or tracker load as the App and linear", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
@@ -265,14 +264,13 @@ describe("config", () => {
       { mode: 0o600 },
     );
     const runtime = loadRuntime({ PAWS_HOME: home });
-    expect(runtime.githubAuth).toBe("gh");
+    expect(runtime.githubAuth).toBe("app");
     expect(runtime.trackerKind).toBe("linear");
-    expect(runtime.oauthClientId).toBeNull();
     expect(runtime.file.githubAuth).toBeNull();
     expect(runtime.file.trackerSpecified).toBe(false);
   });
 
-  test("Linear tracker config keeps GitHub OAuth authentication", () => {
+  test("config.toml accepts only github.auth = app and drops oauth_client_id", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
@@ -282,8 +280,7 @@ describe("config", () => {
       linearViewerId: "viewer_1",
       linearSecret: "secrets/linear-api-key",
       linearClientFile: null,
-      githubAuth: "oauth",
-      oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID,
+      githubAuth: "app",
       trackerKind: "linear",
       repo: "pmdroid/paws-demo",
       checkout: home,
@@ -291,16 +288,15 @@ describe("config", () => {
       maxAwakeMs: 1_000,
       implementer: "claude",
     });
-    const runtime = loadRuntime({
-      PAWS_HOME: home,
-      PAWS_GITHUB_CLIENT_ID: "Iv1.from-env",
-    });
-    expect(runtime.githubAuth).toBe("oauth");
-    expect(runtime.oauthClientId).toBe("Iv1.from-env");
-    expect(runtime.trackerKind).toBe("linear");
+    const runtime = loadRuntime({ PAWS_HOME: home });
+    expect(runtime.configError).toBeNull();
+    expect(runtime.githubAuth).toBe("app");
     const text = readFileSync(paths.configFile, "utf8");
-    expect(text).toContain('auth = "oauth"');
-    expect(text).toContain('kind = "linear"');
-    expect(text).not.toContain("[tracker.github]");
+    expect(text).toContain('auth = "app"');
+    expect(text).not.toContain("oauth_client_id");
+    for (const auth of ["oauth", "gh"]) {
+      writeFileSync(paths.configFile, `[github]\nauth = "${auth}"\n`, { mode: 0o600 });
+      expect(loadRuntime({ PAWS_HOME: home }).configError).toContain("docs/github-app.md");
+    }
   });
 });

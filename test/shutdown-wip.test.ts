@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../src/acp";
 import {
   beginImplementRun,
+  saveRunCommitPolicy,
   bindLinearSessionTask,
   enqueueJob,
   ensureLinearSession,
@@ -17,6 +18,12 @@ import { JOB_KIND } from "../src/core";
 import { startPaws } from "../src/index";
 import { linearTokenPath, writeStoredToken } from "../src/linear";
 import { tempHome } from "./helpers";
+
+/** App mode commits WIP only under a run commit policy. */
+const APP_POLICY = {
+  bot: { appId: "1", login: "paws-test[bot]", id: 1 },
+  credit: null,
+};
 
 describe("shutdown WIP", () => {
   test("stop commits WIP on the item branch before the run is recoverable", async () => {
@@ -34,11 +41,15 @@ describe("shutdown WIP", () => {
       branchName: "paws/eng-21",
       now: Date.now(),
     });
-    beginImplementRun(paws.db, "ENG-21", Date.now(), {
-      phase: "running",
-      wipCommit: "wip",
-      turn: 1,
-    });
+    saveRunCommitPolicy(
+      paws.db,
+      beginImplementRun(paws.db, "ENG-21", Date.now(), {
+        phase: "running",
+        wipCommit: "wip",
+        turn: 1,
+      }).run.id,
+      APP_POLICY,
+    );
     await paws.stop();
 
     expect(
@@ -185,7 +196,11 @@ describe("shutdown WIP", () => {
       expect(existsSync(evidence)).toBe(false);
       expect(existsSync(`${evidence}.descendant`)).toBe(false);
       insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
-      beginImplementRun(paws.db, "ENG-21", Date.now(), { phase: "running", turn: 1 });
+      saveRunCommitPolicy(
+        paws.db,
+        beginImplementRun(paws.db, "ENG-21", Date.now(), { phase: "running", turn: 1 }).run.id,
+        APP_POLICY,
+      );
       const stopping = paws.stop();
       expect(paws.stop()).toBe(stopping);
       await stopping;
@@ -227,7 +242,11 @@ describe("shutdown WIP", () => {
         branchName: "paws/eng-21",
         now: Date.now(),
       });
-      beginImplementRun(db, "ENG-21", Date.now(), { phase: "running", turn: 1 });
+      saveRunCommitPolicy(
+        db,
+        beginImplementRun(db, "ENG-21", Date.now(), { phase: "running", turn: 1 }).run.id,
+        APP_POLICY,
+      );
       db.close();
       proc.kill("SIGTERM");
       const code = await Promise.race([

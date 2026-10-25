@@ -36,7 +36,7 @@ function fixture(gitExec?: GitExec, onCleanupFailure = () => {}) {
         return state.respond(init);
       }),
       tokenProvider: {
-        mode: "oauth",
+        mode: "token",
         async tokenFor() {
           state.tokens++;
           return state.acquire();

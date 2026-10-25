@@ -82,7 +82,7 @@ export async function probePublicationStop(
     privateKeyPem: "unused",
     client: createFetchGitHubClient(fetch, server.url.origin),
     tokenProvider: {
-      mode: "oauth" as const,
+      mode: "token" as const,
       async tokenFor() {
         onToken?.();
         return "synthetic-operation-token";

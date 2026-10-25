@@ -26,16 +26,9 @@ import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
 import { probeRunnerRepositories } from "./runner-repositories";
 import { probeGitCancellation } from "./git-cancellation";
-import { statSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { probeRunnerWorker } from "./runner-worker";
-import { dirname, join } from "node:path";
-import {
-  createTokenStore,
-  githubOAuthPath,
-  loginGitHub,
-  PAWS_GITHUB_OAUTH_CLIENT_ID,
-  type GitHubTokenStore,
-} from "../../src/auth";
+import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
   applyWorkItemEvent,
@@ -138,106 +131,6 @@ export async function probeBoundaries(
   await probeRunnerRepositories(join(root, "runner-repositories"), observe);
   await probeGitCancellation(join(root, "git-cancellation"), observe);
   await probeRunnerWorker(join(root, "runner-worker"), observe);
-  const store: GitHubTokenStore = {
-    backend: "file",
-    warning: null,
-    load: async () => null,
-    save: async () => {},
-    update: async (change) => change(null) !== null,
-    markInvalid: async () => {},
-    delete: async () => {},
-  };
-  const logged: string[] = [];
-  const log = console.log;
-  let clientId = "";
-  console.log = (...args: unknown[]) => {
-    logged.push(args.join(" "));
-  };
-  try {
-    await loginGitHub({
-      store,
-      oauthClientId: "Iv1.local-verification-fixture",
-      sleep: async () => {},
-      openBrowser: async () => {},
-      fetch: async (url, init) => {
-        if (url.endsWith("/device/code")) {
-          clientId = new URLSearchParams(String(init?.body)).get("client_id") ?? "";
-          return Response.json({
-            device_code: "fake-device",
-            user_code: "LOCAL-CODE",
-            verification_uri: "https://github.com/login/device",
-            expires_in: 900,
-            interval: 1,
-          });
-        }
-        if (url.endsWith("/access_token"))
-          return Response.json({
-            access_token: "fake-token",
-            token_type: "bearer",
-            scope: "repo read:org",
-          });
-        return Response.json(
-          { login: "local-user", id: 1 },
-          { headers: { "x-oauth-scopes": "repo, read:org" } },
-        );
-      },
-    });
-  } finally {
-    console.log = log;
-  }
-  observe(
-    "configured OAuth client reaches the device request",
-    clientId === "Iv1.local-verification-fixture",
-    clientId,
-  );
-  observe(
-    "default OAuth client is configured",
-    PAWS_GITHUB_OAUTH_CLIENT_ID !== "Iv1.paws-oauth-placeholder",
-    { configuredDefault: PAWS_GITHUB_OAUTH_CLIENT_ID },
-  );
-  observe(
-    "CLI login prints the device code before polling",
-    logged.some((line) => line.includes("LOCAL-CODE")),
-    logged,
-  );
-  const brokenStore = createTokenStore({
-    home: join(root, "token-probe"),
-    platform: "linux",
-    which: () => "/fake/secret-tool",
-    run: async () => ({
-      code: 1,
-      stdout: "",
-      stderr:
-        "secret-tool: The name org.freedesktop.secrets was not provided by any .service files",
-    }),
-  });
-  let storeError = "";
-  try {
-    await brokenStore.save({
-      accessToken: "fake-token",
-      refreshToken: null,
-      expiresAtMs: null,
-      scope: "repo",
-      login: "local-user",
-      id: 1,
-      invalid: false,
-    });
-  } catch (error) {
-    storeError = String(error);
-  }
-  const saved = storeError === "" ? await brokenStore.load() : null;
-  const file = githubOAuthPath(join(root, "token-probe"));
-  const mode = saved === null ? null : statSync(file).mode & 0o777;
-  const dirMode = saved === null ? null : statSync(dirname(file)).mode & 0o777;
-  observe(
-    "unavailable Secret Service falls back to the isolated token file",
-    storeError === "" &&
-      brokenStore.backend === "file" &&
-      saved?.accessToken === "fake-token" &&
-      mode === 0o600 &&
-      dirMode === 0o700,
-    { backend: brokenStore.backend, storeError, mode, dirMode, reloaded: saved !== null },
-  );
   const clock = new FakeClock(1000);
   const db = openDatabase(":memory:");
   migrate(db);

@@ -4,11 +4,10 @@ import type { GitHubClient } from "../types";
 export type TokenPurpose = "push" | "pr" | "merge";
 
 /**
- * `github.auth` in config.
- * Omitted still selects `gh` here so existing callers keep the developer login.
- * New configs set `oauth` explicitly. `src/auth` is the selector those configs use.
+ * Where an operation token comes from. Paws mints `app` installation tokens.
+ * `token` is an injected provider, used by tests and fixtures.
  */
-export type GitHubAuthMode = "gh" | "app" | "oauth";
+export type GitHubAuthMode = "app" | "token";
 
 /**
  * Supplies a token for one push, pull request, or merge.
@@ -17,19 +16,6 @@ export type GitHubAuthMode = "gh" | "app" | "oauth";
 export interface GitHubTokenProvider {
   readonly mode: GitHubAuthMode;
   tokenFor(purpose: TokenPurpose): Promise<string>;
-}
-
-export type DoctorCheck = {
-  name: string;
-  ok: boolean;
-  message: string;
-};
-
-export class GhAuthError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "GhAuthError";
-  }
 }
 
 /** App installation credentials. Used when `github.auth` is `"app"`. */
@@ -42,7 +28,7 @@ export type AppCredentialInput = {
   now?: Date;
 };
 
-/** A selected token provider. App fields are unused for `gh` mode. */
+/** A selected token provider. App fields are unused when it is set. */
 export type ProviderCredentialInput = {
   tokenProvider: GitHubTokenProvider;
   appId?: string;

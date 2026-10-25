@@ -381,7 +381,7 @@ export async function probeRunnerOrchestration(
               installationId: "",
               privateKeyPem: "",
               tokenProvider: {
-                mode: "oauth" as const,
+                mode: "token" as const,
                 tokenFor: async () => "fixture-github-token",
               },
               client: {

@@ -31,7 +31,7 @@ test("returns head shas of merged pull requests from the exact Paws branch", asy
     owner: "acme",
     repo: "demo",
     branch: "paws/ENG-1",
-    tokenProvider: { mode: "oauth", tokenFor: async () => "token" },
+    tokenProvider: { mode: "token", tokenFor: async () => "token" },
   });
 
   expect(heads).toEqual(["merged"]);
@@ -48,7 +48,7 @@ test("rejects a failed pull request listing", async () => {
       owner: "acme",
       repo: "demo",
       branch: "paws/ENG-1",
-      tokenProvider: { mode: "oauth", tokenFor: async () => "token" },
+      tokenProvider: { mode: "token", tokenFor: async () => "token" },
     }),
   ).rejects.toThrow("Could not list");
 });
