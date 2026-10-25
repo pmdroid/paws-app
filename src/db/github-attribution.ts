@@ -5,6 +5,20 @@ import { auditWorkspaceAccess, workspaceMember } from "./workspace";
 export type VerifiedGitHubAttribution = { id: number; login: string; name: string; email: string };
 export type AttributionBinding = { workspaceId: string; userId: string; sessionHash: string };
 
+/** Where a GitHub credit link returns when nothing else is stored. */
+export const ATTRIBUTION_SETTINGS_PATH = "/status/settings/account";
+const ONBOARDING_RETURN = /^\/onboard\/[A-Za-z0-9]{26}$/;
+
+/**
+ * The page a GitHub credit callback may return to: Settings → Account or one onboarding page.
+ * Anything else, including a forged or damaged stored value, becomes Settings → Account.
+ */
+export function attributionReturnPath(value: string | null | undefined): string {
+  return typeof value === "string" && ONBOARDING_RETURN.test(value)
+    ? value
+    : ATTRIBUTION_SETTINGS_PATH;
+}
+
 export function requireAttributionSession(db: Database, binding: AttributionBinding, now: number) {
   const session = db
     .query<{ authenticated_at: number; expires_at: number }, [string, string, string]>(
@@ -25,8 +39,17 @@ export function requireAttributionSession(db: Database, binding: AttributionBind
 export function beginGitHubAttribution(
   db: Database,
   binding: AttributionBinding,
-  input: { stateHash: string; browserHash: string; now: number },
+  input: {
+    stateHash: string;
+    browserHash: string;
+    now: number;
+    /** Set by the server from the route that started the link, never from the URL. */
+    returnPath?: string;
+  },
 ) {
+  const returnPath = input.returnPath ?? ATTRIBUTION_SETTINGS_PATH;
+  if (attributionReturnPath(returnPath) !== returnPath)
+    throw new Error("GitHub credit can only return to Settings or an onboarding page.");
   immediate(db, () => {
     requireAttributionSession(db, binding, input.now);
     db.run(
@@ -38,8 +61,8 @@ export function beginGitHubAttribution(
       [input.now, binding.workspaceId, binding.userId],
     );
     db.run(
-      `INSERT INTO github_attribution_request(state_hash,browser_hash,session_hash,workspace_id,user_id,revision,expires_at)
-      SELECT ?,?,?,?,?,revision,? FROM verified_github_attribution WHERE workspace_id=? AND user_id=?`,
+      `INSERT INTO github_attribution_request(state_hash,browser_hash,session_hash,workspace_id,user_id,revision,expires_at,return_path)
+      SELECT ?,?,?,?,?,revision,?,? FROM verified_github_attribution WHERE workspace_id=? AND user_id=?`,
       [
         input.stateHash,
         input.browserHash,
@@ -47,6 +70,7 @@ export function beginGitHubAttribution(
         binding.workspaceId,
         binding.userId,
         input.now + 600_000,
+        returnPath === ATTRIBUTION_SETTINGS_PATH ? null : returnPath,
         binding.workspaceId,
         binding.userId,
       ],
@@ -59,11 +83,23 @@ export function consumeGitHubAttribution(
   binding: AttributionBinding,
   input: { stateHash: string; browserHash: string; now: number },
 ): number {
+  return consumeGitHubAttributionRequest(db, binding, input).revision;
+}
+
+/** Uses up one pending link and says where its callback returns. */
+export function consumeGitHubAttributionRequest(
+  db: Database,
+  binding: AttributionBinding,
+  input: { stateHash: string; browserHash: string; now: number },
+): { revision: number; returnPath: string } {
   return immediate(db, () => {
     requireAttributionSession(db, binding, input.now);
     const pending = db
-      .query<{ revision: number }, [string, string, string, string, string, number]>(
-        `DELETE FROM github_attribution_request WHERE state_hash=? AND browser_hash=? AND session_hash=? AND workspace_id=? AND user_id=? AND expires_at>? RETURNING revision`,
+      .query<
+        { revision: number; returnPath: string | null },
+        [string, string, string, string, string, number]
+      >(
+        `DELETE FROM github_attribution_request WHERE state_hash=? AND browser_hash=? AND session_hash=? AND workspace_id=? AND user_id=? AND expires_at>? RETURNING revision,return_path AS returnPath`,
       )
       .get(
         input.stateHash,
@@ -74,7 +110,7 @@ export function consumeGitHubAttribution(
         input.now,
       );
     if (!pending) throw new Error("GitHub identity request is invalid or expired.");
-    return pending.revision;
+    return { revision: pending.revision, returnPath: attributionReturnPath(pending.returnPath) };
   });
 }
 

@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, createHmac } from "node:crypto";
 import {
+  attributionReturnPath,
+  beginGitHubAttribution,
+  consumeGitHubAttributionRequest,
   deleteWorkspaceSession,
   githubAttribution,
   migrate,
@@ -373,3 +376,70 @@ test("an older sign-in can still change its own attribution while the session is
     await f.close();
   }
 });
+
+test("the Settings link returns to Settings, and a forged return_path never leaves the two allowed pages", async () => {
+  const f = fixture();
+  try {
+    const pending = await f.begin();
+    expect(
+      f.db.query("SELECT return_path AS returnPath FROM github_attribution_request").get(),
+    ).toEqual({ returnPath: null });
+    const back = await f.callback(
+      pending,
+      f.alice,
+      "&return_path=%2Fonboard%2FAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    );
+    expect(back.headers.get("location")).toBe(
+      `${new URL(pending.target.searchParams.get("redirect_uri")!).origin}/status/settings/account`,
+    );
+
+    const onboarding = "/onboard/ABCDEFGHJKMNPQRSTVWXYZ0123";
+    for (const forged of [
+      "https://evil.example/",
+      "//evil.example/onboard/ABCDEFGHJKMNPQRSTVWXYZ0123",
+      "/onboard/../status",
+      "/onboard/ABCDEFGHJKMNPQRSTVWXYZ0123/github",
+      "/onboard/ABCDEFGHJKMNPQRSTVWXYZ012?x=1",
+      "/status/settings/account/../../admin",
+      "/status",
+      "",
+    ]) {
+      expect(attributionReturnPath(forged)).toBe("/status/settings/account");
+      expect(() =>
+        beginGitHubAttribution(f.db, binding(f), {
+          stateHash: "s".repeat(43),
+          browserHash: "b".repeat(43),
+          now: f.now,
+          returnPath: forged,
+        }),
+      ).toThrow();
+    }
+    expect(attributionReturnPath(onboarding)).toBe(onboarding);
+    expect(attributionReturnPath("/status/settings/account")).toBe("/status/settings/account");
+    expect(attributionReturnPath(null)).toBe("/status/settings/account");
+
+    // SQLite refuses a forged path written past the helpers, and a damaged row reads as Settings.
+    beginGitHubAttribution(f.db, binding(f), {
+      stateHash: "s".repeat(43),
+      browserHash: "b".repeat(43),
+      now: f.now,
+      returnPath: onboarding,
+    });
+    expect(() =>
+      f.db.run("UPDATE github_attribution_request SET return_path='https://evil.example/'"),
+    ).toThrow();
+    expect(
+      consumeGitHubAttributionRequest(f.db, binding(f), {
+        stateHash: "s".repeat(43),
+        browserHash: "b".repeat(43),
+        now: f.now,
+      }).returnPath,
+    ).toBe(onboarding);
+  } finally {
+    await f.close();
+  }
+});
+
+function binding(f: ReturnType<typeof fixture>) {
+  return { workspaceId: "workspace", userId: "alice", sessionHash: f.alice.session.tokenHash };
+}
