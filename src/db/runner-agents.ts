@@ -56,6 +56,8 @@ export class RunnerAgentUpdateError extends Error {}
 
 const NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 const name = (agent: string) => NAMES[agent] ?? agent;
+/** How people know an agent, such as "Claude" for `claude`. */
+export const runnerAgentName = name;
 
 /** Replace what the runner reported last, and drop each target it now runs. */
 export function recordRunnerAgents(

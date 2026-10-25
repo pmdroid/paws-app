@@ -86,6 +86,8 @@ import {
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
+  RunnerSetupRequired,
+  type RunnerSetupNeed,
   placementWaitMs,
   retryNote,
   transientRetryDelayMs,
@@ -182,6 +184,9 @@ import {
   type WorkItemRecord,
   type RunnerCapacityWaitState,
   deferWorkItem,
+  holdForRunnerSetup,
+  markRunnerSetupNotified,
+  runnerAgentName,
   runnerCapacityWait,
   runnerSlotFree,
   getTaskMergeSettings,
@@ -423,10 +428,20 @@ export type OrchestratorOptions = {
    * item out of the slot line and its start timeout. Null when it cannot tell. SQLite only.
    */
   ownerHasRunner?: (itemId: string, agent: string, now: number) => boolean | null;
+  /**
+   * Why the item's owner has no runner they may use for this agent, for the runner-setup hold
+   * and its thought. Null when a runner is usable or only offline. SQLite only.
+   */
+  runnerSetupNeed?: (itemId: string, agent: string, now: number) => RunnerSetupNeed | null;
   clock?: Clock;
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
   placementPollMs?: number;
+  /**
+   * The page where a delegator without a usable runner creates a VM, adds a host or signs an
+   * agent in. Missing means the local Runners page.
+   */
+  runnersUrl?: string;
 };
 
 export type ExecutionChanges = {
@@ -1353,6 +1368,7 @@ export class Orchestrator {
         (item.state !== "running" && item.state !== "verifying" && item.state !== "recovering")
       )
         throw error;
+      if (error instanceof RunnerSetupRequired && this.holdForRunnerSetup(item, error.need)) return;
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
         deferWorkItem(this.db, item, {
@@ -1395,6 +1411,73 @@ export class Orchestrator {
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
       throw error;
     }
+  }
+
+  /**
+   * Put the item back in the queue under a runner-setup hold and say once what is missing. The
+   * scheduler skips held items, so nothing retries, times out or writes to Linear until the hold
+   * ends. False when the item can no longer be held, so the caller retries as before.
+   */
+  private holdForRunnerSetup(item: WorkItemRecord, need: RunnerSetupNeed): boolean {
+    const now = this.now();
+    return immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (
+        !current ||
+        current.cancelRequested ||
+        (current.state !== "running" && current.state !== "recovering")
+      )
+        return false;
+      if (current.currentRunId !== null) {
+        const run = getRun(this.db, current.currentRunId);
+        if (run && (run.status === "active" || run.status === "provisioning"))
+          markRun(this.db, run.id, "lost", now);
+      }
+      applyWorkItemEvent(this.db, current.id, "restart");
+      this.recordRunnerSetupHold(current, need, now);
+      return true;
+    });
+  }
+
+  /**
+   * Write the runner-setup hold of a queued item and post its thought, once per hold. Runs in
+   * the caller's transaction.
+   */
+  private recordRunnerSetupHold(current: WorkItemRecord, need: RunnerSetupNeed, now: number) {
+    const hold = holdForRunnerSetup(this.db, {
+      itemId: current.id,
+      ownerUserId:
+        this.db
+          .query<{ owner: string | null }, [string]>(
+            "SELECT owner_user_id AS owner FROM work_item WHERE id=?",
+          )
+          .get(current.id)?.owner ?? null,
+      reason: need.reason,
+      ...(need.reason === "agent-not-signed-in"
+        ? { runnerId: need.runnerId, agent: need.agent }
+        : {}),
+      now,
+    });
+    this.options.journal?.(`item ${current.linearIdentifier} held: runner setup (${need.reason})`);
+    if (hold.notifiedAt !== null) return;
+    const sessionId = this.activitySession(current);
+    if (sessionId !== null)
+      enqueueOutboxOnce(this.db, {
+        target: OUTBOX_ACTIVITY.target,
+        op: OUTBOX_ACTIVITY.op,
+        orderingKey: sessionId,
+        idempotencyKey: `runner-setup:${current.id}:${need.reason}:${need.reason === "agent-not-signed-in" ? `${need.runnerId}:${need.agent}` : ""}`,
+        payload: { sessionId, kind: "thought", body: this.runnerSetupLine(need) },
+        now,
+      });
+    markRunnerSetupNotified(this.db, current.id, now);
+  }
+
+  private runnerSetupLine(need: RunnerSetupNeed): string {
+    const url = this.options.runnersUrl ?? "http://127.0.0.1:8787/status/runners";
+    return need.reason === "no-runner"
+      ? `You don't have a runner Paws can use yet. Create a VM or add a host here: ${url}. I'll start on my own once it's ready.`
+      : `Your runner ${need.runnerName} needs ${runnerAgentName(need.agent)} signed in. Sign in on the [Runners page](${url}); I'll start right after.`;
   }
 
   private nextRunnerWait(job: Job, error: unknown): RunnerCapacityWaitState | null {
@@ -3661,30 +3744,47 @@ export class Orchestrator {
             ownerHasRunner: (itemId: string) => {
               const item = getWorkItem(this.db, itemId);
               if (!item) return null;
-              const repository = this.repositoryForItem(item);
-              const { agent } = resolveAgentProfiles(
-                config,
-                repository ? `${repository.owner}/${repository.repo}` : undefined,
-              ).implementer;
-              return ownerHasRunner(itemId, agent, this.now());
+              return ownerHasRunner(itemId, this.implementerAgent(item, config), this.now());
             },
-            onRunnerSetup: (itemIds: readonly string[]) => this.noteRunnerSetup(itemIds),
+            onRunnerSetup: (itemIds: readonly string[]) =>
+              this.noteRunnerSetup(itemIds, (item) => this.implementerAgent(item, config)),
           }
         : {}),
     });
   }
 
+  private implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
+    const repository = this.repositoryForItem(item);
+    return resolveAgentProfiles(
+      config,
+      repository ? `${repository.owner}/${repository.repo}` : undefined,
+    ).implementer.agent;
+  }
+
   /**
    * A queued item whose owner has no runner they may use is not in the slot line. It gets no
-   * queue notice and no start timeout. Its session hears once what is missing, and the
-   * scheduler starts it on its own once the owner has a usable runner.
+   * queue notice and no start timeout. When Paws can tell what is missing, the item gets a
+   * runner-setup hold and its session hears it once; the scheduler starts it on its own once the
+   * owner has a usable runner. A runner that is only offline gets the general line.
    */
-  private noteRunnerSetup(itemIds: readonly string[]): void {
+  private noteRunnerSetup(
+    itemIds: readonly string[],
+    agentFor: (item: WorkItemRecord) => string,
+  ): void {
     const now = this.now();
     for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
       clearQueueWait(this.db, item.id);
+      const need = this.options.runnerSetupNeed?.(item.id, agentFor(item), now) ?? null;
+      if (need) {
+        immediate(this.db, () => {
+          const current = getWorkItem(this.db, item.id);
+          if (current?.state === "queued" && !current.cancelRequested)
+            this.recordRunnerSetupHold(current, need, now);
+        });
+        continue;
+      }
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
       const name = item.linearIdentifier ?? "this issue";
