@@ -66,7 +66,12 @@ import {
   WORKSPACE_HOOK_LIMIT,
   type WorkspaceHook,
 } from "../core";
-import { quotaSignal, SESSION_GRACE_MS, type RunnerPlacement } from "../runner-placement";
+import {
+  quotaSignal,
+  RUNNER_ONLINE_MS,
+  SESSION_GRACE_MS,
+  type RunnerPlacement,
+} from "../runner-placement";
 
 class RunnerUnavailableError extends Error {
   override readonly name = "RunnerUnavailableError";
@@ -247,6 +252,7 @@ export function createRemoteAgentRunner(options: {
       ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
       : null;
     const heldForSession =
+      !placement.pinnedRunnerId &&
       placement.session !== undefined &&
       offered.length === 1 &&
       offered[0] === placement.session.runnerId;
@@ -300,7 +306,7 @@ export function createRemoteAgentRunner(options: {
   ) {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
-    const candidates = options.placement
+    let candidates = options.placement
       ? await options.placement.candidates({ ...placement, reserved: unassigned() })
       : db
           .query<{ id: string; workspaceId: string }, []>(
@@ -311,6 +317,15 @@ export function createRemoteAgentRunner(options: {
        ORDER BY r.last_seen_at DESC,r.id`,
           )
           .all();
+    if (
+      placement.pinnedRunnerId &&
+      db
+        .query(
+          "SELECT 1 FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>?",
+        )
+        .get(placement.pinnedRunnerId, now() - RUNNER_ONLINE_MS)
+    )
+      candidates = candidates.filter((runner) => runner.id === placement.pinnedRunnerId);
     placement.signal?.throwIfAborted();
     offered.push(...candidates.map((runner) => runner.id));
     const pending = unassigned();
@@ -322,7 +337,7 @@ export function createRemoteAgentRunner(options: {
         continue;
       }
       const held = runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId);
-      if (!runnerHasCapacity(db, runner.id, now(), "", reserved + held)) {
+      if (!runnerHasCapacity(db, runner.id, now(), item.currentRunId, reserved + held)) {
         rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
         continue;
       }
@@ -442,12 +457,21 @@ export function createRemoteAgentRunner(options: {
             ? sessionHolder(db, itemId)
             : undefined;
         const session = holder?.agent === profile.agent ? { runnerId: holder.runnerId } : undefined;
+        const runId = getWorkItem(db, itemId)?.currentRunId;
+        const pinnedRunnerId = runId
+          ? db
+              .query<{ runnerId: string }, [string]>(
+                "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
+              )
+              .get(runId)?.runnerId
+          : undefined;
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
           role: input.role,
           purpose: input.prepareOnly ? "prepare" : "work",
           excludeRunnerIds: excluded,
+          ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
           ...(session ? { session } : {}),
           signal: input.signal,
         };
@@ -722,6 +746,7 @@ export function createRemoteAgentRunner(options: {
                     ]?.exclude
                   : undefined;
               const resumeSessionId =
+                (!pinnedRunnerId || pinnedRunnerId === selected.id) &&
                 !taskScope &&
                 input.role === "implementer" &&
                 input.checkpoint !== false &&
@@ -822,7 +847,7 @@ export function createRemoteAgentRunner(options: {
                     }),
               };
               immediate(db, () => {
-                if (!runnerHasCapacity(db, selected.id, now()))
+                if (!runnerHasCapacity(db, selected.id, now(), selected.runId))
                   throw new RetryableRunnerError(
                     selected.id,
                     "Runner became busy before assignment",
@@ -845,7 +870,15 @@ export function createRemoteAgentRunner(options: {
               });
               for (const notice of runtimeNotices)
                 await emit({ type: "progress", text: `${notice}\n` });
-              if (session) {
+              if (pinnedRunnerId && pinnedRunnerId !== selected.id) {
+                const name = (id: string) =>
+                  db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
+                    ?.name ?? id;
+                await emit({
+                  type: "progress",
+                  text: `Starting a new session on ${name(selected.id)}; ${name(pinnedRunnerId)} is unavailable.\n`,
+                });
+              } else if (session && (!pinnedRunnerId || session.runnerId === pinnedRunnerId)) {
                 const name = (id: string) =>
                   db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
                     ?.name ?? id;

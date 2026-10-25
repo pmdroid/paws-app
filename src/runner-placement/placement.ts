@@ -13,7 +13,7 @@ import {
   workspaceMember,
 } from "../db";
 import type { PlacementRequest, RunnerPlacement } from "./index";
-import { eligibleRunners, runnerSetupNeed } from "./eligible";
+import { eligibleRunners, runnerSetupNeed, RUNNER_ONLINE_MS } from "./eligible";
 import { quotaSignal } from "./quota";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
@@ -243,12 +243,20 @@ export function createRunnerPlacement(options: {
       const at = now();
       // A task runs on the runners of the person who delegated it, then on the shared runners
       // of its Linear project leads.
+      const pinnedRunnerId = input.pinnedRunnerId;
+      const pinnedOnline = pinnedRunnerId
+        ? db
+            .query(
+              "SELECT 1 FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>?",
+            )
+            .get(pinnedRunnerId, at - RUNNER_ONLINE_MS) !== null
+        : false;
       const rows = eligibleRunners(db, {
         ...eligibility(current),
         agent: input.profile.agent,
         purpose: input.purpose,
         now: at,
-      }).filter((runner) => runner.eligible);
+      }).filter((runner) => runner.eligible && (!pinnedOnline || runner.id === pinnedRunnerId));
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(
@@ -282,7 +290,11 @@ export function createRunnerPlacement(options: {
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
         return [{ runner, rank: reviewRank * 10 + (own ? 0 : 1) }];
       });
-      const session = input.role === "implementer" && input.purpose === "work" && input.session;
+      const session =
+        !pinnedRunnerId &&
+        input.role === "implementer" &&
+        input.purpose === "work" &&
+        input.session;
       const holder = session
         ? ranked.find(({ runner }) => runner.id === session.runnerId)
         : undefined;

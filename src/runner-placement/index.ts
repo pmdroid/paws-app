@@ -66,6 +66,8 @@ export type PlacementRequest = {
   role: "implementer" | "reviewer";
   purpose: PlacementPurpose;
   excludeRunnerIds?: readonly string[];
+  /** Runner assigned to this run. Only an unavailable host permits moving the run. */
+  pinnedRunnerId?: string;
   /** The runner holding the item's last agent session, for implementer work. */
   session?: { runnerId: string };
   /** Slots the caller holds per runner for runs it placed but has not assigned yet. */
