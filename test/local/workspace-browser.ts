@@ -74,7 +74,13 @@ export async function probeWorkspaceBrowser(
     hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
-      return (await access?.handle(request)) ?? new Response("Not found", { status: 404 });
+      // Every simulated person signs in from the same loopback address, and several of their
+      // callbacks fail on purpose. A distinct address per request keeps the sign-in rate limits,
+      // which have their own tests, out of these checks.
+      return (
+        (await access?.handle(request, { ip: crypto.randomUUID() })) ??
+        new Response("Not found", { status: 404 })
+      );
     },
   });
   const origin = `http://127.0.0.1:${server.port}`;
