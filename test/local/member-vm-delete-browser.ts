@@ -18,7 +18,7 @@ const STEP_WAIT_MS = 45_000;
 type Manifest = {
   origin: string;
   cookie: string;
-  sessions: Record<"member" | "observer", string>;
+  sessions: Record<"member" | "observer" | "admin", string>;
   member: string;
 };
 
@@ -100,7 +100,11 @@ const errors: string[] = [];
 const observations: { name: string; observed: unknown }[] = [];
 const observe = (name: string, observed: unknown = true) => observations.push({ name, observed });
 
-async function pageFor(browser: Browser, manifest: Manifest, identity: "member" | "observer") {
+async function pageFor(
+  browser: Browser,
+  manifest: Manifest,
+  identity: "member" | "observer" | "admin",
+) {
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
     viewport: { width: 1440, height: 1000 },
@@ -123,7 +127,7 @@ async function pageFor(browser: Browser, manifest: Manifest, identity: "member" 
   page.on("pageerror", (error) => errors.push(`${identity}: ${error.message}`));
   await page.goto(`${manifest.origin}/status/runners`);
   // Observers get the list without the member controls.
-  if (identity === "member")
+  if (identity !== "observer")
     await page.getByRole("button", { name: "Add a host", exact: true }).waitFor();
   else await page.locator("[data-runner-row]").first().waitFor();
   return page;
@@ -180,6 +184,19 @@ try {
   const created = await snapshot();
   const vmName = created.vm[0]!.vmName;
   observe("the VM is ready", vmName);
+
+  // A workspace admin sees Ada's VM under Members' VMs, with its own Delete VM.
+  const admin = await pageFor(browser, manifest, "admin");
+  const listed = admin.locator(`[data-member-vm-other] >> text=${vmName}`);
+  await listed.waitFor();
+  assert.match(
+    await admin.locator("[data-member-vm-other]").innerText(),
+    /Created by Ada Lovelace/,
+  );
+  await admin.locator("[data-member-vm-other] [data-vm-delete]").waitFor();
+  await capture(admin, "00-admin-members-vms");
+  observe("an admin sees another member's VM with Delete VM");
+  await admin.context().close();
 
   const remove = page.locator("[data-member-vm] [data-vm-delete]");
   await remove.waitFor();

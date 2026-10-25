@@ -523,6 +523,27 @@ describe("Delete VM", () => {
   });
 });
 
+test("an owner or admin sees and deletes another member's VM that never got a runner", async () => {
+  const f = await fixture();
+  const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+  f.exeDev.fail("createVm", "rate_limited");
+  await f.settle();
+  expect(getMemberVm(f.db, row.id)!.failure).toContain("rate_limited");
+  expect(getMemberVm(f.db, row.id)!.runnerId).toBeNull();
+
+  const seen = (await f.call(f.admin, "/api/runners/vm")).body as Extract<
+    MemberVmResponse,
+    { available: true }
+  >;
+  expect(seen.vm).toBeNull();
+  expect(seen.vms.map((entry) => [entry.id, entry.ownerName, entry.runnerId])).toEqual([
+    [row.id, "Ada Lovelace", null],
+  ]);
+  expect((await f.remove(f.admin, row.id)).status).toBe(200);
+  await f.settle();
+  expect(getMemberVm(f.db, row.id)).toBeNull();
+});
+
 describe("Delete VM while a provisioning step is still running", () => {
   /** A gate the test opens later, and the promise of a tick that runs into it. */
   const gate = () => {

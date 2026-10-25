@@ -46,6 +46,8 @@ export type MemberVmView = {
   vmName: string;
   /** The member who created the VM and owns its runner. */
   userId: string;
+  /** That member's display name, so an owner or admin can tell whose VM it is. */
+  ownerName: string | null;
   step: MemberVm["step"];
   failure: string | null;
   runnerId: string | null;
@@ -62,7 +64,11 @@ export type MemberVmResponse =
   | { available: false }
   | { available: true; vm: MemberVmView | null; vms: MemberVmView[] };
 
-export function memberVmView(row: MemberVm, now: number): MemberVmView {
+export function memberVmView(
+  row: MemberVm,
+  now: number,
+  ownerName: string | null = null,
+): MemberVmView {
   const began: Record<MemberVm["step"], number | null> = {
     create: row.createdAt,
     install: row.installAt,
@@ -94,6 +100,7 @@ export function memberVmView(row: MemberVm, now: number): MemberVmView {
     id: row.id,
     vmName: row.vmName,
     userId: row.userId,
+    ownerName,
     step: row.step,
     failure: row.failure,
     runnerId: row.runnerId ?? row.deleteRunnerId,
@@ -214,7 +221,9 @@ export function createMemberVmHttp(options: {
       return json({
         available: true,
         vm: own === null ? null : memberVmView(own, at),
-        vms: listDeletableMemberVms(db, member).map((row) => memberVmView(row, at)),
+        vms: listDeletableMemberVms(db, member).map((row) =>
+          memberVmView(row, at, ownerName(db, row.userId)),
+        ),
       } satisfies MemberVmResponse);
     } catch (error) {
       if (error instanceof MemberVmDeleteDenied) return json({ error: error.message }, 403);
@@ -223,6 +232,13 @@ export function createMemberVmHttp(options: {
       return json({ error: message }, /membership/i.test(message) ? 403 : 409);
     }
   };
+}
+
+function ownerName(db: Database, userId: string): string | null {
+  return (
+    db.query<{ name: string }, [string]>("SELECT name FROM workspace_user WHERE id=?").get(userId)
+      ?.name ?? null
+  );
 }
 
 async function deleteBody(request: Request): Promise<{ id: string; force: boolean } | null> {
