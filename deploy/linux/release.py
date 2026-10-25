@@ -368,17 +368,18 @@ AGENT_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 
 def parse_agent_requests(content):
-    """The agent versions Paws sent the runner: {"format": 1, "requests": [{id, agent, version, integrity, nativeVersion}]}.
+    """The agent versions Paws sent the runner: {"format": 1, "requests": [{id, agent, version, integrity, nativeVersion, packages}]}.
 
     `integrity` is the npm sha512 of the agent package from the Paws catalog, or null to switch back to
-    a version already installed (a rollback). At most one request per agent.
+    a version already installed (a rollback). `packages` lists the native build package and the
+    platform packages it pins, each with the sha512 the catalog checked. At most one request per agent.
     """
     document = json.loads(content, object_pairs_hook=unique_object)
     if not isinstance(document, dict) or set(document) != {"format", "requests"} or document["format"] != 1 or type(document["format"]) is not int or not isinstance(document["requests"], list):
         raise ValueError("Invalid agent request file")
     seen = set()
     for request in document["requests"]:
-        if not isinstance(request, dict) or set(request) != {"id", "agent", "version", "integrity", "nativeVersion"}:
+        if not isinstance(request, dict) or set(request) != {"id", "agent", "version", "integrity", "nativeVersion", "packages"}:
             raise ValueError("Invalid agent request")
         if not isinstance(request["id"], str) or not AGENT_REQUEST_ID.fullmatch(request["id"]) or request["agent"] not in AGENT_PACKAGES or request["agent"] in seen:
             raise ValueError("Invalid agent request")
@@ -388,6 +389,14 @@ def parse_agent_requests(content):
                 raise ValueError(f"Invalid agent request {key}")
         if request["integrity"] is not None and (not isinstance(request["integrity"], str) or not INTEGRITY.fullmatch(request["integrity"])):
             raise ValueError("Invalid agent request integrity")
+        packages = request["packages"]
+        if not isinstance(packages, list) or len(packages) > 64:
+            raise ValueError("Invalid agent request packages")
+        for item in packages:
+            if not isinstance(item, dict) or set(item) != {"name", "version", "integrity"} or not all(isinstance(item[key], str) for key in item):
+                raise ValueError("Invalid agent request package")
+            if not PACKAGE_PATH.fullmatch(item["name"]) or item["name"].count("/") > (1 if item["name"].startswith("@") else 0) or len(item["version"]) > 64 or not EXACT_VERSION.fullmatch(item["version"]) or not INTEGRITY.fullmatch(item["integrity"]):
+                raise ValueError("Invalid agent request package")
         seen.add(request["agent"])
     return document["requests"]
 

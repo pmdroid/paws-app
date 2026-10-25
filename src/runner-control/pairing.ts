@@ -21,6 +21,7 @@ import {
   workspaceMember,
   type RunnerRecord,
 } from "../db";
+import { agentCatalogPackages } from "../agent-catalog";
 import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
 import { releaseVersionFromPath } from "../runner-protocol";
 import {
@@ -212,6 +213,7 @@ export function createRunnerControl(options: {
           userId: principal.userId,
           now: at,
           id: workspaceId(at),
+          catalogPackages: (name, nativeVersion) => agentCatalogPackages(db, name, nativeVersion),
         });
       });
     },
@@ -240,6 +242,7 @@ export function createRunnerControl(options: {
           userId: principal.userId,
           now: at,
           id: () => workspaceId(at),
+          catalogPackages: (name, nativeVersion) => agentCatalogPackages(db, name, nativeVersion),
         });
       });
     },

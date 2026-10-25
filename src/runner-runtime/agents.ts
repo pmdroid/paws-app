@@ -159,12 +159,13 @@ export function openRunnerAgents(
       forwarded = accepted;
       const content = JSON.stringify({
         format: 1,
-        requests: accepted.map(({ id, agent, version, integrity, nativeVersion }) => ({
+        requests: accepted.map(({ id, agent, version, integrity, nativeVersion, packages }) => ({
           id,
           agent,
           version,
           integrity,
           nativeVersion,
+          packages,
         })),
       });
       // Written once after every start, so a switch still waiting when the host restarted resumes.

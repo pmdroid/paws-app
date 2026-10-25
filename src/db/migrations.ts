@@ -2681,6 +2681,7 @@ CREATE TABLE runner_agent_target (
   version TEXT NOT NULL,
   integrity TEXT,
   native_version TEXT,
+  packages TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(packages)),
   rollback INTEGER NOT NULL CHECK (rollback IN (0,1)),
   requested_by TEXT NOT NULL,
   requested_at INTEGER NOT NULL,

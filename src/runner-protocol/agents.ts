@@ -28,6 +28,23 @@ export const RunnerAgentTargetSchema = z.strictObject({
     .regex(/^sha512-[A-Za-z0-9+/]{86}==$/)
     .nullable(),
   nativeVersion: RunnerAgentVersionSchema.nullable(),
+  /**
+   * The native build package and the platform packages it pins, each with the integrity the
+   * catalog checked. The installer refuses a lockfile that resolves any of them with other bytes.
+   * Empty for a rollback.
+   */
+  packages: z
+    .array(
+      z.strictObject({
+        name: z
+          .string()
+          .max(214)
+          .regex(/^(?:@[A-Za-z0-9][A-Za-z0-9._-]*\/)?[A-Za-z0-9][A-Za-z0-9._-]*$/),
+        version: RunnerAgentVersionSchema,
+        integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/),
+      }),
+    )
+    .max(64),
 });
 
 export const RunnerAgentTargetsSchema = z

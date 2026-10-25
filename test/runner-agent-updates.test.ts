@@ -10,6 +10,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   saveAgentVersions,
+  saveNpmPackage,
   type AgentVersionRow,
   type RunnerAgentView,
 } from "../src/db";
@@ -103,6 +104,34 @@ async function fixture() {
     row("claude", "1.9.0", "refused", "D"),
     row("codex", "0.9.0", "eligible", "E"),
   ]);
+  // The native build packages the catalog checked, and the platform package Claude's pins.
+  const npm = (name: string, versions: Record<string, Record<string, string>>, seed: string) =>
+    saveNpmPackage(
+      db,
+      name,
+      null,
+      Object.fromEntries(
+        Object.entries(versions).map(([version, optionalDependencies]) => [
+          version,
+          {
+            publishedAt: now - 5 * DAY,
+            integrity: integrity(seed),
+            deprecated: null,
+            dependencies: {},
+            optionalDependencies,
+          },
+        ]),
+      ),
+      now - 5 * DAY,
+    );
+  const platform = "@anthropic-ai/claude-agent-sdk-linux-x64";
+  npm(
+    "@anthropic-ai/claude-agent-sdk",
+    { "2.0.0-native": {}, "2.1.0-native": { [platform]: "2.1.0-native" } },
+    "N",
+  );
+  npm(platform, { "2.1.0-native": {} }, "P");
+  npm("@openai/codex", { "0.9.0-native": {} }, "X");
   const post = async (path: string, body?: unknown) => {
     const response = (await browser.browser(
       new Request(`https://paws.invalid${path}`, {
@@ -207,6 +236,18 @@ test("Update sends the eligible version with its integrity, and the card follows
       version: "2.1.0",
       integrity: integrity("B"),
       nativeVersion: "2.1.0-native",
+      packages: [
+        {
+          name: "@anthropic-ai/claude-agent-sdk",
+          version: "2.1.0-native",
+          integrity: integrity("N"),
+        },
+        {
+          name: "@anthropic-ai/claude-agent-sdk-linux-x64",
+          version: "2.1.0-native",
+          integrity: integrity("P"),
+        },
+      ],
     },
   ]);
   const target = sent[0]!.id;
@@ -326,6 +367,7 @@ test("Roll back sends the previous version without an integrity, so nothing down
       version: "1.8.0",
       integrity: null,
       nativeVersion: null,
+      packages: [],
     },
   ]);
   expect(listRunnerAgents(runner.db, runner.runnerId)[0]!.pending).toMatchObject({
@@ -421,5 +463,21 @@ test("Update all runners never moves a runner back, and asks again after a faile
   expect(second!.id).not.toBe(first!.id);
   expect(listRunnerAgents(runner.db, runner.runnerId)[0]!.pending).toMatchObject({
     status: "requested",
+  });
+});
+
+test("a version whose native package changed integrity on npm is not sent", async () => {
+  const runner = await fixture();
+  await runner.heartbeat({ agents: installed });
+  runner.db.run(
+    "UPDATE npm_package_version SET changed_integrity=? WHERE package=? AND version=?",
+    [integrity("Z"), "@anthropic-ai/claude-agent-sdk-linux-x64", "2.1.0-native"],
+  );
+  expect(await runner.update("claude", "2.1.0")).toEqual({
+    status: 400,
+    body: {
+      error:
+        "Paws has no unchanged integrity for @anthropic-ai/claude-agent-sdk-linux-x64@2.1.0-native, so it cannot send this version.",
+    },
   });
 });

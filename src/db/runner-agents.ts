@@ -15,6 +15,12 @@ export type RunnerAgentReport = {
   error?: string;
 };
 
+/** A package the catalog checked, with the integrity Paws first saw for it on npm. */
+export type CatalogPackage = { name: string; version: string; integrity: string };
+
+/** The native build package and its platform packages the catalog checked for an agent version. */
+export type CatalogPackages = (agent: string, nativeVersion: string | null) => CatalogPackage[];
+
 /** The version someone chose on the Runners page, sent to the runner until it runs it. */
 export type RunnerAgentTargetRow = {
   id: string;
@@ -23,6 +29,8 @@ export type RunnerAgentTargetRow = {
   /** Null for a rollback: the runner switches back to a version it already has. */
   integrity: string | null;
   nativeVersion: string | null;
+  /** The native and platform packages the runner must install with exactly these integrities. */
+  packages: CatalogPackage[];
 };
 
 /** What the runner card shows for one coding agent. */
@@ -88,11 +96,12 @@ type TargetRecord = RunnerAgentTargetRow & { rollback: number; requestedAt: numb
 
 function targets(db: Database, runnerId: string): TargetRecord[] {
   return db
-    .query<TargetRecord, [string]>(
-      `SELECT id,agent,version,integrity,native_version AS nativeVersion,rollback,
+    .query<Omit<TargetRecord, "packages"> & { packages: string }, [string]>(
+      `SELECT id,agent,version,integrity,native_version AS nativeVersion,packages,rollback,
        requested_at AS requestedAt FROM runner_agent_target WHERE runner_id=? ORDER BY agent`,
     )
-    .all(runnerId);
+    .all(runnerId)
+    .map((row) => ({ ...row, packages: JSON.parse(row.packages) as CatalogPackage[] }));
 }
 
 /**
@@ -115,12 +124,13 @@ function blocked(db: Database, target: TargetRecord): string | null {
 export function runnerAgentTargets(db: Database, runnerId: string): RunnerAgentTargetRow[] {
   return targets(db, runnerId)
     .filter((target) => blocked(db, target) === null)
-    .map(({ id, agent, version, integrity, nativeVersion }) => ({
+    .map(({ id, agent, version, integrity, nativeVersion, packages }) => ({
       id,
       agent,
       version,
       integrity,
       nativeVersion,
+      packages,
     }));
 }
 
@@ -211,10 +221,11 @@ function saveTarget(
   request: Omit<Request, "id">,
 ): void {
   db.run(
-    `INSERT INTO runner_agent_target(runner_id,agent,id,version,integrity,native_version,rollback,requested_by,requested_at)
-     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(runner_id,agent) DO UPDATE SET id=excluded.id,
+    `INSERT INTO runner_agent_target(runner_id,agent,id,version,integrity,native_version,packages,rollback,requested_by,requested_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(runner_id,agent) DO UPDATE SET id=excluded.id,
        version=excluded.version,integrity=excluded.integrity,native_version=excluded.native_version,
-       rollback=excluded.rollback,requested_by=excluded.requested_by,requested_at=excluded.requested_at`,
+       packages=excluded.packages,rollback=excluded.rollback,requested_by=excluded.requested_by,
+       requested_at=excluded.requested_at`,
     [
       runnerId,
       target.agent,
@@ -222,6 +233,7 @@ function saveTarget(
       target.version,
       target.integrity,
       target.nativeVersion,
+      JSON.stringify(target.packages),
       target.rollback ? 1 : 0,
       request.userId,
       request.now,
@@ -239,7 +251,12 @@ function saveTarget(
 /** Ask a runner to run `version` of `agent`. Only an eligible catalog version can be chosen. */
 export function requestRunnerAgentUpdate(
   db: Database,
-  input: Request & { runnerId: string; agent: string; version: string },
+  input: Request & {
+    runnerId: string;
+    agent: string;
+    version: string;
+    catalogPackages: CatalogPackages;
+  },
 ): void {
   immediate(db, () => {
     activeRunner(db, input.runnerId, input.workspaceId);
@@ -266,6 +283,7 @@ export function requestRunnerAgentUpdate(
         version: input.version,
         integrity: row.integrity,
         nativeVersion: row.nativeVersion,
+        packages: input.catalogPackages(input.agent, row.nativeVersion),
         rollback: false,
       },
       input,
@@ -299,6 +317,7 @@ export function requestRunnerAgentRollback(
         version: previous,
         integrity: null,
         nativeVersion: null,
+        packages: [],
         rollback: true,
       },
       input,
@@ -313,7 +332,7 @@ export function requestRunnerAgentRollback(
  */
 export function requestAllRunnerAgentUpdates(
   db: Database,
-  input: Omit<Request, "id"> & { id: () => string },
+  input: Omit<Request, "id"> & { id: () => string; catalogPackages: CatalogPackages },
 ): number {
   return immediate(db, () => {
     const offered = new Map(
@@ -359,6 +378,7 @@ export function requestAllRunnerAgentUpdates(
           version,
           integrity: catalog.integrity,
           nativeVersion: catalog.nativeVersion,
+          packages: input.catalogPackages(row.agent, catalog.nativeVersion),
           rollback: false,
         },
         input,
