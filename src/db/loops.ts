@@ -5,6 +5,7 @@ import { JobLoop } from "./loop";
 import { LINEAR_PROGRESS_INTERVAL_MS } from "./outbox";
 
 const JOB_LEASE_MS = 120_000;
+export const JOB_WORKERS = 64;
 
 /** Poll the job queue and the outbox until `signal` aborts. `prepare` registers handlers first. */
 export function startLoops(input: {
@@ -20,7 +21,7 @@ export function startLoops(input: {
 } {
   const clock = input.clock ?? systemClock;
   const jobs = new JobLoop(input.db, clock, {
-    concurrency: input.concurrency,
+    concurrency: input.concurrency ?? JOB_WORKERS,
     leaseMs: JOB_LEASE_MS,
   });
   const outbox = new OutboxDispatcher(input.db, clock, {

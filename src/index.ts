@@ -917,7 +917,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const loops = startLoops({
     db,
     signal: abort.signal,
-    concurrency: 4,
     prepare(created) {
       assignments?.register(created.jobs);
       parents?.register(created.jobs);
