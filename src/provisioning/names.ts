@@ -1,6 +1,5 @@
 import { ProvisioningError, type ProvisioningOperation } from "./types";
 
-/** exe.dev's own rule: lowercase letters, digits and inner hyphens, at most 63 characters. */
 const VM_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export const MAX_EXEC_COMMAND_BYTES = 64 * 1024;
@@ -34,10 +33,6 @@ export function assertCommand(command: unknown): string {
   return command;
 }
 
-/**
- * One POSIX single-quoted word. exe.dev's lobby lexes the body once and hands the
- * unquoted word to the VM, whose shell parses it as the command line.
- */
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }

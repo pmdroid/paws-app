@@ -19,29 +19,18 @@ export type FakeExecScript =
   | ((command: string, vm: string) => Partial<ExeDevExecResult>);
 
 export type FakeFailure = {
-  /** Only calls for this VM fail. */
   vm?: string;
-  /** Only `execVm` calls whose command matches fail. */
   command?: string | RegExp;
-  /** How many matching calls fail before the rule is spent. Defaults to 1; `Infinity` keeps it. */
   times?: number;
   status?: number | null;
 };
 
 export type FakeExeDev = ExeDev & {
-  /** Every call in order, including ones that failed or were rejected before a request. */
   readonly calls: FakeExeDevCall[];
-  /** VMs that exist, by name. Tests may read or seed it. */
   readonly vms: Map<string, ExeDevVm>;
-  /** Adds a VM as if it had been created earlier. */
   addVm(name: string, vm?: Partial<Omit<ExeDevVm, "name">>): ExeDevVm;
   setStatus(name: string, status: string): void;
-  /**
-   * Scripts `execVm` on `vm` for a command. An exact string or RegExp matches the command.
-   * An array is consumed one result per call; its last entry repeats.
-   */
   scriptExec(vm: string, command: string | RegExp, result: FakeExecScript | FakeExecScript[]): void;
-  /** Makes matching calls to `operation` throw `ProvisioningError` with `code`. */
   fail(operation: ProvisioningOperation, code: ProvisioningErrorCode, failure?: FakeFailure): void;
 };
 
@@ -49,7 +38,6 @@ type Script = { vm: string; command: string | RegExp; results: FakeExecScript[] 
 type Rule = Required<Pick<FakeFailure, "times">> &
   Omit<FakeFailure, "times"> & { operation: ProvisioningOperation; code: ProvisioningErrorCode };
 
-/** Unscripted commands exit 127 so a test notices a command it did not expect. */
 export const FAKE_UNSCRIPTED_EXIT = 127;
 
 export function createFakeExeDev(): FakeExeDev {

@@ -58,7 +58,6 @@ export type ProbeFacts = {
   linearWebhook?: LinearWebhookWarning | null;
   workspace?: string | null;
   githubDelivery?: { event: string; receivedAt: number } | null;
-  /** `~/.paws/secrets/exe-dev-token`. Absent means VM provisioning is not set up. */
   exeDevToken?: ExeDevTokenStatus;
   publicUrl: string | null;
   repo: string | null;

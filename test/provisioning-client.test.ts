@@ -8,7 +8,7 @@ import {
   type ProvisioningOperation,
 } from "../src/provisioning";
 
-const TOKEN = "exe1.c2VjcmV0LXRva2Vu.c2lnbmF0dXJl";
+const TOKEN = "exe1.fake-test-token";
 
 type Sent = { url: string; init: RequestInit; body: string; headers: Headers };
 

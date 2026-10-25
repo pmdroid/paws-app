@@ -12,18 +12,14 @@ import {
 
 export const EXE_DEV_ENDPOINT = "https://exe.dev/exec";
 
-/** The subset of `fetch` the client uses, so tests can pass a plain function. */
 export type ExeDevFetch = (url: string, init: RequestInit) => Promise<Response>;
 
-/** Reads the bearer token. Called once per request so a rotated token takes effect at once. */
 export type ExeDevTokenReader = () => string | null | Promise<string | null>;
 
 export type ExeDevOptions = {
   readToken: ExeDevTokenReader;
   fetch?: ExeDevFetch;
-  /** Milliseconds per operation, covering the request and the whole response body. */
   timeoutMs?: Partial<Record<ProvisioningOperation, number>>;
-  /** Largest response body per operation, in bytes. */
   maxResponseBytes?: Partial<Record<ProvisioningOperation, number>>;
 };
 
@@ -39,7 +35,6 @@ export const DEFAULT_MAX_RESPONSE_BYTES: Readonly<Record<ProvisioningOperation, 
   execVm: 8 * 1024 * 1024,
 };
 
-/** Token characters exe.dev mints: base64url, dots and the `exe1.` prefix. */
 const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
 const STATUS_WORD = /^[a-z][a-z0-9_-]{0,31}$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -188,7 +183,6 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-/** The body as UTF-8, or null once it passes `limit` bytes. Stops reading at the limit. */
 async function readCapped(
   response: Response,
   limit: number,
@@ -237,7 +231,6 @@ function httpError(
   );
 }
 
-/** Maps an exe.dev failure to a code. The error text is read for its kind and then dropped. */
 function codeFor(status: number, error: string | null): ProvisioningErrorCode {
   if (status === 401 || status === 403) return "unauthorized";
   if (status === 409) return "conflict";
@@ -296,10 +289,6 @@ function parseListed(vm: string, status: number, text: string): ExeDevVm {
   return { name: vm, status: state, sshDest, httpsUrl, region };
 }
 
-/**
- * Parses the NDJSON exec stream: `{"stdout": b64}` and `{"stderr": b64}` lines, then one
- * `{"exit_code": n}`. A trailing `{"error": ...}` means the VM never reported an exit.
- */
 function parseExec(vm: string, status: number, text: string): ExeDevExecResult {
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -349,7 +338,6 @@ function parseExec(vm: string, status: number, text: string): ExeDevExecResult {
   };
 }
 
-/** A 2xx body that is only `{"error": "..."}` is a failed command, not a result. */
 function commandFailure(
   operation: ProvisioningOperation,
   vm: string,
