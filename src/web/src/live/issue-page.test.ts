@@ -11,7 +11,12 @@ import {
   openDatabase,
   setCurrentRun,
 } from "../../../db";
-import { parseStatusSnapshot, statusIntegrity, type StatusSnapshot } from "../contract";
+import {
+  parseStatusSnapshot,
+  statusIntegrity,
+  type StatusDeadDelivery,
+  type StatusSnapshot,
+} from "../contract";
 import { emptyCloseoutView } from "../client/closeout";
 import { clock24 } from "../client/format";
 import { render } from "../client/render";
@@ -286,37 +291,36 @@ describe("one page per issue", () => {
     );
 
     const snapshot = snapshotOf(db);
-    expect(snapshot.dead).toEqual(
-      [
-        {
-          itemId: "PAS-368",
-          kind: "job",
-          target: `job:${otherJob}`,
-          name: "run.resume",
-          attempts: 10,
-          lastError: "runner lost",
-          at: new Date(T0 + 150_000).toISOString(),
-        },
-        {
-          itemId: "PAS-367",
-          kind: "outbox",
-          target: `outbox:${elicitation}`,
-          name: "linear.elicitation",
-          attempts: 5,
-          lastError: "Linear is down",
-          at: new Date(T0 + 130_000).toISOString(),
-        },
-        {
-          itemId: "PAS-367",
-          kind: "job",
-          target: `job:${job}`,
-          name: "run.resume",
-          attempts: 10,
-          lastError: "runner lost",
-          at: new Date(T0 + 150_000).toISOString(),
-        },
-      ].sort((left, right) => left.at.localeCompare(right.at)),
-    );
+    const expected: StatusDeadDelivery[] = [
+      {
+        itemId: "PAS-368",
+        kind: "job",
+        target: `job:${otherJob}`,
+        name: "run.resume",
+        attempts: 10,
+        lastError: "runner lost",
+        at: new Date(T0 + 150_000).toISOString(),
+      },
+      {
+        itemId: "PAS-367",
+        kind: "outbox",
+        target: `outbox:${elicitation}`,
+        name: "linear.elicitation",
+        attempts: 5,
+        lastError: "Linear is down",
+        at: new Date(T0 + 130_000).toISOString(),
+      },
+      {
+        itemId: "PAS-367",
+        kind: "job",
+        target: `job:${job}`,
+        name: "run.resume",
+        attempts: 10,
+        lastError: "runner lost",
+        at: new Date(T0 + 150_000).toISOString(),
+      },
+    ];
+    expect(snapshot.dead).toEqual(expected.sort((left, right) => left.at.localeCompare(right.at)));
 
     const html = issuePage(snapshot);
     expect(html).toContain('id="dead-deliveries"');
