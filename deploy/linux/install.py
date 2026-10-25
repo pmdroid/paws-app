@@ -766,10 +766,7 @@ def apply_agent_request(request, state, bun, base, registry, save):
     if outcome["status"] == "installing":
         save()
     try:
-        if request["integrity"] is None:
-            if not (folder / version).is_dir() or (folder / version).is_symlink():
-                raise AgentInstallError(agent, version, "it is not installed on this runner, so it cannot be switched back to")
-        elif (folder / version).is_dir() and not (folder / version).is_symlink():
+        if (folder / version).is_dir() and not (folder / version).is_symlink():
             # An installed folder is never changed, so it must already hold the bytes Paws sent.
             verify_requested_packages(request, installed_agent_packages(base, agent, version))
         else:
@@ -778,8 +775,6 @@ def apply_agent_request(request, state, bun, base, registry, save):
         if switch_current(folder, version) == "waiting":
             outcome.update(status="waiting", sessions=holders(folder / before))
         else:
-            if before is not None and before != version:
-                state["previous"] = before
             outcome.pop("sessions", None)
             outcome["status"] = "installed"
     except (ValueError, OSError) as error:
@@ -798,7 +793,9 @@ def process_agent_requests(bun, base=BASE, registry=DEFAULT_REGISTRY, requests=A
     status = read_agent_status(status_path)
     for agent in release.AGENT_PACKAGES:
         current = current_agent_version(base / "agents" / agent)
-        entry = status["agents"].setdefault(agent, {"previous": None, "request": None})
+        entry = status["agents"].setdefault(agent, {"request": None})
+        # Older installers kept the version before the last switch; nothing reads it any more.
+        entry.pop("previous", None)
         entry["current"] = current
     save = lambda: write_atomic(status_path, json.dumps(status, sort_keys=True).encode(), 0o644)
     while True:
