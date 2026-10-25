@@ -13,10 +13,12 @@ import {
 } from "../auth";
 import {
   closeoutPolicyRoot,
+  exeDevTokenStatus,
   loadRuntime,
   pawsPaths,
   type AgentProfiles,
   type EnvSource,
+  type ExeDevTokenStatus,
   type GitHubConfigAuth,
   type RuntimeConfig,
   type TrackerKind,
@@ -56,6 +58,8 @@ export type ProbeFacts = {
   linearWebhook?: LinearWebhookWarning | null;
   workspace?: string | null;
   githubDelivery?: { event: string; receivedAt: number } | null;
+  /** `~/.paws/secrets/exe-dev-token`. Absent means VM provisioning is not set up. */
+  exeDevToken?: ExeDevTokenStatus;
   publicUrl: string | null;
   repo: string | null;
   team: string | null;
@@ -138,6 +142,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
       closeoutPolicyRoot(runtime.file, runtime.env.home, runtime.repo),
     ),
     linear,
+    exeDevToken: exeDevTokenStatus(runtime.env.home),
   };
 }
 
