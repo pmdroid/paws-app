@@ -107,6 +107,8 @@ export type RunnerStrayProcess = {
 };
 
 export type RunnerOverview = RunnerRecord & {
+  /** The owner's display name, so the Runners page can say whose host it is. */
+  ownerName: string | null;
   metrics: {
     cpuPercent: number | null;
     cpuCount: number | null;
@@ -273,6 +275,7 @@ export function listRunnerOverview(
     applied: number | null;
     ceiling: number | null;
     desired: number | null;
+    ownerName: string | null;
   };
   const sessions = listRunnerSessions(db, workspaceId, now);
   const pins = listSkills(db);
@@ -291,9 +294,10 @@ export function listRunnerOverview(
      AND ((w.ended_at IS NULL AND w.lease_until>?) OR u.status IN ('active','provisioning'))) +
     (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used,
     COALESCE(MIN(c.capacity,COALESCE(c.desired,16)),1) AS total,
-    c.capacity AS applied,c.ceiling,c.desired
+    c.capacity AS applied,c.ceiling,c.desired,o.name AS ownerName
     FROM runner r LEFT JOIN runner_host_status h ON h.runner_id=r.id
     LEFT JOIN runner_capacity c ON c.runner_id=r.id
+    LEFT JOIN workspace_user o ON o.id=r.owner_user_id
     WHERE r.workspace_id=? ORDER BY r.created_at,r.id`,
     )
     .all(now, now, now, workspaceId)
@@ -301,6 +305,7 @@ export function listRunnerOverview(
       id: row.id,
       workspaceId: row.workspaceId,
       ownerUserId: row.ownerUserId,
+      ownerName: row.ownerName,
       name: row.name,
       status: row.status,
       fence: row.fence,

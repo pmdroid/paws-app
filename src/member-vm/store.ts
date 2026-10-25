@@ -20,15 +20,29 @@ export type MemberVm = {
   createRequestedAt: number | null;
   installStartedAt: number | null;
   tokenExpiresAt: number | null;
+  /** When each later step began; create begins at `createdAt`. */
+  installAt: number | null;
+  enrollAt: number | null;
+  healthAt: number | null;
+  readyAt: number | null;
   createdAt: number;
   updatedAt: number;
 };
 
 export type MemberRef = { workspaceId: string; userId: string };
 
+/** The column that records when each step after create began. */
+export const STEP_AT = {
+  install: "install_at",
+  enroll: "enroll_at",
+  health: "health_at",
+  ready: "ready_at",
+} as const satisfies Record<Exclude<MemberVmStep, "create">, string>;
+
 const COLUMNS = `id,workspace_id AS workspaceId,user_id AS userId,vm_name AS vmName,step,failure,
   runner_id AS runnerId,step_started_at AS stepStartedAt,create_requested_at AS createRequestedAt,
   install_started_at AS installStartedAt,token_expires_at AS tokenExpiresAt,
+  install_at AS installAt,enroll_at AS enrollAt,health_at AS healthAt,ready_at AS readyAt,
   created_at AS createdAt,updated_at AS updatedAt`;
 
 export function getMemberVm(db: Database, id: string): MemberVm | null {
@@ -54,9 +68,9 @@ export function startMemberVm(db: Database, input: MemberRef & { now?: number })
         (existing.step === "health" || existing.step === "ready")
       ) {
         db.run(
-          `UPDATE member_vm SET step='enroll',step_started_at=?,token_expires_at=NULL,updated_at=?
-          WHERE id=?`,
-          [now, now, existing.id],
+          `UPDATE member_vm SET step='enroll',step_started_at=?,token_expires_at=NULL,enroll_at=?,
+          health_at=NULL,ready_at=NULL,updated_at=? WHERE id=?`,
+          [now, now, now, existing.id],
         );
         ensureJob(db, existing.id, now);
         return getMemberVm(db, existing.id)!;
@@ -85,10 +99,12 @@ export function retryMemberVm(db: Database, input: MemberRef & { now?: number })
     requireOwner(db, input);
     db.run(
       `UPDATE member_vm SET failure=NULL,step_started_at=?,updated_at=?,
+      enroll_at=CASE WHEN step='health' AND runner_id IS NULL THEN ? ELSE enroll_at END,
+      health_at=CASE WHEN step='health' AND runner_id IS NULL THEN NULL ELSE health_at END,
       step=CASE WHEN step='health' AND runner_id IS NULL THEN 'enroll' ELSE step END,
       install_started_at=CASE WHEN step='install' THEN NULL ELSE install_started_at END
       WHERE id=?`,
-      [now, now, existing.id],
+      [now, now, now, existing.id],
     );
     ensureJob(db, existing.id, now);
     return getMemberVm(db, existing.id)!;
