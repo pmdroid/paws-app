@@ -324,14 +324,18 @@ def parse_agent_manifest(content):
     return manifest
 
 
-def agent_entry(bun, agent, version, workspace, seed=None, registry=None):
+def agent_entry(bun, agent, version, workspace, seed=None, registry=None, pins=None):
     """Resolve one agent version's lockfile into an agents.json entry.
 
     `seed` is a bun.lock whose resolutions are kept; `registry` replaces npm (tests, or the registry
-    the runner installs from). No install script runs and nothing is installed: only the lockfile is written.
+    the runner installs from). `pins` maps package names to the exact versions the resolution must
+    take, such as the native build version the Paws catalog checked inside an adapter's range. They
+    resolve as overrides, which are then left out of the lockfile: the resolved versions stay pinned
+    in it, and the installed package.json still names only the agent. No install script runs and
+    nothing is installed: only the lockfile is written.
     """
     package = agent_package_json(agent, version)
-    (workspace / "package.json").write_text(json.dumps(package))
+    (workspace / "package.json").write_text(json.dumps({**package, **({"overrides": dict(pins)} if pins else {})}))
     if seed is not None:
         (workspace / "bun.lock").write_bytes(seed)
     home = workspace / "home"
@@ -349,6 +353,7 @@ def agent_entry(bun, agent, version, workspace, seed=None, registry=None):
     lockfile = parse_lockfile((workspace / "bun.lock").read_text())
     lockfile["workspaces"] = {"": {"name": package["name"], "dependencies": package["dependencies"]}}
     lockfile.pop("trustedDependencies", None)
+    lockfile.pop("overrides", None)
     packages = []
     for path, locked in sorted(lockfile["packages"].items()):
         # The installer always names the registry itself; a lockfile entry never points at a tarball URL.
