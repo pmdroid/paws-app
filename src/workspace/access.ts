@@ -164,7 +164,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         "/api/workspaces/members",
         "/api/workspaces/repositories",
         "/api/workspaces/select",
-      ].includes(path)
+      ].includes(path) &&
+      !path.startsWith("/onboard/")
     )
       return null;
     if (
@@ -173,6 +174,27 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         request.headers.get("host")?.toLowerCase() !== url.host.toLowerCase())
     )
       return json({ error: "Use the configured Paws origin." }, 403);
+    if (path.startsWith("/onboard/")) {
+      if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+      const link = options.assignments?.open(path.slice("/onboard/".length)) ?? null;
+      if (link === null) return page("This sign-in link is not active.", 404);
+      if (link.state === "done")
+        return new Response(null, {
+          status: 303,
+          headers: {
+            location: issuePage(link.identifier),
+            "cache-control": "no-store",
+            "referrer-policy": "no-referrer",
+          },
+        });
+      return beginWorkspaceOAuth(options.db, {
+        clientId: options.clientId,
+        origin,
+        now: now(),
+        bootstrap: null,
+        assignmentHash: link.hash,
+      });
+    }
     if (path === "/auth/linear") {
       if (!["GET", "POST"].includes(request.method))
         return json({ error: "Method not allowed" }, 405);
@@ -191,19 +213,20 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         if (bootstrap !== null && !/^[A-Za-z0-9_-]{43}$/.test(bootstrap))
           return json({ error: "Invalid bootstrap grant" }, 400);
       }
-      const token = url.searchParams.get("assignment");
-      const assignmentHash = token === null ? null : options.assignments?.begin(token);
-      if (token !== null && !assignmentHash)
+      // Links that carried a secret in the query string were replaced by /onboard/<link id>.
+      if (url.searchParams.has("assignment"))
         return json(
-          { error: "Assignment sign-in is unavailable. Use the latest Linear sign-in action." },
-          400,
+          {
+            error:
+              "This sign-in link was replaced. Use the latest Sign in to Paws action in Linear.",
+          },
+          410,
         );
       return beginWorkspaceOAuth(options.db, {
         clientId: options.clientId,
         origin,
         now: now(),
         bootstrap,
-        assignmentHash,
       });
     }
     if (path === "/auth/linear/callback") {
@@ -273,10 +296,25 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           teamIds: identity.teamIds,
           now: syncAt,
         });
+        let location = "/status/";
         if (result.assignmentHash !== null) {
           if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
-          options.assignments.complete(result.assignmentHash, workspace.id, result.identity.userId);
-        }
+          const completion = options.assignments.complete(
+            result.assignmentHash,
+            workspace.id,
+            result.identity.userId,
+          );
+          if (completion.outcome === "other-user") {
+            const refusal = page(`This link belongs to ${completion.creatorName}.`, 403);
+            refusal.headers.append(
+              "set-cookie",
+              "__Host-paws-login=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+            );
+            return refusal;
+          }
+          // Until the onboarding page exists, the issue page shows what happens next.
+          location = issuePage(completion.identifier);
+        } else options.assignments?.releaseFor(workspace.id, result.identity.userId);
         await links.syncUser(workspace.id, userId);
         const previous = requestWorkspaceSession(options.db, request, now());
         if (previous !== null) deleteWorkspaceSession(options.db, previous.session.tokenHash);
@@ -286,7 +324,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           now: now(),
         });
         const headers = new Headers({
-          location: "/status/",
+          location,
           "cache-control": "no-store",
           "referrer-policy": "no-referrer",
         });
@@ -425,6 +463,31 @@ function json(body: unknown, status = 200): Response {
       "referrer-policy": "no-referrer",
     },
   });
+}
+
+function issuePage(identifier: string): string {
+  return `/status/issues/${encodeURIComponent(identifier)}`;
+}
+
+function page(message: string, status: number): Response {
+  const text = message
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+  return new Response(
+    `<!doctype html><meta charset="utf-8"><title>Paws</title><main><p>${text}</p></main>\n`,
+    {
+      status,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": "default-src 'none'",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+      },
+    },
+  );
 }
 
 async function smallBody(request: Request): Promise<string> {

@@ -2777,6 +2777,19 @@ ALTER TABLE member_vm ADD COLUMN health_at INTEGER;
 ALTER TABLE member_vm ADD COLUMN ready_at INTEGER;
 `,
   },
+  {
+    // PAS-672. A sign-in hold is reached at /onboard/<link_id>. The id is an address, not a
+    // credential: Linear OAuth decides who signed in. token_hash now holds the link id's hash
+    // and is kept for holds written before this migration. The process gives each pending hold
+    // its link id, and one new elicitation, the first time it starts.
+    id: "138_workspace_assignment_link",
+    sql: `
+ALTER TABLE workspace_assignment ADD COLUMN link_id TEXT;
+ALTER TABLE workspace_assignment ADD COLUMN link_expires_at INTEGER;
+ALTER TABLE workspace_assignment ADD COLUMN completed_at INTEGER;
+CREATE UNIQUE INDEX workspace_assignment_link_id ON workspace_assignment(link_id);
+`,
+  },
 ];
 
 /**
