@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, openDatabase } from "../src/db";
+import { migrate, migrations, openDatabase } from "../src/db";
 import { migrateDryRun } from "../scripts/migrate-dry-run";
 
 const dropped = [
@@ -147,7 +147,11 @@ test("a dry run migrates a copy and leaves the original database as it was", () 
   const path = join(dir, "paws.db");
   try {
     beforeDrop([["done", "merged"]], path).close();
-    expect(migrateDryRun(path).applied).toEqual(["130_drop_project_start"]);
+    // 130 and every migration added after it.
+    const pending = migrations.map((migration) => migration.id);
+    expect(migrateDryRun(path).applied).toEqual(
+      pending.slice(pending.indexOf("130_drop_project_start")),
+    );
     const db = openDatabase(path);
     try {
       expect(applied(db)).toBe(false);
