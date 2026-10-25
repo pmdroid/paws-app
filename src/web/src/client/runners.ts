@@ -474,6 +474,10 @@ export function codingAgentUpdate(
   return offered;
 }
 
+export function listedRunners(runners: readonly Runner[]): Runner[] {
+  return runners.filter((runner) => runner.status !== "revoked");
+}
+
 /** How many agents across these runners are behind the newest eligible version. */
 export function codingAgentsBehind(
   runners: readonly Runner[],
@@ -1179,7 +1183,7 @@ export function createRunners() {
           : await api<MemberVmState>("/api/runners/vm").catch(() => memberVm);
       if (current !== generation) return;
       memberVm = vm;
-      runners = list.runners;
+      runners = listedRunners(list.runners);
       loaded = true;
       serverVersion = list.serverVersion ?? null;
       agentCatalog = list.agentVersions ?? [];
