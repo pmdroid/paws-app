@@ -2841,7 +2841,7 @@ ALTER TABLE member_vm ADD COLUMN delete_blocked TEXT
 `,
   },
   {
-    id: "140_member_vm_enrollment",
+    id: "142_member_vm_enrollment",
     sql: `
 CREATE TABLE member_vm_enrollment (
   token_hash TEXT PRIMARY KEY,
@@ -2852,7 +2852,7 @@ CREATE INDEX member_vm_enrollment_vm ON member_vm_enrollment(member_vm_id);
 `,
   },
   {
-    id: "141_member_vm_enrollments_tracked",
+    id: "143_member_vm_enrollments_tracked",
     sql: `
 ALTER TABLE member_vm ADD COLUMN enrollments_tracked INTEGER NOT NULL DEFAULT 1
   CHECK(enrollments_tracked IN (0,1));
