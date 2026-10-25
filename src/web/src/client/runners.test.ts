@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   agentCatalogMarkup,
   compareVersions,
+  hostEnrollmentCommand,
   livePoll,
   RUNNER_POLL_MS,
   runnerActionsMarkup,
@@ -779,5 +780,34 @@ describe("coding agent versions", () => {
 
   test("is left out before the first catalog refresh", () => {
     expect(agentCatalogMarkup([], 0)).toBe("");
+  });
+});
+
+describe("hostEnrollmentCommand", () => {
+  const command = hostEnrollmentCommand({
+    token: "tok_en-123",
+    expiresAt: now,
+    name: "Pascal's box",
+    config: {
+      controlPlaneUrl: "https://paws.example.com",
+      runnerApiUrl: "https://paws.example.com:8788",
+      allowedRepositories: ["acme/app"],
+    },
+  });
+  test("installs, configures, enrolls with a token file and starts the daemon", () => {
+    expect(command.startsWith("curl -fsSL https://get.paws.boo | sudo sh")).toBe(true);
+    expect(command).toContain(
+      "--name 'Pascal'\\''s box' --token-file /etc/paws-runner/enrollment-token",
+    );
+    expect(command).toContain('"runnerApiUrl":"https://paws.example.com:8788"');
+    expect(command).toContain('"allowedRepositories":["acme/app"]');
+    expect(command.endsWith("sudo systemctl enable --now paws-runner.service")).toBe(true);
+  });
+  test("passes the token only through the printf builtin into a root-owned 0600 file", () => {
+    const steps = command.split(" && \\\n  ");
+    const carrying = steps.filter((step) => step.includes("tok_en-123"));
+    expect(carrying).toEqual([
+      "printf '%s\\n' 'tok_en-123' | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token",
+    ]);
   });
 });

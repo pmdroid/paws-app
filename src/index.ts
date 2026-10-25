@@ -68,6 +68,7 @@ import {
   prepareShutdown,
   recoverOnStartup,
   listSkills,
+  listRepositoryCatalog,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -619,6 +620,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           repositoryAccess,
           transcriptObjects,
           skillsRoot: paths.skillsDir,
+          publicUrl: runtime.publicUrl,
+          repositories: () =>
+            listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
           onError: () => console.error("Paws runner connection failed."),
         }).then(async (value) => {
           if (runnerStopping) {
@@ -743,6 +747,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             runnerEnrollment: (request: Request) =>
               runner
                 ? runner.enrollment(request)
+                : Promise.resolve(
+                    Response.json({ error: "Runner control is starting." }, { status: 503 }),
+                  ),
+            runnerHostEnrollment: (request: Request) =>
+              runner
+                ? runner.hostEnrollment(request)
                 : Promise.resolve(
                     Response.json({ error: "Runner control is starting." }, { status: 503 }),
                   ),

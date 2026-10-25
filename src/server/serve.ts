@@ -56,6 +56,8 @@ export type ServerOptions = {
   tls?: PublicTls;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   runnerEnrollment?: (request: Request) => Promise<Response>;
+  /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
+  runnerHostEnrollment?: (request: Request) => Promise<Response>;
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   executionControls?: (
     request: Request,
@@ -146,6 +148,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           csrfToken,
           ...(workspaceAccess === undefined ? {} : { workspaceAccess }),
           ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
+          ...(options.runnerHostEnrollment
+            ? { runnerHostEnrollment: options.runnerHostEnrollment }
+            : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
@@ -181,6 +186,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 type Secrets = {
   workspaceAccess?: WorkspaceAccess | null;
   runnerEnrollment?: ServerOptions["runnerEnrollment"];
+  runnerHostEnrollment?: ServerOptions["runnerHostEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
   executionControls?: ServerOptions["executionControls"];
   slackSigningSecret: string | null;
@@ -212,6 +218,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   if (path === "/api/runner-pairings" && secrets.runnerEnrollment !== undefined)
     return secrets.runnerEnrollment(request);
+  if (path === "/api/runner-enrollments" && secrets.runnerHostEnrollment !== undefined)
+    return secrets.runnerHostEnrollment(request);
   if (secrets.workspaceAccess === null && !path.startsWith("/webhooks")) {
     if (path === "/" || path === "/status" || path.startsWith("/status/")) {
       const page = await handleStatusRequest(request, {});
