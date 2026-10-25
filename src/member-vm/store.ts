@@ -197,10 +197,11 @@ export function startMemberVmDelete(
         delete_blocked=NULL,updated_at=? WHERE id=?`,
         [input.userId, force, now, now, now, row.id],
       );
-      // Provisioning must not keep creating or enrolling what the delete is removing.
+      // Provisioning starts no further step. A step already running keeps its claim and finishes,
+      // so its outcome is recorded; the delete job waits for it before deciding what to remove.
       db.run(
         `UPDATE job SET status='cancelled',finished_at=?,locked_by=NULL,locked_until=NULL,
-        last_error='member VM deleted' WHERE queue=? AND status IN ('pending','running')
+        last_error='member VM deleted' WHERE queue=? AND status='pending'
         AND json_extract(payload,'$.memberVmId')=?`,
         [now, MEMBER_VM_QUEUE, row.id],
       );

@@ -32,6 +32,7 @@ export type {
 export {
   blockingTasks as memberVmBlockingTasks,
   createMemberVmDeleteHandler,
+  MEMBER_VM_DELETE_POLL_MS,
   MEMBER_VM_TAILNET_LOGOUT,
   registerMemberVmDeleteJob,
 } from "./delete";

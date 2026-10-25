@@ -30,7 +30,11 @@ export type MemberVmDeleteJobOptions = {
   disconnect?: (fingerprint: string) => void;
   secrets?: () => Secrets | Promise<Secrets>;
   now?: () => number;
+  /** How often the delete checks again while a provisioning step is still running. */
+  pollMs?: number;
 };
+
+export const MEMBER_VM_DELETE_POLL_MS = 2_000;
 
 /**
  * Leaves the tailnet when the VM joined it (PAS-656 installs `/usr/bin/tailscale` only to join),
@@ -40,7 +44,7 @@ export const MEMBER_VM_TAILNET_LOGOUT =
   "if [ -x /usr/bin/tailscale ]; then sudo tailscale logout; fi";
 const TAILNET_LOGOUT_TIMEOUT_MS = 60_000;
 
-type Outcome = "advance" | "done";
+type Outcome = "advance" | "wait" | "done";
 
 export function registerMemberVmDeleteJob(jobs: JobLoop, options: MemberVmDeleteJobOptions): void {
   jobs.register(MEMBER_VM_DELETE_QUEUE, createMemberVmDeleteHandler(jobs.db, options));
@@ -52,6 +56,7 @@ export function registerMemberVmDeleteJob(jobs: JobLoop, options: MemberVmDelete
  */
 export function createMemberVmDeleteHandler(db: Database, options: MemberVmDeleteJobOptions) {
   const now = options.now ?? Date.now;
+  const pollMs = options.pollMs ?? MEMBER_VM_DELETE_POLL_MS;
   return async (job: Job, context: JobContext): Promise<void> => {
     const id = memberVmId(job.payload);
     const row = id === null ? null : getMemberVm(db, id);
@@ -77,7 +82,7 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
     if (outcome === "done" || !context.isCurrent()) return;
     const at = now();
     parkLeasedJob(db, job, {
-      runAt: at,
+      runAt: outcome === "wait" ? at + pollMs : at,
       payload: job.payload,
       attempts: job.attempts - 1,
       now: at,
@@ -98,7 +103,17 @@ async function runDeleteStep(
   const actor = row.deleteRequestedBy ?? row.userId;
   switch (row.deleteStep) {
     case "drain": {
-      const runner = row.deleteRunnerId === null ? null : liveRunner(db, row.deleteRunnerId);
+      // A provisioning step that was already running when the delete was confirmed keeps its
+      // claim until its exe.dev or enrollment call answers. Its outcome decides whether the VM is
+      // Paws's and which runner it enrolled, so nothing is decided before it finishes.
+      if (provisioningInFlight(db, row.id, now())) return "wait";
+      const runnerId = row.deleteRunnerId ?? row.runnerId;
+      if (row.deleteRunnerId === null && runnerId !== null)
+        db.run("UPDATE member_vm SET delete_runner_id=? WHERE id=? AND delete_step='drain'", [
+          runnerId,
+          row.id,
+        ]);
+      const runner = runnerId === null ? null : liveRunner(db, runnerId);
       if (runner !== null && runner.status !== "draining")
         updateRunnerStatus(db, {
           runnerId: runner.id,
@@ -107,7 +122,7 @@ async function runDeleteStep(
           status: "draining",
           now: now(),
         });
-      const tasks = row.deleteRunnerId === null ? [] : blockingTasks(db, row.deleteRunnerId, now());
+      const tasks = runnerId === null ? [] : blockingTasks(db, runnerId, now());
       if (tasks.length > 0 && row.deleteForce !== 1) {
         const names = tasks.map((task) => task.identifier).join(", ");
         const changed = db.run(
@@ -154,8 +169,13 @@ async function runDeleteStep(
 
     case "revoke": {
       // The same path as removing a paired runner: revoke the runner and its certificates, then
-      // drop their connections. An in-flight enrollment may have set runner_id after the start.
-      const ids = new Set([row.deleteRunnerId, row.runnerId].filter((value) => value !== null));
+      // drop their connections. Also every runner that enrolled with a token minted for this VM,
+      // so an enrollment whose runner_id was never recorded (Paws stopped mid-step) is revoked too.
+      const ids = new Set(
+        [row.deleteRunnerId, row.runnerId, ...enrolledRunners(db, row)].filter(
+          (value) => value !== null,
+        ),
+      );
       for (const runnerId of ids) {
         const runner = liveRunner(db, runnerId);
         if (runner === null) continue;
@@ -218,6 +238,32 @@ export function blockingTasks(db: Database, runnerId: string, now: number): Memb
       ORDER BY r.created_at,i.id`,
     )
     .all(runnerId, now, ...terminal);
+}
+
+/** True while a provisioning job for this VM holds a live claim, so its step is still running. */
+function provisioningInFlight(db: Database, id: string, now: number): boolean {
+  return (
+    db
+      .query<{ one: number }, [string, number, string]>(
+        `SELECT 1 AS one FROM job WHERE queue=? AND status='running' AND locked_until>?
+        AND json_extract(payload,'$.memberVmId')=? LIMIT 1`,
+      )
+      .get(MEMBER_VM_QUEUE, now, id) !== null
+  );
+}
+
+/**
+ * Runners enrolled with a Create VM token for this VM: the enrollment names the VM, belongs to
+ * the VM's member and was used after the row was created.
+ */
+function enrolledRunners(db: Database, row: MemberVm): string[] {
+  return db
+    .query<{ runnerId: string }, [string, string, string, number]>(
+      `SELECT runner_id AS runnerId FROM runner_enrollment WHERE workspace_id=? AND user_id=?
+      AND name=? AND runner_id IS NOT NULL AND used_at>=?`,
+    )
+    .all(row.workspaceId, row.userId, row.vmName, row.createdAt)
+    .map((entry) => entry.runnerId);
 }
 
 function liveRunner(
