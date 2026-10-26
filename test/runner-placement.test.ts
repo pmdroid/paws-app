@@ -470,6 +470,9 @@ test("run pins apply to every role and never expire while the host is online", a
     // Even occupied capacity cannot make placement abandon an online run's pin.
     placed.db.run("UPDATE runner_work SET ended_at=NULL,lease_until=?", [placed.now() + 60_000]);
     expect(await placed.ids({ pinnedRunnerId })).toEqual(["second"]);
+    expect(await placed.ids({ pinnedRunnerId, excludeRunnerIds: ["second"] })).toEqual(["second"]);
+    // Exclusions still apply to new runs and unavailable pins.
+    expect(await placed.ids({ excludeRunnerIds: ["second"] })).toEqual(["own"]);
     placed.db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id='second'", [
       placed.now() + 60_000,
     ]);

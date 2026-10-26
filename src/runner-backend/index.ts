@@ -317,20 +317,21 @@ export function createRemoteAgentRunner(options: {
        ORDER BY r.last_seen_at DESC,r.id`,
           )
           .all();
-    if (
+    const pinnedOnline = Boolean(
       placement.pinnedRunnerId &&
       db
         .query(
           "SELECT 1 FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>?",
         )
-        .get(placement.pinnedRunnerId, now() - RUNNER_ONLINE_MS)
-    )
+        .get(placement.pinnedRunnerId, now() - RUNNER_ONLINE_MS),
+    );
+    if (pinnedOnline)
       candidates = candidates.filter((runner) => runner.id === placement.pinnedRunnerId);
     placement.signal?.throwIfAborted();
     offered.push(...candidates.map((runner) => runner.id));
     const pending = unassigned();
     for (const runner of candidates) {
-      if (placement.excludeRunnerIds?.includes(runner.id)) continue;
+      if (placement.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) continue;
       const reserved = pending.get(runner.id) ?? 0;
       if (reservations.has(item.currentRunId)) {
         rejected.push(`${runner.id}: the run is already being placed`);
@@ -482,7 +483,7 @@ export function createRemoteAgentRunner(options: {
         const sessionBusy =
           session !== undefined &&
           chosen?.offered.includes(session.runnerId) === true &&
-          !runnerHasCapacity(db, session.runnerId, now());
+          !runnerHasCapacity(db, session.runnerId, now(), selected.runId);
         const controller = new AbortController();
         const abort = () => controller.abort(input.signal?.reason);
         input.signal?.addEventListener("abort", abort, { once: true });
@@ -746,6 +747,7 @@ export function createRemoteAgentRunner(options: {
                     ]?.exclude
                   : undefined;
               const resumeSessionId =
+                !excluded.includes(selected.id) &&
                 (!pinnedRunnerId || pinnedRunnerId === selected.id) &&
                 !taskScope &&
                 input.role === "implementer" &&

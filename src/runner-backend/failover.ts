@@ -111,7 +111,7 @@ export async function runWithFailover(
         const answer = await input.askTeam.ask(
           {
             question:
-              "The runner stopped after publishing an artifact or asking a question. Review the existing result and reply with instructions to continue on another runner.",
+              "The runner stopped after publishing an artifact or asking a question. Review the existing result and reply with instructions to continue.",
           },
           {
             itemId: input.itemId,
@@ -146,7 +146,7 @@ export async function runWithFailover(
       }
       prompt = [
         prompt,
-        "Continue in a fresh agent session on another runner.",
+        "Continue in a fresh agent session.",
         error.message,
         history.length ? `Observed prior conversation:\n${JSON.stringify(history)}` : "",
         approved ? `Continuation instructions:\n${approved}` : "",
