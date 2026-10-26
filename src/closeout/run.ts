@@ -426,6 +426,72 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
   }
 }
 
+/**
+ * Decide `head` from the evidence already recorded for it. Runs no command
+ * and no review: an answered pending-human check completes the evaluation
+ * the other checks finished. A rejection is final, as with no fix attempts.
+ */
+export async function decideCloseoutGate(input: GateInput): Promise<GateResult> {
+  let head = input.head;
+  if (!head) {
+    try {
+      head = await readHead(input.worktree);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return finalResult(input, "invalid", 0, 0, "", null, message);
+    }
+  }
+  const evaluation = await decideRecorded({ ...input, head });
+  if (input.reportDir) {
+    await appendDecisionHistory(input.reportDir, {
+      evaluation: 1,
+      exitCode: evaluation.exitCode,
+      decision: evaluation.decision,
+      ...(evaluation.error ? { error: evaluation.error } : {}),
+    });
+  }
+  const outcome: GateOutcome = evaluation.outcome === "rejected" ? "exhausted" : evaluation.outcome;
+  return finalResult(input, outcome, 0, 1, head, evaluation);
+}
+
+async function decideRecorded(input: EvaluateInput): Promise<Evaluation> {
+  const taskError = assertTaskId(input.taskId);
+  if (taskError) return failure("invalid", null, taskError, input.head);
+  if (!isSha(input.base) || !isSha(input.head)) {
+    return failure("invalid", null, "base and head must be commit ids", input.head);
+  }
+  let judged: SpecDecision;
+  try {
+    judged = await decide({
+      checkoutExclusions: input.checkoutExclusions,
+      repo: input.worktree,
+      base: input.base,
+      head: input.head,
+      gate: CLOSEOUT_GATE,
+      task: input.taskId,
+      candidate: input.candidate,
+      evidenceDir: evidencePath(input.taskId, input.pawsHome),
+      ...(input.home !== undefined ? { home: input.home } : {}),
+      ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
+      ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+      ...publishedOf(input),
+    });
+  } catch (error) {
+    if (isTransient(error)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    return failure("blocked", null, scrub(message), input.head);
+  }
+  const moved = await headUnmoved(input.worktree, input.head);
+  if (moved) return failure("blocked", exitOf(judged.decision), moved, input.head);
+  if (judged.gate !== CLOSEOUT_GATE) {
+    return failure("invalid", exitOf(judged.decision), "decision gate is not beforePR", input.head);
+  }
+  return applyBypasses(
+    finish(toGateDecision(judged), input.base, input.head, []),
+    input.bypasses ?? [],
+  );
+}
+
 async function attemptFix(
   input: GateInput,
   request: FixRequest,
