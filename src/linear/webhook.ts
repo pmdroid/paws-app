@@ -7,7 +7,7 @@ import {
   type AcceptedLinearEvent,
   type LinearEventAction,
 } from "./events";
-import { flightsFor } from "./event-dispatch";
+import { flightsFor, isPawsStop } from "./event-dispatch";
 import type { InboxStore } from "./inbox";
 import type { IntakeQueue } from "./intake-queue";
 import { isRecord, readNumber, readString } from "./read";
@@ -210,8 +210,13 @@ export function parseAgentEvent(
     (readString(session, "archivedAt") !== null ||
       readString(session, "dismissedAt") !== null ||
       readString(session, "status") === "stopping");
-  const signal = closed ? "stop" : activity === null ? null : readString(activity, "signal");
   const action = closed ? "prompted" : agentAction(type, actionName);
+  const signal =
+    closed || (action === "prompted" && isPawsStop(body))
+      ? "stop"
+      : activity === null
+        ? null
+        : readString(activity, "signal");
   const dedupeKey = dedupeFor(action, sessionId, activityId, deliveryId);
   return {
     dedupeKey,
