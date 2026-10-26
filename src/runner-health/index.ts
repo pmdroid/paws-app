@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -144,7 +145,7 @@ export function createRunnerHealth(options: {
       return immediate(db, () => {
         const at = now();
         const { member, runner } = visible(principal, runnerId);
-        if (!["owner", "admin"].includes(member.role))
+        if (!isWorkspaceAdmin(member.role))
           throw new Error("Workspace administrator access is required");
         if (pendingChecks(runnerId, at) >= 4)
           throw new Error("Runner health checks are already pending");

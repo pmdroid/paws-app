@@ -1,3 +1,4 @@
+import { canAct } from "./eligibility";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
@@ -47,10 +48,8 @@ export function createWorkspaceLinearActions(options: {
         installation.oauthClientId === options.clientId &&
         installation.teamId !== null &&
         getLinearSessionAccess(options.db, event.sessionId) === "allowed" &&
-        (member === null ||
-          (member.active &&
-            member.role !== "observer" &&
-            member.teamIds.includes(installation.teamId)))) ||
+        canAct({ id: event.actorId ?? "", member, teamId: installation.teamId }, "prompt")
+          .allowed) ||
       denied(event, workspace?.id ?? null, member?.userId ?? null)
     );
   }
@@ -65,7 +64,7 @@ export function createWorkspaceLinearActions(options: {
       workspace === null ||
       !actorId?.trim() ||
       event.sessionId === null ||
-      (member !== null && (!member.active || member.role === "observer"))
+      !canAct({ id: actorId, member }, "prompt").allowed
     )
       return deny();
     const before = getLinearSessionInstallation(options.db, event.sessionId);
@@ -92,7 +91,7 @@ export function createWorkspaceLinearActions(options: {
       current.appUserId !== before.appUserId ||
       current.teamId !== before.teamId ||
       getLinearSessionAccess(options.db, event.sessionId) !== "allowed" ||
-      (latest !== null && (!latest.active || latest.role === "observer"))
+      !canAct({ id: actorId, member: latest }, "prompt").allowed
     )
       return deny();
     if (latest !== null) {
@@ -104,15 +103,16 @@ export function createWorkspaceLinearActions(options: {
         teamIds: identity.teamIds,
         now: observedAt,
       });
-      const verified = workspaceLinearMember(options.db, workspace.id, actorId)!;
-      if (
-        !verified.active ||
-        verified.role === "observer" ||
-        !verified.teamIds.includes(before.teamId)
-      )
-        return deny();
     }
-    return identity.active && !identity.guest && identity.teamIds.includes(before.teamId)
+    return canAct(
+      {
+        id: actorId,
+        identity,
+        member: workspaceLinearMember(options.db, workspace.id, actorId),
+        teamId: before.teamId,
+      },
+      "prompt",
+    ).allowed
       ? true
       : deny();
   }

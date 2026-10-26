@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "./eligibility";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
@@ -24,7 +25,7 @@ export async function handleWorkspaceGitHubIntegration(
   const principal = options.principal;
   const permitted = () => {
     const member = workspaceMember(options.db, principal.workspaceId, principal.userId);
-    return member?.active && ["owner", "admin"].includes(member.role);
+    return member?.active && isWorkspaceAdmin(member.role);
   };
   const audit = (action: string) =>
     auditWorkspaceAccess(options.db, {

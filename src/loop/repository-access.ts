@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import {
   listWorkspaceMembers,
@@ -56,7 +57,7 @@ export function teamMemberDenial(db: Database, item: WorkItemRecord): GitHubDeni
 /** Names of the workspace's active owners and admins, from the database. */
 export function workspaceAdministratorNames(db: Database, workspaceId: string): string[] {
   return listWorkspaceMembers(db, workspaceId)
-    .filter((member) => member.active && (member.role === "owner" || member.role === "admin"))
+    .filter((member) => member.active && isWorkspaceAdmin(member.role))
     .map((member) => member.name);
 }
 
