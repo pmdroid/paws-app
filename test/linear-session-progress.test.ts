@@ -477,17 +477,28 @@ test("post-PR reconstruction refuses backwards phases and appends rebase verific
 });
 
 test.each([
-  ["findings", "Fix Closeout findings (2 of 3)"],
-  ["ci", "Fix CI"],
-  ["review", "Fix review findings"],
-  ["conflict", "Resolve merge conflict"],
-])("%s restarts append one durable reason-named step", (reason, content) => {
+  ["findings", "Fix Closeout findings (2 of 3)", 3],
+  ["findings", "Fix Closeout findings (2 of 5)", 5],
+  ["ci", "Fix CI", 3],
+  ["review", "Fix review findings", 3],
+  ["conflict", "Resolve merge conflict", 3],
+])("%s restarts append one durable reason-named step", (reason, content, limit) => {
   const db = tempDb();
   try {
     createLinearSessionProgress(db, "session", "ENG-1").phase("merging");
     markPr(db);
-    createLinearSessionProgress(db, "session", "ENG-1").restart(reason!, 2, 10);
-    createLinearSessionProgress(db, "session", "ENG-1").restart(reason!, 2, 10);
+    createLinearSessionProgress(db, "session", "ENG-1").restart(
+      String(reason),
+      2,
+      10,
+      typeof limit === "number" ? limit : 3,
+    );
+    createLinearSessionProgress(db, "session", "ENG-1").restart(
+      String(reason),
+      2,
+      10,
+      typeof limit === "number" ? limit : 3,
+    );
     const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
       ?.payload as SessionUpdate;
     expect(plan.plan?.filter((step) => step.content === content)).toEqual([
