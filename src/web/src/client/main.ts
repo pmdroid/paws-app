@@ -12,6 +12,7 @@ import {
   type StatusCheckLog,
   type StatusItemDetail,
   type StatusSnapshot,
+  type StatusSnapshotBase,
 } from "../contract";
 import {
   attemptsOf,
@@ -229,7 +230,7 @@ async function signedIn(response: Response): Promise<boolean> {
 }
 
 /** What the current page renders from: the issue's detail on its page, otherwise the list. */
-function pageData(): StatusSnapshot | null {
+function pageData(): StatusSnapshotBase | null {
   return openDetail({ route: currentRoute(), detail }) ? detail : snapshot;
 }
 
@@ -660,8 +661,9 @@ async function fetchLog(
   return parsed.log;
 }
 
+/** Closeout attempts and checks are only in the open issue page's detail, not in the list. */
 function closeoutVerdict(itemId: string) {
-  const data = pageData();
+  const data = openDetail({ route: currentRoute(), detail }) ? detail : null;
   const runId = agentCloseoutRun(itemId);
   if (runId === null) return data?.verdicts.find((entry) => entry.itemId === itemId);
   const agent = findAgentCloseout(data?.agentCloseout, runId);

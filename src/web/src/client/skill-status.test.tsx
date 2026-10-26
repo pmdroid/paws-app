@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusSnapshot } from "../contract";
+import { parseStatusSnapshot, STATUS_API_VERSION } from "../contract";
 import { runSetupSection } from "./render";
 import { runnerDetailMarkup, runnerRowMarkup, runnerSkillsMarkup, type Runner } from "./runners";
 import { renderSkillSettings, skillRolloutMarkup, type SkillListing } from "./skills";
@@ -268,7 +268,7 @@ describe("run page skills and hooks", () => {
 
   test("the snapshot carries the setup to the run page", () => {
     const parsed = parseStatusSnapshot({
-      version: 1,
+      version: STATUS_API_VERSION,
       source: "live",
       generatedAt: "2026-10-22T10:00:00.000Z",
       project: { name: "Paws", team: "PAS", repo: "pmdroid/paws-app", workspace: "kyku" },
@@ -292,7 +292,6 @@ describe("run page skills and hooks", () => {
       questions: [],
       verdicts: [],
       mergeQueue: [],
-      events: [],
     });
     expect(parsed.ok && parsed.snapshot.runs[0]?.setup).toEqual(setup);
   });

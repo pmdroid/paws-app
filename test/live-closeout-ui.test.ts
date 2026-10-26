@@ -27,7 +27,15 @@ import { handleStatusRequest } from "../src/web";
 import { render, type RenderModel } from "../src/web/src/client/render";
 import { attemptsOf, checkKey } from "../src/web/src/client/closeout";
 import { createLiveStatusProvider } from "../src/web/src/live/provider";
-import type { StatusCheck, StatusSnapshot, StatusVerdict } from "../src/web/src/contract";
+import type {
+  StatusCheck,
+  StatusItemDetail,
+  StatusSnapshot,
+  StatusVerdict,
+} from "../src/web/src/contract";
+
+/** The status list, with each listed issue's detail as the issue page loads it. */
+type Status = StatusSnapshot & { details: Map<string, StatusItemDetail> };
 
 const open: Database[] = [];
 const dirs: string[] = [];
@@ -136,43 +144,50 @@ function acceptVerdict(db: Database, id: string, head: string, body: string, now
 }
 
 /**
- * The live snapshot with every check's output read through `checkLog`, as the issue page shows
- * a check once its row has loaded the log. `/api/status` itself carries no check output.
+ * The status list, with each listed issue's detail and every check's output read through
+ * `checkLog`, as the issue page shows a check once its row has loaded the log. Neither
+ * `/api/status` nor the detail carries check output.
  */
-function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): StatusSnapshot {
+function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): Status {
   const provider = createLiveStatusProvider(db, { now: () => new Date(now), env });
-  const snapshot = provider.snapshot();
+  const list = provider.snapshot();
   const withLog = (itemId: string, attempt: number) => (check: StatusCheck) => ({
     ...check,
     ...provider.checkLog({ itemId, attempt, checkId: check.id, run: null }),
   });
-  return {
-    ...snapshot,
-    verdicts: snapshot.verdicts.map((verdict) => {
-      const attempts = attemptsOf(verdict);
-      return {
-        ...verdict,
-        checks: verdict.checks.map(withLog(verdict.itemId, attempts.at(-1)!.number)),
-        ...(verdict.attempts
-          ? {
-              attempts: verdict.attempts.map((attempt) => ({
-                ...attempt,
-                checks: attempt.checks.map(withLog(verdict.itemId, attempt.number)),
-              })),
-            }
-          : {}),
-      };
-    }),
-  };
+  const details = new Map<string, StatusItemDetail>();
+  for (const item of list.items) {
+    const detail = provider.item(item.id);
+    if (detail === null) continue;
+    details.set(item.id, {
+      ...detail,
+      verdicts: detail.verdicts.map((verdict) => {
+        const attempts = attemptsOf(verdict);
+        return {
+          ...verdict,
+          checks: verdict.checks.map(withLog(verdict.itemId, attempts.at(-1)!.number)),
+          ...(verdict.attempts
+            ? {
+                attempts: verdict.attempts.map((attempt) => ({
+                  ...attempt,
+                  checks: attempt.checks.map(withLog(verdict.itemId, attempt.number)),
+                })),
+              }
+            : {}),
+        };
+      }),
+    });
+  }
+  return { ...list, details };
 }
 
-function verdictOf(snapshot: StatusSnapshot, id: string): StatusVerdict {
-  const verdict = snapshot.verdicts.find((entry) => entry.itemId === id);
+function verdictOf(snapshot: Status, id: string): StatusVerdict {
+  const verdict = snapshot.details.get(id)?.verdicts.find((entry) => entry.itemId === id);
   if (verdict === undefined) throw new Error(`missing verdict ${id}`);
   return verdict;
 }
 
-function paint(snapshot: StatusSnapshot, id: string, checkId: string): string {
+function paint(snapshot: Status, id: string, checkId: string): string {
   const item = snapshot.items.find((entry) => entry.id === id);
   const runId =
     item?.runId && snapshot.runs.some((run) => run.id === item.runId)
@@ -181,9 +196,10 @@ function paint(snapshot: StatusSnapshot, id: string, checkId: string): string {
   if (!runId) throw new Error(`missing run for ${id}`);
   const latest = attemptsOf(verdictOf(snapshot, id)).at(-1)?.number ?? 1;
   const model: RenderModel = {
-    route: { view: "runs", id: runId },
+    route: { view: "issues", id },
     phase: "ready",
     snapshot,
+    detail: snapshot.details.get(id) ?? null,
     error: null,
     engineUrl: "http://127.0.0.1:8787",
     closeout: { attempt: {}, open: { [checkKey(id, latest, checkId)]: true }, wrap: {} },
@@ -394,9 +410,10 @@ describe("live closeout ui", () => {
     expect(html).toContain('data-attempt="2" aria-pressed="true"');
     expect(html).toContain('id="check-2-unit"');
     const earlier = render({
-      route: { view: "runs", id: snapshot.runs.find((run) => run.itemId === id)!.id },
+      route: { view: "issues", id },
       phase: "ready",
       snapshot,
+      detail: snapshot.details.get(id) ?? null,
       error: null,
       engineUrl: null,
       closeout: { attempt: { [id]: 1 }, open: {}, wrap: {} },

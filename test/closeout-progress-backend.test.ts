@@ -452,7 +452,8 @@ describe("closeout progress backend", () => {
       expect(stopped?.decision).toBe("running");
       expect(step?.state).toBe("pending");
       expect(step?.detail).toBe("Retrying: 503 Service Unavailable");
-      const verdict = createLiveStatusProvider(db).snapshot().verdicts[0];
+      const provider = createLiveStatusProvider(db);
+      const verdict = provider.item(provider.snapshot().items[0]!.id)?.verdicts[0];
       const check = verdict?.checks.find((entry) => entry.id === "adversarial-review");
       expect(verdict?.summary).toBe("Closeout is running.");
       expect(check?.active).toBe(false);

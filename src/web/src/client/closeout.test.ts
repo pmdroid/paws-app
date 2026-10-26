@@ -1,9 +1,9 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, itemDetail, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusSnapshot } from "../contract";
+import { parseStatusItemDetail } from "../contract";
 import {
   checkHash,
   checkKey,
@@ -12,33 +12,32 @@ import {
   renderCloseoutChecks,
   type CloseoutView,
 } from "./closeout";
-import { render, type RenderModel } from "./render";
+import { render } from "./render";
 import { themedMarkup } from "./theme";
 
 const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
 
 function verdict(id: string) {
-  const found = statusFixture().verdicts.find((entry) => entry.itemId === id);
+  const found = fullStatusFixture().verdicts.find((entry) => entry.itemId === id);
   if (!found) throw new Error(`missing ${id}`);
   return found;
 }
 
-function runPage(patch: Partial<RenderModel>): string {
+function runPage(snapshot: FullStatus = fullStatusFixture()): string {
   return render({
-    route: { view: "runs", id: "r-100" },
     phase: "ready",
-    snapshot: statusFixture(),
     error: null,
     engineUrl: null,
-    ...patch,
+    ...pageData(snapshot, { view: "runs", id: "r-100" }),
   }).content;
 }
 
 describe("closeout checks", () => {
   test("the fixture with attempts passes the contract", () => {
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(statusFixture())));
+    const detail = itemDetail(fullStatusFixture(), "ENG-100");
+    const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(detail)));
     if (!parsed.ok) throw new Error(parsed.error);
-    const attempts = parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-100")?.attempts;
+    const attempts = parsed.detail.verdicts.find((entry) => entry.itemId === "ENG-100")?.attempts;
     expect(attempts?.map((entry) => entry.decision)).toEqual(["rejected", "rejected", "exhausted"]);
   });
 
@@ -206,12 +205,12 @@ describe("closeout checks", () => {
   });
 
   test("a run without Closeout has no Closeout section", () => {
-    const snapshot = statusFixture();
+    const snapshot = fullStatusFixture();
     snapshot.verdicts = snapshot.verdicts.filter((entry) => entry.itemId !== "ENG-100");
-    const html = runPage({ snapshot });
+    const html = runPage(snapshot);
     expect(html).not.toContain('aria-label="Closeout"');
     expect(html).not.toContain("<h3>Checks</h3>");
-    expect(runPage({})).toContain('aria-label="Closeout"');
+    expect(runPage()).toContain('aria-label="Closeout"');
   });
 
   test("copied links round-trip the attempt and check id", () => {
@@ -264,12 +263,14 @@ describe("independent review measurements", () => {
     expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   });
 
-  test("a measured review survives the status contract", () => {
-    const snapshot = statusFixture();
+  test("a measured review survives the item detail contract", () => {
+    const snapshot = fullStatusFixture();
     snapshot.verdicts = [measured()];
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    const parsed = parseStatusItemDetail(
+      JSON.parse(JSON.stringify(itemDetail(snapshot, "ENG-101"))),
+    );
     if (!parsed.ok) throw new Error(parsed.error);
-    const review = parsed.snapshot.verdicts[0]!.checks.find((check) => check.kind === "review");
+    const review = parsed.detail.verdicts[0]!.checks.find((check) => check.kind === "review");
     expect(review?.tokens).toBe(52_300);
   });
 });
