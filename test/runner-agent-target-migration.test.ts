@@ -20,7 +20,7 @@ function before133(): Database {
 test("133 keeps updates with their integrity and checked packages, and drops every other target", () => {
   const db = before133();
   try {
-    migrate(db);
+    migrate(db, { until: "133_runner_agent_target_updates_only" });
     expect(db.query("SELECT runner_id,agent,id,integrity FROM runner_agent_target").all()).toEqual([
       { runner_id: "r", agent: "codex", id: "update", integrity: sha("A") },
     ]);
