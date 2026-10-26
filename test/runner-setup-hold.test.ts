@@ -129,20 +129,23 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     disconnect() {},
   });
   const pair = async (name: string, userId: string, ready: number) => {
-    const pairing = await control.beginPairing({
+    const enrollment = {
       name,
       csr: (await createRunnerKey(join(root, name))).csr,
+    };
+    const { runnerId } = await control.enroll({
+      ...enrollment,
+      token: control.createEnrollment(
+        {
+          workspaceId: workspace.id,
+          userId: ownerId,
+          role: "owner",
+          authenticatedAt: now,
+          teamIds: [],
+        },
+        enrollment,
+      ).token,
     });
-    const { runnerId } = await control.approvePairing(
-      {
-        workspaceId: workspace.id,
-        userId: ownerId,
-        role: "owner",
-        authenticatedAt: now,
-        teamIds: [],
-      },
-      pairing.code,
-    );
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     db.run("UPDATE runner SET owner_user_id=? WHERE id=?", [userId, runnerId]);
     db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);

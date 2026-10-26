@@ -97,7 +97,7 @@ export async function probeRunnerSessionHelpers(
     hostname: "127.0.0.1",
     port: 0,
     tls,
-    fetch: (input) => coordinator.enrollment(input),
+    fetch: (input) => coordinator.hostEnrollment(input),
   });
   const daemonOptions = {
     root: join(root, "daemon"),
@@ -109,12 +109,13 @@ export async function probeRunnerSessionHelpers(
   };
   let daemon = openRunnerDaemon(daemonOptions);
   try {
-    const pairing = await daemon.beginPairing("Session helper runner");
-    assert.equal(pairing.phase, "pending");
-    if (pairing.phase !== "pending") throw new Error("Missing pairing challenge");
-    const approved = await coordinator.control.approvePairing(principal, pairing.code);
-    coordinator.control.setStatus(principal, approved.runnerId, "active");
-    const paired = await daemon.pollPairing();
+    const enrollment = coordinator.control.createEnrollment(principal, {
+      name: "Session helper runner",
+    });
+
+    const paired = await daemon.enroll("Session helper runner", enrollment.token);
+    if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
+    coordinator.control.setStatus(principal, paired.runnerId, "active");
     assert.equal(paired.phase, "paired");
     if (paired.phase !== "paired") throw new Error("Missing runner identity");
     const localIdentity = JSON.parse(
@@ -359,15 +360,13 @@ export async function probeRunnerSessionHelpers(
       root: join(root, "daemon-revocation"),
     });
     try {
-      const challenge = await revocationDaemon.beginPairing("Revoked helper runner");
-      assert.equal(challenge.phase, "pending");
-      if (challenge.phase !== "pending") throw new Error("Missing pairing challenge");
-      const replacementApproval = await coordinator.control.approvePairing(
-        principal,
-        challenge.code,
-      );
-      coordinator.control.setStatus(principal, replacementApproval.runnerId, "active");
-      const replacement = await revocationDaemon.pollPairing();
+      const challenge = coordinator.control.createEnrollment(principal, {
+        name: "Revoked helper runner",
+      });
+
+      const replacement = await revocationDaemon.enroll("Revoked helper runner", challenge.token);
+      if (replacement.phase !== "paired") throw new Error("Runner enrollment failed");
+      coordinator.control.setStatus(principal, replacement.runnerId, "active");
       if (replacement.phase !== "paired") throw new Error("Missing paired runner");
       const pending = coordinator.helpers.dispatch({ ...input, runnerId: replacement.runnerId });
       coordinator.control.setStatus(principal, replacement.runnerId, "revoked");

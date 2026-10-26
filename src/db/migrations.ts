@@ -2946,6 +2946,10 @@ CREATE TABLE work_item_event (
 ) STRICT;
 `,
   },
+  {
+    id: "146_remove_runner_pairing",
+    sql: `DROP TABLE runner_pairing;`,
+  },
 ];
 
 /**

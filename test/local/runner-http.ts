@@ -117,7 +117,8 @@ export async function probeRunnerHttp(
     port: 0,
     tls,
     async fetch(input) {
-      if (new URL(input.url).pathname === "/api/runner-pairings") return routes.enrollment(input);
+      if (new URL(input.url).pathname === "/api/runner-enrollments")
+        return routes.hostEnrollment(input);
       const selected =
         input.headers.get("x-fixture-user") === "member"
           ? { ...principal, userId: memberId }
@@ -128,67 +129,37 @@ export async function probeRunnerHttp(
   try {
     const send = (path: string, body?: unknown, headers?: Record<string, string>) =>
       exchange(browser.port!, path, tls.cert, { body, headers });
-    const pending = await send("/api/runner-pairings", { name: "Linux VM", csr: client.csr });
-    assert.equal(pending.status, 200);
-    const pairing = JSON.parse(pending.body) as { id: string; claim: string; code: string };
-    assert.equal(pending.headers["cache-control"], "no-store");
-    const waiting = await send("/api/runner-pairings", { id: pairing.id, claim: pairing.claim });
-    assert.equal(JSON.parse(waiting.body).status, "pending");
-    const wrongClaim = await send("/api/runner-pairings", { id: pairing.id, claim: pairing.code });
-    assert.equal(wrongClaim.status, 400);
-    observe("HTTPS enrollment returns an opaque claim and waits for approval", true, {
-      status: pending.status,
-      pending: true,
-      wrongClaimStatus: wrongClaim.status,
-      cacheControl: pending.headers["cache-control"],
-    });
-    const malformed = await send("/api/runner-pairings", {
-      name: "Bad",
-      csr: client.csr,
+    const enrollment = control.createEnrollment(principal, { name: "Linux VM" });
+    const enrollmentInput = { token: enrollment.token, name: enrollment.name, csr: client.csr };
+    const malformed = await send("/api/runner-enrollments", {
+      ...enrollmentInput,
       command: "ignored",
     });
-    const oversized = await send("/api/runner-pairings", {
+    const oversized = await send("/api/runner-enrollments", {
+      ...enrollmentInput,
       name: "X".repeat(25_000),
-      csr: client.csr,
     });
-    const plaintext = await routes.enrollment(
-      new Request("http://localhost/api/runner-pairings", {
+    const plaintext = await routes.hostEnrollment(
+      new Request("http://localhost/api/runner-enrollments", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "VM", csr: client.csr }),
+        body: JSON.stringify(enrollmentInput),
       }),
     );
     assert.deepEqual([malformed.status, oversized.status, plaintext.status], [400, 400, 400]);
-    observe("pairing rejects unknown fields, oversized input and plaintext transport", true, {
-      malformed: malformed.status,
-      oversized: oversized.status,
-      plaintext: plaintext.status,
-    });
-    const memberApproval = await send(
-      "/api/runners/pairings/approve",
-      { code: pairing.code },
-      { "x-fixture-user": "member" },
-    );
-    assert.equal(memberApproval.status, 403);
-    const inspected = await send("/api/runners/pairings/inspect", { code: pairing.code });
-    assert.equal(JSON.parse(inspected.body).name, "Linux VM");
-    const approval = await send("/api/runners/pairings/approve", { code: pairing.code });
-    assert.equal(approval.status, 200);
-    const runnerId = JSON.parse(approval.body).runnerId as string;
-    assert.equal((await send("/api/runners/pairings/approve", { code: pairing.code })).status, 403);
-    observe("runner management HTTP checks the current database role and one-use approval", true, {
-      memberStatus: memberApproval.status,
-      ownerStatus: approval.status,
-      approvalReplayDenied: true,
-    });
-    const claim = await send("/api/runner-pairings", { id: pairing.id, claim: pairing.claim });
-    const identity = JSON.parse(claim.body) as {
+    observe("enrollment rejects unknown fields, oversized input and plaintext transport", true, {});
+    const enrolled = await send("/api/runner-enrollments", enrollmentInput);
+    assert.equal(enrolled.status, 200);
+    assert.equal(enrolled.headers["cache-control"], "no-store");
+    const identity = JSON.parse(enrolled.body) as {
       certificate: string;
       authority: string;
       runnerId: string;
       workspaceId: string;
     };
-    assert.equal(identity.runnerId, runnerId);
+    const runnerId = identity.runnerId;
+    assert.equal((await send("/api/runner-enrollments", enrollmentInput)).status, 401);
+    observe("HTTPS enrollment returns an identity once with no-store", true, { runnerId });
     listener = await startRunnerListener({
       tls: { ...tls, ca: authority.certificate },
       authorize(peer) {
@@ -235,10 +206,7 @@ export async function probeRunnerHttp(
         key: readFileSync(client.keyPath, "utf8"),
       }),
     );
-    assert.equal(
-      (await send("/api/runner-pairings", { id: pairing.id, claim: pairing.claim })).status,
-      400,
-    );
+    assert.equal((await send("/api/runner-enrollments", enrollmentInput)).status, 401);
     observe("HTTP revocation blocks both enrolled identities and enrollment claim replay", true, {
       status: revoked.status,
       renewalDenied: true,

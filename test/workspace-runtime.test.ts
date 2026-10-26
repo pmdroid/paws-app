@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeWorkspaceRuntime } from "./local/workspace-runtime";
 
-test("public workspace startup, verified operator setup and membership refresh shutdown", async () => {
+test("public workspace startup and membership refresh shutdown", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-workspace-runtime-"));
   const failed: string[] = [];
   try {

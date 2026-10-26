@@ -16,11 +16,7 @@ export { createWorkspaceAccess } from "./access";
 export type { WorkspaceAccess, WorkspaceAccessOptions, WorkspaceClient } from "./access";
 export { createRateLimiter, ONBOARDING_RATE_LIMITS } from "./rate-limit";
 export type { RateLimiter, RateLimitRule } from "./rate-limit";
-export {
-  createWorkspaceAccessFromLinear,
-  issueVerifiedWorkspaceBootstrap,
-  startWorkspaceAccess,
-} from "./runtime";
+export { createWorkspaceAccessFromLinear, startWorkspaceAccess } from "./runtime";
 export { createWorkspaceIdentityLinks } from "./identity-links";
 
 export {

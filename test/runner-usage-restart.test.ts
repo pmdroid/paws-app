@@ -131,14 +131,17 @@ async function usageLimitScenario(restart: boolean) {
     certificateRoot: issuer,
     disconnect() {},
   });
-  const pairing = await control.beginPairing({
+  const enrollment = {
     name: "fixture",
     csr: (await createRunnerKey(join(root, "client"))).csr,
+  };
+  const { runnerId } = await control.enroll({
+    ...enrollment,
+    token: control.createEnrollment(
+      { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
+      enrollment,
+    ).token,
   });
-  const { runnerId } = await control.approvePairing(
-    { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
-    pairing.code,
-  );
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);

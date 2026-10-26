@@ -304,22 +304,13 @@ try {
     } else {
       assert.equal((await call(browserPort, "/api/runners")).status, 401);
       const key = await createRunnerKey(join(root, "client"));
-      const pairing = await call<{ id: string; claim: string; code: string }>(
-        browserPort,
-        "/api/runner-pairings",
-        {
-          name: "Startup runner",
-          csr: key.csr,
-        },
-      );
-      assert.equal(pairing.status, 200);
-      const approvePath = "/api/runners/pairings/approve";
+      const enrollPath = "/api/runners/enrollments";
       assert.equal(
         (
           await call(
             browserPort,
-            approvePath,
-            { code: pairing.body.code },
+            enrollPath,
+            { name: "Startup runner" },
             { cookie: headers.cookie, origin: headers.origin },
           )
         ).status,
@@ -329,23 +320,27 @@ try {
         (
           await call(
             browserPort,
-            approvePath,
-            { code: pairing.body.code },
+            enrollPath,
+            { name: "Startup runner" },
             { ...headers, origin: "https://foreign.invalid" },
           )
         ).status,
         403,
       );
-      assert.equal(
-        (await call(browserPort, approvePath, { code: pairing.body.code }, headers)).status,
-        200,
+      const enrollment = await call<{ token: string; name: string }>(
+        browserPort,
+        enrollPath,
+        { name: "Startup runner" },
+        headers,
       );
+      assert.equal(enrollment.status, 200);
       const claimed = await call<{ certificate: string; runnerId: string; signingKeys: unknown[] }>(
         browserPort,
-        "/api/runner-pairings",
+        "/api/runner-enrollments",
         {
-          id: pairing.body.id,
-          claim: pairing.body.claim,
+          token: enrollment.body.token,
+          name: enrollment.body.name,
+          csr: key.csr,
         },
       );
       assert.equal(claimed.status, 200);
@@ -355,7 +350,7 @@ try {
         key: readFileSync(key.keyPath, "utf8"),
       };
       observe(
-        "normal Paws HTTPS pairing enforces sessions, Origin and CSRF before advertising public signer",
+        "normal Paws HTTPS enrollment enforces sessions, Origin and CSRF before advertising public signer",
         {
           anonymousAdminStatus: 401,
           missingCsrfStatus: 403,

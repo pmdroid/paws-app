@@ -175,7 +175,6 @@ import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./dep
 import {
   canAct,
   isWorkspaceAdmin,
-  issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
   delegatorCommitCredit,
   createWorkspaceAssignments,
@@ -808,12 +807,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       ...(runnerConfig === null
         ? {}
         : {
-            runnerEnrollment: (request: Request) =>
-              runner
-                ? runner.enrollment(request)
-                : Promise.resolve(
-                    Response.json({ error: "Runner control is starting." }, { status: 503 }),
-                  ),
             runnerHostEnrollment: (request: Request) =>
               runner
                 ? runner.hostEnrollment(request)
@@ -1605,8 +1598,7 @@ Commands:
   paws                          start Paws on 127.0.0.1:8787
   paws doctor                   check prerequisites, including the GitHub App
   paws login slack              connect Slack
-  paws workspace bootstrap      print a single-use workspace setup code
-  paws runner <command>         pair and run a remote runner
+  paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
   paws public-tls validate      check the public HTTPS certificate
 
@@ -1645,45 +1637,6 @@ if (import.meta.main) {
       process.exit(0);
     } catch {
       console.error("Public HTTPS certificate validation failed.");
-      process.exit(1);
-    }
-  }
-  if (command === "workspace") {
-    try {
-      if (argv.length !== 2 || argv[1] !== "bootstrap")
-        throw new Error("usage: paws workspace bootstrap");
-      const runtime = loadRuntime(process.env);
-      if (runtime.configError !== null) throw new Error(runtime.configError);
-      const paths = pawsPaths(runtime.env.home);
-      assertLinearQueue(paths.db);
-      ensureLayout(paths);
-      const db = openDatabase(paths.db);
-      try {
-        migrate(db);
-        const linear = openLinear({
-          db,
-          secretsDir: paths.secretsDir,
-          env: linearEnv(runtime, process.env),
-          publicUrl: runtime.publicUrl,
-          isAuthorized: () =>
-            !isLinearAppRevoked(db, {
-              oauthClientId: runtime.linearClientId,
-              appUserId: runtime.linearViewerId,
-            }),
-          webhooks: false,
-          noTunnel: true,
-        });
-        if (linear.memberships === null)
-          throw new Error("Connect the Linear app installation before workspace setup.");
-        const grant = await issueVerifiedWorkspaceBootstrap(db, linear.memberships);
-        console.log(`Workspace: ${grant.organization.name} (${grant.organization.id})`);
-        console.log(`Single-use setup code (expires in 10 minutes): ${grant.code}`);
-      } finally {
-        db.close();
-      }
-      process.exit(0);
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : "Workspace setup failed.");
       process.exit(1);
     }
   }

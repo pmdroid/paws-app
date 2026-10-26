@@ -1,18 +1,12 @@
 import { isWorkspaceAdmin } from "../workspace";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 import {
   agentCatalogSummary,
-  approveRunnerPairing,
   auditWorkspaceAccess,
   createRunnerEnrollment,
-  createRunnerPairing,
   enrollRunner,
-  expireRunnerPairings,
   findRunnerEnrollment,
-  findRunnerPairing,
-  getRunnerCertificate,
   getRunner,
   immediate,
   listRunnerOverview,
@@ -123,155 +117,7 @@ export function createRunnerControl(options: {
         authority: options.authority.certificate,
       };
     },
-    async beginPairing(input: { name: string; csr: string }) {
-      runnerName(input.name);
-      await validateRunnerRequest(options.certificateRoot, input.csr);
-      const at = now();
-      const id = workspaceId(at);
-      const claim = workspaceSecret();
-      const code = randomBytes(8).toString("hex").toUpperCase();
-      const expiresAt = at + 10 * 60_000;
-      const requestFingerprint = createHash("sha256").update(input.csr).digest("hex");
-      immediate(db, () => {
-        expireRunnerPairings(db, at);
-        db.run("DELETE FROM runner_pairing WHERE expires_at<=?", [at]);
-        const pending = db
-          .query<{ count: number }, []>(
-            "SELECT count(*) AS count FROM runner_pairing WHERE runner_id IS NULL",
-          )
-          .get()!.count;
-        if (pending >= 100) throw new Error("Too many runner pairing requests. Try again shortly.");
-        createRunnerPairing(db, {
-          id,
-          claimHash: workspaceTokenHash(claim),
-          codeHash: workspaceTokenHash(code),
-          csr: input.csr,
-          name: input.name.trim(),
-          requestFingerprint,
-          expiresAt,
-          runnerId: null,
-          certificateFingerprint: null,
-        });
-      });
-      return {
-        id,
-        claim,
-        code,
-        requestFingerprint,
-        expiresAt,
-      };
-    },
-    inspectPairing(principal: WorkspacePrincipal, code: string) {
-      const at = now();
-      admin(principal);
-      const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
-      if (!pairing || pairing.expiresAt <= at || pairing.runnerId !== null)
-        throw new Error("Runner pairing is invalid or expired.");
-      return {
-        name: pairing.name,
-        requestFingerprint: pairing.requestFingerprint,
-        expiresAt: pairing.expiresAt,
-      };
-    },
-    async approvePairing(principal: WorkspacePrincipal, code: string) {
-      admin(principal);
-      const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
-      if (!pairing || pairing.expiresAt <= now() || pairing.runnerId !== null)
-        throw new Error("Runner pairing is invalid or expired.");
-      const certificate = await options.authority.issue(pairing.csr, undefined, now());
-      const at = now();
-      const runnerId = workspaceId(at);
-      immediate(db, () => {
-        admin(principal);
-        approveRunnerPairing(db, {
-          pairingId: pairing.id,
-          runnerId,
-          workspaceId: principal.workspaceId,
-          userId: principal.userId,
-          certificate,
-          now: at,
-        });
-      });
-      return { runnerId };
-    },
-    /**
-     * Approve a pairing Paws started itself on a VM it created, with `userId` as the runner's owner.
-     * Paws vouches for the host, so any active member qualifies; observers do not. The request
-     * fingerprint read off the VM must match the pending pairing, or nothing changes.
-     */
-    async approveProvisionedPairing(input: {
-      workspaceId: string;
-      userId: string;
-      code: string;
-      requestFingerprint: string;
-    }) {
-      function provisioningMember() {
-        const member = workspaceMember(db, input.workspaceId, input.userId);
-        if (!member?.active || member.role === "observer")
-          throw new Error("Active workspace membership is required to own a runner.");
-      }
-      function pending() {
-        const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(input.code) });
-        if (!pairing || pairing.expiresAt <= now() || pairing.runnerId !== null)
-          throw new Error("Runner pairing is invalid or expired.");
-        if (!sameFingerprint(pairing.requestFingerprint, input.requestFingerprint))
-          throw new Error("Runner pairing fingerprint does not match.");
-        return pairing;
-      }
-      provisioningMember();
-      const pairing = pending();
-      const certificate = await options.authority.issue(pairing.csr, undefined, now());
-      const at = now();
-      const runnerId = workspaceId(at);
-      immediate(db, () => {
-        provisioningMember();
-        if (pending().id !== pairing.id) throw new Error("Runner pairing is invalid or expired.");
-        approveRunnerPairing(db, {
-          pairingId: pairing.id,
-          runnerId,
-          workspaceId: input.workspaceId,
-          userId: input.userId,
-          certificate,
-          now: at,
-        });
-        auditWorkspaceAccess(db, {
-          workspaceId: input.workspaceId,
-          userId: input.userId,
-          action: "runner.pairing_provisioned",
-          subject: pairing.id,
-          now: at,
-        });
-      });
-      return { runnerId, pairingId: pairing.id };
-    },
-    claimPairing(id: string, claim: string) {
-      const result = immediate(db, () => {
-        const at = now();
-        expireRunnerPairings(db, at);
-        const pairing = findRunnerPairing(db, { id, claimHash: workspaceTokenHash(claim) });
-        if (!pairing || pairing.expiresAt <= at) return null;
-        if (pairing.runnerId === null || pairing.certificateFingerprint === null)
-          return { status: "pending" as const };
-        const certificate = getRunnerCertificate(db, pairing.certificateFingerprint);
-        const runner = runnerForCertificate(db, pairing.certificateFingerprint, at);
-        if (!certificate || !runner) throw new Error("Runner identity is revoked or expired.");
-        db.run("UPDATE runner_pairing SET claimed_at=COALESCE(claimed_at,?) WHERE id=?", [
-          at,
-          pairing.id,
-        ]);
-        return {
-          status: "approved" as const,
-          runnerId: runner.id,
-          workspaceId: runner.workspaceId,
-          certificate: certificate.pem,
-          authority: options.authority.certificate,
-        };
-      });
-      if (result === null) throw new Error("Runner pairing is invalid or expired.");
-      return result;
-    },
     expireConnections() {
-      expireRunnerPairings(db, now());
       const fingerprints = db
         .query<{ fingerprint: string }, [number]>(
           `SELECT c.fingerprint FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
@@ -403,12 +249,6 @@ function runnerName(name: string): string {
   )
     throw new Error("Runner name must contain between 1 and 80 printable characters.");
   return name.trim();
-}
-
-function sameFingerprint(expected: string, actual: string) {
-  const left = Buffer.from(expected);
-  const right = Buffer.from(actual.trim().toLowerCase());
-  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function installedVersion() {

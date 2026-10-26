@@ -42,16 +42,11 @@ import {
   ApprovedIdentitySchema,
   identifier,
   localKey,
-  PairingChallengeSchema,
   prepareState,
-  readRecovery,
   readState,
-  requestFingerprint,
   trustedSigningKeys,
   validateIdentity,
-  writeRecovery,
   writeState,
-  type PairingChallenge,
   type PairedState,
 } from "./state";
 import { downloadRunnerInputs } from "./inputs";
@@ -123,7 +118,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (key.type !== "public" || key.asymmetricKeyType !== "ed25519")
         throw new Error("Runner job signing pins must be Ed25519 public keys.");
   let state = readState(options.root);
-  let recovery = state?.phase === "paired" ? readRecovery(options.root, state.runnerId) : null;
   let closed = false;
   if (
     state &&
@@ -160,23 +154,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     if (!state) throw new Error("Runner identity is not prepared.");
     return { ...origins, csr: state.csr };
   }
-  function pendingStatus(challenge: PairingChallenge) {
-    const { id, code, requestFingerprint: fingerprint, expiresAt } = challenge;
-    return {
-      phase: "pending" as const,
-      id,
-      code,
-      requestFingerprint: fingerprint,
-      expiresAt,
-    };
-  }
   function status() {
     ensureOpen();
     if (!state || state.phase === "prepared") return { phase: "unpaired" as const };
-    if (state.phase === "pending") return pendingStatus(state);
     const certificate = describeRunnerCertificate(state.certificate);
-    if (certificate.notAfter <= now() && recovery && recovery.expiresAt > now())
-      return pendingStatus(recovery);
     return {
       phase: certificate.notAfter <= now() ? ("expired" as const) : ("paired" as const),
       runnerId: state.runnerId,
@@ -340,91 +321,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         });
       writeState(options.root, enrolled);
       state = enrolled;
-      recovery = null;
-      return status();
-    },
-    async beginPairing(name: string) {
-      ensureOpen();
-      if (state?.phase === "paired") {
-        if (describeRunnerCertificate(state.certificate).notAfter > now())
-          throw new Error("Runner is already paired.");
-        if (recovery && recovery.expiresAt > now()) return status();
-      }
-      if (state?.phase === "pending" && state.expiresAt > now()) return status();
-      const parsedName = runnerName.parse(name);
-      if (!state) state = await prepareState(options.root, origins);
-      const previousState = state;
-      const previousRecovery = recovery;
-      const response = await requestJson({
-        origin: origins.controlPlaneUrl,
-        path: "/api/runner-pairings",
-        method: "POST",
-        body: {
-          name: parsedName,
-          csr: state.csr,
-        },
-        serverCa: options.serverCa,
-      });
-      ensureOpen();
-      if (state !== previousState || recovery !== previousRecovery)
-        throw new Error("Runner pairing changed while awaiting the response.");
-      const challenge = PairingChallengeSchema.parse(response);
-      if (
-        challenge.expiresAt <= now() ||
-        challenge.requestFingerprint !== requestFingerprint(state.csr)
-      )
-        throw new Error("Runner pairing challenge does not match the local request.");
-      const pending = { ...common(), phase: "pending" as const, ...challenge };
-      if (state.phase === "paired") {
-        writeRecovery(options.root, state.runnerId, challenge);
-        recovery = challenge;
-      } else {
-        writeState(options.root, pending);
-        state = pending;
-      }
-      return status();
-    },
-    async pollPairing() {
-      ensureOpen();
-      const previous = state?.phase === "paired" ? state : null;
-      if (previous && describeRunnerCertificate(previous.certificate).notAfter > now())
-        return status();
-      const challenge = previous ? recovery : state?.phase === "pending" ? state : null;
-      if (!challenge || challenge.expiresAt <= now())
-        throw new Error("Runner pairing is missing or expired.");
-      const response = await requestJson({
-        origin: origins.controlPlaneUrl,
-        path: "/api/runner-pairings",
-        method: "POST",
-        body: { id: challenge.id, claim: challenge.claim },
-        serverCa: options.serverCa,
-      });
-      ensureOpen();
-      const result = z
-        .discriminatedUnion("status", [
-          z.strictObject({ status: z.literal("pending") }),
-          z.strictObject({ status: z.literal("approved"), ...ApprovedIdentitySchema.shape }),
-        ])
-        .parse(response);
-      const currentChallenge =
-        state?.phase === "paired" ? recovery : state?.phase === "pending" ? state : null;
-      if (currentChallenge !== challenge || challenge.expiresAt <= now())
-        throw new Error("Runner pairing changed while awaiting the response.");
-      if (result.status === "pending") return status();
-      const { status: _status, ...identity } = result;
-      const approved = { ...common(), phase: "paired" as const, ...identity };
-      validateIdentity(options.root, approved, now());
-      trustedSigningKeys(approved, pins);
-      if (previous && identity.runnerId === previous.runnerId)
-        throw new Error("Re-pairing requires a new runner identity.");
-      if (previous)
-        immediate(db, () => {
-          db.run("DELETE FROM pending_command");
-          db.run("DELETE FROM command_receipt");
-        });
-      writeState(options.root, approved);
-      state = approved;
-      recovery = null;
       return status();
     },
     /**

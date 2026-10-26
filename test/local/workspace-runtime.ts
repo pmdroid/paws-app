@@ -100,66 +100,6 @@ export async function probeWorkspaceRuntime(root: string, observe: Observe) {
       await child.exited;
     }
   }
-  for (const mode of ["operator", "unverified"] as const) {
-    const home = join(root, mode);
-    mkdirSync(home, { recursive: true, mode: 0o700 });
-    const bootstrap = Bun.spawn(
-      [
-        process.execPath,
-        "--no-env-file",
-        "--preload",
-        "./test/fixtures/workspace-runtime-linear.ts",
-        "src/index.ts",
-        "workspace",
-        "bootstrap",
-      ],
-      {
-        cwd: fileURLToPath(new URL("../..", import.meta.url)),
-        env: {
-          PATH: process.env.PATH,
-          HOME: home,
-          PAWS_HOME: home,
-          KYOTOAGENT_ROOT: home,
-          LINEAR_MODE: "agent-session",
-          LINEAR_CLIENT_ID: "client",
-          LINEAR_ACCESS_TOKEN: "fixture-access",
-          ...(mode === "unverified" ? { PAWS_VERIFY_INSTALL_USER: "1" } : {}),
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const [output, errors, code] = await Promise.all([
-      new Response(bootstrap.stdout).text(),
-      new Response(bootstrap.stderr).text(),
-      bootstrap.exited,
-    ]);
-    const db = openDatabase(join(home, "paws.db"));
-    const grant = output.match(/minutes\): ([A-Za-z0-9_-]{43})/u)?.[1];
-    const stored =
-      grant === undefined
-        ? null
-        : db
-            .query<{ organization_id: string }, [string]>(
-              "SELECT organization_id FROM workspace_bootstrap WHERE token_hash=?",
-            )
-            .get(workspaceTokenHash(grant));
-    const count = db
-      .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_bootstrap")
-      .get()!.count;
-    observe(
-      mode === "operator"
-        ? "operator CLI issues a hashed single-use grant for the verified installed organization"
-        : "operator CLI rejects a human credential without issuing a grant",
-      mode === "operator"
-        ? code === 0 &&
-            stored?.organization_id === "org" &&
-            output.includes("Local workspace (org)")
-        : code === 1 && count === 0,
-      { code, organization: stored?.organization_id, count, errors },
-    );
-    db.close();
-  }
 }
 
 async function probeWorkspaceHttpDrain(path: string, observe: Observe) {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { probeDaemonEnrollment, probeRunnerEnrollment } from "./local/runner-pairing";
+import { probeDaemonEnrollment, probeRunnerEnrollment } from "./local/runner-enrollment";
 
 async function run(
   prefix: string,

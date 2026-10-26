@@ -52,7 +52,6 @@ export type ServerOptions = {
   onboarding?: (request: Request) => Promise<Response | null>;
   tls?: PublicTls;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
-  runnerEnrollment?: (request: Request) => Promise<Response>;
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
   runnerHostEnrollment?: (request: Request) => Promise<Response>;
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
@@ -153,7 +152,6 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           csrfToken,
           ip,
           ...(workspaceAccess === undefined ? {} : { workspaceAccess }),
-          ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
           ...(options.runnerHostEnrollment
             ? { runnerHostEnrollment: options.runnerHostEnrollment }
             : {}),
@@ -194,7 +192,6 @@ type Secrets = {
   /** The socket peer address, for the sign-in rate limits. */
   ip?: string | null;
   workspaceAccess?: WorkspaceAccess | null;
-  runnerEnrollment?: ServerOptions["runnerEnrollment"];
   runnerHostEnrollment?: ServerOptions["runnerHostEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
   executionControls?: ServerOptions["executionControls"];
@@ -228,8 +225,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       { status: report.ok ? 200 : 503, headers: { "cache-control": "no-store" } },
     );
   }
-  if (path === "/api/runner-pairings" && secrets.runnerEnrollment !== undefined)
-    return secrets.runnerEnrollment(request);
   if (path === "/api/runner-enrollments" && secrets.runnerHostEnrollment !== undefined)
     return secrets.runnerHostEnrollment(request);
   if (secrets.workspaceAccess === null && !path.startsWith("/webhooks")) {

@@ -99,9 +99,9 @@ if (process.argv[2] === "job") {
     async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/fixture/count") return Response.json({ enrollmentRequests });
-      if (path === "/api/runner-pairings") {
+      if (path === "/api/runner-enrollments") {
         enrollmentRequests++;
-        return coordinator.enrollment(request);
+        return coordinator.hostEnrollment(request);
       }
       return (await coordinator.browser(request, principal)) ?? new Response(null, { status: 404 });
     },
@@ -111,6 +111,7 @@ if (process.argv[2] === "job") {
     runnerApiUrl: `https://localhost:${coordinator.port}`,
     serverCa: tls.cert,
     allowedRepositories: [],
+    enrollmentToken: coordinator.control.createEnrollment(principal, { name: "CLI fixture" }).token,
   };
   writeFileSync(join(root, "ready.json"), JSON.stringify(config));
   let stopping = false;

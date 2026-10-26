@@ -5,7 +5,6 @@ import type { OnboardingReadinessReader } from "./onboarding-page";
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceAccess } from "./access";
-import { issueWorkspaceBootstrap } from "./session";
 
 export async function createWorkspaceAccessFromLinear(options: {
   db: Database;
@@ -22,14 +21,6 @@ export async function createWorkspaceAccessFromLinear(options: {
 }) {
   const installedOrganization = await options.memberships.installation(AbortSignal.timeout(10_000));
   return createWorkspaceAccess({ ...options, installedOrganization });
-}
-
-export async function issueVerifiedWorkspaceBootstrap(
-  db: Database,
-  memberships: LinearMembershipReads,
-) {
-  const installation = await memberships.installation(AbortSignal.timeout(10_000));
-  return { code: issueWorkspaceBootstrap(db, installation.id), organization: installation };
 }
 
 export function startWorkspaceAccess(
