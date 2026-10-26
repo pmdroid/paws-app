@@ -3,7 +3,13 @@ import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
 import { mergeQueueCount } from "./merge-queue";
 
-import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
+import {
+  parseStatusItemDetail,
+  parseStatusSnapshot,
+  statusItemPath,
+  type StatusItemDetail,
+  type StatusSnapshot,
+} from "../contract";
 import {
   attemptsOf,
   checkAnchor,
@@ -15,7 +21,7 @@ import {
 } from "./closeout";
 import { captureLogs, restoreLogs } from "./log-scroll";
 import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
-import { issueRowMatches, render, type RenderModel } from "./render";
+import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
 import {
   issueRedirect,
   matchRoute,
@@ -68,6 +74,8 @@ const closeout = emptyCloseoutView();
 let linkedHash = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
+/** The open issue page's data. While an issue page is open, only this is polled. */
+let detail: StatusItemDetail | null = null;
 let error: string | null = null;
 let timer = 0;
 let workspaceReady = false;
@@ -131,6 +139,9 @@ async function boot(): Promise<void> {
 }
 
 function routeChanged(): void {
+  const issue = openIssue(currentRoute());
+  // A newly opened issue page waits for its own detail instead of showing list data.
+  if (issue !== null && detail?.id !== issue) phase = "loading";
   paint();
   if (!booted) return;
   void reload();
@@ -143,19 +154,19 @@ async function reload(): Promise<void> {
     return;
   }
   try {
-    const response = await fetch("/api/status", {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    if (response.status === 401) {
-      workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
-      shell.setAuthenticated(workspaceReady);
-      if (!workspaceReady) return;
+    const loaded = await loadDetail(route);
+    if (loaded === "signed-out") return;
+    if (loaded === "none") {
+      const response = await fetch("/api/status", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!(await signedIn(response))) return;
+      if (!response.ok) throw new Error(await errorText(response));
+      const parsed = parseStatusSnapshot(await response.json());
+      if (!parsed.ok) throw new Error(parsed.error);
+      snapshot = parsed.snapshot;
     }
-    if (!response.ok) throw new Error(await errorText(response));
-    const parsed = parseStatusSnapshot(await response.json());
-    if (!parsed.ok) throw new Error(parsed.error);
-    snapshot = parsed.snapshot;
     phase = "ready";
     error = null;
   } catch (caught) {
@@ -165,6 +176,47 @@ async function reload(): Promise<void> {
   }
   paint();
   schedule();
+}
+
+function openIssue(route: Route): string | null {
+  return route.view === "issues" ? route.id : null;
+}
+
+/**
+ * Loads the open issue page's detail. `none` when no issue page is open or the issue is not
+ * visible, so the list snapshot is loaded instead and the page says the issue was not found.
+ */
+async function loadDetail(route: Route): Promise<"loaded" | "none" | "signed-out"> {
+  const id = openIssue(route);
+  if (id === null) return "none";
+  const response = await fetch(statusItemPath(id), {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  if (!(await signedIn(response))) return "signed-out";
+  if (response.status === 404) {
+    detail = null;
+    return "none";
+  }
+  if (!response.ok) throw new Error(await errorText(response));
+  const parsed = parseStatusItemDetail(await response.json());
+  if (!parsed.ok) throw new Error(parsed.error);
+  // The reader may have moved to another page while this request ran.
+  if (openIssue(currentRoute()) === id) detail = parsed.detail;
+  return "loaded";
+}
+
+/** False when the session ended and the reader still has to sign in again. */
+async function signedIn(response: Response): Promise<boolean> {
+  if (response.status !== 401) return true;
+  workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
+  shell.setAuthenticated(workspaceReady);
+  return workspaceReady;
+}
+
+/** What the current page renders from: the issue's detail on its page, otherwise the list. */
+function pageData(): StatusSnapshot | null {
+  return openDetail({ route: currentRoute(), detail }) ? detail : snapshot;
 }
 
 /** Run, session and verdict links open the issue page, so links posted in Linear keep working. */
@@ -196,6 +248,7 @@ function paint(): void {
     route: currentRoute(),
     phase,
     snapshot,
+    detail,
     error,
     engineUrl: currentEngine(),
     closeout,
@@ -203,12 +256,13 @@ function paint(): void {
   };
   const view = render(model);
   const route = model.route;
-  const detail =
+  const data = pageData();
+  const shown =
     route.view === "evidence" ? snapshot?.evidence?.find((entry) => entry.id === route.id) : null;
   if (snapshot) shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
   shell.setBreadcrumb(
-    detail
-      ? { issueId: detail.itemId, entityId: detail.id }
+    shown
+      ? { issueId: shown.itemId, entityId: shown.id }
       : (model.route.view === "evidence" || model.route.view === "issues") && model.route.id
         ? { issueId: null, entityId: model.route.id }
         : null,
@@ -227,7 +281,7 @@ function paint(): void {
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
   setHtml("#page-content", view.content);
-  evidence.attach(snapshot, currentEngine());
+  evidence.attach(data, currentEngine());
   applyIssueFilter();
   if (openLinkedCheck()) return;
 
@@ -254,7 +308,7 @@ function paint(): void {
   const deadRoot = document.querySelector<HTMLElement>("#dead-deliveries");
   if (deadRoot) deadDeliveryRetry.mount(deadRoot, currentEngine(), source());
   const drawRoot = document.querySelector<HTMLElement>("#review-draw");
-  if (drawRoot) reviewDraw.mount(drawRoot, snapshot, currentEngine(), source());
+  if (drawRoot) reviewDraw.mount(drawRoot, data, currentEngine(), source());
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
   if (runnerRoot && model.route.view === "runners")
     runners.mount(runnerRoot, currentEngine(), source(), model.route.id);
@@ -492,9 +546,10 @@ function onClick(event: MouseEvent): void {
 }
 
 function closeoutVerdict(itemId: string) {
+  const data = pageData();
   const runId = agentCloseoutRun(itemId);
-  if (runId === null) return snapshot?.verdicts.find((entry) => entry.itemId === itemId);
-  const agent = findAgentCloseout(snapshot?.agentCloseout, runId);
+  if (runId === null) return data?.verdicts.find((entry) => entry.itemId === itemId);
+  const agent = findAgentCloseout(data?.agentCloseout, runId);
   return agent ? agentVerdict(agent) : undefined;
 }
 

@@ -2,6 +2,7 @@ import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
   StatusAgentCloseout,
   StatusItem,
+  StatusItemDetail,
   StatusItemEvent,
   StatusLink,
   StatusQuestion,
@@ -48,6 +49,8 @@ export interface RenderModel {
   route: Route;
   phase: "loading" | "ready" | "error";
   snapshot: StatusSnapshot | null;
+  /** The open issue page's own data from `GET /api/status/items/<id>`. It renders that page alone. */
+  detail?: StatusItemDetail | null;
   error: string | null;
   engineUrl: string | null;
   closeout?: CloseoutView;
@@ -79,11 +82,25 @@ export function render(model: RenderModel): Rendered {
         ? '<div id="runner-settings"></div>'
         : model.route.view === "settings"
           ? renderSettingsPage(model.route.page)
-          : snapshot && model.phase !== "loading"
-            ? renderView(snapshot, model)
-            : renderPending(model),
+          : model.phase !== "loading" && openDetail(model)
+            ? issuePage(
+                model.detail!,
+                model.detail!.id,
+                model.closeout ?? emptyCloseoutView(),
+                model.engineUrl,
+              )
+            : snapshot && model.phase !== "loading"
+              ? renderView(snapshot, model)
+              : renderPending(model),
     title,
   };
+}
+
+/** The issue page has its detail; the list snapshot is not read for it. */
+export function openDetail(model: Pick<RenderModel, "route" | "detail">): boolean {
+  return (
+    model.route.view === "issues" && model.route.id !== null && model.detail?.id === model.route.id
+  );
 }
 
 function renderTop(_model: RenderModel): string {
@@ -364,9 +381,12 @@ function issuePage(
       : engine === null
         ? transcriptPath
         : new URL(transcriptPath, engine).href;
-  const blocked = snapshot.items.filter(
-    (entry) => entry.id !== item.id && entry.blockers.includes(item.id),
-  );
+  const blocked =
+    "blocks" in snapshot
+      ? (snapshot as StatusItemDetail).blocks
+      : snapshot.items
+          .filter((entry) => entry.id !== item.id && entry.blockers.includes(item.id))
+          .map((entry) => entry.id);
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
     <header class="run-heading"><div class="row wrap">${run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
@@ -406,7 +426,7 @@ function issuePage(
     </section>`
         : `<p class="muted">No agent activity yet.</p>`
     }
-    <section class="issue-relations" aria-label="Related issues"><h2>Blocked by</h2>${relatedIssues(item.blockers)}<h2>Blocks</h2>${relatedIssues(blocked.map((entry) => entry.id))}</section>
+    <section class="issue-relations" aria-label="Related issues"><h2>Blocked by</h2>${relatedIssues(item.blockers)}<h2>Blocks</h2>${relatedIssues(blocked)}</section>
     ${earlier.map((entry, index) => earlierAttempt(snapshot, entry, index, attempts)).join("")}
   </article>`;
 }
