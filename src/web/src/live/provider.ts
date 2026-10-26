@@ -41,7 +41,9 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  getCloseoutRecovery,
   getLinkAsk,
+  listCloseoutBypassChecks,
   listDeadDeliveries,
   describeLinearWebhookWarning,
   getConfirmedRemoteMerge,
@@ -438,7 +440,7 @@ function readScopedSnapshot(
     project: projectOf(visible, options.project),
     items,
     runs,
-    questions: questionsFor(db, records, rows, runs, openQuestions),
+    questions: [],
     verdicts: records.flatMap((record) => {
       const runId = storedRuns.get(record.id)?.[0]?.id;
       return verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((verdict) =>
@@ -463,6 +465,9 @@ function readScopedSnapshot(
     ciRounds: ciRoundsFor(db, records, env),
     dead: deadFor(db, records),
   };
+  snapshot.questions = questionsFor(db, records, rows, runs, openQuestions).map((question) =>
+    withBypassChecks(db, question, snapshot.verdicts, env),
+  );
   const blocks =
     only === undefined
       ? []
@@ -914,6 +919,57 @@ function itemProject(fact: WorkItemFact | undefined): StatusItem["project"] {
   const name = fact?.projectName?.trim() ?? "";
   if (id.length === 0 || name.length === 0) return null;
   return { id, name };
+}
+
+/** Lines of a failed check's output the bypass card shows when Closeout recorded no finding. */
+const BYPASS_OUTPUT_LINES = 8;
+
+/**
+ * A bypass ask carries the failed checks of its head for the "Closeout needs
+ * your help" card: state, attempt, and the finding or the end of the output.
+ */
+function withBypassChecks(
+  db: Database,
+  question: StatusQuestion,
+  verdicts: readonly StatusVerdict[],
+  env: NodeJS.ProcessEnv,
+): StatusQuestion {
+  const ask = question.linkAsk;
+  if (ask?.kind !== "bypass") return question;
+  const recovery = getCloseoutRecovery(db, question.id);
+  if (recovery === null) return question;
+  const verdict = verdicts.find(
+    (entry) => entry.itemId === question.itemId && entry.headSha === recovery.head,
+  );
+  const shown = verdict?.checks ?? [];
+  const tail = (output: string | null | undefined) =>
+    output?.trim().split("\n").slice(-BYPASS_OUTPUT_LINES).join("\n") ?? "";
+  return {
+    ...question,
+    linkAsk: {
+      ...ask,
+      bypass: {
+        policyDigest: recovery.policyDigest,
+        passed: shown.filter((check) => check.state === "passed").map((check) => check.id),
+        checks: listCloseoutBypassChecks(db, question.id).map((stored) => {
+          const check = shown.find((entry) => entry.id === stored.checkId);
+          return {
+            id: stored.checkId,
+            kind: stored.kind || check?.kind || "",
+            state: stored.state,
+            attempt: stored.attempt ?? check?.attempt ?? null,
+            finding:
+              check?.findings?.trim() ||
+              tail(check?.stderr) ||
+              tail(check?.stdout) ||
+              redactCloseoutText(stored.message, env) ||
+              check?.detail ||
+              "",
+          };
+        }),
+      },
+    },
+  };
 }
 
 function questionsFor(

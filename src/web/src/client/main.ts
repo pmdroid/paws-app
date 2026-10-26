@@ -45,7 +45,7 @@ import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
-import { rememberLinkAskDraft, submitLinkAsk } from "./link-ask-submit";
+import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
 import { createDeadDeliveryRetry } from "./dead-delivery-retry";
 import { createReviewDraw } from "./review-draw";
 import { createEvidenceMedia } from "./evidence-media";
@@ -98,6 +98,7 @@ let issueProject = "";
 document.addEventListener("click", onClick);
 document.addEventListener("submit", (event) => void submitLinkAsk(event, reload));
 document.addEventListener("input", (event) => rememberLinkAskDraft(event.target));
+document.addEventListener("change", (event) => rememberLinkAskDraft(event.target));
 router.subscribe((state) => {
   if (state.location.pathname === shownPath) {
     if (state.location.search === shownSearch) return;
@@ -498,6 +499,7 @@ function onClick(event: MouseEvent): void {
   const target = event.target;
   if (!(target instanceof Element)) return;
   followLink(event, target);
+  if (stopFromLinkAsk(event, reload)) return;
   const action = target.closest("[data-action]")?.getAttribute("data-action");
   if (!action) return;
   if (action === "refresh") {

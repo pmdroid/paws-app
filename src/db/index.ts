@@ -282,6 +282,7 @@ export {
 } from "./agent-closeout";
 
 export {
+  getCloseoutRecovery,
   listCloseoutRecoveries,
   saveCloseoutRecovery,
   type CloseoutRecovery,
