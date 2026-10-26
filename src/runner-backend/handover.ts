@@ -1,0 +1,108 @@
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import type { Database } from "bun:sqlite";
+import { getWorkItem, immediate } from "../db";
+import { RunnerResultSchema } from "../runner-protocol";
+import type { RunnerWork } from "../runner-work";
+
+/** The runner waits this long for the current tool call before it gives up on a handover. */
+export const RUNNER_HANDOVER_LIMIT_MS = 120_000;
+/** Past the wait: the WIP commit, its push, the session snapshot and the result. */
+const RESULT_SLACK_MS = 5 * 60_000;
+
+export type RunnerHandoverOutcome =
+  /** The run ended with its WIP commit as the item's checkpoint, or nothing to commit. */
+  | { status: "handed_over"; wipCommit: string | null }
+  /** The run ended on its own before the runner stopped it. */
+  | { status: "finished" }
+  /** No safe point within 2 minutes: the session keeps running on its runner. */
+  | { status: "timed_out" }
+  /** The runner sent nothing in time, or Paws could not keep the WIP commit. */
+  | { status: "unanswered" }
+  | { status: "not_running" };
+
+/**
+ * Asks the runner of an item's running session to hand it over and waits for the outcome. The
+ * running attempt in `forItem` imports the WIP commit as the checkpoint; this only waits for it.
+ */
+export function createRemoteHandover(options: {
+  db: Database;
+  work: RunnerWork;
+  now?: () => number;
+  pollIntervalMs?: number;
+}) {
+  const { db, work } = options;
+  const now = options.now ?? Date.now;
+  return async function handOverItem(
+    itemId: string,
+    signal?: AbortSignal,
+  ): Promise<RunnerHandoverOutcome> {
+    const request = immediate(db, () => {
+      const row = db
+        .query<
+          { runId: string; runnerId: string; workspaceId: string; generation: number },
+          [string]
+        >(
+          `SELECT w.run_id AS runId,w.runner_id AS runnerId,w.workspace_id AS workspaceId,
+           w.generation FROM runner_work w JOIN run r ON r.id=w.run_id
+           WHERE r.item_id=? AND w.ended_at IS NULL`,
+        )
+        .get(itemId);
+      if (!row) return null;
+      const at = now();
+      work.enqueue({
+        id: randomUUID(),
+        type: "handover",
+        runId: row.runId,
+        runnerId: row.runnerId,
+        workspaceId: row.workspaceId,
+        generation: row.generation,
+        issuedAt: at,
+        expiresAt: at + RUNNER_HANDOVER_LIMIT_MS + RESULT_SLACK_MS,
+      });
+      const after = db
+        .query<{ sequence: number }, [string, number]>(
+          "SELECT COALESCE(MAX(sequence),0) AS sequence FROM runner_event WHERE run_id=? AND generation=?",
+        )
+        .get(row.runId, row.generation)!.sequence;
+      return { ...row, after, deadline: at + RUNNER_HANDOVER_LIMIT_MS + RESULT_SLACK_MS };
+    });
+    if (!request) return { status: "not_running" };
+    while (now() < request.deadline) {
+      signal?.throwIfAborted();
+      const stored = db
+        .query<{ payload: string }, [string, number]>(
+          "SELECT payload FROM runner_result WHERE run_id=? AND generation=?",
+        )
+        .get(request.runId, request.generation);
+      const result = stored ? RunnerResultSchema.parse(JSON.parse(stored.payload)) : null;
+      if (result && !result.handedOver) return { status: "finished" };
+      // The attempt ends the work once it has imported the WIP commit, or once it failed to.
+      if (
+        result &&
+        db
+          .query(
+            "SELECT 1 FROM runner_work WHERE run_id=? AND generation=? AND ended_at IS NOT NULL",
+          )
+          .get(request.runId, request.generation)
+      ) {
+        const wipCommit = result.candidateSha ?? null;
+        return wipCommit === null || getWorkItem(db, itemId)?.checkpoint?.wipCommit === wipCommit
+          ? { status: "handed_over", wipCommit }
+          : { status: "unanswered" };
+      }
+      if (
+        !result &&
+        db
+          .query(
+            `SELECT 1 FROM runner_event WHERE run_id=? AND generation=? AND sequence>?
+             AND json_extract(payload,'$.type')='handover'`,
+          )
+          .get(request.runId, request.generation, request.after)
+      )
+        return { status: "timed_out" };
+      await delay(options.pollIntervalMs ?? 250, undefined, { signal });
+    }
+    return { status: "unanswered" };
+  };
+}
