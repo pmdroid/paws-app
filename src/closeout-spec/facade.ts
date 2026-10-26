@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { evaluate, type EvaluateRequest } from "./evaluate/evaluate";
+import { attemptsLeft, evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
@@ -322,35 +322,63 @@ export function visualReviewRequirements(
 }
 
 export function policyFixBudget(repo: string, home?: string, policyRoot?: string): number | null {
-  return policyFixLimits(repo, home, policyRoot)?.fixRounds ?? null;
-}
-
-/** The two retry limits that end a Closeout fix loop: fix rounds per item and attempts per check. */
-export type FixLimits = { fixRounds: number; attemptsPerCheck: number };
-
-export function policyFixLimits(
-  repo: string,
-  home?: string,
-  policyRoot?: string,
-): FixLimits | null {
   const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return null;
-  if (loaded.policy.source === "none") return { fixRounds: 3, attemptsPerCheck: 3 };
-  return {
-    fixRounds: loaded.policy.retry?.fix_rounds_per_item ?? 3,
-    attemptsPerCheck: loaded.policy.retry?.maxFailedAttemptsPerItem ?? 3,
-  };
+  return loaded.policy.source === "none" ? 3 : (loaded.policy.retry?.fix_rounds_per_item ?? 3);
 }
 
 /**
- * The limit a fix-attempt line names for attempt `attempt`: whichever of the two limits stops the
- * loop first. The first evaluation spends one of a check's attempts, so a check that fails every
- * time is exhausted after `attemptsPerCheck - 1` fix attempts. Once the attempt passes that,
- * different checks failed in different rounds and only the fix-round limit still bounds the count.
+ * Fix attempts the checks in `failed` still allow before the first of them is exhausted, if each
+ * keeps failing: a check exhausts on the evaluation that spends its last failed attempt, so the
+ * count equals the failed attempts it has left. Read from the same evidence and retry policy as
+ * {@link decision}. `null` when none of them has a limit or the evidence cannot be read.
  */
-export function fixAttemptLimit(limits: FixLimits, attempt: number): number {
-  const perCheck = limits.attemptsPerCheck - 1;
-  return attempt <= perCheck ? Math.min(limits.fixRounds, perCheck) : limits.fixRounds;
+export async function fixesLeft(
+  input: DecisionInput,
+  failed: readonly string[],
+): Promise<number | null> {
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  if (!loaded.ok || loaded.policy.source === "none") return null;
+  const policy = loaded.policy;
+  const items = policy.items.filter((item) => item.kind !== "evidence" && failed.includes(item.id));
+  if (items.length === 0) return null;
+  const resolved = await resolvePair(
+    input.repo,
+    input.base,
+    input.head,
+    scrubCommandEnv(input.env),
+  );
+  if (!resolved.ok) return null;
+  const snapshot = await createEvidenceStore({
+    root: input.evidenceDir ?? join(input.repo, ".closeout"),
+  }).load();
+  if (snapshot.invalid !== undefined) return null;
+  const request = requestOf(input, input.candidate ?? blankCandidate(), {
+    base: resolved.base,
+    head: resolved.head,
+  });
+  let least: number | null = null;
+  for (const item of items) {
+    const left = attemptsLeft(
+      item,
+      policy.retry,
+      policy.digest ?? "",
+      snapshot.records,
+      request,
+      input.trust,
+    );
+    if (left !== null) least = least === null ? left : Math.min(least, left);
+  }
+  return least;
+}
+
+/**
+ * The limit a fix-attempt line names for fix attempt `attempt`: whichever stops the item first,
+ * the fix rounds or a failed check spending its attempts. `left` is {@link fixesLeft} from the
+ * evaluation this fix answers, so the last fix a failing check allows is `attempt - 1 + left`.
+ */
+export function fixAttemptLimit(fixRounds: number, attempt: number, left: number | null): number {
+  return left === null ? fixRounds : Math.min(fixRounds, attempt - 1 + left);
 }
 
 export async function retryBaseline(evidenceDir: string): Promise<string[]> {

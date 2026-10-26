@@ -11,8 +11,8 @@ export type FixRequest = {
   /** 1-based. */
   fixAttempt: number;
   /**
-   * The limit that stops the loop first: the gate's fix budget, or the fix attempts left before a
-   * check that fails every time spends the policy's attempts per check.
+   * The limit that stops the loop first: the gate's fix budget, or the last fix a failed check
+   * allows before it spends the policy's attempts per check, if it keeps failing.
    */
   maxFixAttempts: number;
   base: string;
