@@ -20,6 +20,7 @@ import {
   immediate,
   mergeLaneSql,
   requeueOrphanedWork,
+  runnerCapacityWait,
   saveItemHolds,
   saveQueuePositions,
   type ItemHold,
@@ -234,10 +235,13 @@ function allItems(db: Database, now: number): Item[] {
     .all(now, runnerLeaseCutoff(now), now);
 }
 
-function taskSlots(db: Database, now: number): { total: number; busy: number } | null {
+function taskSlots(
+  db: Database,
+  now: number,
+): { total: number; busy: number; open: Map<string, number> } | null {
   const runners = db
-    .query<{ capacity: number; used: number }, [number, number, number]>(
-      `SELECT COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity,
+    .query<{ id: string; capacity: number; used: number }, [number, number, number]>(
+      `SELECT r.id,COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity,
        (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND ((w.ended_at IS NULL AND w.lease_until>?) OR EXISTS(SELECT 1 FROM run held WHERE held.id=w.run_id AND held.status IN ('active','provisioning')))) +
        (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used
        FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
@@ -247,7 +251,42 @@ function taskSlots(db: Database, now: number): { total: number; busy: number } |
   return {
     total: runners.reduce((total, runner) => total + runner.capacity, 0),
     busy: runners.reduce((busy, runner) => busy + Math.min(runner.used, runner.capacity), 0),
+    open: new Map(
+      runners.map((runner) => [
+        runner.id,
+        runner.capacity - Math.min(runner.used, runner.capacity),
+      ]),
+    ),
   };
+}
+
+type PinnedWait = { itemId: string; jobId: number; runnerId: string };
+
+/**
+ * Items whose resume or reverify job waits for a slot on the runner their run is pinned to. Each
+ * holds that runner's next free slot. A wait on an offline pinned runner, or one past its hold,
+ * holds nothing: placement then may move the run.
+ */
+function pinnedWaits(db: Database, now: number): PinnedWait[] {
+  return db
+    .query<PinnedWait & { payload: string }, [number]>(
+      `SELECT i.id AS itemId,j.id AS jobId,w.runner_id AS runnerId,j.payload
+       FROM work_item i
+       JOIN runner_work w ON w.run_id=i.current_run_id
+       JOIN runner r ON r.id=w.runner_id
+       JOIN job j ON j.id=(SELECT q.id FROM job q WHERE q.status='pending'
+         AND q.queue IN ('${JOB_KIND.resume}','${JOB_KIND.reverify}')
+         AND json_extract(q.payload,'$.itemId')=i.id ORDER BY q.id DESC LIMIT 1)
+       WHERE i.state IN ('recovering','verifying','merge_queue') AND i.cancel_requested=0
+       AND r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
+    )
+    .all(now - RUNNER_SEEN_MS)
+    .flatMap(({ payload, ...pin }) => {
+      const wait = runnerCapacityWait(JSON.parse(payload));
+      return wait?.runnerIds.includes(pin.runnerId) && now - wait.since < (wait.holdMs ?? Infinity)
+        ? [pin]
+        : [];
+    });
 }
 
 function holdsSession(item: Item): boolean {
@@ -475,16 +514,37 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         held.push(entry);
       }
     const depth = depths(db, items);
-    const candidates = items
-      .filter((item) => ready.has(item.id))
-      .sort(
-        (a, b) =>
-          (depth.get(b.id) ?? 0) - (depth.get(a.id) ?? 0) ||
-          (a.priority || 5) - (b.priority || 5) ||
-          a.createdAt - b.createdAt ||
-          a.id.localeCompare(b.id),
-      );
+    const rank = (a: Item, b: Item) =>
+      (depth.get(b.id) ?? 0) - (depth.get(a.id) ?? 0) ||
+      (a.priority || 5) - (b.priority || 5) ||
+      a.createdAt - b.createdAt ||
+      a.id.localeCompare(b.id);
+    const candidates = items.filter((item) => ready.has(item.id)).sort(rank);
     const slots = taskSlots(db, now);
+    const pins = slots
+      ? pinnedWaits(db, now)
+          .filter((pin) => byId.has(pin.itemId) && slots.open.has(pin.runnerId))
+          .sort((a, b) => rank(byId.get(a.itemId)!, byId.get(b.itemId)!))
+      : [];
+    let pinned = 0;
+    // Pinned waits ranked ahead of `before` take their runner's next free slot, and are woken
+    // when that slot is free now. On a full runner the wait holds the slot that frees next.
+    const claimPinned = (before?: Item) => {
+      for (; pinned < pins.length; pinned += 1) {
+        const pin = pins[pinned]!;
+        if (before && rank(byId.get(pin.itemId)!, before) > 0) return;
+        const open = slots!.open.get(pin.runnerId)!;
+        if (open > 0 && free > 0) {
+          db.run("UPDATE job SET run_at=? WHERE id=? AND status='pending' AND run_at>?", [
+            now,
+            pin.jobId,
+            now,
+          ]);
+          free -= 1;
+        }
+        slots!.open.set(pin.runnerId, open - 1);
+      }
+    };
     const reserved = items.filter(
       (item) =>
         !item.placed &&
@@ -515,6 +575,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const admitted: string[] = [];
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
+      claimPinned(item);
       if (free <= 0) break;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
@@ -545,6 +606,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       admitted.push(item.id);
       free -= 1;
     }
+    claimPinned();
     const waiting = order.filter(({ item }) => !admitted.includes(item.id) && !setup.has(item.id));
     const line = [
       ...waiting.filter(({ capped }) => !capped),
