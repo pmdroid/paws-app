@@ -88,6 +88,7 @@ import {
   RunnerArtifactSchema,
   RunnerEventSchema,
   RunnerHelperResultSchema,
+  RUNNER_HANDOVER_LIMIT_MS,
   RUNNER_SKILL_FOLDERS,
   type RunnerArtifact,
   type RunnerEvent,
@@ -150,8 +151,6 @@ export interface RunnerWorkerOptions {
   handoverLimitMs?: number;
 }
 
-/** A handover waits this long for a safe point; after that the session keeps running here. */
-export const HANDOVER_LIMIT_MS = 120_000;
 export const HANDOVER_COMMIT_MESSAGE =
   "Save work in progress to hand the session to another runner";
 
@@ -1057,7 +1056,8 @@ export async function executeRunnerCommand(
         ? (async () => {
             await options.handover!(handoverWatch.signal);
             handoverStarted = true;
-            const deadline = performance.now() + (options.handoverLimitMs ?? HANDOVER_LIMIT_MS);
+            const deadline =
+              performance.now() + (options.handoverLimitMs ?? RUNNER_HANDOVER_LIMIT_MS);
             while (!safePoint()) {
               if (performance.now() >= deadline) {
                 console.warn(

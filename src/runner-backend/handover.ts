@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { getWorkItem, immediate } from "../db";
-import { RunnerResultSchema } from "../runner-protocol";
+import { RUNNER_HANDOVER_LIMIT_MS, RunnerResultSchema } from "../runner-protocol";
 import type { RunnerWork } from "../runner-work";
+import { versionAtLeast } from "./session-restore";
 
-/** The runner waits this long for the current tool call before it gives up on a handover. */
-export const RUNNER_HANDOVER_LIMIT_MS = 120_000;
+/** First runner release that hands a running session over. */
+export const HANDOVER_RUNNER_VERSION = [0, 1, 44];
 /** Past the wait: the WIP commit, its push, the session snapshot and the result. */
 const RESULT_SLACK_MS = 5 * 60_000;
 
@@ -19,6 +20,8 @@ export type RunnerHandoverOutcome =
   | { status: "timed_out" }
   /** The runner sent nothing in time, or Paws could not keep the WIP commit. */
   | { status: "unanswered" }
+  /** The runner's release cannot hand over; nothing was asked of it. */
+  | { status: "old_runner" }
   | { status: "not_running" };
 
 /**
@@ -49,6 +52,12 @@ export function createRemoteHandover(options: {
         )
         .get(itemId);
       if (!row) return null;
+      const version = db
+        .query<{ version: string | null }, [string]>(
+          "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+        )
+        .get(row.runnerId)?.version;
+      if (!versionAtLeast(version, HANDOVER_RUNNER_VERSION)) return "old_runner" as const;
       const at = now();
       work.enqueue({
         id: randomUUID(),
@@ -68,6 +77,7 @@ export function createRemoteHandover(options: {
       return { ...row, after, deadline: at + RUNNER_HANDOVER_LIMIT_MS + RESULT_SLACK_MS };
     });
     if (!request) return { status: "not_running" };
+    if (request === "old_runner") return { status: "old_runner" };
     while (now() < request.deadline) {
       signal?.throwIfAborted();
       const stored = db
