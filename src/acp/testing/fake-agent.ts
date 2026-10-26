@@ -1,7 +1,8 @@
 import { journalCaught } from "../../journal";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { readFileSync, writeFileSync, renameSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { dirname } from "node:path";
 import type { FakeResult, FakeScript, FakeStep } from "./script";
 
 /**
@@ -332,6 +333,11 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
         });
       }
       persist();
+      continue;
+    }
+    if (step.type === "write_file") {
+      mkdirSync(dirname(step.path), { recursive: true });
+      writeFileSync(step.path, step.content);
       continue;
     }
     if (step.type === "terminal") {
