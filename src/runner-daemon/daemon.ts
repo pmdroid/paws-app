@@ -40,6 +40,13 @@ import {
   type RunnerTranscriptFinish,
 } from "../runner-transcripts";
 import {
+  AgentSessionChunkSchema,
+  AgentSessionFinishSchema,
+  AGENT_SESSION_MAX_BYTES,
+  type AgentSessionChunk,
+  type AgentSessionFinish,
+} from "../agent-sessions";
+import {
   ApprovedIdentitySchema,
   identifier,
   localKey,
@@ -458,6 +465,54 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
             grantToken,
           ),
         );
+    },
+    /** One chunk of an agent session snapshot, under the run grant. */
+    async uploadSession(runId: string, chunk: AgentSessionChunk, grantToken: string) {
+      identifier.parse(runId);
+      const body = AgentSessionChunkSchema.parse(chunk);
+      RunnerGrantTokenSchema.parse(grantToken);
+      const receipt = z
+        .strictObject({
+          offset: z.number().int().nonnegative().max(AGENT_SESSION_MAX_BYTES),
+          duplicate: z.boolean(),
+        })
+        .parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/session/chunks`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
+      if (receipt.offset !== body.offset + Buffer.from(body.data, "base64").byteLength)
+        throw new Error("Agent session receipt offset is invalid.");
+      return receipt;
+    },
+    async finishSession(runId: string, finish: AgentSessionFinish, grantToken: string) {
+      identifier.parse(runId);
+      const body = AgentSessionFinishSchema.parse(finish);
+      RunnerGrantTokenSchema.parse(grantToken);
+      const receipt = z
+        .strictObject({
+          generation: z.number().int().positive(),
+          sizeBytes: z.number().int().nonnegative(),
+          sha256: z.string(),
+        })
+        .parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/session/finish`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
+      if (
+        receipt.generation !== body.generation ||
+        receipt.sizeBytes !== body.sizeBytes ||
+        receipt.sha256 !== body.sha256
+      )
+        throw new Error("Agent session receipt is invalid.");
+      return receipt;
     },
     async readInputs(command: RunnerCommand, getGrant: () => Promise<string>, signal: AbortSignal) {
       ensureOpen();
