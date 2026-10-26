@@ -61,7 +61,10 @@ export function createRunnerResults(options: {
           (command.type === "run" && result.reviewText !== undefined) ||
           (command.type === "review" && result.candidateSha !== undefined) ||
           (result.candidateSha !== undefined && (result.cancelled || !result.agentExited)) ||
-          (result.handedOver && (command.type !== "run" || result.cancelled || !result.agentExited))
+          (result.handedOver &&
+            (command.type !== "run" || result.cancelled || !result.agentExited)) ||
+          (result.handoverFailure !== undefined &&
+            (command.type !== "run" || result.handedOver || result.cancelled))
         )
           throw new Error("Runner result command binding is invalid.");
         const payload = JSON.stringify(result);

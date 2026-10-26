@@ -166,6 +166,8 @@ export interface RunAgentResult {
   interrupted?: boolean;
   /** A remote run stopped at a safe point so another runner can continue it. */
   handedOver?: boolean;
+  /** The handover stopped the agent, then failed this step; the session stays on its runner. */
+  handoverFailure?: "commit" | "snapshot" | "publication";
   transcriptPath?: string;
   authRequired: boolean;
   errorMessage?: string;
