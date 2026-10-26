@@ -61,26 +61,16 @@ describe("restart recovery", () => {
     expect(resume?.payload).not.toHaveProperty("handoff");
 
     expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "ask_restart" }]);
-    expect(getWorkItem(db, item.id)).toMatchObject({
-      state: "awaiting_input",
-      recoveryAttempts: 1,
-      checkpoint: { ...checkpoint, phase: "awaiting_input" },
-    });
+    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
     expect(getRun(db, run.id)?.status).toBe("ended");
     expect(listJobs(db).find((job) => job.queue === "run.resume")?.status).toBe("cancelled");
-    const question = db
-      .query<{ id: string; body: string }, []>(
-        "SELECT id, body FROM question WHERE status = 'open'",
-      )
-      .get();
-    expect(question?.body).toContain("Start it again from its branch in a fresh session?");
-    const [ask] = listOutbox(db);
-    expect(listOutbox(db)).toHaveLength(1);
-    expect(ask).toMatchObject({ op: "elicitation", orderingKey: "ses" });
-    expect(ask?.payload).toMatchObject({ sessionId: "ses", questionId: question?.id });
-
-    expect(recoverOnStartup(db, clock.now())).toEqual([]);
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    const request = listJobs(db).find((job) => job.queue === "item.ask");
+    expect(request?.payload).toMatchObject({
+      itemId: item.id,
+      kind: "agent",
+      options: ["Start again"],
+    });
+    expect(listOutbox(db)).toHaveLength(0);
   });
 
   test("a second restart without a Linear session fails the item", () => {
@@ -277,7 +267,9 @@ describe("restart recovery", () => {
     prepareShutdown(db, clock.now());
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
     recoverOnStartup(db, clock.now());
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    expect(listJobs(db).some((job) => job.queue === "item.ask" && job.status === "pending")).toBe(
+      true,
+    );
   });
 
   test("a merge that was in progress is re-verified and does not continue", () => {
@@ -336,11 +328,11 @@ describe("restart recovery", () => {
     const { run } = beginImplementRun(db, item.id, clock.now());
     applyWorkItemEvent(db, item.id, "blocking_question");
     saveCheckpoint(db, item.id, { ...checkpoint, phase: "awaiting_input" });
-    expect(recoverOnStartup(db, clock.now())).toEqual([]);
+    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "none" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
     expect(getRun(db, run.id)?.status).toBe("ended");
-    expect(listJobs(db)).toHaveLength(0);
+    expect(listJobs(db).map((job) => job.queue)).toEqual([JOB_KIND.catchup]);
   });
 
   test("a restart leaves an answered item to its pending answer resume", () => {

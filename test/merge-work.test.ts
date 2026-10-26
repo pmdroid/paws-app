@@ -169,24 +169,30 @@ test("the rebase_return migration backfills rebase-conflict returns so budgets s
       db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, 0)", [migration.id]);
     }
     insertItem(db, "item");
-    const merge = enqueueJob(db, {
+    const legacyJob: typeof enqueueJob = (legacy, input) =>
+      legacy
+        .query<{ id: number }, [string, string | null, string, number]>(
+          "INSERT INTO job(queue,job_key,payload,priority,run_at,max_attempts,created_at) VALUES(?,?,?,5,?,10,0) RETURNING id",
+        )
+        .get(input.queue, input.jobKey ?? null, JSON.stringify(input.payload), input.now ?? 0)!.id;
+    const merge = legacyJob(db, {
       queue: JOB_KIND.resume,
       jobKey: "rebase-conflict:item:0:0",
       payload: { itemId: "item", reason: "rebase-conflict" },
       now: 1,
     });
-    const linear = enqueueJob(db, {
+    const linear = legacyJob(db, {
       queue: JOB_KIND.resume,
       jobKey: "linear-turn:session:1",
       payload: { itemId: "item", reason: "rebase-conflict" },
       now: 2,
     });
-    enqueueJob(db, {
+    legacyJob(db, {
       queue: JOB_KIND.resume,
       payload: { itemId: "item", reason: "ci-failed" },
       now: 3,
     });
-    enqueueJob(db, {
+    legacyJob(db, {
       queue: JOB_KIND.resume,
       payload: { itemId: "gone", reason: "rebase-conflict" },
       now: 4,

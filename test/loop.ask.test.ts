@@ -60,7 +60,7 @@ const reply = (body: string, deliveryId = "activity:ans") => ({
 
 const resumes = (db: Database) => listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
 
-test("an answered agent question resumes as a fresh session with the handoff", () => {
+test("an answered agent question restarts the same run with the handoff", () => {
   const { db, asker } = parked();
   const asked = ask(db, asker, "agent", "Include archived rows?", {
     options: ["yes", "no"],
@@ -73,14 +73,14 @@ test("an answered agent question resumes as a fresh session with the handoff", (
   const outcome = answer(db, reply("parquet, please"), questionEffects(db, { now: NOW + 100 }));
 
   expect(outcome.status).toBe("answered");
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("running");
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(resumes(db)).toEqual([
     expect.objectContaining({
       jobKey: `resume:answer:${asked.question.id}`,
       status: "pending",
       payload: {
         itemId: asker.itemId,
-        freshSession: true,
+        runId: asker.runId,
         reason: "answer",
         handoff: handoffNote({
           question: "Include archived rows?",
@@ -102,7 +102,7 @@ test.each(["clarification", "repository"] as const)(
     const { db, asker } = parked();
     const asked = ask(db, asker, kind, "Which outcome?", { now: NOW });
     answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
-    expect(getWorkItem(db, asker.itemId)?.state).toBe("running");
+    expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
     expect(resumes(db).map((job) => job.jobKey)).toEqual([`resume:answer:${asked.question.id}`]);
   },
 );
@@ -112,8 +112,8 @@ test("an answer while the asking run is still live leaves the resume to the end 
   ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, asking: (runId) => runId === asker.runId });
   expect(answer(db, reply("parquet"), effects).status).toBe("answered");
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("running");
-  expect(resumes(db)).toEqual([]);
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect(resumes(db)).toHaveLength(1);
 });
 
 test("a redirecting answer resumes the task without a handoff job", () => {
@@ -121,8 +121,8 @@ test("a redirecting answer resumes the task without a handoff job", () => {
   ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, redirect: true });
   expect(answer(db, reply("parquet"), effects).status).toBe("answered");
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("running");
-  expect(resumes(db)).toEqual([]);
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect(resumes(db)).toHaveLength(1);
 });
 
 test("an agent question queued behind another is delivered once that one is answered", () => {

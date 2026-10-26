@@ -81,8 +81,8 @@ describe("journal", () => {
 
   test("writes done, dead and cancelled outcomes for item jobs", () => {
     const db = database();
-    enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: "a" }, now: 0 });
-    completeJob(db, claim(db, JOB_KIND.start), 1_000);
+    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
+    completeJob(db, claim(db, JOB_KIND.resume), 1_000);
     enqueueJob(db, {
       queue: JOB_KIND.merge,
       lane: MERGE_LANE,
@@ -94,7 +94,7 @@ describe("journal", () => {
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "c" }, now: 0 });
     cancelOpenJobs(db, { itemId: "c", reason: "stopped", now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([
-      "job 1 item.start done item=a attempts=1/10",
+      "job 1 run.resume done item=a attempts=1/10",
       "job 2 github.merge dead item=b attempts=1/1 error=merge conflict",
       "job 3 run.resume cancelled item=c attempts=0/10 error=stopped",
     ]);
@@ -104,8 +104,8 @@ describe("journal", () => {
     const db = database();
     enqueueJob(db, { queue: JOB_KIND.catchup, now: 0 });
     completeJob(db, claim(db, JOB_KIND.catchup), 1_000);
-    enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: "a" }, now: 0 });
-    failJob(db, claim(db, JOB_KIND.start), new Error("busy"), { now: 1_000 });
+    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
+    failJob(db, claim(db, JOB_KIND.resume), new Error("busy"), { now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([]);
   });
 });

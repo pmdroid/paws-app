@@ -1,3 +1,4 @@
+import type { ask } from "../questions";
 import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
@@ -39,6 +40,7 @@ export type MergeVoice = {
 };
 
 export type OrderCapabilities = {
+  ask: typeof ask;
   now(): number;
   stopped(): boolean;
   session(item: WorkItemRecord): string | null;
@@ -86,8 +88,19 @@ export function sendBack(
   });
 }
 
-export function askHelp({ db, item, caps }: MergeContext, body: string): boolean {
-  return askMergeHelp(db, { itemId: item.id, body, now: caps.now(), session: caps.session });
+export function askHelp(
+  { db, item, caps }: MergeContext,
+  body: string,
+  reason = "merge_help",
+): boolean {
+  return askMergeHelp(db, {
+    itemId: item.id,
+    body,
+    reason,
+    now: caps.now(),
+    session: caps.session,
+    ask: caps.ask,
+  });
 }
 
 export function ciRound(
@@ -275,11 +288,18 @@ export async function mergeThroughGitHubQueue(
           )
         )
           return { kind: "returned" };
-        return {
-          kind: "failed",
-          reason: "merge",
-          message: `GitHub's merge queue removed the pull request for a conflict${why}.${budget.allowed ? "" : ` ${budget.message}`}`,
-        };
+        const message = `GitHub's merge queue removed the pull request for a conflict${why}.${budget.allowed ? "" : ` ${budget.message}`}`;
+        if (
+          askHelp(
+            merge,
+            `${message} Reply with guidance to continue, or stop the task.`,
+            budget.allowed ? "merge_help" : "rebase_budget_spent",
+          )
+        ) {
+          await caps.voice.flush();
+          return { kind: "asked" };
+        }
+        return { kind: "failed", reason: "merge", message };
       }
       return askGitHubQueueRemoval(
         merge,
@@ -321,7 +341,7 @@ async function githubQueueCiFailed(
     })
   )
     return { kind: "returned" };
-  if (askHelp(merge, ciFixQuestion(checks, limit, pullUrl))) {
+  if (askHelp(merge, ciFixQuestion(checks, limit, pullUrl), "budget_spent")) {
     await merge.caps.voice.flush();
     return { kind: "asked" };
   }

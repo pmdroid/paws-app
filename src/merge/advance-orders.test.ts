@@ -140,7 +140,7 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(getJob(h.db, behind)?.runAt).toBe(h.clock.now());
     expect(getJob(h.db, review)?.runAt).toBe(h.clock.now() + 300_000);
     expect(resumes(h).map((payload) => [payload.itemId, payload.reason])).toEqual([
-      ["ENG-121", "ci-failed"],
+      ["ENG-121", "ci"],
     ]);
     expect(queued(h)).toEqual(["ENG-122", "ENG-123"]);
 
@@ -161,9 +161,9 @@ describe("advanceMerge on a CI failure", () => {
     const item = await h.addItem("ENG-1");
     h.state.ci = failingTest;
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("running");
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("queued");
     const [resume] = resumes(h);
-    expect(resume?.reason).toBe("ci-failed");
+    expect(resume?.reason).toBe("ci");
     expect(resume?.handoff).toContain(`End of the \`test\` log:\n\`\`\`\n${LOG_TAIL}\n\`\`\``);
     expect(h.bodies("status")).toContain("CI: `test` failed. Sent back to the agent, fix 1 of 3.");
     const rounds = listCiRounds(h.db, "ENG-1");
@@ -274,7 +274,7 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     queue.remove(1, "FAILED_CHECKS");
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     const [resume] = resumes(h);
-    expect(resume?.reason).toBe("ci-failed");
+    expect(resume?.reason).toBe("ci");
     expect(resume?.handoff).toContain("GitHub's merge queue removed the pull request");
     expect(h.bodies("status")).toContain(
       "CI: `FAILED_CHECKS` failed. Sent back to the agent, fix 1 of 3.",
@@ -285,6 +285,21 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     queue.merge(1);
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.github.merged).toEqual([]);
+  });
+
+  test("a GitHub queue conflict asks once the rebase budget is spent", async () => {
+    const { h, queue } = await githubQueue();
+    for (let round = 0; round < 3; round++) {
+      await h.pass("ENG-1");
+      queue.remove(1, "MERGE_CONFLICT");
+      expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+      await h.requeue("ENG-1", `resolve ${round}\n`);
+    }
+    await h.pass("ENG-1");
+    queue.remove(1, "MERGE_CONFLICT");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+    expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({ reason: "rebase_budget_spent" });
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
   });
 
   test("a person removing the pull request from the queue makes Paws ask in Linear", async () => {

@@ -1,3 +1,4 @@
+import { tickWithRestarts } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { execFile } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
@@ -121,7 +122,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     const deadline = Date.now() + 90_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {
-      const job = await jobs.tick();
+      const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) {
         idle += 1;
         if (idle > 3) break;
@@ -154,7 +155,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
       "Fixes DEMO-3",
       "Fixes DEMO-4",
     ]);
-    expect(github.opened[0]?.body).toContain("Fix attempts: 1");
+    expect(github.opened[0]?.body).toContain("Fix attempts: 0");
     expect(prompts.some((prompt) => prompt.includes("P1") && prompt.includes("failOn"))).toBe(true);
     const history = await readFile(
       path.join(layout.pawsRoot, "runs", runDirectory(db, "DEMO-2"), "closeout-history.jsonl"),

@@ -96,7 +96,10 @@ test("the migration deletes the retired execution.reconcile recurring job", () =
       db.run("PRAGMA foreign_keys = ON");
     }
     for (const queue of ["execution.reconcile", "scheduler.tick"])
-      enqueueJob(db, { queue, jobKey: queue, recurringEveryMs: 30_000, now: 1 });
+      db.run(
+        "INSERT INTO job(queue,job_key,payload,priority,run_at,max_attempts,created_at,recurring_every_ms) VALUES(?,?,'{}',5,1,10,1,30000)",
+        [queue, queue],
+      );
     db.transaction(() => db.run(migrations[cutoff]!.sql)).immediate();
     expect(db.query("SELECT queue FROM job ORDER BY queue").all()).toEqual([
       { queue: "scheduler.tick" },

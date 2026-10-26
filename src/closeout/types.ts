@@ -83,6 +83,8 @@ export type GateResult = {
   exitCode: number | null;
   decision: DecisionDocument | null;
   summary: string;
+  /** Detailed failed checks and output for a host-owned restart. */
+  handoff?: string;
   reportPath?: string;
   bypasses?: readonly import("./bypass").CloseoutBypass[];
 };

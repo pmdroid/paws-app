@@ -1,3 +1,4 @@
+import { tickWithRestarts } from "./helpers";
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
@@ -167,7 +168,7 @@ test("linear intake delivers a persisted body-only requirement to real implement
       home: process.env.HOME,
       launch,
     });
-    await jobs.tick();
+    await tickWithRestarts(jobs, orchestrator, db);
     const item = getWorkItem(db, itemId!);
     const prompts = readFileSync(evidence, "utf8")
       .trim()

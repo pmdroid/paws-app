@@ -519,11 +519,18 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         [now, JOB_KIND.start, item.id],
       );
       const handoff = options.handoffForItem?.(item.id);
-      const jobId = enqueueJob(db, {
-        queue: JOB_KIND.start,
-        payload: { itemId: item.id, ...(handoff ? { handoff } : {}) },
-        now,
-      });
+      const resume = db
+        .query<{ id: number }, [string]>(
+          "SELECT id FROM job WHERE queue='run.resume' AND status='pending' AND json_extract(payload,'$.itemId')=? ORDER BY id DESC LIMIT 1",
+        )
+        .get(item.id);
+      const jobId =
+        resume?.id ??
+        enqueueJob(db, {
+          queue: JOB_KIND.start,
+          payload: { itemId: item.id, ...(handoff ? { handoff } : {}) },
+          now,
+        });
       db.run(
         `INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,session_id,paths,hot,created_at)
         VALUES(?,?,?,?,?,?,?,?)`,

@@ -19,6 +19,7 @@ export type StoredQuestion = {
   runId: string | null;
   sessionId: string;
   kind: QuestionKind;
+  reason: string;
   body: string;
   context: string | null;
   options: QuestionOption[];
@@ -37,6 +38,7 @@ type QuestionRow = {
   run_id: string | null;
   session_id: string;
   kind: QuestionKind;
+  reason: string | null;
   body: string;
   context: string | null;
   options: string | null;
@@ -54,6 +56,7 @@ export type NewQuestion = {
   runId?: string | null;
   sessionId: string;
   body: string;
+  reason?: string;
   options?: readonly QuestionOption[];
   now?: number;
 };
@@ -75,14 +78,15 @@ export function insertQuestion(
   const options = input.options === undefined ? null : JSON.stringify([...input.options]);
   db.run(
     `INSERT INTO question (
-       id, item_id, run_id, session_id, kind, body, context, options, status, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       id, item_id, run_id, session_id, kind, reason, body, context, options, status, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.itemId,
       input.runId ?? null,
       input.sessionId,
       input.kind,
+      input.reason ?? input.kind,
       input.body,
       input.context ?? null,
       options,
@@ -159,6 +163,7 @@ function mapQuestion(row: QuestionRow): StoredQuestion {
     runId: row.run_id,
     sessionId: row.session_id,
     kind: row.kind,
+    reason: row.reason ?? row.kind,
     body: row.body,
     context: row.context,
     options: row.options === null ? [] : (JSON.parse(row.options) as QuestionOption[]),

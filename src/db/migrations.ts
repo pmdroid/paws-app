@@ -2950,6 +2950,16 @@ CREATE TABLE work_item_event (
     id: "146_remove_runner_pairing",
     sql: `DROP TABLE runner_pairing;`,
   },
+  {
+    id: "147_job_item_version_and_question_reason",
+    sql: `ALTER TABLE question ADD COLUMN reason TEXT;
+UPDATE question SET reason=kind;
+ALTER TABLE question ADD COLUMN handoff_version INTEGER;
+UPDATE question SET handoff_version=0 WHERE status='answered';
+ALTER TABLE job ADD COLUMN item_version INTEGER;
+UPDATE job SET item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId'))
+WHERE json_type(payload,'$.itemId')='text';`,
+  },
 ];
 
 /**

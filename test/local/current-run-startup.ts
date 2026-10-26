@@ -16,7 +16,7 @@ import {
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { migratedDatabase } from "../helpers";
-import { workspaceAdmission } from "../fake-workspace";
+import { workspaceAdmission, workspaceDispatch } from "../fake-workspace";
 
 export async function probeCurrentRunStartup(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -99,14 +99,16 @@ export async function probeCurrentRunStartup(root: string) {
       },
     });
     try {
-      enqueueJob(db, {
-        queue: mode === "clarified-artifact" ? JOB_KIND.resume : JOB_KIND.start,
-        payload: {
-          itemId: item.id,
-          ...(mode === "clarified-artifact" ? { handoff: "Capture the create VM dialog" } : {}),
-        },
-        now: clock.now(),
-      });
+      if (mode !== "clarified-artifact") workspaceDispatch(db, { now: clock.now() });
+      else
+        enqueueJob(db, {
+          queue: mode === "clarified-artifact" ? JOB_KIND.resume : JOB_KIND.start,
+          payload: {
+            itemId: item.id,
+            ...(mode === "clarified-artifact" ? { handoff: "Capture the create VM dialog" } : {}),
+          },
+          now: clock.now(),
+        });
       await jobs.tick();
       const current = getWorkItem(db, item.id)!;
       const hold = db

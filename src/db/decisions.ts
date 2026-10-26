@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   formatPauseNote,
@@ -20,7 +19,7 @@ import {
 } from "./items";
 import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
-import { getRun, insertRun, markRun } from "./runs";
+import { getRun, insertRun, markRun, releaseRunCapacity } from "./runs";
 import { getTaskMode } from "./tasks";
 
 const RESTART_QUESTION =
@@ -111,7 +110,7 @@ function applyResume(
     const run = getRun(db, current.currentRunId);
     if (run && run.status === "lost") markRun(db, run.id, "active", now);
   }
-  const restart =
+  const restartHandoff =
     !reattach && checkpoint === null && getTaskMode(db, item.id) === "code"
       ? `Paws restarted before this task saved a checkpoint, and the earlier session is gone. Start again${item.branchName ? ` from the branch ${item.branchName}` : ""}: keep any work already on it and finish the issue.`
       : null;
@@ -123,7 +122,7 @@ function applyResume(
       runId: current.currentRunId,
       freshSession: true,
       checkpoint,
-      ...(restart === null ? {} : { handoff: restart }),
+      ...(restartHandoff === null ? {} : { handoff: restartHandoff }),
       reason: "process_restart",
     },
     runAt,
@@ -133,15 +132,7 @@ function applyResume(
 
 /** Already resumed once: ask in Linear. Any answer starts the task again through the answer resume. */
 function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void {
-  const sessionId = item.sessionKey;
-  const open =
-    sessionId !== null &&
-    db
-      .query(
-        "SELECT 1 FROM question WHERE session_id = ? AND status = 'open' AND cancelled_at IS NULL",
-      )
-      .get(sessionId) !== null;
-  if (sessionId === null || open) {
+  if (item.sessionKey === null) {
     failWorkItem(
       db,
       item,
@@ -152,29 +143,17 @@ function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void 
     return;
   }
   cancelOpenJobs(db, { itemId: item.id, reason: "restart_question", now });
-  applyWorkItemEvent(db, item.id, "blocking_question");
-  if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "awaiting_input" });
-  const questionId = randomUUID();
-  const options = ["Start again"];
-  db.run(
-    `INSERT INTO question (id, item_id, run_id, session_id, body, options, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
-    [
-      questionId,
-      item.id,
-      item.currentRunId,
-      sessionId,
-      RESTART_QUESTION,
-      JSON.stringify(options),
-      now,
-    ],
-  );
-  enqueueOutboxOnce(db, {
-    target: "linear",
-    op: "elicitation",
-    orderingKey: sessionId,
-    idempotencyKey: `restart-ask:${questionId}`,
-    payload: { sessionId, questionId, body: RESTART_QUESTION, options },
+  if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
+  enqueueJobOnce(db, {
+    queue: "item.ask",
+    jobKey: `restart-ask:${item.id}:${item.version}`,
+    payload: {
+      itemId: item.id,
+      kind: "agent",
+      reason: "restart",
+      body: RESTART_QUESTION,
+      options: ["Start again"],
+    },
     now,
   });
 }

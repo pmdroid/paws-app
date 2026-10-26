@@ -214,6 +214,7 @@ test("a consumed activity cannot answer the next question in its session", async
   try {
     const event = prompt(NOW + 100);
     await orchestrator.onLinearEvent(event);
+    applyWorkItemEvent(db, item.id, "dispatched");
     applyWorkItemEvent(db, item.id, "blocking_question");
     const next = openQuestion(db, {
       itemId: item.id,

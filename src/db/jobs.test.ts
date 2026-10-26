@@ -204,34 +204,20 @@ describe("job queue", () => {
     right.close();
   });
 
-  test("two ready items never run at once", () => {
+  test("a ready start needs its own reservation", () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
-    enqueueJob(db, {
+    const id = enqueueJob(db, {
       queue: JOB_KIND.start,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
-    enqueueJob(db, {
-      queue: JOB_KIND.start,
-      payload: { itemId: "eng-2" },
-      now: clock.now(),
-    });
-    enqueueJob(db, { queue: JOB_KIND.catchup, priority: 9, now: clock.now() });
-
-    const first = claim(db, clock, [JOB_KIND.start, JOB_KIND.catchup]);
-    expect(first?.payload).toEqual({ itemId: "eng-1" });
-    expect(claim(db, clock, [JOB_KIND.start, JOB_KIND.catchup])?.queue).toBe(JOB_KIND.catchup);
     expect(claim(db, clock, [JOB_KIND.start])).toBeNull();
-
-    if (first === null) throw new Error("missing claim");
-    expect(completeJob(db, first, clock.now())).toBe(true);
-    beginImplementRun(db, "eng-1", clock.now());
-    expect(claim(db, clock, [JOB_KIND.start])).toBeNull();
-
-    applyWorkItemEvent(db, "eng-1", "cancel");
-    expect(claim(db, clock, [JOB_KIND.start])?.payload).toEqual({ itemId: "eng-2" });
+    db.run(
+      "INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,paths,hot,created_at) VALUES(?,?,'*','repo','[]',0,?)",
+      ["eng-1", id, clock.now()],
+    );
+    expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(id);
   });
 
   test("the in-flight item can resume while another start waits", () => {
@@ -294,7 +280,15 @@ describe("job queue", () => {
     enqueueMerge(db, clock, "eng-1");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
     enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: "eng-1" }, now: clock.now() });
-    enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: "eng-2" }, now: clock.now() });
+    const startId = enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: "eng-2" },
+      now: clock.now(),
+    });
+    db.run(
+      "INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,paths,hot,created_at) VALUES(?, ?, '*', 'repo', '[]',0,?)",
+      ["eng-2", startId, clock.now()],
+    );
     expect(claim(db, clock, [JOB_KIND.start])?.payload).toEqual({ itemId: "eng-2" });
   });
 

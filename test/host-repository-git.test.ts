@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { JOB_KIND, systemClock } from "../src/core";
+import { systemClock } from "../src/core";
 import { expect, test } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
@@ -24,7 +24,6 @@ import {
 } from "../src/linear";
 import {
   bindLinearSessionTask,
-  enqueueJob,
   ensureLinearSession,
   getWorkItem,
   insertQueuedItem,
@@ -34,7 +33,7 @@ import {
   recordLinearInstallation,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
-import { workspaceAdmission } from "./fake-workspace";
+import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 
 const token = "synthetic-host-git-token";
 
@@ -308,7 +307,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
           ],
         }),
       );
-      enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: item.id }, now: Date.now() });
+      workspaceDispatch(db, { now: Date.now() });
       await jobs.tick();
       expect(getWorkItem(db, item.id)?.state).toBe("completed");
       expect(checkedReads).toBe(1);

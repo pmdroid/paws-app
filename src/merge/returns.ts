@@ -1,17 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
-  applyWorkItemEvent,
+  restart,
   countCiFixes,
   countRebaseReturns,
-  enqueueJobOnce,
   listRebaseReturns,
   getWorkItem,
   immediate,
-  saveCheckpoint,
   type WorkItemRecord,
 } from "../db";
-import { ask } from "../questions";
+import type { ask } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
 
 export type MergeReturnReason = "rebase-conflict" | "ci-failed";
@@ -21,7 +19,7 @@ export function latestUserTurn(db: Database, itemId: string): number {
     .query<{ id: number | null }, [string, string]>(
       `SELECT MAX(id) AS id FROM job
        WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-         AND job_key LIKE 'linear-turn:%'`,
+         AND (job_key LIKE 'linear-turn:%' OR json_extract(payload, '$.reason') = 'answer')`,
     )
     .get(JOB_KIND.resume, itemId);
   return Number(row?.id ?? 0);
@@ -65,17 +63,15 @@ export function returnToAgent(
       input.reason === "rebase-conflict" ? rebaseReturns(db, current.id) : ciFixes(db, current.id);
     if (!input.admit(returns)) return false;
     const round = `${latestUserTurn(db, current.id)}:${returns}`;
-    const running = applyWorkItemEvent(db, current.id, "ejected");
-    if (current.checkpoint)
-      saveCheckpoint(db, current.id, { ...current.checkpoint, phase: "running" });
-    const jobId = enqueueJobOnce(db, {
-      queue: JOB_KIND.resume,
+    input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
+    const jobId = restart(db, current, {
+      reason: input.reason === "rebase-conflict" ? "conflict" : "ci",
+      body: input.handoff,
       jobKey: `${input.reason}:${current.id}:${round}`,
-      payload: { itemId: current.id, handoff: input.handoff, reason: input.reason },
       now: input.now,
     });
+    if (jobId === null) return false;
     input.record(jobId, returns + 1);
-    input.announce(running, returns + 1, `${current.id}:${input.reason}:${round}`);
     return true;
   });
 }
@@ -87,6 +83,8 @@ export function askMergeHelp(
     body: string;
     now: number;
     session: (item: WorkItemRecord) => string | null;
+    ask: typeof ask;
+    reason?: string;
   },
 ): boolean {
   return immediate(db, () => {
@@ -94,12 +92,16 @@ export function askMergeHelp(
     if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
     const sessionId = input.session(current);
     if (sessionId === null) return false;
-    ask(db, { itemId: current.id, runId: current.currentRunId, sessionId }, "ci-help", input.body, {
-      now: input.now,
-    });
-    applyWorkItemEvent(db, current.id, "blocking_question");
-    if (current.checkpoint)
-      saveCheckpoint(db, current.id, { ...current.checkpoint, phase: "awaiting_input" });
+    input.ask(
+      db,
+      { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
+      "ci-help",
+      input.body,
+      {
+        now: input.now,
+        reason: input.reason ?? "merge_help",
+      },
+    );
     return true;
   });
 }
