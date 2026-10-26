@@ -164,7 +164,7 @@ const assert = require("node:assert/strict");
     assert.equal((await exchange(port, "/api/runners")).status, 401);
     await assert.rejects(exchange(manifest.runnerPort, "/v1/commands"));
     const owner = await pageFor("owner");
-    await owner.getByText("No runners are paired.", { exact: false }).waitFor();
+    await owner.getByText("No runners are enrolled.", { exact: false }).waitFor();
     assert.deepEqual(await owner.locator("#side .nav").allTextContents(), [
       "Overview",
       "Runners",

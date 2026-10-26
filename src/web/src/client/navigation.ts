@@ -27,7 +27,7 @@ export const PAGES = {
   },
   runners: {
     title: "Runners",
-    description: "Manage the hosts that execute work delegated in Linear.",
+    description: "Manage the runners that execute work delegated in Linear.",
   },
   settings: {
     title: "Settings",

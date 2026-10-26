@@ -123,7 +123,7 @@ async function pageFor(
   page.on("pageerror", (error) => errors.push(`${identity}: ${error.message}`));
   await page.goto(`${manifest.origin}/status/runners`);
   if (identity !== "observer")
-    await page.getByRole("button", { name: "Add a host", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Add a runner", exact: true }).waitFor();
   else await page.locator("[data-runner-row]").first().waitFor();
   return page;
 }

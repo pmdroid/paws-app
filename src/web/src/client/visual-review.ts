@@ -54,7 +54,7 @@ export function visualReviewSection(
   const waiting = waitingVisualReview(item);
   const links = snapshot.questions.find((question) => question.id === waiting?.questionId)?.links;
   const summary = waiting
-    ? `<section class="closeout-result blocked"><div class="min-w-0"><h3>Waiting for ${esc(item.owner ?? "the person who delegated this issue")} or the project lead · round ${waiting.round}</h3><p>Accept the screenshots in Linear, or reply with the changes you want. The task resumes with the answer.</p>${links?.length ? `<div class="row">${linkButtons(links)}</div>` : ""}<div id="review-draw" data-question="${esc(waiting.questionId)}" hidden></div></div></section>`
+    ? `<section class="closeout-result blocked"><div class="min-w-0"><h3>Waiting for ${esc(item.owner ?? "the person who delegated this issue")} or the project lead · round ${waiting.round}</h3><p>Accept the screenshots in Linear, or reply with the changes you want. The item resumes with the answer.</p>${links?.length ? `<div class="row">${linkButtons(links)}</div>` : ""}<div id="review-draw" data-question="${esc(waiting.questionId)}" hidden></div></div></section>`
     : last.state === "accepted" && carriedInFull(last)
       ? carriedSummary(snapshot, reviews, last)
       : last.state === "accepted"

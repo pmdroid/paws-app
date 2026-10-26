@@ -244,7 +244,7 @@ describe("live closeout ui", () => {
     expect(run?.activity.some((line) => line.text.includes("Implementation finished"))).toBe(true);
     const html = paint(snapshot, id, "typecheck");
     expect(html).toContain("Implementation finished. Closeout is verifying this candidate.");
-    expect(html).toContain("The task is not complete.");
+    expect(html).toContain("The item is not complete.");
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("line one");

@@ -34,7 +34,7 @@ export function settingsProblems(settings: AgentSettings): string[] {
   const cap = settings.queue?.maxRunningPerOwner ?? null;
   if (cap !== null && (!Number.isInteger(cap) || cap < 1 || cap > OWNER_CAP_MAX))
     checks.push(
-      `Running tasks per owner: leave empty for no cap, or enter a whole number from 1 to ${OWNER_CAP_MAX}.`,
+      `Running items per owner: leave empty for no cap, or enter a whole number from 1 to ${OWNER_CAP_MAX}.`,
     );
   return profiles
     .filter(
@@ -121,10 +121,10 @@ function checksSection(attempts: number): string {
 }
 
 function queueSection(hours: number, cap: number | null): string {
-  return `<section class="settings-section"><div class="settings-label"><h2>Queue</h2><p class="sub">While every runner slot is busy, a delegated task waits in line and Linear shows its place.</p></div><div class="col">
-      <label for="queue-start-timeout">Fail a task that has not started after, in hours</label><input id="queue-start-timeout" name="queue-start-timeout" type="number" inputmode="numeric" min="1" max="${QUEUE_START_TIMEOUT_MAX}" step="1" required value="${Number.isFinite(hours) ? hours : ""}" aria-describedby="queue-start-timeout-help">
-      <p class="sub" id="queue-start-timeout-help">From 1 to ${QUEUE_START_TIMEOUT_MAX} hours. The default is ${QUEUE_START_TIMEOUT_DEFAULT}. Paws then fails the task in Linear, and delegating it again retries.</p>
-      <label for="queue-owner-cap">Most tasks one person or project runs at once</label><input id="queue-owner-cap" name="queue-owner-cap" type="number" inputmode="numeric" min="1" max="${OWNER_CAP_MAX}" step="1" value="${cap !== null && Number.isFinite(cap) ? cap : ""}" aria-describedby="queue-owner-cap-help">
+  return `<section class="settings-section"><div class="settings-label"><h2>Queue</h2><p class="sub">While every runner slot is busy, a delegated item waits in line and Linear shows its place.</p></div><div class="col">
+      <label for="queue-start-timeout">Fail an item that has not started after, in hours</label><input id="queue-start-timeout" name="queue-start-timeout" type="number" inputmode="numeric" min="1" max="${QUEUE_START_TIMEOUT_MAX}" step="1" required value="${Number.isFinite(hours) ? hours : ""}" aria-describedby="queue-start-timeout-help">
+      <p class="sub" id="queue-start-timeout-help">From 1 to ${QUEUE_START_TIMEOUT_MAX} hours. The default is ${QUEUE_START_TIMEOUT_DEFAULT}. Paws then fails the item in Linear, and delegating it again retries.</p>
+      <label for="queue-owner-cap">Most items one person or project runs at once</label><input id="queue-owner-cap" name="queue-owner-cap" type="number" inputmode="numeric" min="1" max="${OWNER_CAP_MAX}" step="1" value="${cap !== null && Number.isFinite(cap) ? cap : ""}" aria-describedby="queue-owner-cap-help">
       <p class="sub" id="queue-owner-cap-help">Free runners take turns between the people and projects with queued work. Empty means no cap, so one person alone still gets every runner.</p></div></section>`;
 }
 
