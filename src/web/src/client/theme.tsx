@@ -463,6 +463,30 @@ function replace(node: DOMNode): ReactElement | undefined {
       "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 text-sm [overflow-wrap:anywhere] [&>input]:mt-1",
     );
   if (has("skill-pick-copy")) return styled("flex min-w-0 flex-col gap-1");
+  if (has("checkout-repo-body")) return styled("flex min-w-0 flex-col gap-4");
+  if (name === "ul" && has("checkout-paths"))
+    return styled("m-0 list-none divide-y-2 divide-border border-y-2 border-border p-0");
+  if (has("checkout-path")) return styled("flex min-w-0 flex-col gap-3 py-3");
+  if (has("checkout-path-row"))
+    return styled(
+      "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 md:grid-cols-[minmax(0,1fr)_16rem_auto] max-md:[&>[data-slot=native-select-wrapper]]:col-span-full max-md:[&>[data-slot=native-select-wrapper]]:row-start-2",
+    );
+  if (has("checkout-path-name")) return styled("flex min-w-0 flex-wrap items-center gap-2");
+  if (has("checkout-path-text")) return styled("font-mono text-sm [overflow-wrap:anywhere]");
+  if (has("checkout-note"))
+    return styled(
+      cn(
+        "space-y-1 rounded-base border-2 border-border p-3 text-sm leading-relaxed [overflow-wrap:anywhere]",
+        has("warn") ? "bg-yellow-200 text-black" : "bg-background",
+      ),
+    );
+  if (has("checkout-add")) return styled("flex min-w-0 flex-col gap-2");
+  if (has("checkout-add-row"))
+    return styled("grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]");
+  if (has("checkout-error"))
+    return styled(
+      "rounded-base border-2 border-border bg-red-200 px-3 py-2 text-sm leading-relaxed text-black",
+    );
   if (has("settings-account")) return styled("flex min-w-0 flex-col items-start gap-4");
   if (has("settings-section")) return styled(SETTINGS_SECTION_LAYOUT);
   if (has("overview-section"))
