@@ -288,6 +288,8 @@ async function setup() {
       commitSha: wip,
       turn: command.generation,
     });
+    // The runner commits to the handover before it publishes the result.
+    events(command, [{ type: "handover", handedOver: true }]);
     submit(command, { handedOver: true, candidateSha: wip });
     return wip;
   }
@@ -408,7 +410,7 @@ test("a handover the runner cannot finish within 2 minutes is reported and the s
   expect(result.handedOver).toBeUndefined();
   expect(result.stopReason).toBe("end_turn");
   expect(notices).toContain(
-    "A couldn't stop this session at a safe point within 2 minutes, so it keeps running there.\n",
+    "A couldn't hand this session over within 2 minutes, so it keeps running there.\n",
   );
 });
 

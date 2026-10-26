@@ -81,11 +81,14 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     restored: z.boolean(),
     reason: z.enum(["download", "integrity", "unpack", "load"]).optional(),
   }),
-  /** A handover Paws asked for that the runner gave up on; the session keeps running there. */
+  /**
+   * A handover Paws asked for: the runner committed to it (the WIP commit and session are ready
+   * and the result follows), or gave up on it and the session keeps running there.
+   */
   z.strictObject({
     type: z.literal("handover"),
-    handedOver: z.literal(false),
-    reason: z.literal("timeout"),
+    handedOver: z.boolean(),
+    reason: z.enum(["timeout", "snapshot"]).optional(),
   }),
   z.strictObject({
     type: z.literal("hook_failed"),

@@ -8,17 +8,28 @@ import { versionAtLeast } from "./session-restore";
 
 /** First runner release that hands a running session over. */
 export const HANDOVER_RUNNER_VERSION = [0, 1, 44];
-/** Past the runner's deadline: polling and delivery of its result or report. */
+/** Past the runner's deadline: polling and delivery of its decision. */
 const DELIVERY_GRACE_MS = 30_000;
+/**
+ * Once the runner committed to the handover, its agent is stopped and the session is saved;
+ * publishing the WIP commit and the session may take this long before Paws stops waiting.
+ */
+const PUBLICATION_WAIT_MS = 30 * 60_000;
 
 export type RunnerHandoverOutcome =
   /** The run ended with its WIP commit as the item's checkpoint, or nothing to commit. */
   | { status: "handed_over"; wipCommit: string | null }
   /** The run ended on its own before the runner stopped it. */
   | { status: "finished" }
-  /** No safe point within 2 minutes: the session keeps running on its runner. */
+  /**
+   * The runner could not stop at a safe point, commit and save the session within 2 minutes:
+   * the session keeps running on its runner.
+   */
   | { status: "timed_out" }
-  /** The runner sent nothing within 2 minutes, or Paws could not keep the WIP commit. */
+  /**
+   * The runner decided nothing within 2 minutes, published nothing after it committed, or Paws
+   * could not keep the WIP commit.
+   */
   | { status: "unanswered" }
   /** The runner's release cannot hand over; nothing was asked of it. */
   | { status: "old_runner" }
@@ -79,7 +90,8 @@ export function createRemoteHandover(options: {
     });
     if (!request) return { status: "not_running" };
     if (request === "old_runner") return { status: "old_runner" };
-    while (now() < request.deadline) {
+    let deadline = request.deadline;
+    while (now() < deadline) {
       signal?.throwIfAborted();
       const stored = db
         .query<{ payload: string }, [string, number]>(
@@ -102,16 +114,18 @@ export function createRemoteHandover(options: {
           ? { status: "handed_over", wipCommit }
           : { status: "unanswered" };
       }
-      if (
-        !result &&
-        db
-          .query(
-            `SELECT 1 FROM runner_event WHERE run_id=? AND generation=? AND sequence>?
-             AND json_extract(payload,'$.type')='handover'`,
-          )
-          .get(request.runId, request.generation, request.after)
-      )
-        return { status: "timed_out" };
+      const decision = result
+        ? null
+        : db
+            .query<{ handedOver: number }, [string, number, number]>(
+              `SELECT json_extract(payload,'$.handedOver') AS handedOver FROM runner_event
+               WHERE run_id=? AND generation=? AND sequence>? AND json_extract(payload,'$.type')='handover'
+               ORDER BY sequence LIMIT 1`,
+            )
+            .get(request.runId, request.generation, request.after);
+      if (decision && !decision.handedOver) return { status: "timed_out" };
+      // Committed: the session left its agent, so only its publication is left to wait for.
+      if (decision) deadline = Math.max(deadline, request.deadline + PUBLICATION_WAIT_MS);
       await delay(options.pollIntervalMs ?? 250, undefined, { signal });
     }
     return { status: "unanswered" };
