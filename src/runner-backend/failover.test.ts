@@ -181,6 +181,27 @@ describe("usage limits pause the task instead of failing it", () => {
     expect(runners.calls[1]!.at).toBe(runners.calls[0]!.at);
   });
 
+  test("two runners on one account both at the limit wait for the reset instead of failing", async () => {
+    const runners = fleet((limit, now) => {
+      if (!limit) return "agentbox";
+      if (limit.runnerId === "agentbox") return "goldbox";
+      if (limit.resumeAt > now)
+        return new UsageLimitPause("claude", limit.resumeAt, limit.resetsAt, limit.runnerId);
+      return "agentbox";
+    });
+    runners.outcomes.push(limited("agentbox", RESET), limited("goldbox", RESET));
+    const result = await runWithFailover(
+      input(),
+      runners.attempt,
+      async () => undefined,
+      runners.wait,
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(runners.pauses).toHaveLength(1);
+    expect(runners.calls.map((call) => call.runnerId)).toEqual(["agentbox", "goldbox", "agentbox"]);
+    expect(runners.calls[2]!.at).toBe(RESET + 60_000);
+  });
+
   test("Stop ends the wait", async () => {
     const stop = new AbortController();
     const runners = fleet(oneRunner);
