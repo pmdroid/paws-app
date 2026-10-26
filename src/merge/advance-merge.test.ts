@@ -8,6 +8,7 @@ import {
   getWorkItem,
   listJobs,
   listRebaseReturns,
+  recordPullReview,
 } from "../db";
 import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
 import { REBASE_CONFLICT_INSTRUCTION, REBASE_CONFLICT_THOUGHT } from "./orders";
@@ -49,6 +50,34 @@ function reverifyJobs(h: MergeHarness): string[] {
     .filter((job) => job.queue === JOB_KIND.reverify)
     .map((job) => job.jobKey ?? "");
 }
+
+describe("advanceMerge and a changes-requested review", () => {
+  test("a review recorded while the merge attempt runs holds the squash", async () => {
+    const h = await start();
+    await h.addItem("ENG-1");
+    let recorded = false;
+    // The webhook lands after the first guard, during the readiness reads.
+    h.state.ci = () => {
+      if (!recorded)
+        recorded = recordPullReview(h.db, {
+          reviewId: 41,
+          itemId: "ENG-1",
+          state: "changes_requested",
+          pullNumber: 1,
+          head: null,
+          reviewer: "rev",
+          body: "Please rename it.",
+          receivedAt: h.clock.now(),
+        });
+      return undefined;
+    };
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(recorded).toBe(true);
+    expect(h.github.merged).toEqual([]);
+    expect(getConfirmedRemoteMerge(h.db, "ENG-1")).toBeNull();
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
+  });
+});
 
 describe("advanceMerge: the lane only merges mergeable(S)", () => {
   test("green CI merges the accepted head with it as the expected head, without Closeout", async () => {

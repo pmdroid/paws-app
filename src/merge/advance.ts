@@ -2,7 +2,6 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
-  artifactPublicationReady,
   closeoutPolicyDigest,
   completeMergedItem,
   enqueueJobOnce,
@@ -32,8 +31,10 @@ import {
   REBASE_CONFLICT_THOUGHT,
   askHelp,
   ciRound,
+  mergeHeld,
   mergeQueueTurn,
   mergeThroughGitHubQueue,
+  reviewHold,
   sendBack,
   type MergeContext,
   type MergePull,
@@ -89,6 +90,8 @@ export async function advanceMerge(
     if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
   }
+  const held = reviewHold(db, item.id, caps.now());
+  if (held) return held;
   const published = await caps.publish(item);
   if ("kind" in published) return published;
   const merge: MergeContext = { db, item, caps };
@@ -125,7 +128,7 @@ export async function advanceMerge(
     gitExec: github.gitExec,
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,
-    isCancelled: () => caps.stopped() || !artifactPublicationReady(db, item.id),
+    isCancelled: () => mergeHeld(merge),
   };
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
@@ -133,6 +136,12 @@ export async function advanceMerge(
     rebase: () => rebaseOntoMain(lane),
     squash: (head, facts) => squashPull(lane, { head, base: facts.base }, published.summary),
   });
+  // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
+  // A turn that already rebased goes on to re-verify the pushed head.
+  if ((turn.kind === "stopped" || turn.kind === "blocked") && !caps.stopped()) {
+    const late = reviewHold(db, item.id, caps.now());
+    if (late) return late;
+  }
   const ciFixLimit = caps.ciFixAttempts(item);
   const result = turn.kind === "merged" || turn.kind === "stopped" ? turn.result : null;
   const conflict: RebaseConflict = {

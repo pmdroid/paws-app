@@ -6,6 +6,8 @@ export const JOB_KIND = {
   reverify: "run.reverify",
   merge: "github.merge",
   closeStoppedPull: "github.close_stopped",
+  /** One per GitHub review id; the payload names the review, not the item, so a restart keeps it. */
+  pullReview: "github.pull_review",
   catchup: "linear.catchup",
   visualReviewReminder: "linear.visual_review_reminder",
   /** Written by the SQLite triggers of migration 144, one pending job per hold owner. */
