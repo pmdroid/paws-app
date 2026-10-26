@@ -34,6 +34,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
 } from "../src/db";
+import { planSessionRestore } from "../src/runner-backend/session-restore";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import type { RunnerCommand } from "../src/runner-protocol";
@@ -429,6 +430,7 @@ describe("agent session snapshots", () => {
     const faulty: AgentSessionObjects = {
       write: (name, bytes) => objects.write(name, bytes),
       read: (name) => (failRead ? Promise.reject(new Error("outage")) : objects.read(name)),
+      delete: (name) => objects.delete(name),
     };
     const http = createAgentSessionsHttp(createAgentSessions({ db, work, objects: faulty, key }));
     const post = (path: string, body: unknown, token = access.token, runnerId = runnerA) =>
@@ -472,6 +474,158 @@ describe("agent session snapshots", () => {
 
     work.finish(run.runId, 1);
     expect((await post("read", { generation: 1, snapshotGeneration: 1 }))!.status).toBe(409);
+  });
+
+  type Sessions = ReturnType<typeof createAgentSessions>;
+  type Access = ReturnType<typeof f.assign>;
+  async function seal(sessions: Sessions, access: Access, generation: number, bytes = snapshot) {
+    for (let offset = 0; offset < bytes.length; offset += AGENT_SESSION_CHUNK_BYTES)
+      await sessions.upload(
+        access,
+        chunk(generation, offset, bytes.subarray(offset, offset + AGENT_SESSION_CHUNK_BYTES)),
+      );
+    await sessions.finish(access, finishFor(generation, bytes));
+  }
+  const objectsOf = (runId: string, generation?: number) =>
+    [...objects.objects.keys()].filter((name) =>
+      name.includes(`/${runId}/${generation === undefined ? "" : `${generation}/`}`),
+    );
+  const chunkRows = (runId: string, generation: number) =>
+    db
+      .query<{ n: number }, [string, number]>(
+        "SELECT count(*) AS n FROM agent_session_snapshot_chunk WHERE run_id=? AND generation=?",
+      )
+      .get(runId, generation)!.n;
+
+  test("a second sealed snapshot discards the first and deletes its chunks", async () => {
+    const { sessions, access, run, runnerA } = await sealed();
+    expect(objectsOf(run.runId, 1)).toHaveLength(3);
+    work.finish(run.runId, 1);
+    const next = f.assign(run, runnerA, 2);
+    const second = Buffer.concat([full, tail, MARKER]);
+    await sessions.upload(next, chunk(2, 0, full));
+    // A newer snapshot still uploading does not discard the sealed one.
+    await sessions.prune();
+    expect(sessions.snapshot(run.runId, 1)?.status).toBe("sealed");
+    await sessions.upload(next, chunk(2, AGENT_SESSION_CHUNK_BYTES, Buffer.concat([tail, MARKER])));
+    await sessions.finish(next, finishFor(2, second));
+
+    expect(sessions.snapshot(run.runId, 1)?.status).toBe("discarded");
+    expect(chunkRows(run.runId, 1)).toBe(0);
+    expect(objectsOf(run.runId, 1)).toEqual([]);
+    expect(objects.deletes.filter((name) => name.includes(`/${run.runId}/1/`))).toHaveLength(3);
+    expect(sessions.snapshot(run.runId, 2)?.status).toBe("sealed");
+    expect(objectsOf(run.runId, 2)).toHaveLength(2);
+    expect(await collect(sessions.read({ ...next, generation: 2 }, 2))).toEqual(second);
+    // A discarded generation is never written or read again.
+    expect(() => sessions.read({ ...next, generation: 2 }, 1)).toThrow();
+    await expect(sessions.upload(access, chunk(1, 0, full))).rejects.toThrow();
+  });
+
+  test("an ended run leaves no sealed rows and no objects", async () => {
+    const runnerA = await f.enroll("a");
+    const sessions = createAgentSessions({ db, work, objects, key });
+    const runs = {
+      lost: f.startRun("lost"),
+      replaced: f.startRun("replaced"),
+      merged: f.startRun("merged"),
+      failed: f.startRun("failed"),
+      cancelled: f.startRun("cancelled"),
+      between: f.startRun("between"),
+    };
+    for (const run of Object.values(runs)) {
+      await seal(sessions, f.assign(run, runnerA, 1), 1);
+      work.finish(run.runId, 1);
+    }
+    db.run("UPDATE run SET status='lost' WHERE id=?", [runs.lost.runId]);
+    db.run("UPDATE run SET status='ended' WHERE id IN (?,?)", [
+      runs.replaced.runId,
+      runs.between.runId,
+    ]);
+    db.run("UPDATE work_item SET current_run_id=NULL WHERE id=?", [runs.replaced.itemId]);
+    for (const state of ["merged", "failed", "cancelled"] as const)
+      db.run("UPDATE work_item SET state=? WHERE id=?", [state, runs[state].itemId]);
+    await sessions.prune();
+
+    for (const name of ["lost", "replaced", "merged", "failed", "cancelled"] as const) {
+      const run = runs[name];
+      expect(sessions.snapshot(run.runId, 1)?.status).toBe("discarded");
+      expect(chunkRows(run.runId, 1)).toBe(0);
+      expect(objectsOf(run.runId)).toEqual([]);
+    }
+    // A restart ends the run between turns and keeps it as the item's run, so its latest
+    // snapshot stays until the item finishes.
+    expect(sessions.snapshot(runs.between.runId, 1)?.status).toBe("sealed");
+    expect(objectsOf(runs.between.runId)).toHaveLength(3);
+    db.run("UPDATE work_item SET state='completed' WHERE id=?", [runs.between.itemId]);
+    await sessions.prune();
+    expect(db.query("SELECT 1 FROM agent_session_snapshot WHERE status='sealed'").all()).toEqual(
+      [],
+    );
+    expect(objects.objects.size).toBe(0);
+  });
+
+  test("a startup sweep deletes objects left by an interrupted prune", async () => {
+    const { run } = await sealed();
+    // Paws stopped after discarding the row and before deleting any object.
+    db.run("UPDATE agent_session_snapshot SET status='discarded' WHERE run_id=?", [run.runId]);
+    expect(objectsOf(run.runId)).toHaveLength(3);
+    const restarted = createAgentSessions({ db, work, objects, key });
+    await restarted.prune();
+    expect(objectsOf(run.runId)).toEqual([]);
+    expect(chunkRows(run.runId, 1)).toBe(0);
+    expect(restarted.snapshot(run.runId, 1)?.status).toBe("discarded");
+  });
+
+  test("an upload that loses the race with a prune deletes its object", async () => {
+    const runnerA = await f.enroll("a");
+    const run = f.startRun("first");
+    const access = f.assign(run, runnerA, 1);
+    let sessions: Sessions;
+    const racing: AgentSessionObjects = {
+      async write(name, bytes) {
+        await objects.write(name, bytes);
+        db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [run.itemId]);
+        await sessions.prune();
+      },
+      read: (name) => objects.read(name),
+      delete: (name) => objects.delete(name),
+    };
+    sessions = createAgentSessions({ db, work, objects: racing, key });
+    await expect(sessions.upload(access, chunk(1, 0, full))).rejects.toThrow();
+    expect(sessions.snapshot(run.runId, 1)?.status).toBe("discarded");
+    expect(objects.objects.size).toBe(0);
+  });
+
+  test("a restore never selects a discarded snapshot", async () => {
+    const { sessions, run, runnerA } = await sealed();
+    const runnerB = await f.enroll("b");
+    const at = Date.now();
+    db.run(
+      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.43',?)",
+      [runnerB, at],
+    );
+    db.run(
+      "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',1,0)",
+      [runnerB],
+    );
+    db.run(
+      "INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(?,'claude','0.88.0','current',?)",
+      [runnerB, at],
+    );
+    const plan = () =>
+      planSessionRestore(db, { runId: run.runId, agent: "claude", targetRunnerId: runnerB });
+    expect(plan()).toMatchObject({ eligible: true, restoreSession: { generation: 1 } });
+
+    work.finish(run.runId, 1);
+    await seal(sessions, f.assign(run, runnerA, 2), 2);
+    expect(plan()).toMatchObject({ eligible: true, restoreSession: { generation: 2 } });
+
+    // The newest row discarded by an interrupted prune is skipped too.
+    db.run("UPDATE agent_session_snapshot SET status='discarded' WHERE run_id=? AND generation=2", [
+      run.runId,
+    ]);
+    expect(plan()).toEqual({ eligible: false, failure: "no_snapshot" });
   });
 });
 
@@ -519,6 +673,18 @@ describe("agent session storage on disk", () => {
     await expect(createLocalAgentSessionObjects(link).write("other", bytes)).rejects.toThrow();
     expect(() => createLocalAgentSessionObjects("relative")).toThrow();
   });
+
+  test("local objects delete their file, and a missing file or directory is not an error", async () => {
+    const dir = join(root, "agent-sessions");
+    const store = createLocalAgentSessionObjects(dir);
+    await store.delete("paws/agent-sessions/w/r/1/0-x");
+    await store.write("paws/agent-sessions/w/r/1/0-x", randomBytes(16));
+    await store.write("paws/agent-sessions/w/r/1/1-y", randomBytes(16));
+    await store.delete("paws/agent-sessions/w/r/1/0-x");
+    await store.delete("paws/agent-sessions/w/r/1/0-x");
+    expect(readdirSync(dir)).toHaveLength(1);
+    await expect(store.read("paws/agent-sessions/w/r/1/0-x")).rejects.toThrow();
+  });
 });
 
 describe("agent session storage in S3", () => {
@@ -539,6 +705,10 @@ describe("agent session storage in S3", () => {
         if (request.method === "PUT") {
           stored.set(path, new Uint8Array(await request.arrayBuffer()));
           return new Response(null, { status: 200, headers: { etag: '"fixture"' } });
+        }
+        if (request.method === "DELETE") {
+          stored.delete(path);
+          return new Response(null, { status: 204 });
         }
         const bytes = stored.get(path);
         if (request.method === "GET" && bytes) return new Response(bytes);
@@ -595,6 +765,12 @@ describe("agent session storage in S3", () => {
     requests.length = 0;
     expect(Buffer.from(await objects.read("earlier"))).toEqual(earlier);
     expect(requests).toEqual([]);
+
+    await objects.delete("earlier");
+    await objects.delete("remote");
+    await objects.delete("never-written");
+    expect(stored.has("/fixture-sessions/remote")).toBe(false);
+    await expect(local.read("earlier")).rejects.toThrow();
 
     chmodSync(join(root, "agent-sessions"), 0o755);
     await expect(objects.read("earlier")).rejects.toThrow("Unsafe agent session directory");

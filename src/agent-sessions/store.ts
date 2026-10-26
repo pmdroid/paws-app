@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { immediate } from "../db";
+import { journalCaught } from "../journal";
 import type { RunnerWork } from "../runner-work";
 import { agentSessionKeyId, openAgentSessionChunk, sealAgentSessionChunk } from "./key";
 import type { AgentSessionObjects } from "./objects";
@@ -38,6 +39,9 @@ export type AgentSessionSnapshot = {
   sealedAt: number | null;
 };
 type Chunk = { offset: number; sizeBytes: number; sha256: string; keyId: string };
+
+/** Chunks of discarded snapshots deleted per transaction. */
+const PRUNE_BATCH = 256;
 
 function hash(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -102,7 +106,10 @@ export function createAgentSessions(options: {
       refused();
     return row;
   }
-  function objectKey(row: AgentSessionSnapshot, chunk: { offset: number; sha256: string }) {
+  function objectKey(
+    row: Pick<AgentSessionSnapshot, "workspaceId" | "runId" | "generation">,
+    chunk: { offset: number; sha256: string },
+  ) {
     return `paws/agent-sessions/${row.workspaceId}/${row.runId}/${row.generation}/${chunk.offset}-${chunk.sha256}`;
   }
   function existing(runId: string, generation: number, offset: number) {
@@ -175,6 +182,82 @@ export function createAgentSessions(options: {
     return row;
   }
 
+  /**
+   * Marks snapshots a move can no longer use as `discarded` in one transaction, then deletes the
+   * objects of every discarded snapshot outside it. A run keeps only its latest sealed snapshot,
+   * and loses that once the run is lost, replaced by another run, or its work item is completed,
+   * merged, cancelled or failed. Rows stay `discarded` so a generation is never written again.
+   * Concurrent calls share one pass and run it again afterwards.
+   */
+  let pruning: Promise<void> | undefined;
+  let pruneAgain = false;
+  async function prunePass() {
+    immediate(db, () =>
+      db.run(
+        `UPDATE agent_session_snapshot SET status='discarded' WHERE status<>'discarded' AND (
+          EXISTS(SELECT 1 FROM agent_session_snapshot newer
+            WHERE newer.run_id=agent_session_snapshot.run_id
+              AND newer.generation>agent_session_snapshot.generation AND newer.status='sealed')
+          OR EXISTS(SELECT 1 FROM run r WHERE r.id=agent_session_snapshot.run_id AND (
+            r.status='lost' OR (r.status='ended' AND NOT EXISTS(
+              SELECT 1 FROM work_item w WHERE w.id=r.item_id AND w.current_run_id=r.id))))
+          OR EXISTS(SELECT 1 FROM work_item w WHERE w.id=agent_session_snapshot.item_id
+            AND w.state IN ('completed','merged','cancelled','failed')))`,
+      ),
+    );
+    for (;;) {
+      const chunks = db
+        .query<
+          {
+            runId: string;
+            generation: number;
+            workspaceId: string;
+            offset: number;
+            sha256: string;
+          },
+          [number]
+        >(
+          `SELECT c.run_id AS runId,c.generation,s.workspace_id AS workspaceId,c.offset,c.sha256
+          FROM agent_session_snapshot_chunk c JOIN agent_session_snapshot s
+            ON s.run_id=c.run_id AND s.generation=c.generation
+          WHERE s.status='discarded' LIMIT ?`,
+        )
+        .all(PRUNE_BATCH);
+      if (!chunks.length) return;
+      for (const chunk of chunks)
+        await objects.delete(
+          objectKey(
+            { workspaceId: chunk.workspaceId, runId: chunk.runId, generation: chunk.generation },
+            chunk,
+          ),
+        );
+      immediate(db, () => {
+        for (const chunk of chunks)
+          db.run(
+            "DELETE FROM agent_session_snapshot_chunk WHERE run_id=? AND generation=? AND offset=?",
+            [chunk.runId, chunk.generation, chunk.offset],
+          );
+      });
+    }
+  }
+  async function prune(): Promise<void> {
+    if (pruning) {
+      pruneAgain = true;
+      return pruning;
+    }
+    pruning = (async () => {
+      try {
+        do {
+          pruneAgain = false;
+          await prunePass();
+        } while (pruneAgain);
+      } finally {
+        pruning = undefined;
+      }
+    })();
+    return pruning;
+  }
+
   return {
     snapshot,
     async upload(access: Access, raw: AgentSessionChunk) {
@@ -214,25 +297,35 @@ export function createAgentSessions(options: {
       } catch {
         unavailable();
       }
-      return immediate(db, () => {
-        const current = check();
-        if (!current.previous) {
-          db.run("INSERT INTO agent_session_snapshot_chunk VALUES(?,?,?,?,?,?)", [
-            access.runId,
-            chunk.generation,
-            chunk.offset,
-            bytes.length,
-            chunk.sha256,
-            keyId,
-          ]);
-          db.run("UPDATE agent_session_snapshot SET size_bytes=? WHERE run_id=? AND generation=?", [
-            chunk.offset + bytes.length,
-            access.runId,
-            chunk.generation,
-          ]);
-        }
-        return { offset: chunk.offset + bytes.length, duplicate: !!current.previous };
-      });
+      try {
+        return immediate(db, () => {
+          const current = check();
+          if (!current.previous) {
+            db.run("INSERT INTO agent_session_snapshot_chunk VALUES(?,?,?,?,?,?)", [
+              access.runId,
+              chunk.generation,
+              chunk.offset,
+              bytes.length,
+              chunk.sha256,
+              keyId,
+            ]);
+            db.run(
+              "UPDATE agent_session_snapshot SET size_bytes=? WHERE run_id=? AND generation=?",
+              [chunk.offset + bytes.length, access.runId, chunk.generation],
+            );
+          }
+          return { offset: chunk.offset + bytes.length, duplicate: !!current.previous };
+        });
+      } catch (error) {
+        // A prune discarded the snapshot while the chunk was being written; nothing references it.
+        if (snapshot(access.runId, chunk.generation)?.status === "discarded")
+          await objects
+            .delete(objectKey(initial.row, chunk))
+            .catch((caught: unknown) =>
+              journalCaught(caught, "agent-sessions.upload.delete", null),
+            );
+        throw error;
+      }
     },
     async finish(access: Access, raw: AgentSessionFinish) {
       const finish = AgentSessionFinishSchema.parse(raw);
@@ -253,7 +346,7 @@ export function createAgentSessions(options: {
         total += bytes.length;
       }
       if (total !== finish.sizeBytes || digest.digest("hex") !== finish.sha256) refused();
-      return immediate(db, () => {
+      const sealed = immediate(db, () => {
         const row = check();
         if (row.status === "sealed") return receipt(row);
         db.run(
@@ -277,7 +370,13 @@ export function createAgentSessions(options: {
         );
         return receipt(snapshot(access.runId, finish.generation)!);
       });
+      // The seal stands even if the prune fails; the coordinator's sweep retries it.
+      await prune().catch((error: unknown) =>
+        journalCaught(error, "agent-sessions.finish.prune", null),
+      );
+      return sealed;
     },
+    prune,
     /**
      * Decrypted chunks of a sealed snapshot for the runner that holds the run's current grant
      * (`access.generation`). Access is checked before the first chunk and again before each one.

@@ -19,6 +19,8 @@ import { AGENT_SESSION_OBJECT_MAX_BYTES } from "./schema";
 export interface AgentSessionObjects {
   write(key: string, bytes: Uint8Array): Promise<void>;
   read(key: string): Promise<Uint8Array>;
+  /** Removes a chunk; a missing one is not an error. */
+  delete(key: string): Promise<void>;
 }
 
 /** Chunks under `~/.paws/agent-sessions`: an owner-only 0700 directory of 0600 files, no links. */
@@ -103,6 +105,22 @@ export function createLocalAgentSessionObjects(root: string): AgentSessionObject
         closeSync(rootFd);
       }
     },
+    async delete(key) {
+      const filename = name(key);
+      let rootFd: number;
+      try {
+        rootFd = directory();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      try {
+        rmSync(`/proc/self/fd/${rootFd}/${filename}`, { force: true });
+        fsyncSync(rootFd);
+      } finally {
+        closeSync(rootFd);
+      }
+    },
   };
 }
 
@@ -130,12 +148,15 @@ export function createS3AgentSessionObjects(options: {
       }
       return Buffer.concat(parts);
     },
+    async delete(key) {
+      await options.client.file(key).delete();
+    },
   };
 }
 
 /**
  * Writes go to `remote`. Reads use the local chunk when one exists, so snapshots sealed before
- * S3 was configured still restore.
+ * S3 was configured still restore. Deletes remove the chunk from both.
  */
 export function withLocalAgentSessionFallback(
   local: AgentSessionObjects,
@@ -151,15 +172,21 @@ export function withLocalAgentSessionFallback(
         return remote.read(key);
       }
     },
+    async delete(key) {
+      await local.delete(key);
+      await remote.delete(key);
+    },
   };
 }
 
 export function createFakeAgentSessionObjects() {
   const objects = new Map<string, Uint8Array>();
   const writes: string[] = [];
+  const deletes: string[] = [];
   return {
     objects,
     writes,
+    deletes,
     async write(key: string, bytes: Uint8Array) {
       objects.set(key, new Uint8Array(bytes));
       writes.push(key);
@@ -169,5 +196,13 @@ export function createFakeAgentSessionObjects() {
       if (!bytes) throw new Error("Agent session object missing");
       return new Uint8Array(bytes);
     },
-  } satisfies AgentSessionObjects & { objects: Map<string, Uint8Array>; writes: string[] };
+    async delete(key: string) {
+      objects.delete(key);
+      deletes.push(key);
+    },
+  } satisfies AgentSessionObjects & {
+    objects: Map<string, Uint8Array>;
+    writes: string[];
+    deletes: string[];
+  };
 }
