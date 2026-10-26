@@ -11,6 +11,7 @@ import {
   enqueueOutbox,
   enterMergeQueue,
   finishCloseoutProgress,
+  insertLinkAsk,
   insertQueuedItem,
   LINEAR_WEBHOOK_FIX,
   joinMergeQueue,
@@ -20,6 +21,8 @@ import {
   putWorkspaceUser,
   recordCiRound,
   recordConfirmedRemoteMerge,
+  saveCloseoutBypassChecks,
+  saveCloseoutRecovery,
   saveEvidence,
   saveTaskMode,
   saveTaskBlocks,
@@ -535,6 +538,51 @@ describe("live status provider", () => {
         title: "Closeout needs your help.",
       }),
     ]);
+  });
+
+  test("a bypass link ask carries its failed checks and the policy it binds to", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const head = "7f65200aa1b2c3d4";
+    const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", now });
+    beginImplementRun(db, item.id, now);
+    applyWorkItemEvent(db, item.id, "blocking_question");
+    db.run(
+      "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-bypass', ?, 'ses_1', 'link', 'Closeout needs your decision', 'open', ?)",
+      [item.id, now],
+    );
+    insertLinkAsk(db, {
+      questionId: "q-bypass",
+      itemId: item.id,
+      kind: "bypass",
+      headCommit: head,
+      link: "https://paws.example/status/issues/ENG-3#closeout",
+      title: "Closeout needs your decision on 7f65200.",
+      detail: "Closeout stopped on 7f65200: 1 check failed (test).",
+      answerers: ["delegator"],
+      createdAt: now,
+    });
+    saveCloseoutRecovery(db, {
+      questionId: "q-bypass",
+      taskId: "ENG-3",
+      itemId: item.id,
+      base: "base",
+      head,
+      policyDigest: "sha256:0eadf4c",
+      failedChecks: ["test"],
+      retryBaseline: [],
+      summary: "Closeout: exhausted",
+    });
+    saveCloseoutBypassChecks(db, "q-bypass", [
+      { id: "test", kind: "command", state: "exhausted", attempt: 3, message: "exited 1" },
+    ]);
+    expect(createLiveStatusProvider(db).snapshot().questions[0]?.linkAsk?.bypass).toEqual({
+      policyDigest: "sha256:0eadf4c",
+      passed: [],
+      checks: [
+        { id: "test", kind: "command", state: "exhausted", attempt: 3, finding: "exited 1" },
+      ],
+    });
   });
 
   test("the merge queue lists each repository's tasks in order, with what each waits for", () => {

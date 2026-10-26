@@ -45,7 +45,7 @@ export {
   type RepositoryBinding,
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
-export { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
+export { askCloseoutHelp, type CloseoutHelp, type CloseoutHelpCheck } from "./closeout-help";
 export { questionEffects } from "./question-effects";
 
 export {
@@ -86,5 +86,8 @@ export {
   linkAskAvailable,
   linkAskUrl,
   remindLinkAsk,
+  reverifyBypassed,
+  BYPASS_REPLY_NOTE,
+  type LinkAskBypass,
   type LinkAskEffects,
 } from "./link-ask";

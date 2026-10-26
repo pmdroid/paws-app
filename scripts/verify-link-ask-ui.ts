@@ -1,6 +1,6 @@
 import { statusFixture } from "../src/web/test/fixtures";
-// The overview's Needs you list with the four kinds of link asks, and the bypass card on the
-// issue page, against the real status handler.
+// The overview's Needs you list with the four kinds of link asks, and the "Closeout needs your
+// help" card on the issue page, against the real status handler.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-link-ask-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
@@ -45,14 +45,14 @@ const linkAsk = (
     link: `https://paws.example/status/issues/${itemId}#${anchor}`,
   },
 });
-snapshot.questions = [
+const questions = [
   linkAsk(
     "Q-50",
     "ENG-103",
     "bypass",
     "7f65200aa1",
     "Closeout needs your decision on 7f65200.",
-    "independent-review failed (P1, docs/smoke-test.md). 7 other checks passed.",
+    "Closeout stopped on 7f65200: 1 check failed (independent-review). Bypass a failed check for this commit with a reason, send the agent guidance, or stop.",
     "closeout",
   ),
   linkAsk(
@@ -83,6 +83,24 @@ snapshot.questions = [
     "question",
   ),
 ];
+questions[0]!.linkAsk = {
+  ...questions[0]!.linkAsk,
+  bypass: {
+    policyDigest: "sha256:0eadf4c9d1e2f3",
+    passed: ["install", "lint", "format", "typecheck", "test", "build-status", "links"],
+    checks: [
+      {
+        id: "independent-review",
+        kind: "review",
+        state: "failed",
+        attempt: 1,
+        finding:
+          "docs/smoke-test.md: Recorded runs\nThe required live smoke runs remain incomplete. The fake-based rehearsal cannot verify Linear rendering, GitHub webhook delivery or live merge behaviour.",
+      },
+    ],
+  },
+};
+snapshot.questions = questions;
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -126,10 +144,24 @@ try {
       await page.getByRole("link", { name: /^Review bypass/ }).click();
       await expect(page).toHaveURL(/\/status\/issues\/ENG-103#closeout$/);
       const card = page.locator("#closeout");
-      await expect(card.getByRole("heading", { name: "Closeout bypass" })).toBeVisible();
-      await expect(card.getByRole("button", { name: "Bypass" })).toBeVisible();
-      await expect(card.getByRole("button", { name: "Send guidance" })).toBeVisible();
-      await card.screenshot({ path: join(directory, `bypass-card-${scheme}-${width}.png`) });
+      await expect(card.getByRole("heading", { name: "Closeout needs your help" })).toBeVisible();
+      await expect(card.getByRole("checkbox", { name: /independent-review/ })).toBeChecked();
+      await card
+        .getByLabel("Why bypass independent-review?")
+        .fill("The live smoke run cannot run from a runner and moved to PAS-744.");
+      await expect(
+        card.getByRole("button", { name: "Bypass 1 check for 7f65200 and re-verify" }),
+      ).toBeEnabled();
+      await expect(card.getByRole("button", { name: "Send guidance instead" })).toBeVisible();
+      await expect(card.getByText("Stop", { exact: true })).toBeVisible();
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+        .toBe(true);
+      await page.evaluate(() => scrollTo(0, 0));
+      await page.screenshot({
+        path: join(directory, `closeout-help-${scheme}-${width}.png`),
+        fullPage: true,
+      });
       await page.close();
     }
   expect(errors).toEqual([]);
