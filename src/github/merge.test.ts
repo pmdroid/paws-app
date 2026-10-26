@@ -352,6 +352,52 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
     }
   });
 
+  for (const scenario of ["CI failing", "a review thread opening"] as const)
+    test(`${scenario} on the read just before the squash stops the merge`, async () => {
+      const repo = await oneClone();
+      try {
+        await commitFile(repo.work, "file.txt", "candidate\n");
+        let merges = 0;
+        let reads = 0;
+        const client = mergingClient(repo.bare, [], () => {
+          merges += 1;
+          return null;
+        });
+        const changing: GitHubClient = {
+          async request(req) {
+            const head = req.path === "/graphql" ? readinessHead(req) : undefined;
+            if (head === undefined) return client.request(req);
+            reads += 1;
+            const body = fakeMergeReadiness(head);
+            if (reads > 1 && scenario === "CI failing")
+              body.data.repository.object.statusCheckRollup.contexts.nodes = [
+                { name: "ci", conclusion: "FAILURE" },
+              ];
+            if (reads > 1 && scenario === "a review thread opening")
+              body.data.repository.pullRequest.reviewThreads = {
+                nodes: [{ isResolved: false }],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              };
+            return { status: 200, body };
+          },
+        };
+        const input = { ...lane(repo, changing, 8), sleep: async () => {} };
+        const read = await readPullFacts(input);
+        if (read.kind !== "facts") throw new Error("facts were not read");
+        expect(read.readiness.outcome).toBe("ready");
+        const result = await squashPull(input, read, "accepted");
+        expect(merges).toBe(0);
+        expect(result).toMatchObject({ merged: false, outcome: "blocked", head: read.head });
+        expect(result.readiness).toMatchObject(
+          scenario === "CI failing"
+            ? { outcome: "ci_failed", failedChecks: [{ name: "ci" }] }
+            : { outcome: "pending", unresolvedThreads: 1 },
+        );
+      } finally {
+        await repo.cleanup();
+      }
+    });
+
   test("a stop before the squash merges nothing", async () => {
     const repo = await oneClone();
     try {
