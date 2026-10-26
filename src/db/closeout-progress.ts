@@ -298,6 +298,18 @@ export function latestCloseoutIdentity(
     .get(itemId);
 }
 
+/** The policy digest of the latest Closeout run on `head`, or null when none was recorded. */
+export function closeoutPolicyDigest(db: Database, itemId: string, head: string): string | null {
+  return (
+    db
+      .query<{ policyDigest: string }, [string, string]>(
+        `SELECT policy_digest AS policyDigest FROM closeout_progress
+         WHERE item_id = ? AND head = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
+      )
+      .get(itemId, head)?.policyDigest ?? null
+  );
+}
+
 export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
   const runs = db
     .query<ProgressSql, []>("SELECT * FROM closeout_progress ORDER BY updated_at, id")

@@ -195,6 +195,7 @@ export {
   ensureCloseoutProgress,
   finishCloseoutProgress,
   latestCloseoutIdentity,
+  closeoutPolicyDigest,
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,

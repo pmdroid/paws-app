@@ -112,6 +112,8 @@ export type Readiness = {
   failedChecks?: FailedCheck[];
   /** Every check on the head, set when CI failed. */
   checks?: CiCheck[];
+  /** Set when CI is green and only unresolved review threads hold the merge. */
+  unresolvedThreads?: number;
 };
 
 /** Conclusions and states that fail the pull request. Anything else that is not green waits. */
@@ -272,7 +274,11 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
     if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;
     return unresolved > 0
-      ? { outcome: "pending", message: `Waiting for ${unresolved} unresolved review thread(s).` }
+      ? {
+          outcome: "pending",
+          message: `Waiting for ${unresolved} unresolved review thread(s).`,
+          unresolvedThreads: unresolved,
+        }
       : { outcome: "ready", message: "CI passed and all review threads are resolved" };
   } catch (error) {
     if (error instanceof Error && LINEAR_WAIT.test(error.message))
