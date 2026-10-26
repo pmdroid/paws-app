@@ -160,6 +160,10 @@ async function handle(message: {
     return;
   }
 
+  if (message.method === "session/new" || message.method === "session/load") {
+    if (typeof message.params?.cwd === "string") state.sessionCwd = message.params.cwd;
+  }
+
   if (message.method === "session/new") {
     const servers = Array.isArray(message.params?.mcpServers) ? message.params.mcpServers : [];
     state.mcpServers = servers.map((server) => {
