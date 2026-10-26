@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isTransientFailure, retryAfterMs } from "../src/core";
+import { isTransient, retryAfterMs } from "../src/core";
 import { createLinearClient } from "../src/linear";
 
 const token = "synthetic-linear-token";
@@ -136,17 +136,17 @@ describe("Linear HTTP failures", () => {
         (error: unknown) => error,
       );
 
-  test.each([502, 503, 504])("HTTP %d is a temporary failure", async (status) => {
+  test.each([500, 502, 503, 504, 599])("HTTP %d is a temporary failure", async (status) => {
     const error = await failing(status);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(`Linear GraphQL HTTP ${status}`);
-    expect(isTransientFailure(error)).toBe(true);
+    expect(isTransient(error)).toBe(true);
   });
 
   test("HTTP 400 is not a temporary failure", async () => {
     const error = await failing(400);
     expect(error).toBeInstanceOf(Error);
-    expect(isTransientFailure(error)).toBe(false);
+    expect(isTransient(error)).toBe(false);
   });
 
   test("Retry-After on a 503 becomes the retry delay", async () => {

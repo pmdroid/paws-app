@@ -78,7 +78,7 @@ export function createLinearClient(options: {
             ? first["message"]
             : "request failed";
       }
-      if (message !== null && message.startsWith("Entity not found: "))
+      if (response.status < 500 && message !== null && message.startsWith("Entity not found: "))
         throw new LinearEntityNotFoundError(message);
       if (!response.ok) {
         const detail = message !== null ? `: ${message}` : "";
@@ -147,8 +147,14 @@ export class LinearEntityNotFoundError extends Error {
 export class LinearHttpError extends Error {
   readonly status: number;
   readonly retryAfterMs: number | undefined;
-  constructor(status: number, detail: string, headers: Headers, now = Date.now()) {
-    super(`Linear GraphQL HTTP ${status}${detail}`);
+  constructor(
+    status: number,
+    detail: string,
+    headers: Headers,
+    now = Date.now(),
+    message?: string,
+  ) {
+    super(message ?? `Linear GraphQL HTTP ${status}${detail}`);
     this.name = "LinearHttpError";
     this.status = status;
     this.retryAfterMs = resetRetryMs(headers, now) ?? undefined;

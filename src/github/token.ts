@@ -1,3 +1,4 @@
+import { isTransient } from "../core";
 import type { GitHubApp, InstallationToken, MintTokenInput } from "./app";
 import { signAppJwt } from "./jwt";
 import {
@@ -52,20 +53,13 @@ export async function mintInstallationToken(input: {
 }
 
 function mintFailure(response: GitHubResponse): GitHubTokenError {
-  const message = (response.body as { message?: unknown } | null)?.message;
-  const rateLimited =
-    response.status === 429 ||
-    (response.status === 403 && typeof message === "string" && /rate limit/i.test(message));
-  if (!rateLimited) {
-    return new GitHubTokenError(
-      `installation token request failed with status ${response.status}`,
-      response,
-    );
-  }
-  return new GitHubTokenError(
-    `installation token request was rate limited by GitHub (status ${response.status})`,
-    { status: 429, retryAfterMs: response.retryAfterMs },
+  const error = new GitHubTokenError(
+    `installation token request failed with status ${response.status}`,
+    response,
   );
+  if (response.status < 500 && isTransient(error))
+    error.message = `installation token request was rate limited by GitHub (status ${response.status})`;
+  return error;
 }
 
 export function assertScopedToken(

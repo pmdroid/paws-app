@@ -1,4 +1,5 @@
-import type { GitHubClient, GitHubResponse } from "./types";
+import { isTransient } from "../core";
+import { GitHubHttpError, type GitHubClient, type GitHubResponse } from "./types";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -28,13 +29,15 @@ export function createFetchGitHubClient(
         try {
           parsed = JSON.parse(text);
         } catch {
-          parsed = { message: "non-json response" };
+          parsed = text;
         }
       }
       const retryAfterMs = retryAfterHeaderMs(response.headers.get("retry-after"));
-      return retryAfterMs === undefined
-        ? { status: response.status, body: parsed }
-        : { status: response.status, body: parsed, retryAfterMs };
+      return checkedResponse(
+        retryAfterMs === undefined
+          ? { status: response.status, body: parsed }
+          : { status: response.status, body: parsed, retryAfterMs },
+      );
     },
   };
 }
@@ -68,11 +71,25 @@ async function requestText(
   if (response.status >= 300 && response.status < 400 && location) {
     await response.body?.cancel();
     const target = await fetchImpl(location, { method: "GET", signal });
-    return { status: target.status, body: await target.text() };
+    return checkedResponse({
+      status: target.status,
+      body: await target.text(),
+      retryAfterMs: retryAfterHeaderMs(target.headers.get("retry-after")),
+    });
   }
-  return { status: response.status, body: await response.text() };
+  return checkedResponse({
+    status: response.status,
+    body: await response.text(),
+    retryAfterMs: retryAfterHeaderMs(response.headers.get("retry-after")),
+  });
 }
 
 export function repoApiPath(owner: string, repo: string, suffix: string): string {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${suffix}`;
+}
+
+function checkedResponse(response: GitHubResponse): GitHubResponse {
+  const error = new GitHubHttpError(response);
+  if (isTransient(error)) throw error;
+  return response;
 }

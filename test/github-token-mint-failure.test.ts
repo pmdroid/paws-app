@@ -1,7 +1,12 @@
 import { generateKeyPairSync } from "node:crypto";
 import { expect, test } from "bun:test";
-import { isTransientFailure, transientRetryDelayMs } from "../src/core";
-import { GitHubTokenError, createFetchGitHubClient, mintInstallationToken } from "../src/github";
+import { isTransient, transientRetryDelayMs } from "../src/core";
+import {
+  GitHubHttpError,
+  GitHubTokenError,
+  createFetchGitHubClient,
+  mintInstallationToken,
+} from "../src/github";
 
 const { privateKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -30,10 +35,10 @@ async function mintAgainst(status: number, message: string, headers: Record<stri
 
 test("a 429 token mint is transient and keeps GitHub's retry-after", async () => {
   const error = await mintAgainst(429, "API rate limit exceeded", { "retry-after": "90" });
-  expect(error).toBeInstanceOf(GitHubTokenError);
+  expect(error).toBeInstanceOf(GitHubHttpError);
   expect(error).toMatchObject({ status: 429, retryAfterMs: 90_000 });
   expect((error as Error).message).toMatch(/rate limit/);
-  expect(isTransientFailure(error)).toBe(true);
+  expect(isTransient(error)).toBe(true);
   expect(transientRetryDelayMs(0, error, 10)).toBe(90_000);
 });
 
@@ -45,7 +50,7 @@ test("a 403 secondary rate limit on the token mint is transient", async () => {
   );
   expect(error).toMatchObject({ retryAfterMs: 60_000 });
   expect((error as Error).message).toMatch(/rate limit/);
-  expect(isTransientFailure(error)).toBe(true);
+  expect(isTransient(error)).toBe(true);
 });
 
 test.each([
@@ -55,5 +60,5 @@ test.each([
   const error = await mintAgainst(status, message);
   expect(error).toBeInstanceOf(GitHubTokenError);
   expect(error).toMatchObject({ status });
-  expect(isTransientFailure(error)).toBe(false);
+  expect(isTransient(error)).toBe(false);
 });
