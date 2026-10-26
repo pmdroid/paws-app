@@ -1,10 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   JOB_KIND,
   delegationHasOpenWork,
   holdsExecution,
-  isBlockerSatisfied,
   isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
@@ -14,8 +13,6 @@ import {
   enqueueJob,
   enqueueJobOnce,
   enqueueOutboxOnce,
-  getTaskMode,
-  getConfirmedRemoteMerge,
   immediate,
   mergeLaneSql,
   requeueOrphanedWork,
@@ -25,7 +22,7 @@ import {
   type JobLoop,
   runnerLeaseCutoff,
 } from "../db";
-import { readyItems } from "../intake";
+import { openDependencyBlockers, readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
 
 const TICK = "scheduler.tick";
@@ -94,23 +91,51 @@ function holdLine(hold: ItemHold): string {
 }
 
 function openBlockers(db: Database, item: Item): string[] {
-  return db
-    .query<{ id: string; identifier: string; state: WorkItemState }, [string]>(
-      `SELECT i.id,i.linear_identifier AS identifier,i.state FROM task_block b
-       JOIN work_item i ON i.id=(SELECT c.id FROM work_item c WHERE c.linear_issue_id=b.blocker_linear_issue_id
-         ORDER BY c.created_at DESC,c.id DESC LIMIT 1)
-       WHERE b.blocked_linear_issue_id=? AND i.linear_identifier IS NOT NULL ORDER BY i.position,i.id`,
-    )
-    .all(item.issueId)
-    .filter(
-      (blocker) =>
-        !isBlockerSatisfied({
-          ...blocker,
-          mode: getTaskMode(db, blocker.id),
-          mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
-        }),
-    )
-    .map((blocker) => blocker.identifier);
+  const workspaceId =
+    item.workspaceId ??
+    db
+      .query<{ id: string }, [string]>(
+        `SELECT w.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
+     JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE i.id=?`,
+      )
+      .get(item.id)?.id;
+  return workspaceId ? openDependencyBlockers(db, { itemId: item.id, workspaceId }) : [];
+}
+
+function reportHolds(
+  db: Database,
+  holds: readonly ItemHold[],
+  sessionFor: (id: string) => string | null,
+  now: number,
+): void {
+  for (const hold of holds) {
+    if (!["blocked", "slot", "cap"].includes(hold.reason)) continue;
+    const sessionId = sessionFor(hold.itemId);
+    if (!sessionId) continue;
+    const recorded = db
+      .query<{ session: string | null }, [string]>(
+        "SELECT response_session_id AS session FROM item_hold WHERE item_id=?",
+      )
+      .get(hold.itemId);
+    if (recorded?.session === sessionId) continue;
+    const body =
+      hold.reason === "blocked"
+        ? `Waiting: ${holdLine(hold)}. I'll start on my own when the blockers finish.`
+        : hold.reason === "slot"
+          ? "Queued: every runner slot you can use is busy. I'll start when one frees up."
+          : "Queued: you already run the most tasks at once. I'll start when one finishes.";
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      // A hold ends Linear's active phase, but must not fence out subsequent start activity.
+      delivery: "ordered",
+      idempotencyKey: `hold:${hold.itemId}:${randomUUID()}`,
+      payload: { itemId: hold.itemId, sessionId, kind: "response", body },
+      now,
+    });
+    db.run("UPDATE item_hold SET response_session_id=? WHERE item_id=?", [sessionId, hold.itemId]);
+  }
 }
 
 export function schedulerPaths(paths: readonly string[]): string[] {
@@ -574,6 +599,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         ? `item ${name} held: ${holdLine(change.held)}`
         : `item ${name} no longer held`;
     });
+    reportHolds(db, holds, options.sessionFor ?? ((id) => byId.get(id)?.sessionId ?? null), now);
     return {
       admitted,
       waiting: waiting.map(({ item }) => item.id),

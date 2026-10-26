@@ -26,6 +26,7 @@ import {
   isMergeReadiness,
   repoLayout,
 } from "./e2e-harness";
+import { dispatch } from "../src/scheduler";
 import { workspaceAdmission } from "./fake-workspace";
 
 const exec = promisify(execFile);
@@ -87,6 +88,7 @@ function linearServer() {
     priority: 0,
   };
   const page = { pageInfo: { hasNextPage: false, endCursor: null } };
+  const activities: { agentSessionId: string; content: { type: string; body?: string } }[] = [];
   const counts = new Map<string, number>();
   const answer = (operation: string, variables: Record<string, unknown>): unknown => {
     switch (operation) {
@@ -220,6 +222,7 @@ function linearServer() {
   };
   return {
     counts,
+    activities,
     async fetch(url: string | URL | Request, init?: RequestInit): Promise<Response> {
       if (!String(url).includes("api.linear.app")) return new Response(null, { status: 200 });
       const { query, variables } = JSON.parse(String(init?.body)) as {
@@ -231,6 +234,8 @@ function linearServer() {
       const key = `${itemId === undefined ? "-" : "item"} ${caller} ${operation}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
 
+      if (operation === "AgentActivityCreate" || operation === "AgentActivityWithSessionUpdate")
+        activities.push(variables["input"] as (typeof activities)[number]);
       return Response.json({ data: answer(operation, variables ?? {}) });
     },
   };
@@ -297,6 +302,7 @@ function write(worktree: string, file: string, content = `${file}\n`): Steps[num
 async function runTask(input: {
   policy: string;
   rounds: ((worktree: string, round: number) => Steps)[];
+  blockedHold?: boolean;
   ciPendingPolls?: number;
   mainMovesAtPoll?: number;
 }) {
@@ -369,9 +375,18 @@ async function runTask(input: {
       env: process.env,
     };
   };
+  let holding = input.blockedHold ?? false;
+  const baseAdmission = workspaceAdmission(db);
+  const admission = {
+    ...baseAdmission,
+    canStart: (id: string) => {
+      const start = baseAdmission.canStart(id);
+      return start.ok && holding ? { ok: false as const, held: "blocked" as const } : start;
+    },
+  };
   orchestrator = attachOrchestrator({
     db,
-    admission: workspaceAdmission(db),
+    admission,
     jobs,
     outbox,
     clock,
@@ -438,6 +453,27 @@ async function runTask(input: {
       },
       "created-delivery",
     );
+    if (input.blockedHold) {
+      const tick = () => dispatch(db, { admission, now: clock.now(), sessionFor: () => "session" });
+      tick();
+      while (outbox.tick().length > 0) await outbox.idle();
+      const writes = [...server.counts]
+        .filter(([key]) => key.endsWith("AgentActivityCreate"))
+        .reduce((sum, [, n]) => sum + n, 0);
+      expect(server.activities.filter((a) => a.content.type === "response")).toHaveLength(1);
+      for (let i = 0; i < 3; i++) {
+        clock.advance(60_000);
+        tick();
+        while (outbox.tick().length > 0) await outbox.idle();
+      }
+      expect(
+        [...server.counts]
+          .filter(([key]) => key.endsWith("AgentActivityCreate"))
+          .reduce((sum, [, n]) => sum + n, 0),
+      ).toBe(writes);
+      holding = false;
+      tick();
+    }
     const deadline = Date.now() + 20_000;
     while (!["merged", "failed", "exhausted"].includes(state() ?? "")) {
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
@@ -481,6 +517,8 @@ async function runTask(input: {
       perCaller[caller!] = (perCaller[caller!] ?? 0) + count;
     }
     return {
+      activities: server.activities,
+      sessions: db.query("SELECT session_id FROM linear_session").all(),
       state: state(),
       asked,
       polls,
@@ -568,4 +606,25 @@ test("Linear requests while CI is pending and main moves before the merge", asyn
     "session-read": 1,
     "task-access": 7,
   });
+});
+
+test("a blocked hold adds one write and starts again in its original session within 30 requests", async () => {
+  const result = await runTask({
+    policy: POLICY_WITHOUT_CHECKS,
+    blockedHold: true,
+    rounds: [(worktree) => [write(worktree, "ok.txt", "ok\n")]],
+  });
+  expect(result.state, result.operations).toBe("merged");
+  expect(result.total, result.operations).toBeLessThanOrEqual(30);
+  expect(result.sessions).toEqual([{ session_id: "session" }]);
+  expect(result.activities.every((a) => a.agentSessionId === "session")).toBe(true);
+  const held = result.activities.findIndex(
+    (a) => a.content.type === "response" && a.content.body?.startsWith("Waiting:"),
+  );
+  expect(held).toBeGreaterThanOrEqual(0);
+  expect(
+    result.activities
+      .slice(held + 1)
+      .some((a) => a.content.type === "thought" || a.content.type === "action"),
+  ).toBe(true);
 });

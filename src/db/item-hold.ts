@@ -35,7 +35,7 @@ export function saveItemHolds(db: Database, holds: readonly ItemHold[]): ItemHol
     if (old?.reason === hold.reason && JSON.stringify(old.blockers) === blockers) continue;
     db.run(
       `INSERT INTO item_hold(item_id,reason,blockers) VALUES(?,?,?)
-       ON CONFLICT(item_id) DO UPDATE SET reason=excluded.reason,blockers=excluded.blockers`,
+       ON CONFLICT(item_id) DO UPDATE SET reason=excluded.reason,blockers=excluded.blockers,response_session_id=NULL`,
       [hold.itemId, hold.reason, blockers],
     );
     changes.push({ itemId: hold.itemId, held: hold });

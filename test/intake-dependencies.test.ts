@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { bindLinearSessionTask, listTaskBlockers, recordLinearInstallation } from "../src/db";
 import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
+import { dispatch } from "../src/scheduler";
 import { tempDb } from "./helpers";
 import { probeDependencySnapshots } from "./local/intake-dependencies";
 
@@ -256,12 +257,27 @@ test("a held item tells Linear which blockers it waits for, once", async () => {
       });
     await refresh();
     await refresh();
+    dispatch(db, { now: 1001 });
+    dispatch(db, { now: 1002 });
     const waiting = db
       .query<{ payload: string }, []>("SELECT payload FROM outbox WHERE op='activity'")
       .all()
-      .map((row) => JSON.parse(row.payload) as { sessionId: string; kind: string; body: string });
+      .map(
+        (row) =>
+          JSON.parse(row.payload) as {
+            itemId: string;
+            sessionId: string;
+            kind: string;
+            body: string;
+          },
+      );
     expect(waiting).toEqual([
-      { sessionId: "session", kind: "thought", body: "Waiting for DEP-3 before starting." },
+      {
+        itemId: target.itemId,
+        sessionId: "session",
+        kind: "response",
+        body: "Waiting: blocked by DEP-3. I'll start on my own when the blockers finish.",
+      },
     ]);
   } finally {
     db.close();
