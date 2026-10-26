@@ -163,7 +163,15 @@ Then check the edges on fresh issues delegated by another new user:
 - Open an old `/auth/linear?assignment=…` link. It answers 410.
 - Open the `/onboard/<link id>` address eleven times in a minute. The eleventh answers 429 with `Retry-After`, and Linear shows nothing new.
 
-Keep each session, the onboarding page at each step, the pull request and the run page. Publish a screenshot of each session state (sign-in action, no runner, starting, merged) and of each onboarding page step on the PAS issue for the run, and link the merged pull request. For the whole run, `/health` should count no more than 30 Linear requests under the issue.
+Record the run on the PAS issue for it and on its pull request:
+
+1. A screenshot of the Linear session at each state, as listed in [Linear agent sessions](linear-agent-sessions.md#a-first-delegation): the sign-in action (awaitingInput), the no-runner thought after sign-in, the "Starting" thought, and the merged response with the session complete.
+2. A screenshot of the onboarding page after sign-in, while the VM is set up or the host enrolls, with agents needed, and set up.
+3. The "This link belongs to <name>." page from step 3.
+4. The merged pull request, showing the `Co-authored-by` trailer on a commit and the credit line in the body.
+5. The Linear request count under the issue from `/health`, which should be 30 or fewer for the whole run.
+
+Then add a row below with the date, the Paws head the instance ran, and links to the session, the pull request and the screenshots.
 
 ### Recorded first delegations
 
@@ -181,8 +189,6 @@ bun test test/workspace-assignments.test.ts test/workspace-access.test.ts \
   test/runner-setup-hold-queue.test.ts test/github-repository-access.test.ts \
   test/first-delegation-budget.test.ts
 ```
-
-Add a row for each live run, with links to the session, the pull request and the published screenshots.
 
 ## Runtimes
 
