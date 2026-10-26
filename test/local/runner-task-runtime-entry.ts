@@ -191,7 +191,7 @@ if (mode === "agent") {
     hostname: "127.0.0.1",
     port: 0,
     tls: tls(),
-    fetch: (request) => service.enrollment(request),
+    fetch: (request) => service.hostEnrollment(request),
   });
   const configuration: Configuration = {
     browserPort: browser.port!,
@@ -199,11 +199,11 @@ if (mode === "agent") {
     commands: [],
   };
   const daemon = openRunnerDaemon(daemonOptions(configuration));
-  const pending = await daemon.beginPairing("Task runtime");
-  assert(pending.phase === "pending");
-  const approved = await service.control.approvePairing(principal, pending.code);
-  service.control.setStatus(principal, approved.runnerId, "active");
-  const paired = await daemon.pollPairing();
+  const pending = service.control.createEnrollment(principal, { name: "Task runtime" });
+
+  const paired = await daemon.enroll("Task runtime", pending.token);
+  if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
+  service.control.setStatus(principal, paired.runnerId, "active");
   assert(paired.phase === "paired");
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
     workspace.id,

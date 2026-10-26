@@ -864,7 +864,7 @@ describe("member VM", () => {
     );
   });
 
-  test("ready links to the runner for agent sign-in, and a removed runner offers pairing again", () => {
+  test("ready links to the runner for agent sign-in, and a removed runner offers enrollment again", () => {
     const ready = vm({
       step: "ready",
       runnerId: runner.id,

@@ -157,7 +157,7 @@ export async function probeWorkspaceAuthorization(
     webhooks: false,
     statusEnv: {},
     workspaceAccess: ready.promise,
-    runnerEnrollment: async (request) => {
+    runnerHostEnrollment: async (request) => {
       enrollments++;
       return Response.json({ enrollment: request.method }, { status: 202 });
     },
@@ -508,7 +508,7 @@ export async function probeWorkspaceAuthorization(
       outagePage.status === 200 && outageData.status === 503 && outageLogout.status === 200,
       { page: outagePage.status, data: outageData.status, logout: outageLogout.status },
     );
-    const enrollment = await fetch(`${origin}/api/runner-pairings`, { method: "POST" });
+    const enrollment = await fetch(`${origin}/api/runner-enrollments`, { method: "POST" });
     const noPrincipal = await fetch(`${origin}/api/runners`);
     const noCsrf = await fetch(`${origin}/api/runners/approve`, {
       method: "POST",

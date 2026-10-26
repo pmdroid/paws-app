@@ -112,11 +112,14 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     teamIds: [],
   };
   const pair = async (name: string) => {
-    const pairing = await control.beginPairing({
+    const enrollment = {
       name,
       csr: (await createRunnerKey(join(root, name))).csr,
+    };
+    const { runnerId } = await control.enroll({
+      ...enrollment,
+      token: control.createEnrollment(owner, enrollment).token,
     });
-    const { runnerId } = await control.approvePairing(owner, pairing.code);
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [

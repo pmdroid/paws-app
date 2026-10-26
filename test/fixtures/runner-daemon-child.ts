@@ -34,11 +34,8 @@ try {
   });
   let result: unknown;
   switch (process.argv[3]) {
-    case "pair":
-      result = await daemon.beginPairing("Local Linux runner");
-      break;
-    case "claim":
-      result = await daemon.pollPairing();
+    case "enroll":
+      result = await daemon.enroll("Local Linux runner", "t".repeat(43));
       break;
     case "commands": {
       const polled = await daemon.pollCommands();

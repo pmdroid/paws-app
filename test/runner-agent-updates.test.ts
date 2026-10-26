@@ -72,9 +72,14 @@ async function fixture() {
   });
   const pair = async (name: string) => {
     const client = await createRunnerKey(join(root, name));
-    const pending = await control.beginPairing({ name, csr: client.csr });
+    const pending = { name, csr: client.csr };
     now += 1;
-    return (await control.approvePairing(principal, pending.code)).runnerId;
+    return (
+      await control.enroll({
+        ...pending,
+        token: control.createEnrollment(principal, pending).token,
+      })
+    ).runnerId;
   };
   const runnerId = await pair("goldbox");
   const work = createRunnerWork({

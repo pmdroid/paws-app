@@ -70,14 +70,17 @@ async function fixture() {
     disconnect() {},
     now,
   });
-  const pending = await control.beginPairing({
+  const pending = {
     name: "Runner",
     csr: (await createRunnerKey(join(root, "client"))).csr,
+  };
+  const { runnerId } = await control.enroll({
+    ...pending,
+    token: control.createEnrollment(
+      { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now(), teamIds: [] },
+      pending,
+    ).token,
   });
-  const { runnerId } = await control.approvePairing(
-    { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now(), teamIds: [] },
-    pending.code,
-  );
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now());

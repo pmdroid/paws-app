@@ -24,16 +24,16 @@ The [smoke test](https://github.com/pmdroid/paws-app/blob/727ebfed11d9883a6143b1
 
 ## Prove the feature where it runs
 
-| Feature               | Useful evidence                                                                                          |
-| --------------------- | -------------------------------------------------------------------------------------------------------- |
-| Workspace access      | Browser sign-in, membership changes, role checks, CSRF rejection, and cross-workspace rejection.         |
-| Pairing and mTLS      | A real HTTPS pairing exchange, certificate authentication, renewal, revocation, and rejected identities. |
-| Host installation     | Package validation, selected-release identity, interruption at installer checkpoints, and recovery.      |
-| Agent login bootstrap | The actual selected launcher, process UID and home, provider version, and login-status output.           |
-| Repository delivery   | The assigned base SHA, prepared bundle, candidate SHA, ancestry check, and push destination.             |
-| Results and questions | Repeated delivery, persistence after reopening SQLite, answer ordering, and payload limits.              |
-| Runner health         | Real mTLS submission, persisted health, replay behavior, and oversized-stream cancellation.              |
-| Dashboard             | Actual API data, role-specific controls, working links, and desktop and mobile browser observations.     |
+| Feature               | Useful evidence                                                                                             |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Workspace access      | Browser sign-in, membership changes, role checks, CSRF rejection, and cross-workspace rejection.            |
+| Enrollment and mTLS   | A real HTTPS enrollment exchange, certificate authentication, renewal, revocation, and rejected identities. |
+| Host installation     | Package validation, selected-release identity, interruption at installer checkpoints, and recovery.         |
+| Agent login bootstrap | The actual selected launcher, process UID and home, provider version, and login-status output.              |
+| Repository delivery   | The assigned base SHA, prepared bundle, candidate SHA, ancestry check, and push destination.                |
+| Results and questions | Repeated delivery, persistence after reopening SQLite, answer ordering, and payload limits.                 |
+| Runner health         | Real mTLS submission, persisted health, replay behavior, and oversized-stream cancellation.                 |
+| Dashboard             | Actual API data, role-specific controls, working links, and desktop and mobile browser observations.        |
 
 Record a failing baseline and a passing treatment when fixing a regression. Keep raw reports, the tested revision, and the final source hash. Distinguish scripted provider behavior from an observation made against a real provider CLI or authenticated service.
 
@@ -48,7 +48,7 @@ Record a failing baseline and a passing treatment when fixing a regression. Keep
 | Workspace access                     | `src/workspace`                             | [PR 238](https://github.com/pmdroid/paws-app/pull/238)                                                                                                             |
 | Browser dashboard                    | `src/web`                                   | [PR 243](https://github.com/pmdroid/paws-app/pull/243)                                                                                                             |
 | Signed runner commands               | `src/runner-protocol`                       | [PR 207](https://github.com/pmdroid/paws-app/pull/207)                                                                                                             |
-| Certificates and pairing             | `src/runner-identity`, `src/runner-control` | [PR 236](https://github.com/pmdroid/paws-app/pull/236)                                                                                                             |
+| Certificates and enrollment          | `src/runner-identity`, `src/runner-control` | [PR 236](https://github.com/pmdroid/paws-app/pull/236)                                                                                                             |
 | Runner work and results              | `src/runner-work`, `src/runner-results`     | [PR 235](https://github.com/pmdroid/paws-app/pull/235), [PR 247](https://github.com/pmdroid/paws-app/pull/247)                                                     |
 | Runner daemon                        | `src/runner-daemon`                         | [PR 231](https://github.com/pmdroid/paws-app/pull/231)                                                                                                             |
 | Linux execution exchange             | `src/runner-execution`                      | [PR 248](https://github.com/pmdroid/paws-app/pull/248)                                                                                                             |

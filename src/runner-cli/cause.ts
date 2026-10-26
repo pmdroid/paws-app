@@ -1,9 +1,9 @@
 import { ZodError } from "zod";
 import { RunnerRequestError, RunnerTransportError } from "../runner-daemon";
 
-/** The sentence every failed `enroll`, `pair` or `daemon` command starts with. */
+/** The sentence every failed `enroll` or `daemon` command starts with. */
 export const RUNNER_FAILURE =
-  "Runner command failed. Check the service identity, configuration and pairing.";
+  "Runner command failed. Check the service identity, configuration and enrollment.";
 
 /** The longest cause printed after {@link RUNNER_FAILURE}. */
 export const CAUSE_LIMIT = 300;

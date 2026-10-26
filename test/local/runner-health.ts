@@ -84,10 +84,14 @@ export async function probeRunnerHealth(
     now: () => now,
   });
   const client = await createRunnerKey(join(root, "client"));
-  const pairing = await control.beginPairing({ name: "Health proof", csr: client.csr });
-  const { runnerId } = await control.approvePairing(principal, pairing.code);
+  const enrollment = { name: "Health proof", csr: client.csr };
+  const identity = await control.enroll({
+    ...enrollment,
+    token: control.createEnrollment(principal, enrollment).token,
+  });
+  const { runnerId } = identity;
+
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  const identity = control.claimPairing(pairing.id, pairing.claim);
   assert.equal(identity.status, "approved");
   if (identity.status !== "approved") throw new Error("Expected approved fixture identity");
   const signing = generateKeyPairSync("ed25519");

@@ -117,7 +117,7 @@ def main():
         if not runner_path.is_symlink() or os.readlink(runner_path) != "../current/bin/paws-runner" or runner_path.read_bytes() != installer.release.RUNNER_LAUNCHER:
             raise RuntimeError("Runner launcher is not installed")
         launched = subprocess.run([str(runner_path), "runner", "unknown"], env=installer.release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
-        if launched.returncode != 1 or launched.stderr.decode().strip() != "Runner command failed. Check the service identity, configuration and pairing.":
+        if launched.returncode != 1 or launched.stderr.decode().strip() != "Runner command failed. Check the service identity, configuration and enrollment.":
             raise RuntimeError("Runner launcher did not start the runner: " + launched.stderr.decode()[-400:])
         state_path = pathlib.Path("/var/lib/paws-runner-install/release.json")
         installed = state_path.read_bytes()

@@ -50,6 +50,9 @@ export async function probeRunnerTaskAuthority(
   );
   assert(taskMigrationIndex > 0);
   for (const migration of migrations.slice(0, taskMigrationIndex)) applyMigration(migration);
+  // This upgrade fixture starts before task commands existed. Enrollment needs only the
+  // workspace and runner tables already present, so install its table before enrolling.
+  applyMigration(migrations.find((value) => value.id === "134_runner_enrollment")!);
   let now = Date.now();
   const userId = putWorkspaceUser(db, {
     id: workspaceId(),
@@ -129,7 +132,7 @@ export async function probeRunnerTaskAuthority(
     hostname: "127.0.0.1",
     port: 0,
     tls,
-    fetch: (request) => coordinator.enrollment(request),
+    fetch: (request) => coordinator.hostEnrollment(request),
   });
   const daemon = openRunnerDaemon({
     root: join(root, "daemon"),
@@ -143,14 +146,14 @@ export async function probeRunnerTaskAuthority(
     error instanceof RunnerRequestError && error.status === code;
   const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
   try {
-    const pairing = await daemon.beginPairing("Response task proof");
-    assert(pairing.phase === "pending");
-    const { runnerId } = await coordinator.control.approvePairing(
+    const enrollmentGrant = coordinator.control.createEnrollment(
       { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
-      pairing.code,
+      { name: "Response task proof" },
     );
+    const enrolled = await daemon.enroll("Response task proof", enrollmentGrant.token);
+    if (enrolled.phase !== "paired") throw new Error("Runner enrollment failed");
+    const { runnerId } = enrolled;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    assert.equal((await daemon.pollPairing()).phase, "paired");
     db.run(
       "INSERT INTO runner_command(ordinal,id,runner_id,kind,envelope,expires_at,acknowledged_at) VALUES(12,'retained-task-migration',?,'probe','{}',?,?)",
       [runnerId, now, now],

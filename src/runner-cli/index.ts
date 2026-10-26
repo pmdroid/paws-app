@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from "../runner-daemon";
 import { ExecutionIdSchema, RUNNER_SKILLS_ENV } from "../runner-execution";
@@ -280,53 +279,21 @@ export async function runRunnerCli(
         daemon.close();
       }
     }
-    const daemonCommand =
-      operation === "daemon" && args.length === 2 && args[0] === "--config" && Boolean(args[1]);
-    if (
-      !daemonCommand &&
-      (operation !== "pair" ||
-        args.length !== 4 ||
-        args[0] !== "--config" ||
-        !args[1] ||
-        args[2] !== "--name" ||
-        !args[3])
-    )
-      throw new RunnerCliFailure("usage", "Invalid pairing command.");
+    if (operation !== "daemon" || args.length !== 2 || args[0] !== "--config" || !args[1])
+      throw new RunnerCliFailure("usage", "Invalid daemon command.");
     if (process.getuid?.() !== ids.runnerUid)
-      throw new RunnerCliFailure("identity", "Pairing identity is invalid.");
+      throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...loadConfig(args[1]!, ids.runnerUid),
       sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
     });
     try {
-      if (daemonCommand) {
-        await runPairedDaemon(daemon, ids, abort.signal, (failure) =>
-          error(`Runner operation failed: ${describeRunnerFailure(failure)}`),
-        );
-        abort.signal.throwIfAborted();
-        return 0;
-      }
-      const pending = await daemon.beginPairing(args[3]!);
+      await runPairedDaemon(daemon, ids, abort.signal, (failure) =>
+        error(`Runner operation failed: ${describeRunnerFailure(failure)}`),
+      );
       abort.signal.throwIfAborted();
-      if (pending.phase !== "pending") throw new Error("Pairing is not pending");
-      write(JSON.stringify(pending));
-      while (!abort.signal.aborted) {
-        const status = await daemon.pollPairing();
-        abort.signal.throwIfAborted();
-        if (status.phase === "paired") {
-          write(
-            JSON.stringify({
-              paired: true,
-              runnerId: status.runnerId,
-              workspaceId: status.workspaceId,
-            }),
-          );
-          return 0;
-        }
-        await delay(2000, undefined, { signal: abort.signal });
-      }
-      return 130;
+      return 0;
     } finally {
       daemon.close();
     }
