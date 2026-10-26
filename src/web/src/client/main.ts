@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
 import { mergeQueueCount } from "./merge-queue";

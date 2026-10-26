@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import type {
   MainMoved,
@@ -271,10 +271,11 @@ export function createMergeSettings(invalidate: () => void): {
         if (started !== generation) return;
         view = { data, busy: view.busy, error: null, saved: false };
       } catch (error) {
-        journalCaught(error, "merge-settings.createMergeSettings.mergeSettingsRequest", null);
         if (started === generation && error instanceof Error && error.cause === 403) {
           view.denied = true;
           view.data = null;
+
+          journalCaught(error, "merge-settings.createMergeSettings.mergeSettingsRequest", null);
           return;
         }
         throw error;

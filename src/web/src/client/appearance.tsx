@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { useSyncExternalStore } from "react";
 import { NativeSelect } from "./ui/native-select";
 

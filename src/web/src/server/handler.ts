@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
 import type { Database } from "bun:sqlite";

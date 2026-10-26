@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { timingSafeEqual } from "node:crypto";
 import {
   LINEAR_SESSION_API_PATH,

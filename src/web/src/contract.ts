@@ -1,6 +1,6 @@
 export { holdsExecution, isBlockerSatisfied } from "../../core";
 
-import { journalCaught } from "../../journal";
+import { journalCaught } from "./journal";
 /**
  * Read-only status snapshot served by the local Paws engine.
  *

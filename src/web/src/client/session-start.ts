@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { LINEAR_SESSION_API_PATH } from "../session-start";
 import { esc } from "./format";

@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import type { StatusSnapshot } from "../contract";
 import { evidenceFileUrl } from "./evidence";
 import { esc } from "./format";

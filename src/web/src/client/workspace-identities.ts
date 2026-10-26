@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
