@@ -1,4 +1,4 @@
-import type { TaskMode } from "./task";
+import { isResponseTaskMode, type TaskMode } from "./task";
 
 /** Work-item states. The `work_item.state` CHECK list must match this union. */
 export const WORK_ITEM_STATES = [
@@ -89,7 +89,7 @@ export function isBlockerSatisfied(blocker: {
 }): boolean {
   return (
     (blocker.state === "merged" && !!blocker.mergeSha) ||
-    (blocker.state === "completed" && (blocker.mode === "answer" || blocker.mode === "artifact"))
+    (blocker.state === "completed" && isResponseTaskMode(blocker.mode))
   );
 }
 

@@ -3150,6 +3150,33 @@ CREATE TABLE pull_review (
 ) STRICT;
 CREATE INDEX pull_review_open ON pull_review(item_id) WHERE handled_at IS NULL;`,
   },
+  {
+    id: "154_plan_proposal",
+    foreignKeys: false,
+    sql: `
+CREATE TABLE work_item_task_plan (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  mode TEXT NOT NULL CHECK (mode IN ('code', 'answer', 'artifact', 'plan')),
+  response TEXT,
+  generation INTEGER NOT NULL DEFAULT 0,
+  repository_context INTEGER NOT NULL DEFAULT 0 CHECK(repository_context IN (0,1))
+) STRICT;
+INSERT INTO work_item_task_plan (item_id, mode, response, generation, repository_context)
+SELECT item_id, mode, response, generation, repository_context FROM work_item_task;
+DROP TABLE work_item_task;
+ALTER TABLE work_item_task_plan RENAME TO work_item_task;
+CREATE TABLE plan_proposal (
+  question_id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  parent_issue_id TEXT NOT NULL,
+  repository TEXT,
+  drafts TEXT NOT NULL CHECK (json_valid(drafts)),
+  created_at INTEGER NOT NULL,
+  filed TEXT CHECK (filed IS NULL OR json_valid(filed)),
+  filed_at INTEGER
+) STRICT;
+CREATE INDEX plan_proposal_item ON plan_proposal (item_id);`,
+  },
 ];
 
 /**
