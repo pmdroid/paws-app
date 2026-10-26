@@ -53,6 +53,7 @@ import { RUNNER_LEASE_GRACE_MS, type RunnerCommand, type RunnerResult } from "..
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
+import { createRemoteHandover } from "./handover";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -440,6 +441,7 @@ export function createRemoteAgentRunner(options: {
     };
   }
   const cancelItem = createRemoteCancellation(options);
+  const handOverItem = createRemoteHandover(options);
   function usageLimitWait(itemId: string, input: RunAgentOptions): UsageLimitWait {
     return {
       now,
@@ -480,6 +482,7 @@ export function createRemoteAgentRunner(options: {
   }
   return {
     cancelItem,
+    handOverItem,
     forItem(itemId: string) {
       const attempt: FailoverAttempt = async (input, excluded, limit) => {
         input.signal?.throwIfAborted();
@@ -1157,6 +1160,11 @@ export function createRemoteAgentRunner(options: {
                 });
               }
               if (event.type === "hook_failed") await emit(event);
+              if (event.type === "handover")
+                await emit({
+                  type: "progress",
+                  text: `${db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(selected.id)?.name ?? selected.id} couldn't stop this session at a safe point within 2 minutes, so it keeps running there.\n`,
+                });
               // Runners from before the start line named the runtimes still report the install.
               if (
                 event.type === "progress" &&
@@ -1336,6 +1344,9 @@ export function createRemoteAgentRunner(options: {
             await delay(interval, undefined, { signal });
           }
           if (!complete) throw new Error("Remote run timed out");
+          // A handover can stop the agent while Paws still posts its question; the question stays.
+          if (question && complete.handedOver) await question;
+          if (questionError) throw questionError;
           if (question) throw new Error("Remote run completed with an unanswered question");
           if (assigned.type === "task" && (complete.candidateSha || complete.reviewText))
             throw new Error("Remote response task returned code work");
@@ -1535,6 +1546,12 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
+
+export {
+  createRemoteHandover,
+  RUNNER_HANDOVER_LIMIT_MS,
+  type RunnerHandoverOutcome,
+} from "./handover";
 
 function agentName(agent: string): string {
   return agent.charAt(0).toUpperCase() + agent.slice(1);

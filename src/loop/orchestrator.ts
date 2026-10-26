@@ -2511,6 +2511,11 @@ export class Orchestrator {
         this.fail(finished, "auth", executed.run.errorMessage ?? "Claude login is missing.");
         return;
       }
+      // A run handed over to another runner keeps its question; the item waits for the answer.
+      if (executed.run.handedOver && this.askedRuns.has(run.id)) {
+        await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
+        return;
+      }
       if (executed.run.cancelled || executed.run.stopReason === "cancelled") return;
       if (this.askedRuns.has(run.id)) {
         await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
