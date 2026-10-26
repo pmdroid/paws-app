@@ -21,10 +21,9 @@ export type {
   PawsSetupConfig,
   TrackerKind,
 } from "./file";
-export { GITHUB_APP_ONLY_MESSAGE } from "./file";
 export { ensureLayout, pawsPaths } from "./paths";
 export type { PawsPaths } from "./paths";
-export { LINEAR_COMMENT_MODE_REMOVED, LINEAR_WORKSPACE_REQUIRED, loadRuntime } from "./runtime";
+export { LINEAR_WORKSPACE_REQUIRED, loadRuntime } from "./runtime";
 export type { RuntimeConfig } from "./runtime";
 export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
 export type { GitHubAppCredentials } from "./github-app";

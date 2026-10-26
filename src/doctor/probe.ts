@@ -42,7 +42,6 @@ export type ProbeFacts = {
   agentProfiles?: AgentProfiles[];
   grokLogin?: GrokLoginStatus | null;
   configured: boolean;
-  linearCommentMode: boolean;
   trackerKind: TrackerKind;
   githubDoctor: GitHubDoctorFacts;
   webhooks: boolean;
@@ -99,7 +98,6 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     agentProfiles,
     grokLogin,
     configured: runtime.configured,
-    linearCommentMode: runtime.linearCommentMode,
     trackerKind: runtime.trackerKind,
     githubDoctor,
     webhooks: runtime.webhooks,

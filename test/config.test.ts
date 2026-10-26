@@ -40,7 +40,7 @@ describe("config", () => {
       closeoutProjects: { "acme/one": "policies/one" },
     });
     expect(parseConfigToml(text).githubRepos).toEqual(["acme/one", "acme/two"]);
-    writeFileSync(paths.configFile, `${text}\n[merge]\ncloseout_after_update = true\n`, {
+    writeFileSync(paths.configFile, `${text}\n[merge]\nmain_moved = "closeout"\n`, {
       mode: 0o600,
     });
     writeConfigFile(paths.configFile, { ...setup, maxTurns: 50 });
@@ -156,7 +156,6 @@ describe("config", () => {
     chmodSync(join(paths.secretsDir, "linear-oauth.json"), 0o600);
 
     const parsed = loadConfigFile(paths.configFile);
-    expect(parsed.linearCommentMode).toBe(false);
     expect(parsed.linearTeam).toBe("ENG");
     expect(parsed.repo).toBe("pmdroid/paws-demo");
     expect(parsed.maxTurns).toBe(40);
@@ -166,7 +165,6 @@ describe("config", () => {
       PAWS_GITHUB_REPOSITORY: "other/repo",
     });
     expect(runtime.configured).toBe(true);
-    expect(runtime.linearCommentMode).toBe(false);
     expect(runtime.linearAccessToken).toBe("lin_oauth_from_file");
     expect(runtime.repo).toBe("other/repo");
     expect(runtime.githubAuth).toBe("app");
@@ -180,24 +178,20 @@ describe("config", () => {
     expect(overridden.linearAccessToken).toBe("lin_oauth_from_env");
   });
 
-  test("a configured comment mode is reported and selects nothing", () => {
-    const home = tempHome();
-    const paths = pawsPaths(home);
-    ensureLayout(paths);
-    expect(loadRuntime({ PAWS_HOME: home }).linearCommentMode).toBe(false);
-    expect(loadRuntime({ PAWS_HOME: home, LINEAR_MODE: "comments" }).linearCommentMode).toBe(true);
-    expect(loadRuntime({ PAWS_HOME: home, PAWS_LINEAR_MODE: "comments" }).linearCommentMode).toBe(
-      true,
+  test("unknown keys and sections fail with plain config errors", () => {
+    for (const section of ["linear", "merge", "tracker"]) {
+      expect(() => parseConfigToml(`[${section}]\nunknown = true\n`)).toThrow(
+        `config.toml line 2 has an unknown key: ${section}.unknown`,
+      );
+    }
+    expect(() => parseConfigToml("[unknown]\n")).toThrow(
+      "config.toml line 1 has an unknown section: unknown",
     );
-    writeFileSync(paths.configFile, '[linear]\nmode = "comments"\n', { mode: 0o600 });
-    const runtime = loadRuntime({ PAWS_HOME: home });
-    expect(runtime.configError).toBeNull();
-    expect(runtime.linearCommentMode).toBe(true);
-    writeFileSync(paths.configFile, '[linear]\nmode = "agent-session"\n', { mode: 0o600 });
-    expect(loadRuntime({ PAWS_HOME: home }).linearCommentMode).toBe(false);
-    writeFileSync(paths.configFile, '[linear]\nmode = "email"\n', { mode: 0o600 });
-    expect(loadRuntime({ PAWS_HOME: home }).configError).toContain(
-      "linear.mode must be agent-session",
+    const paths = pawsPaths(tempHome());
+    ensureLayout(paths);
+    writeFileSync(paths.configFile, "[linear]\nunknown = true\n");
+    expect(loadRuntime({ PAWS_HOME: paths.home }).configError).toBe(
+      "config.toml line 2 has an unknown key: linear.unknown",
     );
   });
 
@@ -258,16 +252,11 @@ describe("config", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
-    writeFileSync(
-      paths.configFile,
-      ['repo = "pmdroid/paws-demo"', "", "[linear]", 'mode = "comments"', ""].join("\n"),
-      { mode: 0o600 },
-    );
+    writeFileSync(paths.configFile, 'repo = "pmdroid/paws-demo"\n', { mode: 0o600 });
     const runtime = loadRuntime({ PAWS_HOME: home });
     expect(runtime.githubAuth).toBe("app");
     expect(runtime.trackerKind).toBe("linear");
     expect(runtime.file.githubAuth).toBeNull();
-    expect(runtime.file.trackerSpecified).toBe(false);
   });
 
   test("config.toml accepts only github.auth = app and drops oauth_client_id", () => {
@@ -296,7 +285,7 @@ describe("config", () => {
     expect(text).not.toContain("oauth_client_id");
     for (const auth of ["oauth", "gh"]) {
       writeFileSync(paths.configFile, `[github]\nauth = "${auth}"\n`, { mode: 0o600 });
-      expect(loadRuntime({ PAWS_HOME: home }).configError).toContain("docs/github-app.md");
+      expect(loadRuntime({ PAWS_HOME: home }).configError).toContain('github.auth must be "app"');
     }
   });
 });
