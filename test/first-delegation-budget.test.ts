@@ -531,7 +531,7 @@ async function firstDelegation(
       clock.now(),
     );
     const deadline = Date.now() + 20_000;
-    while (!["merged", "failed", "exhausted", "cancelled"].includes(state() ?? "")) {
+    while (!["merged", "failed", "cancelled"].includes(state() ?? "")) {
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
       await settle();
     }

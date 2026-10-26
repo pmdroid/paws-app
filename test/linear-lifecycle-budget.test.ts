@@ -439,7 +439,7 @@ async function runTask(input: {
       "created-delivery",
     );
     const deadline = Date.now() + 20_000;
-    while (!["merged", "failed", "exhausted"].includes(state() ?? "")) {
+    while (!["merged", "failed"].includes(state() ?? "")) {
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
       while (outbox.tick().length > 0) await outbox.idle();
       const open = findOpenQuestion(db, "session");

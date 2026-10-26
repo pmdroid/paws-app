@@ -148,10 +148,7 @@ export class LinearTaskAccess {
     for (const sessionId of affected) this.invalidate({ sessionId });
     const active = new Set(
       listWorkItems(this.db)
-        .filter(
-          (item) =>
-            !["cancelled", "completed", "merged", "failed", "exhausted"].includes(item.state),
-        )
+        .filter((item) => !["cancelled", "completed", "merged", "failed"].includes(item.state))
         .flatMap((item) => (item.sessionKey === null ? [] : [item.sessionKey])),
     );
     await this.reconcileItems((_item, sessionId) => affected.has(sessionId));
@@ -196,8 +193,7 @@ export class LinearTaskAccess {
     accept: (item: WorkItemRecord, sessionId: string) => boolean,
   ): Promise<void> {
     for (const item of listWorkItems(this.db)) {
-      if (["cancelled", "completed", "merged", "failed", "exhausted"].includes(item.state))
-        continue;
+      if (["cancelled", "completed", "merged", "failed"].includes(item.state)) continue;
       const sessionId = item.sessionKey;
       if (sessionId === null || !accept(item, sessionId)) continue;
       try {

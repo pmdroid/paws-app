@@ -17,17 +17,16 @@ describe("transition", () => {
     });
   });
 
-  test("sends low-risk acceptance to the merge queue and high-risk to sign-off", () => {
-    const low = transition("verifying", "closeout_accepted");
-    expect(low.ok).toBe(true);
-    if (low.ok) expect(low.to).toBe("merge_queue");
-    const high = transition("verifying", "closeout_accepted_high_risk");
-    expect(high).toEqual({
+  test("acceptance enters the merge queue and spent budgets await input", () => {
+    expect(transition("verifying", "closeout_accepted")).toMatchObject({
       ok: true,
-      from: "verifying",
-      to: "awaiting_signoff",
-      event: "closeout_accepted_high_risk",
+      to: "merge_queue",
     });
+    for (const state of ["verifying", "merge_queue"] as const)
+      expect(transition(state, "blocking_question")).toMatchObject({
+        ok: true,
+        to: "awaiting_input",
+      });
   });
 
   test("recovery fails a merge closed and restarts onto the queue", () => {

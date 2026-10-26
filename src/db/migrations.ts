@@ -2960,6 +2960,101 @@ ALTER TABLE job ADD COLUMN item_version INTEGER;
 UPDATE job SET item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId'))
 WHERE json_type(payload,'$.itemId')='text';`,
   },
+  {
+    id: "148_remove_obsolete_work_item_states",
+    foreignKeys: false,
+    // No runtime caller wrote this state. Refuse unexpected rows rather than discard them.
+    guard: (db) => {
+      const item = db
+        .query<{ id: string }, []>(
+          "SELECT id FROM work_item WHERE state='awaiting_signoff' LIMIT 1",
+        )
+        .get();
+      if (item)
+        throw new Error(
+          `Work item ${item.id} is unexpectedly awaiting sign-off. Resolve it with the previous Paws version before migrating.`,
+        );
+    },
+    sql: `
+UPDATE work_item SET state='failed' WHERE state='exhausted';
+CREATE TABLE work_item_next (
+  id TEXT PRIMARY KEY,
+  delegation_id TEXT NOT NULL,
+  linear_issue_id TEXT NOT NULL,
+  linear_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'planning',
+    'queued',
+    'running',
+    'paused',
+    'awaiting_input',
+    'recovering',
+    'verifying',
+    'failed',
+    'merge_queue',
+    'manual',
+    'completed',
+    'merged',
+    'cancelled'
+  )),
+  branch_name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  task_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL,
+  checkpoint TEXT CHECK (checkpoint IS NULL OR json_valid(checkpoint)),
+  recovery_attempts INTEGER NOT NULL DEFAULT 0,
+  awake_ms INTEGER NOT NULL DEFAULT 0,
+  last_mono_ms INTEGER,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  max_turns INTEGER NOT NULL DEFAULT 80,
+  max_awake_ms INTEGER NOT NULL DEFAULT 2700000,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  session_key TEXT,
+  current_run_id TEXT,
+  brief TEXT CHECK (brief IS NULL OR json_valid(brief)),
+  owner_user_id TEXT REFERENCES workspace_user(id),
+  delegated_by TEXT,
+  resumed_at INTEGER,
+  accepted_head TEXT,
+  agent_ms INTEGER NOT NULL DEFAULT 0,
+  closeout_ms INTEGER NOT NULL DEFAULT 0,
+  waiting_ms INTEGER NOT NULL DEFAULT 0,
+  recheck_ms INTEGER NOT NULL DEFAULT 0,
+  linear_project_id TEXT,
+  linear_project_name TEXT
+) STRICT;
+INSERT INTO work_item_next (
+  id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version,
+  task_key, created_at, checkpoint, recovery_attempts, awake_ms, last_mono_ms, turn_count,
+  max_turns, max_awake_ms, cancel_requested, session_key, current_run_id, brief, owner_user_id,
+  delegated_by, resumed_at, accepted_head, agent_ms, closeout_ms, waiting_ms, recheck_ms,
+  linear_project_id, linear_project_name
+)
+SELECT
+  id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version,
+  task_key, created_at, checkpoint, recovery_attempts, awake_ms, last_mono_ms, turn_count,
+  max_turns, max_awake_ms, cancel_requested, session_key, current_run_id, brief, owner_user_id,
+  delegated_by, resumed_at, accepted_head, agent_ms, closeout_ms, waiting_ms, recheck_ms,
+  linear_project_id, linear_project_name
+FROM work_item;
+DROP TABLE work_item;
+ALTER TABLE work_item_next RENAME TO work_item;
+CREATE UNIQUE INDEX work_item_active_issue ON work_item(linear_issue_id) WHERE state NOT IN ('completed','merged','cancelled');
+CREATE INDEX work_item_delegation_position ON work_item (delegation_id, position);
+CREATE TRIGGER runner_setup_hold_ends AFTER UPDATE OF state,cancel_requested ON work_item
+WHEN NEW.state<>'queued' OR NEW.cancel_requested=1
+BEGIN
+  DELETE FROM runner_setup_hold WHERE item_id=NEW.id;
+END;
+CREATE TRIGGER runner_setup_resume_ends AFTER UPDATE OF cancel_requested ON work_item
+WHEN NEW.cancel_requested=1
+BEGIN
+  DELETE FROM runner_setup_resume WHERE item_id=NEW.id;
+END;
+`,
+  },
 ];
 
 /**

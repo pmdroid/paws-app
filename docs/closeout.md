@@ -116,6 +116,8 @@ Paws asks in the issue's Linear session when Closeout cannot pass on its own:
 - the fix budget is spent,
 - the policy blocks the candidate, or a fix round cannot continue.
 
+Asking enters `awaiting_input`. Spent budgets always leave an outstanding question. `failed` means execution stopped without an outstanding question, such as a crash budget, run failure or start timeout.
+
 The question lists every check with its status and attempts. There are two ways to answer:
 
 - **Reply with guidance.** The agent gets a new fix round with your guidance, and the checks get a fresh round of attempts with the same limits. Earlier evidence is kept.

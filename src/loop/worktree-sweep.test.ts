@@ -41,7 +41,7 @@ test("removes finished worktrees after seven idle days and keeps recent or waiti
 test("removes a waiting worktree only when its clean HEAD was merged on GitHub", async () => {
   const fixture = await setup();
   const merged = await fixture.item("ENG-1", "awaiting_input", now - 60_000);
-  const ahead = await fixture.item("ENG-2", "awaiting_signoff", now - 60_000);
+  const ahead = await fixture.item("ENG-2", "awaiting_input", now - 60_000);
   const dirty = await fixture.item("ENG-3", "paused", now - 60_000);
   const busy = await fixture.item("ENG-4", "manual", now - 60_000);
   await fixture.item("ENG-5", "running", now - 60_000);

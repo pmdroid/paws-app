@@ -3648,7 +3648,7 @@ export class Orchestrator {
           continue;
         }
         cancelItemQuestions(this.db, itemId, this.now());
-        if (item.state === "failed" || item.state === "exhausted") {
+        if (item.state === "failed") {
           this.db.run(
             "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
             [itemId],
@@ -4447,7 +4447,7 @@ export class Orchestrator {
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
     immediate(this.db, () => {
-      if (item!.cancelRequested || item!.state === "failed" || item!.state === "exhausted") {
+      if (item!.cancelRequested || item!.state === "failed") {
         this.db.run(
           "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
           [item!.id],
