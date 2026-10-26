@@ -78,10 +78,10 @@ export function applyLinearCommand(
       });
 
     const sessionId = item.sessionKey ?? item.id;
-    const generation =
-      response === undefined
-        ? stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now)
-        : advanceOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, { now });
+    const closed = response?.startsWith("Closed:") === true;
+    const generation = !closed
+      ? stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now)
+      : advanceOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, { now });
     const origin = command.source === "dashboard" ? "Paws" : "Linear";
     const lead =
       response ??
@@ -98,12 +98,11 @@ export function applyLinearCommand(
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: sessionId,
-      delivery: response === undefined ? "stop" : "ordered",
+      delivery: closed ? "ordered" : "stop",
       generation,
-      idempotencyKey:
-        response === undefined
-          ? `command:stop:${sessionId}:${generation}`
-          : `closed:${item.id}:${generation}`,
+      idempotencyKey: !closed
+        ? `command:stop:${sessionId}:${generation}`
+        : `closed:${item.id}:${generation}`,
       payload: { sessionId, kind: "response", body: text, id: crypto.randomUUID() },
       now,
     });

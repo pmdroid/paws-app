@@ -105,6 +105,7 @@ export function evidenceActivityBody(input: {
  * Keeps a video or screenshot published with a Closeout check id in the evidence store and
  * posts it to Linear. With `uploads`, files within `EVIDENCE_INLINE_LIMITS` go out as a
  * `linear.evidence` outbox row that uploads the file and embeds it; others get the Paws link.
+ * After the PR response, evidence uploads stay silent and attach to the issue instead.
  * Every other artifact goes to `linear`, unchanged.
  */
 export function createEvidenceArtifactPublisher(options: {

@@ -108,6 +108,7 @@ test.each([false, true, "cap"] as const)(
     ]);
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
+    let implementationTurns = 0;
     let entered = "";
     let release = "";
     const heartbeats: (() => void)[] = [];
@@ -130,7 +131,9 @@ test.each([false, true, "cap"] as const)(
       caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
       repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
       launch(input) {
-        if (input.purpose === "fix") {
+        const fixing =
+          input.purpose === "fix" || (input.purpose === "implement" && ++implementationTurns > 1);
+        if (fixing) {
           entered = path.join(input.worktree, "fix-entered");
           release = path.join(input.worktree, "fix-release");
         }
@@ -140,7 +143,7 @@ test.each([false, true, "cap"] as const)(
           steps:
             input.purpose === "review"
               ? emptyReview().steps
-              : input.purpose === "fix"
+              : fixing
                 ? [
                     {
                       type: "update",
@@ -644,11 +647,13 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
       ),
     ).toBe(true);
     const completedPlan = tracker.sessionUpdates.findLast((update) => update.plan)?.plan;
-    expect(completedPlan?.slice(-3).map((step) => step.content)).toEqual([
-      "Verify changes",
-      "Open pull request",
-      "Merge verified changes",
-    ]);
+    expect(
+      completedPlan
+        ?.filter((step) =>
+          ["Verify changes", "Open pull request", "Merge verified changes"].includes(step.content),
+        )
+        .map((step) => step.content),
+    ).toEqual(["Verify changes", "Open pull request", "Merge verified changes"]);
     expect(completedPlan?.every((step) => step.status === "completed")).toBe(true);
 
     expect(
@@ -2510,7 +2515,10 @@ test.each(["pending", "merged"] as const)(
           if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
         }
         expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merged");
-        expect(tracker.progress.at(-1)).toEqual(firstResponse);
+        expect(tracker.progress.at(-1)).toMatchObject({
+          kind: "response",
+          body: expect.stringContaining("Merged #"),
+        });
       }
       const followup = {
         ...linearEvent("prompted", "Add the requested follow-up change", null, "pr-tool"),
@@ -2528,14 +2536,14 @@ test.each(["pending", "merged"] as const)(
       expect(getWorkItem(db, active.id)?.state, debug(layout, db)).toBe("merged");
       expect(prompts).toHaveLength(2);
       expect(prompts[1]).toContain("Add the requested follow-up change");
-      expect(responses()).toHaveLength(2);
+      expect(responses()).toHaveLength(followupAt === "merged" ? 4 : 3);
       expect(responses()[1]?.sessionId).toBe("ses_1");
       expect(responses()[1]?.id).not.toBe(firstResponse.id);
-      expect(tracker.progress.at(-1)).toEqual(responses()[1]);
+      expect(tracker.progress.at(-1)).toEqual(responses().at(-1));
       await orchestrator.onLinearEvent(followup);
       await tickWithRestarts(jobs, orchestrator, db);
       expect(prompts).toHaveLength(2);
-      expect(responses()).toHaveLength(2);
+      expect(responses()).toHaveLength(followupAt === "merged" ? 4 : 3);
       expect(github.opened[0]?.title).toBe("Add ok.txt for the seeded check");
       expect(titles).toEqual(
         github.merged.map((pull) => `Add ok.txt for the seeded check (#${pull.number})`),
@@ -2745,7 +2753,7 @@ test.each([false, true])(
       );
       expect(queuedSummary()).toContain("CI: `test` failed. Sent back to the agent, fix 1 of 3.");
       expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(
-        ask ? 2 : 1,
+        ask ? 3 : 2,
       );
       if (ask) expect(prompts[2]).toContain("Use the compatible fix");
     } finally {
@@ -3456,9 +3464,11 @@ test("an unreadable CI read retries the merge job and fails the task with the re
     expect(stateOf(db, "ENG-93"), debug(layout, db)).toBe("failed");
     expect(reads, debug(layout, db)).toBe(6);
     expect(
-      tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
+      tracker.progress
+        .filter((update) => update.kind === "response" && update.body.startsWith("Closed:"))
+        .map((update) => update.body),
     ).toEqual([
-      `Stopped after 2 attempts. could not read GitHub CI and review threads. The accepted work is on branch \`${branchOf(db, "ENG-93")}\`.`,
+      `Closed: Stopped after 2 attempts. could not read GitHub CI and review threads. The accepted work is on branch \`${branchOf(db, "ENG-93")}\`.`,
     ]);
     expect(
       listJobs(db)
@@ -3558,7 +3568,9 @@ test.each([
         outcome === "merges" ? "merged" : "failed",
       );
       expect(
-        tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
+        tracker.progress
+          .filter((update) => update.kind === "response" && update.body.startsWith("Closed:"))
+          .map((update) => update.body),
       ).toEqual(
         outcome === "merges"
           ? []
