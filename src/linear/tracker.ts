@@ -1,6 +1,7 @@
 import { createIssuePullRequestReads } from "./issue-pulls";
 import { createLinearProjectScopeReads } from "./project-scope";
 import { createLinearAttachmentMethods } from "./attachments";
+import { createLinearSubIssueMethods } from "./sub-issues";
 import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
@@ -68,6 +69,7 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
 type LinearTracker = LinearSessionAdapter &
   ReturnType<typeof createLinearSessionReads> &
   LinearRepositoryAdapter &
+  ReturnType<typeof createLinearSubIssueMethods> &
   ReturnType<typeof createLinearMergeReads>;
 
 type TrackerMethod = {
@@ -93,6 +95,7 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   mergeChoices: "merge-choices",
   createIssueAttachment: "issue-attachment",
   deleteIssueAttachment: "issue-attachment",
+  createSubIssues: "sub-issues",
   listIssuePullRequests: "issue-pull-requests",
   loadEpic: "issue-snapshot",
   listDeps: "issue-relations",
@@ -108,11 +111,13 @@ export function createLinearTracker(client: LinearClient, starts?: IssueStartRea
 
 function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads): LinearTracker {
   const sessions = createLinearSessionMethods(client);
+  const repositories = createLinearRepositoryMethods(client);
   return {
     supportsActivityReconciliation: true,
     ...sessions,
     ...createLinearProjectScopeReads(client),
-    ...createLinearRepositoryMethods(client),
+    ...repositories,
+    ...createLinearSubIssueMethods(client, repositories.addRepositoryLabel),
     ...createLinearMergeReads(client, starts),
     ...createLinearAttachmentMethods(client),
     listIssuePullRequests: createIssuePullRequestReads(client),
