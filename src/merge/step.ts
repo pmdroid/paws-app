@@ -11,9 +11,12 @@ export type LaneActions = {
   squash(expectedHead: string, pull: PullFacts): Promise<SerialMergeResult>;
 };
 
+/** Why a turn released: a failed `mergeable(S)`, or main moving between the read and the squash. */
+export type LaneBlock = Exclude<MergeBlock, "behind_main"> | "main_moved";
+
 export type LaneTurn =
   | { kind: "merged"; result: SerialMergeResult }
-  | { kind: "blocked"; block: Exclude<MergeBlock, "behind_main">; pull: PullFacts }
+  | { kind: "blocked"; block: LaneBlock; pull: PullFacts }
   | { kind: "rebased"; base: string; head: string }
   | { kind: "stopped"; result: SerialMergeResult };
 
@@ -41,7 +44,12 @@ export async function laneTurn(actions: LaneActions): Promise<LaneTurn> {
   if (verdict.ok) {
     const result = await actions.squash(pull.head, pull);
     if (result.merged) return { kind: "merged", result };
-    if (result.outcome === "sha_moved") return { kind: "blocked", block: "head_moved", pull };
+    if (result.outcome === "sha_moved")
+      return {
+        kind: "blocked",
+        block: result.base !== undefined && result.base !== pull.base ? "main_moved" : "head_moved",
+        pull,
+      };
     return { kind: "stopped", result };
   }
   if (verdict.block !== "behind_main") return { kind: "blocked", block: verdict.block, pull };
@@ -104,13 +112,17 @@ function step(facts: SerialMergeFacts): SerialMergeStep {
   }
 }
 
-function blocked(
-  facts: SerialMergeFacts,
-  block: Exclude<MergeBlock, "behind_main">,
-  pull: PullFacts,
-): SerialMergeStep {
+function blocked(facts: SerialMergeFacts, block: LaneBlock, pull: PullFacts): SerialMergeStep {
   const candidate = { base: pull.base, head: pull.head };
   switch (block) {
+    case "main_moved":
+      // The next turn reads main again, finds S behind it and rebases.
+      return {
+        kind: "wait",
+        reason: "ci",
+        message: "Main moved before the merge. Reading it again.",
+        ...candidate,
+      };
     case "head_moved":
       return {
         kind: "wait",

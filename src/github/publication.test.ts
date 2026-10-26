@@ -185,7 +185,7 @@ test("clone, refresh, push, PR and serial rebase merge retain ordinary behavior"
   };
   const rebased = await rebaseOntoMain(lane);
   if (!rebased.rebased) throw new Error(`rebase failed: ${rebased.result.message}`);
-  const merged = await squashPull(lane, rebased.head, "synthetic verified");
+  const merged = await squashPull(lane, rebased, "synthetic verified");
   expect(merged.merged).toBe(true);
   expect(await captured(f.canary)).not.toContain(token);
 });

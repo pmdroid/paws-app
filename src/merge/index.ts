@@ -39,6 +39,7 @@ export {
   laneTurn,
   serialMergeStep,
   type LaneActions,
+  type LaneBlock,
   type LaneTurn,
   type MergeStep,
   type SerialMergeFacts,

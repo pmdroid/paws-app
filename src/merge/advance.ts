@@ -131,7 +131,7 @@ export async function advanceMerge(
     read: () => readPullFacts(lane),
     facts: (facts) => mergeFacts(db, item.id, facts, caps.policyDigest(item, published.worktree)),
     rebase: () => rebaseOntoMain(lane),
-    squash: (head) => squashPull(lane, head, published.summary),
+    squash: (head, facts) => squashPull(lane, { head, base: facts.base }, published.summary),
   });
   const ciFixLimit = caps.ciFixAttempts(item);
   const result = turn.kind === "merged" || turn.kind === "stopped" ? turn.result : null;

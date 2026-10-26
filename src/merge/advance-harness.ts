@@ -10,6 +10,7 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
+  finishCloseoutProgress,
   getWorkItem,
   insertQueuedItem,
   markCloseoutAccepted,
@@ -31,6 +32,9 @@ import { advanceMerge, type MergeCapabilities } from "./advance";
 import type { MergeStep } from "./step";
 
 const exec = promisify(execFile);
+
+/** The policy digest the harness's Closeout runs record. */
+export const CLOSEOUT_DIGEST = "sha256:harness-policy";
 
 type CheckNodes = ReturnType<
   typeof fakeMergeReadiness
@@ -113,7 +117,8 @@ export async function mergeHarness(
     ci: (_head: string): CheckNodes | undefined => undefined,
     pullHead: (head: string): string => head,
     reviews: new Map<number, "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED">(),
-    policyDigest: "" as string | null,
+    /** The digest the lane reads now; acceptances record {@link CLOSEOUT_DIGEST}. */
+    policyDigest: CLOSEOUT_DIGEST as string | null,
     ciFixAttempts: 3,
     stopped: false,
     orders: new Map<string, TaskMergeSettings["order"]>(),
@@ -177,11 +182,23 @@ export async function mergeHarness(
     insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
     beginImplementRun(db, id, clock.now());
     enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
-    markCloseoutAccepted(db, id, head);
+    acceptHead(id, base, head);
     const item = { id, worktree, pull: items.size + 1, accepted: head, base };
     items.set(id, item);
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return item;
+  }
+
+  /** Closeout's accept row: the accepted head and a finished run on it under the policy digest. */
+  function acceptHead(id: string, base: string, head: string): void {
+    finishCloseoutProgress(
+      db,
+      id,
+      { taskId: id, base, head, policyDigest: CLOSEOUT_DIGEST, policyPath: null },
+      "accepted",
+      clock.now(),
+    );
+    markCloseoutAccepted(db, id, head);
   }
 
   async function requeue(id: string, fix?: string): Promise<string> {
@@ -197,7 +214,7 @@ export async function mergeHarness(
     applyWorkItemEvent(db, id, "turn_ended");
     applyWorkItemEvent(db, id, "closeout_accepted");
     saveCheckpoint(db, id, { ...current.checkpoint!, phase: "merge_queue", wipCommit: head });
-    markCloseoutAccepted(db, id, head);
+    acceptHead(id, current.checkpoint?.baseSha ?? "", head);
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return head;
   }
@@ -210,7 +227,7 @@ export async function mergeHarness(
     verified.push(head);
     if (getWorkItem(db, id)?.state === "verifying") applyWorkItemEvent(db, id, "closeout_accepted");
     saveCheckpoint(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
-    markCloseoutAccepted(db, id, head);
+    acceptHead(id, base, head);
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return head;
   }

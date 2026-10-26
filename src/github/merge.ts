@@ -118,20 +118,36 @@ export async function rebaseOntoMain(input: SerialMergeInput): Promise<RebaseRes
 }
 
 /**
- * Squash-merge the pull request only if GitHub still carries `expectedHead`. GitHub refuses a
- * moved head with 409, which is reported as `sha_moved` and never retried here.
+ * Squash-merge the pull request only if main is still the `base` the facts were read against and
+ * GitHub still carries `head`. GitHub's expected-head guard covers the pull request head only, so
+ * main is fetched again first: a newer main is reported as `sha_moved` and the lane reads again.
+ * GitHub refusing a moved head with 409 is `sha_moved` too. Neither is retried here.
  */
 export async function squashPull(
   input: SerialMergeInput,
-  expectedHead: string,
+  expected: { head: string; base: string },
   summary: string,
 ): Promise<SerialMergeResult> {
+  const expectedHead = expected.head;
   const branch = laneBranch(input);
   if (typeof branch !== "string") return branch;
   if (input.isCancelled?.()) return cancelled(branch);
   const token = await operationToken(input, "merge");
   input.onCredential?.("merge", token);
-  // A stop or withdrawn publication while the token was minted must still win.
+  const gitExec = input.gitExec ?? defaultGitExec();
+  const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
+  await fetchMain(input.worktree, url, token, gitExec, input.sleep);
+  const baseNow = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
+  if (baseNow !== expected.base)
+    return {
+      merged: false,
+      outcome: "sha_moved",
+      branch,
+      base: baseNow,
+      head: expectedHead,
+      message: "main moved before merge",
+    };
+  // A stop or withdrawn publication while main was fetched must still win.
   if (input.isCancelled?.()) return cancelled(branch);
   const merged = await squash(input, token, expectedHead, summary);
   if (merged.status === 409)
