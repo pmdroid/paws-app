@@ -2,7 +2,8 @@ import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { get } from "node:https";
 import { join } from "node:path";
 import { loadPublicTls } from "../../src/deployment";
-import { startServer } from "../../src/server";
+import { migrate, openDatabase } from "../../src/db";
+import { startServer, type HealthReport } from "../../src/server";
 
 export function createPublicTlsFixture(root: string): {
   PAWS_TLS_KEY_PATH: string;
@@ -50,7 +51,10 @@ export async function probePublicTls(
   const files = createPublicTlsFixture(join(root, "public-tls"));
   const tls = loadPublicTls({ ...files, PAWS_PUBLIC_DASHBOARD: "1" });
   if (!tls) throw new Error("Public TLS was not loaded");
+  const db = openDatabase(":memory:");
+  migrate(db);
   const server = startServer({
+    db,
     hostname: "127.0.0.1",
     port: 0,
     tls,
@@ -79,13 +83,18 @@ export async function probePublicTls(
         request.on("error", reject);
       },
     );
+    const health = JSON.parse(result.body) as HealthReport;
     observe(
       "public TLS configuration serves direct verified HTTPS",
-      result.status === 200 && result.body === JSON.stringify({ ok: true, service: "paws" }),
+      result.status === 200 &&
+        health.ok &&
+        health.service === "paws" &&
+        health.failedChecks.length === 0,
       result,
     );
   } finally {
     await server.stop(true);
+    db.close();
   }
   await probePublicTlsErrorPages(root, observe);
 }

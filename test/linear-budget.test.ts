@@ -344,7 +344,7 @@ describe("shared Linear budget", () => {
     try {
       const response = await fetch(`http://127.0.0.1:${server.port}/health`);
       expect(await response.json()).toMatchObject({
-        ok: true,
+        ok: false,
         service: "paws",
         linear: {
           budget: null,
