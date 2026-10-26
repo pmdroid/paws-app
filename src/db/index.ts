@@ -64,6 +64,7 @@ export {
 } from "./plan-proposals";
 export {
   TransitionRejectedError,
+  accrueAtJobBoundary,
   accrueAwake,
   applyWorkItemEvent,
   awakeBreakdown,
@@ -100,6 +101,7 @@ export {
   enqueueJob,
   enqueueJobOnce,
   extendJobLease,
+  hasLiveJob,
   failJob,
   getJob,
   listJobs,
