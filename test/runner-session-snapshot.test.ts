@@ -206,7 +206,7 @@ test.skipIf(!linux)("a bundle over the size cap is skipped with a notice", async
   const events = readFileSync(join(output, "events.jsonl"), "utf8")
     .trimEnd()
     .split("\n")
-    .map((line) => JSON.parse(line) as { type: string; text?: string });
+    .map((line) => JSON.parse(line) as { type: string; text?: string; notice?: boolean });
   expect(events).toContainEqual({ type: "progress", text: CLAUDE_SESSION_TOO_LARGE, notice: true });
 });
 
@@ -219,9 +219,9 @@ test.skipIf(!linux)("a cancelled turn doesn't snapshot", async () => {
   })();
   const result = await execute([...writeSession(), { type: "hang" }], {
     signal: controller.signal,
-  }).catch((error: unknown) => error);
+  });
   await waiting;
-  if (!(result instanceof Error)) expect(result.run.cancelled).toBe(true);
+  expect(result.run.cancelled).toBe(true);
   expect(existsSync(join(output, "session.ndjson.gz"))).toBe(false);
   expect(existsSync(join(output, "session.json"))).toBe(false);
 });
