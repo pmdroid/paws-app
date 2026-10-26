@@ -35,11 +35,7 @@ import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./s
 /** `github.auth`. Paws uses the GitHub App only. */
 export type GitHubConfigAuth = "app";
 
-/** Names the setup document when a removed `github.auth` mode is configured. */
-export const GITHUB_APP_ONLY_MESSAGE =
-  'Paws uses the GitHub App only. Set github.auth = "app" or remove it, then connect the App as described in docs/github-app.md.';
-
-export type TrackerKind = "github" | "linear" | "both";
+export type TrackerKind = "linear";
 
 export const IMPLEMENTERS = ["claude", "grok", "codex"] as const;
 
@@ -72,7 +68,6 @@ export function isImplementer(value: string): value is ImplementerName {
  * Secret values are paths, never the secret itself.
  */
 export type PawsConfigFile = {
-  linearCommentMode: boolean;
   linearTeam: string | null;
   linearTeamId: string | null;
   linearViewerId: string | null;
@@ -81,9 +76,6 @@ export type PawsConfigFile = {
   linearClientFile: string | null;
   webhooks: boolean | null;
   githubAuth: GitHubConfigAuth | null;
-  /** True when `[tracker]` or `[tracker.github]` is present. Absent means linear. */
-  trackerSpecified: boolean;
-  retiredTrackerConfigured: boolean;
   trackerKind: TrackerKind | null;
   repo: string | null;
   githubRepos: string[];
@@ -94,11 +86,9 @@ export type PawsConfigFile = {
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
-  /** `[merge] closeout_after_update`, the PAS-389 switch. `main_moved` replaces it. */
-  closeoutAfterUpdate?: boolean;
   /** `[merge] order`. Missing means the merge queue. */
   mergeOrder?: MergeOrder;
-  /** `[merge] main_moved`. Missing means `closeout_after_update`, then `ci`. */
+  /** `[merge] main_moved`. Missing means `ci`. */
   mainMoved?: MainMoved;
   /** `[merge.projects."<Linear project id>"]`. */
   mergeProjects?: Record<string, MergeOverride>;
@@ -137,7 +127,6 @@ export type PawsSetupConfig = {
 
 export function emptyConfigFile(): PawsConfigFile {
   return {
-    linearCommentMode: false,
     linearTeam: null,
     linearTeamId: null,
     linearViewerId: null,
@@ -145,8 +134,6 @@ export function emptyConfigFile(): PawsConfigFile {
     linearClientFile: null,
     webhooks: null,
     githubAuth: null,
-    trackerSpecified: false,
-    retiredTrackerConfigured: false,
     trackerKind: null,
     repo: null,
     githubRepos: [],
@@ -174,6 +161,14 @@ export function parseConfigToml(text: string): PawsConfigFile {
     const heading = /^\[\[?\s*([^[\]]+?)\s*\]\]?$/.exec(line);
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
+      if (
+        !/^(linear|github|tracker|closeout|merge|queue|checkout|caps|agents|server)$/.test(
+          section,
+        ) &&
+        !/^(closeout|merge|checkout|agents|skills)\./.test(section) &&
+        section !== "skills"
+      )
+        throw new Error(`config.toml line ${index + 1} has an unknown section: ${section}`);
       continue;
     }
     const eq = line.indexOf("=");
@@ -396,13 +391,13 @@ function assignConfig(
   line: number,
 ): void {
   if (section === "linear") {
-    if (key === "mode") config.linearCommentMode = linearCommentMode(value, line);
-    else if (key === "team") config.linearTeam = asString(value, line);
+    if (key === "team") config.linearTeam = asString(value, line);
     else if (key === "team_id") config.linearTeamId = asString(value, line);
     else if (key === "viewer_id") config.linearViewerId = asString(value, line);
     else if (key === "secret") config.linearSecret = asString(value, line);
     else if (key === "client_file") config.linearClientFile = asString(value, line);
     else if (key === "webhooks") config.webhooks = asBoolean(value, line);
+    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
   if (section === "github") {
@@ -412,12 +407,9 @@ function assignConfig(
     return;
   }
   if (section === "tracker") {
-    config.trackerSpecified = true;
-    if (key === "kind") config.trackerKind = trackerKind(value, line);
-    return;
-  }
-  if (section === "tracker.github") {
-    config.retiredTrackerConfigured = true;
+    if (key === "kind")
+      config.trackerKind = oneOf(["linear"] as const, value, line, "tracker.kind");
+    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
   const closeoutProject = /^closeout\.projects\."([^"\\]+)"$/.exec(section);
@@ -439,10 +431,11 @@ function assignConfig(
     return;
   }
   if (section === "merge") {
-    if (key === "closeout_after_update") config.closeoutAfterUpdate = asBoolean(value, line);
     if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
-    if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
-    if (key === "main_moved") config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");
+    else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
+    else if (key === "main_moved")
+      config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");
+    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
   if (section === "queue") {
@@ -546,23 +539,10 @@ export function setImplementerText(current: string, implementer: ImplementerName
   return `${body}[agents]\n${assignment}\n`;
 }
 
-function linearCommentMode(value: string | number | boolean | string[], line: number): boolean {
-  const mode = asString(value, line);
-  if (mode === "comments") return true;
-  if (mode === "agent-session" || mode === "agent") return false;
-  throw new Error(`config.toml line ${line} linear.mode must be agent-session`);
-}
-
 function githubAuth(value: string | number | boolean | string[], line: number): GitHubConfigAuth {
   const auth = asString(value, line);
   if (auth === "app") return auth;
-  throw new Error(`config.toml line ${line} github.auth must be "app". ${GITHUB_APP_ONLY_MESSAGE}`);
-}
-
-function trackerKind(value: string | number | boolean | string[], line: number): TrackerKind {
-  const kind = asString(value, line);
-  if (kind === "github" || kind === "linear" || kind === "both") return kind;
-  throw new Error(`config.toml line ${line} tracker.kind must be github, linear, or both`);
+  throw new Error(`config.toml line ${line} github.auth must be "app"`);
 }
 
 function asString(value: string | number | boolean | string[], line: number): string {

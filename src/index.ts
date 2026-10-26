@@ -31,7 +31,6 @@ import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
 import {
   closeoutPolicyRoot,
   ensureLayout,
-  LINEAR_COMMENT_MODE_REMOVED,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
   loadEnv,
@@ -886,7 +885,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();
 
   const tracker = linear?.tracker ?? null;
-  if (runtime.linearCommentMode) journal(LINEAR_COMMENT_MODE_REMOVED);
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
   const admission = createAdmission({ db, workspace: managed });

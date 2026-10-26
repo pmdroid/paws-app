@@ -2097,7 +2097,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
     const layout = await repoLayout("paws-e2e-");
     await writeFile(
       path.join(layout.pawsRoot, "config.toml"),
-      `[merge]\ncloseout_after_update = ${closeoutAfterUpdate}\n`,
+      `[merge]\nmain_moved = "${closeoutAfterUpdate ? "closeout" : "ci"}"\n`,
     );
     const tracker = createFakeTracker([
       {
@@ -3593,7 +3593,7 @@ async function runRebaseConflict(
   if (closeoutAfterUpdate !== undefined)
     await writeFile(
       path.join(layout.pawsRoot, "config.toml"),
-      `[merge]\ncloseout_after_update = ${closeoutAfterUpdate}\n`,
+      `[merge]\nmain_moved = "${closeoutAfterUpdate ? "closeout" : "ci"}"\n`,
     );
   if (merging !== undefined) {
     await writeFile(path.join(layout.pawsRoot, "config.toml"), merging.toml);
