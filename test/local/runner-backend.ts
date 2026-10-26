@@ -1527,7 +1527,7 @@ export async function probeRunnerBackend(
       input(prepared, {
         prepareOnly: true,
         role: "reviewer",
-        profile: { agent: "codex", model: null },
+        profile: { agent: "codex" as const, model: null },
       }),
     );
     const probe = await next();
@@ -1948,6 +1948,32 @@ export async function probeRunnerBackend(
         const moved = await step(replacement, "reviewer");
         assert(!("resumeSessionId" in moved));
         assert.equal(runnerSlotsHeldBetweenCommands(db, firstHost, now), 0);
+        // Reviewer preflight after a moved review/ejection must not use cached model evidence
+        // or the checkout pin. A revoked previous generation must not prevent reviewerPreparation.
+        db.run("UPDATE runner_agent_policy SET resolved_model='model'");
+        const prepareRequest = {
+          itemId: record.id,
+          profile: { agent: "codex" as const, model: null },
+          role: "reviewer" as const,
+          purpose: "prepare" as const,
+        };
+        const reviewerPrepareHost = (await placement.candidates(prepareRequest))[0]!.id;
+        const reviewerPreparation = affinityBackend.forItem(record.id)(
+          input(record, {
+            role: "reviewer",
+            prepareOnly: true,
+            profile: prepareRequest.profile,
+          }),
+        );
+        void reviewerPreparation.catch(() => undefined);
+        const reviewerProbe = await next(reviewerPrepareHost);
+        assert.equal(reviewerProbe.type, "probe");
+        // Independence belongs to fresh preflight identities, not the prior implementation.
+        health.submit(reviewerPrepareHost, {
+          ...result(reviewerProbe),
+          models: [{ id: "model", name: "Model" }],
+        });
+        assert.equal((await reviewerPreparation).stopReason, "end_turn");
         // Bringing the original host back must not pull the run back or repeat its notice.
         db.run("UPDATE runner SET status='active',revoked_at=NULL,last_seen_at=? WHERE id=?", [
           now,
@@ -2222,13 +2248,21 @@ export async function probeRunnerBackend(
     );
     work.heartbeat(hostIds[0]!);
     work.heartbeat(hostIds[1]!);
+    const probeHost = (
+      await placement.candidates({
+        itemId: failoverItem.id,
+        profile: { agent: "codex", model: "model" },
+        role: "implementer",
+        purpose: "prepare",
+      })
+    )[0]!.id;
     const preparing = placedBackend.forItem(failoverItem.id)(
       input(failoverItem, { prepareOnly: true, signal: failoverAbort.signal }),
     );
     pendingFailover = preparing;
-    const failoverProbe = await next(hostIds[1]!);
+    const failoverProbe = await next(probeHost);
     assert.equal(failoverProbe.type, "probe");
-    health.submit(hostIds[1]!, {
+    health.submit(probeHost, {
       ...result(failoverProbe),
       models: [{ id: "model", name: "Model" }],
     });
@@ -2492,7 +2526,7 @@ export async function probeRunnerBackend(
         input(artifactItem, {
           role: "reviewer",
           readOnly: true,
-          profile: { agent: "codex", model: null },
+          profile: { agent: "codex" as const, model: null },
           signal: failoverAbort.signal,
           onEvent(event) {
             if (event.type === "session_update") rejectedReviewEvents.push(JSON.stringify(event));
@@ -2794,11 +2828,29 @@ export async function probeRunnerBackend(
       for (const hostId of hostIds)
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [offlineAt, hostId]);
       const offline = item();
-      const offlineWait = await placedBackend
-        .forItem(offline.id)(input(offline))
-        .catch((error: unknown) => error);
+      const placementLogs: unknown[][] = [];
+      const warn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        placementLogs.push(args);
+      };
+      let offlineWait: unknown;
+      try {
+        offlineWait = await placedBackend
+          .forItem(offline.id)(input(offline))
+          .catch((error: unknown) => error);
+      } finally {
+        console.warn = warn;
+      }
       assert(offlineWait instanceof RunnerCapacityWait);
       assert.deepEqual(offlineWait.runnerIds, []);
+      assert.equal(placementLogs.length, 1);
+      for (const hostId of hostIds) {
+        const name = db
+          .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
+          .get(hostId)!.name;
+        assert(offlineWait.message.includes(`${name}: offline`));
+        assert(JSON.stringify(placementLogs).includes(`${name}: offline`));
+      }
       for (const hostId of hostIds) work.heartbeat(hostId);
       const offlineAbort = new AbortController();
       const offlineRun = placedBackend.forItem(offline.id)(
