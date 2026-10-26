@@ -218,6 +218,18 @@ export type WorkItemEventRow = {
   actor: string | null;
 };
 
+/** When each item last changed state, in ms, from `work_item_event`. Items without rows are absent. */
+export function listLastWorkItemEventTimes(db: Database): Map<string, number> {
+  return new Map(
+    db
+      .query<{ item_id: string; at: number }, []>(
+        "SELECT item_id, MAX(at) AS at FROM work_item_event GROUP BY item_id",
+      )
+      .all()
+      .map((row) => [row.item_id, row.at]),
+  );
+}
+
 /** An item's history, oldest first. `limit` keeps the newest rows. */
 export function listWorkItemEventRows(
   db: Database,
