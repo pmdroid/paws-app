@@ -62,7 +62,12 @@ export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
 ]);
 
 export const RunnerEventSchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("artifact"), artifact: RunnerArtifactSchema }),
+  z.strictObject({
+    type: z.literal("artifact"),
+    artifact: RunnerArtifactSchema,
+    /** Set by the runner when Paws refused the upload; the bytes were not sent. */
+    dropped: z.string().min(1).max(1024).optional(),
+  }),
   z.strictObject({
     type: z.literal("progress"),
     text: z.string().min(1).max(500),

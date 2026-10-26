@@ -433,6 +433,18 @@ export async function probeRunnerBackend(
       token: grant.token,
       sequence: 4,
       event: {
+        type: "artifact",
+        artifact: { ...artifact, id: randomUUID(), path: "reports/extra.png" },
+        dropped: "Paws keeps at most 20 artifacts per run",
+      },
+    });
+    work.event({
+      runnerId,
+      runId: assigned.runId,
+      generation: assigned.generation,
+      token: grant.token,
+      sequence: 5,
+      event: {
         type: "closeout",
         progress: {
           type: "finished",
@@ -468,6 +480,14 @@ export async function probeRunnerBackend(
       )
       .get(assigned.runId);
     assert.deepEqual(JSON.parse(refusal!.answer), { error: "The file is larger than 200 MB." });
+    const dropped = db
+      .query<{ answer: string }, [string]>(
+        "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=4",
+      )
+      .get(assigned.runId);
+    assert.deepEqual(JSON.parse(dropped!.answer), {
+      error: "reports/extra.png was not published: Paws keeps at most 20 artifacts per run.",
+    });
     const publicationAnswer = db
       .query<{ answer: string }, [string]>(
         "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=2",
