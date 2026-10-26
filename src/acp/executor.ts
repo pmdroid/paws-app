@@ -21,6 +21,7 @@ export async function executeItem(options: ExecuteItemOptions): Promise<ExecuteI
     itemId: options.itemId,
     pawsRoot: options.pawsRoot,
     ...(options.startRef ? { startRef: options.startRef } : {}),
+    ...(options.checkoutExclusions ? { checkoutExclusions: options.checkoutExclusions } : {}),
   });
   const run = await (options.promptRunner ?? runAgent)({
     ...options,

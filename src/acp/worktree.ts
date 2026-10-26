@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { loadConfigFile } from "../config";
+import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -130,6 +130,24 @@ export async function resolveStartRef(
 }
 
 /**
+ * The last fetched `origin/main` of the repository's bare mirror and every file path in it, from
+ * local objects only. `null` before Paws has cloned the repository.
+ */
+export async function mirrorFiles(options: {
+  owner: string;
+  repo: string;
+  pawsRoot: string;
+}): Promise<{ mirror: string; commit: string; files: string[] } | null> {
+  const mirror = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  if (!(await exists(mirror))) return null;
+  const ref = await resolveStartRef(mirror);
+  const commit = ref && (await revParse(mirror, `${ref}^{commit}`));
+  if (!commit) return null;
+  const listed = await git(["--git-dir", mirror, "ls-tree", "-r", "-z", "--name-only", commit]);
+  return { mirror, commit, files: listed.split("\0").filter(Boolean) };
+}
+
+/**
  * `git worktree add ~/.paws/worktrees/<item> -b paws/<item> origin/main`.
  * An existing worktree for the item is reused. The caller's checkout is never used.
  */
@@ -139,6 +157,8 @@ export async function createWorktree(options: {
   itemId: string;
   pawsRoot: string;
   startRef?: string;
+  /** The run's agent exclusions. Missing means what `config.toml` sets for the repository now. */
+  checkoutExclusions?: readonly string[];
 }): Promise<Worktree> {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   return onMirror(gitDir, () => addWorktree(gitDir, options));
@@ -153,9 +173,12 @@ async function addWorktree(
   }
   const path = worktreePath(options.pawsRoot, options.itemId);
   const branch = branchName(options.itemId);
-  const config = loadConfigFile(join(options.pawsRoot, "config.toml"));
   const patterns = exclusionPatterns(
-    config.checkoutProjects?.[`${options.owner}/${options.repo}`.toLowerCase()]?.exclude ?? [],
+    options.checkoutExclusions ??
+      checkoutExclusionsFor(
+        loadConfigFile(join(options.pawsRoot, "config.toml")).checkoutProjects,
+        `${options.owner}/${options.repo}`,
+      ).agent,
   );
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 

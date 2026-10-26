@@ -16,6 +16,7 @@ export {
 } from "./git";
 export {
   GLOBAL_POLICY_CODE,
+  loadCommitPolicy,
   loadOriginMainRootFiles,
   loadPolicy,
   NO_CLOSEOUT_POLICY,
