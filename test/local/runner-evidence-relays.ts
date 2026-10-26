@@ -104,7 +104,7 @@ export async function probeRunnerEvidenceRelays(
     hostname: "127.0.0.1",
     port: 0,
     tls,
-    fetch: (request) => coordinator.enrollment(request),
+    fetch: (request) => coordinator.hostEnrollment(request),
   });
   const artifacts = createRunnerArtifactStore({
     root: join(root, "artifacts"),
@@ -164,11 +164,13 @@ export async function probeRunnerEvidenceRelays(
   const statusError = (status: number) => (error: unknown) =>
     error instanceof RunnerRequestError && error.status === status;
   try {
-    const pairing = await daemon.beginPairing("Evidence relay");
-    assert(pairing.phase === "pending");
-    const { runnerId } = await coordinator.control.approvePairing(principal, pairing.code);
+    const enrollmentGrant = coordinator.control.createEnrollment(principal, {
+      name: "Evidence relay",
+    });
+    const enrolled = await daemon.enroll("Evidence relay", enrollmentGrant.token);
+    if (enrolled.phase !== "paired") throw new Error("Runner enrollment failed");
+    const { runnerId } = enrolled;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    assert.equal((await daemon.pollPairing()).phase, "paired");
     const item = insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
     const { run } = beginImplementRun(db, item.id, now);
     recordLinearInstallation(db, {

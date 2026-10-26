@@ -81,21 +81,28 @@ export async function probeRunnerRepositoryAccess(
     now: () => now,
     disconnect() {},
   });
-  const pending = await control.beginPairing({ name: "Repository VM", csr: client.csr });
-  const { runnerId } = await control.approvePairing(principal, pending.code);
+  const pending = { name: "Repository VM", csr: client.csr };
+  const identity = await control.enroll({
+    ...pending,
+    token: control.createEnrollment(principal, pending).token,
+  });
+  const { runnerId } = identity;
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   now = Date.now();
-  const identity = control.claimPairing(pending.id, pending.claim);
+
   assert.equal(identity.status, "approved");
-  if (identity.status !== "approved") throw new Error("Pairing was not approved");
+  if (identity.status !== "approved") throw new Error("Enrollment was not approved");
   const certificate = identity.certificate;
-  const reviewPairing = await control.beginPairing({ name: "Review VM", csr: client.csr });
-  const reviewRunnerId = (await control.approvePairing(principal, reviewPairing.code)).runnerId;
+  const reviewRequest = { name: "Review VM", csr: client.csr };
+  const reviewIdentity = await control.enroll({
+    ...reviewRequest,
+    token: control.createEnrollment(principal, reviewRequest).token,
+  });
+  const reviewRunnerId = reviewIdentity.runnerId;
   db.run("UPDATE runner SET status='active' WHERE id=?", [reviewRunnerId]);
   now = Date.now();
-  const reviewIdentity = control.claimPairing(reviewPairing.id, reviewPairing.claim);
   assert.equal(reviewIdentity.status, "approved");
-  if (reviewIdentity.status !== "approved") throw new Error("Review pairing was not approved");
+  if (reviewIdentity.status !== "approved") throw new Error("Review enrollment was not approved");
   const reviewCertificate = reviewIdentity.certificate;
   const work = createRunnerWork({
     db,

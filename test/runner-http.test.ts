@@ -13,7 +13,7 @@ test("runner HTTPS routes enforce enrollment, current roles and actual mTLS rene
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 5);
+    assert.equal(observations.length, 4);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

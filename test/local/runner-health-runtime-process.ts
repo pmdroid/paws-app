@@ -108,7 +108,7 @@ if (mode === "prepare") {
     hostname: "127.0.0.1",
     port: 0,
     tls: tls(),
-    fetch: (request) => coordinator.enrollment(request),
+    fetch: (request) => coordinator.hostEnrollment(request),
   });
   const config: Fixture = {
     browserPort: browser.port!,
@@ -117,11 +117,13 @@ if (mode === "prepare") {
   };
   const daemon = openRunnerDaemon(daemonOptions(config));
   try {
-    const pending = await daemon.beginPairing("Durable health runner");
-    assert(pending.phase === "pending");
-    const approved = await coordinator.control.approvePairing(principal, pending.code);
-    coordinator.control.setStatus(principal, approved.runnerId, "active");
-    const paired = await daemon.pollPairing();
+    const pending = coordinator.control.createEnrollment(principal, {
+      name: "Durable health runner",
+    });
+
+    const paired = await daemon.enroll("Durable health runner", pending.token);
+    if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
+    coordinator.control.setStatus(principal, paired.runnerId, "active");
     assert(paired.phase === "paired");
     if (process.argv[4] === "helpers") {
       config.helpers = true;

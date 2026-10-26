@@ -135,40 +135,24 @@ export async function probeRunnerCoordinator(
     port: 0,
     tls,
     async fetch(input) {
-      if (new URL(input.url).pathname === "/api/runner-pairings")
-        return coordinator.enrollment(input);
+      if (new URL(input.url).pathname === "/api/runner-enrollments")
+        return coordinator.hostEnrollment(input);
       return (await coordinator.browser(input, principal)) ?? new Response(null, { status: 404 });
     },
   });
   let keepAlive: Agent | undefined;
   try {
     const client = await createRunnerKey(join(root, "client"));
-    const pairing = await exchange<{ id: string; claim: string; code: string }>(
-      browser.port!,
-      "/api/runner-pairings",
-      tls.cert,
-      {
-        name: "Fixture VM",
-        csr: client.csr,
-      },
-    );
-    const pending = await exchange(browser.port!, "/api/runner-pairings", tls.cert, {
-      id: pairing.id,
-      claim: pairing.claim,
-    });
-    assert.equal(pending.status, "pending");
-    assert(!("signingKeys" in pending));
-    await exchange(browser.port!, "/api/runners/pairings/approve", tls.cert, {
-      code: pairing.code,
-    });
+    const enrollment = coordinator.control.createEnrollment(principal, { name: "Fixture VM" });
     const identity = await exchange<{
       certificate: string;
       runnerId: string;
       workspaceId: string;
       signingKeys: unknown;
-    }>(browser.port!, "/api/runner-pairings", tls.cert, {
-      id: pairing.id,
-      claim: pairing.claim,
+    }>(browser.port!, "/api/runner-enrollments", tls.cert, {
+      token: enrollment.token,
+      name: enrollment.name,
+      csr: client.csr,
     });
     coordinator.control.setStatus(principal, identity.runnerId, "active");
     assert.deepEqual(identity.signingKeys, initialized);
@@ -183,11 +167,10 @@ export async function probeRunnerCoordinator(
     );
     assert.deepEqual(renewed.signingKeys, initialized);
     observe(
-      "verified HTTPS pairing and actual mTLS renewal advertise only the persistent public command key",
+      "verified HTTPS enrollment and actual mTLS renewal advertise only the persistent public command key",
       true,
       {
         keyId: initialized[0].keyId,
-        pendingHasNoKeys: true,
         renewalHasSamePublicKey: true,
       },
     );

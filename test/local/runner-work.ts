@@ -80,9 +80,11 @@ export async function probeRunnerWork(
   });
   const client = await createRunnerKey(join(root, "client"));
   async function paired(name: string) {
-    const pending = await control.beginPairing({ name, csr: client.csr });
-    const { runnerId } = await control.approvePairing(principal, pending.code);
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+    const pending = { name, csr: client.csr };
+    const { runnerId } = await control.enroll({
+      ...pending,
+      token: control.createEnrollment(principal, pending).token,
+    });
     control.setStatus(principal, runnerId, "active");
     return runnerId;
   }

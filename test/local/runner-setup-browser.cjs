@@ -65,12 +65,9 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
       });
       configured = true;
       await page.getByRole("button", { name: "Check setup" }).click();
-      await page.getByRole("button", { name: "Pair a host" }).click();
-      await page.getByRole("dialog", { name: "Pair a host" }).waitFor();
-      assert.equal(
-        await page.getByRole("textbox", { name: "Pairing code from the host" }).count(),
-        1,
-      );
+      await page.getByRole("button", { name: "Add a host" }).click();
+      await page.getByRole("dialog", { name: "Add a host" }).waitFor();
+      assert.equal(await page.getByRole("textbox", { name: "Host name" }).count(), 1);
       assert.equal(
         await page.getByText("Workspace execution permission", { exact: true }).count(),
         0,
@@ -78,7 +75,7 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
       assert.equal(await page.getByRole("heading", { name: "Set up remote runners" }).count(), 0);
       assert.deepEqual(errors, []);
       observations.push({
-        name: `${screen} refresh switches to owner pairing and settings after configuration`,
+        name: `${screen} refresh switches to member enrollment and settings after configuration`,
         passed: true,
         observed: { configuredResponses: "scripted" },
       });

@@ -56,12 +56,15 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       disconnect() {},
     });
     const client = await createRunnerKey(join(root, "client"));
-    const pending = await control.beginPairing({ name: "Result channel proof", csr: client.csr });
+    const pending = { name: "Result channel proof", csr: client.csr };
     const runnerId = (
-      await control.approvePairing(
-        { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
-        pending.code,
-      )
+      await control.enroll({
+        ...pending,
+        token: control.createEnrollment(
+          { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
+          pending,
+        ).token,
+      })
     ).runnerId;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     const item = insertQueuedItem(db, { id: "result-item", now, sessionKey: "result-session" });

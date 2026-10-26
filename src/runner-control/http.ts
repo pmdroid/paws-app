@@ -3,13 +3,8 @@ import { RunnerAgentUpdateError, RunnerConcurrencyError } from "../db";
 import { RUNNER_CODING_AGENTS, RunnerAgentVersionSchema } from "../runner-protocol";
 import type { RunnerPeer } from "../runner-identity";
 import type { WorkspacePrincipal } from "../workspace";
-import { RunnerEnrollmentDenied, type RunnerControl } from "./pairing";
+import { RunnerEnrollmentDenied, type RunnerControl } from "./control";
 
-const code = z.object({ code: z.string().regex(/^[A-F0-9]{16}$/) }).strict();
-const enrollment = z.union([
-  z.object({ name: z.string().max(80), csr: z.string().max(16_384) }).strict(),
-  z.object({ id: z.string().max(80), claim: z.string().max(80) }).strict(),
-]);
 const hostEnrollment = z
   .object({
     token: z
@@ -50,25 +45,6 @@ export function createRunnerHttp(
 ) {
   let enrolling = 0;
   return {
-    async enrollment(request: Request): Promise<Response> {
-      if (new URL(request.url).protocol !== "https:")
-        return json({ error: "HTTPS is required." }, 400);
-      if (request.method !== "POST") return json({ error: "Use POST." }, 405);
-      if (enrolling >= 4) return json({ error: "Pairing is busy. Try again shortly." }, 429);
-      enrolling += 1;
-      try {
-        const input = enrollment.parse(await readJson(request));
-        return json(
-          "id" in input
-            ? control.claimPairing(input.id, input.claim)
-            : await control.beginPairing(input),
-        );
-      } catch {
-        return json({ error: "Runner pairing request is invalid or unavailable." }, 400);
-      } finally {
-        enrolling -= 1;
-      }
-    },
     /**
      * `POST /api/runner-enrollments`: the host posts its token, name and CSR once and receives
      * its identity. A used, expired or unknown token answers 401.
@@ -114,12 +90,6 @@ export function createRunnerHttp(
             ),
             config: options.hostConfig?.() ?? null,
           });
-        if (path === "/api/runners/pairings/inspect" && request.method === "POST")
-          return json(control.inspectPairing(principal, code.parse(await readJson(request)).code));
-        if (path === "/api/runners/pairings/approve" && request.method === "POST")
-          return json(
-            await control.approvePairing(principal, code.parse(await readJson(request)).code),
-          );
         const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/status$/.exec(path);
         if (match && request.method === "POST") {
           control.setStatus(

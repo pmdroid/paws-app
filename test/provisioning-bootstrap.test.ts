@@ -374,7 +374,7 @@ test("enroll fails with BootstrapError('enroll') on anything but a paired runner
   const outputs = [
     {
       exitCode: 1,
-      stderr: "Runner command failed. Check the service identity, configuration and pairing.\n",
+      stderr: "Runner command failed. Check the service identity, configuration and enrollment.\n",
     },
     { stdout: "" },
     { stdout: "not json\n" },

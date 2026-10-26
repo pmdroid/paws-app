@@ -173,66 +173,23 @@ const assert = require("node:assert/strict");
     observe("normal authenticated dashboard has three areas and a real empty runner list", {
       anonymous: 401,
     });
-    const verifierKey = crypto.generateKeyPairSync("ed25519").publicKey;
-    const verifierFingerprint = crypto
-      .createHash("sha256")
-      .update(verifierKey.export({ type: "spki", format: "der" }))
-      .digest("hex");
-    const pairing = await exchange(port, "/api/runner-pairings", {
-      name: "Linux proof host",
+    await owner.getByRole("button", { name: "Add a host" }).click();
+    await owner.getByRole("dialog", { name: "Add a host" }).waitFor();
+    await owner.getByRole("textbox", { name: "Host name" }).fill("Linux proof host");
+    const enrollment = await submit(owner, "Create command", "/enrollments");
+    const claimed = await exchange(port, "/api/runner-enrollments", {
+      token: enrollment.token,
+      name: enrollment.name,
       csr: manifest.client.csr,
-      verifierPublicKeyPem: verifierKey.export({ type: "spki", format: "pem" }).toString(),
-    });
-    assert.equal(pairing.status, 200);
-    await owner.getByRole("button", { name: "Pair a host" }).click();
-    await owner.getByRole("dialog", { name: "Pair a host" }).waitFor();
-    await owner.getByLabel("Pairing code from the host").fill("0000000000000000");
-    await owner.getByRole("button", { name: "Inspect host" }).click();
-    await owner.getByRole("alert").waitFor();
-    assert.equal(
-      await owner.getByLabel("Pairing code from the host").inputValue(),
-      "0000000000000000",
-    );
-    await owner.getByLabel("Pairing code from the host").fill(pairing.body.code);
-    await owner.getByLabel("Pairing code from the host").press("Enter");
-    await owner.getByText(pairing.body.requestFingerprint, { exact: true }).waitFor();
-    await owner.getByText(verifierFingerprint, { exact: true }).waitFor();
-    await owner.getByText("Verification key fingerprint", { exact: true }).waitFor();
-    await owner.screenshot({ path: path.join(root, "verifier-desktop.png"), fullPage: true });
-    await owner.setViewportSize({ width: 390, height: 844 });
-    await owner.waitForFunction(
-      () => document.querySelector("#side").getBoundingClientRect().right <= 0,
-    );
-    assert.equal(
-      await owner.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-      true,
-    );
-    await owner.screenshot({ path: path.join(root, "verifier-mobile.png"), fullPage: true });
-    await owner.setViewportSize({ width: 1440, height: 1000 });
-    const approvalRequest = owner.waitForRequest(
-      (request) =>
-        request.url().endsWith("/api/runners/pairings/approve") && request.method() === "POST",
-    );
-    await submit(owner, "Approve runner", "/approve");
-    assert.equal((await approvalRequest).postDataJSON().verifierFingerprint, verifierFingerprint);
-    await owner
-      .locator(".runner-list")
-      .getByRole("heading", { name: "Linux proof host" })
-      .waitFor();
-    const claimed = await exchange(port, "/api/runner-pairings", {
-      id: pairing.body.id,
-      claim: pairing.body.claim,
     });
     assert.equal(claimed.status, 200);
-    assert.equal(claimed.body.verifierFingerprint, verifierFingerprint);
+    await owner.getByRole("button", { name: "Close", exact: true }).click();
+    await owner.getByRole("button", { name: "Refresh runners" }).click();
     peer = { cert: claimed.body.certificate, key: manifest.client.key };
     const runnerId = claimed.body.runnerId,
       healthPath = `/api/runners/${runnerId}/health`;
-    observe("keyboard inspection and administrator approval pair the actual HTTPS host", {
+    observe("a workspace member enrolls the actual HTTPS host with a single-use token", {
       runnerId,
-      fingerprintCompared: true,
-      verifierFingerprintCompared: true,
-      exactVerifierFingerprintSubmitted: true,
     });
     await owner.getByRole("button", { name: "View health" }).click();
     await owner.getByText("No health checks yet.", { exact: true }).waitFor();
@@ -249,32 +206,6 @@ const assert = require("node:assert/strict");
     );
     await owner.getByLabel("Model, optional").fill("draft-model");
     await owner.getByLabel("Effort, optional").fill("draft-effort");
-    const pendingPairing = await exchange(port, "/api/runner-pairings", {
-      name: "Pending proof host",
-      csr: manifest.client.csr,
-    });
-    assert.equal(pendingPairing.status, 200);
-    await owner.getByRole("button", { name: "Pair a host" }).click();
-    await owner.getByLabel("Pairing code from the host").fill(pendingPairing.body.code);
-    await submit(owner, "Inspect host", "/inspect");
-    await owner.getByText("Pending proof host", { exact: true }).waitFor();
-    assert.equal(await owner.locator('select[name="agent"]').inputValue(), "codex");
-    assert.equal(await owner.getByLabel("Model, optional").inputValue(), "draft-model");
-    assert.equal(await owner.getByLabel("Effort, optional").inputValue(), "draft-effort");
-    await owner.route("**/api/runners/*/health", (route) => route.abort());
-    await owner.getByRole("button", { name: "Refresh runners" }).click();
-    await owner.getByRole("alert").waitFor();
-    assert.equal(
-      await owner.getByRole("button", { name: "Approve runner", exact: true }).count(),
-      1,
-    );
-    await owner.unroute("**/api/runners/*/health");
-    await owner.getByRole("button", { name: "Refresh runners" }).click();
-    await owner.getByRole("button", { name: "Check connection", exact: true }).waitFor();
-    observe(
-      "parent paints preserve form nodes and optional health failures retain pending administrator pairing",
-      { retainedInspection: true },
-    );
     const probe = await submit(owner, "Check connection", "/health");
     const commands = await exchange(manifest.runnerPort, "/v1/commands", undefined, peer);
     const envelope = commands.body.commands.find(
@@ -358,10 +289,7 @@ const assert = require("node:assert/strict");
     );
     const member = await pageFor("member");
     await member.locator(".runner-list h2").waitFor();
-    assert.equal(
-      await member.locator("[data-runner-pair],#runner-pairing,[data-runner-status]").count(),
-      0,
-    );
+    assert.equal(await member.locator("[data-runner-status]").count(), 0);
     await member.getByRole("button", { name: "View health" }).click();
     await member.getByText("Signed in via subscription", { exact: true }).waitFor();
     assert.equal(await member.locator("#runner-health").count(), 0);
@@ -423,20 +351,6 @@ const assert = require("node:assert/strict");
       rejection = failure.code;
     }
     assert([403, "ECONNRESET"].includes(rejection));
-    const control = await exchange(port, "/api/runner-pairings", {
-      id: pendingPairing.body.id,
-      claim: pendingPairing.body.claim,
-    });
-    assert.equal(control.status, 200);
-    assert.equal(
-      (
-        await exchange(manifest.runnerPort, "/v1/commands", undefined, {
-          cert: control.body.certificate,
-          key: manifest.client.key,
-        })
-      ).status,
-      200,
-    );
     observe("network errors can be retried and revocation denies the former mTLS identity", {
       revoked: true,
       rejection,

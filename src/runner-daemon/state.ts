@@ -1,10 +1,4 @@
-import {
-  createHash,
-  createPrivateKey,
-  createPublicKey,
-  X509Certificate,
-  type KeyObject,
-} from "node:crypto";
+import { createPrivateKey, createPublicKey, X509Certificate, type KeyObject } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -46,7 +40,6 @@ export const SigningKeysSchema = z
   .min(1)
   .max(8)
   .refine((keys) => new Set(keys.map((key) => key.keyId)).size === keys.length);
-const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const verifierFingerprint = z
   .string()
   .regex(/^[a-f0-9]{64}$/)
@@ -56,18 +49,6 @@ const common = {
   runnerApiUrl: z.string(),
   csr: z.string().min(1).max(16_384),
 };
-export const PairingChallengeSchema = z.strictObject({
-  id: identifier,
-  claim: z
-    .string()
-    .min(16)
-    .max(256)
-    .regex(/^[A-Za-z0-9_-]+$/),
-  code: z.string().regex(/^[A-F0-9]{16}$/),
-  requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-  verifierFingerprint,
-  expiresAt: timestamp,
-});
 export const ApprovedIdentitySchema = z.strictObject({
   runnerId: identifier,
   workspaceId: identifier,
@@ -78,7 +59,6 @@ export const ApprovedIdentitySchema = z.strictObject({
 });
 const StateSchema = z.discriminatedUnion("phase", [
   z.strictObject({ ...common, phase: z.literal("prepared") }),
-  z.strictObject({ ...common, phase: z.literal("pending"), ...PairingChallengeSchema.shape }),
   z.strictObject({
     ...common,
     phase: z.literal("paired"),
@@ -88,7 +68,6 @@ const StateSchema = z.discriminatedUnion("phase", [
 ]);
 export type RunnerState = z.infer<typeof StateSchema>;
 export type PairedState = Extract<RunnerState, { phase: "paired" }>;
-export type PairingChallenge = z.infer<typeof PairingChallengeSchema>;
 
 export function trustedSigningKeys(
   state: PairedState,
@@ -106,19 +85,6 @@ export function trustedSigningKeys(
       if (!pins.get(id)?.equals(key))
         throw new Error("Runner job signing key does not match its pin.");
   return keys;
-}
-
-export function readRecovery(root: string, runnerId: string): PairingChallenge | null {
-  const raw = readSecretFile(join(root, "identity", "recovery.json"));
-  if (raw === null) return null;
-  const recovery = z
-    .strictObject({ runnerId: identifier, challenge: PairingChallengeSchema })
-    .parse(JSON.parse(raw));
-  return recovery.runnerId === runnerId ? recovery.challenge : null;
-}
-
-export function writeRecovery(root: string, runnerId: string, challenge: PairingChallenge): void {
-  writeSecretFile(join(root, "identity", "recovery.json"), JSON.stringify({ runnerId, challenge }));
 }
 
 export function readState(root: string): RunnerState | null {
@@ -187,8 +153,4 @@ export function validateIdentity(
     (!allowExpired && now >= Date.parse(authority.validTo))
   )
     throw new Error("Runner certificate does not match the paired identity.");
-}
-
-export function requestFingerprint(csr: string): string {
-  return createHash("sha256").update(csr).digest("hex");
 }

@@ -152,11 +152,8 @@ export {
 export { immediate } from "./tx";
 export {
   createRunnerEnrollment,
-  createRunnerPairing,
   enrollRunner,
-  expireRunnerPairings,
   findRunnerEnrollment,
-  findRunnerPairing,
   getRunner,
   runRunnerName,
   listRunners,
@@ -166,7 +163,6 @@ export {
   runnerAgentUsage,
   getRunnerCertificate,
   runnerForCertificate,
-  approveRunnerPairing,
   renewRunnerCertificate,
   isCurrentRunnerCertificate,
   updateRunnerStatus,
@@ -179,7 +175,6 @@ export {
   type RunnerHostSample,
   type RunnerAgentLimit,
   type RunnerEnrollment,
-  type RunnerPairing,
   type StoredRunnerCertificate,
 } from "./runners";
 export {

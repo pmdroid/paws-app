@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeRunnerCoordinator } from "./local/runner-coordinator";
 
-test("the coordinator composes persistent signing identity, pairing and fenced mTLS work", async () => {
+test("the coordinator composes persistent signing identity, enrollment and fenced mTLS work", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-coordinator-"));
   const observations: string[] = [];
   try {

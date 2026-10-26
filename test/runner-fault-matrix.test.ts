@@ -223,10 +223,10 @@ async function runRemoteFault(fault: Fault) {
     certificateRoot: issuer,
     disconnect() {},
   });
-  const pairing = await control.beginPairing({
+  const enrollment = {
     name: "fixture",
     csr: (await createRunnerKey(join(root, "client"))).csr,
-  });
+  };
   const owner = {
     workspaceId: workspace.id,
     userId,
@@ -234,7 +234,10 @@ async function runRemoteFault(fault: Fault) {
     authenticatedAt: now,
     teamIds: [],
   };
-  const { runnerId } = await control.approvePairing(owner, pairing.code);
+  const { runnerId } = await control.enroll({
+    ...enrollment,
+    token: control.createEnrollment(owner, enrollment).token,
+  });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   for (const agent of ["claude", "codex"])
