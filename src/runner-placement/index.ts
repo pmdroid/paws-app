@@ -65,6 +65,7 @@ export type PlacementRequest = {
   profile?: PlacementProfile;
   role: "implementer" | "reviewer";
   purpose: PlacementPurpose;
+  /** Failed hosts to avoid for new placement; an online pin retries a fresh session there. */
   excludeRunnerIds?: readonly string[];
   /** Runner assigned to this run. Only an unavailable host permits moving the run. */
   pinnedRunnerId?: string;

@@ -277,10 +277,15 @@ export function createRunnerPlacement(options: {
             .get(runner.id, at)
         )
           return [];
-        if (input.excludeRunnerIds?.includes(runner.id)) return [];
+        // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
+        // session on its pinned host instead of moving its checkout and held slot.
+        if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) return [];
         const own = runner.reason === "own";
         if (runner.cooldownUntil > at) return [];
+        // A fresh session may correct a reported model mismatch. The receipt still rejects
+        // actual implementer-model reuse, and failover bounds the number of attempts.
         if (
+          !(pinnedOnline && input.excludeRunnerIds?.includes(runner.id)) &&
           input.role === "reviewer" &&
           lastImplementation?.model &&
           (input.profile?.model ?? runner.resolvedModel) === lastImplementation.model
