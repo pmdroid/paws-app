@@ -38,6 +38,21 @@ export class UsageLimitPause extends Error {
   }
 }
 
+/** Usage-limit responses and waits share this budget across the whole failover call. */
+export const MAX_USAGE_LIMIT_EVENTS = 3;
+
+export class UsageLimitExhaustedError extends Error {
+  override readonly name = "UsageLimitExhaustedError";
+  constructor(
+    readonly runnerId: string | null,
+    cause: UsageLimitPause | RetryableRunnerError,
+  ) {
+    super(`Runner usage-limit retry budget exhausted after ${MAX_USAGE_LIMIT_EVENTS} events`, {
+      cause,
+    });
+  }
+}
+
 export type UsageLimit = { runnerId: string; resetsAt: number | null; resumeAt: number };
 
 export type FailoverAttempt = (
@@ -63,6 +78,7 @@ export async function runWithFailover(
   let basePrompt = prompt;
   let deadline = performance.now() + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
   let limit: UsageLimit | undefined;
+  let usageLimitEvents = 0;
   for (let index = 0; index < 3;) {
     input.signal?.throwIfAborted();
     try {
@@ -71,7 +87,9 @@ export async function runWithFailover(
       return await attempt({ ...input, prompt, timeoutMs: remaining }, excluded, limit);
     } catch (error) {
       if (error instanceof UsageLimitPause && usageLimits) {
-        // Waiting for a reset is not an attempt, and the wait does not count against the run.
+        if (++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
+          throw new UsageLimitExhaustedError(error.runnerId, error);
+        // Waiting does not consume execution time, but does consume the usage-limit budget.
         const waitingAt = performance.now();
         await usageLimits.pause(error);
         input.signal?.throwIfAborted();
@@ -85,6 +103,8 @@ export async function runWithFailover(
       input.signal?.throwIfAborted();
       const usageLimit = usageLimits ? error.usageLimit : undefined;
       if ((!usageLimit && index === 2) || performance.now() >= deadline) throw error;
+      if (usageLimit && ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
+        throw new UsageLimitExhaustedError(error.runnerId, error);
       if (usageLimit)
         // The runner stays eligible: its cooldown keeps it out until the reset, and another
         // runner with an available account can take the work meanwhile.
