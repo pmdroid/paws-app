@@ -69,7 +69,11 @@ export async function shutdownPaws(
   } catch (error) {
     const failures = error instanceof PawsStopError ? error.failures : [{ stage: "stop", error }];
     for (const failure of failures) {
-      const detail = failure.error instanceof Error ? failure.error.stack : String(failure.error);
+      const message = String(failure.error);
+      const stack = failure.error instanceof Error ? failure.error.stack : undefined;
+      const detail = stack?.startsWith(message)
+        ? stack
+        : [message, stack].filter(Boolean).join("\n");
       journal(`Paws shutdown failed at ${failure.stage}: ${detail}`);
     }
     if (!(error instanceof PawsStopError && error.stateFlushed)) code = 1;
