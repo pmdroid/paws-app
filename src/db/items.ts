@@ -24,7 +24,7 @@ import {
   type WorkItemState,
   type WorkBrief,
 } from "../core";
-import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
+import { cancelOpenJobs, enqueueJobOnce, hasLiveJob } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
 import { getLinearSessionGeneration } from "./linear-sessions";
@@ -366,8 +366,13 @@ export function accrueAwake(
     if (current === null) throw new Error(`work item ${id} not found`);
     const baseline = sinceMono ?? current.lastMonoMs;
     const delta = baseline === null ? 0 : Math.max(0, mono - baseline);
-    const category = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
-    const awake = countsAwakeTime(current.state, current.checkpoint, current.acceptedHead);
+    const counted = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
+    // Closeout time is time a job spends verifying. An item left in `verifying` with no
+    // job working on it is idle and does not count toward the cap (PAS-771).
+    const idle = counted === "closeout" && !hasLiveJob(db, id, now);
+    const category = idle ? null : counted;
+    const awake =
+      !idle && countsAwakeTime(current.state, current.checkpoint, current.acceptedHead);
     const awakeMs = current.awakeMs + (awake ? delta : 0);
     if (delta > 0 || (current.lastMonoMs === null && sinceMono === undefined)) {
       const breakdown =
