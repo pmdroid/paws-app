@@ -433,7 +433,7 @@ function issuePage(
           : `<section class="closeout-result blocked"><div class="min-w-0"><h2>${esc(question.title)}</h2><p>${esc(plainTask(question.body))}</p><div class="row wrap">${linkList(question.links)}</div></div></section>`,
       )
       .join("")}
-    ${visualReviewSection(snapshot, item, engineUrl)}
+    ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
     ${verdict ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>` : ""}
     ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item.state)) : ""}
     ${run ? evidenceSlot(snapshot, run.id) : ""}
@@ -804,7 +804,7 @@ function phaseStrip(
         `<li class="run-step ${cls}"${current ? ' aria-current="step"' : ""}>${cls === "done" ? "✓ " : cls === "failed" ? "✕ " : ""}${esc(name)}</li>`,
     )
     .join("");
-  return `<ol class="run-stepper${review ? " with-review" : ""}" aria-label="Run progress" title="${esc(waiting ? "Waiting for a visual review in Linear. The item is not complete." : phase.detail)}">${marks}</ol>`;
+  return `<ol class="run-stepper${review ? " with-review" : ""}" aria-label="Run progress" title="${esc(waiting ? "Waiting for a visual review. The item is not complete." : phase.detail)}">${marks}</ol>`;
 }
 
 function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: StatusVerdict): string {

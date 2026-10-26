@@ -138,6 +138,14 @@ export function setLinkAskStatus(questionId: string, message: string, busy: bool
   else pending.delete(questionId);
 }
 
+export function linkAskDraft(questionId: string): string {
+  return drafts.get(questionId) ?? "";
+}
+
+export function linkAskMessage(questionId: string): string {
+  return messages.get(questionId) ?? "";
+}
+
 export function linkAskPending(questionId: string): boolean {
   return pending.has(questionId);
 }

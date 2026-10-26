@@ -304,3 +304,63 @@ describe("visual review on the run page", () => {
     expect(css).toContain(".evidence-more {\n  display: grid;");
   });
 });
+
+describe("visual review asked with a link", () => {
+  function linkAsked() {
+    const { snapshot, runId } = fixture(
+      [
+        { ...CHANGES, marks: [{ id: "m-1", evidenceId: "shot-1" }] },
+        round({
+          questionId: "q-2",
+          round: 2,
+          evidenceIds: ["shot-1", "shot-2"],
+          commit: "b".repeat(40),
+        }),
+      ],
+      "verifying",
+    );
+    const question = snapshot.questions[0]!;
+    question.links = [];
+    question.linkAsk = {
+      kind: "screenshots",
+      head: "4b317d5".padEnd(40, "0"),
+      title: "The screens of 4b317d5 need your visual review.",
+      detail: "2 changed screens for visual-proof: shot-1.png, shot-2.png.",
+      link: "https://paws.example/status/issues/ENG-102#visual-review",
+    };
+    return { snapshot, runId };
+  }
+
+  test("the card shows every changed screen large, the earlier round and the three decisions", () => {
+    const { snapshot, runId } = linkAsked();
+    const html = runPage(snapshot, runId);
+    expect(html).toContain(
+      '<section id="visual-review" class="card visual-review visual-review-ask"',
+    );
+    expect(html).toContain("visual-proof · round 2");
+    expect(html.match(/class="visual-review-frame"/g)).toHaveLength(2);
+    expect(html).toContain('data-review-draw="q-2" data-review-shot="1" data-evidence-id="shot-2"');
+    expect(html).toContain("Changes requested by Ada Reviewer · 1 mark, addressed in");
+    expect(html).toContain('value="approve">Approve 4b317d5</button>');
+    expect(html).toContain('value="changes">Request changes</button>');
+    expect(html).toContain('data-visual-review-stop="');
+    expect(html).toContain("A reply in Linear never approves; it requests changes.");
+    expect(html).toContain("any other new commit asks again");
+    // The Linear answer link is gone: Linear only carries the link ask.
+    expect(html).not.toContain("Answer in Linear");
+  });
+
+  test("the overview lists it under Needs you with Review screenshots", () => {
+    const { snapshot } = linkAsked();
+    const html = render({
+      route: { view: "overview" },
+      phase: "ready",
+      snapshot,
+      error: null,
+      engineUrl: null,
+    }).content;
+    expect(html).toContain("2 changed screens for visual-proof: shot-1.png, shot-2.png.");
+    expect(html).toContain("#visual-review");
+    expect(html).toContain(">Review screenshots</a>");
+  });
+});

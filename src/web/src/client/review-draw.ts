@@ -4,11 +4,11 @@ import { evidenceFileUrl } from "./evidence";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
 import { renderMarkup } from "./theme";
+import { forgetDrawnMarks, INK, strokesOf, type Stroke } from "./review-marks";
+
+export type { Stroke } from "./review-marks";
 
 export type ReviewShot = { id: string; name: string; src: string };
-export type Stroke = (readonly [number, number])[];
-
-const INK = "#e5484d";
 const WIDTH = 0.006;
 
 export function drawStrokes(
@@ -48,32 +48,76 @@ export function reviewShots(
   });
 }
 
-export function reviewDrawMarkup(shots: readonly ReviewShot[]): string {
+/**
+ * Sends the change request: the note, and each screenshot with marks on it
+ * drawn into the image. Throws with the server's message.
+ */
+export async function sendReviewChanges(
+  questionId: string,
+  shots: readonly ReviewShot[],
+  note: string,
+): Promise<void> {
+  const strokes = strokesOf(questionId, shots);
+  const marked = shots.filter((shot) => strokes.get(shot.id)!.length);
+  if (!marked.length && !note.trim())
+    throw new Error("Draw on a screenshot or write what to change.");
+  const form = new FormData();
+  form.append("questionId", questionId);
+  form.append("note", note);
+  for (const shot of marked)
+    form.append(`mark:${shot.id}`, await composite(shot, strokes.get(shot.id)!), "mark.png");
+  const response = await fetch("/api/visual-review-changes", {
+    method: "POST",
+    headers: { "x-paws-csrf": readCsrfToken(document) },
+    body: form,
+  });
+  const body = (await response.json().catch((caughtError1) => {
+    journalCaught(caughtError1, "review-draw.sendReviewChanges.json", null);
+    return null;
+  })) as { error?: string } | null;
+  if (!response.ok) throw new Error(body?.error ?? "The changes could not be sent. Try again.");
+  forgetDrawnMarks(questionId);
+}
+
+export function reviewDrawMarkup(
+  shots: readonly ReviewShot[],
+  options: { collect?: boolean; start?: number } = {},
+): string {
+  const start = options.start ?? 0;
   const list = shots
     .map(
       (shot, index) =>
-        `<li><button type="button" class="review-draw-shot" data-draw-shot="${index}" aria-pressed="${index === 0}"><img src="${esc(shot.src)}" alt="" /><span data-draw-count>${esc(shot.name)}</span></button></li>`,
+        `<li><button type="button" class="review-draw-shot" data-draw-shot="${index}" aria-pressed="${index === start}"><img src="${esc(shot.src)}" alt="" /><span data-draw-count>${esc(shot.name)}</span></button></li>`,
     )
     .join("");
-  return `<dialog class="review-draw" aria-labelledby="review-draw-heading"><div class="dialog-body review-draw-body"><div class="between"><h2 id="review-draw-heading">Request changes</h2><button class="btn" type="button" data-draw-close>Close</button></div><p class="sub">Draw on the screenshots to mark what needs work. The agent gets each marked screenshot with your note.</p>${shots.length > 1 ? `<ul class="review-draw-shots">${list}</ul>` : ""}<div class="review-draw-stage"><img data-draw-image src="${esc(shots[0]?.src ?? "")}" alt="${esc(shots[0]?.name ?? "")}" /><canvas data-draw-canvas aria-label="Draw on the screenshot"></canvas></div><div class="row"><button class="btn sm" type="button" data-draw-undo>Undo</button><button class="btn sm" type="button" data-draw-clear>Clear</button></div><label class="field"><span>Note for the agent</span><textarea data-draw-note rows="3" maxlength="10000" placeholder="Move this button left"></textarea></label><p class="muted" data-draw-message role="status"></p><div class="row"><button class="btn primary" type="button" data-draw-submit>Request changes</button></div></div></dialog>`;
+  const footer = options.collect
+    ? `<p class="muted">Your marks stay on the card. Send them with Request changes.</p><div class="row"><button class="btn primary" type="button" data-draw-close>Done</button></div>`
+    : `<label class="field"><span>Note for the agent</span><textarea data-draw-note rows="3" maxlength="10000" placeholder="Move this button left"></textarea></label><p class="muted" data-draw-message role="status"></p><div class="row"><button class="btn primary" type="button" data-draw-submit>Request changes</button></div>`;
+  return `<dialog class="review-draw" aria-labelledby="review-draw-heading"><div class="dialog-body review-draw-body"><div class="between"><h2 id="review-draw-heading">${options.collect ? "Draw on screenshots" : "Request changes"}</h2><button class="btn" type="button" data-draw-close>Close</button></div><p class="sub">Draw on the screenshots to mark what needs work. The agent gets each marked screenshot with your note.</p>${shots.length > 1 ? `<ul class="review-draw-shots">${list}</ul>` : ""}<div class="review-draw-stage"><img data-draw-image src="${esc(shots[start]?.src ?? "")}" alt="${esc(shots[start]?.name ?? "")}" /><canvas data-draw-canvas aria-label="Draw on the screenshot"></canvas></div><div class="row"><button class="btn sm" type="button" data-draw-undo>Undo</button><button class="btn sm" type="button" data-draw-clear>Clear</button></div>${footer}</div></dialog>`;
 }
 
+/**
+ * The drawing dialog. By default it sends the change request itself; with
+ * `collect` it only keeps the marks for the card's Request changes, and
+ * `done` runs when it closes.
+ */
 export function openReviewDraw(
   questionId: string,
   shots: readonly ReviewShot[],
-  done: () => Promise<void>,
+  done: () => Promise<void> | void,
+  options: { collect?: boolean; start?: number } = {},
 ): void {
   const host = document.createElement("div");
   document.body.append(host);
-  renderMarkup(host, reviewDrawMarkup(shots));
+  renderMarkup(host, reviewDrawMarkup(shots, options));
   const dialog = host.querySelector<HTMLDialogElement>("dialog")!;
   const image = dialog.querySelector<HTMLImageElement>("[data-draw-image]")!;
   const canvas = dialog.querySelector<HTMLCanvasElement>("[data-draw-canvas]")!;
-  const note = dialog.querySelector<HTMLTextAreaElement>("[data-draw-note]")!;
-  const message = dialog.querySelector<HTMLElement>("[data-draw-message]")!;
-  const submit = dialog.querySelector<HTMLButtonElement>("[data-draw-submit]")!;
-  const strokes = new Map<string, Stroke[]>(shots.map((shot) => [shot.id, []]));
-  let selected = 0;
+  const note = dialog.querySelector<HTMLTextAreaElement>("[data-draw-note]");
+  const message = dialog.querySelector<HTMLElement>("[data-draw-message]");
+  const submit = dialog.querySelector<HTMLButtonElement>("[data-draw-submit]");
+  const strokes = strokesOf(questionId, shots);
+  let selected = Math.min(options.start ?? 0, Math.max(0, shots.length - 1));
   let active: Stroke | null = null;
   const current = () => strokes.get(shots[selected]!.id)!;
 
@@ -147,37 +191,22 @@ export function openReviewDraw(
     counts();
     redraw();
   });
-  dialog.querySelector("[data-draw-close]")!.addEventListener("click", () => dialog.close());
-  dialog.addEventListener("close", () => host.remove());
-  submit.addEventListener("click", async () => {
-    const marked = shots.filter((shot) => strokes.get(shot.id)!.length);
-    if (!marked.length && !note.value.trim()) {
-      message.textContent = "Draw on a screenshot or write what to change.";
-      return;
-    }
+  for (const close of dialog.querySelectorAll("[data-draw-close]"))
+    close.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => {
+    host.remove();
+    if (options.collect) void done();
+  });
+  submit?.addEventListener("click", async () => {
     submit.disabled = true;
-    message.textContent = "Sending…";
+    message!.textContent = "Sending…";
     try {
-      const form = new FormData();
-      form.append("questionId", questionId);
-      form.append("note", note.value);
-      for (const shot of marked)
-        form.append(`mark:${shot.id}`, await composite(shot, strokes.get(shot.id)!), "mark.png");
-      const response = await fetch("/api/visual-review-changes", {
-        method: "POST",
-        headers: { "x-paws-csrf": readCsrfToken(document) },
-        body: form,
-      });
-      const body = (await response.json().catch((caughtError1) => {
-        journalCaught(caughtError1, "review-draw.openReviewDraw.json", null);
-        return null;
-      })) as { error?: string } | null;
-      if (!response.ok) throw new Error(body?.error ?? "The changes could not be sent. Try again.");
+      await sendReviewChanges(questionId, shots, note!.value);
       dialog.close();
       await done();
     } catch (error) {
-      journalCaught(error, "review-draw.openReviewDraw.append", null);
-      message.textContent =
+      journalCaught(error, "review-draw.openReviewDraw.send", null);
+      message!.textContent =
         error instanceof Error ? error.message : "The changes could not be sent. Try again.";
       submit.disabled = false;
     }
