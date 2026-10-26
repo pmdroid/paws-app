@@ -184,7 +184,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
           reason: question.linkAsk.detail || question.linkAsk.title,
           action: LINK_ASK_ACTIONS[question.linkAsk.kind],
           href: `${routeHref({ view: "issues", id: item.id })}#${LINK_ASK_ANCHORS[question.linkAsk.kind]}`,
-          primary: question.linkAsk.kind !== "question",
+          primary: question.linkAsk.kind !== "question" && question.linkAsk.kind !== "rounds",
         },
       ];
     if (question)

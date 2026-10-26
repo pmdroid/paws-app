@@ -278,7 +278,7 @@ export interface StatusQuestion {
   linkAsk?: StatusLinkAsk;
 }
 
-export const LINK_ASK_KINDS = ["bypass", "screenshots", "risk", "question"] as const;
+export const LINK_ASK_KINDS = ["bypass", "screenshots", "risk", "question", "rounds"] as const;
 export type LinkAskKind = (typeof LINK_ASK_KINDS)[number];
 
 /** A decision a signed-in person makes on the item page. Linear carries its `link`. */
@@ -291,6 +291,8 @@ export interface StatusLinkAsk {
   link: string;
   /** For a `bypass` ask: the failed checks a person may bypass on this head. */
   bypass?: StatusBypassAsk;
+  /** On the `rounds` kind: the failed review rounds and the findings still open. */
+  rounds?: StatusReviewRounds;
 }
 
 /** What the "Closeout needs your help" card shows and binds a bypass to. */
@@ -309,6 +311,16 @@ export interface StatusBypassCheck {
   attempt: number | null;
   /** The finding, or the last lines of the check's output. */
   finding: string;
+}
+
+/** The review rounds that ran out, shown with the choice on the item page. */
+export interface StatusReviewRounds {
+  rounds: { head: string; findings: number }[];
+  open: { severity: string; location: string; bugClass: string }[];
+  /** The class of bug reported most often across the rounds. */
+  bugClass: string | null;
+  /** How many more rounds Keep going grants, when the policy says. */
+  limit: number | null;
 }
 
 export interface StatusCheck {
@@ -1235,6 +1247,9 @@ function readLinkAsk(input: unknown, path: string): StatusLinkAsk {
     detail: string(body, "detail", path),
     link: text(body, "link", path),
     ...(body.bypass === undefined ? {} : { bypass: readBypassAsk(body.bypass, `${path}.bypass`) }),
+    ...(body.rounds === undefined
+      ? {}
+      : { rounds: readReviewRounds(body.rounds, `${path}.rounds`) }),
   };
 }
 
@@ -1254,6 +1269,30 @@ function readBypassAsk(input: unknown, path: string): StatusBypassAsk {
         finding: string(check, "finding", at),
       };
     }),
+  };
+}
+
+function readReviewRounds(input: unknown, path: string): StatusReviewRounds {
+  const body = object(input, path);
+  return {
+    rounds: array(body, "rounds", path).map((entry, index) => {
+      const round = object(entry, `${path}.rounds[${index}]`);
+      return {
+        head: text(round, "head", `${path}.rounds[${index}]`),
+        findings: count(round, "findings", `${path}.rounds[${index}]`),
+      };
+    }),
+    open: array(body, "open", path).map((entry, index) => {
+      const finding = object(entry, `${path}.open[${index}]`);
+      const at = `${path}.open[${index}]`;
+      return {
+        severity: text(finding, "severity", at),
+        location: text(finding, "location", at),
+        bugClass: text(finding, "bugClass", at),
+      };
+    }),
+    bugClass: body.bugClass === null ? null : text(body, "bugClass", path),
+    limit: optionalCount(body, "limit", path),
   };
 }
 
