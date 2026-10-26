@@ -115,7 +115,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "workspace",
     "deployment",
   ],
-  settings: ["journal", "config", "core", "db", "skills", "workspace"],
+  settings: ["journal", "config", "core", "db", "skills", "workspace", "worktree-checkout"],
   skills: ["journal", "core", "db", "runner-protocol"],
   runtimes: ["journal"],
   "agent-catalog": ["journal", "db"],
