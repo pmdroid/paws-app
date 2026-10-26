@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -227,7 +228,8 @@ async function apiResponse(request: Request, provider: StatusProvider): Promise<
     const parsed = parseStatusSnapshot(snapshot);
     if (!parsed.ok) return json({ error: parsed.error }, 500);
     return json(parsed.snapshot, 200);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "handler.apiResponse.snapshot", null);
     return json({ error: "status unavailable" }, 500);
   }
 }
@@ -273,7 +275,8 @@ function relativePagePath(pathname: string): string | null {
   let decoded: string;
   try {
     decoded = decodeURIComponent(raw);
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "handler.relativePagePath.decodeURIComponent", null);
     return null;
   }
   if (decoded.includes("\0") || decoded.includes("\\")) return null;

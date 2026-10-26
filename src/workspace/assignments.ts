@@ -1,4 +1,5 @@
 import { canAct } from "./eligibility";
+import { journalCaught, journalRejection } from "../journal";
 import { randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -170,7 +171,9 @@ function creatorName(hold: Pick<Hold, "event" | "actorId">): string {
       creator.name.trim() !== ""
     )
       return creator.name.trim().slice(0, 200);
-  } catch {}
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "assignments.creatorName.parse", null);
+  }
   return "the person who delegated this issue";
 }
 
@@ -602,9 +605,21 @@ export function createWorkspaceAssignments(options: {
           : refused(STOPPED);
       }
       const signal = AbortSignal.timeout(30_000);
-      const verified = await snapshot(event, signal).catch(linearReadRetry);
+      const verified = await snapshot(event, signal).catch(
+        journalRejection(
+          "workspace/assignments.createWorkspaceAssignments.snapshot",
+          linearReadRetry,
+          null,
+        ),
+      );
       if ("outcome" in verified) return verified;
-      const refusal = await ineligible(verified, signal).catch(linearReadRetry);
+      const refusal = await ineligible(verified, signal).catch(
+        journalRejection(
+          "workspace/assignments.createWorkspaceAssignments.ineligible",
+          linearReadRetry,
+          null,
+        ),
+      );
       if (refusal) return refusal;
       const currentSession = getLinearSession(db, event.sessionId);
       if (
@@ -749,7 +764,13 @@ export function createWorkspaceAssignments(options: {
         const event: AcceptedLinearEvent = JSON.parse(hold.event);
         // Every Linear request of the resume counts toward the issue under /health linear.items.
         await linearItem(holdIdentifier(hold), async () => {
-          const verified = await resumeCheck(hold, event, context.signal).catch(linearReadRetry);
+          const verified = await resumeCheck(hold, event, context.signal).catch(
+            journalRejection(
+              "workspace/assignments.createWorkspaceAssignments.resumeCheck",
+              linearReadRetry,
+              null,
+            ),
+          );
           if ("outcome" in verified) {
             if (verified.outcome === "retry") throw new Error(verified.reason);
             return refuseHold(hold, verified.reason);
@@ -795,6 +816,7 @@ export function createWorkspaceAssignments(options: {
           } catch (error) {
             // A refusal is final for this hold: say why once instead of retrying the job.
             if (!(error instanceof LinearIntakeRefusedError)) throw error;
+            journalCaught(error, "assignments.register.continue", null);
             if (error.quiet) invalidate(hold);
             else refuseHold(hold, error.message);
           } finally {

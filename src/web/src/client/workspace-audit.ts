@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
@@ -61,6 +62,7 @@ export function initializeWorkspaceAudit(root: HTMLElement) {
       nextBefore = page.nextBefore;
       status.textContent = entries.length === 0 ? "No workspace changes recorded yet." : "";
     } catch (error) {
+      journalCaught(error, "workspace-audit.load.fetch", null);
       status.textContent = error instanceof Error ? error.message : "Audit history is unavailable.";
     } finally {
       pending = false;

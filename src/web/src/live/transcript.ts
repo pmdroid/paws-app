@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import type { StatusActivity } from "../contract";
@@ -116,7 +117,9 @@ function* readFile(
           pending = { at, kind, text: entryText };
         }
         message = chunk;
-      } catch {}
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "transcript.readFile.parse", null);
+      }
     }
     if (pending) yield { ...pending, text: redactTranscriptText(pending.text, env) };
     for (const output of terminal.values())
@@ -125,7 +128,8 @@ function* readFile(
         kind: "tool",
         text: redactTranscriptText(`${output.title}\n${output.text}`, env),
       };
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "transcript.readFile.realpathSync", null);
     return;
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -173,7 +177,8 @@ function redactTranscriptText(text: string, env: NodeJS.ProcessEnv): string {
         url.search = "";
         url.hash = "";
         return url.href;
-      } catch {
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "transcript.redactTranscriptText", null);
         return "[redacted URL]";
       }
     });

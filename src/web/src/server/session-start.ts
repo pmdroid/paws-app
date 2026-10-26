@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { timingSafeEqual } from "node:crypto";
 import {
   LINEAR_SESSION_API_PATH,
@@ -72,6 +73,7 @@ export async function handleSessionStartRequest(
       throw new Error("Enter a Linear issue identifier or comment link.");
     target = parseLinearSessionTarget(body.target);
   } catch (error) {
+    journalCaught(error, "session-start.handleSessionStartRequest.trim", null);
     return json(
       { error: error instanceof Error ? error.message : "Invalid Linear session target." },
       400,
@@ -83,7 +85,8 @@ export async function handleSessionStartRequest(
       await options.startLinearSession(target, new URL("/status/", url.origin).href, signal),
       201,
     );
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "session-start.handleSessionStartRequest.any", null);
     return json(
       {
         error:

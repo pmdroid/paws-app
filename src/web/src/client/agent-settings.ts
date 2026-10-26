@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { routeHref } from "./route";
 import { renderMarkup } from "./theme";
 import type { AgentModelCatalog, AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
@@ -261,6 +262,7 @@ export function createAgentSettings(invalidate: () => void): {
       view.catalogs = data.catalogs;
       view.catalogError = null;
     } catch (error) {
+      journalCaught(error, "agent-settings.createAgentSettings.fetch", null);
       if (started !== generation) return;
       view.catalogError =
         error instanceof Error ? error.message : "Model choices could not be loaded.";
@@ -287,6 +289,7 @@ export function createAgentSettings(invalidate: () => void): {
       paint();
       await operation();
     } catch (error) {
+      journalCaught(error, "agent-settings.createAgentSettings.paint", null);
       if (started === generation)
         view.error = error instanceof Error ? error.message : "Could not update agent settings.";
     } finally {
@@ -304,6 +307,7 @@ export function createAgentSettings(invalidate: () => void): {
       try {
         data = await settingsRequest<AgentSettings>(engine!, "GET");
       } catch (error) {
+        journalCaught(error, "agent-settings.createAgentSettings.settingsRequest", null);
         if (started === generation && error instanceof Error && error.cause === 403) {
           view.denied = true;
           view.data = null;

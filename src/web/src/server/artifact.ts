@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -71,7 +72,8 @@ export function readCloseoutArtifact(input: {
   let bytes: Buffer;
   try {
     bytes = readFileSync(file);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "artifact.readCloseoutArtifact.readFileSync", input.itemId);
     return { status: 404, body: "Not found" };
   }
   const clipped = bytes.subarray(0, CAP_BYTES);
@@ -129,7 +131,8 @@ function resolveInside(evidenceRoot: string, taskId: string, portable: string): 
     if (fileReal !== rootReal && !fileReal.startsWith(prefix)) return null;
     if (!lstatSync(absolute).isFile()) return null;
     return fileReal;
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "artifact.resolveInside.isDirectory", taskId);
     return null;
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   loadConfigFile,
   parseMergePolicy,
@@ -56,7 +57,8 @@ export async function handleMergeSettingsRequest(
     let policy: MergePolicy;
     try {
       policy = readMergeSettings(loadConfigFile(options.configPath));
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "merging.handleMergeSettingsRequest.readMergeSettings", null);
       return json({ error: "Merging settings could not be read" }, 503);
     }
     let choices: MergeChoices | null = null;
@@ -64,7 +66,8 @@ export async function handleMergeSettingsRequest(
     if (options.choices) {
       try {
         choices = await options.choices(AbortSignal.timeout(10_000));
-      } catch {
+      } catch (caughtError2) {
+        journalCaught(caughtError2, "merging.handleMergeSettingsRequest.choices", null);
         choicesError = "Linear projects and labels could not be loaded.";
       }
     }
@@ -82,13 +85,15 @@ export async function handleMergeSettingsRequest(
   let body: unknown;
   try {
     body = await readJson(request);
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "merging.handleMergeSettingsRequest.readJson", null);
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   let policy: MergePolicy;
   try {
     policy = parseMergePolicy(body);
   } catch (error) {
+    journalCaught(error, "merging.handleMergeSettingsRequest.parseMergePolicy", null);
     return json(
       { error: error instanceof Error ? error.message : "Invalid merging settings" },
       400,
@@ -101,12 +106,16 @@ export async function handleMergeSettingsRequest(
     const config = loadConfigFile(options.configPath);
     current = storedMerge(config);
     before = readMergeSettings(config);
-  } catch {}
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "merging.handleMergeSettingsRequest.loadConfigFile", null);
+  }
   if (options.githubQueues && usesGitHubQueue(policy) && !(before && usesGitHubQueue(before))) {
     let repositories: string[] | null = null;
     try {
       repositories = await options.githubQueues(AbortSignal.timeout(10_000));
-    } catch {}
+    } catch (caughtError5) {
+      journalCaught(caughtError5, "merging.handleMergeSettingsRequest.githubQueues", null);
+    }
     if (repositories !== null && repositories.length === 0)
       return json(
         {
@@ -118,7 +127,8 @@ export async function handleMergeSettingsRequest(
   }
   try {
     writeMergePolicy(options.configPath, policy, current);
-  } catch {
+  } catch (caughtError6) {
+    journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
@@ -130,7 +140,8 @@ async function githubQueueView(
 ): Promise<{ githubQueue: { repositories: string[] } | null; githubQueueError?: string }> {
   try {
     return { githubQueue: { repositories: await githubQueues(AbortSignal.timeout(10_000)) } };
-  } catch {
+  } catch (caughtError7) {
+    journalCaught(caughtError7, "merging.githubQueueView.githubQueues", null);
     return {
       githubQueue: null,
       githubQueueError: "Paws could not check which repositories have a GitHub merge queue.",
@@ -141,7 +152,10 @@ async function githubQueueView(
 async function upToDateRuleView(
   upToDateRules: (signal: AbortSignal) => Promise<string[]>,
 ): Promise<{ upToDateRule?: string[] }> {
-  const repositories = await upToDateRules(AbortSignal.timeout(10_000)).catch(() => []);
+  const repositories = await upToDateRules(AbortSignal.timeout(10_000)).catch((caughtError8) => {
+    journalCaught(caughtError8, "merging.upToDateRuleView.upToDateRules", null);
+    return [];
+  });
   return repositories.length ? { upToDateRule: repositories } : {};
 }
 

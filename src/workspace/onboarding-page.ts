@@ -149,6 +149,12 @@ form[method="post"] button{justify-self:start;font:inherit;font-weight:600;borde
  * reload shows the form again, not the token.
  */
 const SCRIPT = String.raw`(() => {
+  const journalCaught = (error, operation) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("catch item=none operation=onboarding." + operation + " error=" + message
+      .replace(/github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|lin_api_[A-Za-z0-9]+/g, "[redacted token]")
+      .replace(/[\r\n]+/g, " ").slice(0, 1000));
+  };
   const main = document.querySelector("main");
   const csrf = document.querySelector('meta[name="paws-csrf"]')?.getAttribute("content") ?? "";
   let busy = false;
@@ -179,7 +185,10 @@ const SCRIPT = String.raw`(() => {
       headers: { "content-type": "application/json", "x-paws-csrf": csrf },
       body: JSON.stringify(body),
     });
-    const value = await response.json().catch(() => ({}));
+    const value = await response.json().catch((error) => {
+      journalCaught(error, "post.readResponse");
+      return {};
+    });
     if (!response.ok) throw new Error(value.error || "The request failed. Try again.");
     return value;
   };
@@ -219,7 +228,9 @@ const SCRIPT = String.raw`(() => {
         const host = byId("host");
         if (host && document.querySelector("#steps [data-runner].done")) host.hidden = true;
       }
-    } catch {}
+    } catch (error) {
+      journalCaught(error, "refresh");
+    }
     schedule();
   };
   document.addEventListener("click", async (event) => {
@@ -237,7 +248,10 @@ const SCRIPT = String.raw`(() => {
       const text = byId("host-command-text")?.textContent ?? "";
       navigator.clipboard?.writeText(text).then(
         () => (button.textContent = "Copied"),
-        () => say("The command could not be copied. Select it and copy it by hand."),
+        (error) => {
+          journalCaught(error, "copyCommand");
+          say("The command could not be copied. Select it and copy it by hand.");
+        },
       );
       return;
     }
@@ -248,6 +262,7 @@ const SCRIPT = String.raw`(() => {
       const value = await post(action === "retry-vm" ? "/api/runners/vm/retry" : "/api/runners/vm", {});
       if (value.available === false) say("Paws cannot create a VM right now. Add a host instead.");
     } catch (error) {
+      journalCaught(error, "submit");
       say(error.message);
     } finally {
       busy = false;
@@ -293,6 +308,7 @@ const SCRIPT = String.raw`(() => {
       }
       if (submit) submit.textContent = "Create a new command";
     } catch (error) {
+      journalCaught(error, "submit");
       say(error.message);
     } finally {
       busy = false;

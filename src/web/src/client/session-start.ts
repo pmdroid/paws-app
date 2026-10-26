@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { renderMarkup } from "./theme";
 import { LINEAR_SESSION_API_PATH } from "../session-start";
 import { esc } from "./format";
@@ -37,7 +38,10 @@ export function createSessionStart(reload: () => Promise<void>) {
           });
           root.hidden = !local || !visible;
         })
-        .catch(() => undefined);
+        .catch((caughtError1) => {
+          journalCaught(caughtError1, "session-start.mount.then", null);
+          return undefined;
+        });
     },
   };
 
@@ -82,6 +86,7 @@ export function createSessionStart(reload: () => Promise<void>) {
       form.reset();
       await reload();
     } catch (error) {
+      journalCaught(error, "session-start.submit.fetch", null);
       status.textContent =
         error instanceof Error ? error.message : "The session could not be started.";
     } finally {
@@ -103,7 +108,8 @@ function safeLinearUrl(value: string): string | null {
   try {
     const url = new URL(value);
     return url.origin === "https://linear.app" ? url.href : null;
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "session-start.safeLinearUrl", null);
     return null;
   }
 }

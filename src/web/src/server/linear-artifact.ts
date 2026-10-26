@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 export type ReadLinearArtifact = (
   id: string,
   signal?: AbortSignal,
@@ -50,7 +51,8 @@ export async function handleLinearArtifactRequest(
         "Cross-Origin-Resource-Policy": "same-origin",
       },
     });
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "linear-artifact.handleLinearArtifactRequest.read", null);
     return response("Not found", 404);
   }
 }

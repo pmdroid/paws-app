@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import type { StatusSnapshot } from "../contract";
 import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 
@@ -125,7 +126,8 @@ function issueForVerdict(id: string, snapshot: StatusSnapshot | null | undefined
 function decodePart(part: string): string {
   try {
     return decodeURIComponent(part);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "route.decodePart.decodeURIComponent", null);
     return part;
   }
 }

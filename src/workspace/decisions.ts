@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { changeDecision, decisionAnswers, listDecisions } from "../decisions";
 import type { WorkspaceSession } from "../db";
@@ -66,6 +67,7 @@ export async function handleDecisions(
     const id = changeDecision(options.db, actor, value, options.now());
     return json({ id });
   } catch (error) {
+    journalCaught(error, "decisions.handleDecisions.readWorkspaceJson", null);
     return json(
       { error: error instanceof Error ? error.message : "The decision could not be saved." },
       400,

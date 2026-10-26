@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { renderMarkup } from "./theme";
 import { durationLabel, esc, skillVersionLabel, statePill } from "./format";
 import { readCsrfToken } from "./csrf";
@@ -1134,7 +1135,10 @@ export function createRunners() {
             },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    const data = (await response.json().catch(() => null)) as { error?: string } | null;
+    const data = (await response.json().catch((caughtError1) => {
+      journalCaught(caughtError1, "runners.api.json", null);
+      return null;
+    })) as { error?: string } | null;
     if (!response.ok)
       throw Object.assign(new Error(data?.error ?? `Runner request failed (${response.status}).`), {
         status: response.status,
@@ -1176,7 +1180,10 @@ export function createRunners() {
             .map((runner) =>
               api<HostPolicy>(`/api/runners/${encodeURIComponent(runner.id)}/policy`).then(
                 (value) => [runner.id, value] as const,
-                () => null,
+                (caughtError1) => {
+                  journalCaught(caughtError1, "runners.load.api", null);
+                  return null;
+                },
               ),
             ),
         ),
@@ -1186,7 +1193,10 @@ export function createRunners() {
       const vm: MemberVmState =
         identity.role === "observer"
           ? { available: false }
-          : await api<MemberVmState>("/api/runners/vm").catch(() => memberVm);
+          : await api<MemberVmState>("/api/runners/vm").catch((caughtError2) => {
+              journalCaught(caughtError2, "runners.load.api", null);
+              return memberVm;
+            });
       if (current !== generation) return;
       memberVm = vm;
       runners = listedRunners(list.runners);
@@ -1203,6 +1213,7 @@ export function createRunners() {
         enrollment = null;
       }
     } catch (caught) {
+      journalCaught(caught, "runners.load.api", null);
       if (current !== generation) return;
       const message = caught instanceof Error ? caught.message : "Runners could not be loaded.";
       if (quiet) stale = `Runner status could not be refreshed: ${message}`;
@@ -1239,6 +1250,7 @@ export function createRunners() {
       await action();
       await load();
     } catch (caught) {
+      journalCaught(caught, "runners.change.action", null);
       error = caught instanceof Error ? caught.message : "The runner change failed.";
     } finally {
       busy = false;
@@ -1494,7 +1506,8 @@ export function createRunners() {
             error = "";
             feedback = "Command copied. Run it on the runner.";
           },
-          () => {
+          (caughtError2) => {
+            journalCaught(caughtError2, "runners.bind.then", null);
             error = "The command could not be copied. Select it and copy it by hand.";
           },
         )
@@ -1511,7 +1524,8 @@ export function createRunners() {
               error = "";
               feedback = "Runner ID copied.";
             },
-            () => {
+            (caughtError3) => {
+              journalCaught(caughtError3, "runners.bind.then", null);
               error = `The runner ID could not be copied. It is ${value}.`;
             },
           )

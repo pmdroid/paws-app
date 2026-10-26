@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { renderMarkup } from "./theme";
 import type {
   MainMoved,
@@ -251,6 +252,7 @@ export function createMergeSettings(invalidate: () => void): {
       paint();
       await operation();
     } catch (error) {
+      journalCaught(error, "merge-settings.createMergeSettings.paint", null);
       if (started === generation)
         view.error = error instanceof Error ? error.message : "Could not update merging settings.";
     } finally {
@@ -269,6 +271,7 @@ export function createMergeSettings(invalidate: () => void): {
         if (started !== generation) return;
         view = { data, busy: view.busy, error: null, saved: false };
       } catch (error) {
+        journalCaught(error, "merge-settings.createMergeSettings.mergeSettingsRequest", null);
         if (started === generation && error instanceof Error && error.cause === 403) {
           view.denied = true;
           view.data = null;

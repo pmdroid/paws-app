@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
 import { mergeQueueCount } from "./merge-queue";
@@ -118,7 +119,9 @@ async function boot(): Promise<void> {
       const back = signInReturn();
       if (back !== null) await router.navigate(back, { replace: true });
     }
-  } catch {}
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "main.boot.getItem", null);
+  }
   booted = true;
   phase = "loading";
   paint();
@@ -154,6 +157,7 @@ async function reload(): Promise<void> {
     phase = "ready";
     error = null;
   } catch (caught) {
+    journalCaught(caught, "main.reload.fetch", null);
     error = caught instanceof Error ? caught.message : "Could not load status";
     phase = "error";
   }
@@ -474,7 +478,10 @@ function onClick(event: MouseEvent): void {
     url.hash = checkHash(attempt, checkId);
     void navigator.clipboard?.writeText(url.href).then(
       () => flashLabel(target.closest("button"), "Copied"),
-      () => flashLabel(target.closest("button"), "Copy failed"),
+      (caughtError1) => {
+        journalCaught(caughtError1, "main.onClick.writeText", itemId);
+        return flashLabel(target.closest("button"), "Copy failed");
+      },
     );
   }
   if (action === "download-output") downloadOutput(itemId, attempt, checkId);
@@ -578,7 +585,8 @@ async function errorText(response: Response): Promise<string> {
     if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
       return `Engine responded ${response.status}: ${body.error}`;
     }
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "main.errorText.json", null);
     /* status is enough */
   }
   return `Engine responded ${response.status}`;
