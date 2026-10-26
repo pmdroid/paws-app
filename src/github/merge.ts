@@ -8,7 +8,7 @@ import { defaultGitExec, git, gitFailureReason, redact, withCredential } from ".
 import { mainOverlap, readUpToDateRule } from "./overlap";
 import { pushWithLease, remoteBranchSha } from "./push";
 import { waitForMergeReadiness } from "./readiness";
-import { hasGitTransportCause } from "./transport";
+import { isTransient } from "../core";
 import {
   MAX_SHA_GUARD_CYCLES,
   UPSTREAM_MAIN_REF,
@@ -336,7 +336,7 @@ async function pushRebased(
     const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
     return { ok: true, base, head };
   } catch (error) {
-    if (hasGitTransportCause(error)) throw error;
+    if (isTransient(error)) throw error;
     const message = redact(minted, error instanceof Error ? error.message : String(error));
     return { ok: false, result: { merged: false, outcome: "push_rejected", branch, message } };
   }

@@ -4,6 +4,7 @@ import { migrate, openDatabase } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import {
   acknowledgeNewSession,
+  LinearHttpError,
   createFakeTracker,
   createInboxStore,
   startCatchUpPoller,
@@ -131,4 +132,31 @@ test("retains the intake error when posting its error activity fails", async () 
       },
     ),
   ).rejects.toBe(original);
+});
+
+test("a transient Linear failure during follow-up never posts a terminal error", async () => {
+  const tracker = createFakeTracker();
+  const error = new LinearHttpError(503, "", new Headers());
+  await expect(
+    acknowledgeNewSession(
+      tracker,
+      {
+        dedupeKey: "activity:503",
+        deliveryId: null,
+        source: "poll",
+        action: "prompted",
+        sessionId: "session",
+        issueId: "issue",
+        activityId: "503",
+        body: "request",
+        signal: null,
+        updatedAtMs: 1,
+        payload: "{}",
+      },
+      async () => {
+        throw error;
+      },
+    ),
+  ).rejects.toBe(error);
+  expect(tracker.progress.filter((update) => update.kind === "error")).toEqual([]);
 });

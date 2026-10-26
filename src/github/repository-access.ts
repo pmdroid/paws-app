@@ -1,3 +1,4 @@
+import { GitHubHttpError } from "./types";
 import type { FetchLike } from "./client";
 
 type RepositoryAccessOptions = {
@@ -36,7 +37,14 @@ async function checkRepositoryAccess(
   );
   options.signal.throwIfAborted();
   if (response.status === 404) return false;
-  if (!response.ok) throw new Error(`GitHub repository access check failed (${response.status})`);
+  if (!response.ok)
+    throw new GitHubHttpError({
+      status: response.status,
+      body: await response.text(),
+      retryAfterMs: /^\d+$/.test(response.headers.get("retry-after") ?? "")
+        ? Number(response.headers.get("retry-after")) * 1000
+        : undefined,
+    });
   const data = (await response.json()) as { permissions?: { push?: boolean } };
   options.signal.throwIfAborted();
   if (options.app || !write) return true;

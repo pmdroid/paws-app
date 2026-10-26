@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { isTransientFailure, isTransientGitError } from "../core";
+import { isTransient, isTransientGitError } from "../core";
 import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
 import type { FixRequest, FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
@@ -121,7 +121,7 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
         : { ...input, progress: observe(input.progress, running) },
     );
   } catch (error) {
-    const retrying = isTransientFailure(error);
+    const retrying = isTransient(error);
     stopRunning(input.progress, running, error, retrying);
     seal(input.progress, retrying ? "running" : "blocked");
     throw error;
@@ -229,7 +229,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
     });
   } catch (error) {
     await early?.done.catch(() => null);
-    if (isTransientFailure(error)) throw error;
+    if (isTransient(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     return failure("blocked", null, message, input.head);
   }
@@ -664,7 +664,7 @@ async function addReviewEvidence(
         },
       });
     } catch (error) {
-      if (isTransientFailure(error)) throw error;
+      if (isTransient(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
       const detail = scrub(`reviewer failed for ${item.id}: ${message}`);
       noteReview(input, identity, item.id, "blocked", detail, null, item.attempt ?? null, null, {

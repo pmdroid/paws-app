@@ -65,13 +65,30 @@ export type AppCredentials = {
 };
 
 export class GitHubTokenError extends Error {
+  readonly body?: unknown;
   readonly status?: number;
   readonly retryAfterMs?: number;
-  constructor(message: string, response?: { status: number; retryAfterMs?: number }) {
+  constructor(message: string, response?: GitHubResponse) {
     super(message);
     this.name = "GitHubTokenError";
+    this.body = response?.body;
     this.status = response?.status;
     this.retryAfterMs = response?.retryAfterMs;
+  }
+}
+
+/** HTTP and GraphQL failures retain the response for the shared retry classifier. */
+export class GitHubHttpError extends Error {
+  override readonly name = "GitHubHttpError";
+  readonly status: number;
+  readonly body: unknown;
+  readonly retryAfterMs?: number;
+  constructor(response: GitHubResponse) {
+    const message = (response.body as { message?: unknown } | null)?.message;
+    super(`GitHub HTTP ${response.status}${typeof message === "string" ? `: ${message}` : ""}`);
+    this.status = response.status;
+    this.body = response.body;
+    this.retryAfterMs = response.retryAfterMs;
   }
 }
 

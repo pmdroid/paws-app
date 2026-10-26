@@ -14,6 +14,7 @@ import {
 } from "../src/db";
 import {
   LinearRateLimitError,
+  LinearHttpError,
   createFakeLinearAccessReads,
   createFakeLinearIssueLifecycle,
   createFakeTracker,
@@ -61,6 +62,18 @@ test.each([
   90_000,
 );
 
+test("a tracker 503 retries without applying run_failed", async () => {
+  const result = await runWithFault({
+    error: () => new LinearHttpError(503, "", new Headers()),
+    times: 1,
+    tracker: true,
+  });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.retries, result.detail).toEqual([1]);
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.states, result.detail).not.toContain("failed");
+}, 90_000);
+
 test("a Linear rate limit while a run starts is waited out without a retry", async () => {
   const result = await runWithFault({ error: rateLimit, times: 1 });
   expect(result.state, result.detail).toBe("merge_queue");
@@ -98,9 +111,11 @@ test("a 10-minute retry delay holds no job worker and the task resumes after it"
 async function runWithFault(fault: {
   error: () => unknown;
   times: number;
+  tracker?: boolean;
   clock?: FakeClock;
 }): Promise<{
   state: string | null;
+  states: (string | null)[];
   thoughts: string[];
   errors: string[];
   retries: number[];
@@ -194,8 +209,18 @@ async function runWithFault(fault: {
   });
   const startCodeIssue = lifecycle.startCodeIssue;
   let remaining = fault.times;
+  const states: (string | null)[] = [];
+  const listSessionActivities = tracker.listSessionActivities!;
+  if (fault.tracker)
+    tracker.listSessionActivities = async (...args) => {
+      if (fault.tracker && remaining > 0 && stateOf(db, "ENG-7") === "running") {
+        remaining -= 1;
+        throw fault.error();
+      }
+      return listSessionActivities ? listSessionActivities(...args) : [];
+    };
   lifecycle.startCodeIssue = async (input, options) => {
-    if (remaining > 0 && stateOf(db, "ENG-7") === "running") {
+    if (!fault.tracker && remaining > 0 && stateOf(db, "ENG-7") === "running") {
       remaining -= 1;
       throw fault.error();
     }
@@ -223,6 +248,7 @@ async function runWithFault(fault: {
       Date.now() < deadline &&
       !["merge_queue", "merged", "failed"].includes(stateOf(db, "ENG-7") ?? "")
     ) {
+      states.push(stateOf(db, "ENG-7"));
       if ((await jobs.tick()) === null) {
         outbox.tick();
         await Bun.sleep(25);
@@ -248,6 +274,7 @@ async function runWithFault(fault: {
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     return {
       state: stateOf(db, "ENG-7"),
+      states,
       thoughts: progress("thought"),
       errors: progress("error"),
       retries: listJobs(db)
