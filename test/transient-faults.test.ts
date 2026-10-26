@@ -2,10 +2,18 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
-import { FakeClock, JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
+import {
+  FakeClock,
+  JOB_KIND,
+  MAX_TRANSIENT_RETRIES,
+  RUNNER_CAPACITY_WAIT_MS,
+  RunnerCapacityWait,
+  systemClock,
+} from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
+  applyLinearCommand,
   listJobs,
   listOutbox,
   listRuns,
@@ -108,11 +116,91 @@ test("a 10-minute retry delay holds no job worker and the task resumes after it"
   expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
 }, 90_000);
 
+const HOUR_MS = 60 * 60_000;
+const busyRunner = () => new RunnerCapacityWait(["runner-1"]);
+
+test("waiting eight hours for a slot on a busy runner keeps the task deferred without failing", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: busyRunner,
+    times: Infinity,
+    clock,
+    untilMs: 8 * HOUR_MS,
+  });
+  expect(["running", "recovering"], result.detail).toContain(result.state!);
+  // The wait is never counted as a failed attempt.
+  expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
+  expect(result.states, result.detail).not.toContain("failed");
+  expect(result.events, result.detail).not.toContain("run_failed");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.waits.length, result.detail).toBeGreaterThan(30);
+  expect(Math.max(...result.waits.map((wait) => wait.delayMs)), result.detail).toBeLessThanOrEqual(
+    4 * 60_000,
+  );
+  expect(result.capacityWait, result.detail).toEqual({
+    since: expect.any(Number),
+    attempt: expect.any(Number),
+    runnerIds: ["runner-1"],
+  });
+  expect(result.implementations, result.detail).toBe(0);
+}, 90_000);
+
+test("a wait with no runner offered still stops the task after the hour and its retries", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: () => new RunnerCapacityWait([]),
+    times: Infinity,
+    clock,
+    // Each transient retry waits its own hour before it counts.
+    untilMs: 12 * HOUR_MS,
+  });
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.elapsedMs, result.detail).toBeGreaterThanOrEqual(
+    (MAX_TRANSIENT_RETRIES + 1) * RUNNER_CAPACITY_WAIT_MS,
+  );
+  expect(result.errors, result.detail).toEqual([
+    `Stopped after ${MAX_TRANSIENT_RETRIES} retries. Waiting for a paired runner to come online`,
+  ]);
+}, 90_000);
+
+test("a busy runner wait that outlasts the hour, then loses its runners, gets a fresh hour", async () => {
+  const clock = new FakeClock(Date.now());
+  const start = clock.now();
+  const result = await runWithFault({
+    error: () => (clock.now() - start < 2 * HOUR_MS ? busyRunner() : new RunnerCapacityWait([])),
+    times: Infinity,
+    clock,
+    untilMs: 2 * HOUR_MS + 30 * 60_000,
+  });
+  expect(["running", "recovering"], result.detail).toContain(result.state!);
+  expect(result.capacityWait, result.detail).toMatchObject({ runnerIds: [] });
+}, 90_000);
+
+test("Stop while the task waits for a busy runner cancels it", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: busyRunner,
+    times: Infinity,
+    clock,
+    stopAtMs: 2 * HOUR_MS,
+  });
+  expect(result.state, result.detail).toBe("cancelled");
+  expect(result.elapsedMs, result.detail).toBeLessThan(2 * HOUR_MS + 5 * 60_000);
+  expect(
+    result.jobs.filter((job) => job.startsWith(`${JOB_KIND.resume}:pending`)),
+    result.detail,
+  ).toEqual([]);
+}, 90_000);
+
 async function runWithFault(fault: {
   error: () => unknown;
   times: number;
   tracker?: boolean;
   clock?: FakeClock;
+  /** Stops driving the loop once the fake clock has moved this far. */
+  untilMs?: number;
+  /** Applies Stop once the fake clock has moved this far. */
+  stopAtMs?: number;
 }): Promise<{
   state: string | null;
   states: (string | null)[];
@@ -123,6 +211,9 @@ async function runWithFault(fault: {
   jobs: string[];
   implementations: number;
   waits: { delayMs: number; runningJobs: number }[];
+  events: string[];
+  capacityWait: unknown;
+  elapsedMs: number;
   detail: string;
 }> {
   const layout = await repoLayout("paws-faults-");
@@ -177,6 +268,7 @@ async function runWithFault(fault: {
     linearTaskModes: true,
     linearAccess: gate,
     retryBaseMs: 10,
+    placementPollMs: 1_000,
     clock,
     launch(input) {
       sequence += 1;
@@ -244,10 +336,27 @@ async function runWithFault(fault: {
     expect(await gate.accept(event)).toBe(true);
     await orchestrator.onLinearEvent(event);
     const deadline = Date.now() + 60_000;
+    const startedAt = clock.now();
+    let stopped = false;
     while (
       Date.now() < deadline &&
-      !["merge_queue", "merged", "failed"].includes(stateOf(db, "ENG-7") ?? "")
+      !["merge_queue", "merged", "failed", "cancelled"].includes(stateOf(db, "ENG-7") ?? "") &&
+      (fault.untilMs === undefined || clock.now() - startedAt < fault.untilMs)
     ) {
+      if (!stopped && fault.stopAtMs !== undefined && clock.now() - startedAt >= fault.stopAtMs) {
+        const itemId = (
+          db.query("SELECT id FROM work_item WHERE linear_identifier='ENG-7'").get() as {
+            id: string;
+          }
+        ).id;
+        applyLinearCommand(db, {
+          type: "stop",
+          itemId,
+          source: "linear",
+          requestedAt: clock.now(),
+        });
+        stopped = true;
+      }
       states.push(stateOf(db, "ENG-7"));
       if ((await jobs.tick()) === null) {
         outbox.tick();
@@ -272,7 +381,19 @@ async function runWithFault(fault: {
     }
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
+    const pendingResume = listJobs(db).find(
+      (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+    );
     return {
+      events: db
+        .query(
+          "SELECT event FROM work_item_event WHERE item_id=(SELECT id FROM work_item WHERE linear_identifier='ENG-7')",
+        )
+        .all()
+        .map((row) => (row as { event: string }).event),
+      capacityWait: (pendingResume?.payload as { capacityWait?: unknown } | undefined)
+        ?.capacityWait,
+      elapsedMs: clock.now() - startedAt,
       state: stateOf(db, "ENG-7"),
       states,
       thoughts: progress("thought"),
