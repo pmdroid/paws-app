@@ -168,6 +168,7 @@ export const QUESTION_LINKS = [
   { table: "visual_review_mark", column: "question_id" },
   { table: "plan_proposal", column: "question_id" },
   { table: "link_ask", column: "question_id" },
+  { table: "closeout_bypass_check", column: "question_id" },
 ] as const;
 
 /** True when another record is tied to this question's id. */
