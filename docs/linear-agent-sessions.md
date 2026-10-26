@@ -8,16 +8,115 @@ Progress is posted with `agentActivityCreate`, and `ask_team` questions are elic
 
 An install whose `config.toml` sets `mode = "comments"` under `[linear]`, or whose environment sets `LINEAR_MODE=comments`, gets a startup message and a missing `linear-mode` check from `bun run paws doctor`. Delete that setting; Paws runs agent sessions either way.
 
-Nothing in this tree calls Linear; the notes below are from Linear's docs and the published GraphQL operations, plus what Pascal should confirm in a workspace.
+## One story per session
 
-## What we needed to know
+One Paws run is one Linear agent session. Linear derives the session's state from the last activity Paws sent, so Paws controls the story by controlling which activity kinds each work-item state may emit. Title (`summary` on `agentSessionUpdate`) and plan are session metadata, not activities: they move without changing the session's state. Both derive from the work-item state that `transition()` produced, the restart reason, and whether the pull request response exists. There is no second state machine for them.
+
+### The post-PR rule
+
+Before the pull request, activities tell the story and the title names the phase. After the pull request response, only the title and plan move, and exactly one more response closes the session.
+
+`canReportProgress` in `src/loop/activity-policy.ts` is the only activity gate. Once a `pull-request-ready:`, `merged:` or `closed:` row exists for the session's generation, it drops every later thought, action, keepalive and evidence line. Two kinds pass it:
+
+1. **The final response.** Merged (`merged:<item>:<generation>`), closed without merge (`closed:`), or stopped (`command:stop:`). It is delivered `ordered`, keeps the session complete, and ends it for good. A comment-only GitHub review's threads (`pull-review:`) are also a response, posted once per review id.
+2. **Elicitations from `ask()`.** A question is the only thing that reopens a session after the pull request, because a person must see it.
+
+Evidence published after the pull request response is attached to the issue (`linear.attachment`), not posted. See [Evidence checks](closeout.md#evidence-checks).
+
+The host plan is monotonic. A completed host step (Wait, Implement, Verify, Fix findings, Open pull request, Merge) never returns to pending. Re-verification and fix rounds append a step, and the title never reads `implementing`, `verifying` or `fixing` again after the pull request.
+
+### Restart reasons
+
+`restart(item, reason)` in `src/loop` is the one way back to the agent. The reason picks the title and the appended plan step:
+
+| Reason      | Cause                                                 | Title while queued                               | Title while running                       |
+| ----------- | ----------------------------------------------------- | ------------------------------------------------ | ----------------------------------------- |
+| `findings`  | Closeout rejected the candidate                       | waiting for a runner to fix Closeout findings (k of n) | fixing Closeout findings (k of n)   |
+| `ci`        | CI failed on the pull request head                    | waiting for a runner to fix CI (k of n)          | fixing CI (k of n)                        |
+| `review`    | A changes-requested review on the pull request        | waiting for a runner to address the review (k of n) | fixing review findings (k of n)        |
+| `conflict`  | The merge lane's rebase conflicted                    | waiting for a runner to resolve a merge conflict | resolving merge conflict                  |
+| `follow_up` | A person's message in the session                     | the ordinary queued face                         | the ordinary running face                 |
+| `answer`    | A person's guidance in reply to a question            | the ordinary queued face                         | the ordinary running face                 |
+
+`n` is `retry.fix_rounds_per_item`. The first four reasons append a plan step: Fix Closeout findings (k of n), Fix CI, Fix review findings or Resolve merge conflict. When the agent's fix reaches `verifying` after the pull request, that step completes, a **Verify fixes** step is appended, and the title reads "checking fixes". Before the pull request, a restart posts one thought naming the reason, once per round. After it, a restart moves only the title and plan.
+
+### The face table
+
+Each work-item state has one face. Titles are prefixed with the issue identifier, for example `PAS-619: waiting for PAS-618`.
+
+| State                       | Linear session                     | Title                                                                                      | Plan step                                   | Activity allowed                                                                                                 |
+| --------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `planning`                  | active                             | unchanged                                                                                  | unchanged                                   | None. The item waits for `plan_approved` and then enters `queued`.                                               |
+| `queued`, blocked           | active                             | waiting for PAS-m                                                                          | Wait for PAS-m, in progress                 | One thought naming the blocker; an ephemeral "Still waiting for PAS-m." every 25 minutes                         |
+| `queued`, no runner slot    | active                             | 2nd in line for a runner                                                                   | Wait for a runner, in progress              | The same, with the queue position                                                                                |
+| `queued` after a restart    | active before the PR, complete after | waiting for a runner to … (see [Restart reasons](#restart-reasons))                      | the appended step, in progress              | Before the PR, the same ephemeral; after the PR, none                                                            |
+| `paused`                    | active                             | paused by <who>                                                                            | current step, in progress                   | One thought; no ephemeral while paused                                                                           |
+| `recovering`                | active                             | recovering an interrupted turn                                                             | current step, in progress                   | One thought                                                                                                      |
+| `running`                   | active                             | implementing (preparing answer, creating files, or planning sub-issues by task mode)        | Implement, with the agent's steps            | `post_update` thoughts; an ephemeral keepalive every 25 minutes carrying the current agent step                 |
+| `running` after a restart, before the PR | active                | fixing … (see [Restart reasons](#restart-reasons))                                         | the appended step, in progress | One thought naming the reason; `post_update` thoughts; keepalive with the step |
+| `running` after a restart, PR exists | complete                  | the same titles                                                                            | the same appended steps                     | None; a question goes through `ask()`                                                                            |
+| `awaiting_input`            | awaitingInput                      | unchanged                                                                                  | unchanged                                   | One elicitation from `ask()`, and nothing else until it is answered. Allowed after the PR                        |
+| `verifying`                 | active                             | verifying                                                                                  | Verify, in progress                         | One thought per Closeout verdict, evidence bundled                                                               |
+| `verifying` after a rebase, PR exists | complete                 | rebased onto main, re-verifying                                                            | Re-verify after rebase, in progress         | None; evidence is attached to the issue                                                                          |
+| `verifying` after a fix, PR exists | complete                    | checking fixes                                                                             | Verify fixes, in progress                   | None; evidence is attached to the issue                                                                          |
+| publishing                  | active                             | publishing                                                                                 | Open pull request, in progress              | None until the pull request response, which completes the session                                                |
+| `merge_queue`               | complete                           | CI running, rebased, re-verifying, 2nd in queue or merging                                 | Merge, in progress                          | The pull request response once, with the PR as an external URL; nothing after                                    |
+| `merged`                    | complete                           | completed                                                                                  | all completed                               | Final response "Merged #N into main at <sha>. PAS-n is Done."; the issue moves to Done                           |
+| `completed`                 | complete                           | completed                                                                                  | all completed                               | One response with the answer, the files, or for a plan outcome the created sub-issues or "Discarded the proposal. Nothing was filed." |
+| `failed`                    | error                              | unchanged                                                                                  | current step                                | One error with the cause (crash budget, run failure, start timeout). After the PR, a `Closed: …` response instead |
+| `manual`                    | complete                           | manual                                                                                     | remaining steps canceled                    | Response "Taken over by <who>. Paws will not restart, verify or merge PAS-n."                                     |
+| `cancelled`, stopped        | complete                           | stopped                                                                                    | remaining steps canceled                    | Response "Stopped. Branch paws/PAS-n has k commits; PR #N is open. Re-delegate to continue."                     |
+
+Publishing is a phase of `verifying` and `merge_queue`, not a work-item state. Spent budgets are questions in `awaiting_input`, never `failed`.
+
+Linear's stop button, the `stopping` status and a `/paws stop` reply all end in the one stop response. It is built from the run's last known branch state: the branch, its commit count, and whether a pull request is open, will be closed, or was never opened.
+
+The keepalive (`KEEPALIVE_MS` in `src/loop/activity.ts`, `WAIT_KEEPALIVE_MS` in `src/scheduler/waits.ts`) is 25 minutes, below Linear's 30-minute stale window (`LINEAR_STALE_MS`). Its body is the agent's current plan step, else the last `post_update` line, else the phase. A lifecycle thought with an identical body is not posted twice within one phase.
+
+### Measuring the story
+
+The outbox records every post, so these queries show whether sessions follow the rule. The live run of them is tracked in PAS-744.
+
+```sql
+-- Merged items whose session got a final response.
+SELECT COUNT(*) AS merged,
+  SUM(EXISTS (SELECT 1 FROM outbox o WHERE o.target = 'linear'
+    AND o.idempotency_key LIKE 'merged:' || w.id || ':%' AND o.status = 'sent')) AS announced
+FROM work_item w WHERE w.state = 'merged';
+
+-- Activities after the PR response per session generation (target: 1, the final response).
+SELECT p.ordering_key, p.delivery_generation, COUNT(o.id) AS after_pr
+FROM outbox p
+JOIN outbox o ON o.target = 'linear' AND o.ordering_key = p.ordering_key
+  AND o.delivery_generation = p.delivery_generation AND o.id > p.id
+  AND o.op = 'activity' AND o.status = 'sent'
+WHERE p.target = 'linear' AND p.idempotency_key LIKE 'pull-request-ready:%' AND p.status = 'sent'
+GROUP BY p.ordering_key, p.delivery_generation;
+
+-- Title updates and plan replaces per session, on average.
+SELECT op, AVG(n) FROM (
+  SELECT op, ordering_key, COUNT(*) AS n FROM outbox
+  WHERE target = 'linear' AND op IN ('linear.session.summary', 'linear.session.plan')
+  GROUP BY op, ordering_key
+) GROUP BY op;
+
+-- Bare "Working on" keepalives (target: 0).
+SELECT COUNT(*) FROM outbox
+WHERE target = 'linear' AND op = 'activity' AND json_extract(payload, '$.body') LIKE 'Working on %';
+```
+
+## Linear API findings
+
+The notes below are from Linear's docs and the published GraphQL operations, plus what Pascal should confirm in a workspace.
+
+### What we needed to know
 
 1. Does delegating an issue create an `AgentSession` that `agentSessions` polling can see?
 2. Do agent activities render when the OAuth app has no webhook URL?
 
-## Findings
+### Findings
 
-### Delegation and `agentSessions`
+#### Delegation and `agentSessions`
 
 An `AgentSession` is created when an **agent** is @mentioned or delegated an issue. Delegation means the issue's delegate is the app user (`Issue.delegate`), which requires an OAuth app installed with `actor=app` and the `app:assignable` scope. A mention requires `app:mentionable`. Assigning the issue to a human is not an agent delegation and does not create an agent session.
 
@@ -30,7 +129,7 @@ Linear's docs separate two facts:
 
 We read that as: the row is probably inserted either way, and the UI is not. The docs do not say the row is skipped when the category is off, and they do not say it is inserted when the category is off. That is the open point in the manual checks.
 
-### Activities with no webhook URL
+#### Activities with no webhook URL
 
 `agentActivityCreate` is a GraphQL mutation keyed by `agentSessionId`. It does not take a webhook URL. Activities render in the Agent Session UI. Linear shows that UI only after the app subscribes to `AgentSessionEvent`.
 
