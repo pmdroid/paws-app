@@ -252,7 +252,7 @@ test.each([false, true, "cap"] as const)(
       if (!parsed.ok) throw new Error("Invalid status snapshot");
       const run = parsed.snapshot.runs.find((entry) => entry.itemId === "ENG-302");
       expect(run?.activity.map((entry) => entry.text)).not.toContain("Fixing the missing output.");
-      expect(run?.summary).toContain("fix attempt 1 of 3");
+      expect(run?.summary).toContain("Step 1 of 1: Repair missing output.");
       expect(JSON.stringify(tracker.progress)).not.toContain("PRIVATE_FIX_REASONING");
       expect(JSON.stringify(parsed.snapshot)).not.toContain("PRIVATE_FIX_REASONING");
       if (stop === true) await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
