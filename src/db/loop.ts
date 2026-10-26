@@ -7,6 +7,7 @@ import {
   sleep,
   type Clock,
 } from "../core";
+import { journal } from "./journal";
 import { claimNextJob, completeJob, extendJobLease, failJob, isJobCurrent, type Job } from "./jobs";
 
 export type JobContext = {
@@ -57,10 +58,14 @@ export class JobLoop {
     if (job === null) return null;
     const handler = this.handlers.get(job.queue);
     if (handler === undefined) {
-      failJob(this.db, job, new Error(`No handler for ${job.queue}`), {
-        now,
-        baseMs: this.options.backoffBaseMs,
-      });
+      const reason = `No handler for ${job.queue}`;
+      const result = this.db.run(
+        `UPDATE job SET status = 'cancelled', last_error = ?, finished_at = ?,
+         locked_by = NULL, locked_until = NULL
+         WHERE id = ? AND status = 'running' AND locked_by = ?`,
+        [reason, now, job.id, job.lockedBy],
+      );
+      if (result.changes > 0) journal(`job ${job.id} ${job.queue} cancelled: ${reason}`);
       return job;
     }
     const controller = new AbortController();
@@ -104,6 +109,19 @@ export class JobLoop {
     const concurrency = this.options.concurrency ?? 1;
     if (!Number.isSafeInteger(concurrency) || concurrency < 1)
       throw new Error("Invalid job concurrency");
+    // run() starts after prepare has registered the complete handler set.
+    const registeredQueues = [...this.handlers.keys()];
+    const removed = this.db
+      .query<{ id: number; queue: string }, string[]>(
+        `DELETE FROM job WHERE recurring_every_ms IS NOT NULL
+         ${registeredQueues.length ? `AND queue NOT IN (${registeredQueues.map(() => "?").join(",")})` : ""}
+         RETURNING id, queue`,
+      )
+      .all(...registeredQueues);
+    for (const job of removed)
+      journal(
+        `job ${job.id} ${job.queue} recurring definition removed: No handler for ${job.queue}`,
+      );
     const worker = async (queues?: () => string[]) => {
       while (!signal.aborted) {
         const job = await this.tick(queues?.());

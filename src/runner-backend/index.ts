@@ -1333,3 +1333,5 @@ function clockTime(at: number, now: number): string {
     time.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? "" : `${time.slice(0, 10)} `;
   return `${day}${time.slice(11, 16)} UTC`;
 }
+
+export { UsageLimitExhaustedError } from "./failover";
