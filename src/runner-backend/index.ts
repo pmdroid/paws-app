@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -1166,7 +1166,20 @@ export function createRemoteAgentRunner(options: {
                   answer: encodePolicyFiles(policy),
                 });
               }
-              if (event.type === "artifact") {
+              if (event.type === "artifact" && event.dropped !== undefined) {
+                journal(
+                  `item ${itemId} runner dropped artifact ${JSON.stringify(event.artifact.path)}: ${event.dropped}`,
+                );
+                signal.throwIfAborted();
+                results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: JSON.stringify({
+                    error: `${event.artifact.path} was not published: ${event.dropped}.`,
+                  }),
+                });
+              } else if (event.type === "artifact") {
                 if (!input.publishArtifact || !options.artifacts)
                   throw new Error("Remote artifact publication is unavailable");
                 const snapshot = options.artifacts.snapshot(
