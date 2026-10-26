@@ -13,6 +13,7 @@ export type EligibleRunnerReason =
   | "no-project-lead"
   | "offline"
   | "paused"
+  | "revoked"
   | "agent-not-signed-in"
   | "auth-expired"
   | "owner-not-in-team"
@@ -28,6 +29,8 @@ export type EligibleRunnersInput = {
   agent: string;
   purpose: PlacementPurpose;
   now?: number;
+  /** Include revoked runners in rejection diagnostics. They remain ineligible. */
+  includeRevoked?: boolean;
 };
 export type EligibleRunner = {
   id: string;
@@ -67,12 +70,14 @@ export type PlacementRequest = {
   purpose: PlacementPurpose;
   /** Failed hosts to avoid for new placement; an online pin retries a fresh session there. */
   excludeRunnerIds?: readonly string[];
-  /** Runner assigned to this run. Only an unavailable host permits moving the run. */
+  /** Runner assigned to this run. Work moves only when unavailable; preparation is unpinned. */
   pinnedRunnerId?: string;
   /** The runner holding the item's last agent session, for implementer work. */
   session?: { runnerId: string };
   /** Slots the caller holds per runner for runs it placed but has not assigned yet. */
   reserved?: ReadonlyMap<string, number>;
+  /** Reports policy and ranking rejections for this selection, without credentials. */
+  onRejected?: (runnerId: string, reason: string) => void;
   signal?: AbortSignal;
 };
 export type RunnerPlacement = {

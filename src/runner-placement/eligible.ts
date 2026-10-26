@@ -13,6 +13,7 @@ export const RUNNER_ONLINE_MS = 60_000;
 
 type Row = Omit<EligibleRunner, "eligible" | "reason"> & {
   status: string;
+  revokedAt: number | null;
   lastSeenAt: number | null;
   cancelPending: number;
 };
@@ -35,9 +36,9 @@ type Row = Omit<EligibleRunner, "eligible" | "reason"> & {
 export function eligibleRunners(db: Database, input: EligibleRunnersInput): EligibleRunner[] {
   const at = input.now ?? Date.now();
   const rows = db
-    .query<Row, [string, string]>(
+    .query<Row, [string, string, number]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerId,r.status,
-       r.last_seen_at AS lastSeenAt,
+       r.last_seen_at AS lastSeenAt,r.revoked_at AS revokedAt,
        COALESCE(p.sharing,0) AS sharing,
        COALESCE(a.ready,0) AS ready,COALESCE(a.auth_expired,0) AS authExpired,
        COALESCE(a.quota_state,'ok') AS quotaState,COALESCE(a.cooldown_until,0) AS cooldownUntil,
@@ -47,12 +48,13 @@ export function eligibleRunners(db: Database, input: EligibleRunnersInput): Elig
        FROM runner r
        LEFT JOIN runner_policy p ON p.runner_id=r.id
        LEFT JOIN runner_agent_policy a ON a.runner_id=r.id AND a.agent=?
-       WHERE r.workspace_id=? AND r.revoked_at IS NULL AND r.status<>'revoked'
+       WHERE r.workspace_id=? AND (?=1 OR (r.revoked_at IS NULL AND r.status<>'revoked'))
        ORDER BY r.id`,
     )
-    .all(input.agent, input.workspaceId);
-  return rows.map(({ status, lastSeenAt, cancelPending, ...runner }) => {
+    .all(input.agent, input.workspaceId, input.includeRevoked ? 1 : 0);
+  return rows.map(({ status, revokedAt, lastSeenAt, cancelPending, ...runner }) => {
     const reason = ((): EligibleRunnerReason => {
+      if (revokedAt !== null || status === "revoked") return "revoked";
       const own = input.ownerUserId !== null && runner.ownerId === input.ownerUserId;
       if (!own) {
         if (input.leadUserIds.includes(runner.ownerId)) {
