@@ -647,6 +647,11 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
       generation !== fence.generation ||
       (fence.stopped && delivery !== "stop") ||
       Boolean(terminal);
+    const repeated =
+      blocked || db.query("SELECT 1 FROM outbox WHERE idempotency_key = ?").get(row.idempotencyKey)
+        ? null
+        : repeatedThought(db, row, generation);
+    if (repeated !== null) return repeated;
     const progressActivity =
       Boolean(row.orderingKey) &&
       row.target === "linear" &&
@@ -720,11 +725,48 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
           OR COALESCE(json_extract(payload,'$.ephemeral'),0)=1
           OR COALESCE(json_extract(payload,'$.kind'),'') NOT IN ('thought','action')))
           OR (? = 'terminal' AND delivery_kind = 'critical'
-          AND (op='elicitation' OR json_extract(payload,'$.kind') IN ('thought','action'))))`,
+          AND ((op='elicitation' AND COALESCE((SELECT state FROM work_item
+                WHERE id = ${OUTBOX_ITEM_SQL("outbox")}), '') <> 'awaiting_input')
+            OR json_extract(payload,'$.kind') IN ('thought','action'))))`,
       [row.target, row.orderingKey, inserted.id, delivery],
     );
     return inserted.id;
   });
+}
+
+/**
+ * A Linear thought whose body equals the session's last sent or pending thought in the same
+ * phase is not stored again; the id of that earlier thought is returned instead. A response,
+ * an error or a question starts a new phase. An ephemeral line may repeat an ephemeral line:
+ * Linear replaces the one it shows, and a pending one is superseded by the newer.
+ */
+function repeatedThought(db: Database, row: NewOutbox, generation: number): number | null {
+  const payload = row.payload as { kind?: unknown; body?: unknown; ephemeral?: unknown };
+  if (
+    row.target !== "linear" ||
+    !row.orderingKey ||
+    (row.op !== "activity" && row.op !== "linear.activity") ||
+    payload?.kind !== "thought" ||
+    typeof payload.body !== "string"
+  )
+    return null;
+  const last = db
+    .query<
+      { id: number; kind: string | null; body: string | null; ephemeral: number },
+      [string, number]
+    >(
+      `SELECT id, json_extract(payload, '$.kind') AS kind, json_extract(payload, '$.body') AS body,
+         COALESCE(json_extract(payload, '$.ephemeral'), 0) AS ephemeral
+       FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
+         AND status IN ('pending', 'sent')
+         AND (op = 'elicitation' OR (op IN ('activity', 'linear.activity')
+           AND json_extract(payload, '$.kind') IN ('thought', 'response', 'error')))
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(row.orderingKey, generation);
+  if (last?.kind !== "thought" || last.body?.trim() !== payload.body.trim()) return null;
+  if (payload.ephemeral === true && last.ephemeral === 1) return null;
+  return last.id;
 }
 
 function deliveryKind(row: NewOutbox): OutboxDelivery {

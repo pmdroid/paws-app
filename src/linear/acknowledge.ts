@@ -55,6 +55,11 @@ export async function acknowledgeNewSession(
     acknowledgedOnArrival?: boolean;
     /** False on a retry, so a failure is reported in Linear once, not on every attempt. */
     reportFailure?: boolean;
+    /**
+     * The session already has an item in flight. A failed follow-up then posts no error, which
+     * would end that session in Linear and drop its open question; the queue retries it instead.
+     */
+    sessionBusy?: (sessionId: string) => boolean;
   } = {},
 ): Promise<void | boolean> {
   options.signal?.throwIfAborted();
@@ -118,7 +123,8 @@ export async function acknowledgeNewSession(
       event.sessionId !== null &&
       options.reportFailure !== false &&
       !isTransient(error) &&
-      !(error instanceof UserFacingError && error.reported)
+      !(error instanceof UserFacingError && error.reported) &&
+      (waiting || options.sessionBusy?.(event.sessionId) !== true)
     ) {
       try {
         await tracker.postProgress(

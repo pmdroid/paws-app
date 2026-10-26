@@ -898,27 +898,29 @@ export function createRemoteAgentRunner(options: {
               });
               for (const notice of runtimeNotices)
                 await emit({ type: "progress", text: `${notice}\n` });
-              if (pinnedRunnerId && pinnedRunnerId !== selected.id) {
-                const name = (id: string) =>
-                  db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
-                    ?.name ?? id;
+              const name = (id: string) =>
+                db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
+                  ?.name ?? id;
+              // One start line names the runner, the repository and the runtimes it installs.
+              const where = `${name(selected.id)}${
+                boundRepository ? ` in ${boundRepository.owner}/${boundRepository.repo}` : ""
+              }${runtimes ? `, ${runtimes.map((runtime) => `${runtime.tool} ${runtime.version}`).join(", ")}` : ""}`;
+              if (pinnedRunnerId && pinnedRunnerId !== selected.id)
                 await emit({
                   type: "progress",
-                  text: `Starting a new session on ${name(selected.id)}; ${name(pinnedRunnerId)} is unavailable.\n`,
+                  text: `Starting a new session on ${where}; ${name(pinnedRunnerId)} is unavailable.\n`,
                 });
-              } else if (session && (!pinnedRunnerId || session.runnerId === pinnedRunnerId)) {
-                const name = (id: string) =>
-                  db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
-                    ?.name ?? id;
+              else if (session && (!pinnedRunnerId || session.runnerId === pinnedRunnerId))
                 await emit({
                   type: "progress",
                   text: resumeSessionId
-                    ? `Continuing the agent's session on ${name(selected.id)}.\n`
+                    ? `Continuing the agent's session on ${where}.\n`
                     : selected.id === session.runnerId
-                      ? `Starting a new session on ${name(selected.id)}; this runner version can't resume the earlier session.\n`
-                      : `Starting a new session on ${name(selected.id)}; ${name(session.runnerId)} is ${sessionBusy ? "busy" : "unavailable"}.\n`,
+                      ? `Starting a new session on ${where}; this runner version can't resume the earlier session.\n`
+                      : `Starting a new session on ${where}; ${name(session.runnerId)} is ${sessionBusy ? "busy" : "unavailable"}.\n`,
                 });
-              }
+              else if (input.role === "implementer")
+                await emit({ type: "progress", text: `Starting on ${where}.\n` });
               return { assigned, baseSha, mainSha, deadline };
             })());
           const { assigned, baseSha, mainSha, deadline } = placed;
@@ -1005,7 +1007,11 @@ export function createRemoteAgentRunner(options: {
               if (event.type === "permission")
                 await emit({ type: "permission", ...event.permission });
               if (event.type === "hook_failed") await emit(event);
-              if (event.type === "progress") {
+              // Runners from before the start line named the runtimes still report the install.
+              if (
+                event.type === "progress" &&
+                !(event.notice && /^Installed runtimes /.test(event.text))
+              ) {
                 if (input.postUpdate && !event.notice)
                   await input.postUpdate.post(event.text).catch(() => undefined);
                 else await emit({ type: "progress", text: event.text });

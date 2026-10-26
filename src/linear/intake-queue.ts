@@ -193,6 +193,8 @@ export function createLinearIntake(options: {
   ) => Promise<void | boolean>;
   beforeEvent?: (event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>;
   progressReporter?: (event: AcceptedLinearEvent) => TrackerAdapter["postProgress"];
+  /** The session already has an item in flight, so a failed follow-up retries quietly. */
+  sessionBusy?: (sessionId: string) => boolean;
   signal: AbortSignal;
   ledger?: LinearLedger;
   concurrency?: number;
@@ -256,6 +258,7 @@ export function createLinearIntake(options: {
             signal,
             acknowledgedOnArrival: checked,
             reportFailure: mode.attempts === 0,
+            sessionBusy: options.sessionBusy,
           },
         );
       }),
