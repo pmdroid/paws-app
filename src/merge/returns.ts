@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   restart,
-  countCiFixes,
+  fixRounds,
   countRebaseReturns,
   listRebaseReturns,
   getWorkItem,
@@ -40,7 +40,7 @@ export function rebaseBudgetFor(
 }
 
 export function ciFixes(db: Database, itemId: string): number {
-  return countCiFixes(db, itemId, latestUserTurn(db, itemId));
+  return fixRounds(db, itemId);
 }
 
 export function returnToAgent(

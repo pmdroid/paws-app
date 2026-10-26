@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
-import { jobVersionCurrent } from "../db";
+import { saveHumanRetryWindow, fixRounds, jobVersionCurrent } from "../db";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -45,6 +45,7 @@ import {
   type AgentProfile,
 } from "../config";
 import {
+  policyFixBudget,
   approvalsAtHead,
   awaitsVisualReview,
   createCloseoutGate,
@@ -2118,13 +2119,22 @@ export class Orchestrator {
         returned !== null && ["findings", "ci", "review", "conflict"].includes(returned.reason);
       sessionProgress?.phase(fixing ? "fixing" : "implementing");
       if (fixing) {
-        const round =
-          this.db
-            .query<{ count: number }, [string]>(
-              "SELECT COUNT(*) AS count FROM work_item_event WHERE item_id=? AND kind='restart' AND reason IN ('findings','ci','review')",
-            )
-            .get(item.id)?.count ?? 1;
-        live.progress = `Fixing Closeout findings for ${item.linearIdentifier}, fix attempt ${round} of 3.`;
+        const round = fixRounds(this.db, item.id);
+        const limit = this.fixRoundLimit(item);
+        const label =
+          returned.reason === "ci"
+            ? "CI"
+            : returned.reason === "review"
+              ? "review findings"
+              : returned.reason === "conflict"
+                ? "merge conflicts"
+                : "Closeout findings";
+        const counter = returned.reason === "conflict" ? "" : ` (${round} of ${limit})`;
+        sessionProgress?.status(`${item.linearIdentifier}: fixing ${label}${counter}`);
+        live.progress =
+          returned.reason === "conflict"
+            ? `Resolving merge conflicts for ${item.linearIdentifier}.`
+            : `Fixing ${label} for ${item.linearIdentifier}, fix attempt ${round} of ${limit}.`;
         this.post(item, "thought", live.progress, `${item.id}:fix:${item.version}`);
       }
       if (working !== undefined) this.startPost(working);
@@ -2756,8 +2766,7 @@ export class Orchestrator {
   }
 
   /**
-   * A re-check of a rebased head starts with a fresh retry budget. Earlier
-   * evidence stays on disk; its attempt keys become the round's baseline.
+   * Record re-verification metadata. A rebase does not authorize new attempts.
    */
   private async startCloseoutRound(item: WorkItemRecord, head: string): Promise<void> {
     if (head === "" || head === item.checkpoint?.wipCommit) return;
@@ -2788,15 +2797,14 @@ export class Orchestrator {
     const checks = result?.decision?.items ?? [];
     const failed = checks.some((check) => check.state === "failed");
     const exhausted = checks.some((check) => check.state === "exhausted");
-    const rounds =
-      this.db
-        .query<{ count: number }, [string]>(
-          `SELECT COUNT(*) AS count FROM work_item_event e WHERE item_id=? AND kind='restart'
-        AND reason IN ('findings','ci','review') AND id > COALESCE((SELECT MAX(id) FROM work_item_event
-          WHERE item_id=e.item_id AND kind='restart' AND reason='answer'),0)`,
-        )
-        .get(item.id)?.count ?? 0;
-    if (failed && !exhausted && rounds < 3) {
+    const rounds = fixRounds(this.db, item.id);
+    const limit = this.fixRoundLimit(item);
+    if (
+      failed &&
+      !exhausted &&
+      !checks.some((check) => check.kind === "setup" && check.state === "failed") &&
+      rounds < limit
+    ) {
       restart(this.db, current, {
         reason: "findings",
         body: result?.handoff ?? summary,
@@ -2832,7 +2840,7 @@ export class Orchestrator {
       now: this.now(),
       version: current.version,
       reason:
-        exhausted || rounds >= 3
+        exhausted || rounds >= limit
           ? "budget_spent"
           : result?.outcome === "blocked"
             ? "blocked_check"
@@ -3168,7 +3176,7 @@ export class Orchestrator {
       stopped: () => this.stopped(itemId),
       session: (item) => this.activitySession(item),
       fetchMain: (item) => this.fetchUpstreamMain(item),
-      ciFixAttempts: () => this.ciFixAttempts(),
+      ciFixAttempts: (item) => this.fixRoundLimit(item),
       voice: {
         thought: (item, body, key) => this.post(item, "thought", body, key),
         status: (item, body) => this.statusAfterPullRequest(item, body),
@@ -3211,10 +3219,11 @@ export class Orchestrator {
     }
   }
 
-  /** `[merge] ci_fix_attempts`, read for every CI round. Missing means 3. */
-  private ciFixAttempts(): number {
-    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-      .ciFixAttempts;
+  private fixRoundLimit(item: WorkItemRecord): number {
+    const { home, policyRoot } = this.closeoutHome(item);
+    return (
+      policyFixBudget(worktreePath(this.options.pawsRoot, itemPathId(item)), home, policyRoot) ?? 3
+    );
   }
 
   /**
@@ -4446,6 +4455,8 @@ export class Orchestrator {
       upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
+    const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
+
     immediate(this.db, () => {
       if (item!.cancelRequested || item!.state === "failed") {
         this.db.run(
@@ -4461,6 +4472,7 @@ export class Orchestrator {
         jobKey,
         now: this.now(),
       });
+      if (jobId !== null) saveHumanRetryWindow(this.db, item!.id, jobId, retryBaseline);
       if (rebase && jobId !== null)
         recordRebaseReturn(this.db, {
           itemId: item!.id,

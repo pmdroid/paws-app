@@ -41,3 +41,18 @@ export function restart(
     });
   });
 }
+
+/** Fix restarts since the latest human turn, across findings, CI and review. */
+export function fixRounds(db: Database, itemId: string): number {
+  return (
+    db
+      .query<{ count: number }, [string, string, string, string]>(`
+    SELECT COUNT(*) AS count FROM job WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
+      AND json_extract(payload, '$.reason') IN ('findings','ci','review')
+      AND id > COALESCE((SELECT MAX(id) FROM job
+        WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
+          AND (job_key LIKE 'linear-turn:%' OR json_extract(payload, '$.reason') = 'answer')), 0)
+  `)
+      .get(JOB_KIND.resume, itemId, JOB_KIND.resume, itemId)?.count ?? 0
+  );
+}

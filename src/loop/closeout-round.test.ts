@@ -31,7 +31,7 @@ const POLICY = [
   "",
 ].join("\n");
 
-test("a re-check of a rebased head gets the full attempt budget again", async () => {
+test("a re-check of a rebased head retains the spent check budget", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paws-closeout-round-"));
   const dir = path.join(root, "repo");
   const home = path.join(root, "home");
@@ -102,10 +102,10 @@ test("a re-check of a rebased head gets the full attempt budget again", async ()
       maxFixAttempts: 5,
     });
     expect(recheck.outcome).toBe("exhausted");
-    expect(recheck.evaluations).toBe(3);
+    expect(recheck.evaluations).toBe(1);
     const kept = await snapshotRetryBaseline(TASK, pawsHome);
     expect(kept).toEqual(expect.arrayContaining(baseline));
-    expect(kept.length).toBe(baseline.length + 3);
+    expect(kept.length).toBe(baseline.length);
   } finally {
     db.close();
     await rm(root, { recursive: true, force: true });

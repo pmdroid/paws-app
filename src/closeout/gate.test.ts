@@ -8,7 +8,6 @@ import { createCloseoutGate } from "./gate";
 import type { FixRunner } from "./fixer";
 import { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run";
 import type { CodexReviewer } from "./reviewer";
-import { MAX_FIX_ATTEMPTS } from "./types";
 import { reviewRequirements } from "./index";
 import { addReview, type CloseoutProgressStep, type PublishedEvidence } from "../closeout-spec";
 
@@ -436,7 +435,7 @@ describe("closeout gate", () => {
       fixer: committingFixer(repo.dir, fixes, "note.txt", "still failing\n"),
     });
     expect(result.outcome).toBe("exhausted");
-    expect(result.fixAttempts).toBe(MAX_FIX_ATTEMPTS);
+    expect(result.fixAttempts).toBe(2);
     expect(fixes).toEqual([1, 2]);
     expect(result.evaluations).toBe(3);
     await repo.cleanup();
@@ -652,7 +651,7 @@ describe("closeout gate", () => {
         },
         fixer: committingFixer(repo.dir, fixes),
       };
-      const result = await runCloseoutGate(input);
+      const result = await runCloseoutGate({ ...input, maxFixAttempts: 12 });
       expect(result.outcome).toBe("exhausted");
       expect(result.fixAttempts).toBe(11);
       expect(reviews).toBe(12);
@@ -953,13 +952,13 @@ describe("closeout gate", () => {
     }
   });
 
-  test("setup repairs and command repairs each receive their configured budget", async () => {
+  test("setup faults retry once, then stop without spending fix rounds", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": JSON.stringify({
         specVersion: "0.1",
-        retry: { maxFailedAttemptsPerItem: 2, scope: "task" },
-        setup: [{ id: "install", exec: ["sh", "-c", "test -f installed.txt"], timeoutSeconds: 30 }],
-        items: [commandUntilOk("test")],
+        retry: { attempts_per_check: 5, fix_rounds_per_item: 3 },
+        setup: [{ id: "install", exec: ["sh", "-c", "exit 1"], timeoutSeconds: 30 }],
+        items: [alwaysPass("test")],
       }),
     });
     try {
@@ -972,20 +971,49 @@ describe("closeout gate", () => {
         home: repo.home,
         pawsHome: repo.pawsHome,
         reviewer: throwingReviewer(),
-        fixer: {
-          applyFix(request) {
-            return committingFixer(
-              repo.dir,
-              fixes,
-              request.fixAttempt === 1 ? "installed.txt" : "ok.txt",
-            ).applyFix(request);
-          },
-        },
+        fixer: committingFixer(repo.dir, fixes),
       });
-      expect(result.outcome).toBe("accepted");
-      expect(fixes).toEqual([1, 2]);
+      expect(result.outcome).toBe("exhausted");
+      expect(result.fixAttempts).toBe(0);
+      expect(result.decision?.items.find((item) => item.id === "install")?.message).toContain(
+        "2 of 2",
+      );
+      expect(fixes).toEqual([]);
     } finally {
       await repo.cleanup();
+    }
+  });
+
+  test("fix_rounds_per_item bounds repairs independently of the number of checks", async () => {
+    for (const count of [1, 4]) {
+      const repo = await originRepo({
+        ".agents/closeout.yaml": JSON.stringify({
+          specVersion: "0.1",
+          retry: { attempts_per_check: 10, fix_rounds_per_item: 1 },
+          items: Array.from({ length: count }, (_, i) => ({
+            ...alwaysFail(`test-${i}`),
+            gate: "beforePR",
+          })),
+        }),
+      });
+      try {
+        const fixes: number[] = [];
+        const result = await runCloseoutGate({
+          worktree: repo.dir,
+          taskId: TASK,
+          base: repo.head,
+          candidate: candidate(),
+          home: repo.home,
+          pawsHome: repo.pawsHome,
+          reviewer: throwingReviewer(),
+          fixer: committingFixer(repo.dir, fixes),
+        });
+        expect(result.outcome).toBe("exhausted");
+        expect(fixes).toEqual([1]);
+        expect(result.evaluations).toBe(2);
+      } finally {
+        await repo.cleanup();
+      }
     }
   });
 

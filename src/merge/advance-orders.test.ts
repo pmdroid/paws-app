@@ -192,7 +192,9 @@ describe("advanceMerge on a CI failure", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
     const question = findOpenQuestion(h.db, "ses-ENG-1")!;
-    expect(question.body).toContain("The agent used all 1 CI fix attempt.");
+    expect(question.body).toContain(
+      "The agent used all 1 fix round across Closeout, CI and review.",
+    );
     expect(question.body).toContain("- test (https://ci.example/1)");
     const rounds = listCiRounds(h.db, "ENG-1");
     expect(rounds.map((round) => [round.next, round.fix, round.fixLimit])).toEqual([
@@ -209,7 +211,7 @@ describe("advanceMerge on a CI failure", () => {
     h.state.ciFixAttempts = 0;
     h.state.ci = failingTest;
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
-    expect(findOpenQuestion(h.db, "ses-ENG-1")?.body).toContain("CI fix attempts are set to 0");
+    expect(findOpenQuestion(h.db, "ses-ENG-1")?.body).toContain("Fix rounds are set to 0");
     expect(resumes(h)).toEqual([]);
   });
 
@@ -223,7 +225,7 @@ describe("advanceMerge on a CI failure", () => {
     await h.requeue("ENG-1", "fix 1\n");
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(findOpenQuestion(h.db, "ses-ENG-1")?.body).toContain(
-      "The agent used all 1 CI fix attempt.",
+      "The agent used all 1 fix round across Closeout, CI and review.",
     );
   });
 });

@@ -5,7 +5,7 @@
  */
 
 /** Orchestrator fix budget from QM-06. Separate from the policy retry limit. */
-export const MAX_FIX_ATTEMPTS = 2;
+export const MAX_FIX_ATTEMPTS = 3;
 
 export const CLOSEOUT_GATE = "beforePR" as const;
 
