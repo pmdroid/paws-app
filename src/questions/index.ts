@@ -20,6 +20,7 @@ export {
   linkAskHandoff,
   linkAskReminderBody,
   linkAskTitle,
+  reviewRoundsDetail,
   openLinkAsk,
   removeLinkAskUrl,
   shortCommit,

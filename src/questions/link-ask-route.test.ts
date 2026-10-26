@@ -187,3 +187,39 @@ test("a bypass approval sends each selected check with its reason", async () => 
     },
   ]);
 });
+
+test("a rounds ask takes Stop without a note and refuses Approve", async () => {
+  const { db, calls } = setup();
+  const { question } = openLinkAsk(db, {
+    asker: { itemId: "PAS-633", runId: null, sessionId: "ses_1" },
+    kind: "rounds",
+    head: "4b317d5aa",
+    link: "https://paws.example/status/issues/PAS-633#review-rounds",
+    detail: "The independent review failed 4 rounds.",
+    answerers: ["linear-1"],
+    now: NOW,
+  });
+  const options = {
+    db,
+    principal: { workspaceId: "ws", userId: "user-1" },
+    sessionIds: ["ses_1"],
+    submit: (async (input) => (calls.push(input), "answered")) as LinkAskAnswer,
+  };
+  const approve = await handleLinkAskAnswer(
+    post({ questionId: question.id, decision: "approve" }),
+    options,
+  );
+  expect(approve?.status).toBe(400);
+  for (const decision of ["stop", "continue", "rethink"]) {
+    const response = await handleLinkAskAnswer(
+      post({ questionId: question.id, decision }),
+      options,
+    );
+    expect(response?.status).toBe(200);
+  }
+  expect(calls.map((call) => [call.decision, call.note])).toEqual([
+    ["stop", null],
+    ["continue", null],
+    ["rethink", null],
+  ]);
+});

@@ -26,7 +26,13 @@ export function recoveryOptions(
         for (const key of recovery.retryBaseline) retryBaseline.add(key);
       continue;
     }
-    if (linkAsk.decision === "changes" || linkAsk.closedReason === "guidance")
+    // Rethink the approach and Keep going on a rounds ask start a new round budget too.
+    if (
+      linkAsk.decision === "changes" ||
+      linkAsk.decision === "rethink" ||
+      linkAsk.decision === "continue" ||
+      linkAsk.closedReason === "guidance"
+    )
       for (const key of recovery.retryBaseline) retryBaseline.add(key);
     if (linkAsk.decision !== "approve") continue;
     // Bypasses are approved on the item page, one reason per check.
