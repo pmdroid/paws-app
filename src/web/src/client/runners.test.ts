@@ -874,7 +874,10 @@ describe("member VM", () => {
     });
     const html = memberVmMarkup(ready, { busy: false, runner });
     expect(html).toContain(routeHref({ view: "runners", id: runner.id }));
-    expect(html).toContain("sign in to Claude and Codex");
+    expect(html).toContain("sign in to coding agents");
+    expect(
+      memberVmMarkup(ready, { busy: false, runner: { ...runner, status: "paused" } }),
+    ).toContain("Ready (paused)");
     const removed = memberVmMarkup(ready, {
       busy: false,
       runner: { ...runner, status: "revoked" },
@@ -1005,4 +1008,19 @@ describe("member VM", () => {
     );
     expect(html).toContain("Owned by Ada Lovelace");
   });
+});
+
+test("a new paused runner tells its member owner to sign in and turn it on", () => {
+  const fresh = { ...runner, status: "paused" as const, hasRunWork: false };
+  const html = runnerDetailMarkup(fresh, { ...view, role: "member" });
+  expect(html).toContain("Sign in the coding agents this runner should use, then turn it on.");
+  expect(html).toContain('data-runner-status="active"');
+  expect(html).toContain(">Turn on</button>");
+  expect(html).toContain("data-runner-signin");
+  const used = runnerDetailMarkup({ ...fresh, hasRunWork: true }, view);
+  expect(used).toContain(">Resume</button>");
+  expect(used).not.toContain("then turn it on.");
+  const active = runnerDetailMarkup({ ...fresh, status: "active" }, view);
+  expect(active).toContain(">Pause</button>");
+  expect(active).not.toContain("then turn it on.");
 });

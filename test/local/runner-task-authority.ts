@@ -149,6 +149,7 @@ export async function probeRunnerTaskAuthority(
       { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
       pairing.code,
     );
+    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     assert.equal((await daemon.pollPairing()).phase, "paired");
     db.run(
       "INSERT INTO runner_command(ordinal,id,runner_id,kind,envelope,expires_at,acknowledged_at) VALUES(12,'retained-task-migration',?,'probe','{}',?,?)",

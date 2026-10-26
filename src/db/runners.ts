@@ -108,6 +108,7 @@ export type RunnerStrayProcess = {
 };
 
 export type RunnerOverview = RunnerRecord & {
+  hasRunWork: boolean;
   /** The owner's display name, so the Runners page can say whose host it is. */
   ownerName: string | null;
   metrics: {
@@ -277,12 +278,16 @@ export function listRunnerOverview(
     ceiling: number | null;
     desired: number | null;
     ownerName: string | null;
+    hasRunWork: number;
   };
   const sessions = listRunnerSessions(db, workspaceId, now);
   const pins = listSkills(db);
   return db
     .query<Row, [number, number, number, string]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
+    (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id)
+     OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind IN ('run','review','check','task'))
+     OR EXISTS(SELECT 1 FROM runner_helper x WHERE x.runner_id=r.id)) AS hasRunWork,
     h.cpu_percent AS cpuPercent,h.cpu_count AS cpuCount,h.memory_total_bytes AS memoryTotalBytes,
     h.memory_available_bytes AS memoryAvailableBytes,h.load_1 AS load1,h.load_5 AS load5,
     h.load_15 AS load15,h.disk_total_bytes AS diskTotalBytes,h.disk_free_bytes AS diskFreeBytes,
@@ -307,6 +312,7 @@ export function listRunnerOverview(
       workspaceId: row.workspaceId,
       ownerUserId: row.ownerUserId,
       ownerName: row.ownerName,
+      hasRunWork: row.hasRunWork === 1,
       name: row.name,
       status: row.status,
       fence: row.fence,
@@ -414,7 +420,7 @@ export function approveRunnerPairing(
       .get(input.pairingId, input.now);
     if (!pairing) throw new Error("Runner pairing is invalid or expired.");
     db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'paused',?)",
       [input.runnerId, input.workspaceId, input.userId, pairing.name, input.now],
     );
     insertCertificate(db, input.runnerId, input.certificate);
@@ -507,7 +513,7 @@ export function enrollRunner(
     const enrollment = findRunnerEnrollment(db, input.tokenHash, input.now);
     if (!enrollment) throw new Error("Runner enrollment is invalid or expired.");
     db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'paused',?)",
       [input.runnerId, enrollment.workspaceId, enrollment.userId, input.name, input.now],
     );
     insertCertificate(db, input.runnerId, input.certificate);

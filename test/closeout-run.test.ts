@@ -179,6 +179,10 @@ describe("closeout command runner", () => {
       expect(record.exec.exitCode).toBeNull();
       const parent = Number(readFileSync(parentPid, "utf8"));
       const child = Number(readFileSync(childPid, "utf8"));
+      // Process-group signals return before every child has exited and been reaped.
+      const deadline = Date.now() + 2_000;
+      while ((alive(parent) || alive(child)) && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 20));
       expect(alive(parent)).toBe(false);
       expect(alive(child)).toBe(false);
     } finally {

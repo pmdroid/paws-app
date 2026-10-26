@@ -119,7 +119,8 @@ if (mode === "prepare") {
   try {
     const pending = await daemon.beginPairing("Durable health runner");
     assert(pending.phase === "pending");
-    await coordinator.control.approvePairing(principal, pending.code);
+    const approved = await coordinator.control.approvePairing(principal, pending.code);
+    coordinator.control.setStatus(principal, approved.runnerId, "active");
     const paired = await daemon.pollPairing();
     assert(paired.phase === "paired");
     if (process.argv[4] === "helpers") {

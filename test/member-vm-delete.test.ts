@@ -535,7 +535,7 @@ describe("Delete VM", () => {
     expect(again.id).not.toBe(vm.id);
     const recreated = await f.ready();
     expect(recreated.runnerId).not.toBe(vm.runnerId);
-    expect(getRunner(f.db, recreated.runnerId!)!.status).toBe("active");
+    expect(getRunner(f.db, recreated.runnerId!)!.status).toBe("paused");
     expect(f.exeDev.vms.has(vm.vmName)).toBe(true);
   });
 
@@ -689,7 +689,7 @@ describe("Delete VM while a provisioning step is still running", () => {
         "SELECT id FROM runner WHERE name='ada-lovelace-paws' AND revoked_at IS NULL",
       )
       .get()!;
-    expect(getRunner(f.db, orphan.id)!.status).toBe("active");
+    expect(getRunner(f.db, orphan.id)!.status).toBe("paused");
     const itemId = f.task(orphan.id, "PAS-902");
 
     const manual = f.control.createEnrollment(f.principal(f.member.userId, "member"), {
@@ -714,7 +714,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(f.stopped).toEqual([itemId]);
     expect(getMemberVm(f.db, row.id)).toBeNull();
     expect(getRunner(f.db, orphan.id)!.status).toBe("revoked");
-    expect(getRunner(f.db, laptop.runnerId)!.status).toBe("active");
+    expect(getRunner(f.db, laptop.runnerId)!.status).toBe("paused");
     expect(
       f.db.query("SELECT 1 FROM member_vm_enrollment WHERE member_vm_id=?").get(row.id),
     ).toBeNull();
@@ -767,7 +767,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     const stopped = getMemberVm(f.db, row.id)!;
     expect(stopped.deleteStep).toBe("drain");
     expect(stopped.deleteFailure).toContain(orphan.id);
-    expect(getRunner(f.db, orphan.id)!.status).toBe("active");
+    expect(getRunner(f.db, orphan.id)!.status).toBe("paused");
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
 
     f.control.setStatus(f.owner, orphan.id, "revoked");

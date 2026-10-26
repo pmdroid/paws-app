@@ -11,7 +11,7 @@ export type OnboardingRunner =
   /** An eligible runner. `sharedBy` names the project lead who shares it, when it is not the member's. */
   | { state: "ready"; id: string; name: string; sharedBy?: string }
   /** The member's own runner, or the lead's shared one when `sharedBy` is set, is not reachable. */
-  | { state: "offline" | "paused"; name: string; sharedBy?: string }
+  | { state: "offline" | "paused"; id?: string; name: string; sharedBy?: string }
   | { state: "setting-up"; name: string; steps: OnboardingVmStep[] }
   | { state: "failed"; name: string; failure: string; steps: OnboardingVmStep[] }
   /** Nothing is eligible. `reason` says why when Paws knows, such as an unshared lead runner. */
@@ -358,6 +358,19 @@ function runnerStep(input: OnboardingPageInput): Step {
       };
     case "offline":
     case "paused": {
+      if (runner.state === "paused" && runner.sharedBy === undefined)
+        return {
+          title,
+          state: "needed",
+          label: "Ready (paused)",
+          detail: `${runner.name} is paused. Sign in the coding agents this runner should use, then turn it on.`,
+          actions: [
+            {
+              href: runner.id ? `${RUNNERS_PAGE}/${encodeURIComponent(runner.id)}` : RUNNERS_PAGE,
+              label: "Open Runners",
+            },
+          ],
+        };
       const which =
         runner.sharedBy === undefined
           ? runner.name
@@ -442,7 +455,7 @@ export function onboardingSteps(input: OnboardingPageInput): Step[] {
       state: "later",
       label: "After the runner",
       detail:
-        "Sign in to both on the runner once it is ready. Claude writes the change; Codex reviews it.",
+        "Sign in to both on the runner, then turn it on. Claude writes the change; Codex reviews it.",
     });
   else if (missing.length === 0)
     steps.push({

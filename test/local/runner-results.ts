@@ -63,6 +63,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         pending.code,
       )
     ).runnerId;
+    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     const item = insertQueuedItem(db, { id: "result-item", now, sessionKey: "result-session" });
     const { run } = beginImplementRun(db, item.id, now);
     recordLinearInstallation(db, {
