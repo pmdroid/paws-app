@@ -43,7 +43,7 @@ const VERDICT_LABEL: Record<VerdictDecision, string> = {
 const VERDICT_DETAIL: Record<VerdictDecision, string> = {
   accepted: "Fresh evidence satisfied the applicable requirements.",
   rejected: "Findings go back to the implementing agent.",
-  exhausted: "Retry budget for this task is used up.",
+  exhausted: "Retry budget for this item is used up.",
   running: "Closeout is still collecting evidence.",
   blocked: "Closeout stopped and needs a person.",
 };
@@ -90,33 +90,33 @@ export function taskPhase(
     itemState !== "awaiting_input";
   if (itemState === "completed")
     return { current: 3, detail: "The requested response is complete." };
-  if (itemState === "merged") return { current: 3, detail: "Merged. This task is complete." };
+  if (itemState === "merged") return { current: 3, detail: "Merged. This item is complete." };
   if (recheck) {
     return {
       current: 1,
       detail:
-        "Implementation finished. Closeout is verifying this candidate. The task is not complete.",
+        "Implementation finished. Closeout is verifying this candidate. The item is not complete.",
     };
   }
   if (closeoutDecision === "blocked") {
     return {
       current: 1,
-      detail: "Closeout is blocked and needs a person. The task is not complete.",
+      detail: "Closeout is blocked and needs a person. The item is not complete.",
     };
   }
   if (closeoutDecision === "exhausted" || itemState === "exhausted") {
     return {
       current: 1,
-      detail: "Closeout stopped after its retry budget. The task is not complete.",
+      detail: "Closeout stopped after its retry budget. The item is not complete.",
     };
   }
   if (closeoutDecision === "rejected") {
-    return { current: 1, detail: "Closeout checks failed. The task is not complete." };
+    return { current: 1, detail: "Closeout checks failed. The item is not complete." };
   }
   if (itemState === "merge_queue") {
     return {
       current: 2,
-      detail: "Closeout accepted. Waiting to merge. The task is not complete.",
+      detail: "Closeout accepted. Waiting to merge. The item is not complete.",
     };
   }
   if (itemState === "signoff") {
@@ -126,24 +126,24 @@ export function taskPhase(
     };
   }
   if (itemState === "needs_human" || itemState === "stopped" || runState === "stopped") {
-    return { current: 1, detail: "Stopped before the task was complete." };
+    return { current: 1, detail: "Stopped before the item was complete." };
   }
   if (itemState === "awaiting_input" || runState === "awaiting_input") {
     return {
       current: 0,
-      detail: "The implementing agent is waiting for an answer. The task is not complete.",
+      detail: "The implementing agent is waiting for an answer. The item is not complete.",
     };
   }
   if (itemState === "verifying" || runState === "verifying") {
     return {
       current: 1,
       detail:
-        "Implementation finished. Closeout is verifying this candidate. The task is not complete.",
+        "Implementation finished. Closeout is verifying this candidate. The item is not complete.",
     };
   }
   return {
     current: 0,
-    detail: "The implementing agent is still working. The task is not complete.",
+    detail: "The implementing agent is still working. The item is not complete.",
   };
 }
 
@@ -275,7 +275,7 @@ const HELD_LINES: Record<HeldReason, string> = {
   project: "its project has not released it yet",
   reconciling: "Linear changes are still syncing",
   snapshot: "reading its dependencies from Linear",
-  cap: "its owner already runs the most tasks at once",
+  cap: "its owner already runs the most items at once",
   slot: "no free slot on any runner",
   workspace: "no Linear workspace is configured",
 };
@@ -291,7 +291,7 @@ export function heldLine(item: StatusItem): string | null {
 }
 
 export function capLine(item: StatusItem, cap: number): string {
-  return `its ${item.project ? "project" : "owner"} already runs ${cap} ${cap === 1 ? "task" : "tasks"}, the most at once`;
+  return `its ${item.project ? "project" : "owner"} already runs ${cap} ${cap === 1 ? "item" : "items"}, the most at once`;
 }
 
 /** "Queued, 2nd in line. 4 of 4 runner slots are busy." Matches the Linear thought. */

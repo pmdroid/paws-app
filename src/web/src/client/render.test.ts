@@ -158,7 +158,7 @@ describe("status views", () => {
     snapshot.items = Array.from({ length: 9 }, (_, index) => ({
       ...item,
       id: `WORK-${index}`,
-      title: `Task ${index}`,
+      title: `Item ${index}`,
       runId: null,
       blockers: [],
     }));
@@ -168,7 +168,7 @@ describe("status views", () => {
     expect(html).toContain("9 working");
     expect(html).toContain("View all 9 working issues");
     expect(html.match(/class="overview-row"/g)).toHaveLength(6);
-    expect(html).not.toContain("Task 6");
+    expect(html).not.toContain("Item 6");
   });
 
   test("issue filters keep in-progress work out of Done", () => {
@@ -204,7 +204,7 @@ describe("status views", () => {
     expect(detail).toContain('href="/issues/ENG-104"');
   });
 
-  test("a queued task shows its place in line on the run and issue pages", () => {
+  test("a queued item shows its place in line on the run and issue pages", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
@@ -227,7 +227,7 @@ describe("status views", () => {
     );
   });
 
-  test("a held task shows why it waits on its issue page", () => {
+  test("a held item shows why it waits on its issue page", () => {
     const snapshot = demoStatus();
     const item = snapshot.items[0]!;
     item.state = "queued";
@@ -241,7 +241,7 @@ describe("status views", () => {
       [{ reason: "project", blockers: [] }, "Waiting: its project has not released it yet"],
       [{ reason: "reconciling", blockers: [] }, "Waiting: Linear changes are still syncing"],
       [{ reason: "snapshot", blockers: [] }, "Waiting: reading its dependencies from Linear"],
-      [{ reason: "cap", blockers: [] }, "Waiting: its owner already runs the most tasks at once"],
+      [{ reason: "cap", blockers: [] }, "Waiting: its owner already runs the most items at once"],
       [{ reason: "slot", blockers: [] }, "Waiting: no free slot on any runner"],
       [{ reason: "workspace", blockers: [] }, "Waiting: no Linear workspace is configured"],
     ];
@@ -261,7 +261,7 @@ describe("status views", () => {
     expect(issue()).not.toContain("Waiting:");
   });
 
-  test("the issue page shows how many Linear requests the task made", () => {
+  test("the issue page shows how many Linear requests the item made", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
@@ -271,7 +271,7 @@ describe("status views", () => {
     expect(page).toContain("<dt>Linear requests</dt><dd>12</dd>");
   });
 
-  test("a task in the merge queue shows its place on the run and issue pages", () => {
+  test("an item in the merge queue shows its place on the run and issue pages", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
@@ -294,7 +294,7 @@ describe("status views", () => {
     );
   });
 
-  test("a task in the GitHub merge queue shows GitHub's position and state", () => {
+  test("an item in the GitHub merge queue shows GitHub's position and state", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
@@ -330,7 +330,7 @@ describe("status views", () => {
     expect(html).not.toContain("/verdicts");
   });
 
-  test("task activity is a plain section with its links as one row of buttons", () => {
+  test("item activity is a plain section with its links as one row of buttons", () => {
     const snapshot = demoStatus();
     snapshot.source = "live";
     const run = snapshot.runs.find((entry) => entry.state === "running");
@@ -446,6 +446,6 @@ function issueRow(html: string, id: string): string {
 
 function activitySection(html: string): string {
   const start = html.indexOf('<section class="run-activity"');
-  if (start < 0) throw new Error("missing task activity");
+  if (start < 0) throw new Error("missing item activity");
   return html.slice(start, html.indexOf("</section>", start));
 }

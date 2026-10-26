@@ -10,7 +10,7 @@ export const RUNNER_POLL_MS = 10_000;
 export const RUNNER_HEARTBEAT_MS = 15_000;
 /** Four missed beats mark a runner offline. */
 export const RUNNER_OFFLINE_MS = 4 * RUNNER_HEARTBEAT_MS;
-/** Host metrics older than two heartbeats are shown as stale. */
+/** Runner metrics older than two heartbeats are shown as stale. */
 export const RUNNER_STALE_MS = 2 * RUNNER_HEARTBEAT_MS;
 
 type RunnerStatus = "active" | "paused" | "draining" | "revoked";
@@ -168,7 +168,7 @@ export type MemberVmState =
 const VM_STEPS: Record<MemberVm["steps"][number]["step"], string> = {
   create: "Create the VM",
   install: "Install the runner",
-  enroll: "Pair with Paws",
+  enroll: "Enroll with Paws",
   health: "First heartbeat",
 };
 const VM_STATES: Record<MemberVm["steps"][number]["state"], [string, string]> = {
@@ -193,7 +193,7 @@ function deleteButton(vm: MemberVm, busy: boolean): string {
 export function memberVmDeleteDialogMarkup(vm: MemberVm, view: { busy: boolean }): string {
   const name = esc(vm.vmName);
   const disabled = view.busy ? " disabled" : "";
-  return `<dialog id="vm-delete-dialog" aria-labelledby="vm-delete-heading" aria-describedby="vm-delete-detail"><div class="dialog-body"><h2 id="vm-delete-heading">Delete VM <span class="mono">${name}</span>?</h2><p id="vm-delete-detail"><b class="mono">${name}</b> will be destroyed on exe.dev, with everything on its disk, and its runner removed from Paws.</p><p class="muted">A task running on the runner stops the delete and is named here. You can then wait for it or force the delete, which stops the task.</p><div class="settings-actions"><button class="btn" data-vm-delete-cancel data-focus="vm-delete-cancel">Cancel</button><button class="btn primary" data-vm-delete-confirm="${esc(vm.id)}" data-focus="vm-delete-confirm"${disabled}>Delete VM</button></div></div></dialog>`;
+  return `<dialog id="vm-delete-dialog" aria-labelledby="vm-delete-heading" aria-describedby="vm-delete-detail"><div class="dialog-body"><h2 id="vm-delete-heading">Delete VM <span class="mono">${name}</span>?</h2><p id="vm-delete-detail"><b class="mono">${name}</b> will be destroyed on exe.dev, with everything on its disk, and its runner removed from Paws.</p><p class="muted">An item running on the runner stops the delete and is named here. You can then wait for it or force the delete, which stops the item.</p><div class="settings-actions"><button class="btn" data-vm-delete-cancel data-focus="vm-delete-cancel">Cancel</button><button class="btn primary" data-vm-delete-confirm="${esc(vm.id)}" data-focus="vm-delete-confirm"${disabled}>Delete VM</button></div></div></dialog>`;
 }
 
 export function memberVmDeleteMarkup(vm: MemberVm, view: { busy: boolean; title: string }): string {
@@ -219,7 +219,7 @@ export function memberVmDeleteMarkup(vm: MemberVm, view: { busy: boolean; title:
     .map((task) => `<li><b class="mono">${esc(task.identifier)}</b> ${esc(task.title)}</li>`)
     .join("");
   const status = blocked
-    ? `<div role="alert"><p>${deleting.blocked.length === 1 ? "This task is" : "These tasks are"} still running on the VM:</p><ul data-vm-delete-blocked>${tasks}</ul><p class="muted">Retry once ${deleting.blocked.length === 1 ? "it ends" : "they end"}, or force the delete. Force delete stops ${deleting.blocked.length === 1 ? "the task" : "each task"} the way Stop does.</p></div>`
+    ? `<div role="alert"><p>${deleting.blocked.length === 1 ? "This item is" : "These items are"} still running on the VM:</p><ul data-vm-delete-blocked>${tasks}</ul><p class="muted">Retry once ${deleting.blocked.length === 1 ? "it ends" : "they end"}, or force the delete. Force delete stops ${deleting.blocked.length === 1 ? "the item" : "each item"} the way Stop does.</p></div>`
     : deleting.failure !== null
       ? '<p class="muted">Retry resumes from the failed step.</p>'
       : '<p class="muted">Paws drains the runner, removes it and destroys the VM on exe.dev.</p>';
@@ -297,16 +297,16 @@ export function memberVmMarkup(
     vm.failure !== null
       ? `<button class="btn primary" data-vm-retry data-focus="vm-retry"${disabled}>Retry</button>`
       : removed
-        ? `<button class="btn primary" data-vm-create data-focus="vm-create"${disabled}>Pair again</button>`
+        ? `<button class="btn primary" data-vm-create data-focus="vm-create"${disabled}>Enroll again</button>`
         : "";
   const status = removed
-    ? "<p>The runner on this VM was removed. Pair again to enroll the VM as a new runner.</p>"
+    ? "<p>The runner on this VM was removed. Enroll the VM again to add it as a new runner.</p>"
     : ready
       ? view.runner
         ? `<p>The runner is ready${view.runner.status === "paused" ? " (paused)" : ""} and owned by you. <a href="${esc(routeHref({ view: "runners", id: view.runner.id }))}" data-focus="vm-open">Open ${esc(view.runner.name)}</a> to sign in to coding agents${view.runner.status === "paused" ? ", then turn it on" : ""}.</p>`
         : "<p>The runner is ready and owned by you.</p>"
       : vm.failure === null
-        ? '<p class="muted">Paws creates the VM, installs the runner and pairs it to you. This takes a few minutes.</p>'
+        ? '<p class="muted">Paws creates the VM, installs the runner and enrolls it for you. This takes a few minutes.</p>'
         : '<p class="muted">Retry resumes from the failed step.</p>';
   const pill = removed
     ? '<span class="tag warn">Removed</span>'
@@ -636,7 +636,7 @@ const SKILL_STATES: Record<RunnerSkill["state"], [string, string]> = {
 };
 
 export function waitingLabel(tasks: number, runner: string): string {
-  return `Waiting for ${tasks} running ${tasks === 1 ? "task" : "tasks"} on ${runner}`;
+  return `Waiting for ${tasks} running ${tasks === 1 ? "item" : "items"} on ${runner}`;
 }
 
 export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: string): string {
@@ -670,7 +670,7 @@ export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: strin
 
 export function runnerRuntimesMarkup(runtimes: readonly RunnerRuntime[]): string {
   if (!runtimes.length)
-    return '<p class="muted">No runtimes installed yet. The runner installs a repository\'s mise runtimes when a task starts.</p>';
+    return '<p class="muted">No runtimes installed yet. The runner installs a repository\'s mise runtimes when an item starts.</p>';
   const rows = runtimes
     .map((runtime) => {
       const failed = runtime.status === "failed";
@@ -782,12 +782,12 @@ export function runnerConcurrencyMarkup(
   const id = esc(runner.id);
   const reported =
     ceiling === null
-      ? "Set in the host config. Update the runner to change it here."
-      : `Host limit ${ceiling}. Runner applied ${applied}.`;
+      ? "Set in the runner config. Update the runner to change it here."
+      : `Runner limit ${ceiling}. Runner applied ${applied}.`;
   if (!state.manages || ceiling === null)
     return `${esc(String(value))} <span class="muted">${esc(reported)}</span>`;
   const disabled = state.busy ? " disabled" : "";
-  return `<form class="row" data-runner-concurrency="${id}"><input class="concurrency-input" name="concurrency" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Concurrency, from 1 to ${ceiling}" value="${esc(state.draft ?? String(value))}" data-focus="concurrency:${id}"${disabled}><button class="btn" type="submit" data-focus="concurrency:${id}:save"${disabled}>Save</button><span class="muted">${esc(reported)}</span></form>`;
+  return `<form class="row" data-runner-concurrency="${id}"><input class="concurrency-input" name="concurrency" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Slots, from 1 to ${ceiling}" value="${esc(state.draft ?? String(value))}" data-focus="concurrency:${id}"${disabled}><button class="btn" type="submit" data-focus="concurrency:${id}:save"${disabled}>Save</button><span class="muted">${esc(reported)}</span></form>`;
 }
 
 /** "5 s ago", "3 min ago", "2 h ago", or the date for older values. */
@@ -816,7 +816,7 @@ function gaugeMarkup(gauge: Gauge): string {
 /** CPU, memory, disk and load from the latest heartbeat only, as bars that turn orange when high. */
 export function runnerMetricsMarkup(metrics: Runner["metrics"], now: number): string {
   if (!metrics)
-    return '<section class="runner-host" aria-label="Host metrics"><p class="muted">This runner has not reported host metrics yet.</p></section>';
+    return '<section class="runner-host" aria-label="Runner metrics"><p class="muted">This runner has not reported runner metrics yet.</p></section>';
   const stale = now - metrics.reportedAt > RUNNER_STALE_MS;
   const missing = (label: string): Gauge => ({ label, value: "Not reported", high: false });
   const share = (label: string, total: number | null, free: number | null, detail: string) => {
@@ -872,7 +872,7 @@ export function runnerMetricsMarkup(metrics: Runner["metrics"], now: number): st
             high: false,
           },
   ];
-  return `<section class="runner-host" aria-label="Host metrics"${stale ? ' data-stale=""' : ""}><dl class="runner-gauges${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
+  return `<section class="runner-host" aria-label="Runner metrics"${stale ? ' data-stale=""' : ""}><dl class="runner-gauges${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
 }
 
 function resetLabel(at: number, now: number): string {
@@ -1035,7 +1035,7 @@ export function runnerDetailMarkup(
             : "",
           runnerRuntimesMarkup(runner.runtimes),
         )
-  }${block("host", "Host", "", runnerMetricsMarkup(metrics, view.now))}${
+  }${block("host", "Runner", "", runnerMetricsMarkup(metrics, view.now))}${
     metrics?.strayProcesses?.length
       ? block("strays", "Stray processes", "", runnerStrayMarkup(metrics.strayProcesses))
       : ""
@@ -1048,12 +1048,10 @@ export function runnerDetailMarkup(
   const sharing =
     view.policy === null || revoked
       ? ""
-      : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
+      : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this runner with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The runner owner controls its sharing settings.</p>'}`;
   const copy = `<button class="btn" data-runner-copy="${id}" data-focus="copy:${id}" title="${id}" aria-label="Copy runner ID ${id}">Copy ID</button>`;
   const settings = [
-    concurrency
-      ? `<div class="runner-setting"><h3>Concurrency</h3><div>${concurrency}</div></div>`
-      : "",
+    concurrency ? `<div class="runner-setting"><h3>Slots</h3><div>${concurrency}</div></div>` : "",
     sharing ? `<div class="runner-setting"><h3>Sharing</h3><div>${sharing}</div></div>` : "",
     runnerActionsMarkup(runner, { manages, busy: view.busy }, copy),
   ].join("");
@@ -1254,25 +1252,25 @@ export function createRunners() {
     const expired = enrollment !== null && enrollment.expiresAt <= now;
     const command =
       enrollment?.config && !expired
-        ? `<p>Run this on the Linux host. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
+        ? `<p>Run this on the Linux runner. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
         : enrollment && !expired
-          ? '<p role="alert" class="err">Paws has no public HTTPS address for hosts. Set PAWS_PUBLIC_URL and restart Paws.</p>'
+          ? '<p role="alert" class="err">Paws has no public HTTPS address for runners. Set PAWS_PUBLIC_URL and restart Paws.</p>'
           : expired
             ? '<p class="muted">The token expired. Create a new command.</p>'
             : "";
     const dialog = adding
-      ? `<dialog id="runner-add-dialog" aria-labelledby="runner-add-heading"><div class="dialog-body"><div class="between"><h2 id="runner-add-heading">Add a host</h2><button class="btn" data-runner-add-close data-focus="add-close">Close</button></div>${alert}<form id="runner-enrollment"><label class="field"><span>Host name</span><input name="host-name" data-focus="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${esc(hostName)}"${disabled}></label><button class="btn primary" type="submit" data-focus="enroll"${disabled}>${enrollment ? "Create a new command" : "Create command"}</button></form>${command}</div></dialog>`
+      ? `<dialog id="runner-add-dialog" aria-labelledby="runner-add-heading"><div class="dialog-body"><div class="between"><h2 id="runner-add-heading">Add a runner</h2><button class="btn" data-runner-add-close data-focus="add-close">Close</button></div>${alert}<form id="runner-enrollment"><label class="field"><span>Runner name</span><input name="host-name" data-focus="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${esc(hostName)}"${disabled}></label><button class="btn primary" type="submit" data-focus="enroll"${disabled}>${enrollment ? "Create a new command" : "Create command"}</button></form>${command}</div></dialog>`
       : "";
     const empty = addsHosts()
-      ? "<p>No runners are paired. Select <b>Add a host</b> to connect a Linux host.</p>"
-      : "<p>No runners are paired. A workspace member adds a Linux host with <b>Add a host</b>.</p>";
+      ? "<p>No runners are enrolled. Select <b>Add a runner</b> to connect a Linux runner.</p>"
+      : "<p>No runners are enrolled. A workspace member adds a Linux runner with <b>Add a runner</b>.</p>";
     const vm = addsHosts() && memberVm.available ? memberVm.vm : null;
     const createVm =
       addsHosts() && memberVm.available && memberVm.vm === null
         ? `<button class="btn" data-vm-create data-focus="vm-create"${disabled}>Create VM</button>`
         : "";
     const actions = addsHosts()
-      ? `<div class="settings-actions">${createVm}<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a host</button></div>`
+      ? `<div class="settings-actions">${createVm}<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a runner</button></div>`
       : "";
     const vmSection = `${
       vm
@@ -1289,14 +1287,14 @@ export function createRunners() {
           )
         : ""
     }`;
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
     const back = `<nav class="crumbs" aria-label="Breadcrumb"><a href="${list}" data-focus="back">All runners</a></nav>`;
     const runner = runners.find((entry) => entry.id === id);
     if (!runner)
-      return `<h1 class="sr-only">Runners</h1>${back}${notices}${loaded ? `<div class="empty">This runner is not paired with your workspace. <a href="${list}">Choose another runner</a>.</div>` : ""}`;
+      return `<h1 class="sr-only">Runners</h1>${back}${notices}${loaded ? `<div class="empty">This runner is not enrolled with your workspace. <a href="${list}">Choose another runner</a>.</div>` : ""}`;
     const runnerVm = deletableVms().find((entry) => entry.runnerId === runner.id);
     return `<h1 class="sr-only">Runners</h1>${back}${notices}${runnerDetailMarkup(runner, {
       now,
@@ -1313,7 +1311,7 @@ export function createRunners() {
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
-      return `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li></ol><p>Then select <b>Add a host</b> and run its command on the Linux host.</p><button class="btn" data-runners-setup data-focus="setup"${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
+      return `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux runner to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to enroll a runner.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li></ol><p>Then select <b>Add a runner</b> and run its command on the Linux runner.</p><button class="btn" data-runners-setup data-focus="setup"${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
     const disabled = busy ? " disabled" : "";
     const now = Date.now();
     const status = `${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !loaded ? "Loading runners…" : esc(feedback)}</p>`;
@@ -1376,7 +1374,7 @@ export function createRunners() {
   function savePolicy(runnerId: string, body: { sharing: boolean }) {
     void change(async () => {
       await api(`/api/runners/${encodeURIComponent(runnerId)}/policy`, body);
-      feedback = "Host settings saved.";
+      feedback = "Runner settings saved.";
     }, false);
   }
   function bind() {
@@ -1494,7 +1492,7 @@ export function createRunners() {
         .then(
           () => {
             error = "";
-            feedback = "Command copied. Run it on the host.";
+            feedback = "Command copied. Run it on the runner.";
           },
           () => {
             error = "The command could not be copied. Select it and copy it by hand.";
@@ -1539,7 +1537,7 @@ export function createRunners() {
           value < 1 ||
           (ceiling != null && value > ceiling)
         ) {
-          error = `Concurrency must be from 1 to ${ceiling ?? 16}, the limit set on the host.`;
+          error = `Slots must be from 1 to ${ceiling ?? 16}, the limit set on the runner.`;
           paint();
           return;
         }
@@ -1548,7 +1546,7 @@ export function createRunners() {
             concurrency: value,
           });
           concurrencyDrafts.delete(runnerId);
-          feedback = "Concurrency saved. The runner applies it to new work at its next heartbeat.";
+          feedback = "Slots saved. The runner applies it to new work at its next heartbeat.";
         });
       });
     }

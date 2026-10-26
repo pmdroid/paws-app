@@ -37,7 +37,7 @@ describe("run page while the agent waits for its usage limit", () => {
     expect(html).toContain("paused until 18:00");
     expect(html).toContain('<h2 id="usage-pause-heading">Paused</h2>');
     expect(html).toContain("Claude reached its usage limit. Paws continues at 18:00 UTC.");
-    expect(html).toContain("At 18:00 Paws continues the task on runner agentbox.");
+    expect(html).toContain("At 18:00 Paws continues the item on runner agentbox.");
     expect(html.match(/id="execution-controls"/g)).toHaveLength(1);
     expect(html.indexOf('id="execution-controls"')).toBeGreaterThan(
       html.indexOf("usage-pause-heading"),

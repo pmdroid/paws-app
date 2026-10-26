@@ -633,11 +633,11 @@ function usagePauseSection(run: StatusRun, pause: StatusUsagePause): string {
   const at = utcClock(pause.resumeAt);
   return `<section class="usage-pause" aria-labelledby="usage-pause-heading">
     <div class="between"><h2 id="usage-pause-heading">Paused</h2>${executionControls(run)}</div>
-    <div class="closeout-result usage-pause-card"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><p><b>${esc(pause.agent)} reached its usage limit. Paws continues at ${esc(at)} UTC.</b></p><p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the task${run.runner ? ` on runner ${esc(run.runner)}` : ""}.</p></div></div>
+    <div class="closeout-result usage-pause-card"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><p><b>${esc(pause.agent)} reached its usage limit. Paws continues at ${esc(at)} UTC.</b></p><p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the item${run.runner ? ` on runner ${esc(run.runner)}` : ""}.</p></div></div>
   </section>`;
 }
 
-/** Where a queued task stands while every runner slot is busy. */
+/** Where a queued item stands while every runner slot is busy. */
 function queueNotice(item: StatusItem): string {
   if (item.state !== "queued") return "";
   const held = heldLine(item);
@@ -648,14 +648,14 @@ function queueNotice(item: StatusItem): string {
   return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `${held ? `${held}. ` : ""}Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p></div></section>`;
 }
 
-/** Where a task stands in its repository's merge queue. Only the first one moves. */
+/** Where an item stands in its repository's merge queue. Only the first one moves. */
 function mergeQueueNotice(item: StatusItem): string {
   const queue = item.state === "merge_queue" ? item.mergeQueue : undefined;
   if (!queue) return "";
   const detail =
     queue.position === 1
       ? "This pull request moves now: Paws updates its branch onto main if main moved, waits for CI on that commit, and merges it."
-      : `${queue.ahead ?? "The task ahead"} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
+      : `${queue.ahead ?? "The item ahead"} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
   return `<section class="closeout-result queue-notice" aria-labelledby="merge-queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${queue.position}</span><div><h3 id="merge-queue-${esc(item.id)}">${esc(mergeQueueLine(queue))}</h3><p>${esc(detail)}</p></div></section>`;
 }
 
@@ -763,7 +763,7 @@ function phaseStrip(
         `<li class="run-step ${cls}"${current ? ' aria-current="step"' : ""}>${cls === "done" ? "✓ " : cls === "failed" ? "✕ " : ""}${esc(name)}</li>`,
     )
     .join("");
-  return `<ol class="run-stepper${review ? " with-review" : ""}" aria-label="Run progress" title="${esc(waiting ? "Waiting for a visual review in Linear. The task is not complete." : phase.detail)}">${marks}</ol>`;
+  return `<ol class="run-stepper${review ? " with-review" : ""}" aria-label="Run progress" title="${esc(waiting ? "Waiting for a visual review in Linear. The item is not complete." : phase.detail)}">${marks}</ol>`;
 }
 
 function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: StatusVerdict): string {
