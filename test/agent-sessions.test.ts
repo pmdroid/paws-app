@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { S3Client } from "bun";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -18,7 +19,9 @@ import {
   createAgentSessionsHttp,
   createFakeAgentSessionObjects,
   createLocalAgentSessionObjects,
+  createS3AgentSessionObjects,
   loadAgentSessionKey,
+  withLocalAgentSessionFallback,
   type AgentSessionFinish,
   type AgentSessionObjects,
 } from "../src/agent-sessions";
@@ -515,5 +518,116 @@ describe("agent session storage on disk", () => {
     symlinkSync(target, link);
     await expect(createLocalAgentSessionObjects(link).write("other", bytes)).rejects.toThrow();
     expect(() => createLocalAgentSessionObjects("relative")).toThrow();
+  });
+});
+
+describe("agent session storage in S3", () => {
+  let root: string;
+  let server: ReturnType<typeof Bun.serve>;
+  const stored = new Map<string, Uint8Array>();
+  const requests: string[] = [];
+  beforeEach(() => {
+    root = tempHome();
+    stored.clear();
+    requests.length = 0;
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        requests.push(`${request.method} ${path}`);
+        if (request.method === "PUT") {
+          stored.set(path, new Uint8Array(await request.arrayBuffer()));
+          return new Response(null, { status: 200, headers: { etag: '"fixture"' } });
+        }
+        const bytes = stored.get(path);
+        if (request.method === "GET" && bytes) return new Response(bytes);
+        return new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 });
+      },
+    });
+  });
+  afterEach(async () => {
+    await server.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  });
+  function s3() {
+    const client = new S3Client({
+      bucket: "fixture-sessions",
+      endpoint: `http://127.0.0.1:${server.port}`,
+      region: "fixture-region",
+      accessKeyId: "fixture-key",
+      secretAccessKey: "fixture-secret",
+    });
+    return createS3AgentSessionObjects({ client, bucket: "fixture-sessions" });
+  }
+
+  test("stores each sealed chunk as one object under its key and reads it back", async () => {
+    const store = s3();
+    const bytes = randomBytes(AGENT_SESSION_CHUNK_BYTES + 28);
+    await store.write("paws/agent-sessions/w/r/1/0-abc", bytes);
+    expect([...stored.keys()]).toEqual(["/fixture-sessions/paws/agent-sessions/w/r/1/0-abc"]);
+    expect(Buffer.from(await store.read("paws/agent-sessions/w/r/1/0-abc"))).toEqual(bytes);
+    await expect(store.read("paws/agent-sessions/w/r/1/missing")).rejects.toThrow();
+    await expect(
+      store.write("too-big", new Uint8Array(AGENT_SESSION_CHUNK_BYTES + 29)),
+    ).rejects.toThrow("Agent session chunk exceeds size limit");
+    expect(stored.has("/fixture-sessions/too-big")).toBe(false);
+
+    stored.set("/fixture-sessions/oversized", new Uint8Array(AGENT_SESSION_CHUNK_BYTES + 29));
+    await expect(store.read("oversized")).rejects.toThrow(
+      "Agent session object exceeds size limit",
+    );
+    expect(() =>
+      createS3AgentSessionObjects({ client: new S3Client({}), bucket: "Not A Bucket" }),
+    ).toThrow();
+  });
+
+  test("writes go to S3 and chunks stored locally before S3 still read", async () => {
+    const local = createLocalAgentSessionObjects(join(root, "agent-sessions"));
+    const objects = withLocalAgentSessionFallback(local, s3());
+    const remote = randomBytes(64);
+    await objects.write("remote", remote);
+    expect(stored.has("/fixture-sessions/remote")).toBe(true);
+    expect(Buffer.from(await objects.read("remote"))).toEqual(remote);
+
+    const earlier = randomBytes(64);
+    await local.write("earlier", earlier);
+    requests.length = 0;
+    expect(Buffer.from(await objects.read("earlier"))).toEqual(earlier);
+    expect(requests).toEqual([]);
+
+    chmodSync(join(root, "agent-sessions"), 0o755);
+    await expect(objects.read("earlier")).rejects.toThrow("Unsafe agent session directory");
+  });
+
+  test("a snapshot sealed through S3 stores only ciphertext there and reads back", async () => {
+    const f = await fixture(root);
+    try {
+      const objects = withLocalAgentSessionFallback(
+        createLocalAgentSessionObjects(join(root, "agent-sessions")),
+        s3(),
+      );
+      const sessions = createAgentSessions({
+        db: f.db,
+        work: f.work,
+        objects,
+        key: randomBytes(32),
+      });
+      const access = f.assign(f.startRun("first"), await f.enroll("a"), 1);
+      await sessions.upload(access, chunk(1, 0, full));
+      await sessions.upload(access, chunk(1, AGENT_SESSION_CHUNK_BYTES, full));
+      await sessions.upload(access, chunk(1, 2 * AGENT_SESSION_CHUNK_BYTES, tail));
+      await sessions.finish(access, finishFor(1, snapshot));
+      expect(stored.size).toBe(3);
+      for (const [path, bytes] of stored) {
+        expect(path.startsWith(`/fixture-sessions/paws/agent-sessions/${f.workspaceId}/`)).toBe(
+          true,
+        );
+        expect(Buffer.from(bytes).includes(MARKER)).toBe(false);
+      }
+      expect(await collect(sessions.read({ ...access, generation: 1 }, 1))).toEqual(snapshot);
+    } finally {
+      f.db.close();
+    }
   });
 });
