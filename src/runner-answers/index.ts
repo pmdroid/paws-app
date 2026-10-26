@@ -29,6 +29,9 @@ export function runnerFollowUpRequestId(sequence: number): string {
   return `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, "0")}`;
 }
 
+/** The answer the runner publishes to ask the worker to hand its session over. */
+export const RUNNER_HANDOVER_REQUEST_ID = "00000000-0000-4000-8000-000000000000";
+
 export function removeRunnerAnswers(spool: RunnerSpool, executionId: string): void {
   if (process.getuid?.() !== spool.runnerUid) throw new Error("Only the runner may remove answers");
   try {

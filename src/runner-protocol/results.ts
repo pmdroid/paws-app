@@ -55,6 +55,8 @@ export const RunnerResultSchema = z.strictObject({
     .min(1)
     .max(4)
     .optional(),
+  /** The run stopped for a handover: `candidateSha` is its WIP commit, if the worktree changed. */
+  handedOver: z.literal(true).optional(),
   pushFailure: z
     .strictObject({
       branch: z.string().min(1).max(256),
@@ -69,6 +71,7 @@ export const RunnerHelperResultSchema = RunnerResultSchema.omit({
   candidateSha: true,
   reviewText: true,
   closeoutReport: true,
+  handedOver: true,
 }).extend({
   role: z.literal("implementer"),
   text: z
