@@ -88,20 +88,45 @@ export class RunnerSetupRequired extends Error {
   }
 }
 
-export function isTransientFailure(error: unknown, depth = 0): boolean {
+export function isTransient(error: unknown, depth = 0): boolean {
   if (typeof error !== "object" || error === null || depth > 3) return false;
-  const { name, code, status, message, cause } = error as {
+  const { name, code, status, message, body, stderr, cause } = error as {
     name?: unknown;
     code?: unknown;
     status?: unknown;
     message?: unknown;
+    body?: unknown;
+    stderr?: unknown;
     cause?: unknown;
   };
   if (typeof name === "string" && TRANSIENT_ERROR_NAMES.has(name)) return true;
   if (typeof code === "string" && TRANSIENT_CODES.has(code)) return true;
-  if (typeof status === "number" && (status === 429 || status >= 500)) return true;
+  if (typeof status === "number" && (status === 429 || (status >= 500 && status < 600)))
+    return true;
+  if (typeof stderr === "string" && isTransientGitError(stderr)) return true;
+  if (
+    (name === "GitHubHttpError" || name === "GitHubTokenError" || name === "LinearHttpError") &&
+    ((status === 403 && rateLimitedBody(body)) ||
+      rateLimitedBody((body as { errors?: unknown } | null)?.errors))
+  )
+    return true;
+  if (typeof message === "string" && /Linear GraphQL: RATELIMITED/i.test(message)) return true;
   if (message === "fetch failed" && cause === undefined) return true;
-  return isTransientFailure(cause, depth + 1);
+  return isTransient(cause, depth + 1);
+}
+
+function rateLimitedBody(body: unknown, depth = 0): boolean {
+  if (depth > 4) return false;
+  if (typeof body === "string")
+    return /\bRATELIMITED\b|\bsecondary rate limit\b|\brate limit exceeded\b|\brate limited\b/i.test(
+      body,
+    );
+  if (typeof body !== "object" || body === null) return false;
+  if (Array.isArray(body)) return body.some((entry) => rateLimitedBody(entry, depth + 1));
+  const { message, type, code, errors, extensions } = body as Record<string, unknown>;
+  return [message, type, code, errors, extensions].some((value) =>
+    rateLimitedBody(value, depth + 1),
+  );
 }
 
 export function transientRetryDelayMs(

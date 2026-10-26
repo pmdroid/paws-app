@@ -1,3 +1,4 @@
+import { LinearHttpError } from "./graphql";
 import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { readSecretFile, writeSecretFile, refreshCredential } from "../credentials";
@@ -245,7 +246,13 @@ async function requestToken(
     body,
   });
   if (!response.ok) {
-    throw new Error(`Linear token request failed (HTTP ${response.status})`);
+    throw new LinearHttpError(
+      response.status,
+      "",
+      response.headers,
+      Date.now(),
+      `Linear token request failed (HTTP ${response.status})`,
+    );
   }
   const json: unknown = await response.json();
   if (!isRecord(json)) throw new Error("Linear token response was not an object");

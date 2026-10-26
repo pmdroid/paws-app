@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { isTransientFailure } from "./failure";
+import { isTransient } from "./failure";
 import { PawsShutdown, RunnerSlotsBusyError } from "./user-facing-error";
 
 function named(name: string, message = name): Error {
   return Object.assign(new Error(message), { name });
 }
 
-describe("isTransientFailure", () => {
+describe("isTransient", () => {
   test.each([
     ["a Linear rate limit", named("LinearRateLimitError", "Linear GraphQL: RATELIMITED")],
     ["a runner that restarted or lost its lease", named("RunnerWorkFencedError")],
@@ -34,7 +34,7 @@ describe("isTransientFailure", () => {
       new Error("outer", { cause: new Error("middle", { cause: named("TimeoutError") }) }),
     ],
   ])("%s is transient", (_label, error) => {
-    expect(isTransientFailure(error)).toBe(true);
+    expect(isTransient(error)).toBe(true);
   });
 
   test.each([
@@ -54,6 +54,53 @@ describe("isTransientFailure", () => {
       }),
     ],
   ])("%s is terminal", (_label, error) => {
-    expect(isTransientFailure(error)).toBe(false);
+    expect(isTransient(error)).toBe(false);
+  });
+});
+
+// Keep core independent of adapters while checking their public error shape.
+describe("HTTP statuses and rate-limit bodies", () => {
+  test.each([
+    [200, {}, false],
+    [200, "secondary rate limit", false],
+    [200, { message: "API rate limit exceeded" }, false],
+    [400, { message: "Bad request" }, false],
+    [401, { message: "Bad credentials" }, false],
+    [403, { message: "Resource not accessible by integration" }, false],
+    [404, {}, false],
+    [422, {}, false],
+    [429, {}, true],
+    [500, {}, true],
+    [502, {}, true],
+    [503, {}, true],
+    [504, {}, true],
+    [599, {}, true],
+    [600, {}, false],
+    [403, { message: "You have exceeded a secondary rate limit." }, true],
+    [403, { message: "API rate limit exceeded" }, true],
+    [200, { errors: [{ type: "RATELIMITED", message: "Try again later" }] }, true],
+    [200, { errors: [{ extensions: { code: "RATELIMITED" } }] }, true],
+    [403, "You have exceeded a secondary rate limit", true],
+    [403, { message: "Forbidden", documentation_url: "https://docs/rate-limits" }, false],
+  ])("status %d, body %j is transient: %s", (status, body, expected) => {
+    const error = Object.assign(new Error("GitHub request failed"), {
+      name: "GitHubHttpError",
+      status,
+      body,
+    });
+    expect(isTransient(error)).toBe(expected);
+    expect(isTransient(new Error("wrapped", { cause: error }))).toBe(expected);
+  });
+
+  test("legacy Linear RATELIMITED errors use the shared classifier", () => {
+    expect(isTransient(new Error("Linear GraphQL: RATELIMITED"))).toBe(true);
+  });
+
+  test("transient git stderr uses the shared classifier", () => {
+    expect(
+      isTransient(
+        Object.assign(new Error("git failed"), { stderr: "remote: Service unavailable" }),
+      ),
+    ).toBe(true);
   });
 });

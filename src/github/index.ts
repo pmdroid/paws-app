@@ -66,6 +66,7 @@ export type {
 export {
   GitCommandError,
   GitHubTokenError,
+  GitHubHttpError,
   INSTALLATION_PERMISSIONS,
   MAX_SHA_GUARD_CYCLES,
   MAX_TOKEN_TTL_MS,
