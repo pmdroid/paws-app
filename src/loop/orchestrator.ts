@@ -39,12 +39,14 @@ import {
 } from "../acp";
 import {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
+  checkoutExclusionsFor,
   loadConfigFile,
   readMergeSettings,
   readQueueSettings,
   resolveAgentProfiles,
   resolveMergeSettings,
   type AgentProfile,
+  type CheckoutExclusions,
 } from "../config";
 import {
   policyFixBudget,
@@ -215,6 +217,7 @@ import {
   runnerCapacityWait,
   runnerSlotFree,
   getTaskMergeSettings,
+  pinRunCheckout,
   getTaskLinearRead,
   keepTaskLinearRead,
   linearActivitiesListedAt,
@@ -341,6 +344,7 @@ import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
   closeoutChecksPrompt,
+  hiddenPathsPrompt,
   implementPrompt,
   POST_UPDATE_PROMPT,
   type AgentLaunch,
@@ -2144,17 +2148,20 @@ export class Orchestrator {
         if (repository === null) throw new Error("The requested repository has not been selected");
         const auth = this.authorization(item);
         if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
+        const hidden = this.runCheckout(item).agent;
         const source = await prepareRepositorySnapshot({
           ...repository,
-          checkoutExclusions: loadConfigFile(join(this.options.pawsRoot, "config.toml"))
-            .checkoutProjects?.[`${repository.owner}/${repository.repo}`.toLowerCase()]?.exclude,
+          checkoutExclusions: hidden,
           workspace,
           networkGit: this.repositoryGit(item, repository, controller.signal, "read"),
           signal: controller.signal,
           onCleanupFailure: () => this.blockConversation(item.id),
         });
         controller.signal.throwIfAborted();
-        repositoryContext = `The selected repository ${repository.owner}/${repository.repo} is available in ./repository at commit ${source.commit}. Use this private source snapshot for the requested explanation or deliverable. Publish deliverable paths relative to this workspace and return the complete answer or file links.`;
+        repositoryContext = [
+          `The selected repository ${repository.owner}/${repository.repo} is available in ./repository at commit ${source.commit}. Use this private source snapshot for the requested explanation or deliverable. Publish deliverable paths relative to this workspace and return the complete answer or file links.`,
+          ...(hidden.length ? [hiddenPathsPrompt(hidden)] : []),
+        ].join("\n");
       }
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const prompt = [
@@ -2408,10 +2415,12 @@ export class Orchestrator {
       if (!this.taskAccess()) this.postStatus(item, "started");
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
+      const checkout = this.runCheckout(item);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
         brief: this.workContext(item),
+        hiddenPaths: checkout.agent,
         ...(handoff ? { handoff } : {}),
       });
       await this.flush();
@@ -2462,6 +2471,7 @@ export class Orchestrator {
         networkGit: this.repositoryGit(item, repository, controller.signal, "write"),
         pawsRoot: this.options.pawsRoot,
         home: this.options.home ?? homedir(),
+        checkoutExclusions: checkout.agent,
         signal: controller.signal,
         promptRunner,
         askTeam,
@@ -2792,7 +2802,7 @@ export class Orchestrator {
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
     const repository = this.repositoryForItem(item);
-    const checkoutExclusions = this.checkoutExclusions(item);
+    const checkoutExclusions = this.runCheckout(item).checks;
     const deps = this.agentDeps(item);
     const networkGit =
       repository && deps.signal
@@ -3299,7 +3309,7 @@ export class Orchestrator {
         settings: (item, signal) => this.mergeSettingsFor(item, signal),
         policyDigest: (item, worktree) => {
           const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigest(worktree, home, policyRoot, this.checkoutExclusions(item));
+          return candidatePolicyDigest(worktree, home, policyRoot, this.runCheckout(item).checks);
         },
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
@@ -5906,6 +5916,7 @@ export class Orchestrator {
       ...repository,
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
+      checkoutExclusions: this.runCheckout(item).agent,
     });
     const required = (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.path,
@@ -6017,15 +6028,24 @@ export class Orchestrator {
     return list;
   }
 
-  /** `[checkout.projects."owner/repo"] exclude`, which Closeout folds into its policy digest. */
-  private checkoutExclusions(item: WorkItemRecord): string[] {
-    const repository = this.repositoryForItem(item);
-    if (!repository) return [];
-    return (
-      loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects?.[
-        `${repository.owner}/${repository.repo}`.toLowerCase()
-      ]?.exclude ?? []
-    );
+  /**
+   * What the item's current run leaves out of its checkouts, pinned on the run the first time it
+   * is read: `agent` for the agent's worktree and snapshot, `checks` for Closeout and review,
+   * which Closeout folds into its policy digest. A `paws:full-checkout` label on the issue when
+   * the task started leaves nothing out.
+   */
+  private runCheckout(item: WorkItemRecord): CheckoutExclusions {
+    const resolve = (): CheckoutExclusions => {
+      const repository = this.repositoryForItem(item);
+      if (!repository) return { agent: [], checks: [] };
+      return checkoutExclusionsFor(
+        loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects,
+        `${repository.owner}/${repository.repo}`,
+        issueLabels(getTaskMergeSettings(this.db, item.id)?.resolved.labels),
+      );
+    };
+    const runId = getWorkItem(this.db, item.id)?.currentRunId ?? null;
+    return runId === null ? resolve() : pinRunCheckout(this.db, runId, resolve);
   }
 
   private closeoutHome(item: WorkItemRecord): {
@@ -6477,4 +6497,9 @@ function listsChecks(report: string): boolean {
     journalCaught(caughtError18, "orchestrator.listsChecks.parse", null);
     return false;
   }
+}
+
+/** The issue labels kept with the task's merge settings when it started. */
+function issueLabels(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((label) => typeof label === "string") : [];
 }

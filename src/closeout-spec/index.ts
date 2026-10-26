@@ -83,6 +83,7 @@ export {
   decision,
   digest,
   candidatePolicyDigest,
+  policyCheckPaths,
   policyFixBudget,
   retryBaseline,
   reviewRequirements,

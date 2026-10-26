@@ -92,16 +92,24 @@ export function closeoutChecksPrompt(head: string): string {
 export const POST_UPDATE_PROMPT =
   "Call post_update when something meaningful happens, such as finding the cause, a plan change, tests passing, or being blocked. Don't narrate each step.";
 
+/** The run prompt's line for paths the checkout left out, so the agent neither seeks nor recreates them. */
+export function hiddenPathsPrompt(paths: readonly string[]): string {
+  return `Not checked out in this run: ${paths.join(", ")}.\nAsk in the session if the task needs one of them.`;
+}
+
 export function implementPrompt(input: {
   identifier: string;
   title: string;
   handoff?: string;
   brief?: string;
+  /** Paths this run's checkout leaves out. */
+  hiddenPaths?: readonly string[];
 }): string {
   const brief = [
     `Implement ${input.identifier}: ${input.title}.`,
     ...(input.brief ? [input.brief] : []),
     "Work only in this repository.",
+    ...(input.hiddenPaths?.length ? [hiddenPathsPrompt(input.hiddenPaths)] : []),
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     POST_UPDATE_PROMPT,

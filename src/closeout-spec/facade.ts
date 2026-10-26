@@ -19,6 +19,7 @@ import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
 import { approvalsAtHead, publishedAtHead } from "./published";
 import {
+  loadCommitPolicy,
   loadOriginMainRootFiles,
   loadPolicy,
   loadPolicyFiles,
@@ -255,6 +256,45 @@ export function reviewRequirements(
         parallel: parallel === true,
       })),
   };
+}
+
+/**
+ * The repository paths each check of the policy committed at `commit` names: its `paths`
+ * triggers and the relative paths among its command's arguments (not the program). Reads local
+ * objects only, so a settings page can ask without a network round trip. Reviews are left out:
+ * the review checkout follows the same exclusions as the checks.
+ */
+export function policyCheckPaths(
+  repo: string,
+  commit: string,
+): { ok: true; checks: Array<{ id: string; paths: string[] }> } | { ok: false; message: string } {
+  const loaded = loadCommitPolicy({ repo, git: gitReader }, commit);
+  if (!loaded.ok) return loaded;
+  if (loaded.policy === null) return { ok: true, checks: [] };
+  const checks = [...loaded.policy.setup, ...loaded.policy.items].flatMap((item) => {
+    const args =
+      "exec" in item
+        ? item.exec
+            .slice(1)
+            .flatMap((arg) => (repositoryArgument(arg) ? [arg.replace(/^\.\//, "")] : []))
+        : [];
+    const paths = [...new Set([...(item.paths ?? []), ...args])];
+    return item.kind === "review" || !paths.length ? [] : [{ id: item.id, paths }];
+  });
+  return { ok: true, checks };
+}
+
+/**
+ * A command argument that may name a path in the repository, such as `docs`, `./docs/` or
+ * `scripts/links.ts`. Flags, absolute paths, `key=value` and anything leaving the repository are not.
+ */
+function repositoryArgument(arg: string): boolean {
+  const path = arg.replace(/^\.\//, "").replace(/\/$/, "");
+  return (
+    /^[\w.@+-]+(?:\/[\w.@+*-]+)*$/.test(path) &&
+    !path.startsWith("-") &&
+    path.split("/").every((part) => part !== "." && part !== "..")
+  );
 }
 
 /** Evidence requirements with `approval: human`, from the same trusted policy as Closeout. */

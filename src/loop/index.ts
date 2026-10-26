@@ -31,6 +31,7 @@ export {
 export {
   createAcpCodexReviewer,
   createAcpFixRunner,
+  hiddenPathsPrompt,
   implementPrompt,
   parseFindings,
   type AgentLaunch,

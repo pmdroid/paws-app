@@ -26,9 +26,11 @@ import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
   commitCheckpointSync,
+  mirrorFiles,
   restartFromFreshMain,
   worktreePath,
 } from "./acp";
+import { policyCheckPaths } from "./closeout";
 import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
 import {
   closeoutPolicyRoot,
@@ -901,6 +903,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         applyToWaiting: () => orchestrator?.applyAgentSettingsToWaiting() ?? 0,
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
+        checkoutFacts: async (name: string) => {
+          const [owner, repo] = name.split("/");
+          if (!owner || !repo) return null;
+          const mirror = await mirrorFiles({ owner, repo, pawsRoot: paths.home });
+          if (!mirror) return null;
+          const policy = policyCheckPaths(mirror.mirror, mirror.commit);
+          return { files: mirror.files, checks: policy.ok ? policy.checks : [] };
+        },
         ...(linear?.tracker?.mergeChoices
           ? {
               mergeChoices: (signal: AbortSignal) => linear.tracker!.mergeChoices!({ signal }),

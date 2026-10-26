@@ -200,6 +200,7 @@ export {
   releaseRunCapacity,
   saveRunResult,
   saveRunCommitPolicy,
+  pinRunCheckout,
   getItemRunCommitPolicy,
   type StoredRun,
 } from "./runs";

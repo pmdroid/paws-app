@@ -30,6 +30,7 @@ import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
 import { createMergeSettings } from "./merge-settings";
 import { createHookSettings } from "./hooks";
+import { createCheckoutSettings } from "./checkout-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createExecutionControls } from "./execution-controls";
@@ -50,6 +51,7 @@ const settings = createAgentSettings(() => paint());
 const skillSettings = createSkillSettings();
 const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
+const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const executionControls = createExecutionControls(reload);
@@ -231,6 +233,8 @@ function paint(): void {
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
+  const checkoutRoot = document.querySelector<HTMLElement>("#checkout-settings");
+  if (checkoutRoot) checkoutSettings.mount(checkoutRoot, currentEngine());
   const skillsRoot = document.querySelector<HTMLElement>("#skill-settings");
   if (skillsRoot) skillSettings.mount(skillsRoot, currentEngine());
   const mergeRoot = document.querySelector<HTMLElement>("#merge-settings");

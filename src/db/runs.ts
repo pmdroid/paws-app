@@ -128,6 +128,26 @@ export function saveRunCommitPolicy(db: Database, id: string, policy: GitCommitP
   ]);
 }
 
+/**
+ * The run's checkout exclusions. The first call stores `resolve()` on the run; every later call
+ * returns that, so a settings change never alters a checkout a run already started with.
+ */
+export function pinRunCheckout(
+  db: Database,
+  id: string,
+  resolve: () => NonNullable<Checkpoint["checkout"]>,
+): NonNullable<Checkpoint["checkout"]> {
+  const run = getRun(db, id);
+  if (!run) return resolve();
+  if (run.checkpoint?.checkout) return run.checkpoint.checkout;
+  const checkout = resolve();
+  db.run("UPDATE run SET checkpoint=? WHERE id=?", [
+    JSON.stringify({ ...(run.checkpoint ?? { phase: "running" }), checkout }),
+    id,
+  ]);
+  return checkout;
+}
+
 export function getItemRunCommitPolicy(db: Database, itemId: string): GitCommitPolicy | undefined {
   return listRuns(db, itemId)
     .toReversed()
