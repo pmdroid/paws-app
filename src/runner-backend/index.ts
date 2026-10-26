@@ -86,6 +86,14 @@ class RunnerUnavailableError extends Error {
   override readonly name = "RunnerUnavailableError";
 }
 
+/** The runner did not finish preparing the agent in time. It is temporary, so the item retries. */
+export class RemotePreparationTimeout extends Error {
+  override readonly name = "TimeoutError";
+  constructor() {
+    super("Remote agent preparation timed out");
+  }
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const NO_FREE_CAPACITY = ": no free capacity";
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
@@ -614,7 +622,7 @@ export function createRemoteAgentRunner(options: {
               }
               await delay(interval, undefined, { signal });
             }
-            throw new Error("Remote agent preparation timed out");
+            throw new RemotePreparationTimeout();
           }
           const placed =
             attached ??
