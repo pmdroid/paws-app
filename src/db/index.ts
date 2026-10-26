@@ -64,6 +64,7 @@ export {
 } from "./plan-proposals";
 export {
   TransitionRejectedError,
+  accrueAtJobBoundary,
   accrueAwake,
   applyWorkItemEvent,
   awakeBreakdown,

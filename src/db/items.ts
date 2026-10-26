@@ -360,6 +360,8 @@ export function accrueAwake(
   now = Date.now(),
   /** An in-memory baseline lets the supervisor skip writes while an item is parked. */
   sinceMono?: number,
+  /** Whether a job worked on the item over the interval. Defaults to whether one does now. */
+  liveJob?: boolean,
 ): CapOutcome {
   return immediate(db, () => {
     const current = getWorkItem(db, id);
@@ -368,8 +370,10 @@ export function accrueAwake(
     const delta = baseline === null ? 0 : Math.max(0, mono - baseline);
     const counted = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
     // Closeout time is time a job spends verifying. An item left in `verifying` with no
-    // job working on it is idle and does not count toward the cap (PAS-771).
-    const idle = counted === "closeout" && !hasLiveJob(db, id, now);
+    // job working on it is idle and does not count toward the cap (PAS-771). Job claims
+    // and ends settle the interval before them (accrueAtJobBoundary), so the job status
+    // now holds for the whole interval since the last accrual.
+    const idle = counted === "closeout" && !(liveJob ?? hasLiveJob(db, id, now));
     const category = idle ? null : counted;
     const awake = !idle && countsAwakeTime(current.state, current.checkpoint, current.acceptedHead);
     const awakeMs = current.awakeMs + (awake ? delta : 0);
@@ -389,6 +393,27 @@ export function accrueAwake(
       return { capped: false, item: updated };
     }
     return enforceCaps(db, id, now);
+  });
+}
+
+/**
+ * Settles a verifying item's awake time when a job claims it or ends, so the interval
+ * before the boundary counts by whether a job worked on the item then (PAS-771): idle time
+ * before a claim stays idle, and the last stretch of a job still counts as Closeout.
+ */
+export function accrueAtJobBoundary(
+  db: Database,
+  job: { id: number; payload: unknown },
+  boundary: "claimed" | "ending",
+  mono: number,
+  now: number,
+): void {
+  const itemId = (job.payload as { itemId?: unknown } | null)?.itemId;
+  if (typeof itemId !== "string") return;
+  immediate(db, () => {
+    if (getWorkItem(db, itemId)?.state !== "verifying") return;
+    const liveJob = boundary === "ending" || hasLiveJob(db, itemId, now, job.id);
+    accrueAwake(db, itemId, mono, now, undefined, liveJob);
   });
 }
 
