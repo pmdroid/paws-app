@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 import { removeWorktree, worktreeMergedInto, worktreePath } from "../acp";
@@ -55,7 +56,14 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
         );
       if (!unchanged || (!expired && !(await worktreeMergedInto(path, heads)))) return;
       await removeWorktree({ ...repository, itemId: pathId, pawsRoot: sweep.pawsRoot }).catch(
-        () => undefined,
+        (caughtError1) => {
+          journalCaught(
+            caughtError1,
+            "worktree-sweep.sweepWorktrees.removeWorktree",
+            items.map((item) => item.id).join(","),
+          );
+          return undefined;
+        },
       );
     });
   }
@@ -78,7 +86,12 @@ function lastTouched(db: Database, items: WorkItemRecord[], path: string): numbe
   let modified: number;
   try {
     modified = statSync(path).mtimeMs;
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(
+      caughtError2,
+      "worktree-sweep.lastTouched.statSync",
+      items.map((item) => item.id).join(","),
+    );
     return null;
   }
   const ran = db
@@ -96,7 +109,8 @@ async function mergedHeads(
 ): Promise<string[]> {
   try {
     return await sweep.mergedHeads(item, repository);
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "worktree-sweep.mergedHeads", item?.id);
     return [];
   }
 }

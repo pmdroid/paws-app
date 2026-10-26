@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { getLinearConversationSource } from "./linear-session-url";
 
@@ -71,7 +72,9 @@ export function linearConversationUrl(
     try {
       const url = new URL(source);
       if (url.origin === "https://linear.app" && !url.username && !url.password) return url.href;
-    } catch {}
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "visual-reviews.linearConversationUrl", null);
+    }
   }
   return `https://linear.app/issue/${encodeURIComponent(identifier)}`;
 }

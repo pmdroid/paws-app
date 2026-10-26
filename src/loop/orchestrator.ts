@@ -3,6 +3,7 @@ import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
 import { saveHumanRetryWindow, fixRounds, jobVersionCurrent } from "../db";
+import { journalCaught } from "../journal";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -653,7 +654,18 @@ export class Orchestrator {
     const key = event.sessionId ?? event.issueId ?? event.dedupeKey;
     const previous = this.sessionEvents.get(key) ?? Promise.resolve();
     const done = previous
-      .catch(() => undefined)
+      .catch((caughtError1) => {
+        journalCaught(
+          caughtError1,
+          "orchestrator.onLinearEvent",
+          this.itemsForSession(event.sessionId ?? "")
+            .map((item) => item.id)
+            .join(",") || null,
+          undefined,
+          this.options.journal,
+        );
+        return undefined;
+      })
       .then(async () => {
         const current =
           (await this.options.recheckLinearEvent?.(event)) === false
@@ -823,6 +835,15 @@ export class Orchestrator {
         acknowledged: session !== null,
       });
     } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.handleLinearEvent.intakeLinearTask",
+        this.itemsForSession(event.sessionId ?? "")
+          .map((item) => item.id)
+          .join(",") || null,
+        undefined,
+        this.options.journal,
+      );
       const current = session ? getLinearSession(this.db, session.sessionId) : null;
       if (session && (current?.stoppedAt !== null || current.generation !== session.generation))
         return;
@@ -908,7 +929,18 @@ export class Orchestrator {
       const held = setTimeout(() => {
         if (!this.shuttingDown)
           void this.flush(request?.signal, update.sessionId)
-            .catch(() => undefined)
+            .catch((caughtError2) => {
+              journalCaught(
+                caughtError2,
+                "orchestrator.enqueueSessionProgress.flush",
+                this.itemsForSession(update.sessionId)
+                  .map((item) => item.id)
+                  .join(",") || null,
+                undefined,
+                this.options.journal,
+              );
+              return undefined;
+            })
             .finally(forget);
       }, FIRST_ACTIVITY_HOLD_MS);
       held.unref?.();
@@ -996,6 +1028,13 @@ export class Orchestrator {
               request: (signal) => this.classificationRequest(sessionId, snapshot, signal, options),
             })
             .catch((error: unknown) => {
+              journalCaught(
+                error,
+                "orchestrator.intakeLinearTask.plan",
+                redirect?.itemId,
+                undefined,
+                this.options.journal,
+              );
               if (error instanceof RunnerSlotsBusyError && !savedRequest) return null;
               throw error;
             })
@@ -1287,6 +1326,13 @@ export class Orchestrator {
             this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
           );
         } catch (error) {
+          journalCaught(
+            error,
+            "orchestrator.register.runLeasedJob",
+            readString(job.payload, "itemId"),
+            undefined,
+            this.options.journal,
+          );
           const wait = this.nextRunnerWait(job, error);
           if (!wait || !context.isCurrent()) throw error;
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
@@ -1307,11 +1353,15 @@ export class Orchestrator {
       } catch (error) {
         if (this.shuttingDown || job.attempts >= job.maxAttempts || !context.isCurrent())
           throw error;
-        const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(
-          `merge job ${job.id} attempt ${job.attempts} of ${job.maxAttempts} failed, retrying in ${delayMs} ms: ${message}`,
+        journalCaught(
+          error,
+          "orchestrator.register.mergeAttempt",
+          readString(job.payload, "itemId"),
+          undefined,
+          this.options.journal,
         );
+        const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
+
         if (!retryMergeLater(this.db, job, this.now(), delayMs, error)) throw error;
         return;
       }
@@ -1437,6 +1487,13 @@ export class Orchestrator {
           });
         } catch (error) {
           if (!(error instanceof LinearReconciliationPendingError)) throw error;
+          journalCaught(
+            error,
+            "orchestrator.mergeAttempt.runOwnedJob",
+            readString(job.payload, "itemId"),
+            undefined,
+            this.options.journal,
+          );
           immediate(this.db, () => {
             if (!context.isCurrent()) throw context.signal.reason;
             enqueueJobOnce(this.db, {
@@ -1510,6 +1567,13 @@ export class Orchestrator {
     try {
       await this.executeQueued(job.payload);
     } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.executeRetried.executeQueued",
+        readString(job.payload, "itemId"),
+        undefined,
+        this.options.journal,
+      );
       const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
       if (
@@ -1546,10 +1610,7 @@ export class Orchestrator {
           return;
         }
         const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
-        console.error(
-          `${item.linearIdentifier} retry ${retry} of ${MAX_TRANSIENT_RETRIES} in ${delayMs} ms: ${message}`,
-          error,
-        );
+
         deferWorkItem(this.db, item, {
           retry,
           delayMs,
@@ -1788,7 +1849,16 @@ export class Orchestrator {
       }
       if (!(await this.selectRepository(item))) return;
       // A rule matches the issue's labels as they are when the task starts.
-      await this.mergeSettingsFor(item, this.signalForItem(item.id)).catch(() => undefined);
+      await this.mergeSettingsFor(item, this.signalForItem(item.id)).catch((caughtError3) => {
+        journalCaught(
+          caughtError3,
+          "orchestrator.executeQueued.mergeSettingsFor",
+          itemId,
+          undefined,
+          this.options.journal,
+        );
+        return undefined;
+      });
       await this.runItem(item, handoff);
     }
   }
@@ -2105,6 +2175,13 @@ export class Orchestrator {
       } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now(), finish);
       this.dispatch();
     } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.runResponse.assert",
+        live.itemId,
+        undefined,
+        this.options.journal,
+      );
       if (
         !this.askedRuns.has(run.id) &&
         !this.stopped(item.id) &&
@@ -2283,6 +2360,13 @@ export class Orchestrator {
         if (!this.readProfileSnapshot(run.id)?.candidate)
           await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
       } catch (error) {
+        journalCaught(
+          error,
+          "orchestrator.runItem.preflight",
+          live.itemId,
+          undefined,
+          this.options.journal,
+        );
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
         if (isTransient(error)) throw error;
@@ -2382,6 +2466,13 @@ export class Orchestrator {
       else closeActiveRun(this.db, run.id, this.now());
       await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
     } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.runItem.assert",
+        live.itemId,
+        undefined,
+        this.options.journal,
+      );
       const current = getWorkItem(this.db, item.id);
       if (
         !this.askedRuns.has(run.id) &&
@@ -2834,6 +2925,13 @@ export class Orchestrator {
       } catch (error) {
         assertCurrent();
         if (deps.signal?.aborted || error instanceof RunnerCapacityWait) throw error;
+        journalCaught(
+          error,
+          "orchestrator.runRunnerCloseout.itemPathId",
+          item?.id,
+          "cancellation may interrupt work",
+          this.options.journal,
+        );
         reason = error instanceof Error ? error.message : String(error);
         if (
           (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(reason)) &&
@@ -2887,7 +2985,15 @@ export class Orchestrator {
       },
       notify: (reason) => {
         this.post(item, "thought", reason, `${runId}:closeout-runner-wait:${head}:${reason}`);
-        void this.flush().catch(() => {});
+        void this.flush().catch((caughtError4) => {
+          journalCaught(
+            caughtError4,
+            "orchestrator.notify.flush",
+            item?.id,
+            undefined,
+            this.options.journal,
+          );
+        });
       },
       ask: (runner, reason) => this.askRunnerWait(item, runId, runner.name, reason),
       asked: () => {
@@ -2925,7 +3031,15 @@ export class Orchestrator {
         now: this.now(),
       },
     );
-    void this.flush().catch(() => {});
+    void this.flush().catch((caughtError5) => {
+      journalCaught(
+        caughtError5,
+        "orchestrator.askRunnerWait.flush",
+        question.itemId,
+        undefined,
+        this.options.journal,
+      );
+    });
     return this.runnerWaitQuestion(question.id);
   }
 
@@ -2948,7 +3062,14 @@ export class Orchestrator {
     let retryBaseline: string[];
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
-    } catch {
+    } catch (caughtError6) {
+      journalCaught(
+        caughtError6,
+        "orchestrator.startCloseoutRound.snapshotRetryBaseline",
+        item?.id,
+        undefined,
+        this.options.journal,
+      );
       return;
     }
     startCloseoutRound(this.db, {
@@ -2991,7 +3112,15 @@ export class Orchestrator {
     let retryBaseline: string[] = [];
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
-    } catch {}
+    } catch (caughtError7) {
+      journalCaught(
+        caughtError7,
+        "orchestrator.askCloseoutHelp.snapshotRetryBaseline",
+        item?.id,
+        undefined,
+        this.options.journal,
+      );
+    }
     const context = {
       itemId: item.id,
       taskId: itemPathId(item),
@@ -3048,11 +3177,21 @@ export class Orchestrator {
           UPSTREAM_MAIN_REF,
         ])
           .then(() => UPSTREAM_MAIN_REF)
-          .catch(() => "origin/main");
+          .catch((caughtError8) => {
+            journalCaught(
+              caughtError8,
+              "orchestrator.reverify.then",
+              itemId,
+              undefined,
+              this.options.journal,
+            );
+            return "origin/main";
+          });
         base = (await git(["-C", worktree, "merge-base", "HEAD", upstream])).trim();
       }
     } catch (error) {
       if (isTransient(error)) throw error;
+      journalCaught(error, "orchestrator.reverify.trim", itemId, undefined, this.options.journal);
       const message = error instanceof Error ? error.message : String(error);
       this.fail(item, "reverify", message, error);
       return;
@@ -3284,7 +3423,16 @@ export class Orchestrator {
       repo: repository.repo,
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
-    }).catch(() => undefined);
+    }).catch((caughtError9) => {
+      journalCaught(
+        caughtError9,
+        "orchestrator.completeMerge.removeWorktree",
+        item?.id,
+        undefined,
+        this.options.journal,
+      );
+      return undefined;
+    });
     this.dispatch();
     await this.flush();
   }
@@ -3310,7 +3458,15 @@ export class Orchestrator {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     if (getWorkItem(this.db, item.id)?.state === "cancelled") return;
     this.sessionProgress(item)?.status(body);
-    void this.flush().catch(() => {});
+    void this.flush().catch((caughtError10) => {
+      journalCaught(
+        caughtError10,
+        "orchestrator.statusAfterPullRequest.flush",
+        item?.id,
+        undefined,
+        this.options.journal,
+      );
+    });
   }
 
   /** Progress is quiet once the pull request is open, so this posts like the pull request note. */
@@ -3323,7 +3479,14 @@ export class Orchestrator {
     try {
       return readQueueSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
         .startTimeoutHours;
-    } catch {
+    } catch (caughtError11) {
+      journalCaught(
+        caughtError11,
+        "orchestrator.queueStartTimeoutHours.readQueueSettings",
+        null,
+        undefined,
+        this.options.journal,
+      );
       return DEFAULT_QUEUE_START_TIMEOUT_HOURS;
     }
   }
@@ -3357,10 +3520,12 @@ export class Orchestrator {
       } catch (error) {
         signal?.throwIfAborted();
         context = null;
-        console.error(
-          `merge settings for ${item.linearIdentifier} failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        journalCaught(
+          error,
+          "orchestrator.mergeSettingsFor.issueMergeContext",
+          item.id,
+          undefined,
+          this.options.journal,
         );
       }
     }
@@ -3507,13 +3672,29 @@ export class Orchestrator {
     let base = current.checkpoint?.baseSha ?? "";
     try {
       head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
-    } catch {
+    } catch (caughtError13) {
+      journalCaught(
+        caughtError13,
+        "orchestrator.keepAskedWork.trim",
+        itemId,
+        undefined,
+        this.options.journal,
+      );
       return;
     }
     if (base === "")
       base = await git(["-C", worktree, "merge-base", "HEAD", "origin/main"]).then(
         (out) => out.trim(),
-        () => "",
+        (caughtError1) => {
+          journalCaught(
+            caughtError1,
+            "orchestrator.keepAskedWork.git",
+            itemId,
+            undefined,
+            this.options.journal,
+          );
+          return "";
+        },
       );
     saveCheckpoint(this.db, itemId, {
       phase,
@@ -3551,7 +3732,15 @@ export class Orchestrator {
         payload.answeredBy.trim()
       )
         answeredBy = payload.answeredBy;
-    } catch {}
+    } catch (caughtError14) {
+      journalCaught(
+        caughtError14,
+        "orchestrator.deliverPrompt.parse",
+        open.itemId,
+        undefined,
+        this.options.journal,
+      );
+    }
     const user = answerer(answeredBy);
     if (user === null) return "rejected";
     if (open.kind === "visual-review") {
@@ -3606,6 +3795,13 @@ export class Orchestrator {
             [answer, sessionId, event.dedupeKey],
           );
         } catch (error) {
+          journalCaught(
+            error,
+            "orchestrator.deliverPrompt.confirmDecision",
+            open.itemId,
+            undefined,
+            this.options.journal,
+          );
           this.post(
             item,
             "error",
@@ -3980,7 +4176,14 @@ export class Orchestrator {
     let config: ReturnType<typeof loadConfigFile> | null = null;
     try {
       if (ownerHasRunner) config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    } catch {
+    } catch (caughtError15) {
+      journalCaught(
+        caughtError15,
+        "orchestrator.dispatch.loadConfigFile",
+        null,
+        undefined,
+        this.options.journal,
+      );
       config = null;
     }
     dispatch(this.db, {
@@ -4461,6 +4664,13 @@ export class Orchestrator {
       await operation();
     } catch (error) {
       if (!live.controller.signal.aborted) throw error;
+      journalCaught(
+        error,
+        "orchestrator.runOwnedJob.set",
+        itemId,
+        "cancellation may interrupt work",
+        this.options.journal,
+      );
     } finally {
       this.conversations.delete(itemId);
       this.live.delete(key);
@@ -4859,6 +5069,13 @@ export class Orchestrator {
       );
     } catch (error) {
       signal.throwIfAborted();
+      journalCaught(
+        error,
+        "orchestrator.hydrateLinearContext.linearCaller",
+        null,
+        undefined,
+        this.options.journal,
+      );
       if (
         error instanceof LinearRateLimitError &&
         listLinearActivitySnapshots(this.db, sessionId).length > 0
@@ -4897,8 +5114,15 @@ export class Orchestrator {
         projectOverviewText(overview),
         this.now(),
       );
-    } catch {
+    } catch (caughtError16) {
       signal.throwIfAborted();
+      journalCaught(
+        caughtError16,
+        "orchestrator.loadProjectOverview.projectOverview",
+        itemId,
+        undefined,
+        this.options.journal,
+      );
     }
   }
 
@@ -5398,6 +5622,13 @@ export class Orchestrator {
     try {
       return this.candidateFor(runId);
     } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.candidateForItem.candidateFor",
+        item?.id,
+        undefined,
+        this.options.journal,
+      );
       const summary = error instanceof Error ? error.message : String(error);
       closeActiveRun(this.db, runId, this.now());
       this.post(item, "thought", summary, `${runId}:missing-candidate-identity`);
@@ -5423,6 +5654,13 @@ export class Orchestrator {
         readFileSync(join(runDir(this.options.pawsRoot, runId), "agent-profile.json"), "utf8"),
       );
     } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.readProfileSnapshot.parse",
+        null,
+        "optional file may be absent",
+        this.options.journal,
+      );
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
@@ -5843,12 +6081,14 @@ export class Orchestrator {
             keepTaskLinearRead(this.db, item.id, "repository_hints", hints, this.now());
           hinted = hintedRepository(candidates, hints);
         } catch (error) {
-          controller.signal.throwIfAborted();
-          console.error(
-            `repository hints for ${item.linearIdentifier} failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+          journalCaught(
+            error,
+            "orchestrator.selectRepository.getTaskLinearRead",
+            live.itemId,
+            undefined,
+            this.options.journal,
           );
+          controller.signal.throwIfAborted();
         }
       }
       const best = new Map<string, RepositorySuggestion>();
@@ -5893,12 +6133,15 @@ export class Orchestrator {
               best.set(key, suggestion);
           }
         } catch (error) {
-          controller.signal.throwIfAborted();
-          console.error(
-            `repository suggestions for ${item.linearIdentifier} failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+          journalCaught(
+            error,
+            "orchestrator.selectRepository.linearCaller",
+            live.itemId,
+            undefined,
+            this.options.journal,
           );
+          controller.signal.throwIfAborted();
+
           if (attempt < 3) await delay(attempt * 500, undefined, { signal: controller.signal });
         }
       }
@@ -5999,7 +6242,14 @@ export class Orchestrator {
         input.profile?.agent,
       );
       return { ...launched, command: adapter.command, args: launched.args ?? adapter.args };
-    } catch {
+    } catch (caughtError17) {
+      journalCaught(
+        caughtError17,
+        "orchestrator.launchAgent.loadConfigFile",
+        input.itemId,
+        undefined,
+        this.options.journal,
+      );
       return launched;
     }
   };
@@ -6077,7 +6327,8 @@ function listsChecks(report: string): boolean {
   try {
     const parsed = JSON.parse(report) as { required?: unknown };
     return Array.isArray(parsed.required) && parsed.required.length > 0;
-  } catch {
+  } catch (caughtError18) {
+    journalCaught(caughtError18, "orchestrator.listsChecks.parse", null);
     return false;
   }
 }

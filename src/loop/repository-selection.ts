@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { RepositoryBinding } from "../core";
 import type { RepositoryHints, RepositorySuggestion } from "../linear";
 import type { AgentProfile } from "../config";
@@ -138,7 +139,12 @@ export async function interpretRepositoryAnswer(options: {
         (candidate) => `${candidate.owner}/${candidate.repo}` === parsed.repositoryFullName,
       ) ?? null
     );
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(
+      caughtError1,
+      "repository-selection.interpretRepositoryAnswer.parse",
+      options.itemId,
+    );
     return null;
   }
 }

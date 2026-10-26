@@ -1,3 +1,4 @@
+import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   DEFAULT_LEASE_MS,
@@ -94,6 +95,7 @@ export class JobLoop {
       await handler(job, context);
       if (current()) completeJob(this.db, job, this.clock.now());
     } catch (error) {
+      journalCaught(error, "loop.tick.handler", journalItemId(job.payload));
       if (current())
         failJob(this.db, job, error, { now: this.clock.now(), baseMs: this.options.backoffBaseMs });
     } finally {

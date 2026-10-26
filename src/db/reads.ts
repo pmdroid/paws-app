@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 
 export type WorkItemBlockRecord = {
@@ -153,7 +154,8 @@ function stringList(value: string): string[] {
       const label = item.label ?? item.value;
       return typeof label === "string" ? [label] : [];
     });
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "reads.stringList.parse", null);
     return [];
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { CLOSEOUT_OUTPUT_CAP_BYTES } from "./closeout-progress";
 import { immediate } from "./tx";
@@ -177,7 +178,8 @@ function parseChecks(text: string | null): AgentCloseoutCheck[] {
   try {
     const parsed: unknown = JSON.parse(text);
     return Array.isArray(parsed) ? (parsed as AgentCloseoutCheck[]) : [];
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "agent-closeout.parseChecks.parse", null);
     return [];
   }
 }

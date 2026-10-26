@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   decideStartup,
@@ -107,7 +108,8 @@ export function prepareShutdown(
     for (const item of listInFlightItems(db)) {
       try {
         commitWip(item);
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "recovery.prepareShutdown.commitWip", item.id);
         // The lease move still happens. A missing worktree is not a reason to skip shutdown.
       }
     }

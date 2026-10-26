@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type {
   ActionDetails,
   ActivityKind,
@@ -271,6 +272,7 @@ async function postEvidence(
       assetUrl = uploaded.assetUrl;
       setEvidenceAssetUrl(db, evidence.id, assetUrl);
     } catch (error) {
+      journalCaught(error, "dispatch.postEvidence.readFile", null);
       options.signal?.throwIfAborted();
       if (message.attempts < message.maxAttempts) throw error;
       note = "Paws could not upload this file to Linear.";

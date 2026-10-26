@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -240,7 +241,14 @@ test.skipIf(process.platform !== "linux")(
       if (pid > 0) {
         try {
           process.kill(pid, "SIGKILL");
-        } catch {}
+        } catch (caughtError1) {
+          journalCaught(
+            caughtError1,
+            "publication.test.recover.kill",
+            null,
+            "test fixture cleanup",
+          );
+        }
       }
       await rm(root, { recursive: true, force: true });
     }
@@ -295,7 +303,14 @@ test.skipIf(process.platform !== "linux")(
       if (pid > 0) {
         try {
           process.kill(pid, "SIGKILL");
-        } catch {}
+        } catch (caughtError2) {
+          journalCaught(
+            caughtError2,
+            "publication.test.recover.kill",
+            null,
+            "test fixture cleanup",
+          );
+        }
       }
       await rm(root, { recursive: true, force: true });
     }

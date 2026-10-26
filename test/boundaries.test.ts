@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "journal",
   "onboarding",
   "runner-login",
   "runner-login-worker",
@@ -76,6 +77,7 @@ type ModuleName = (typeof MODULES)[number];
 /** Who may import whose public index. Enforced so parallel issues stay in their directory. */
 const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   root: MODULES,
+  journal: ["core"],
   onboarding: ["config", "credentials", "db", "linear", "workspace", "web"],
   "worktree-checkout": [],
   config: ["core", "credentials", "worktree-checkout"],
@@ -275,7 +277,7 @@ describe("module boundaries", () => {
           continue;
         }
         const allowed = ALLOWED[importer];
-        if (!allowed.includes(target as ModuleName)) {
+        if (target !== "journal" && !allowed.includes(target as ModuleName)) {
           violations.push(`${relative(SRC, file)} imports ${target}`);
         }
       }
