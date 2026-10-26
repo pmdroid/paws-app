@@ -1,9 +1,9 @@
 import { createHmac } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { intakeDelegatedIssue } from "../src/intake";
-import { configureWorkItem, insertQueuedItem } from "../src/db";
+import { configureWorkItem, insertQueuedItem, setJournalSink } from "../src/db";
 import { RunnerSlotsBusyError } from "../src/core";
 import {
   POLL_INTERVAL_FAILING_MS,
@@ -418,7 +418,8 @@ describe("linear intake poll", () => {
 
   test("logs a rate-limited poll with its wait", async () => {
     const db = tempDb();
-    const errors = spyOn(console, "error").mockImplementation(() => {});
+    const errors: string[] = [];
+    const restoreJournal = setJournalSink((line) => errors.push(line));
     const waits: number[] = [];
     const poller = startCatchUpPoller({
       source: {
@@ -433,11 +434,11 @@ describe("linear intake poll", () => {
     });
     try {
       await waitFor(() => waits.length > 0);
-      expect(errors.mock.calls.map((call) => String(call[0]))).toContain(
-        "linear intake poll rate-limited; retrying in 60s: Linear GraphQL: RATELIMITED",
-      );
+      expect(errors).toEqual([
+        "catch item=none operation=poller.startCatchUpPoller.pollOnce expected=rate limited; retrying in 60s error=Linear GraphQL: RATELIMITED",
+      ]);
     } finally {
-      errors.mockRestore();
+      restoreJournal();
       await poller.stop();
       db.close();
     }

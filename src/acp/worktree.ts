@@ -28,7 +28,7 @@ async function exists(path: string): Promise<boolean> {
     await stat(path);
     return true;
   } catch (caughtError1) {
-    journalCaught(caughtError1, "worktree.exists.stat", null);
+    journalCaught(caughtError1, "worktree.exists.stat", null, "optional file may be absent");
     return false;
   }
 }

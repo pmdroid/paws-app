@@ -111,7 +111,12 @@ export async function runProviderLogin(options: {
           try {
             process.kill(-child.pid, "SIGKILL");
           } catch (caughtError3) {
-            journalCaught(caughtError3, "runner-login-worker.runProviderLogin.kill", null);
+            journalCaught(
+              caughtError3,
+              "runner-login-worker.runProviderLogin.kill",
+              null,
+              "process may have exited",
+            );
           }
         }
       };

@@ -64,6 +64,8 @@ test("src contains no empty catches", () => {
   const violations: string[] = [];
   for (const file of readdirSync(root, { recursive: true })) {
     if (typeof file !== "string" || !/\.[cm]?[jt]sx?$/.test(file)) continue;
+    // Build output includes bundled third-party code; enforce the maintained source instead.
+    if (file.startsWith("web/dist/")) continue;
     for (const line of emptyCatches(file, readFileSync(join(root, file), "utf8")))
       violations.push(`${file}:${line}`);
   }

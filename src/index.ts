@@ -694,7 +694,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       try {
         return readFileSync(new URL("../deploy/linux/install-runner.sh", import.meta.url), "utf8");
       } catch (caughtError3) {
-        journalCaught(caughtError3, "index.installer.readFileSync", null);
+        journalCaught(
+          caughtError3,
+          "index.installer.readFileSync",
+          null,
+          "optional file may be absent",
+        );
         return null;
       }
     },
@@ -1785,7 +1790,7 @@ if (import.meta.main) {
       try {
         validatePublicTls(process.env);
       } catch (caughtError4) {
-        journalCaught(caughtError4, "index.recover.validatePublicTls", null);
+        journalCaught(caughtError4, "public TLS certificate renewal rejected", null);
 
         return;
       }

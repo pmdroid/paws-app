@@ -272,7 +272,12 @@ function fsTree(root: string): PolicyTree {
       try {
         return { status: "file", bytes: new Uint8Array(readFileSync(absolute)) };
       } catch (caughtError2) {
-        journalCaught(caughtError2, "resolve.read.readFileSync", null);
+        journalCaught(
+          caughtError2,
+          "resolve.read.readFileSync",
+          null,
+          "optional file may be absent",
+        );
         return { status: "error", message: "could not read the policy file" };
       }
     },
@@ -298,7 +303,12 @@ function listSkillFiles(root: string, skillFile: string): TreeList {
   try {
     dirStat = lstatSync(dirAbs);
   } catch (caughtError3) {
-    journalCaught(caughtError3, "resolve.listSkillFiles.lstatSync", null);
+    journalCaught(
+      caughtError3,
+      "resolve.listSkillFiles.lstatSync",
+      null,
+      "optional file may be absent",
+    );
     return { ok: false, message: `skill is missing: ${skillFile}` };
   }
   if (dirStat.isSymbolicLink()) return { ok: false, message: `skill file is a symlink: ${dirAbs}` };
@@ -312,7 +322,12 @@ function listSkillFiles(root: string, skillFile: string): TreeList {
     try {
       entries = readdirSync(current, { withFileTypes: true });
     } catch (caughtError4) {
-      journalCaught(caughtError4, "resolve.listSkillFiles.readdirSync", null);
+      journalCaught(
+        caughtError4,
+        "resolve.listSkillFiles.readdirSync",
+        null,
+        "optional file may be absent",
+      );
       return { ok: false, message: "could not read the skill directory" };
     }
     for (const entry of entries) {

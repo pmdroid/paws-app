@@ -198,7 +198,7 @@ function runMise(
       try {
         if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
       } catch (caughtError1) {
-        journalCaught(caughtError1, "install.runMise.kill", null);
+        journalCaught(caughtError1, "install.runMise.kill", null, "process may have exited");
       }
     };
     const timer = setTimeout(() => {

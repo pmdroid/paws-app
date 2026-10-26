@@ -272,7 +272,7 @@ async function postEvidence(
       assetUrl = uploaded.assetUrl;
       setEvidenceAssetUrl(db, evidence.id, assetUrl);
     } catch (error) {
-      journalCaught(error, "dispatch.postEvidence.readFile", null);
+      journalCaught(error, "dispatch.postEvidence.readFile", null, "optional file may be absent");
       options.signal?.throwIfAborted();
       if (message.attempts < message.maxAttempts) throw error;
       note = "Paws could not upload this file to Linear.";
