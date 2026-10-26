@@ -1,6 +1,6 @@
 # Smoke test
 
-Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop. Install Bun 1.4.2 or newer and Git. Enroll a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Enrollment is in [Enroll a remote Linux runner](runner-enrollment.md). GitHub App setup is in [GitHub App](github-app.md).
+Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop, then exercise the merge lane: a rebase after main moved, a changes-requested review and a forced conflict loop. Install Bun 1.4.2 or newer and Git. Enroll a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Enrollment is in [Enroll a remote Linux runner](runner-enrollment.md). GitHub App setup is in [GitHub App](github-app.md).
 
 ```sh
 bun install
@@ -44,6 +44,53 @@ Each sub-issue runs in its own Linear agent session and its own run. Paws opens 
 3. ENG-3's session opens after ENG-2 merges, and its pull request merges.
 4. ENG-4's session opens after ENG-3 merges. ENG-4 parks on a question in its session. Answer `yes` or `no`, or reply in your own words. The run continues with that answer.
 5. ENG-4 merges.
+
+## Merge lane
+
+These runs prove that every merged head is one Closeout accepted, that a review reaches the agent without a Linear paste, and that a conflict loop ends in one question. Terms are in [GLOSSARY.md](../GLOSSARY.md); the flow is in [After acceptance](closeout.md#after-acceptance). Use the demo repository with `[merge] order = "queue"`, the default. Reset the demo first, and for each run create a fresh issue in the sandbox team and delegate it to the Paws app.
+
+Hold an item in the merge queue while you act: in the demo repository's branch protection on `main`, require one approving review. Branch protection then keeps `mergeable(S)` false. Release the hold by approving the pull request when the step says so.
+
+### Rebase after main moved
+
+1. Delegate **Add a comment to `exportRows`**: "Add a one-line doc comment above `exportRows` in `src/export.ts`." Wait until the session posts the pull request response and the item is in `merge_queue`.
+2. Push an unrelated commit to `main`, for example a line appended to `README.md`.
+3. Release the hold.
+
+Expect these results:
+
+- The lane finds the head behind `main`, rebases it to a new head S', and the item returns to `verifying`. The session title reads "rebased onto main, re-verifying" and the plan gains a **Re-verify after rebase** step. No new activity appears after the pull request response.
+- Closeout runs on S'; the run page shows a Closeout result for S' next to the one for the first head.
+- The squash merge has S' as its head, and the session ends with the merged response.
+
+### Changes-requested review
+
+1. Delegate **Name the header row**: "`exportWithHeader` takes an optional `header` argument." Wait for the pull request and the merge queue, with the hold in place.
+2. On GitHub, submit a review with **Request changes** and two line comments: one clear ("rename `header` to `headerRow`") and one unclear ("should this match the CSV spec?").
+3. Submit a second review on the same pull request with **Comment** only and one line comment.
+
+Expect these results:
+
+- The changes-requested review restarts the item once (restart reason `review`). The title reads "fixing review findings (1 of 3)". The agent renames the argument and asks in the session about the CSV question; that question is the one activity after the pull request response. Answer it.
+- The comment-only review posts its thread once in the session and restarts nothing.
+- Redelivering the changes-requested webhook from the GitHub App's advanced settings restarts nothing.
+- The new head goes through Closeout. Resolve the threads and approve; the pull request merges.
+
+### Forced conflict loop
+
+1. Delegate **Rename the export file**: "Rename `exportRows` to `exportTable` everywhere." Wait for the pull request and the merge queue, with the hold in place.
+2. Push a commit to `main` that edits the same lines of `src/export.ts` differently, and release the hold. The lane's rebase conflicts, and the item restarts with reason `conflict` and the conflicting files.
+3. Each time the agent pushes a resolved head and the item is back in `merge_queue`, push another conflicting commit to the same lines on `main`.
+
+Expect these results:
+
+- Each conflict is a rebase return. The title reads "resolving merge conflict", and the lane is released before the agent starts.
+- On the fourth conflict, Paws does not restart the agent. It asks one question in the session that names the main commits and the conflicting files, and the item waits in `awaiting_input`. A newer `main` does not reset the count.
+- Reply with guidance. The item restarts with reason `answer` and a fresh budget, resolves the conflict, goes through Closeout and merges.
+
+### Record the run
+
+For each run, keep the Linear session, the GitHub pull request and the Paws run page. Publish a screenshot of each session and of each run page's Closeout results on the PAS issue for the run, and link the merged pull requests.
 
 ### Linear agent sessions
 
