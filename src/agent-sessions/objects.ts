@@ -148,12 +148,15 @@ export function createS3AgentSessionObjects(options: {
       }
       return Buffer.concat(parts);
     },
+    async delete(key) {
+      await options.client.file(key).delete();
+    },
   };
 }
 
 /**
  * Writes go to `remote`. Reads use the local chunk when one exists, so snapshots sealed before
- * S3 was configured still restore.
+ * S3 was configured still restore. Deletes remove the chunk from both.
  */
 export function withLocalAgentSessionFallback(
   local: AgentSessionObjects,
@@ -168,6 +171,10 @@ export function withLocalAgentSessionFallback(
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         return remote.read(key);
       }
+    },
+    async delete(key) {
+      await local.delete(key);
+      await remote.delete(key);
     },
   };
 }

@@ -706,6 +706,10 @@ describe("agent session storage in S3", () => {
           stored.set(path, new Uint8Array(await request.arrayBuffer()));
           return new Response(null, { status: 200, headers: { etag: '"fixture"' } });
         }
+        if (request.method === "DELETE") {
+          stored.delete(path);
+          return new Response(null, { status: 204 });
+        }
         const bytes = stored.get(path);
         if (request.method === "GET" && bytes) return new Response(bytes);
         return new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 });
@@ -761,6 +765,12 @@ describe("agent session storage in S3", () => {
     requests.length = 0;
     expect(Buffer.from(await objects.read("earlier"))).toEqual(earlier);
     expect(requests).toEqual([]);
+
+    await objects.delete("earlier");
+    await objects.delete("remote");
+    await objects.delete("never-written");
+    expect(stored.has("/fixture-sessions/remote")).toBe(false);
+    await expect(local.read("earlier")).rejects.toThrow();
 
     chmodSync(join(root, "agent-sessions"), 0o755);
     await expect(objects.read("earlier")).rejects.toThrow("Unsafe agent session directory");
