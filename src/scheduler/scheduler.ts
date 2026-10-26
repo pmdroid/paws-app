@@ -4,12 +4,14 @@ import {
   JOB_KIND,
   delegationHasOpenWork,
   holdsExecution,
+  queueLine,
   isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
   type WorkItemState,
 } from "../core";
 import {
+  getQueuePosition,
   enqueueJob,
   enqueueJobOnce,
   enqueueOutboxOnce,
@@ -107,22 +109,24 @@ function reportHolds(
   holds: readonly ItemHold[],
   sessionFor: (id: string) => string | null,
   now: number,
+  occupied: ReadonlySet<string>,
 ): void {
   for (const hold of holds) {
     if (!["blocked", "slot", "cap"].includes(hold.reason)) continue;
     const sessionId = sessionFor(hold.itemId);
-    if (!sessionId) continue;
+    if (!sessionId || occupied.has(sessionId)) continue;
     const recorded = db
       .query<{ session: string | null }, [string]>(
         "SELECT response_session_id AS session FROM item_hold WHERE item_id=?",
       )
       .get(hold.itemId);
     if (recorded?.session === sessionId) continue;
+    const position = getQueuePosition(db, hold.itemId);
     const body =
       hold.reason === "blocked"
         ? `Waiting: ${holdLine(hold)}. I'll start on my own when the blockers finish.`
         : hold.reason === "slot"
-          ? "Queued: every runner slot you can use is busy. I'll start when one frees up."
+          ? `${position ? queueLine(position) : "Queued: every runner slot you can use is busy."} I'll start when one frees up.`
           : "Queued: you already run the most tasks at once. I'll start when one finishes.";
     enqueueOutboxOnce(db, {
       target: "linear",
@@ -599,7 +603,16 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         ? `item ${name} held: ${holdLine(change.held)}`
         : `item ${name} no longer held`;
     });
-    reportHolds(db, holds, options.sessionFor ?? ((id) => byId.get(id)?.sessionId ?? null), now);
+    const sessionFor = options.sessionFor ?? ((id: string) => byId.get(id)?.sessionId ?? null);
+    const occupied = new Set(
+      items
+        .filter((item) => holdsSession(item) || held.some((entry) => entry.itemId === item.id))
+        .flatMap((item) => {
+          const session = sessionFor(item.id);
+          return session ? [session] : [];
+        }),
+    );
+    reportHolds(db, holds, sessionFor, now, occupied);
     return {
       admitted,
       waiting: waiting.map(({ item }) => item.id),

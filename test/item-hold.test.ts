@@ -202,7 +202,7 @@ test("hold responses survive scheduler restarts and follow blocker changes and s
     db.run(
       "INSERT INTO task_block VALUES('issue-PAS-1','issue-PAS-3'),('issue-PAS-2','issue-PAS-3')",
     );
-    const sessionFor = () => "session-delegation";
+    const sessionFor = (id = "PAS-3") => (id === "PAS-3" ? "session-delegation" : `session-${id}`);
     const tick = (now: number) => workspaceDispatch(db, { now, sessionFor });
     tick(1);
     expect(responses(db)).toHaveLength(1);
@@ -226,7 +226,7 @@ test("hold responses survive scheduler restarts and follow blocker changes and s
     tick(Date.now());
     expect(responses(db)).toHaveLength(3);
     expect(responses(db)[2]!.payload).toMatchObject({
-      body: "Queued: every runner slot you can use is busy. I'll start when one frees up.",
+      body: expect.stringContaining("I'll start when one frees up."),
     });
     tick(Date.now() + 1);
     expect(responses(db)).toHaveLength(3);
@@ -280,6 +280,19 @@ test("owners without an eligible runner receive no busy-slot response", () => {
       sessionFor: () => "session",
       ownerHasRunner: () => false,
     });
+    expect(responses(db)).toEqual([]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a held sibling never ends the active phase of a shared session", () => {
+  const db = tempDb();
+  try {
+    item(db, "PAS-1", "running");
+    item(db, "PAS-2");
+    db.run("INSERT INTO task_block VALUES('issue-PAS-1','issue-PAS-2')");
+    workspaceDispatch(db, { now: 1, sessionFor: () => "shared" });
     expect(responses(db)).toEqual([]);
   } finally {
     db.close();
