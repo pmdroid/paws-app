@@ -95,6 +95,81 @@ export async function requestJson(input: RunnerRequest): Promise<unknown> {
   }
 }
 
+/**
+ * Streams a response body to `onData` without holding it, refused once it passes `limit` bytes.
+ * Resolves with the response headers once a 2xx body ends.
+ */
+export function requestStream(
+  input: RunnerRequest,
+  accept: string,
+  limit: number,
+  onData: (chunk: Buffer) => void,
+  timeoutMs: number,
+): Promise<Record<string, string | string[] | undefined>> {
+  const started = performance.now();
+  const elapsed = () => Math.round(performance.now() - started);
+  return new Promise((resolve, reject) => {
+    const body = input.body === undefined ? undefined : Buffer.from(JSON.stringify(input.body));
+    const url = new URL(input.path, input.origin);
+    let timedOut = false;
+    const req = request(
+      url,
+      {
+        method: input.method,
+        agent: false,
+        rejectUnauthorized: true,
+        minVersion: "TLSv1.3",
+        ...(input.serverCa ? { ca: input.serverCa } : {}),
+        ...(input.identity ? { key: input.identity.key, cert: input.identity.certificate } : {}),
+        headers: {
+          accept,
+          ...(input.runGrant ? { authorization: `Bearer ${input.runGrant}` } : {}),
+          ...(body ? { "content-type": "application/json", "content-length": body.length } : {}),
+        },
+      },
+      (response) => {
+        const ok = Boolean(
+          response.statusCode && response.statusCode >= 200 && response.statusCode < 300,
+        );
+        let length = 0;
+        response.on("data", (chunk: Buffer) => {
+          if (!ok) return;
+          length += chunk.length;
+          if (length > limit) {
+            req.destroy(new Error("Runner response exceeds the allowed size."));
+            return;
+          }
+          try {
+            onData(chunk);
+          } catch (error) {
+            req.destroy(error instanceof Error ? error : new Error(String(error)));
+          }
+        });
+        response.on("error", reject);
+        response.on("aborted", () => reject(new Error("Runner response was cut off.")));
+        response.on("end", () => {
+          if (!ok) {
+            reject(
+              new RunnerRequestError(response.statusCode ?? 0, input.method, input.path, elapsed()),
+            );
+            return;
+          }
+          resolve(response.headers);
+        });
+      },
+    );
+    const timer = setTimeout(() => {
+      timedOut = true;
+      req.destroy(new Error("Runner request timed out."));
+    }, timeoutMs);
+    req.on("close", () => clearTimeout(timer));
+    req.on("error", (error) =>
+      reject(transportFailure(error, url, input.method, input.path, elapsed(), timedOut)),
+    );
+    req.end(body);
+  });
+}
+
 /** The raw response body, refused once it passes `limit` bytes. */
 export function requestBytes(
   input: RunnerRequest,

@@ -168,6 +168,17 @@ export const RunnerCommandSchema = z
       commitPolicy: RunnerCommitPolicySchema.optional(),
       checkpoint: z.literal(false).optional(),
       resumeSessionId: id.optional(),
+      /** The sealed session snapshot to unpack before the agent starts, when the run moved. */
+      restoreSession: z
+        .strictObject({
+          generation: generation.min(1),
+          agent: z.literal("claude"),
+          agentVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$/),
+          sessionId: id,
+          sha256: z.string().regex(/^[a-f0-9]{64}$/),
+          sizeBytes: z.number().int().min(1).max(1_073_741_824),
+        })
+        .optional(),
     }),
     z.strictObject({ ...common, type: z.literal("review"), ...work }),
     z.strictObject({
@@ -230,6 +241,13 @@ export const RunnerCommandSchema = z
       !("inputFiles" in command) ||
       (command.inputFiles?.length ?? 0) <= 20 ||
       (command.type === "run" && command.skillsInputId !== undefined),
+  )
+  .refine(
+    (command) =>
+      command.type !== "run" ||
+      !command.restoreSession ||
+      (command.profile.agent === command.restoreSession.agent &&
+        command.resumeSessionId === command.restoreSession.sessionId),
   )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)

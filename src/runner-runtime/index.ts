@@ -1,10 +1,10 @@
 import { journalCaught, journalRejection } from "../journal";
-import { rmSync } from "node:fs";
+import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
 import { runGitHubGit } from "../github";
 import { z } from "zod";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
 import { RUNNER_TRANSCRIPT_CHUNK_BYTES } from "../runner-transcripts";
 import {
@@ -131,7 +131,12 @@ export async function openRunnerRuntime(options: {
     | "uploadTranscript"
     | "finishTranscript"
   > &
-    Partial<Pick<RunnerDaemon, "readInputs" | "followUps" | "uploadSession" | "finishSession">>;
+    Partial<
+      Pick<
+        RunnerDaemon,
+        "readInputs" | "followUps" | "uploadSession" | "finishSession" | "readSession"
+      >
+    >;
   spool: RunnerSpool;
   results: RunnerResults;
   repositoryRoot: string;
@@ -560,8 +565,57 @@ export async function openRunnerRuntime(options: {
     });
     return pulsing;
   }
+  /**
+   * Downloads the session snapshot a moved run restores, checked against the signed size and
+   * sha256. Any failure leaves no file, and the worker starts a new session and says why.
+   */
+  async function downloadSession(entry: Active): Promise<string | undefined> {
+    const command = entry.execution.command;
+    if (command.type !== "run" || !command.restoreSession) return undefined;
+    const restore = command.restoreSession;
+    const path = join(options.repositoryRoot, `session-${entry.execution.id}-${randomUUID()}.gz`);
+    let kept = false;
+    try {
+      if (!options.daemon.readSession) throw new Error("Runner session transport is unavailable");
+      const fd = openSync(
+        path,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
+      );
+      let received: Awaited<ReturnType<NonNullable<typeof options.daemon.readSession>>>;
+      try {
+        const token = await grant(entry);
+        received = await options.daemon.readSession(
+          command.runId,
+          { generation: command.generation, snapshotGeneration: restore.generation },
+          token,
+          fd,
+          restore.sizeBytes,
+        );
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      check(entry);
+      if (
+        received.sizeBytes !== restore.sizeBytes ||
+        received.sha256 !== restore.sha256 ||
+        received.sentSha256 !== restore.sha256
+      )
+        throw new Error("The agent session snapshot does not match its checksum");
+      kept = true;
+      return path;
+    } catch (error) {
+      if (entry.abort.signal.aborted) throw error;
+      journalCaught(error, "runner-runtime.downloadSession", command.itemId);
+      return undefined;
+    } finally {
+      if (!kept) rmSync(path, { force: true });
+    }
+  }
   async function launch(entry: Active) {
     let bundle: string | undefined;
+    let sessionBundle: string | undefined;
     let snapshotWorkspace: string | undefined;
     try {
       await grant(entry);
@@ -628,11 +682,13 @@ export async function openRunnerRuntime(options: {
           )
         : undefined;
       check(entry);
+      sessionBundle = await downloadSession(entry);
+      check(entry);
       if (command.expiresAt <= now()) throw new Error("Runner command expired before dispatch");
       publishRunnerJob(
         options.spool,
         { executionId: entry.execution.id, command: entry.execution.command },
-        { repositoryBundle: bundle, repositorySnapshot, ...inputs },
+        { repositoryBundle: bundle, repositorySnapshot, sessionBundle, ...inputs },
       );
       check(entry);
       if (entry.execution.command.expiresAt <= now())
@@ -652,6 +708,7 @@ export async function openRunnerRuntime(options: {
       report(error);
     } finally {
       if (bundle) rmSync(bundle, { force: true });
+      if (sessionBundle) rmSync(sessionBundle, { force: true });
       if (snapshotWorkspace) {
         rmSync(snapshotWorkspace, { recursive: true, force: true });
         rmSync(`${snapshotWorkspace}.repository.json`, { force: true });
