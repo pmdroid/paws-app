@@ -274,6 +274,21 @@ export interface StatusQuestion {
   askedAt: string;
   claimedBy: string | null;
   links: StatusLink[];
+  /** Present when the question is answered on the item page, not in Linear. */
+  linkAsk?: StatusLinkAsk;
+}
+
+export const LINK_ASK_KINDS = ["bypass", "screenshots", "risk", "question"] as const;
+export type LinkAskKind = (typeof LINK_ASK_KINDS)[number];
+
+/** A decision a signed-in person makes on the item page. Linear carries its `link`. */
+export interface StatusLinkAsk {
+  kind: LinkAskKind;
+  /** The head commit the decision is bound to. A new head closes the ask. */
+  head: string;
+  title: string;
+  detail: string;
+  link: string;
 }
 
 export interface StatusCheck {
@@ -1131,6 +1146,20 @@ function readQuestion(input: unknown, index: number): StatusQuestion {
     askedAt: dateString(body, "askedAt", path),
     claimedBy,
     links: readLinks(body.links, `${path}.links`),
+    ...(body.linkAsk === undefined
+      ? {}
+      : { linkAsk: readLinkAsk(body.linkAsk, `${path}.linkAsk`) }),
+  };
+}
+
+function readLinkAsk(input: unknown, path: string): StatusLinkAsk {
+  const body = object(input, path);
+  return {
+    kind: oneOf(string(body, "kind", path), LINK_ASK_KINDS, `${path}.kind`),
+    head: text(body, "head", path),
+    title: text(body, "title", path),
+    detail: string(body, "detail", path),
+    link: text(body, "link", path),
   };
 }
 
