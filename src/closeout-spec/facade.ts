@@ -353,9 +353,14 @@ export async function fixesLeft(
     root: input.evidenceDir ?? join(input.repo, ".closeout"),
   }).load();
   if (snapshot.invalid !== undefined) return null;
+  // Pre-existing review findings do not spend a review's attempts, as in decision().
+  const lineRanges = items.some((item) => item.kind === "review")
+    ? await reviewLineRanges(input, policy, snapshot.records, resolved.base, resolved.head)
+    : undefined;
   const request = requestOf(input, input.candidate ?? blankCandidate(), {
     base: resolved.base,
     head: resolved.head,
+    ...(lineRanges !== undefined ? { changedLineRanges: lineRanges } : {}),
   });
   let least: number | null = null;
   for (const item of items) {
