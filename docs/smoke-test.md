@@ -67,12 +67,12 @@ Expect these results:
 
 1. Delegate **Name the header row**: "`exportWithHeader` takes an optional `header` argument." Wait for the pull request and the merge queue, with the hold in place.
 2. On GitHub, submit a review with **Request changes** and two line comments: one clear ("rename `header` to `headerRow`") and one unclear ("should this match the CSV spec?").
-3. Submit a second review on the same pull request with **Comment** only and one line comment.
+3. After the item is back in the merge queue, add a line comment ("use a constant for the delimiter") and, within a minute, a conversation comment ("also mention it in the README").
 
 Expect these results:
 
 - The changes-requested review restarts the item once (restart reason `review`). The title reads "fixing review findings (1 of 3)". The agent renames the argument and asks in the session about the CSV question; that question is the one activity after the pull request response. Answer it.
-- The comment-only review posts its thread once in the session and restarts nothing.
+- The two comments restart the item once more, with both comments in the handoff; the title reads "fixing review findings (2 of 3)". A Cloudflare Pages preview comment restarts nothing.
 - Redelivering the changes-requested webhook from the GitHub App's advanced settings restarts nothing.
 - The new head goes through Closeout. Resolve the threads and approve; the pull request merges.
 

@@ -9,6 +9,7 @@ import {
   getPullReview,
   getWorkItem,
   insertQueuedItem,
+  pendingPullComments,
   recordItemPullRequest,
   listJobs,
   migrate,
@@ -24,7 +25,6 @@ import {
 } from "../github";
 import { advanceMerge, type MergeCapabilities } from "../merge";
 import { findOpenQuestion } from "../questions";
-import { AFTER_PULL_REQUEST_RESPONSE } from "./activity-policy";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import {
   REVIEW_FIX_INSTRUCTION,
@@ -64,7 +64,6 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
       github.respond(request) ?? (await queue.respond(request)) ?? { status: 404, body: null },
   };
   const tokenProvider = { mode: "app" as const, tokenFor: async () => "token" };
-  const posts: { body: string; key: string }[] = [];
   let busy = false;
   let limit = 3;
   const caps: PullReviewCapabilities = {
@@ -88,7 +87,6 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
       }),
     fixRoundLimit: () => limit,
     session: (item) => item.sessionKey,
-    post: (_, body, key) => posts.push({ body, key }),
     flush: async () => {},
   };
   let delivery = 0;
@@ -133,7 +131,6 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
     github,
     queue,
     caps,
-    posts,
     deliver,
     setBusy: (value: boolean) => (busy = value),
     setLimit: (value: number) => (limit = value),
@@ -252,51 +249,13 @@ describe("changes-requested reviews", () => {
   });
 });
 
-describe("comment-only and other reviews", () => {
-  test("a comment-only review posts its own threads once and changes nothing else", async () => {
-    const { db, caps, deliver, posts } = setup();
+describe("other reviews", () => {
+  test("a comment-only review is a comment, not a change request", () => {
+    const { db, deliver } = setup();
     deliver({ id: 777, state: "commented" });
-    expect(await handlePullReview(db, 777, caps)).toBe("posted");
-    deliver({ id: 777, state: "commented" });
-    expect(await handlePullReview(db, 777, caps)).toBe("done");
-    expect(posts).toHaveLength(1);
-    expect(posts[0]?.key).toBe("pull-review:777");
-    expect(AFTER_PULL_REQUEST_RESPONSE.test(posts[0]!.key)).toBe(true);
-    expect(posts[0]?.body).toContain("@rev commented on pull request #7.");
-    expect(posts[0]?.body).toContain("Typo here.");
-    expect(posts[0]?.body).not.toContain("wrong way round");
-    expect(getWorkItem(db, "eng-1")?.state).toBe("merge_queue");
-    expect(resumeJobs(db)).toHaveLength(0);
-    // Nothing waits on a comment-only review; open threads keep readiness pending instead.
-    const step = await advanceMerge(db, { itemId: "eng-1", payload: {}, jobId: 1 }, {
-      now: () => 10,
-      publish: async () => ({ kind: "obsolete" }),
-    } as unknown as MergeCapabilities);
-    expect(step).toEqual({ kind: "obsolete" });
-  });
-
-  test("a comment past a thread's first page keeps its thread", async () => {
-    const long: FakeReviewThread = {
-      path: "src/long.ts",
-      line: 1,
-      comments: [
-        ...Array.from({ length: 4 }, (_, index) => ({ author: "pascal", body: `Note ${index}.` })),
-        { author: "rev", body: "One more thing here.", reviewId: 900 },
-      ],
-    };
-    const { db, caps, deliver, posts, github } = setup([long], { commentsPerPage: 2 });
-    deliver({ id: 900, state: "commented" });
-    expect(await handlePullReview(db, 900, caps)).toBe("posted");
-    expect(github.reads).toBe(3);
-    expect(posts[0]?.body).toContain("@pascal: Note 0.");
-    expect(posts[0]?.body).toContain("@rev: One more thing here.");
-  });
-
-  test("an empty comment-only review posts nothing", async () => {
-    const { db, caps, deliver, posts } = setup([]);
-    deliver({ id: 9, state: "commented" });
-    expect(await handlePullReview(db, 9, caps)).toBe("posted");
-    expect(posts).toHaveLength(0);
+    expect(getPullReview(db, 777)).toBeNull();
+    expect(reviewJobs(db)).toHaveLength(0);
+    expect(pendingPullComments(db, "eng-1").map((comment) => comment.commentId)).toEqual([777]);
   });
 
   test("approvals, edits and other branches record nothing", () => {
