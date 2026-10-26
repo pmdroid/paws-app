@@ -12,7 +12,7 @@ export const VISUAL_REVIEW_OPTIONS = ["Accept", "Request changes"] as const;
 export const VISUAL_REVIEW_REMINDER_MS = 24 * 60 * 60 * 1000;
 
 export const VISUAL_REVIEW_REMINDER =
-  "Still waiting for a visual review. Accept the screenshots, or describe the changes you want.";
+  "Still waiting for a visual review. Reply with the changes you want. A reply in Linear never approves the screens.";
 
 export const VISUAL_REVIEW_ANSWERERS =
   "Only the person who delegated this issue or the Linear project's lead can answer this visual review. The task keeps waiting.";

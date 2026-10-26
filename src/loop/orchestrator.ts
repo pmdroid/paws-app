@@ -5518,7 +5518,6 @@ export class Orchestrator {
             checkId: now.requirement.id,
             evidenceIds: now.evidenceIds,
             carried,
-            approved: plan.approved,
             base,
             head,
             publicUrl: evidence.publicUrl,

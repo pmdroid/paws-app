@@ -91,4 +91,4 @@ export {
   type LinkAskBypass,
   type LinkAskEffects,
 } from "./link-ask";
-export { VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
+export { VISUAL_REVIEW_NEEDS_LINK, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";

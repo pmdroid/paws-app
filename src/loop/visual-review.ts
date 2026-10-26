@@ -42,7 +42,6 @@ import {
   getVisualReview,
   insertVisualReview,
   lastVisualReviewFeedback,
-  openVisualReview,
   openVisualReviewContinue,
   parseVisualReviewAnswer,
   recordVisualReviewAnswer,
@@ -56,9 +55,7 @@ import {
   VISUAL_REVIEW_ROUNDS,
   type StoredQuestion,
   type StoredVisualReview,
-  VISUAL_REVIEW_OPTIONS,
   VISUAL_REVIEW_REMINDER,
-  VISUAL_REVIEW_REMINDER_MS,
 } from "../questions";
 
 export function dueVisualReview(
@@ -224,6 +221,13 @@ export function reviewable(item: WorkItemRecord | null): item is WorkItemRecord 
   return item?.state === "verifying" && !item.cancelRequested;
 }
 
+/**
+ * Asks the delegator or the project lead to approve the screens on the item
+ * page, where they are in view: the screenshots link ask. A Linear reply only
+ * ever requests changes. Without an https dashboard link nobody could see the
+ * screens, so Paws does not ask and the check stays unapproved; it says so once.
+ * Returns whether it asked.
+ */
 export function askForVisualReview(
   db: Database,
   input: {
@@ -238,8 +242,6 @@ export function askForVisualReview(
     now: number;
     /** Files among `evidenceIds` that carried an approval over and are not asked about. */
     carried?: readonly VisualReviewCarry[];
-    /** For a changed file, the approved file to show beside it. */
-    approved?: ReadonlyMap<string, string>;
   },
 ): boolean {
   const { item, sessionId } = input;
@@ -247,74 +249,49 @@ export function askForVisualReview(
   const current = getWorkItem(db, item.id);
   if (!reviewable(current)) return false;
   if (findOpenQuestion(db, sessionId) !== null) return false;
-  const base = input.publicUrl.replace(/\/+$/, "");
-  const link = (id: string) => `${base}/evidence/${encodeURIComponent(id)}`;
-  const skipped = new Set(carried.map((entry) => entry.evidenceId));
-  const evidence = input.evidenceIds
-    .filter((id) => !skipped.has(id))
-    .map((id) => {
-      const approved = input.approved?.get(id);
-      return {
-        id,
-        link: link(id),
-        ...(approved ? { approved: { id: approved, link: link(approved) } } : {}),
-      };
-    });
-  // The delegator approves on the item page, where the screenshots are in view.
-  if (linkAskAvailable(input.publicUrl) && current.sessionKey === sessionId) {
-    const name = (id: string) => getEvidence(db, id)?.displayName ?? id;
-    const { question } = askWithLink(db, {
-      item: current,
-      runId: input.runId,
-      kind: "screenshots",
-      head: input.head,
-      detail: visualReviewLinkDetail(
-        input.checkId,
-        evidence.map((file) => name(file.id)),
-        carried.map((entry) => name(entry.evidenceId)),
-      ),
-      publicUrl: input.publicUrl,
-      now: input.now,
-      // Asked beside the command checks and the review; the item stays verifying.
-      pending: true,
-    });
-    insertVisualReview(db, {
-      questionId: question.id,
-      itemId: item.id,
-      checkId: input.checkId,
-      evidenceIds: input.evidenceIds,
-      headCommit: input.head,
-      now: input.now,
-      carried,
-    });
-    return true;
+  if (!linkAskAvailable(input.publicUrl) || current.sessionKey !== sessionId) {
+    postNote(
+      db,
+      sessionId,
+      current,
+      VISUAL_REVIEW_NEEDS_LINK,
+      `visual-review-needs-link:${item.id}:${input.head}`,
+      input.now,
+    );
+    return false;
   }
-  // Without a link a person can open, Linear asks with options as before.
-  const { question } = openVisualReview(db, {
-    // Asked beside the command checks and the review; the item stays verifying.
-    ask: (store, asker, ...rest) => ask(store, { ...asker, pending: true }, ...rest),
-    itemId: item.id,
+  const skipped = new Set(carried.map((entry) => entry.evidenceId));
+  const name = (id: string) => getEvidence(db, id)?.displayName ?? id;
+  const { question } = askWithLink(db, {
+    item: current,
     runId: input.runId,
-    sessionId,
+    kind: "screenshots",
+    head: input.head,
+    detail: visualReviewLinkDetail(
+      input.checkId,
+      input.evidenceIds.filter((id) => !skipped.has(id)).map(name),
+      carried.map((entry) => name(entry.evidenceId)),
+    ),
+    publicUrl: input.publicUrl,
+    now: input.now,
+    // Asked beside the command checks and the review; the item stays verifying.
+    pending: true,
+  });
+  insertVisualReview(db, {
+    questionId: question.id,
+    itemId: item.id,
     checkId: input.checkId,
     evidenceIds: input.evidenceIds,
     headCommit: input.head,
     now: input.now,
     carried,
-    shown: {
-      evidence,
-      ...(carried.length ? { carried: carried.map((entry) => entry.evidenceId) } : {}),
-    },
-  });
-  enqueueJobOnce(db, {
-    queue: JOB_KIND.visualReviewReminder,
-    jobKey: `visual-review-reminder:${question.id}`,
-    payload: { questionId: question.id },
-    runAt: input.now + VISUAL_REVIEW_REMINDER_MS,
-    now: input.now,
   });
   return true;
 }
+
+/** Why a localhost-only Paws leaves a human visual review unapproved. */
+export const VISUAL_REVIEW_NEEDS_LINK =
+  "Visual review needs a dashboard link a person can open, so the screens can be approved where they are in view. Set PAWS_PUBLIC_URL to an https address; a reply in Linear cannot approve screens.";
 
 /** Posts the one reminder while the review is still open and the task still waits on it. */
 export function remindVisualReview(db: Database, questionId: string, now: number): boolean {
@@ -333,7 +310,7 @@ export function remindVisualReview(db: Database, questionId: string, now: number
       sessionId: question.sessionId,
       questionId,
       body: VISUAL_REVIEW_REMINDER,
-      options: [...VISUAL_REVIEW_OPTIONS],
+      options: [],
     },
     now,
   });
@@ -368,15 +345,17 @@ export function postNote(
 }
 
 /**
- * Records the answer. Accept passes the check; changes, or Keep going after
- * the round limit, go back to the agent. Moves no state: the caller does.
+ * Records a Linear answer to a review question asked before the link ask.
+ * A reply in Linear never approves screens: every answer, "Accept" included,
+ * is a change request, and Keep going after the round limit goes back to the
+ * agent. Moves no state: the caller does.
  */
 export function recordVisualReviewOutcome(
   db: Database,
   question: StoredQuestion,
   review: StoredVisualReview,
   now: number,
-): "accepted" | "changes" | "asked" {
+): "changes" | "asked" {
   const answer = question.answer ?? "";
   const answeredBy = question.answeredBy ?? "";
   if (review.kind === "continue") {
@@ -390,16 +369,6 @@ export function recordVisualReviewOutcome(
     return "changes";
   }
   const parsed = parseVisualReviewAnswer(answer);
-  if (parsed.kind === "accept") {
-    const headCommit = review.headCommit ?? reviewedHead(db, question.itemId, review);
-    recordVisualReviewAnswer(db, question.id, {
-      outcome: "accepted",
-      answeredBy,
-      now,
-      ...(headCommit ? { headCommit } : {}),
-    });
-    return "accepted";
-  }
   recordVisualReviewAnswer(db, question.id, {
     outcome: "changes_requested",
     answeredBy,
@@ -603,10 +572,4 @@ export function visualReviewPullRequestNote(
       ].join("\n\n");
     })
     .join("\n\n");
-}
-
-function reviewedHead(db: Database, itemId: string, review: StoredVisualReview): string | null {
-  const shown = new Set(review.evidenceIds);
-  const rows = listEvidence(db, itemId).filter((row) => shown.has(row.id));
-  return rows.at(-1)?.headCommit ?? null;
 }

@@ -19,6 +19,7 @@ import {
   listEvidence,
   listJobs,
   listVisualReviewMarks,
+  listVisualReviews,
   listWorkItems,
   migrate,
   openDatabase,
@@ -41,7 +42,12 @@ import {
   createLinearFileTransfer,
   type AcceptedLinearEvent,
 } from "../src/linear";
-import { attachOrchestrator, VISUAL_REVIEW_REPLY_NOTE, type AgentLaunch } from "../src/loop";
+import {
+  attachOrchestrator,
+  VISUAL_REVIEW_NEEDS_LINK,
+  VISUAL_REVIEW_REPLY_NOTE,
+  type AgentLaunch,
+} from "../src/loop";
 import {
   findOpenQuestion,
   getQuestion,
@@ -50,10 +56,7 @@ import {
   rejectedEvidenceIds,
   visualReviewContinueQuestion,
   VISUAL_REVIEW_ANSWERERS,
-  VISUAL_REVIEW_DESCRIBE,
   VISUAL_REVIEW_ROUNDS,
-  VISUAL_REVIEW_QUESTION,
-  VISUAL_REVIEW_REMINDER,
   VISUAL_REVIEW_REMINDER_MS,
   visualReviewCarriedNote,
 } from "../src/questions";
@@ -65,6 +68,8 @@ import { workspaceAdmission } from "./fake-workspace";
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const ASSET = "https://uploads.linear.app/workspace/evidence";
+/** The one reminder the shared link ask posts after 24 hours. */
+const REMINDED = "**Still waiting for your decision on";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -94,7 +99,7 @@ function publishTwo(worktree: string, n: number): Step[] {
   return names.map((name) => ({ type: "publish_artifact", path: name, checkId: "visual-proof" }));
 }
 
-test("two screenshots published 10 s apart end the turn with one question that shows both", async () => {
+test("two screenshots published 10 s apart end the turn with one link ask that names both", async () => {
   const f = await pausedForReview();
   try {
     const item = listWorkItems(f.db)[0]!;
@@ -105,29 +110,25 @@ test("two screenshots published 10 s apart end the turn with one question that s
     const [first, second] = listEvidence(f.db, item.id);
     expect(second!.createdAt - first!.createdAt).toBeGreaterThanOrEqual(10_000);
     expect(f.lastPublication()).toMatch(
-      /^\[shot-2\.png\]\(<http:\/\/127\.0\.0\.1:8787\/evidence\/[^>]+>\)$/,
+      /^\[shot-2\.png\]\(<https:\/\/paws\.example\/evidence\/[^>]+>\)$/,
     );
 
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    expect(open.kind).toBe("link");
+    expect(getLinkAsk(f.db, open.id)).toMatchObject({
+      kind: "screenshots",
+      headCommit: item.checkpoint?.wipCommit,
+    });
     expect(f.tracker.questions).toHaveLength(1);
     const [question] = f.tracker.questions;
-    expect(question!.options).toEqual(["Accept", "Request changes"]);
-    expect(question!.body.startsWith(VISUAL_REVIEW_QUESTION)).toBe(true);
-    expect(question!.body).toContain(`![shot-1.png](<${ASSET}>)`);
-    expect(question!.body).toContain(`![shot-2.png](<${ASSET}>)`);
-    expect(f.uploads.sort()).toEqual(["shot-1.png", "shot-2.png"]);
-    expect(findOpenQuestion(f.db, "ses_1")?.body).toBe(VISUAL_REVIEW_QUESTION);
-    expect(f.log.filter((entry) => entry.body.includes("shot-"))).toEqual([
-      {
-        kind: "elicitation",
-        body: question!.body,
-        options: ["Accept", "Request changes"],
-      },
-    ]);
-    expect(f.log.at(-1)).toEqual({
-      kind: "elicitation",
-      body: question!.body,
-      options: ["Accept", "Request changes"],
-    });
+    // No answer buttons: the screens are approved on the item page, where they are in view.
+    expect(question!.options ?? []).toEqual([]);
+    expect(question!.body).toContain("2 changed screens for visual-proof: shot-1.png, shot-2.png.");
+    expect(question!.body).toContain(
+      "Decide in Paws: https://paws.example/status/issues/ENG-7#visual-review",
+    );
+    expect(question!.body).toContain("A reply here cannot approve the screens.");
+    expect(f.log.filter((entry) => entry.kind === "elicitation")).toHaveLength(1);
 
     const posted = f.log.length;
     for (const step of [60_000, 60 * 60_000, VISUAL_REVIEW_REMINDER_MS - 62 * 60_000]) {
@@ -141,7 +142,25 @@ test("two screenshots published 10 s apart end the turn with one question that s
   }
 }, 90_000);
 
-test("a reply from someone who can't approve gets a note and the task keeps waiting", async () => {
+test("a Paws without an https dashboard link leaves the check unapproved and asks nothing in Linear", async () => {
+  const f = await pausedForReview({ publicUrl: "http://127.0.0.1:8787" });
+  try {
+    await f.until(() => f.notes(VISUAL_REVIEW_NEEDS_LINK) === 1);
+    // Nothing in Linear can approve the screens: Closeout stays blocked on the check.
+    expect(listVisualReviews(f.db, listWorkItems(f.db)[0]!.id)).toEqual([]);
+    expect(f.tracker.questions.every((question) => !question.options?.length)).toBe(true);
+    expect(f.tracker.questions.map((question) => question.body.split("\n")[0])).toEqual([
+      "Closeout needs your help.",
+    ]);
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(listVisualReviews(f.db, listWorkItems(f.db)[0]!.id)).toEqual([]);
+    expect(f.github.opened).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
+test("a reply from someone who can't answer gets a note; the delegator's reply requests changes", async () => {
   const f = await pausedForReview();
   try {
     const open = findOpenQuestion(f.db, "ses_1")!;
@@ -156,25 +175,33 @@ test("a reply from someone who can't approve gets a note and the task keeps wait
       status: "answered",
       answeredBy: "delegator-1",
     });
+    expect(getVisualReview(f.db, open.id)).toMatchObject({
+      outcome: "changes_requested",
+      feedback: "Looks good",
+    });
     expect(f.notes(VISUAL_REVIEW_ANSWERERS)).toBe(1);
   } finally {
     await f.close();
   }
 }, 90_000);
 
-test("the project lead can answer the visual review", async () => {
+test("the project lead can approve on the page and nobody else can", async () => {
   const f = await pausedForReview();
   try {
     const open = findOpenQuestion(f.db, "ses_1")!;
-    await f.orchestrator.onLinearEvent(prompted("Accept", "lead-1"));
-    expect(getQuestion(f.db, open.id)).toMatchObject({ status: "answered", answeredBy: "lead-1" });
-    expect(f.notes(VISUAL_REVIEW_ANSWERERS)).toBe(0);
+    expect(await f.approve("someone-else")).toBe("forbidden");
+    expect(getVisualReview(f.db, open.id)?.outcome).toBeNull();
+    expect(await f.approve("lead-1")).toBe("answered");
+    expect(getVisualReview(f.db, open.id)).toMatchObject({
+      outcome: "accepted",
+      answeredBy: "lead-1",
+    });
   } finally {
     await f.close();
   }
 }, 90_000);
 
-test("the reminder is asked once after 24 hours with the buttons", async () => {
+test("the reminder is posted once after 24 hours, without buttons", async () => {
   const f = await pausedForReview();
   try {
     await f.tickAll();
@@ -191,11 +218,12 @@ test("the reminder is asked once after 24 hours with the buttons", async () => {
     f.advance(VISUAL_REVIEW_REMINDER_MS * 3);
     await f.tickAll();
     expect(f.reminders()).toBe(1);
-    expect(f.log.at(-1)).toEqual({
-      kind: "elicitation",
-      body: VISUAL_REVIEW_REMINDER,
-      options: ["Accept", "Request changes"],
-    });
+    const last = f.log.at(-1)!;
+    expect(last.kind).toBe("elicitation");
+    expect(last.body).toContain(
+      "Decide in Paws: https://paws.example/status/issues/ENG-7#visual-review",
+    );
+    expect(last).not.toHaveProperty("options");
     expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
     expect(findOpenQuestion(f.db, "ses_1")).not.toBeNull();
   } finally {
@@ -218,88 +246,14 @@ test("stopping the task ends the wait", async () => {
     f.advance(VISUAL_REVIEW_REMINDER_MS);
     await f.tickAll();
     expect(f.reminders()).toBe(0);
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:late"));
-    expect(getQuestion(f.db, open.id)?.answer).toBeNull();
-  } finally {
-    await f.close();
-  }
-}, 90_000);
-
-test("with a dashboard link the review is a link ask; Approve on the page opens the pull request", async () => {
-  const f = await pausedForReview({ publicUrl: "https://paws.example" });
-  try {
-    const open = findOpenQuestion(f.db, "ses_1")!;
-    const item = listWorkItems(f.db)[0]!;
-    const wip = item.checkpoint?.wipCommit;
-    expect(open.kind).toBe("link");
-    expect(getLinkAsk(f.db, open.id)).toMatchObject({ kind: "screenshots", headCommit: wip });
-    const asked = f.log.filter((entry) => entry.kind === "elicitation");
-    expect(asked).toHaveLength(1);
-    // No answer buttons: the decision is made on the item page.
-    expect(asked[0]).not.toHaveProperty("options");
-    expect((asked[0] as { body: string }).body).toContain(
-      `Decide in Paws: https://paws.example/status/issues/ENG-7#visual-review`,
-    );
-    putWorkspaceUser(f.db, {
-      id: "user-ada",
-      linearUserId: "delegator-1",
-      name: "Ada Reviewer",
-      email: "ada@example.invalid",
-    });
-    const workspaceId = f.db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
-
-    expect(
-      await f.orchestrator.decideLinkAsk({
-        questionId: open.id,
-        decision: "approve",
-        note: null,
-        answeredBy: "delegator-1",
-        actor: { workspaceId, userId: "user-ada", name: "Ada Reviewer" },
-      }),
-    ).toBe("answered");
-    expect(getVisualReview(f.db, open.id)).toMatchObject({
-      outcome: "accepted",
-      answeredBy: "delegator-1",
-      headCommit: wip,
-      evidenceIds: listEvidence(f.db, item.id).map((row) => row.id),
-    });
-
-    await f.driveUntil(() => f.github.opened.length > 0);
-    const body = f.github.opened[0]!.body;
-    expect(body).toContain(
-      `Visual review accepted by Ada Reviewer in Paws for ${wip!.slice(0, 7)}.`,
-    );
-    // Approve completes the evaluation of the reviewed head: no agent turn.
-    expect(f.prompts).toHaveLength(1);
-  } finally {
-    await f.close();
-  }
-}, 90_000);
-
-test("with a dashboard link, Accept replied in Linear requests changes and never approves", async () => {
-  const f = await pausedForReview({ publicUrl: "https://paws.example" });
-  try {
-    const open = findOpenQuestion(f.db, "ses_1")!;
-    expect(open.kind).toBe("link");
-    // Someone other than the delegator or the lead cannot even request changes.
-    await f.orchestrator.onLinearEvent(prompted("Accept", "stranger", "activity:stranger"));
+    expect(await f.approve("delegator-1", open.id)).toBe("rejected");
     expect(getVisualReview(f.db, open.id)?.outcome).toBeNull();
-    expect(f.notes(VISUAL_REVIEW_ANSWERERS)).toBe(1);
-
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
-    expect(getVisualReview(f.db, open.id)).toMatchObject({
-      outcome: "changes_requested",
-      feedback: "Accept",
-    });
-    expect(getLinkAsk(f.db, open.id)?.closedReason).toBe("guidance");
-    await f.until(() => f.notes(VISUAL_REVIEW_REPLY_NOTE) === 1);
-    expect(f.github.opened).toHaveLength(0);
   } finally {
     await f.close();
   }
 }, 90_000);
 
-test("Accept records the approval, passes the check and opens the pull request", async () => {
+test("Approve on the page records the approval, passes the check and opens the pull request", async () => {
   const f = await pausedForReview();
   try {
     const open = findOpenQuestion(f.db, "ses_1")!;
@@ -313,7 +267,7 @@ test("Accept records the approval, passes the check and opens the pull request",
       email: "ada@example.invalid",
     });
 
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     expect(getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "accepted",
       answeredBy: "delegator-1",
@@ -326,11 +280,11 @@ test("Accept records the approval, passes the check and opens the pull request",
     expect(f.github.opened).toHaveLength(1);
     const body = f.github.opened[0]!.body;
     expect(body).toContain(
-      "Visual review accepted by Ada Reviewer in [Linear](<https://linear.app/issue/ENG-7>).",
+      `Visual review accepted by Ada Reviewer in Paws for ${wip!.slice(0, 7)}.`,
     );
     expect(body).toContain(`![shot-1.png](<${ASSET}>)`);
     expect(body).toContain(`![shot-2.png](<${ASSET}>)`);
-    // Accept completes the evaluation of the reviewed head: no agent turn.
+    // Approve completes the evaluation of the reviewed head: no agent turn.
     expect(f.prompts).toHaveLength(1);
     expect(f.tracker.questions).toHaveLength(1);
     expect(getWorkItem(f.db, item.id)?.state).not.toBe("awaiting_input");
@@ -339,15 +293,28 @@ test("Accept records the approval, passes the check and opens the pull request",
   }
 }, 120_000);
 
-test("Request changes resumes the agent with the feedback, and new screenshots ask again", async () => {
+test("Accept replied in Linear requests changes and never approves", async () => {
+  const f = await pausedForReview();
+  try {
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(getVisualReview(f.db, open.id)).toMatchObject({
+      outcome: "changes_requested",
+      feedback: "Accept",
+    });
+    expect(getLinkAsk(f.db, open.id)?.closedReason).toBe("guidance");
+    await f.until(() => f.notes(VISUAL_REVIEW_REPLY_NOTE) === 1);
+    expect(f.github.opened).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
+test("a reply in Linear requests changes, and new screenshots ask again", async () => {
   const f = await pausedForReview();
   try {
     const first = findOpenQuestion(f.db, "ses_1")!;
     const item = listWorkItems(f.db)[0]!;
-
-    await f.orchestrator.onLinearEvent(prompted("Request changes", "delegator-1"));
-    expect(getQuestion(f.db, first.id)?.status).toBe("open");
-    expect(f.notes(VISUAL_REVIEW_DESCRIBE)).toBe(1);
 
     await f.orchestrator.onLinearEvent(
       prompted("Make the hint under Model shorter", "delegator-1", "activity:changes"),
@@ -405,13 +372,21 @@ test("Request changes from the run page hands the marked screenshot and note to 
     const request = { questionId: open.id, note: "Move the save button left", marks: [mark] };
 
     expect(
-      await f.orchestrator.requestVisualReviewChanges({ ...request, answeredBy: "someone-else" }),
+      await f.orchestrator.requestVisualReviewChanges({
+        ...request,
+        answeredBy: "someone-else",
+        actor: f.actor("someone-else"),
+      }),
     ).toBe("forbidden");
     expect(getQuestion(f.db, open.id)?.status).toBe("open");
     expect(listVisualReviewMarks(f.db, open.id)).toEqual([]);
 
     expect(
-      await f.orchestrator.requestVisualReviewChanges({ ...request, answeredBy: "delegator-1" }),
+      await f.orchestrator.requestVisualReviewChanges({
+        ...request,
+        answeredBy: "delegator-1",
+        actor: f.actor("delegator-1"),
+      }),
     ).toBe("answered");
     expect(getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "changes_requested",
@@ -420,7 +395,11 @@ test("Request changes from the run page hands the marked screenshot and note to 
     });
     expect(listVisualReviewMarks(f.db, open.id)).toEqual([mark]);
     expect(
-      await f.orchestrator.requestVisualReviewChanges({ ...request, answeredBy: "delegator-1" }),
+      await f.orchestrator.requestVisualReviewChanges({
+        ...request,
+        answeredBy: "delegator-1",
+        actor: f.actor("delegator-1"),
+      }),
     ).toBe("rejected");
 
     await f.driveUntil(() => f.tracker.questions.length === 2);
@@ -475,7 +454,7 @@ test("after three rounds of changes Paws asks whether to keep going instead of r
     await f.driveUntil(() => f.tracker.questions.length === VISUAL_REVIEW_ROUNDS + 2);
     expect(f.prompts).toHaveLength(VISUAL_REVIEW_ROUNDS + 1);
     expect(f.prompts.at(-1)).toContain(`Change ${VISUAL_REVIEW_ROUNDS}`);
-    expect(f.tracker.questions.at(-1)!.options).toEqual(["Accept", "Request changes"]);
+    expect(f.tracker.questions.at(-1)!.body).toContain("Decide in Paws:");
   } finally {
     await f.close();
   }
@@ -495,7 +474,7 @@ test("a change under the check's paths after acceptance asks again", async () =>
   });
   try {
     const first = findOpenQuestion(f.db, "ses_1")!;
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     await f.orchestrator.onLinearEvent(followUp());
     await f.driveUntil(() => f.tracker.questions.length === 2);
 
@@ -506,7 +485,7 @@ test("a change under the check's paths after acceptance asks again", async () =>
     expect(f.tracker.questions[1]!.body).toContain("shot-3.png");
     expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
 
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:accept-2"));
+    expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.github.opened.length > 0);
     expect(f.github.opened).toHaveLength(1);
   } finally {
@@ -521,7 +500,7 @@ test("a review accepted for some of the files asks again about the rest instead 
     const item = listWorkItems(f.db)[0]!;
     coverOnlyFirstShot(f.db, item.id, first.id);
 
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.tracker.questions.length === 2);
 
     expectReviewOfSecondShot(f.tracker.questions[1]!);
@@ -530,7 +509,7 @@ test("a review accepted for some of the files asks again about the rest instead 
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(f.github.opened).toHaveLength(0);
 
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:accept-2"));
+    expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.github.opened.length > 0);
     expect(f.tracker.questions).toHaveLength(2);
   } finally {
@@ -544,7 +523,7 @@ test("retry on a task Closeout blocked for an uncovered file asks a new review r
     const first = findOpenQuestion(f.db, "ses_1")!;
     const item = listWorkItems(f.db)[0]!;
     coverOnlyFirstShot(f.db, item.id, first.id);
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     f.db.run("DELETE FROM job WHERE queue = ? AND finished_at IS NULL", [JOB_KIND.resume]);
     const blocked = openQuestion(f.db, {
       itemId: item.id,
@@ -586,7 +565,7 @@ test("an accepted review at an unchanged head stays accepted when the checkpoint
     expect(head).not.toBe(base);
     saveCheckpoint(f.db, item.id, { phase: "awaiting_input", baseSha: base, wipCommit: base });
 
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     expect(getVisualReview(f.db, open.id)?.headCommit).toBe(head);
 
     await f.driveUntil(() => f.github.opened.length > 0 || f.tracker.questions.length > 1);
@@ -627,10 +606,9 @@ test("4 screens published 3 times ask one review of the 4 latest files, and Acce
     const open = findOpenQuestion(f.db, "ses_1")!;
     expect(getVisualReview(f.db, open.id)?.evidenceIds).toEqual(latest);
     const [question] = f.tracker.questions;
-    expect(question!.body.match(/!\[/g)).toHaveLength(4);
-    for (const name of SCREENS) expect(question!.body).toContain(`![${name}](<${ASSET}>)`);
+    expect(question!.body).toContain(`4 changed screens for visual-proof: ${SCREENS.join(", ")}.`);
 
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.github.opened.length > 0 || f.tracker.questions.length > 1);
     expect(f.tracker.questions).toHaveLength(1);
     expect(f.github.opened).toHaveLength(1);
@@ -686,7 +664,7 @@ async function republishedAfterAcceptance(again: Record<string, Buffer>) {
     email: "ada@example.invalid",
   });
   const first = findOpenQuestion(f.db, "ses_1")!;
-  await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+  expect(await f.approve()).toBe("answered");
   await f.orchestrator.onLinearEvent(followUp());
   await f.driveUntil(
     () => f.prompts.length === 3 && f.github.opened.length + f.tracker.questions.length > 1,
@@ -743,7 +721,7 @@ test("republished screenshots with identical bytes pass visual-proof with no que
   }
 }, 180_000);
 
-test("a screen within tolerance carries over, and a visibly changed one is asked beside its approved version", async () => {
+test("a screen within tolerance carries over, and a visibly changed one is asked", async () => {
   const { f, first } = await republishedAfterAcceptance({
     // A clock in the corner moved: 80 of 120,000 pixels.
     "Settings desktop": screenshotPng(400, 300, [
@@ -759,13 +737,8 @@ test("a screen within tolerance carries over, and a visibly changed one is asked
   try {
     expect(f.tracker.questions).toHaveLength(2);
     const question = f.tracker.questions[1]!;
-    expect(question.options).toEqual(["Accept", "Request changes"]);
     expect(question.body).toContain(
-      `![Settings 390, approved](<${ASSET}>) ![Settings 390, new](<${ASSET}>)`,
-    );
-    expect(question.body).not.toContain("![Settings desktop");
-    expect(question.body).toContain(
-      "Unchanged since your approval, so not asked again: Settings desktop.",
+      "1 changed screen for visual-proof: Settings 390. Unchanged since your approval, so not asked again: Settings desktop.",
     );
     const item = listWorkItems(f.db)[0]!;
     const [desktop, narrow] = listEvidence(f.db, item.id).slice(2);
@@ -783,7 +756,7 @@ test("a screen within tolerance carries over, and a visibly changed one is asked
       },
     ]);
 
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:accept-2"));
+    expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.github.opened.length > 0);
     expect(f.tracker.questions).toHaveLength(2);
     const body = f.github.opened[0]!.body;
@@ -803,11 +776,8 @@ test("a screen with a new name is always asked", async () => {
   try {
     expect(f.tracker.questions).toHaveLength(2);
     const question = f.tracker.questions[1]!;
-    expect(question.body).toContain(`![Settings dark](<${ASSET}>)`);
-    expect(question.body).not.toContain("approved](");
-    expect(question.body).not.toContain("![Settings desktop");
     expect(question.body).toContain(
-      "Unchanged since your approval, so not asked again: Settings desktop.",
+      "1 changed screen for visual-proof: Settings dark. Unchanged since your approval, so not asked again: Settings desktop.",
     );
     expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
     expect(f.github.opened).toHaveLength(0);
@@ -873,9 +843,8 @@ test("the visual review waits beside the commands and the independent review of 
     // Both are in flight: the question is open while Closeout runs on the same head.
     expect(item.state).toBe("verifying");
     const open = findOpenQuestion(f.db, "ses_1")!;
-    expect(open.kind).toBe("visual-review");
+    expect(open.kind).toBe("link");
     expect(getVisualReview(f.db, open.id)?.headCommit).toBe(gate.runs[0]!.headSha);
-    expect(f.tracker.questions[0]!.options).toEqual(["Accept", "Request changes"]);
 
     gate.next = pendingHuman(gate.runs[0]!.headSha);
     release();
@@ -888,7 +857,7 @@ test("the visual review waits beside the commands and the independent review of 
     // The gate reads approvals: once the person accepts, later runs pass the check.
     gate.decided = ACCEPTED;
     gate.next = ACCEPTED;
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => gate.decisions.length > 0);
     // Accept completed the evaluation from the finished checks: no second run, no agent turn.
     expect(gate.runs).toHaveLength(1);
@@ -906,7 +875,7 @@ test("Accept while the commands still run passes the check, and the evaluation c
   const f = await pausedForReview({ gate });
   try {
     await f.until(() => f.tracker.questions.length === 1 && gate.runs.length === 1);
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     const item = listWorkItems(f.db)[0]!;
     expect(item.state).toBe("verifying");
     expect(gate.decisions).toHaveLength(0);
@@ -1030,7 +999,7 @@ test("a rebase that keeps the patch-id keeps the pending visual review open for 
     // The gate reads approvals: once the person accepts, later runs pass the check.
     gate.decided = ACCEPTED;
     gate.next = ACCEPTED;
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.github.opened.length > 0);
     expect(getVisualReview(f.db, open.id)).toMatchObject({
       outcome: "accepted",
@@ -1060,7 +1029,7 @@ test("a rebase that keeps the patch-id carries an accepted visual review to the 
     const open = findOpenQuestion(f.db, "ses_1")!;
     applyWorkItemEvent(f.db, item.id, "answer_received");
     applyWorkItemEvent(f.db, item.id, "turn_ended");
-    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(await f.approve()).toBe("answered");
     expect(getVisualReview(f.db, open.id)?.outcome).toBe("accepted");
     await rebaseOntoNewMain(f, worktree);
     const rebased = await headOf(worktree);
@@ -1126,11 +1095,10 @@ function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): v
 
 /** shot-1.png carries its acceptance over; only shot-2.png is asked. */
 function expectReviewOfSecondShot(question: { body: string; options?: readonly unknown[] }): void {
-  expect(question.options).toEqual(["Accept", "Request changes"]);
-  expect(question.body.startsWith(VISUAL_REVIEW_QUESTION)).toBe(true);
-  expect(question.body).not.toContain(`![shot-1.png]`);
-  expect(question.body).toContain(`![shot-2.png](<${ASSET}>)`);
-  expect(question.body).toContain("Unchanged since your approval, so not asked again: shot-1.png.");
+  expect(question.options ?? []).toEqual([]);
+  expect(question.body).toContain(
+    "1 changed screen for visual-proof: shot-2.png. Unchanged since your approval, so not asked again: shot-1.png.",
+  );
 }
 
 async function pausedForReview(
@@ -1139,10 +1107,7 @@ async function pausedForReview(
     implement?: (worktree: string, n: number, prompt: string) => Step[];
     /** The Closeout fake in place of the real gate. A held run returns before the turn ends. */
     gate?: FakeCloseoutGate;
-    /**
-     * The dashboard link. Localhost by default, which Linear asks with options;
-     * an https link asks with a link and is decided on the item page.
-     */
+    /** The dashboard link the link ask points at. A localhost Paws cannot ask. */
     publicUrl?: string;
   } = {},
 ) {
@@ -1256,7 +1221,7 @@ async function pausedForReview(
           return saved;
         },
       },
-      publicUrl: options.publicUrl ?? "http://127.0.0.1:8787",
+      publicUrl: options.publicUrl ?? "https://paws.example",
       root: evidenceRoot,
     },
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
@@ -1330,8 +1295,33 @@ async function pausedForReview(
       }
     },
     reminders() {
-      return tracker.questions.filter((question) => question.body === VISUAL_REVIEW_REMINDER)
-        .length;
+      return tracker.questions.filter((question) => question.body.startsWith(REMINDED)).length;
+    },
+    /** The signed-in Paws account of Linear user `by`, for the Audit history row. */
+    actor(by: string) {
+      const userId =
+        db
+          .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?")
+          .get(by)?.id ??
+        putWorkspaceUser(db, {
+          id: `user-${by}`,
+          linearUserId: by,
+          name: by,
+          email: `${by}@example.invalid`,
+        });
+      const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
+      return { workspaceId, userId, name: by };
+    },
+    /** Approve on the item page: the only way a person approves the screens. */
+    async approve(by = "delegator-1", questionId = findOpenQuestion(db, "ses_1")?.id) {
+      if (questionId === undefined) throw new Error("No visual review is waiting");
+      return orchestrator.decideLinkAsk({
+        questionId,
+        decision: "approve",
+        note: null,
+        answeredBy: by,
+        actor: this.actor(by),
+      });
     },
     notes(body: string) {
       return tracker.progress.filter((update) => update.body === body).length;
