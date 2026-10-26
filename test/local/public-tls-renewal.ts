@@ -11,6 +11,7 @@ import {
   getWorkItem,
   insertQueuedItem,
   openDatabase,
+  migrate,
 } from "../../src/db";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "../../src/deployment";
 import { startServer } from "../../src/server";
@@ -166,8 +167,11 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     ]);
     return exit;
   }
+  const healthDb = openDatabase(":memory:");
+  migrate(healthDb);
   function listen(port = 0) {
     return startServer({
+      db: healthDb,
       hostname: "127.0.0.1",
       port,
       tls: validatePublicTls(env),
@@ -272,6 +276,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     );
   } finally {
     await server.stop(true);
+    healthDb.close();
   }
   const source = join(root, "source");
   mkdirSync(source);

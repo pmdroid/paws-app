@@ -96,6 +96,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   web: ["db", "core"],
   evidence: ["db"],
   server: [
+    "runner-placement",
+    "runner-protocol",
     "evidence",
     "slack",
     "config",
