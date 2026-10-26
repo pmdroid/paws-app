@@ -44,7 +44,6 @@ export type {
   Delegation,
   DelegationId,
   ItemId,
-  RiskTier,
   Run,
   RunId,
   RunKind,
