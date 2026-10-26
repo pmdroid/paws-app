@@ -89,7 +89,6 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       route: { view: "runs", id: review.id },
       phase: "ready",
       snapshot: parsed.snapshot,
-      via: "engine",
       error: null,
       engineUrl: null,
     });

@@ -1,7 +1,8 @@
+import { statusFixture } from "../../src/web/test/fixtures";
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { demoStatus, handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/web";
 
 const directory = resolve(process.argv[2] ?? "evidence-versions-evidence");
 await mkdir(directory, { recursive: true });
@@ -18,7 +19,7 @@ const PUBLISHED = [
   "2026-10-23T17:56:00.000Z",
 ];
 
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 snapshot.source = "live";
 const run = snapshot.runs.find((entry) => entry.id === "r-102")!;
 snapshot.evidence = PUBLISHED.flatMap((publishedAt, copy) =>

@@ -1,3 +1,4 @@
+import { statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import {
   parseStatusSnapshot,
@@ -7,7 +8,6 @@ import {
   type StatusMergeSettings,
   type StatusSnapshot,
 } from "../contract";
-import { demoStatus } from "../demo";
 import { mergeQueueCount } from "./merge-queue";
 import { render } from "./render";
 import { matchRoute, routePath } from "./route";
@@ -60,7 +60,7 @@ function entry(
 
 /** acme/platform queues three issues; acme/web merges each when green. */
 function twoRepositories(): StatusSnapshot {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   snapshot.generatedAt = NOW;
   snapshot.items = [
     item("ENG-101", "Audit log model", "acme/platform", 412),
@@ -125,7 +125,6 @@ function page(snapshot: StatusSnapshot): string {
     route: { view: "mergeQueue" },
     phase: "ready",
     snapshot,
-    via: "bundled",
     error: null,
     engineUrl: null,
   }).content;

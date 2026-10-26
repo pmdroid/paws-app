@@ -1,14 +1,15 @@
+import { statusFixture } from "../src/web/test/fixtures";
 // Runners → Add a host for a workspace member: the button, the dialog and its one command.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-runner-add-host-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { demoStatus, handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/web";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 snapshot.source = "live";
 const token = "Zq3_fixture-token-0123456789abcdefghijklmnop";
 const minted: unknown[] = [];

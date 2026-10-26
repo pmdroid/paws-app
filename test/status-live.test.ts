@@ -220,7 +220,7 @@ test("fake e2e rows show up on /api/status as live work", async () => {
       { db, env: {} },
     );
     const demo = (await hidden?.json()) as { source: string };
-    expect(demo.source).toBe("demo");
+    expect(demo.source).toBe("live");
   } finally {
     db.close();
   }
@@ -262,7 +262,6 @@ test("an empty live snapshot asks the operator to delegate a Linear issue", asyn
       route: { view: "overview" },
       phase: "ready",
       snapshot: parsed.snapshot,
-      via: "engine",
       error: null,
       engineUrl: "http://127.0.0.1:8787",
     });

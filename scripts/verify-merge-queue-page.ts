@@ -1,15 +1,16 @@
+import { statusFixture } from "../src/web/test/fixtures";
 // The Merge queue page with two repositories, against the real status handler.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-merge-queue-page.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { demoStatus, handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/web";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 snapshot.source = "live";
 const at = (minutes: number) =>
   new Date(Date.parse(snapshot.generatedAt) - minutes * 60_000).toISOString();

@@ -1,15 +1,16 @@
+import { statusFixture } from "../../src/web/test/fixtures";
 // Captures the dashboard navigation without a Projects entry, at desktop and 390 px, and checks
 // that /status/projects answers 404, for visual proof.
 // Usage: bun run build:status && bun --no-env-file test/local/projects-removed-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { demoStatus, handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/web";
 
 const directory = resolve(process.argv[2] ?? "projects-removed-evidence");
 await mkdir(directory, { recursive: true });
 
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 snapshot.source = "live";
 
 const server = Bun.serve({
