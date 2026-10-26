@@ -65,7 +65,10 @@ export type PlacementRequest = {
   profile?: PlacementProfile;
   role: "implementer" | "reviewer";
   purpose: PlacementPurpose;
+  /** Failed hosts to avoid for new placement; an online pin retries a fresh session there. */
   excludeRunnerIds?: readonly string[];
+  /** Runner assigned to this run. Only an unavailable host permits moving the run. */
+  pinnedRunnerId?: string;
   /** The runner holding the item's last agent session, for implementer work. */
   session?: { runnerId: string };
   /** Slots the caller holds per runner for runs it placed but has not assigned yet. */
