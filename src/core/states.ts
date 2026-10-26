@@ -90,24 +90,26 @@ export function isTerminalWorkItemState(state: WorkItemState): state is Terminal
   return state === "completed" || state === "merged" || state === "cancelled";
 }
 
+/** Managed code work releases its blockers only with recorded merge evidence. */
 export function isBlockerSatisfied(blocker: {
   state: WorkItemState;
   mode: TaskMode | null;
+  mergeSha: string | null;
 }): boolean {
   return (
-    blocker.state === "merged" ||
+    (blocker.state === "merged" && !!blocker.mergeSha) ||
     (blocker.state === "completed" && (blocker.mode === "answer" || blocker.mode === "artifact"))
   );
 }
 
 export function holdsExecution(row: {
   state: WorkItemState;
-  liveRun: boolean;
-  liveJob: boolean;
+  liveRun: boolean | number;
+  liveJob: boolean | number;
 }): boolean {
   return (
-    row.liveRun ||
-    row.liveJob ||
+    !!row.liveRun ||
+    !!row.liveJob ||
     row.state === "running" ||
     row.state === "verifying" ||
     row.state === "recovering"

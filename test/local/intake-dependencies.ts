@@ -1,3 +1,4 @@
+import { confirmFakeMerge } from "../fake-workspace";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -122,6 +123,7 @@ export async function probeDependencySnapshots(
       ["completed", "artifact", "started", true],
       ["completed", "artifact", "canceled", false],
     ] as const;
+    confirmFakeMerge(db, ids.get("a")!);
     for (const [state, mode, linearState, expected] of cases) {
       db.run("UPDATE work_item SET state=? WHERE id=?", [state, ids.get("a")!]);
       db.run("UPDATE work_item_task SET mode=? WHERE item_id=?", [mode, ids.get("a")!]);

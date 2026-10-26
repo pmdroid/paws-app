@@ -1,3 +1,4 @@
+import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Database } from "bun:sqlite";
@@ -95,6 +96,8 @@ test("sync stores internal and external edges in task_block and readiness matche
     expect(readyIds()).not.toContain(ids.get("b")!);
     expect(readyIds()).toContain(ids.get("a")!);
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [ids.get("a")!]);
+    expect(readyIds()).not.toContain(ids.get("b")!);
+    confirmFakeMerge(db, ids.get("a")!);
     expect(readyIds()).toContain(ids.get("b")!);
     lifecycle.issues.get("outside")!.stateType = "started";
     await refresh();

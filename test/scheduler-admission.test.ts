@@ -1,3 +1,4 @@
+import { confirmFakeMerge } from "./fake-workspace";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import {
@@ -165,6 +166,7 @@ test("a task_block dependency is admitted only after its blocker item is merged"
     assert(blocker);
     assert(blocked);
     assert.deepEqual(workspaceDispatch(db, { now: 1000 }), [blocker]);
+    confirmFakeMerge(db, blocker);
     db.run("UPDATE work_item SET state='merged' WHERE id=?", [blocker]);
     assert.deepEqual(workspaceDispatch(db, { now: 1001 }), [blocked]);
   } finally {
