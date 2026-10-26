@@ -12,14 +12,12 @@ const RETIRED_STATES: ReadonlySet<WorkItemState> = new Set([
   "completed",
   "cancelled",
   "failed",
-  "exhausted",
 ]);
 
 const IDLE_STATES: ReadonlySet<WorkItemState> = new Set([
   ...RETIRED_STATES,
   "paused",
   "awaiting_input",
-  "awaiting_signoff",
   "manual",
 ]);
 

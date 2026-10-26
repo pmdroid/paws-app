@@ -193,9 +193,9 @@ export function workItemForSession(
       `SELECT id, delegation_id, state FROM work_item
        WHERE session_key = ?
        ORDER BY CASE
-         WHEN state IN ('running','verifying','recovering','awaiting_input','awaiting_signoff','paused','merge_queue') THEN 0
+         WHEN state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue') THEN 0
          WHEN state IN ('queued','planning') THEN 1
-         WHEN state IN ('failed','exhausted','manual') THEN 2
+         WHEN state IN ('failed','manual') THEN 2
          ELSE 3 END,
                 created_at DESC, position DESC, id DESC
        LIMIT 1`,

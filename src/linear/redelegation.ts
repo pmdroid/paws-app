@@ -5,7 +5,7 @@ import type { LinearIssueOwnership } from "./issue-lifecycle";
 
 export const REDELEGATION_CHECK_DELAY_MS = 60_000;
 const NEW_SESSION_MARGIN_MS = 60_000;
-const CLOSED_STATES = "'merged','completed','cancelled','failed','exhausted'";
+const CLOSED_STATES = "'merged','completed','cancelled','failed'";
 
 export async function checkRedelegation(
   options: {

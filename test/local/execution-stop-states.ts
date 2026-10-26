@@ -298,13 +298,6 @@ export async function probeExecutionStopStates(root: string) {
       ]);
       if (!["running", "verifying", "awaiting_input"].includes(state))
         db.run("UPDATE run SET status='ended' WHERE id=?", [fixture.runId]);
-      if (state === "awaiting_signoff")
-        openQuestion(db, {
-          itemId: "controlled",
-          runId: fixture.runId,
-          sessionId: "session-controlled",
-          body: "Approve the verified evidence?",
-        });
       if (state === "running" || state === "awaiting_input" || state === "verifying")
         remote = await remoteFixture(fixture, directory, state);
       const options: OrchestratorOptions = {
@@ -368,7 +361,7 @@ export async function probeExecutionStopStates(root: string) {
           "SELECT id FROM question WHERE item_id='controlled' AND cancelled_at IS NULL",
         )
         .all();
-      if (state === "awaiting_input" || state === "awaiting_signoff")
+      if (state === "awaiting_input")
         assert(initialQuestions.length > 0, "The waiting state must own its canonical question");
       let returned = false;
       remote?.beforeAck(() =>

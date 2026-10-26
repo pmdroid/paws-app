@@ -264,7 +264,7 @@ async function scenario(
   const interrupt = () => {
     interrupted = true;
     for (const item of listWorkItemsByStates(db, WORK_ITEM_STATES)) {
-      if (["merged", "cancelled", "failed", "exhausted"].includes(item.state)) continue;
+      if (["merged", "cancelled", "failed"].includes(item.state)) continue;
       submitCommand(db, orchestrator.bus, {
         type: "stop",
         itemId: item.id,
@@ -353,7 +353,7 @@ async function scenario(
       if (interrupted) break;
       const items = listWorkItemsByStates(db, WORK_ITEM_STATES);
       if (
-        items.some((item) => ["failed", "exhausted"].includes(item.state)) ||
+        items.some((item) => ["failed"].includes(item.state)) ||
         (name !== "happy" && items.some((item) => item.state === "awaiting_input") && answered) ||
         items.every((item) => item.state === "merged")
       )

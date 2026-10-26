@@ -14,11 +14,9 @@ const ITEM_LABEL: Record<ItemState, string> = {
   running: "Running",
   awaiting_input: "Awaiting input",
   verifying: "Verifying",
-  signoff: "Needs sign-off",
   merge_queue: "In merge queue",
   merged: "Merged",
   completed: "Completed",
-  exhausted: "Exhausted",
   stopped: "Stopped",
   needs_human: "Needs a person",
 };
@@ -104,7 +102,7 @@ export function taskPhase(
       detail: "Closeout is blocked and needs a person. The item is not complete.",
     };
   }
-  if (closeoutDecision === "exhausted" || itemState === "exhausted") {
+  if (closeoutDecision === "exhausted") {
     return {
       current: 1,
       detail: "Closeout stopped after its retry budget. The item is not complete.",
@@ -117,12 +115,6 @@ export function taskPhase(
     return {
       current: 2,
       detail: "Closeout accepted. Waiting to merge. The item is not complete.",
-    };
-  }
-  if (itemState === "signoff") {
-    return {
-      current: 1,
-      detail: "Closeout accepted this high-risk change. A person still has to sign off.",
     };
   }
   if (itemState === "needs_human" || itemState === "stopped" || runState === "stopped") {

@@ -121,9 +121,7 @@ const WORK_ITEM_STATES = [
   "awaiting_input",
   "recovering",
   "verifying",
-  "exhausted",
   "failed",
-  "awaiting_signoff",
   "merge_queue",
   "manual",
   "merged",
@@ -1124,11 +1122,8 @@ function impliedDecision(state: WorkItemRecord["state"]): VerdictDecision | null
   switch (state) {
     case "verifying":
       return "running";
-    case "exhausted":
-      return "exhausted";
     case "merge_queue":
     case "merged":
-    case "awaiting_signoff":
       return "accepted";
     default:
       return null;
@@ -1506,16 +1501,12 @@ function itemState(state: WorkItemRecord["state"]): ItemState {
       return "awaiting_input";
     case "verifying":
       return "verifying";
-    case "awaiting_signoff":
-      return "signoff";
     case "merge_queue":
       return "merge_queue";
     case "merged":
       return "merged";
     case "completed":
       return "completed";
-    case "exhausted":
-      return "exhausted";
     case "paused":
     case "cancelled":
       return "stopped";
@@ -1535,9 +1526,7 @@ function runState(record: WorkItemRecord, status: string): RunState {
     status === "ended" ||
     record.state === "completed" ||
     record.state === "merged" ||
-    record.state === "exhausted" ||
     record.state === "merge_queue" ||
-    record.state === "awaiting_signoff" ||
     record.state === "manual"
   ) {
     return "done";

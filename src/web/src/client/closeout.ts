@@ -148,7 +148,7 @@ export function renderCloseoutChecks(
       : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on attempt ${shown} of ${verdict.maxAttempts}${inRound}`;
   const head = attempt.headSha ? ` on head ${esc(attempt.headSha.slice(0, 7))}` : "";
   const description = accepted
-    ? `All ${attempt.checks.length} checks passed${head}.${pr && itemState === "merge_queue" ? ` Pull request <a href="${esc(pr.url)}">#${pr.number}</a> is waiting to merge.` : itemState === "merged" ? " This change has merged." : itemState === "signoff" ? " Waiting for human sign-off." : ""}`
+    ? `All ${attempt.checks.length} checks passed${head}.${pr && itemState === "merge_queue" ? ` Pull request <a href="${esc(pr.url)}">#${pr.number}</a> is waiting to merge.` : itemState === "merged" ? " This change has merged." : ""}`
     : `${esc(
         attempt.checks
           .filter((check) => ["failed", "blocked", "exhausted"].includes(check.state))

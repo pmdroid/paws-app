@@ -58,7 +58,7 @@ describe("status views", () => {
       const run = snapshot.runs.find((entry) => entry.itemId === item?.id);
       if (!verdict || !item || !run) throw new Error("missing fixture");
       verdict.decision = decision;
-      item.state = decision === "blocked" ? "needs_human" : "exhausted";
+      item.state = "awaiting_input";
       run.state = "verifying";
       const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
       expect(html).toContain("<h2>Closeout</h2>");
@@ -113,14 +113,14 @@ describe("status views", () => {
     expect(view.content.match(/Retention policy enforcement job/g)).toHaveLength(1);
   });
 
-  test("overview includes sign-off and input holds without a question and excludes blocked or paused work", () => {
+  test("overview includes input holds without a question and excludes blocked or paused work", () => {
     const snapshot = statusFixture();
     snapshot.questions = [];
     snapshot.verdicts = [];
-    snapshot.items[0]!.state = "signoff";
+    snapshot.items[0]!.state = "awaiting_input";
     snapshot.items[2]!.blockers = [snapshot.items[0]!.id];
     const html = render(model({ snapshot })).content;
-    expect(html).toContain("Review sign-off");
+    expect(html).toContain("Review issue");
     expect(html).toContain("Waiting for your input.");
     expect(html).toContain("0 working");
     expect(html).not.toContain('href="/runs/r-102"');
