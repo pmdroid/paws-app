@@ -11,6 +11,26 @@ export { createFakeQuestionChannel } from "./fake";
 export type { FakeQuestionChannel } from "./fake";
 export { elicitationBody, handoffNote } from "./note";
 export {
+  LINK_ASK_ACTIONS,
+  LINK_ASK_ANCHORS,
+  LINK_ASK_REMINDER_MS,
+  LINK_ASK_REPLY,
+  linkAskBody,
+  linkAskDecidedNote,
+  linkAskHandoff,
+  linkAskReminderBody,
+  linkAskTitle,
+  openLinkAsk,
+  removeLinkAskUrl,
+  shortCommit,
+} from "./link-ask";
+export {
+  handleLinkAskAnswer,
+  LINK_ASK_ANSWER_PATH,
+  type LinkAskAnswer,
+  type LinkAskAnswerOptions,
+} from "./link-ask-route";
+export {
   answer,
   answerQuestion,
   ask,
