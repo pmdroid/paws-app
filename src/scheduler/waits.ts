@@ -8,13 +8,8 @@ import {
   type ItemHold,
 } from "../db";
 
-/**
- * A waiting item says so this often. Linear marks a session stale after 30 minutes without an
- * activity, so this stays under that window like the turn keepalive.
- */
 export const WAIT_KEEPALIVE_MS = 25 * 60 * 1000;
 
-/** What a queued, paused or recovering item waits for, as the session should show it. */
 export type ItemWait = {
   itemId: string;
   sessionId: string;
@@ -25,7 +20,6 @@ export type ItemWait = {
   | {
       kind: "runner";
       position: number;
-      /** The restart that queued the item, which names what it waits to do. */
       restart: Exclude<RestartReason, "follow_up" | "answer"> | null;
     }
   | { kind: "paused"; by: string | null }
@@ -80,10 +74,6 @@ function pausedBy(db: Database, itemId: string): string | null {
   );
 }
 
-/**
- * One wait per Linear session. A session another item is working in shows that item instead.
- * Siblings that all wait show the first in delegation order.
- */
 export function itemWaits(
   db: Database,
   items: readonly WaitItem[],
@@ -141,12 +131,6 @@ export function waitingLine(wait: ItemWait): string | null {
   return null;
 }
 
-/**
- * A queued item with a known reason posts an ephemeral "still waiting" thought at every
- * 25-minute mark of its wait. The key names the mark, so a Paws restart or a second tick
- * posts it once, and a newer ephemeral replaces a pending one. Nothing is posted once the
- * session's pull request response or another final response went out.
- */
 export function postWaitKeepalives(db: Database, waits: readonly ItemWait[], now: number): void {
   const queued = waits.filter((wait) => wait.kind === "blocked" || wait.kind === "runner");
   keepItemWaits(
