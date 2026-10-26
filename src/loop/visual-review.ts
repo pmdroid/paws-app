@@ -7,7 +7,6 @@ import type { EvidenceApproval, ResolvedEvidence } from "../closeout";
 import { JOB_KIND } from "../core";
 import {
   type WorkItemRecord,
-  applyWorkItemEvent,
   enqueueJobOnce,
   enqueueOutboxOnce,
   getEvidence,
@@ -17,7 +16,6 @@ import {
   listEvidence,
   listVisualReviewMarks,
   listVisualReviews,
-  saveCheckpoint,
 } from "../db";
 import { reviewMarkPath } from "./input-files";
 import { compareScreenshots } from "./screenshot-diff";
@@ -177,8 +175,21 @@ export function carryVisualReview(
   return review;
 }
 
+/** The open review question of the item's pending-human check. */
+export function pendingVisualReview(
+  db: Database,
+  item: WorkItemRecord,
+): { question: StoredQuestion; review: StoredVisualReview } | null {
+  if (item.sessionKey === null) return null;
+  const question = findOpenQuestion(db, item.sessionKey);
+  if (question?.itemId !== item.id || question.kind !== "visual-review") return null;
+  const review = getVisualReview(db, question.id);
+  return review?.kind === "review" ? { question, review } : null;
+}
+
+/** A pending-human check opens while the item is verifying head S. */
 export function reviewable(item: WorkItemRecord | null): item is WorkItemRecord {
-  return (item?.state === "running" || item?.state === "verifying") && !item.cancelRequested;
+  return item?.state === "verifying" && !item.cancelRequested;
 }
 
 export function askForVisualReview(
@@ -218,7 +229,8 @@ export function askForVisualReview(
       };
     });
   const { question } = openVisualReview(db, {
-    ask,
+    // Asked beside the command checks and the review; the item stays verifying.
+    ask: (store, asker, ...rest) => ask(store, { ...asker, pending: true }, ...rest),
     itemId: item.id,
     runId: input.runId,
     sessionId,
@@ -231,11 +243,6 @@ export function askForVisualReview(
       evidence,
       ...(carried.length ? { carried: carried.map((entry) => entry.evidenceId) } : {}),
     },
-  });
-  saveCheckpoint(db, item.id, {
-    phase: "awaiting_input",
-    wipCommit: input.head,
-    baseSha: input.base,
   });
   enqueueJobOnce(db, {
     queue: JOB_KIND.visualReviewReminder,
@@ -298,12 +305,16 @@ export function postNote(
   });
 }
 
+/**
+ * Records the answer. Accept passes the check; changes, or Keep going after
+ * the round limit, go back to the agent. Moves no state: the caller does.
+ */
 export function recordVisualReviewOutcome(
   db: Database,
   question: StoredQuestion,
   review: StoredVisualReview,
   now: number,
-): "answered" | "asked" {
+): "accepted" | "changes" | "asked" {
   const answer = question.answer ?? "";
   const answeredBy = question.answeredBy ?? "";
   if (review.kind === "continue") {
@@ -314,8 +325,7 @@ export function recordVisualReviewOutcome(
       now,
       ...(extra ? { feedback: extra } : {}),
     });
-    applyWorkItemEvent(db, question.itemId, "answer_received");
-    return "answered";
+    return "changes";
   }
   const parsed = parseVisualReviewAnswer(answer);
   if (parsed.kind === "accept") {
@@ -326,8 +336,7 @@ export function recordVisualReviewOutcome(
       now,
       ...(headCommit ? { headCommit } : {}),
     });
-    applyWorkItemEvent(db, question.itemId, "answer_received");
-    return "answered";
+    return "accepted";
   }
   recordVisualReviewAnswer(db, question.id, {
     outcome: "changes_requested",
@@ -335,10 +344,8 @@ export function recordVisualReviewOutcome(
     now,
     feedback: parsed.kind === "changes" ? parsed.feedback : answer.trim(),
   });
-  if (visualReviewRounds(db, question.itemId, review.checkId) < VISUAL_REVIEW_ROUNDS) {
-    applyWorkItemEvent(db, question.itemId, "answer_received");
-    return "answered";
-  }
+  if (visualReviewRounds(db, question.itemId, review.checkId) < VISUAL_REVIEW_ROUNDS)
+    return "changes";
   openVisualReviewContinue(db, {
     ask,
     itemId: question.itemId,

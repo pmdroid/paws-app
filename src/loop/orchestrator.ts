@@ -50,6 +50,7 @@ import {
   approvalsAtHead,
   awaitsVisualReview,
   createCloseoutGate,
+  samePatch,
   reviewRequirements,
   trustedPolicyFiles,
   trustedRootFiles,
@@ -62,6 +63,8 @@ import {
   sessionCloseoutResult,
   writeSessionCloseout,
   type GateResult,
+  type CloseoutGate,
+  type CloseoutGateOptions,
   type CloseoutVerdict,
   type ResolvedEvidence,
   type CandidateIdentity,
@@ -282,6 +285,7 @@ import {
   askForVisualReview,
   carryVisualReview,
   dueVisualReview,
+  pendingVisualReview,
   planVisualReviewCarry,
   postNote,
   remindVisualReview,
@@ -373,6 +377,8 @@ export type OrchestratorOptions = {
   pawsRoot: string;
   home?: string;
   closeoutPolicyRoot?: (repository: RepositoryBinding) => string | undefined;
+  /** Builds the Closeout gate for one evaluation. Tests pass the Closeout fake. */
+  closeoutGate?: (options: CloseoutGateOptions) => CloseoutGate;
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
@@ -479,6 +485,8 @@ class LinearReconciliationPendingError extends Error {}
 type MergeRun = {
   payload: unknown;
   closeoutFailure: CloseoutVerdict | null;
+  /** The head the lane re-verified, for a pending-human check left on it. */
+  reverified?: ReverifyInput;
   publicationCandidate?: { sha: string; baseSha: string };
   candidate?: CandidateIdentity;
   verifying?: WorkItemRecord;
@@ -2308,42 +2316,68 @@ export class Orchestrator {
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state !== "running") return;
     if (await this.visualReviewOutdated(current, worktree, base, head)) return;
-    if (await this.askVisualReview(current, worktree, base, head)) return;
     applyWorkItemEvent(this.db, item.id, "turn_ended");
     const verifying = getWorkItem(this.db, item.id);
     if (verifying === null) return;
     saveCheckpoint(this.db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
-    const verdict = await this.runVerification(item, worktree, base, head, candidate);
-    if (this.signalForItem(item.id)?.aborted) return;
-    const after = getWorkItem(this.db, item.id);
-    if (after === null || after.state === "cancelled") return;
-    if (verdict.decision === "accepted" && !verdict.exhausted) {
-      const acceptedHead = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
-      acceptCloseout(this.db, {
-        itemId: item.id,
-        expected: verdict.owner,
-        base,
-        head: acceptedHead,
-        summary: verdict.summary,
-        now: this.now(),
-      });
-      return;
-    }
-    if (await this.askVisualReviewAfter(after, verdict, worktree, base, head)) return;
-    await this.askCloseoutHelp(after, verdict.result, verdict.summary);
+    await this.evaluateHead(verifying, worktree, base, head, candidate);
   }
 
-  private async askVisualReviewAfter(
+  /**
+   * The Closeout evaluation of head S. Pending-human checks are asked first
+   * and wait beside the command checks and the independent review. When only
+   * they are left the item waits on the person; once they are answered,
+   * `decide` completes S from the recorded results, falling back to a full run.
+   */
+  private async evaluateHead(
     item: WorkItemRecord,
-    verdict: CloseoutVerdict,
     worktree: string,
     base: string,
     head: string,
-  ): Promise<boolean> {
-    return (
-      awaitsVisualReview(verdict.result) &&
-      this.askVisualReview(item, worktree, base, verdict.result?.head ?? head)
-    );
+    candidate: CandidateIdentity,
+    options: { decide?: boolean; reverifyJobId?: number } = {},
+  ): Promise<void> {
+    if (!options.decide && (await this.openVisualReviewCheck(item, worktree, base, head)))
+      await this.flush();
+    let decide = options.decide ?? false;
+    for (let pass = 0; ; pass++) {
+      const verdict = await this.runVerification(item, worktree, base, head, candidate, decide);
+      if (this.stopped(item.id)) return;
+      const after = getWorkItem(this.db, item.id);
+      if (after === null) return;
+      if (verdict.decision === "accepted" && !verdict.exhausted) {
+        const acceptedHead = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+        acceptCloseout(this.db, {
+          itemId: item.id,
+          expected: verdict.owner,
+          base,
+          head: acceptedHead,
+          summary: verdict.summary,
+          now: this.now(),
+          ...(options.reverifyJobId !== undefined ? { reverifyJobId: options.reverifyJobId } : {}),
+        });
+        return;
+      }
+      if (pass < 2 && awaitsVisualReview(verdict.result)) {
+        if (await this.awaitVisualReview(after, worktree, base, verdict.result?.head || head))
+          return;
+        decide = true;
+        continue;
+      }
+      if (pass < 2 && decide) {
+        decide = false;
+        continue;
+      }
+      if (this.cancelVisualReview(after))
+        this.post(
+          after,
+          "thought",
+          verdict.summary,
+          `${item.id}:verdict-after-visual-review:${verdict.result?.head ?? head}`,
+        );
+      await this.askCloseoutHelp(after, verdict.result, verdict.summary);
+      return;
+    }
   }
 
   private async runVerification(
@@ -2352,12 +2386,19 @@ export class Orchestrator {
     base: string,
     head: string,
     candidate: CandidateIdentity,
+    decide = false,
   ): Promise<CloseoutVerdict & { owner: VerificationOwner }> {
     if (!this.options.remoteExecution) {
       this.assertJobCurrent(item.id);
       const owner = getWorkItem(this.db, item.id) ?? item;
-      const verdict = await this.verifyCandidate(item, worktree, base, head, candidate, () =>
-        this.assertJobCurrent(item.id),
+      const verdict = await this.verifyCandidate(
+        item,
+        worktree,
+        base,
+        head,
+        candidate,
+        () => this.assertJobCurrent(item.id),
+        decide,
       );
       this.assertJobCurrent(item.id);
       return { ...verdict, owner: { version: owner.version, runId: owner.currentRunId } };
@@ -2439,6 +2480,7 @@ export class Orchestrator {
         head,
         candidate,
         assertCurrent,
+        decide,
       );
       assertCurrent();
       return { ...verdict, owner: { version: getWorkItem(this.db, item.id)!.version, runId } };
@@ -2454,6 +2496,7 @@ export class Orchestrator {
     head: string,
     candidate: CandidateIdentity,
     assertCurrent: () => void = () => {},
+    decide = false,
   ): Promise<CloseoutVerdict> {
     const policy = await this.commitPolicy(item);
     if (policy)
@@ -2555,7 +2598,7 @@ export class Orchestrator {
       onCandidate?.(identity);
     };
     const reviewer = createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) });
-    const gate = createCloseoutGate({
+    const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
       published: () => publishedEvidence(this.db, item.id),
@@ -2591,7 +2634,7 @@ export class Orchestrator {
       progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
     try {
-      return await gate.run({
+      return await gate[decide ? "decide" : "run"]({
         taskId: itemPathId(item),
         taskLabel: item.linearIdentifier,
         worktree,
@@ -2902,21 +2945,8 @@ export class Orchestrator {
     const candidate = await this.candidateForItem(item);
     if (!candidate) return;
     if (item.state === "merge_queue") await this.startCloseoutRound(item, head);
-    const verdict = await this.runVerification(item, worktree, base, head, candidate);
-    if (this.stopped(item.id)) return;
-    if (verdict.decision !== "accepted") {
-      if (await this.askVisualReviewAfter(item, verdict, worktree, base, head)) return;
-      await this.askCloseoutHelp(item, verdict.result, verdict.summary);
-      return;
-    }
-    head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
-    acceptCloseout(this.db, {
-      itemId: item.id,
-      expected: verdict.owner,
-      base,
-      head,
-      summary: verdict.summary,
-      now: this.now(),
+    await this.evaluateHead(item, worktree, base, head, candidate, {
+      decide: readBoolean(payload, "decide") === true,
       reverifyJobId: jobId,
     });
   }
@@ -2939,12 +2969,17 @@ export class Orchestrator {
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         askCloseoutHelp: async (item) => {
-          if (run.closeoutFailure)
-            await this.askCloseoutHelp(
-              item,
-              run.closeoutFailure.result,
-              run.closeoutFailure.summary,
-            );
+          const failure = run.closeoutFailure;
+          if (!failure) return;
+          const head = run.reverified;
+          if (
+            head &&
+            awaitsVisualReview(failure.result) &&
+            (await this.awaitVisualReview(item, head.worktree, head.base, head.head))
+          )
+            return;
+          this.cancelVisualReview(item);
+          await this.askCloseoutHelp(item, failure.result, failure.summary);
         },
         packages: (repository) => this.repositoryPackages(repository),
         completed: () => this.dispatch(),
@@ -3121,6 +3156,7 @@ export class Orchestrator {
 
   private async verifyForMerge(run: MergeRun, input: ReverifyInput): Promise<MergeVerdict> {
     const verifying = run.verifying!;
+    run.reverified = input;
     await this.startCloseoutRound(verifying, input.head);
     const verdict = await this.runVerification(
       verifying,
@@ -4801,7 +4837,13 @@ export class Orchestrator {
     return required.ok ? required.items : [];
   }
 
-  private async askVisualReview(
+  /**
+   * Opens the pending-human check of head S, bound to S and its files. An
+   * open review of a head with the same patch against main stays open; a
+   * different patch cancels it and asks again with the latest files.
+   * Returns whether a review is open for S.
+   */
+  private async openVisualReviewCheck(
     item: WorkItemRecord,
     worktree: string,
     base: string,
@@ -4812,6 +4854,12 @@ export class Orchestrator {
     if (!evidence || sessionId === null) return false;
     const requirements = this.visualReviewRequirements(item, worktree);
     if (requirements.length === 0) return false;
+    const pending = pendingVisualReview(this.db, item);
+    if (pending) {
+      const reviewed = pending.review.headCommit;
+      if (reviewed && (await samePatch(worktree, reviewed, head, base))) return true;
+      cancelQuestion(this.db, pending.question.id, this.now());
+    }
     const approvals = await approvalsAtHead(
       worktree,
       head,
@@ -4876,7 +4924,6 @@ export class Orchestrator {
           })
         )
           return "none" as const;
-        if (runId) releaseRunCapacity(this.db, runId, this.now());
         return "asked" as const;
       });
       if (outcome === "carried") carriedOver = true;
@@ -4887,6 +4934,47 @@ export class Orchestrator {
     }
     if (carriedOver) await this.flush();
     return false;
+  }
+
+  /**
+   * Only pending-human checks are left on head S: the item waits in
+   * awaiting_input on the open review and gives its runner back. Returns
+   * false when every check is approved, so the evaluation can complete.
+   */
+  private async awaitVisualReview(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+  ): Promise<boolean> {
+    if (pendingVisualReview(this.db, item) === null)
+      await this.openVisualReviewCheck(item, worktree, base, head);
+    const waiting = immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (
+        !current ||
+        current.cancelRequested ||
+        (current.state !== "verifying" && current.state !== "merge_queue")
+      )
+        return true;
+      const pending = pendingVisualReview(this.db, current);
+      if (pending === null) return false;
+      awaitQuestion(this.db, current, pending.question, this.now());
+      if (current.currentRunId) releaseRunCapacity(this.db, current.currentRunId, this.now());
+      return true;
+    });
+    await this.flush();
+    return waiting;
+  }
+
+  /**
+   * Another check failed on head S, so its pending-human check is moot.
+   * Returns whether a review was open; its verdict thoughts were held back.
+   */
+  private cancelVisualReview(item: WorkItemRecord): boolean {
+    const pending = pendingVisualReview(this.db, item);
+    if (pending) cancelQuestion(this.db, pending.question.id, this.now());
+    return pending !== null;
   }
 
   async requestVisualReviewChanges(input: {
@@ -4922,9 +5010,13 @@ export class Orchestrator {
     const sessionId = open.sessionId;
     const outcome = immediate(this.db, () => {
       const item = getWorkItem(this.db, open.itemId);
+      // A pending-human check is answered while the other checks still run.
+      const waiting =
+        item?.state === "awaiting_input" ||
+        (item?.state === "verifying" && review.kind === "review");
       if (
         item === null ||
-        item.state !== "awaiting_input" ||
+        !waiting ||
         item.cancelRequested ||
         getQuestion(this.db, open.id)?.status !== "open"
       )
@@ -4952,6 +5044,11 @@ export class Orchestrator {
       );
       return answered.status === "answered" ? ("answered" as const) : ("rejected" as const);
     });
+    // Changes requested while the other checks ran restart the item: stop that evaluation.
+    if (outcome === "answered" && getWorkItem(this.db, open.itemId)?.state === "queued") {
+      this.abortItem(open.itemId);
+      this.dispatch();
+    }
     await this.flush();
     return outcome;
   }
@@ -5819,6 +5916,12 @@ function readString(payload: unknown, key: string): string | null {
   if (typeof payload !== "object" || payload === null) return null;
   const value = (payload as Record<string, unknown>)[key];
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function readBoolean(payload: unknown, key: string): boolean | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === "boolean" ? value : null;
 }
 
 function sameRepository(left: RepositoryBinding, right: RepositoryBinding): boolean {

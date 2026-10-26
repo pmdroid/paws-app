@@ -11,6 +11,7 @@ import { JOB_KIND, type Clock } from "../src/core";
 import {
   JobLoop,
   applyWorkItemEvent,
+  enqueueJobOnce,
   OutboxDispatcher,
   getRun,
   getWorkItem,
@@ -21,11 +22,17 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  releaseRunCapacity,
   runnerHasCapacity,
   saveCheckpoint,
   saveCloseoutRecovery,
   syncWorkspaceMember,
 } from "../src/db";
+import {
+  createFakeCloseoutGate,
+  type CloseoutVerdict,
+  type FakeCloseoutGate,
+} from "../src/closeout";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeGitHub } from "../src/github";
 import {
@@ -248,8 +255,8 @@ test("Accept records the approval, passes the check and opens the pull request",
     );
     expect(body).toContain(`![shot-1.png](<${ASSET}>)`);
     expect(body).toContain(`![shot-2.png](<${ASSET}>)`);
-    expect(f.prompts).toHaveLength(2);
-    expect(f.prompts[1]).toContain("The visual review of check visual-proof was accepted");
+    // Accept completes the evaluation of the reviewed head: no agent turn.
+    expect(f.prompts).toHaveLength(1);
     expect(f.tracker.questions).toHaveLength(1);
     expect(getWorkItem(f.db, item.id)?.state).not.toBe("awaiting_input");
   } finally {
@@ -414,6 +421,7 @@ test("a change under the check's paths after acceptance asks again", async () =>
   try {
     const first = findOpenQuestion(f.db, "ses_1")!;
     await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    await f.orchestrator.onLinearEvent(followUp());
     await f.driveUntil(() => f.tracker.questions.length === 2);
 
     expect(getVisualReview(f.db, first.id)?.outcome).toBe("stale");
@@ -576,8 +584,9 @@ function publishScreens(worktree: string, n: number, screens: Record<string, Buf
 }
 
 /**
- * Turn 1 publishes the first screens and waits for Accept. Turn 2 changes
- * web/settings.html, so the review goes stale, and turn 3 publishes `again`.
+ * Turn 1 publishes the first screens and waits for Accept. A follow-up starts
+ * turn 2, which changes web/settings.html, so the review goes stale, and
+ * turn 3 publishes `again`.
  */
 async function republishedAfterAcceptance(again: Record<string, Buffer>) {
   const f = await pausedForReview({
@@ -603,6 +612,7 @@ async function republishedAfterAcceptance(again: Record<string, Buffer>) {
   });
   const first = findOpenQuestion(f.db, "ses_1")!;
   await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+  await f.orchestrator.onLinearEvent(followUp());
   await f.driveUntil(
     () => f.prompts.length === 3 && f.github.opened.length + f.tracker.questions.length > 1,
   );
@@ -731,6 +741,306 @@ test("a screen with a new name is always asked", async () => {
   }
 }, 180_000);
 
+/** Commands and the independent review passed on `head`; only the human check is open. */
+function pendingHuman(head: string): CloseoutVerdict {
+  const items = [
+    { id: "test", kind: "command", state: "passed" as const, message: "" },
+    { id: "independent-review", kind: "review", state: "passed" as const, message: "" },
+    { id: "visual-proof", kind: "evidence", state: "missing" as const, message: "approval" },
+  ];
+  const summary = "Closeout: blocked\nvisual-proof: missing";
+  return {
+    decision: "blocked",
+    exhausted: false,
+    summary,
+    result: {
+      outcome: "blocked",
+      taskId: "ENG-7",
+      base: "",
+      head,
+      fixAttempts: 0,
+      evaluations: 1,
+      exitCode: 3,
+      summary,
+      decision: {
+        specVersion: "0.1",
+        decision: "blocked",
+        gate: "beforePR",
+        base: "",
+        head,
+        candidate: { session: "s", model: "m", provider: "p" },
+        policy: { path: null, digest: null, absent: false },
+        items,
+        warnings: [],
+      },
+    },
+  };
+}
+
+const ACCEPTED: CloseoutVerdict = { decision: "accepted", exhausted: false, summary: "accepted" };
+
+/** A gate that holds its run open: the commands and the review are still running. */
+function heldGate() {
+  const gate = createFakeCloseoutGate();
+  let release!: () => void;
+  gate.held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { gate, release: () => release() };
+}
+
+test("the visual review waits beside the commands and the independent review of the same head", async () => {
+  const { gate, release } = heldGate();
+  const f = await pausedForReview({ gate });
+  try {
+    await f.until(() => f.tracker.questions.length === 1 && gate.runs.length === 1);
+    const item = listWorkItems(f.db)[0]!;
+    // Both are in flight: the question is open while Closeout runs on the same head.
+    expect(item.state).toBe("verifying");
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    expect(open.kind).toBe("visual-review");
+    expect(getVisualReview(f.db, open.id)?.headCommit).toBe(gate.runs[0]!.headSha);
+    expect(f.tracker.questions[0]!.options).toEqual(["Accept", "Request changes"]);
+
+    gate.next = pendingHuman(gate.runs[0]!.headSha);
+    release();
+    await f.turn;
+    await f.tickAll();
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(findOpenQuestion(f.db, "ses_1")?.id).toBe(open.id);
+    expect(runnerHasCapacity(f.db, f.runnerId, Date.now())).toBe(true);
+
+    // The gate reads approvals: once the person accepts, later runs pass the check.
+    gate.decided = ACCEPTED;
+    gate.next = ACCEPTED;
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    await f.driveUntil(() => gate.decisions.length > 0);
+    // Accept completed the evaluation from the finished checks: no second run, no agent turn.
+    expect(gate.runs).toHaveLength(1);
+    expect(gate.decisions.map((entry) => entry.headSha)).toEqual([gate.runs[0]!.headSha]);
+    await f.driveUntil(() => f.github.opened.length > 0);
+    expect(f.prompts).toHaveLength(1);
+    expect(f.tracker.questions).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+test("Accept while the commands still run passes the check, and the evaluation completes when they do", async () => {
+  const { gate, release } = heldGate();
+  const f = await pausedForReview({ gate });
+  try {
+    await f.until(() => f.tracker.questions.length === 1 && gate.runs.length === 1);
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    const item = listWorkItems(f.db)[0]!;
+    expect(item.state).toBe("verifying");
+    expect(gate.decisions).toHaveLength(0);
+
+    gate.next = pendingHuman(gate.runs[0]!.headSha);
+    gate.decided = ACCEPTED;
+    release();
+    await f.turn;
+    await f.driveUntil(() => gate.decisions.length > 0);
+    // The gate reads approvals: later runs, such as the merge lane's, pass the check.
+    gate.next = ACCEPTED;
+    expect(gate.runs).toHaveLength(1);
+    expect(gate.decisions).toHaveLength(1);
+    await f.driveUntil(() => f.github.opened.length > 0);
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(f.prompts).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+test("Request changes while the commands still run restarts the item for review", async () => {
+  const { gate, release } = heldGate();
+  const f = await pausedForReview({ gate });
+  try {
+    await f.until(() => f.tracker.questions.length === 1 && gate.runs.length === 1);
+    gate.next = ACCEPTED;
+    await f.orchestrator.onLinearEvent(
+      prompted("Make the hint under Model shorter", "delegator-1", "activity:changes"),
+    );
+    const item = listWorkItems(f.db)[0]!;
+    expect(item.state).toBe("queued");
+    expect(
+      f.db
+        .query<{ reason: string }, [string]>(
+          "SELECT reason FROM work_item_event WHERE item_id = ? AND kind = 'restart'",
+        )
+        .all(item.id),
+    ).toEqual([{ reason: "review" }]);
+    release();
+    await f.turn;
+    // The accepted verdict of the replaced head does not reach the merge queue.
+    expect(getWorkItem(f.db, item.id)?.state).not.toBe("merge_queue");
+    expect(f.github.opened).toHaveLength(0);
+    gate.next = pendingHuman("");
+    // The runner settles the stopped work, and the scheduler places the restarted item.
+    releaseRunCapacity(f.db, getWorkItem(f.db, item.id)!.currentRunId!, Date.now());
+    f.orchestrator.reconcileExecution();
+    await f.driveUntil(() => f.prompts.length === 2);
+    expect(f.prompts[1]).toContain("Make the hint under Model shorter");
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+/** Moves main forward and rebases the task's worktree onto it, as the merge lane does. */
+async function rebaseOntoNewMain(f: { bare: string; root: string }, worktree: string) {
+  const other = path.join(f.root, `main-${Date.now()}`);
+  await exec("git", ["clone", f.bare, other]);
+  await writeFile(path.join(other, "CHANGELOG.md"), "main moved\n");
+  await exec("git", ["-C", other, "add", "."]);
+  await exec("git", [...IDENTITY, "-C", other, "commit", "-m", "main moved"]);
+  await exec("git", ["-C", other, "push", "origin", "HEAD:main"]);
+  await exec("git", ["-C", worktree, "fetch", "origin", "main"]);
+  await exec("git", [...IDENTITY, "-C", worktree, "rebase", "origin/main"]);
+}
+
+const IDENTITY = [
+  "-c",
+  "user.name=Paws Test",
+  "-c",
+  "user.email=paws-test@example.com",
+  "-c",
+  "commit.gpgsign=false",
+];
+
+async function headOf(worktree: string): Promise<string> {
+  return (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).stdout.trim();
+}
+
+/** The item verifies its current head again, as after a rebase in the lane. */
+function reverifyNow(db: Database, itemId: string, key: string): void {
+  applyWorkItemEvent(db, itemId, "answer_received");
+  applyWorkItemEvent(db, itemId, "turn_ended");
+  enqueueJobOnce(db, {
+    queue: JOB_KIND.reverify,
+    jobKey: key,
+    payload: { itemId },
+    now: Date.now(),
+  });
+}
+
+test("a rebase that keeps the patch-id keeps the pending visual review open for the new head", async () => {
+  let worktree = "";
+  const gate = createFakeCloseoutGate();
+  gate.next = pendingHuman("");
+  const f = await pausedForReview({
+    gate,
+    implement(dir, n) {
+      worktree = dir;
+      return n === 1 ? publishTwo(dir, 1) : [];
+    },
+  });
+  try {
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+    const reviewed = getVisualReview(f.db, open.id)!.headCommit!;
+    expect(item.state).toBe("awaiting_input");
+
+    await rebaseOntoNewMain(f, worktree);
+    const rebased = await headOf(worktree);
+    expect(rebased).not.toBe(reviewed);
+    reverifyNow(f.db, item.id, "rebased");
+    await f.tickAll();
+
+    expect(gate.runs.map((entry) => entry.headSha).at(-1)).toBe(rebased);
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(findOpenQuestion(f.db, "ses_1")?.id).toBe(open.id);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+
+    // The gate reads approvals: once the person accepts, later runs pass the check.
+    gate.decided = ACCEPTED;
+    gate.next = ACCEPTED;
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    await f.driveUntil(() => f.github.opened.length > 0);
+    expect(getVisualReview(f.db, open.id)).toMatchObject({
+      outcome: "accepted",
+      headCommit: reviewed,
+    });
+    expect(gate.decisions.map((entry) => entry.headSha)).toEqual([rebased]);
+    expect(f.tracker.questions).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+test("a rebase that keeps the patch-id carries an accepted visual review to the new head", async () => {
+  let worktree = "";
+  const gate = createFakeCloseoutGate();
+  gate.next = pendingHuman("");
+  const f = await pausedForReview({
+    gate,
+    implement(dir, n) {
+      worktree = dir;
+      return n === 1 ? publishTwo(dir, 1) : [];
+    },
+  });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    // Accepted while Closeout still ran on the reviewed head; the head then moves.
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    applyWorkItemEvent(f.db, item.id, "answer_received");
+    applyWorkItemEvent(f.db, item.id, "turn_ended");
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(getVisualReview(f.db, open.id)?.outcome).toBe("accepted");
+    await rebaseOntoNewMain(f, worktree);
+    const rebased = await headOf(worktree);
+    gate.decided = ACCEPTED;
+    enqueueJobOnce(f.db, {
+      queue: JOB_KIND.reverify,
+      jobKey: "rebased",
+      payload: { itemId: item.id },
+      now: Date.now(),
+    });
+    await f.driveUntil(() => gate.decisions.length > 0);
+    // The gate reads approvals: later runs, such as the merge lane's, pass the check.
+    gate.next = ACCEPTED;
+    await f.driveUntil(() => f.github.opened.length > 0);
+
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(gate.runs.at(-1)?.headSha).toBe(rebased);
+    expect(gate.decisions.map((entry) => entry.headSha)).toEqual([rebased]);
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
+test("a new head with a different patch-id cancels the pending visual review and asks again", async () => {
+  let worktree = "";
+  const gate = createFakeCloseoutGate();
+  gate.next = pendingHuman("");
+  const f = await pausedForReview({
+    gate,
+    implement(dir, n) {
+      worktree = dir;
+      return n === 1 ? publishTwo(dir, 1) : [];
+    },
+  });
+  try {
+    const first = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+    await writeFile(path.join(worktree, "settings.html"), "<p>new layout</p>\n");
+    await exec("git", ["-C", worktree, "add", "."]);
+    await exec("git", [...IDENTITY, "-C", worktree, "commit", "-m", "New layout"]);
+    const changed = await headOf(worktree);
+    reverifyNow(f.db, item.id, "changed");
+    await f.tickAll();
+
+    expect(getQuestion(f.db, first.id)?.status).toBe("cancelled");
+    expect(f.tracker.questions).toHaveLength(2);
+    const second = findOpenQuestion(f.db, "ses_1")!;
+    expect(second.id).not.toBe(first.id);
+    expect(getVisualReview(f.db, second.id)?.headCommit).toBe(changed);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+  } finally {
+    await f.close();
+  }
+}, 120_000);
+
 function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): void {
   const [shot] = listEvidence(db, itemId);
   db.run("UPDATE visual_review SET evidence_ids = ? WHERE question_id = ?", [
@@ -752,6 +1062,8 @@ async function pausedForReview(
   options: {
     paths?: string[];
     implement?: (worktree: string, n: number, prompt: string) => Step[];
+    /** The Closeout fake in place of the real gate. A held run returns before the turn ends. */
+    gate?: FakeCloseoutGate;
   } = {},
 ) {
   const layout = await repoLayout(closeoutPolicy(options.paths));
@@ -875,6 +1187,7 @@ async function pausedForReview(
       client: githubClient(layout.bare, github),
     },
     launch,
+    ...(options.gate ? { closeoutGate: () => options.gate! } : {}),
   });
   await orchestrator.onLinearEvent(created());
   db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
@@ -885,11 +1198,24 @@ async function pausedForReview(
   });
   const running = jobs.tick();
   const runnerId = leaseActiveRun(db);
-  await running;
-  await outboxIdle(outbox);
-  expect(listEvidence(db, listWorkItems(db)[0]!.id).length).toBeGreaterThanOrEqual(2);
+  if (!options.gate?.held) {
+    await running;
+    await outboxIdle(outbox);
+    expect(listEvidence(db, listWorkItems(db)[0]!.id).length).toBeGreaterThanOrEqual(2);
+  }
   return {
     db,
+    turn: running,
+    bare: layout.bare,
+    root: layout.root,
+    async until(done: () => boolean) {
+      const deadline = Date.now() + 30_000;
+      while (!done()) {
+        if (Date.now() > deadline) throw new Error("timed out");
+        await outboxIdle(outbox);
+        await Bun.sleep(20);
+      }
+    },
     tracker,
     log,
     github,
@@ -1030,6 +1356,11 @@ function created(): AcceptedLinearEvent {
     updatedAtMs: Date.now(),
     payload: "{}",
   };
+}
+
+/** A follow-up in the session after Accept: the work goes back to the agent. */
+function followUp(): AcceptedLinearEvent {
+  return prompted("Also tighten the copy", "delegator-1", "activity:follow-up");
 }
 
 function prompted(body: string, actorId: string, key = "activity:ans"): AcceptedLinearEvent {

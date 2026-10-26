@@ -514,22 +514,23 @@ test("Linear requests for a long Closeout with an agent question and a visual re
         ...toolCalls(round + 10),
       ],
       (worktree, round) => [...toolCalls(round), write(worktree, "draft.txt")],
+      // The visual review waits beside the checks of this head, so this round also passes them.
       (worktree, round) => {
         writeFileSync(path.join(worktree, "shot.png"), PNG);
         return [
           ...toolCalls(round),
           write(worktree, "notes.txt"),
+          write(worktree, "ok.txt", "ok\n"),
           { type: "publish_artifact", path: "shot.png", checkId: "visual-proof" },
         ];
       },
-      (worktree, round) => [...toolCalls(round), write(worktree, "ok.txt", "ok\n")],
     ],
   });
   expect(result.state, result.operations).toBe("merged");
   expect(result.asked).toEqual(["agent", "visual-review"]);
   expect(result.perCaller, result.operations).toEqual({
     context: 1,
-    outbox: 13,
+    outbox: 12,
     "session-read": 1,
     "task-access": 7,
   });
