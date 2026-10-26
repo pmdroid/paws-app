@@ -14,7 +14,7 @@ import {
   openDatabase,
   saveCheckpoint,
 } from "../db";
-import { bypassSummary } from "../closeout/bypass";
+import { bypassSummary } from "../closeout";
 import { findOpenQuestion, getQuestion } from "../questions";
 import { saveSchedulingContext } from "../scheduler";
 import { askCloseoutHelp } from "./closeout-help";

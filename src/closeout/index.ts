@@ -58,5 +58,5 @@ export type {
   ReviewFindings,
 } from "./types";
 
-export { bypassable } from "./bypass";
+export { bypassable, bypassSummary } from "./bypass";
 export type { CloseoutBypass } from "./bypass";
