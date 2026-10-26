@@ -37,7 +37,7 @@ The agent uses two tools in its session:
 
 Command checks run in the agent's workspace. On a remote runner they run on that runner. Review checks are listed but not run here, because the review must come from a different session. Evidence checks run nothing: `run_closeout` answers with the hint and the `publish_artifact` call to make.
 
-Each check has its own retry limit, `retry.maxFailedAttemptsPerItem`, which is 3 in this repository. With `scope: task`, failed attempts count across the whole task, including new commits. When a check fails, the agent fixes the cause and runs it again. When a check reaches its limit, it is exhausted. The agent stops retrying it and finishes with a short note on why. Paws Closeout then decides what happens next.
+Each check has its own retry limit, `retry.attempts_per_check`, which is 3 in this repository. With `scope: task`, failed attempts count across the whole task, including new commits. When a check fails, the agent fixes the cause and runs it again. When a check reaches its limit, it is exhausted. The agent stops retrying it and finishes with a short note on why. Paws Closeout then decides what happens next.
 
 The agent cannot end its turn while a check is still pending. When the agent tries to finish, the Stop hook checks the Closeout status and sends the agent back with the pending check ids. A check that is exhausted does not hold the agent back.
 
@@ -106,7 +106,7 @@ When a check fails, Paws sends the findings and the failing output back to the i
 
 A fix round that ends without a usable commit still uses one attempt. The next round gets the same findings plus the reason the last round failed. A cancelled fix stops at once.
 
-The number of fix rounds is limited. Paws allows `maxFailedAttemptsPerItem × (checks + setup steps) − 1` rounds. Each check still stops at its own limit, so a check that keeps failing is exhausted before the overall budget runs out.
+The number of fix rounds is limited. Paws allows `retry.fix_rounds_per_item` rounds, defaulting to 3. Closeout findings, red CI and changes-requested reviews share this counter. Adding checks does not increase it. Each check still stops at its own limit, so a check that keeps failing is exhausted before the overall budget runs out.
 
 ### When Paws asks the team
 
@@ -128,3 +128,22 @@ Only a bypass in reply to this question counts. A bypass the agent proposes in i
 ### After acceptance
 
 An accepted candidate enters the merge queue. If `main` moves before the merge, Paws rebases the branch and runs Paws Closeout again on the rebased commit. Closeout must accept the commit that is actually merged. On a remote runner, Paws runs the command checks for the rebased commit on the item's runner. A failing check starts a normal fix round with its output. The review check keeps its usual rules.
+
+The entry policy accepts two budget integers, both defaulting to 3:
+
+```yaml
+retry:
+  attempts_per_check: 3
+  fix_rounds_per_item: 3
+```
+
+`maxFailedAttemptsPerItem` remains a legacy alias for `attempts_per_check`.
+Setup faults retry once and then ask for help without spending a fix round.
+Infrastructure faults do not spend fix rounds. A person's reply in the item's
+session authorizes a fresh budget; a redispatch or newer main commit does not.
+Rebase conflicts allow three known-main returns and six returns in a rolling
+hour. Unknown-main returns count only toward the hour, regardless of files.
+Spent budgets ask the person for guidance.
+
+The legacy `[merge] ci_fix_attempts` setting no longer sets a separate CI budget.
+CI uses `retry.fix_rounds_per_item` along with findings and review repairs.

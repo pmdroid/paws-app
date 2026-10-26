@@ -44,8 +44,8 @@ export function ciFixQuestion(
   const pull = pullUrl === null ? "the pull request" : `the pull request (${pullUrl})`;
   const spent =
     limit === 0
-      ? "CI fix attempts are set to 0, so Paws did not send it back to the agent."
-      : `The agent used all ${limit} CI fix ${limit === 1 ? "attempt" : "attempts"}.`;
+      ? "Fix rounds are set to 0, so Paws did not send it back to the agent."
+      : `The agent used all ${limit} fix ${limit === 1 ? "round" : "rounds"} across Closeout, CI and review.`;
   return [
     `CI failed on ${pull}. ${spent}`,
     "",

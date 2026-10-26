@@ -134,7 +134,7 @@ test("review caps validate through the origin loader and participate in the draf
     writeFileSync(join(fx.repo, ".agents/closeout.yaml"), JSON.stringify(fx.policy));
     expect(digest(fx.repo)).not.toEqual(before);
     expect(validate(fx.repo, fx.home)).toEqual(active);
-    expect(policyFixBudget(fx.repo, fx.home)).toBe(11);
+    expect(policyFixBudget(fx.repo, fx.home)).toBe(3);
   } finally {
     fx.close();
   }
@@ -286,7 +286,7 @@ test("commands and setup retain the ordinary limit with progress-aware reviews",
       for (let round = 0; round < 3; round += 1) {
         const result = await run({ ...fx.input(), pawsHome: join(fx.root, "paws") });
         expect(result.items.find((item) => item.id === "fail")?.state).toBe(
-          round === 2 ? "exhausted" : "failed",
+          kind === "setup" || round === 2 ? "exhausted" : "failed",
         );
       }
       const before = readFileSync(join(fx.repo, ".agents/closeout.yaml"), "utf8");
@@ -300,16 +300,18 @@ test("commands and setup retain the ordinary limit with progress-aware reviews",
   }
 });
 
-test("policies without retry leave failed review attempts unlimited", async () => {
+test("policies without retry default to three failed review attempts", async () => {
   const fx = fixture(12, "task", { retry: undefined });
   try {
-    expect(policyFixBudget(fx.repo, fx.home)).toBeNull();
-    for (let round = 0; round < 5; round += 1) {
+    expect(policyFixBudget(fx.repo, fx.home)).toBe(3);
+    for (let round = 0; round < 3; round += 1) {
       expect((await fx.review([finding("src/same.ts")])).ok).toBe(true);
-      expect((await decision(fx.input())).items[0]?.state).toBe("failed");
+      expect((await decision(fx.input())).items[0]?.state).toBe(
+        round === 2 ? "exhausted" : "failed",
+      );
     }
-    expect((await fx.review([])).ok).toBe(true);
-    expect((await decision(fx.input())).decision).toBe("accepted");
+    expect((await fx.review([])).ok).toBe(false);
+    expect((await decision(fx.input())).decision).toBe("blocked");
   } finally {
     fx.close();
   }

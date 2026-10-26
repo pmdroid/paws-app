@@ -262,11 +262,11 @@ describe("policy errors", () => {
       "repo",
       ".agents/closeout.yaml: /retry/scope must be equal to one of the allowed values",
     );
-    expectBlocked(
-      origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nretry:\n  scope: task\n' }).result,
-      "repo",
-      ".agents/closeout.yaml: /retry must have required property 'maxFailedAttemptsPerItem'",
-    );
+    expect(
+      present(
+        origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nretry:\n  scope: task\n' }).result,
+      ).retry,
+    ).toEqual({ maxFailedAttemptsPerItem: 3, scope: "task" });
     const { result } = origin({
       [PUBLIC_POLICY_PATH]:
         'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/child.yaml\n    as: child\n',

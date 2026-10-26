@@ -241,7 +241,7 @@ function notify(options: CloseoutSessionOptions, event: CloseoutSessionEvent): v
 }
 
 function maxAttempts(policy: TreePolicy): number | null {
-  return policy.retry?.maxFailedAttemptsPerItem ?? null;
+  return policy.retry?.maxFailedAttemptsPerItem ?? 3;
 }
 
 function lastChars(text: string): { text: string; cut: boolean } {
@@ -257,12 +257,12 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   if (prepared.kind === "blocked") {
     return { required: [], pending: [], blocked: prepared.message, bypassed: false };
   }
-  const max = prepared.policy.retry?.maxFailedAttemptsPerItem ?? null;
+  const max = prepared.policy.retry?.maxFailedAttemptsPerItem ?? 3;
   const scope = prepared.policy.retry?.scope ?? null;
   const status = (item: Listed) =>
     item.evidence
       ? evidenceStatus(item.evidence, prepared.published)
-      : statusOf(memory.get(item.id), max);
+      : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
   const required = prepared.required.map((item) => {
     const state = memory.get(item.id);
     const failures = state?.failures ?? 0;
@@ -276,7 +276,9 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
       status: status(item),
       failed_attempts: failures,
       remaining_attempts:
-        reviewCap !== undefined || max === null ? null : Math.max(0, max - failures),
+        reviewCap !== undefined || max === null
+          ? null
+          : Math.max(0, (item.kind === "setup" ? 2 : max) - failures),
       ...(reviewCap !== undefined
         ? {
             retry_limits: {
@@ -294,11 +296,13 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
     .filter(
       (item) =>
         item.kind !== "review" &&
-        (item.evidence ? status(item) === "missing" : runnable(memory.get(item.id), max)),
+        (item.evidence
+          ? status(item) === "missing"
+          : runnable(memory.get(item.id), item.kind === "setup" ? 2 : max)),
     )
     .map((item) => item.id);
   const exhausted = prepared.required.filter(
-    (item) => statusOf(memory.get(item.id), max) === "exhausted",
+    (item) => statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max) === "exhausted",
   );
   const blocked =
     exhausted.length === 0 || max === null
@@ -306,7 +310,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
       : `Cannot finish yet. ${exhausted
           .map((item) => {
             const failures = memory.get(item.id)?.failures ?? 0;
-            return `Check ${item.id} is exhausted. Failed attempts ${failures} of ${max}. Hint: ${item.hint}.`;
+            return `Check ${item.id} is exhausted. Failed attempts ${failures} of ${item.kind === "setup" ? 2 : max}. Hint: ${item.hint}.`;
           })
           .join(" ")}`;
   return { required, pending, blocked, bypassed: false };
@@ -378,22 +382,22 @@ async function runId(
     if (found >= item.evidence.minimum) return `${id} passed. ${found} published.`;
     return `${id} runs nothing. It needs ${item.evidence.minimum - found} more of: ${item.evidence.media.join(", ")}. ${evidenceRequest(item.evidence)}`;
   }
-  const max = policy.retry?.maxFailedAttemptsPerItem ?? null;
-  if (statusOf(memory.get(item.id), max) === "exhausted") {
+  const max = policy.retry?.maxFailedAttemptsPerItem ?? 3;
+  if (statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max) === "exhausted") {
     return `Check ${id} is exhausted. Stop retrying and report the blocker.`;
   }
   if (item.kind === "command") {
     for (const step of required) {
       if (step.kind !== "setup" || step.id === item.id) continue;
       if (memory.get(step.id)?.passed) continue;
-      if (statusOf(memory.get(step.id), max) === "exhausted") {
+      if (statusOf(memory.get(step.id), 2) === "exhausted") {
         return `Check ${step.id} is exhausted. Stop retrying and report the blocker.`;
       }
-      const setup = await execute(workspace, step, memory, options, max);
+      const setup = await execute(workspace, step, memory, options, 2);
       if (!setup.ok) return setup.text;
     }
   }
-  const result = await execute(workspace, item, memory, options, max);
+  const result = await execute(workspace, item, memory, options, item.kind === "setup" ? 2 : max);
   return result.text;
 }
 

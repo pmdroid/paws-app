@@ -276,20 +276,7 @@ export function visualReviewRequirements(
 export function policyFixBudget(repo: string, home?: string, policyRoot?: string): number | null {
   const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return null;
-  const policy = loaded.policy;
-  if (policy.source === "none" || policy.retry === undefined) return null;
-  const retry = policy.retry;
-  const failedBudget =
-    policy.setup.length * retry.maxFailedAttemptsPerItem +
-    policy.items.reduce(
-      (total, item) =>
-        total +
-        (item.kind === "review"
-          ? (retry.maxFailedReviewAttempts ?? retry.maxFailedAttemptsPerItem)
-          : retry.maxFailedAttemptsPerItem),
-      0,
-    );
-  return Math.max(retry.maxFailedAttemptsPerItem, failedBudget) - 1;
+  return loaded.policy.source === "none" ? 3 : (loaded.policy.retry?.fix_rounds_per_item ?? 3);
 }
 
 export async function retryBaseline(evidenceDir: string): Promise<string[]> {
