@@ -63,6 +63,19 @@ export {
   type PlanProposal,
 } from "./plan-proposals";
 export {
+  closeLinkAsk,
+  getLinkAsk,
+  insertLinkAsk,
+  listLinkAsks,
+  LINK_ASK_KINDS,
+  openLinkAsks,
+  recordLinkAskDecision,
+  type LinkAsk,
+  type LinkAskClosed,
+  type LinkAskDecision,
+  type LinkAskKind,
+} from "./link-asks";
+export {
   TransitionRejectedError,
   accrueAtJobBoundary,
   accrueAwake,
