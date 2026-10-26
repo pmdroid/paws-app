@@ -771,6 +771,7 @@ export async function executeRunnerCommand(
     // A handover stops the agent only between tool calls, or while ask_team waits for a person.
     const toolCalls = new Set<string>();
     let waitingForAnswer = 0;
+    const safePoint = () => toolCalls.size === 0 || waitingForAnswer > 0;
     const handoverAbort = new AbortController();
     const handoverWatch = new AbortController();
     let handoverStarted = false;
@@ -1057,7 +1058,7 @@ export async function executeRunnerCommand(
             await options.handover!(handoverWatch.signal);
             handoverStarted = true;
             const deadline = performance.now() + (options.handoverLimitMs ?? HANDOVER_LIMIT_MS);
-            while (toolCalls.size > 0 && waitingForAnswer === 0) {
+            while (!safePoint()) {
               if (performance.now() >= deadline) {
                 console.warn(
                   JSON.stringify({ event: "handover_timed_out", executionId: job.executionId }),
