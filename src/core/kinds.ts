@@ -10,6 +10,8 @@ export const JOB_KIND = {
   pullReview: "github.pull_review",
   catchup: "linear.catchup",
   visualReviewReminder: "linear.visual_review_reminder",
+  /** Written when a redelivered elicitation dies too; the loop re-asks through ask(). */
+  reaskQuestion: "question.reask",
   /** Written by the SQLite triggers of migration 144, one pending job per hold owner. */
   runnerSetupCheck: "runner_setup.check",
 } as const;

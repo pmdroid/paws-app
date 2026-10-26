@@ -113,7 +113,8 @@ export function retryDeadDelivery(
           )
         : db.run(
             `UPDATE job SET status = 'pending', attempts = 0, run_at = ?, finished_at = NULL,
-               locked_by = NULL, locked_until = NULL
+               locked_by = NULL, locked_until = NULL,
+               item_version = (SELECT version FROM work_item WHERE id = json_extract(job.payload, '$.itemId'))
              WHERE id = ? AND status = 'dead' AND json_extract(payload, '$.itemId') = ?`,
             [now, ref.id, itemId],
           );
@@ -121,4 +122,14 @@ export function retryDeadDelivery(
     journal(`${ref.kind} ${ref.id} retried item=${itemId}`);
     return true;
   });
+}
+
+/** Drop the dead elicitation rows of a question that was asked again, so the page stops listing them. */
+export function dropDeadElicitations(db: Database, questionId: string, note: string): number {
+  return db.run(
+    `UPDATE outbox SET status = 'dropped', error = COALESCE(error || ' ', '') || ?
+     WHERE target = 'linear' AND op = 'elicitation' AND status = 'dead'
+       AND json_extract(payload, '$.questionId') = ?`,
+    [note, questionId],
+  ).changes;
 }

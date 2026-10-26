@@ -150,6 +150,7 @@ export {
 } from "./outbox";
 export {
   deadDeliveryItemId,
+  dropDeadElicitations,
   listDeadDeliveries,
   parseDeadDeliveryRef,
   retryDeadDelivery,

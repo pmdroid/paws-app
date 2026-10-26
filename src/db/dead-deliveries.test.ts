@@ -10,7 +10,9 @@ import {
   failJob,
   getJob,
   insertQueuedItem,
+  jobVersionCurrent,
   listDeadDeliveries,
+  listJobs,
   listOutbox,
   migrate,
   openDatabase,
@@ -104,7 +106,7 @@ describe("dead outbox rows and jobs", () => {
     ]);
   });
 
-  test("a dead elicitation of a waiting item is re-enqueued once with a fresh key", async () => {
+  test("a dead elicitation of a waiting item is re-enqueued once, then re-asked once per run", async () => {
     const { clock, db, dispatcher } = harness();
     waiting(db, "item-q", "ses-q");
     elicit(db, "item-q", "ses-q");
@@ -129,11 +131,38 @@ describe("dead outbox rows and jobs", () => {
       "outbox 1 linear.elicitation dead item=item-q attempts=1/1 error=Linear is down",
       "outbox 1 elicitation re-enqueued as outbox 2 item=item-q",
       "outbox 2 linear.elicitation dead item=item-q attempts=5/5 error=Linear is down",
-      "outbox 2 elicitation dead again item=item-q; retry it from the issue page",
+      "outbox 2 elicitation dead again item=item-q; re-asking question q-item-q",
     ]);
     expect(listDeadDeliveries(db, "item-q").map((dead) => [dead.kind, dead.id])).toEqual([
       ["outbox", 2],
     ]);
+    const reask = listJobs(db).filter((job) => job.queue === JOB_KIND.reaskQuestion);
+    expect(reask.map((job) => [job.jobKey, job.payload])).toEqual([
+      [`${JOB_KIND.reaskQuestion}:item-q:-`, { itemId: "item-q", questionId: "q-item-q" }],
+    ]);
+
+    // A second question of the same run that dies twice is not re-asked again.
+    // Answering drops the question's dead rows (answerQuestion does this in src/questions).
+    db.run("UPDATE question SET status = 'answered' WHERE id = 'q-item-q'");
+    db.run("UPDATE outbox SET status = 'dropped' WHERE id = 2");
+    db.run(
+      `INSERT INTO question (id, item_id, session_id, body, status, created_at)
+       VALUES ('q2', 'item-q', 'ses-q', 'And the branch?', 'open', 0)`,
+    );
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "elicitation",
+      orderingKey: "ses-q",
+      idempotencyKey: "question:q2",
+      payload: { id: "q2", sessionId: "ses-q", questionId: "q2", body: "And the branch?" },
+      maxAttempts: 1,
+    });
+    lines = [];
+    await deliverAll(dispatcher, clock, 10);
+    expect(lines.filter((line) => line.startsWith("outbox ")).at(-1)).toBe(
+      "outbox 4 elicitation dead again item=item-q; retry it from the issue page",
+    );
+    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reaskQuestion)).toHaveLength(1);
   });
 
   test("the re-enqueued elicitation is delivered when Linear recovers", async () => {
@@ -193,8 +222,12 @@ describe("dead outbox rows and jobs", () => {
     ]);
 
     expect(retryDeadDelivery(db, "other", { kind: "job", id: job!.id })).toBe(false);
+    // The item moved on since the job was enqueued; the retried job must still count as current.
+    db.run("UPDATE work_item SET version = version + 1 WHERE id = 'item-q'");
+    expect(jobVersionCurrent(db, job!)).toBe(false);
     expect(retryDeadDelivery(db, "item-q", { kind: "job", id: job!.id })).toBe(true);
     expect(getJob(db, job!.id)?.status).toBe("pending");
+    expect(jobVersionCurrent(db, job!)).toBe(true);
     expect(retryDeadDelivery(db, "item-q", { kind: "outbox", id: 1 }, clock.now())).toBe(true);
     expect(listDeadDeliveries(db, "item-q")).toEqual([]);
 
