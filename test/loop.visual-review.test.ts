@@ -12,6 +12,7 @@ import {
   JobLoop,
   applyWorkItemEvent,
   enqueueJobOnce,
+  getLinkAsk,
   OutboxDispatcher,
   getRun,
   getWorkItem,
@@ -40,7 +41,7 @@ import {
   createLinearFileTransfer,
   type AcceptedLinearEvent,
 } from "../src/linear";
-import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+import { attachOrchestrator, VISUAL_REVIEW_REPLY_NOTE, type AgentLaunch } from "../src/loop";
 import {
   findOpenQuestion,
   getQuestion,
@@ -104,7 +105,7 @@ test("two screenshots published 10 s apart end the turn with one question that s
     const [first, second] = listEvidence(f.db, item.id);
     expect(second!.createdAt - first!.createdAt).toBeGreaterThanOrEqual(10_000);
     expect(f.lastPublication()).toMatch(
-      /^\[shot-2\.png\]\(<https:\/\/paws\.example\/evidence\/[^>]+>\)$/,
+      /^\[shot-2\.png\]\(<http:\/\/127\.0\.0\.1:8787\/evidence\/[^>]+>\)$/,
     );
 
     expect(f.tracker.questions).toHaveLength(1);
@@ -219,6 +220,80 @@ test("stopping the task ends the wait", async () => {
     expect(f.reminders()).toBe(0);
     await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1", "activity:late"));
     expect(getQuestion(f.db, open.id)?.answer).toBeNull();
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
+test("with a dashboard link the review is a link ask; Approve on the page opens the pull request", async () => {
+  const f = await pausedForReview({ publicUrl: "https://paws.example" });
+  try {
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    const item = listWorkItems(f.db)[0]!;
+    const wip = item.checkpoint?.wipCommit;
+    expect(open.kind).toBe("link");
+    expect(getLinkAsk(f.db, open.id)).toMatchObject({ kind: "screenshots", headCommit: wip });
+    const asked = f.log.filter((entry) => entry.kind === "elicitation");
+    expect(asked).toHaveLength(1);
+    // No answer buttons: the decision is made on the item page.
+    expect(asked[0]).not.toHaveProperty("options");
+    expect((asked[0] as { body: string }).body).toContain(
+      `Decide in Paws: https://paws.example/status/issues/ENG-7#visual-review`,
+    );
+    putWorkspaceUser(f.db, {
+      id: "user-ada",
+      linearUserId: "delegator-1",
+      name: "Ada Reviewer",
+      email: "ada@example.invalid",
+    });
+    const workspaceId = f.db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
+
+    expect(
+      await f.orchestrator.decideLinkAsk({
+        questionId: open.id,
+        decision: "approve",
+        note: null,
+        answeredBy: "delegator-1",
+        actor: { workspaceId, userId: "user-ada", name: "Ada Reviewer" },
+      }),
+    ).toBe("answered");
+    expect(getVisualReview(f.db, open.id)).toMatchObject({
+      outcome: "accepted",
+      answeredBy: "delegator-1",
+      headCommit: wip,
+      evidenceIds: listEvidence(f.db, item.id).map((row) => row.id),
+    });
+
+    await f.driveUntil(() => f.github.opened.length > 0);
+    const body = f.github.opened[0]!.body;
+    expect(body).toContain(
+      `Visual review accepted by Ada Reviewer in Paws for ${wip!.slice(0, 7)}.`,
+    );
+    // Approve completes the evaluation of the reviewed head: no agent turn.
+    expect(f.prompts).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
+test("with a dashboard link, Accept replied in Linear requests changes and never approves", async () => {
+  const f = await pausedForReview({ publicUrl: "https://paws.example" });
+  try {
+    const open = findOpenQuestion(f.db, "ses_1")!;
+    expect(open.kind).toBe("link");
+    // Someone other than the delegator or the lead cannot even request changes.
+    await f.orchestrator.onLinearEvent(prompted("Accept", "stranger", "activity:stranger"));
+    expect(getVisualReview(f.db, open.id)?.outcome).toBeNull();
+    expect(f.notes(VISUAL_REVIEW_ANSWERERS)).toBe(1);
+
+    await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
+    expect(getVisualReview(f.db, open.id)).toMatchObject({
+      outcome: "changes_requested",
+      feedback: "Accept",
+    });
+    expect(getLinkAsk(f.db, open.id)?.closedReason).toBe("guidance");
+    await f.until(() => f.notes(VISUAL_REVIEW_REPLY_NOTE) === 1);
+    expect(f.github.opened).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -1064,6 +1139,11 @@ async function pausedForReview(
     implement?: (worktree: string, n: number, prompt: string) => Step[];
     /** The Closeout fake in place of the real gate. A held run returns before the turn ends. */
     gate?: FakeCloseoutGate;
+    /**
+     * The dashboard link. Localhost by default, which Linear asks with options;
+     * an https link asks with a link and is decided on the item page.
+     */
+    publicUrl?: string;
   } = {},
 ) {
   const layout = await repoLayout(closeoutPolicy(options.paths));
@@ -1176,7 +1256,7 @@ async function pausedForReview(
           return saved;
         },
       },
-      publicUrl: "https://paws.example",
+      publicUrl: options.publicUrl ?? "http://127.0.0.1:8787",
       root: evidenceRoot,
     },
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },

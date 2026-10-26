@@ -379,7 +379,8 @@ async function runTask(input: {
     files: linear.files!,
     evidence: {
       store: createEvidenceStore({ db, root: evidenceRoot, now: () => clock.now() }),
-      publicUrl: "https://paws.example",
+      // Localhost: the visual review is asked in Linear with options, answered below.
+      publicUrl: "http://127.0.0.1:8787",
       root: evidenceRoot,
     },
     secretsDir: path.join(layout.pawsRoot, "secrets"),
