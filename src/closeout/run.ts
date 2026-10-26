@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -228,7 +229,11 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
     });
   } catch (error) {
-    await early?.done.catch(() => null);
+    journalCaught(error, "run.evaluateUnsealed.run", input.taskId);
+    await early?.done.catch((caughtError1) => {
+      journalCaught(caughtError1, "run.evaluateUnsealed", input.taskId);
+      return null;
+    });
     if (isTransient(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     return failure("blocked", null, message, input.head);
@@ -291,6 +296,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...publishedOf(input),
     });
   } catch (error) {
+    journalCaught(error, "run.evaluateUnsealed.decide", input.taskId);
     const message = error instanceof Error ? error.message : String(error);
     const detail = scrub(message);
     for (const item of [...reviewed, ...gaps]) {
@@ -344,6 +350,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     try {
       head = await readHead(input.worktree);
     } catch (error) {
+      journalCaught(error, "run.runCloseoutGate.readHead", input.taskId);
       const message = error instanceof Error ? error.message : String(error);
       return finalResult(input, "invalid", 0, 0, "", null, message);
     }
@@ -500,6 +507,12 @@ async function attemptFix(
   try {
     fix = await input.fixer.applyFix(request);
   } catch (error) {
+    journalCaught(
+      error,
+      "run.attemptFix.applyFix",
+      input.taskId,
+      "cancellation may interrupt work",
+    );
     return {
       reason: error instanceof Error ? error.message : String(error),
       final: error instanceof Error && error.name === "AbortError",
@@ -511,6 +524,7 @@ async function attemptFix(
   try {
     actual = await readHead(input.worktree);
   } catch (error) {
+    journalCaught(error, "run.attemptFix.readHead", input.taskId);
     return { reason: error instanceof Error ? error.message : String(error), final: true };
   }
   if (fix.head !== actual)
@@ -567,7 +581,8 @@ async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise
     );
     try {
       parts.push(`${item.id} output:\n${scrub((await readFile(file, "utf8")).slice(-4000))}`);
-    } catch {
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "run.repairFeedback.push", input.taskId);
       parts.push(`${item.id} log is unavailable.`);
     }
   }
@@ -605,7 +620,8 @@ async function startParallelReviews(
         ...publishedOf(input),
       }),
     );
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "run.startParallelReviews.toGateDecision", input.taskId);
     return undefined;
   }
   const gaps = reviewGaps(before).filter((item) => parallel.has(item.id));
@@ -619,7 +635,10 @@ async function startParallelReviews(
     evidenceDir,
     progressIdentity(input.taskId, before),
   );
-  done.catch(() => null);
+  done.catch((caughtError4) => {
+    journalCaught(caughtError4, "run.startParallelReviews", input.taskId);
+    return null;
+  });
   return { gaps, done };
 }
 
@@ -653,6 +672,7 @@ async function reviewWithRetries<T>(input: EvaluateInput, review: () => Promise<
     try {
       return await review();
     } catch (error) {
+      journalCaught(error, "run.reviewWithRetries.review", input.taskId);
       const message = error instanceof Error ? error.message : String(error);
       if (attempt >= delays.length || !TRANSIENT_REVIEW_ERROR.test(message)) throw error;
       await new Promise((resume) => setTimeout(resume, delays[attempt]));
@@ -731,6 +751,7 @@ async function addReviewEvidence(
       });
     } catch (error) {
       if (isTransient(error)) throw error;
+      journalCaught(error, "run.addReviewEvidence.addReview", input.taskId);
       const message = error instanceof Error ? error.message : String(error);
       const detail = scrub(`reviewer failed for ${item.id}: ${message}`);
       noteReview(input, identity, item.id, "blocked", detail, null, item.attempt ?? null, null, {
@@ -1002,6 +1023,7 @@ async function headUnmoved(worktree: string, head: string): Promise<string | nul
     if (actual !== head) return "worktree HEAD changed while closeout ran";
     return null;
   } catch (error) {
+    journalCaught(error, "run.headUnmoved.readHead", null);
     return error instanceof Error ? error.message : String(error);
   }
 }

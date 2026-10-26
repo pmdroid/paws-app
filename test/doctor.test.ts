@@ -266,7 +266,13 @@ test("bun run paws doctor exits nonzero until prerequisites exist", async () => 
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  expect(stderr).toBe("");
+  const diagnostics = stderr.trim().split("\n");
+  expect(diagnostics.length).toBeGreaterThan(0);
+  for (const line of diagnostics) {
+    expect(line).toStartWith("catch item=none operation=");
+    expect(line).toContain("code=ENOENT");
+    expect(line).toContain("expected=prerequisite may be absent");
+  }
   expect(stdout).toContain("paws doctor");
   expect(stdout).toContain("missing linear:");
   expect(code).toBe(1);

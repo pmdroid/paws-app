@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   delegationHasOpenWork,
@@ -348,7 +349,8 @@ export function itemDependenciesCurrent(db: Database, target: Target): boolean {
   try {
     const current = scope(db, target);
     return current !== null && snapshot(db, target)?.scope === current.token;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "dependencies.itemDependenciesCurrent.scope", target.itemId);
     return false;
   }
 }

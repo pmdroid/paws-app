@@ -1,4 +1,5 @@
 import type { ask } from "../questions";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
@@ -297,7 +298,10 @@ export async function mergeThroughGitHubQueue(
           CI_FIX_SOURCE.queue,
         );
       if (removal.cause === "conflict") {
-        const base = await caps.fetchMain(item).catch(() => null);
+        const base = await caps.fetchMain(item).catch((caughtError1) => {
+          journalCaught(caughtError1, "orders.mergeThroughGitHubQueue.fetchMain", item?.id);
+          return null;
+        });
         const conflict: RebaseConflict = { base, files: null };
         const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
         if (

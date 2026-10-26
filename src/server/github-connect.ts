@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "../workspace";
+import { journalCaught } from "../journal";
 import { discoverGitHubInstallation } from "./github-connect-status";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -114,7 +115,8 @@ export function createHostedGitHubConnect(options: {
       let app: ActiveGitHubApp;
       try {
         app = activation.template();
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "github-connect.createHostedGitHubConnect.template", null);
         return Response.json(
           { status: "setup_required", canManage: administrator(), requiresSignIn: !permitted() },
           { headers: { "cache-control": "no-store" } },
@@ -191,7 +193,8 @@ export function createHostedGitHubConnect(options: {
           },
           { headers: { "cache-control": "no-store" } },
         );
-      } catch {
+      } catch (caughtError2) {
+        journalCaught(caughtError2, "github-connect.createHostedGitHubConnect.any", null);
         if (!signedIn()) return denied();
         return Response.json(
           {
@@ -243,7 +246,8 @@ export function createHostedGitHubConnect(options: {
           (typeof installationId !== "string" || !/^[1-9][0-9]{0,19}$/.test(installationId))
         )
           throw new Error();
-      } catch {
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "github-connect.createHostedGitHubConnect.parse", null);
         return Response.json(
           { error: "The connection request is invalid. Refresh and try again." },
           { status: 400 },
@@ -262,7 +266,8 @@ export function createHostedGitHubConnect(options: {
           );
         try {
           discoveredApp = activation.template();
-        } catch {
+        } catch (caughtError4) {
+          journalCaught(caughtError4, "github-connect.createHostedGitHubConnect.template", null);
           return Response.json(
             {
               error:
@@ -294,7 +299,12 @@ export function createHostedGitHubConnect(options: {
               { headers: { "cache-control": "no-store" } },
             );
           installationId = discovered.installationId;
-        } catch {
+        } catch (caughtError5) {
+          journalCaught(
+            caughtError5,
+            "github-connect.createHostedGitHubConnect.discoverGitHubInstallation",
+            null,
+          );
           if (!permitted()) return denied();
           return Response.json(
             {
@@ -327,7 +337,8 @@ export function createHostedGitHubConnect(options: {
         let app: ActiveGitHubApp;
         try {
           app = activation.template();
-        } catch {
+        } catch (caughtError6) {
+          journalCaught(caughtError6, "github-connect.createHostedGitHubConnect.template", null);
           return Response.json(
             {
               error:
@@ -468,7 +479,8 @@ export function createHostedGitHubConnect(options: {
           },
         });
       });
-    } catch {
+    } catch (caughtError7) {
+      journalCaught(caughtError7, "github-connect.createHostedGitHubConnect.read", null);
       db.run("UPDATE workspace_github_oauth SET status='failed' WHERE state_hash=?", [
         pending.state_hash,
       ]);

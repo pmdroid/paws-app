@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { linearCaller, linearItem, LinearRateLimitError, type LinearLedger } from "./budget";
@@ -105,6 +106,7 @@ export function createIntakeQueue(options: {
         await options.deliver(store.get(event.dedupeKey) ?? event, queued.attempts);
         store.markHandled(event.dedupeKey);
       } catch (error) {
+        journalCaught(error, "intake-queue.createIntakeQueue.deliver", null);
         if (stopped) return;
         if (error instanceof LinearEntityNotFoundError && error.entity === "AgentSession") {
           log(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
@@ -155,6 +157,7 @@ export function createIntakeQueue(options: {
           if (accepted === false) store.markHandled(event.dedupeKey);
         })
         .catch((error: unknown) => {
+          journalCaught(error, "intake-queue.arrive.then", null);
           const message = error instanceof Error ? error.message : "first activity failed";
           log(`linear first activity for ${event.dedupeKey} failed: ${message}`);
         })
@@ -307,7 +310,8 @@ function eventIssueIdentifier(event: AcceptedLinearEvent): string | null {
     };
     const identifier = parsed?.agentSession?.issue?.identifier;
     return typeof identifier === "string" && identifier.trim() !== "" ? identifier : null;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "intake-queue.eventIssueIdentifier.parse", null);
     return null;
   }
 }

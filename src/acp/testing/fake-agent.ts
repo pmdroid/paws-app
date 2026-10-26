@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { readFileSync, writeFileSync, renameSync } from "node:fs";
@@ -38,7 +39,9 @@ const spawnSteps = (() => {
   let spawned = 0;
   try {
     spawned = Number(readFileSync(counter, "utf8")) || 0;
-  } catch {}
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "fake-agent.recover.Number", null, "test fixture cleanup");
+  }
   writeFileSync(counter, String(spawned + 1));
   return script.sessions[Math.min(spawned, script.sessions.length - 1)]!;
 })();

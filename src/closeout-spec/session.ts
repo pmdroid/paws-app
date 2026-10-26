@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -136,7 +137,10 @@ export function createCloseoutSession(
     const run = chain.then(work, work);
     chain = run.then(
       () => undefined,
-      () => undefined,
+      (caughtError1) => {
+        journalCaught(caughtError1, "session.createCloseoutSession", null);
+        return undefined;
+      },
     );
     return run;
   };
@@ -237,7 +241,9 @@ function notifyReport(
 function notify(options: CloseoutSessionOptions, event: CloseoutSessionEvent): void {
   try {
     options.onProgress?.(event);
-  } catch {}
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "session.notify.onProgress", null);
+  }
 }
 
 function maxAttempts(policy: TreePolicy): number | null {
@@ -412,6 +418,7 @@ async function execute(
   try {
     options.allowCommand?.(argv);
   } catch (error) {
+    journalCaught(error, "session.execute.allowCommand", item?.id);
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, text: message };
   }
@@ -630,7 +637,8 @@ function fileMark(workspace: string, path: string): Buffer | string {
     if (info.isSymbolicLink()) return "link";
     if (!info.isFile()) return "other";
     return readFileSync(absolute);
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "session.fileMark.lstatSync", null);
     return "missing";
   }
 }
@@ -642,7 +650,8 @@ function writeLog(workspace: string, id: string, output: string): string | undef
     writeFileSync(join(workspace, LOG_DIR, ".gitignore"), "*\n");
     writeFileSync(join(workspace, LOG_DIR, name), output);
     return `${LOG_DIR}/${name}`;
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "session.writeLog.mkdirSync", null);
     return undefined;
   }
 }
@@ -651,10 +660,12 @@ function killCommand(pid: number | undefined): void {
   if (pid === undefined) return;
   try {
     process.kill(-pid, "SIGKILL");
-  } catch {
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "session.killCommand.kill", null);
     try {
       process.kill(pid, "SIGKILL");
-    } catch {
+    } catch (caughtError5) {
+      journalCaught(caughtError5, "session.killCommand.kill", null);
       return;
     }
   }

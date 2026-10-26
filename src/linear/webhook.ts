@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   activityKey,
@@ -144,8 +145,7 @@ function schedule(deps: LinearWebhookDeps, event: AcceptedLinearEvent): void {
       deps.store.markHandled(event.dedupeKey);
     })
     .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : "follow-up failed";
-      console.error(`linear webhook follow-up failed: ${message}`);
+      journalCaught(error, "webhook.schedule.then", null);
     })
     .finally(() => {
       pending.delete(event.dedupeKey);
@@ -168,7 +168,8 @@ function readTimestamp(rawBody: string, header: string | null): number | null {
       const bodyTimestamp = readNumber(parsed, "webhookTimestamp");
       if (bodyTimestamp !== null) return bodyTimestamp;
     }
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "webhook.readTimestamp.parse", null);
     return null;
   }
   if (header === null || header.length === 0) return null;
@@ -184,7 +185,8 @@ export function parseAgentEvent(
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody);
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "webhook.parseAgentEvent.parse", null);
     return null;
   }
   if (!isRecord(parsed)) return null;

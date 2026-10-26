@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { appendFile, lstat, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -259,7 +260,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     if (activeCtx && activeSessionId) {
       void activeCtx
         .notify(methods.agent.session.cancel, { sessionId: activeSessionId })
-        .catch(() => undefined);
+        .catch((caughtError1) => {
+          journalCaught(caughtError1, "run.runAgent.notify", options.itemId);
+          return undefined;
+        });
     }
     killTimer = setTimeout(() => killTree(child, "SIGKILL"), graceMs);
   };
@@ -292,7 +296,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
             command: failure.command,
             reason: failure.reason,
           }),
-        ).catch(() => undefined);
+        ).catch((caughtError2) => {
+          journalCaught(caughtError2, "run.runAgent.resolve", options.itemId);
+          return undefined;
+        });
       })
     : undefined;
 
@@ -450,6 +457,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
               phaseSignal,
             );
           } catch (error) {
+            journalCaught(error, "run.runAgent.withTimeout", options.itemId);
             const message = error instanceof Error ? error.message : String(error);
             await emit({ type: "error", message });
             return baseResult(options.role, child, {
@@ -490,6 +498,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
             } catch (error) {
               phaseSignal.throwIfAborted();
               if (isAuthRequired(error)) throw error;
+              journalCaught(error, "run.runAgent.withTimeout", options.itemId);
             } finally {
               loading = false;
             }
@@ -512,6 +521,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           );
           observedModel = model.model;
         } catch (error) {
+          journalCaught(error, "run.runAgent.assertRunning", options.itemId);
           if (isAuthRequired(error)) {
             await emit({ type: "error", message: AUTH_REQUIRED_MESSAGE });
             return baseResult(options.role, child, {
@@ -595,6 +605,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       }),
     ]);
   } catch (error) {
+    journalCaught(error, "run.runAgent.startHostToolBridge", options.itemId);
     const message = error instanceof Error ? error.message : String(error);
     const detail = stderr.text().trim();
     const intentional = state.cancelling;
@@ -650,6 +661,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           await emit({ type: "checkpoint", reason, checkpoint });
         }
       } catch (error) {
+        journalCaught(error, "run.runAgent.commitCheckpoint", options.itemId);
         const message = error instanceof Error ? error.message : String(error);
         result.errorMessage = result.errorMessage ?? message;
         await emit({ type: "error", message });
@@ -660,12 +672,16 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         const report = await bridge.closeoutReport();
         if (report !== undefined && Buffer.byteLength(report) <= 65_536)
           result.closeoutReport = report;
-      } catch {
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "run.runAgent.closeoutReport", options.itemId);
         result.closeoutReport = undefined;
       }
     }
     await bridge?.close();
-    await emitQueue.catch(() => undefined);
+    await emitQueue.catch((caughtError4) => {
+      journalCaught(caughtError4, "run.runAgent", options.itemId);
+      return undefined;
+    });
     options.signal?.removeEventListener("abort", onAbort);
     if (killTimer) clearTimeout(killTimer);
     if (state.cancelling) {
@@ -691,6 +707,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         options.signal,
       );
     } catch (error) {
+      journalCaught(error, "run.runAgent.trim", options.itemId);
       result.stopReason = "error";
       result.errorMessage = error instanceof Error ? error.message : String(error);
     }
@@ -787,6 +804,7 @@ async function runPrompt(options: {
     });
     acpStopReason = response.stopReason;
   } catch (error) {
+    journalCaught(error, "run.runPrompt.request", null);
     if (isAuthRequired(error)) {
       authRequired = true;
       errorMessage = AUTH_REQUIRED_MESSAGE;

@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { join, resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import type {
@@ -256,7 +257,8 @@ function resolveHome(input: LoadPolicyInput): string | undefined {
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "load.isDirectory", null);
     return false;
   }
 }

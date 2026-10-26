@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { randomBytes } from "node:crypto";
 import { requestSlackToken, SLACK_BOT_SCOPES, type SlackFetch, type SlackToken } from "./oauth";
 
@@ -52,7 +53,8 @@ export async function authorizeSlack(input: {
         );
         result.resolve(token);
         return reply("Slack authorization received. Return to Paws.", 200);
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "authorize.fetch.requestSlackToken", null);
         result.reject(
           new Error("Could not exchange the Slack authorization code. Run paws login slack again."),
         );

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { promptMetadata, type AcceptedLinearEvent } from "./events";
 
@@ -82,6 +83,7 @@ export function createInboxStore(db: Database): InboxStore {
         return { inserted: true, handled: false };
       } catch (error) {
         if (!isUniqueViolation(error)) throw error;
+        journalCaught(error, "inbox.commit.transaction", null);
         const existing = findExisting(db, event);
         return { inserted: false, handled: existing?.handled === 1 };
       }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -147,13 +148,15 @@ async function filenameAttempts(root: string, key: AttemptKey): Promise<number[]
   let directory: string;
   try {
     directory = absoluteInside(root, itemDirectory(key));
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "store.filenameAttempts.absoluteInside", key.itemId);
     return [];
   }
   let names: string[];
   try {
     names = await readdir(directory);
   } catch (error) {
+    journalCaught(error, "store.filenameAttempts.readdir", key.itemId);
     if (isEnoent(error)) return [];
     throw error;
   }
@@ -176,13 +179,15 @@ async function readRecord(
   let text: string;
   try {
     text = await readFile(file, "utf8");
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "store.readRecord.readFile", null);
     return { ok: false, path, message: `evidence file ${path} is invalid` };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "store.readRecord.parse", null);
     return { ok: false, path, message: `evidence file ${path} is invalid` };
   }
   const checked = checkEvidence(parsed);
@@ -202,6 +207,7 @@ async function walkJson(dir: string): Promise<{ files: string[]; unreadable: boo
     try {
       entries = await readdir(current, { withFileTypes: true });
     } catch (error) {
+      journalCaught(error, "store.walkJson.readdir", null);
       if (!started && isEnoent(error)) return { files, unreadable: false };
       return { files, unreadable: true };
     }
@@ -243,6 +249,7 @@ async function fileExists(file: string): Promise<boolean> {
     await stat(file);
     return true;
   } catch (error) {
+    journalCaught(error, "store.fileExists.stat", null);
     if (isEnoent(error)) return false;
     throw error;
   }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { assertCommand, assertVmName } from "./names";
 import {
   ProvisioningError,
@@ -127,6 +128,7 @@ export function createFakeExeDev(): FakeExeDev {
       try {
         failIfScripted("deleteVm", vm);
       } catch (error) {
+        journalCaught(error, "fake.deleteVm.failIfScripted", null);
         if (error instanceof ProvisioningError && error.code === "missing") return "missing";
         throw error;
       }

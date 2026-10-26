@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   lastAgentCatalogRefresh,
@@ -98,6 +99,7 @@ export function createAgentCatalog(options: {
         const rows = await evaluateAgent(agent, spec, versions, load, at);
         saveAgentVersions(db, rows);
       } catch (error) {
+        journalCaught(error, "catalog.run.load", null);
         complete = false;
         onError(error);
       }
@@ -126,6 +128,7 @@ export function createAgentCatalog(options: {
       staleReads.set(name, stored?.fetchedAt ?? 0);
       return stored?.versions ?? null;
     } catch (error) {
+      journalCaught(error, "catalog.read.fetchPackage", null);
       onError(new Error(`reading ${name} from npm failed: ${message(error)}`));
       staleReads.set(name, stored?.fetchedAt ?? 0);
       return stored?.versions ?? null;
@@ -437,7 +440,8 @@ function platformBuild(
 function satisfies(version: string, range: string): boolean {
   try {
     return Bun.semver.satisfies(version, range);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "catalog.satisfies", null);
     return false;
   }
 }

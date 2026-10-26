@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   budgetFromHeaders,
   createLinearLedger,
@@ -64,6 +65,7 @@ export function createLinearClient(options: {
       const json: unknown = await abortable(response.json(), signal).catch((error: unknown) => {
         signal?.throwIfAborted();
         if (error instanceof Error && error.name === "AbortError") throw error;
+        journalCaught(error, "graphql.query.abortable", itemId, "cancellation may interrupt work");
         return null;
       });
       current();

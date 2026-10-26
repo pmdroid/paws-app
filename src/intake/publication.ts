@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, delegationHasOpenWork } from "../core";
 import type { createItemReconciler } from "./reconciliation";
@@ -116,8 +117,9 @@ export function createPublicationReadiness(input: {
         workspaceId: before.identity.workspaceId,
         signal,
       });
-    } catch {
+    } catch (caughtError1) {
       signal?.throwIfAborted();
+      journalCaught(caughtError1, "publication.publicationReady.reconcile", itemId);
       return false;
     }
     signal?.throwIfAborted();

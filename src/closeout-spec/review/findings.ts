@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
 import type { Finding, Severity } from "../types";
@@ -126,7 +127,8 @@ function bracketSlices(text: string): string[] {
 function tryParse(text: string): { ok: true; value: unknown } | { ok: false } {
   try {
     return { ok: true, value: JSON.parse(text) as unknown };
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "findings.tryParse.parse", null);
     return { ok: false };
   }
 }

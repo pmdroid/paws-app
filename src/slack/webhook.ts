@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export async function handleSlackWebhook(
@@ -24,7 +25,8 @@ export async function handleSlackWebhook(
   let payload: unknown;
   try {
     payload = JSON.parse(raw.toString("utf8"));
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "webhook.handleSlackWebhook.parse", null);
     return new Response("Invalid Slack payload.", { status: 400 });
   }
   if (

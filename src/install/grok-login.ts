@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   GROK_AGENT_ARGS,
   GROK_LOGIN_MESSAGE,
@@ -81,6 +82,7 @@ export async function grokLoginStatus(options: GrokLoginOptions = {}): Promise<G
       args: resolved.args,
     };
   } catch (error) {
+    journalCaught(error, "grok-login.grokLoginStatus.checkOwnLogin", null);
     const message = error instanceof Error ? error.message : String(error);
     const line = message.split("\n").find((item) => item.trim().length > 0) ?? message;
     return {

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { isRecord, readNumber, readString } from "./read";
 
 export type LinearEventAction = "created" | "prompted" | "other";
@@ -57,7 +58,8 @@ export function promptMetadata(payload: string): {
       actorId: readString(activity, "userId") ?? (user === null ? null : readString(user, "id")),
       activityCreatedAtMs: Number.isFinite(parsedTime) ? parsedTime : null,
     };
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "events.promptMetadata.parse", null);
     return empty;
   }
 }

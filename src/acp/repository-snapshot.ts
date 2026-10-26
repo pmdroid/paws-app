@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -51,6 +52,12 @@ export async function prepareRepositorySnapshot(options: {
     return { path, commit: saved.commit };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    journalCaught(
+      error,
+      "repository-snapshot.prepareRepositorySnapshot.parse",
+      null,
+      "optional file may be absent",
+    );
   }
   await mkdir(options.workspace, { recursive: true, mode: 0o700 });
   const staging = await mkdtemp(join(dirname(options.workspace), ".repository-"));

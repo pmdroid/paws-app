@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { workspaceMember } from "../db";
 import type { WorkspacePrincipal } from "../workspace";
@@ -143,7 +144,8 @@ function parseRecord(text: string | null): Record<string, number> {
         (entry): entry is [string, number] => typeof entry[1] === "number",
       ),
     );
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "http.parseRecord.parse", null);
     return {};
   }
 }
@@ -152,7 +154,8 @@ function parseBlocked(text: string | null): MemberVmBlockingTask[] {
   try {
     const value: unknown = JSON.parse(text ?? "[]");
     return Array.isArray(value) ? (value as MemberVmBlockingTask[]) : [];
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "http.parseBlocked.parse", null);
     return [];
   }
 }
@@ -194,7 +197,10 @@ export function createMemberVmHttp(options: {
       );
     const available = await Promise.resolve()
       .then(() => options.available())
-      .catch(() => false);
+      .catch((caughtError3) => {
+        journalCaught(caughtError3, "http.createMemberVmHttp.then", null);
+        return false;
+      });
     if (!available) return json({ available: false } satisfies MemberVmResponse);
     const member = { workspaceId: principal.workspaceId, userId: principal.userId };
     const at = now();
@@ -217,6 +223,7 @@ export function createMemberVmHttp(options: {
         ),
       } satisfies MemberVmResponse);
     } catch (error) {
+      journalCaught(error, "http.createMemberVmHttp.startMemberVm", null);
       if (error instanceof MemberVmDeleteDenied) return json({ error: error.message }, 403);
       if (error instanceof MemberVmMissing) return json({ error: error.message }, 404);
       const message = error instanceof Error ? error.message : "The VM request failed.";
@@ -234,12 +241,16 @@ function memberName(db: Database, userId: string): string | null {
 
 async function deleteBody(request: Request): Promise<{ id: string; force: boolean } | null> {
   if (!request.headers.get("content-type")?.startsWith("application/json")) return null;
-  const text = await request.text().catch(() => null);
+  const text = await request.text().catch((caughtError4) => {
+    journalCaught(caughtError4, "http.deleteBody.text", null);
+    return null;
+  });
   if (text === null || text.length > MAX_BODY) return null;
   let value: unknown;
   try {
     value = JSON.parse(text);
-  } catch {
+  } catch (caughtError5) {
+    journalCaught(caughtError5, "http.deleteBody.parse", null);
     return null;
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;

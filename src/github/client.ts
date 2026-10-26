@@ -1,5 +1,6 @@
 import { isTransient } from "../core";
 import { GitHubHttpError, type GitHubClient, type GitHubResponse } from "./types";
+import { journalCaught } from "../journal";
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -28,7 +29,8 @@ export function createFetchGitHubClient(
       if (text !== "") {
         try {
           parsed = JSON.parse(text);
-        } catch {
+        } catch (caughtError1) {
+          journalCaught(caughtError1, "client.request.parse", null);
           parsed = text;
         }
       }

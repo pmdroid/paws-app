@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
@@ -58,8 +59,12 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
       const secrets = await Promise.resolve()
         .then(() => options.secrets?.())
         .then((list) => Promise.all(list ?? []))
-        .catch(() => []);
+        .catch((caughtError1) => {
+          journalCaught(caughtError1, "delete.createMemberVmDeleteHandler.then", null);
+          return [];
+        });
       const text = redact(error instanceof Error ? error.message : String(error), secrets);
+      journalCaught(text, "member-vm.delete");
       const at = now();
       db.run(
         `UPDATE member_vm SET delete_failure=?,updated_at=?
@@ -150,7 +155,9 @@ async function runDeleteStep(
           await exeDev.execVm(vm, MEMBER_VM_TAILNET_LOGOUT, {
             timeoutMs: TAILNET_LOGOUT_TIMEOUT_MS,
           });
-        } catch {}
+        } catch (caughtError2) {
+          journalCaught(caughtError2, "delete.runDeleteStep.resolve", null);
+        }
       }
       advance(db, row, "revoke", now());
       return "advance";
@@ -179,6 +186,7 @@ async function runDeleteStep(
         const exists = await exeDev.getVm(vm).then(
           () => true,
           (error: unknown) => {
+            journalCaught(error, "delete.runDeleteStep.getVm", null);
             if (isProvisioningError(error) && error.code === "missing") return false;
             throw error;
           },

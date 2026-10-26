@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { isBlockerSatisfied, type TaskMode, type WorkItemState } from "../core";
 import {
@@ -446,7 +447,8 @@ export function createParentDelegations(input: {
       try {
         scope(sessionId, snapshot);
         return true;
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "parent-delegation.authorizeIntake.scope", null);
         return false;
       }
     },
@@ -530,7 +532,8 @@ export function createParentDelegations(input: {
           try {
             await advance(readParent(row.id)!, context);
             db.run("UPDATE parent_delegation SET last_error=NULL WHERE delegation_id=?", [row.id]);
-          } catch {
+          } catch (caughtError2) {
+            journalCaught(caughtError2, "parent-delegation.register.advance", null);
             context.signal.throwIfAborted();
             db.run("UPDATE parent_delegation SET last_error=? WHERE delegation_id=?", [
               "Sub-issue sessions could not be opened. Check Linear access.",
