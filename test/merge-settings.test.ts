@@ -17,10 +17,10 @@ const PAWS = "843abf82-7a05-4340-b47b-2c81fe6e6e16";
 const PAYMENTS = "4179d503-3ec3-4be7-a8ef-4415a2d9b5e9";
 
 const policy: MergePolicy = {
-  default: { order: "queue", mainMoved: "ci" },
+  default: { order: "queue", mainMoved: "closeout" },
   projects: {
     [PAWS]: {},
-    [PAYMENTS]: { order: "github-queue", mainMoved: "overlap" },
+    [PAYMENTS]: { order: "github-queue", mainMoved: "closeout" },
   },
   rules: [
     { label: "Bug", mainMoved: "closeout" },
@@ -32,19 +32,19 @@ describe("resolveMergeSettings", () => {
   test("an issue rule wins over the project, which wins over the workspace default", () => {
     expect(resolveMergeSettings({ projectId: PAYMENTS, labels: ["Feature"] }, policy)).toEqual({
       order: "github-queue",
-      mainMoved: "overlap",
+      mainMoved: "closeout",
       sources: { order: "project", mainMoved: "project" },
     });
     // The project rule sets the order; its main-moved choice comes from the project.
     expect(resolveMergeSettings({ projectId: PAYMENTS, labels: ["BUG"] }, policy)).toEqual({
       order: "ci-green",
-      mainMoved: "overlap",
+      mainMoved: "closeout",
       sources: { order: "rule", mainMoved: "project" },
       rule: { project: PAYMENTS, label: "bug" },
     });
     expect(resolveMergeSettings({ projectId: null, labels: [] }, policy)).toEqual({
       order: "queue",
-      mainMoved: "ci",
+      mainMoved: "closeout",
       sources: { order: "default", mainMoved: "default" },
     });
   });
@@ -76,7 +76,7 @@ max_turns = 40
 
 [merge]
 order = "ci-green"
-main_moved = "overlap"
+main_moved = "closeout"
 ci_fix_attempts = 2
 
 [merge.projects."${PAWS}"]
@@ -98,7 +98,7 @@ packages = ["apps/*", "packages/*"]
     const config = parseConfigToml(text);
     expect(config.maxTurns).toBe(40);
     expect(readMergeSettings(config)).toEqual({
-      default: { order: "ci-green", mainMoved: "overlap" },
+      default: { order: "ci-green", mainMoved: "closeout" },
       projects: { [PAWS]: {}, [PAYMENTS]: { mainMoved: "closeout" } },
       rules: [
         { label: "Bug", order: "queue" },
@@ -125,7 +125,33 @@ packages = ["apps/*", "packages/*"]
 
   test("unknown choices are rejected", () => {
     expect(() => parseConfigToml('[merge]\norder = "fast"\n')).toThrow("merge.order");
-    expect(() => parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "x"\n')).toThrow();
+    expect(() => parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "x"\n')).toThrow(
+      'must be "closeout"',
+    );
+  });
+
+  test('main_moved other than "closeout" is rejected with a message naming "closeout"', () => {
+    const retired =
+      /is no longer supported: Paws runs Closeout on every rebased head before it merges\. Set it to "closeout" or remove the key\./;
+    for (const value of ["ci", "overlap"]) {
+      expect(() => parseConfigToml(`[merge]\nmain_moved = "${value}"\n`)).toThrow(
+        `config.toml line 2 merge.main_moved "${value}" is no longer supported`,
+      );
+      expect(() => parseConfigToml(`[merge]\nmain_moved = "${value}"\n`)).toThrow(retired);
+      expect(() =>
+        parseConfigToml(`[merge.projects."${PAWS}"]\nmain_moved = "${value}"\n`),
+      ).toThrow(`config.toml merge.projects.${PAWS}.main_moved "${value}" is no longer supported`);
+      expect(() =>
+        parseConfigToml(`[[merge.rules]]\nlabel = "Bug"\nmain_moved = "${value}"\n`),
+      ).toThrow(retired);
+    }
+  });
+
+  test('a missing main_moved means "closeout"', () => {
+    expect(readMergeSettings(parseConfigToml('[merge]\norder = "queue"\n')).default).toEqual({
+      order: "queue",
+      mainMoved: "closeout",
+    });
   });
 });
 
@@ -161,7 +187,7 @@ describe("Merging settings API", () => {
     const response = await handleMergeSettingsRequest(request(), options);
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
-      default: { order: "queue", mainMoved: "ci" },
+      default: { order: "queue", mainMoved: "closeout" },
       projects: [],
       rules: [],
       choices: {
@@ -187,11 +213,11 @@ describe("Merging settings API", () => {
     const { options, audits } = fixture();
     writeFileSync(
       options.configPath,
-      '[caps]\nmax_turns = 31\n\n[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n',
+      '[caps]\nmax_turns = 31\n\n[merge]\norder = "ci-green"\nci_fix_attempts = 5\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n',
     );
     const body = {
-      default: { order: "queue", mainMoved: "ci" },
-      projects: [{ id: PAWS }, { id: PAYMENTS, order: "github-queue", mainMoved: "overlap" }],
+      default: { order: "queue", mainMoved: "closeout" },
+      projects: [{ id: PAWS }, { id: PAYMENTS, order: "github-queue", mainMoved: "closeout" }],
       rules: [{ label: "Bug", mainMoved: "closeout" }],
     };
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
@@ -204,8 +230,8 @@ describe("Merging settings API", () => {
     expect(text).toContain('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"');
     const config = loadConfigFile(options.configPath);
     expect(readMergeSettings(config)).toEqual({
-      default: { order: "queue", mainMoved: "ci" },
-      projects: { [PAWS]: {}, [PAYMENTS]: { order: "github-queue", mainMoved: "overlap" } },
+      default: { order: "queue", mainMoved: "closeout" },
+      projects: { [PAWS]: {}, [PAYMENTS]: { order: "github-queue", mainMoved: "closeout" } },
       rules: [{ label: "Bug", mainMoved: "closeout" }],
       repositories: { "acme/platform": { packages: ["apps/*"] } },
       ciFixAttempts: 5,
@@ -217,7 +243,7 @@ describe("Merging settings API", () => {
     expect(audits).toEqual([
       [
         "settings.merging",
-        "Workspace default when main moved: Always update the branch and run Closeout again → Always update the branch and wait for CI",
+        "Workspace default merge order: Merge each pull request when its CI is green → Merge queue",
       ],
       ["settings.merging", `Project ${PAWS} added`],
       ["settings.merging", `Project ${PAYMENTS} added`],
@@ -227,7 +253,7 @@ describe("Merging settings API", () => {
       ],
       [
         "settings.merging",
-        `Project ${PAYMENTS} when main moved: inherited → Update and re-test only when main changed the same files or package`,
+        `Project ${PAYMENTS} when main moved: inherited → Always update the branch and run Closeout again`,
       ],
       ["settings.merging", "Rule label Bug in any project added"],
       [
@@ -243,9 +269,11 @@ describe("Merging settings API", () => {
 
   test("PUT rejects invalid settings and a missing CSRF token", async () => {
     const { options, audits } = fixture();
-    const valid = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
+    const valid = { default: { order: "queue", mainMoved: "closeout" }, projects: [], rules: [] };
     for (const body of [
-      { ...valid, default: { order: "fast", mainMoved: "ci" } },
+      { ...valid, default: { order: "fast", mainMoved: "closeout" } },
+      { ...valid, default: { order: "queue", mainMoved: "ci" } },
+      { ...valid, projects: [{ id: PAWS, mainMoved: "overlap" }] },
       { ...valid, projects: [{ id: PAWS }, { id: PAWS }] },
       { ...valid, rules: [{ label: " " }] },
       { ...valid, rules: [{ label: "Bug" }, { label: "bug" }] },
@@ -299,7 +327,7 @@ describe("Merging settings API", () => {
     };
     expect(body.githubQueue).toEqual({ repositories: [] });
     const choice = {
-      default: { order: "github-queue", mainMoved: "ci" },
+      default: { order: "github-queue", mainMoved: "closeout" },
       projects: [],
       rules: [],
     };
