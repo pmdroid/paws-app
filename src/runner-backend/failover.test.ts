@@ -119,11 +119,11 @@ describe("usage limits pause the task instead of failing it", () => {
     await expect(run).rejects.toBeInstanceOf(UsageLimitExhaustedError);
     await expect(run).rejects.toMatchObject({
       runnerId: "agentbox",
-      cause: { name: "RetryableRunnerError", usageLimit: { resetsAt: null } },
+      cause: { name: "UsageLimitPause", agent: "claude" },
     });
-    expect(runners.calls).toHaveLength(2);
-    expect(settled).toBe(2);
-    expect(runners.pauses).toHaveLength(1);
+    expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS);
+    expect(settled).toBe(MAX_USAGE_LIMIT_EVENTS);
+    expect(runners.pauses).toHaveLength(MAX_USAGE_LIMIT_EVENTS - 1);
     expect(runners.pauses[0]!.resumeAt - runners.pauses[0]!.at).toBe(15 * 60_000);
     expect(runners.calls.at(-1)!.prompt.match(/usage limit/g)).toHaveLength(1);
   });
@@ -147,7 +147,7 @@ describe("usage limits pause the task instead of failing it", () => {
     await expect(
       runWithFailover(input(), runners.attempt, async () => undefined, runners.wait),
     ).rejects.toBeInstanceOf(UsageLimitExhaustedError);
-    expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS);
+    expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS + 1);
     expect(runners.pauses).toHaveLength(0);
   });
 
@@ -179,6 +179,27 @@ describe("usage limits pause the task instead of failing it", () => {
     expect(runners.pauses).toEqual([]);
     expect(runners.calls.map((call) => call.runnerId)).toEqual(["agentbox", "spare-box"]);
     expect(runners.calls[1]!.at).toBe(runners.calls[0]!.at);
+  });
+
+  test("two runners on one account both at the limit wait for the reset instead of failing", async () => {
+    const runners = fleet((limit, now) => {
+      if (!limit) return "agentbox";
+      if (limit.runnerId === "agentbox") return "goldbox";
+      if (limit.resumeAt > now)
+        return new UsageLimitPause("claude", limit.resumeAt, limit.resetsAt, limit.runnerId);
+      return "agentbox";
+    });
+    runners.outcomes.push(limited("agentbox", RESET), limited("goldbox", RESET));
+    const result = await runWithFailover(
+      input(),
+      runners.attempt,
+      async () => undefined,
+      runners.wait,
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(runners.pauses).toHaveLength(1);
+    expect(runners.calls.map((call) => call.runnerId)).toEqual(["agentbox", "goldbox", "agentbox"]);
+    expect(runners.calls[2]!.at).toBe(RESET + 60_000);
   });
 
   test("Stop ends the wait", async () => {

@@ -39,6 +39,18 @@ test("Quota exhaustion uses explicit reset evidence and keeps unknown cooldown s
     cooldownUntil: now + 900_000,
   });
 });
+test("Claude plan limits name the clock time they reset at", () => {
+  expect(
+    quotaSignal("Internal error: You've hit your weekly limit · resets 4am (UTC)", now),
+  ).toEqual({
+    state: "exhausted",
+    resetsAt: Date.parse("2026-10-14T04:00:00Z"),
+    cooldownUntil: Date.parse("2026-10-14T04:00:00Z"),
+  });
+  expect(quotaSignal("5-hour limit reached ∙ resets 3:30pm (Europe/Berlin)", now)?.resetsAt).toBe(
+    Date.parse("2026-10-13T13:30:00Z"),
+  );
+});
 test("Quota warning remains usable and ordinary errors cannot invent provider limits", () => {
   expect(quotaSignal("10% remaining", now)).toEqual({
     state: "low",
