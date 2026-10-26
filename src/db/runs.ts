@@ -133,3 +133,17 @@ export function getItemRunCommitPolicy(db: Database, itemId: string): GitCommitP
     .toReversed()
     .find((run) => run.checkpoint?.commitPolicy)?.checkpoint?.commitPolicy;
 }
+
+/** Existing runs eligible for a Settings profile update. A live work lease owns its snapshot. */
+export function listWaitingProfileRuns(db: Database, now: number): StoredRun[] {
+  return db
+    .query<RunSql, [number]>(
+      `SELECT r.* FROM run r JOIN work_item i ON i.id=r.item_id
+     WHERE i.state NOT IN ('queued','completed','merged','cancelled') AND i.cancel_requested=0
+       AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id=r.id
+         AND w.ended_at IS NULL AND w.lease_until>?)
+     ORDER BY r.created_at,r.id`,
+    )
+    .all(now)
+    .map(mapRun);
+}

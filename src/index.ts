@@ -849,6 +849,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         updates: skillUpdates,
       },
       agentSettings: {
+        applyToWaiting: () => orchestrator?.applyAgentSettingsToWaiting() ?? 0,
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
         ...(linear?.tracker?.mergeChoices

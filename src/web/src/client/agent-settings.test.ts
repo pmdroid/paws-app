@@ -259,3 +259,16 @@ describe("agent settings", () => {
     ).rejects.toThrow("Settings could not be saved");
   });
 });
+
+test("waiting-run toggle is off by default and save feedback includes the run count", () => {
+  const state = view();
+  const markup = renderAgentSettings(state);
+  expect(markup).toContain('name="apply-to-waiting"  aria-describedby=');
+  expect(markup).toContain("Also switch runs that are waiting");
+  expect(renderAgentSettings({ ...state, saved: true, waitingRuns: 3 })).toContain(
+    "Saved. 3 waiting runs will switch at their next step.",
+  );
+  expect(renderAgentSettings({ ...state, saved: true, waitingRuns: 1 })).toContain(
+    "Saved. 1 waiting run will switch at their next step.",
+  );
+});
