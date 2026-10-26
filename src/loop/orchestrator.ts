@@ -1820,8 +1820,9 @@ export class Orchestrator {
       : `Your runner ${need.runnerName} needs ${runnerAgentName(need.agent)} signed in. Sign in on the [Runners page](${url}); I'll start right after.`;
   }
 
-  private nextRunnerWait(job: Job, error: unknown): RunnerCapacityWaitState | null {
-    if (!(error instanceof RunnerCapacityWait)) return null;
+  private nextRunnerWait(job: Job, caught: unknown): RunnerCapacityWaitState | null {
+    const error = capacityWaitIn(caught);
+    if (!error) return null;
     const busy = error.runnerIds.length > 0;
     const previous = runnerCapacityWait(job.payload);
     // A busy runner is waited for without limit. Only a wait with no runner offered runs out, and
@@ -6546,4 +6547,12 @@ function listsChecks(report: string): boolean {
 /** The issue labels kept with the task's merge settings when it started. */
 function issueLabels(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((label) => typeof label === "string") : [];
+}
+
+function capacityWaitIn(error: unknown): RunnerCapacityWait | null {
+  for (let current = error, depth = 0; current instanceof Error && depth < 5; depth++) {
+    if (current instanceof RunnerCapacityWait) return current;
+    current = current.cause;
+  }
+  return null;
 }
