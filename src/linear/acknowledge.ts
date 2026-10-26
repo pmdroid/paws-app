@@ -1,5 +1,5 @@
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
-import { RunnerSlotsBusyError, UserFacingError } from "../core";
+import { isTransient, RunnerSlotsBusyError, UserFacingError } from "../core";
 import { LinearRateLimitError } from "./budget";
 import { LinearEntityNotFoundError } from "./graphql";
 import type { AcceptedLinearEvent } from "./events";
@@ -117,7 +117,7 @@ export async function acknowledgeNewSession(
     if (
       event.sessionId !== null &&
       options.reportFailure !== false &&
-      !(error instanceof LinearRateLimitError) &&
+      !isTransient(error) &&
       !(error instanceof UserFacingError && error.reported)
     ) {
       try {

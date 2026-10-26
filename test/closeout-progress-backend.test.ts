@@ -12,7 +12,7 @@ import type {
 import { evaluateCandidate, runCloseoutGate } from "../src/closeout";
 import type { FixRunner } from "../src/closeout/fixer";
 import { credentialSecrets } from "../src/closeout-spec";
-import { isTransientFailure } from "../src/core";
+import { isTransient } from "../src/core";
 import { createStreamScrubber } from "../src/closeout-spec/run/scrub";
 import {
   applyWorkItemEvent,
@@ -397,7 +397,7 @@ describe("closeout progress backend", () => {
       const thrown = await evaluateCandidate(
         evalInput(repo, createDbCloseoutProgress(db, "item-1")),
       ).catch((error: unknown) => error);
-      expect(isTransientFailure(thrown)).toBe(true);
+      expect(isTransient(thrown)).toBe(true);
       expect(String(thrown)).toContain("origin/main is unavailable");
       await exec("git", [
         "-C",

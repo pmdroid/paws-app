@@ -118,7 +118,7 @@ export {
   RunnerSetupRequired,
   type RunnerSetupNeed,
   TRANSIENT_RETRY_BASE_MS,
-  isTransientFailure,
+  isTransient,
   placementWaitMs,
   isTransientGitError,
   retryNote,

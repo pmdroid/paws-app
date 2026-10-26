@@ -1,3 +1,4 @@
+import { LinearHttpError } from "./graphql";
 import type { LinearClient } from "./graphql";
 import type { FetchLike, LinearAuth } from "./oauth";
 import { isRecord, readString } from "./read";
@@ -98,7 +99,14 @@ export function createLinearFileTransfer(options: {
       "upload",
     );
     discardBody(response);
-    if (!response.ok) throw new Error(`Linear file upload HTTP ${response.status}`);
+    if (!response.ok)
+      throw new LinearHttpError(
+        response.status,
+        "",
+        response.headers,
+        Date.now(),
+        `Linear file upload HTTP ${response.status}`,
+      );
     if (response.redirected) throw new Error("Linear file upload redirects are forbidden");
     return {
       assetUrl: upload.assetUrl,
@@ -168,7 +176,13 @@ export function createLinearFileTransfer(options: {
         );
         if (!response.ok) {
           discardBody(response);
-          throw new Error(`Linear file download HTTP ${response.status}`);
+          throw new LinearHttpError(
+            response.status,
+            "",
+            response.headers,
+            Date.now(),
+            `Linear file download HTTP ${response.status}`,
+          );
         }
         if (response.redirected) {
           discardBody(response);

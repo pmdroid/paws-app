@@ -82,7 +82,7 @@ import {
   queueLine,
   systemClock,
   parseLinearCommand,
-  isTransientFailure,
+  isTransient,
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
@@ -1409,7 +1409,7 @@ export class Orchestrator {
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      if (isTransientFailure(error)) {
+      if (isTransient(error)) {
         const retry = retryCount(job.payload) + 1;
         if (retry > MAX_TRANSIENT_RETRIES) {
           this.fail(
@@ -1979,7 +1979,7 @@ export class Orchestrator {
         !controller.signal.aborted &&
         getWorkItem(this.db, item.id)?.state !== "awaiting_input"
       ) {
-        if (isTransientFailure(error)) throw error;
+        if (isTransient(error)) throw error;
         this.fail(
           item,
           "answer_error",
@@ -2087,7 +2087,7 @@ export class Orchestrator {
       } catch (error) {
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
-        if (isTransientFailure(error)) throw error;
+        if (isTransient(error)) throw error;
         closeActiveRun(this.db, run.id, this.now());
         const summary = `Closeout: blocked\n${error instanceof Error ? error.message : String(error)}`;
         this.post(item, "thought", summary, `${run.id}:profile-preflight`);
@@ -2189,7 +2189,7 @@ export class Orchestrator {
             current,
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
-        else if (isTransientFailure(error)) {
+        else if (isTransient(error)) {
           deferred = true;
           throw error;
         } else this.fail(current, "run_error", message, error);
@@ -2638,7 +2638,7 @@ export class Orchestrator {
           );
           assertCurrent();
           attempt -= 1;
-        }
+        } else if (isTransient(error)) throw error;
       }
     }
     throw new Error(
@@ -2805,7 +2805,7 @@ export class Orchestrator {
         base = (await git(["-C", worktree, "merge-base", "HEAD", upstream])).trim();
       }
     } catch (error) {
-      if (isTransientFailure(error)) throw error;
+      if (isTransient(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
       this.fail(item, "reverify", message, error);
       return;
