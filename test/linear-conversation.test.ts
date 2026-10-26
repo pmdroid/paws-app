@@ -1,3 +1,4 @@
+import { tickWithRestarts } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -278,7 +279,7 @@ for (const phase of ["implement", "review"] as const) {
     const f = fixture(phase);
     try {
       await f.orchestrator.onLinearEvent(event("created", null, 1));
-      const first = f.jobs.tick();
+      const first = tickWithRestarts(f.jobs, f.orchestrator, f.db);
       await until(() => f.prompts().some((row) => row.purpose === phase));
       if (phase === "implement") await until(() => existsSync(f.evidence + ".descendant"));
       const updates = Promise.all([
@@ -296,7 +297,7 @@ for (const phase of ["implement", "review"] as const) {
         expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
       expect(getConversation(f.db, original.id).entries).not.toContain("PRIVATE_HIDDEN");
       f.reopen();
-      await f.jobs.tick();
+      await tickWithRestarts(f.jobs, f.orchestrator, f.db);
       expect(f.item().id).toBe(original.id);
       expect(f.item().state).toBe("merge_queue");
       const prompt = f
@@ -329,7 +330,7 @@ test("new prompt after completion creates a new task and preserves the terminal 
   const f = fixture(null);
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
-    await f.jobs.tick();
+    await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     const original = f.item();
     applyWorkItemEvent(f.db, original.id, "merge_accepted");
     expect(getConversation(f.db, original.id).entries).toContain(
@@ -343,7 +344,7 @@ test("new prompt after completion creates a new task and preserves the terminal 
     expect(getWorkItem(f.db, original.id)?.state).toBe("merged");
     f.reopen();
     for (let attempt = 0; attempt < 3 && f.item().state === "queued"; attempt++)
-      await f.jobs.tick();
+      await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     expect(f.item().state).toBe("merge_queue");
     expect(
       f
@@ -366,7 +367,7 @@ test("Stop wins over an interrupted turn, quiesces descendants and keeps complet
   const f = fixture("implement");
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
-    const tick = f.jobs.tick();
+    const tick = tickWithRestarts(f.jobs, f.orchestrator, f.db);
     await until(() => existsSync(f.evidence + ".descendant"));
     const update = f.orchestrator.onLinearEvent(event("update", "DO_NOT_RUN", 2));
     const stop = f.orchestrator.onLinearEvent(event("stop", null, 3, "stop"));
@@ -380,7 +381,7 @@ test("Stop wins over an interrupted turn, quiesces descendants and keeps complet
     expect(f.item().state).toBe("cancelled");
     expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
     expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
-    expect(await f.jobs.tick()).toBeNull();
+    expect(await tickWithRestarts(f.jobs, f.orchestrator, f.db)).toBeNull();
     await f.orchestrator.onLinearEvent(event("after-stop", "NEW_REQUEST", 4));
     expect(f.item().state).toBe("queued");
   } finally {
@@ -392,7 +393,7 @@ test("shutdown joins active writers before the database can close", async () => 
   const f = fixture("implement");
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
-    const tick = f.jobs.tick();
+    const tick = tickWithRestarts(f.jobs, f.orchestrator, f.db);
     await until(() => existsSync(f.evidence + ".descendant"));
     await f.orchestrator.shutdown();
     await tick;
@@ -436,7 +437,7 @@ test("prompt before creation recovers the authoritative issue and reuses its tas
     expect(f.item().id).toBe(original.id);
     f.reopen();
     for (let attempt = 0; attempt < 3 && f.item().state === "queued"; attempt++)
-      await f.jobs.tick();
+      await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     expect(f.item().state).toBe("merge_queue");
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "EARLY_REQUEST",
@@ -458,7 +459,7 @@ test("unresolved early prompt remains durable until creation supplies its issue"
     ]);
     f.reopen();
     await f.orchestrator.onLinearEvent(event("created", null, 1));
-    await f.jobs.tick();
+    await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     expect(f.item().state).toBe("merge_queue");
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "PENDING_REQUEST",
@@ -474,7 +475,7 @@ test("an accepted answer question redirects through classification before code e
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     const task = f.item().id;
-    const original = f.jobs.tick();
+    const original = tickWithRestarts(f.jobs, f.orchestrator, f.db);
     await until(() => Boolean(findOpenQuestion(f.db, "session")));
     expect(getTaskMode(f.db, task)).toBe("answer");
     expect(f.starts).toEqual(["classify", "answer"]);
@@ -488,7 +489,7 @@ test("an accepted answer question redirects through classification before code e
     expect(findOpenQuestion(f.db, "session")).toBeNull();
     expect(f.item().id).toBe(task);
     expect(f.tracker.progress.filter((row) => row.kind === "response")).toHaveLength(0);
-    await f.jobs.tick();
+    await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     expect(getTaskMode(f.db, task)).toBe("code");
     expect(f.starts.indexOf("implement")).toBeGreaterThan(f.starts.lastIndexOf("classify"));
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
@@ -531,7 +532,7 @@ test("shutdown retains a queued start without allowing a new writer", async () =
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     await f.orchestrator.shutdown();
-    await f.jobs.tick();
+    await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     expect(f.starts).toEqual([]);
     expect(f.item().state).toBe("queued");
     expect(
@@ -550,7 +551,7 @@ test.each(["answer", "artifact"] as const)(
     try {
       await f.orchestrator.onLinearEvent(event("created", null, 1));
       const discussion = f.item().id;
-      const original = f.jobs.tick();
+      const original = tickWithRestarts(f.jobs, f.orchestrator, f.db);
       await until(() => Boolean(findOpenQuestion(f.db, "session")));
       const reply = {
         ...event("redirect-children", "Also implement both child changes", Date.now()),
@@ -559,7 +560,7 @@ test.each(["answer", "artifact"] as const)(
       };
       await f.orchestrator.onLinearEvent(reply);
       await original;
-      await f.jobs.tick();
+      await tickWithRestarts(f.jobs, f.orchestrator, f.db);
       expect(getWorkItem(f.db, discussion)?.state).toBe("cancelled");
       const children = f.db
         .query<{ id: string; linear_issue_id: string }, []>(
@@ -571,7 +572,7 @@ test.each(["answer", "artifact"] as const)(
       expect(f.starts).toEqual(["classify", mode, "classify"]);
       f.reopen();
       await f.orchestrator.onLinearEvent(event("created", null, 1));
-      await f.jobs.tick();
+      await tickWithRestarts(f.jobs, f.orchestrator, f.db);
       expect(f.item().id).toBe(children[0]!.id);
       expect(f.item().state).toBe("merge_queue");
       const implementation = f.prompts().find((row) => row.purpose === "implement")!.prompt;

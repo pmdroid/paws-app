@@ -58,16 +58,16 @@ const jobs = (db: ReturnType<typeof tempDb>) =>
 test("a Closeout guidance answer resumes the agent with the Closeout summary", () => {
   const { db, asker, question } = closeoutHelp();
   answer(db, reply("Create ok.txt"), questionEffects(db, { now: NOW + 100 }));
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("running");
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db)).toEqual([
     {
       queue: JOB_KIND.resume,
       jobKey: `closeout-guidance:${question.id}`,
       payload: {
         itemId: asker.itemId,
-        freshSession: true,
+        runId: asker.runId,
         handoff: handoffNote({ question: "Closeout: rejected", answer: "Create ok.txt" }),
-        reason: "closeout-guidance",
+        reason: "answer",
       },
     },
   ]);
@@ -188,6 +188,6 @@ test("a CI help answer resumes the agent with the handoff", () => {
   const { db, asker } = parked();
   const { question } = ask(db, asker, "ci-help", "CI failed on the pull request.", { now: NOW });
   answer(db, reply("Fix the flaky test"), questionEffects(db, { now: NOW + 100 }));
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("running");
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db).map((job) => job.jobKey)).toEqual([`resume:answer:${question.id}`]);
 });

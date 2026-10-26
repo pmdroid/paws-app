@@ -279,6 +279,23 @@ describe("module boundaries", () => {
     }
     expect(violations).toEqual([]);
   });
+  test("return and question callers use the shared operations", () => {
+    for (const file of walk(SRC)) {
+      if (!file.endsWith(".ts") || file.endsWith(".test.ts") || file.endsWith("-harness.ts"))
+        continue;
+      const source = readFileSync(file, "utf8");
+      expect(
+        source.match(/applyWorkItemEvent\([^;]*["'](?:ejected|closeout_rejected)["']/g),
+        relative(SRC, file),
+      ).toBeNull();
+      if (relative(SRC, file) !== "loop/operations.ts") {
+        expect(
+          source.match(/applyWorkItemEvent\([^;]*["']blocking_question["']/g),
+          relative(SRC, file),
+        ).toBeNull();
+      }
+    }
+  });
 });
 
 function isPublicApi(rel: string): boolean {

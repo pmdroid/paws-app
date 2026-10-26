@@ -52,7 +52,7 @@ function itemOf(job: Job | null): string | null {
   return (job?.payload as { itemId?: string } | undefined)?.itemId ?? null;
 }
 
-test("an unreserved start the legacy rule claims is journaled with its item, job and reason", () => {
+test("an unreserved start stays pending without a legacy claim decision", () => {
   const db = tempDb();
   try {
     queued(db, "solo");
@@ -61,16 +61,15 @@ test("an unreserved start the legacy rule claims is journaled with its item, job
     const lines = disagreements(() => {
       claimed = claimNextJob(db, { now: 1000 });
     });
-    assert.equal(claimed!.id, id);
-    assert.deepEqual(lines, [
-      `claim gate disagreement job=${id} item.start item=solo legacy=claim reservation=hold reason=no reservation`,
-    ]);
+    assert.equal(claimed, null);
+    assert.equal(getJob(db, id)?.status, "pending");
+    assert.deepEqual(lines, []);
   } finally {
     db.close();
   }
 });
 
-test("a reserved start the legacy rule holds behind unreserved work is journaled once", () => {
+test("a reserved start is claimed without the legacy gate", () => {
   const db = tempDb();
   try {
     queued(db, "legacy");
@@ -84,12 +83,9 @@ test("a reserved start the legacy rule holds behind unreserved work is journaled
       )
       .get()!.id;
     const lines = disagreements(() => {
-      assert.equal(claimNextJob(db, { now: 1000 }), null);
-      assert.equal(claimNextJob(db, { now: 1001 }), null);
+      assert.equal(claimNextJob(db, { now: 1000 })?.id, start);
     });
-    assert.deepEqual(lines, [
-      `claim gate disagreement job=${start} item.start item=next legacy=hold reservation=claim reason=unreserved work in flight`,
-    ]);
+    assert.deepEqual(lines, []);
   } finally {
     db.close();
   }

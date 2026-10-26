@@ -34,3 +34,26 @@ export function migratedDatabase(path: string): Database {
   migrate(db);
   return db;
 }
+
+/** Drive the queued fix turns that formerly ran inside a single Closeout gate call. */
+export async function tickWithRestarts(
+  jobs: import("../src/db").JobLoop,
+  orchestrator: import("../src/loop").Orchestrator,
+  db: Database,
+): Promise<import("../src/db").Job | null> {
+  const first = await jobs.tick();
+  for (let turn = 0; turn < 4; turn++) {
+    const next = db
+      .query<{ id: number }, []>(
+        `SELECT j.id FROM job j JOIN work_item i ON i.id=json_extract(j.payload,'$.itemId')
+       WHERE j.queue='run.resume' AND j.status='pending' AND i.state='queued'
+       AND json_extract(j.payload,'$.reason') IN ('findings','ci','review','conflict') ORDER BY j.id LIMIT 1`,
+      )
+      .get();
+    if (!next) break;
+    orchestrator.reconcileExecution();
+    await jobs.tick(["run.resume"]);
+    if (first?.queue === "github.merge") await jobs.tick(["github.merge"]);
+  }
+  return first;
+}

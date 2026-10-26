@@ -271,8 +271,8 @@ export async function probeExecutionRuntime(input: {
     () => spec()?.revision === 2 && !hasPendingDelegationChanges(db, target.delegationId),
   );
   assert.notEqual(spec()!.hash, first.hash);
-  assert.equal(getWorkItem(db, itemId)!.currentRunId, null);
-  assert.equal(getWorkItem(db, itemId)!.checkpoint, null);
+  assert.equal(getWorkItem(db, itemId)!.currentRunId, oldRun);
+  assert.equal(getWorkItem(db, itemId)!.checkpoint?.phase, "running");
   assert.equal(getWorkItem(db, itemId)!.state, "queued");
   assert.equal(
     db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(oldMerge)!
@@ -282,7 +282,7 @@ export async function probeExecutionRuntime(input: {
   assert.equal(
     db.query<{ status: string }, [string]>("SELECT status FROM run WHERE id=?").get(oldRun!)!
       .status,
-    "lost",
+    "ended",
   );
   assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
   observe(

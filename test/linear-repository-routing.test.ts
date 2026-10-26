@@ -28,7 +28,7 @@ import {
 } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { tempDb, tempHome } from "./helpers";
-import { workspaceAdmission } from "./fake-workspace";
+import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 
 const repositories: RepositoryBinding[] = ["one", "two", "private"].map((repo) => ({
   owner: "acme",
@@ -248,9 +248,16 @@ test("an incomplete access scan retries without binding the surviving repository
     expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
     expect(findOpenQuestion(f.db, "session")).toBeNull();
-    expect(listJobs(f.db).some((job) => job.status === "pending" && job.attempts === 1)).toBe(true);
+    expect(
+      listJobs(f.db).some(
+        (job) =>
+          job.status === "pending" &&
+          (job.attempts === 1 || (job.payload as { reason?: string }).reason === "follow_up"),
+      ),
+    ).toBe(true);
     f.unavailable.clear();
     f.clock.advance(10_000);
+    workspaceDispatch(f.db, { now: f.clock.now() });
     await f.jobs.tick();
     expect(findOpenQuestion(f.db, "session")?.options).toHaveLength(2);
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
@@ -586,6 +593,7 @@ test("a retried repository selection reuses the hints and suggestions it already
     expect([hintReads, suggestionReads]).toEqual([1, 3]);
     f.unavailable.clear();
     f.clock.advance(10_000);
+    workspaceDispatch(f.db, { now: f.clock.now() });
     await f.jobs.tick();
     expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
     expect([hintReads, suggestionReads]).toEqual([1, 3]);

@@ -1,5 +1,6 @@
+import { tickWithRestarts } from "../helpers";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent, type RunAgentOptions } from "../../src/acp";
 import { JOB_KIND, systemClock, FakeClock } from "../../src/core";
@@ -34,7 +35,7 @@ import { createFakeTracker, LinearRateLimitError } from "../../src/linear";
 import { findOpenQuestion } from "../../src/questions";
 import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
-import { attachOrchestrator } from "../../src/loop";
+import { attachOrchestrator, itemPathId } from "../../src/loop";
 import { saveSchedulingContext } from "../../src/scheduler";
 import { migratedDatabase } from "../helpers";
 import { workspaceAdmission } from "../fake-workspace";
@@ -758,6 +759,13 @@ export async function probeRunnerOrchestration(
         });
       }
       await jobs.tick();
+      if (runnerWait)
+        db.run("UPDATE runner_work SET ended_at=? WHERE ended_at IS NULL", [clock.now()]);
+      if (!initialLease && listWorkItems(db)[0]?.state === "queued") {
+        verificationExclusions = [];
+        orchestrator.reconcileExecution();
+        await jobs.tick([JOB_KIND.resume]);
+      }
       const item = listWorkItems(db)[0]!;
       if (initialLease) {
         assert.equal(item.state, "running");
@@ -778,7 +786,11 @@ export async function probeRunnerOrchestration(
         assert.equal(calls.length, 1);
         assert.equal(witnessCalls, 0);
       } else {
-        assert.equal(item.state, "merge_queue", JSON.stringify(item));
+        assert.equal(
+          item.state,
+          "merge_queue",
+          JSON.stringify({ item, question: findOpenQuestion(db, "session") }),
+        );
         assert.equal(implementationCount, 2);
         assert(calls.filter((call) => call.prepare).length === 2);
         assert(calls.some((call) => call.role === "reviewer" && !call.prepare));
@@ -878,6 +890,11 @@ export async function probeRunnerOrchestration(
           assert(clock instanceof FakeClock);
           clock.advance(30001);
         }
+        // Reverify ownership scenarios require a fresh review rather than reuse of the accepted head.
+        rmSync(join(home, "closeout", "evidence", itemPathId(item)), {
+          recursive: true,
+          force: true,
+        });
         reverifying = true;
         const accepted = item.checkpoint?.wipCommit;
         let movedMain = "";
@@ -896,7 +913,7 @@ export async function probeRunnerOrchestration(
               payload: { itemId: item.id },
               now: clock.now(),
             });
-        assert.equal((await jobs.tick())?.id, reverifyId);
+        assert.equal((await tickWithRestarts(jobs, orchestrator, db))?.id, reverifyId);
         const verified = getWorkItem(db, item.id)!;
         if (rebase) {
           const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);

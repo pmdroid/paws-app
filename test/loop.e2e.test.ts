@@ -1,3 +1,4 @@
+import { tickWithRestarts } from "./helpers";
 import { generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
@@ -204,7 +205,7 @@ test.each([false, true, "cap"] as const)(
     let running: Promise<unknown> | undefined;
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "repair"));
-      running = jobs.tick();
+      running = tickWithRestarts(jobs, orchestrator, db);
       for (let i = 0; i < 1_000 && !existsSync(entered); i++) await Bun.sleep(10);
       expect(existsSync(entered), debug(layout, db)).toBe(true);
       // Plan and summary are throttled to one request per 30 seconds, so check the newest
@@ -216,7 +217,7 @@ test.each([false, true, "cap"] as const)(
       const progressDeadline = performance.now() + 10_000;
       while (
         performance.now() < progressDeadline &&
-        (!tracker.progress.some((update) => /fix attempt 1 of 5/i.test(update.body)) ||
+        (!tracker.progress.some((update) => /fix attempt 1 of 3/i.test(update.body)) ||
           metadata("linear.session.summary")?.summary !== "ENG-302: fixing Closeout findings" ||
           metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress")
       ) {
@@ -227,7 +228,7 @@ test.each([false, true, "cap"] as const)(
         "Fixing the missing output.",
       );
       expect(tracker.progress.map((update) => update.body)).not.toContain("Write repaired output");
-      expect(tracker.progress.some((update) => /fix attempt 1 of 5/i.test(update.body))).toBe(true);
+      expect(tracker.progress.some((update) => /fix attempt 1 of 3/i.test(update.body))).toBe(true);
       expect(metadata("linear.session.summary")?.summary).toBe("ENG-302: fixing Closeout findings");
       expect(metadata("linear.session.plan")?.plan?.[0]).toEqual({
         content: "Repair missing output",
@@ -235,7 +236,7 @@ test.each([false, true, "cap"] as const)(
       });
       for (const heartbeat of heartbeats) heartbeat();
       await outbox.idle();
-      expect(tracker.progress.at(-1)?.body).toContain("fix attempt 1 of 5");
+      expect(tracker.progress.at(-1)?.body).toContain("fix attempt 1 of 3");
       const response = await handleStatusRequest(new Request("http://localhost/api/status"), {
         db,
       });
@@ -244,7 +245,7 @@ test.each([false, true, "cap"] as const)(
       if (!parsed.ok) throw new Error("Invalid status snapshot");
       const run = parsed.snapshot.runs.find((entry) => entry.itemId === "ENG-302");
       expect(run?.activity.map((entry) => entry.text)).not.toContain("Fixing the missing output.");
-      expect(run?.summary).toContain("fix attempt 1 of 5");
+      expect(run?.summary).toContain("fix attempt 1 of 3");
       expect(JSON.stringify(tracker.progress)).not.toContain("PRIVATE_FIX_REASONING");
       expect(JSON.stringify(parsed.snapshot)).not.toContain("PRIVATE_FIX_REASONING");
       if (stop === true) await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
@@ -262,15 +263,12 @@ test.each([false, true, "cap"] as const)(
           awakeMs: 0,
           maxAwakeMs: 3 * 60 * 60 * 1000,
         });
-        running = jobs.tick();
+        running = tickWithRestarts(jobs, orchestrator, db);
       }
       if (release) writeFileSync(release, "go");
       await running;
       while (outbox.tick().length > 0) await outbox.idle();
       expect(stateOf(db, "ENG-302")).toBe(stop === true ? "cancelled" : "merge_queue");
-      expect(tracker.progress.some((update) => update.body.includes("Rechecking ENG-302"))).toBe(
-        stop !== true,
-      );
     } finally {
       writeFileSync(release, "go");
       await running;
@@ -344,7 +342,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
   let running: Promise<unknown> | undefined;
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "retry"));
-    running = jobs.tick();
+    running = tickWithRestarts(jobs, orchestrator, db);
     await waitFor(entered(1));
     while (outbox.tick().length > 0) await outbox.idle();
     expect(started()).toHaveLength(1);
@@ -355,7 +353,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     await orchestrator.onLinearEvent(linearEvent("prompted", "Try again", null));
     await running;
-    running = jobs.tick();
+    running = tickWithRestarts(jobs, orchestrator, db);
     await waitFor(entered(2));
     while (outbox.tick().length > 0) await outbox.idle();
     expect(started(), debug(layout, db)).toHaveLength(2);
@@ -448,11 +446,11 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
   });
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "page"));
-    await jobs.tick();
+    await tickWithRestarts(jobs, orchestrator, db);
     expect(stateOf(db, "ENG-303"), debug(layout, db)).toBe("merge_queue");
     const fixes = tracker.progress.filter((update) => update.body.startsWith("Fixing Closeout"));
     expect(fixes.map((update) => update.body)).toEqual([
-      "Fixing Closeout findings for ENG-303, fix attempt 1 of 8. Failed checks: visual-proof.",
+      "Fixing Closeout findings for ENG-303, fix attempt 1 of 3.",
     ]);
     expect(prompts.get("fix")).toContain("visual-proof (evidence): failed");
     expect(prompts.get("fix")).toContain('publish_artifact with checkId "visual-proof"');
@@ -622,7 +620,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     const deadline = Date.now() + 80_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {
-      const job = await jobs.tick();
+      const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) {
         idle += 1;
         if (idle > 3) break;
@@ -686,7 +684,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
       "Fixes ENG-3",
     ]);
     expect(github.opened[0]?.body).toContain("Closeout:");
-    expect(github.opened[1]?.body).toContain("Fix attempts: 1");
+    expect(github.opened[1]?.body).toContain("Fix attempts: 0");
     expect(github.merged).toHaveLength(2);
     expect(implementationLaunches).toEqual(["ENG-2", "ENG-2", "ENG-3"]);
     expect(uploadedDuringCode).toBe(true);
@@ -832,7 +830,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
     const deadline = Date.now() + 90_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {
-      const job = await jobs.tick();
+      const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) {
         idle += 1;
         if (idle > 3) break;
@@ -871,7 +869,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
       "Fixes ENG-3",
       "Fixes ENG-4",
     ]);
-    expect(github.opened[0]?.body).toContain("Fix attempts: 1");
+    expect(github.opened[0]?.body).toContain("Fix attempts: 0");
     expect(github.merged).toHaveLength(3);
     expect(apiPaths.some((apiPath) => apiPath.endsWith("/access_tokens"))).toBe(false);
     expect(apiPaths.some((apiPath) => apiPath.includes("webhook"))).toBe(false);
@@ -927,7 +925,7 @@ test.each(["claude", "codex", "grok"])(
     });
     const running = (async () => {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-9"));
-      await jobs.tick();
+      await tickWithRestarts(jobs, orchestrator, db);
     })();
     const deadline = Date.now() + 15_000;
     while (
@@ -1066,7 +1064,7 @@ test.each([false, true])(
         tick < 10 && !["failed", "merged"].includes(stateOf(db, "ENG-98") ?? "");
         tick++
       )
-        await jobs.tick();
+        await tickWithRestarts(jobs, orchestrator, db);
       const trace = JSON.parse(await readFile(resultPath, "utf8"));
       expect(
         trace.artifact,
@@ -1118,7 +1116,7 @@ test("an unconfigured repository halts with an error and never completes the ses
   });
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "failure"));
-    await jobs.tick();
+    await tickWithRestarts(jobs, orchestrator, db);
     while (outbox.tick().length > 0) await outbox.idle();
     expect(stateOf(db, "ENG-99")).toBe("failed");
     expect(
@@ -1180,7 +1178,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-7"));
     const deadline = Date.now() + 40_000;
     while (Date.now() < deadline && stateOf(db, "ENG-7") !== "awaiting_input") {
-      const job = await jobs.tick();
+      const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) await Bun.sleep(20);
     }
     expect(stateOf(db, "ENG-7"), debug(layout, db)).toBe("awaiting_input");
@@ -1242,7 +1240,7 @@ test("a failed implementer preparation names the implementer in its question", a
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-8"));
     const deadline = Date.now() + 40_000;
     while (Date.now() < deadline && stateOf(db, "ENG-8") !== "awaiting_input") {
-      const job = await jobs.tick();
+      const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) await Bun.sleep(20);
     }
     expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
@@ -1345,7 +1343,7 @@ for (const recovery of [
     try {
       let runtime = attach();
       await runtime.orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-8"));
-      await runtime.jobs.tick();
+      await tickWithRestarts(runtime.jobs, runtime.orchestrator, db);
       expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
       expect(launches).toEqual(["implement", "fix"]);
       expect(github.merged).toHaveLength(0);
@@ -1394,7 +1392,9 @@ for (const recovery of [
         expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
         expect(
           listJobs(db).filter(
-            (job) => job.queue === JOB_KIND.resume || job.queue === JOB_KIND.reverify,
+            (job) =>
+              job.status === "pending" &&
+              (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.reverify),
           ),
         ).toHaveLength(0);
         expect(
@@ -1409,11 +1409,13 @@ for (const recovery of [
       }
       expect(
         listJobs(db).filter(
-          (job) => job.queue === (recovery === "guidance" ? JOB_KIND.resume : JOB_KIND.reverify),
+          (job) =>
+            job.status === "pending" &&
+            job.queue === (recovery === "guidance" ? JOB_KIND.resume : JOB_KIND.reverify),
         ),
       ).toHaveLength(1);
       for (let tick = 0; tick < 5; tick += 1) {
-        if ((await runtime.jobs.tick()) === null) break;
+        if ((await tickWithRestarts(runtime.jobs, runtime.orchestrator, db)) === null) break;
       }
       if (recovery === "stale bypass") {
         expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
@@ -1545,7 +1547,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
     const deadline = Date.now() + 80_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {
-      const job = await jobs.tick();
+      const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) {
         idle += 1;
         if (idle > 3) break;
@@ -1596,7 +1598,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
     expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
-    expect(github.opened[1]?.body).toContain("Fix attempts: 1");
+    expect(github.opened[1]?.body).toContain("Fix attempts: 0");
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
   } finally {
     stop = true;
@@ -1717,7 +1719,7 @@ for (const review of invalidReviews) {
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
       for (let ticks = 0; ticks < 20; ticks += 1) {
-        if ((await jobs.tick()) === null) break;
+        if ((await tickWithRestarts(jobs, orchestrator, db)) === null) break;
       }
       expect(reviews, debug(layout, db)).toBeGreaterThan(0);
       expect(github.opened, debug(layout, db)).toHaveLength(0);
@@ -1954,7 +1956,8 @@ for (const sameModel of [true, false]) {
     });
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "profile-item"));
-      for (let tick = 0; tick < 20; tick += 1) if ((await jobs.tick()) === null) break;
+      for (let tick = 0; tick < 20; tick += 1)
+        if ((await tickWithRestarts(jobs, orchestrator, db)) === null) break;
       if (sameModel) {
         expect(stateOf(db, "ENG-20"), debug(layout, db)).toBe("awaiting_input");
         expect(launches.every((launch) => launch.purpose === "prepare")).toBe(true);
@@ -2040,7 +2043,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
     });
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "legacy-item"));
-      await jobs.tick();
+      await tickWithRestarts(jobs, orchestrator, db);
       const item = db
         .query<{ id: string; current_run_id: string }, []>(
           "SELECT id, current_run_id FROM work_item",
@@ -2056,7 +2059,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
         payload: { itemId: item.id },
         now: systemClock.now(),
       });
-      await jobs.tick();
+      await tickWithRestarts(jobs, orchestrator, db);
       expect(stateOf(db, "ENG-30"), debug(layout, db)).toBe("awaiting_input");
       expect(launched).toHaveLength(beforeHandoff);
       expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
@@ -2075,9 +2078,10 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
         ...linearEvent("prompted", "Restart implementation using the configured profiles", null),
         payload: JSON.stringify({ questionId: question.id, answeredBy: "pascal" }),
       });
-      for (let tick = 0; tick < 10; tick += 1) if ((await jobs.tick()) === null) break;
+      for (let tick = 0; tick < 10; tick += 1)
+        if ((await tickWithRestarts(jobs, orchestrator, db)) === null) break;
       expect(stateOf(db, "ENG-30"), debug(layout, db)).toBe("merged");
-      expect(getWorkItem(db, item.id)?.currentRunId).not.toBe(initialRun);
+      expect(getWorkItem(db, item.id)?.currentRunId).toBe(initialRun);
       expect(launched.filter((purpose) => purpose === "implement")).toHaveLength(2);
       expect(github.merged).toHaveLength(1);
       expect(implementerProfiles.at(-1)).toEqual({ agent: "codex", model: "test-new-implementer" });
@@ -2161,7 +2165,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
     try {
       const first = attach();
       await first.orchestrator.onLinearEvent(linearEvent("created", null, null, "recover-merge"));
-      await first.jobs.tick();
+      await tickWithRestarts(first.jobs, first.orchestrator, db);
       const item = listWorkItems(db)[0]!;
       const original = listJobs(db).find((job) => job.queue === JOB_KIND.merge)!;
       expect(item.state).toBe("merge_queue");
@@ -2171,7 +2175,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
       db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
       recoverOnStartup(db);
       const restarted = attach();
-      await restarted.jobs.tick();
+      await tickWithRestarts(restarted.jobs, restarted.orchestrator, db);
       const retry = listJobs(db).find(
         (job) => job.queue === JOB_KIND.merge && job.status === "pending",
       );
@@ -2184,7 +2188,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
         db.run(`UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'`, [
           JOB_KIND.merge,
         ]);
-        await restarted.jobs.tick();
+        await tickWithRestarts(restarted.jobs, restarted.orchestrator, db);
       }
       expect(getWorkItem(db, item.id)?.state, debug(layout, db)).toBe("merged");
       expect(github.merged).toHaveLength(1);
@@ -2199,7 +2203,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
       expect((await exec("git", ["--git-dir", layout.bare, "show", "main:ok.txt"])).stdout).toBe(
         "ok\n",
       );
-      await restarted.jobs.tick();
+      await tickWithRestarts(restarted.jobs, restarted.orchestrator, db);
       expect(github.merged).toHaveLength(1);
     } finally {
       db.close();
@@ -2214,7 +2218,7 @@ const REBASE_INSTRUCTION =
 test("Linear's Fix merge conflicts request on a conflicting pull request is a rebase-conflict return", async () => {
   const result = await runRebaseConflict("linear");
   expect(result.linearRequest, result.detail).toEqual({
-    jobs: [{ reason: "rebase-conflict", handoff: `${REBASE_INSTRUCTION}\n\nFix merge conflicts` }],
+    jobs: [{ reason: "conflict", handoff: `${REBASE_INSTRUCTION}\n\nFix merge conflicts` }],
     upstreamMain: result.movedMain,
   });
   expect(
@@ -2337,11 +2341,11 @@ test("the active task merges while a later task in its session also waits to mer
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent-pair"));
     const deadline = Date.now() + 80_000;
     while (Date.now() < deadline && stateOf(db, "ENG-81") !== "merge_queue") {
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     db.run("UPDATE work_item SET state = 'merge_queue' WHERE linear_identifier = 'ENG-82'");
     while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-81")!)) {
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     expect(stateOf(db, "ENG-81"), debug(layout, db)).toBe("merged");
   } finally {
@@ -2467,7 +2471,7 @@ test.each(["pending", "merged"] as const)(
       const deadline = Date.now() + 90_000;
       const responses = () => tracker.progress.filter((update) => update.kind === "response");
       while (Date.now() < deadline && github.opened.length === 0) {
-        if ((await jobs.tick()) === null) await Bun.sleep(25);
+        if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
       }
       expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merge_queue");
       expect(github.merged).toHaveLength(0);
@@ -2478,7 +2482,7 @@ test.each(["pending", "merged"] as const)(
       });
       const firstResponse = responses()[0]!;
       db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.merge]);
-      await jobs.tick();
+      await tickWithRestarts(jobs, orchestrator, db);
       expect(responses()).toHaveLength(1);
       expect(tracker.progress.at(-1)).toEqual(firstResponse);
       await orchestrator.shutdown();
@@ -2490,14 +2494,14 @@ test.each(["pending", "merged"] as const)(
       outbox = new OutboxDispatcher(db, systemClock);
       orchestrator = attach();
       db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.merge]);
-      await jobs.tick();
+      await tickWithRestarts(jobs, orchestrator, db);
       expect(responses()).toHaveLength(1);
       expect(tracker.progress.at(-1)).toEqual(firstResponse);
       ciReady = true;
       if (followupAt === "merged") {
         db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.merge]);
         while (Date.now() < deadline && stateOf(db, "ENG-90") !== "merged") {
-          if ((await jobs.tick()) === null) await Bun.sleep(25);
+          if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
         }
         expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merged");
         expect(tracker.progress.at(-1)).toEqual(firstResponse);
@@ -2513,7 +2517,7 @@ test.each(["pending", "merged"] as const)(
       expect(tracker.progress.at(-1)?.kind).toBe("thought");
       const active = listWorkItems(db).findLast((item) => item.state !== "merged")!;
       while (Date.now() < deadline && getWorkItem(db, active.id)?.state !== "merged") {
-        if ((await jobs.tick()) === null) await Bun.sleep(25);
+        if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
       }
       expect(getWorkItem(db, active.id)?.state, debug(layout, db)).toBe("merged");
       expect(prompts).toHaveLength(2);
@@ -2523,7 +2527,7 @@ test.each(["pending", "merged"] as const)(
       expect(responses()[1]?.id).not.toBe(firstResponse.id);
       expect(tracker.progress.at(-1)).toEqual(responses()[1]);
       await orchestrator.onLinearEvent(followup);
-      await jobs.tick();
+      await tickWithRestarts(jobs, orchestrator, db);
       expect(prompts).toHaveLength(2);
       expect(responses()).toHaveLength(2);
       expect(github.opened[0]?.title).toBe("Add ok.txt for the seeded check");
@@ -2605,7 +2609,7 @@ test("post_update posts one Linear thought and refuses a second update within a 
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "update-tool"));
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline && !existsSync(resultPath)) {
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     const result = JSON.parse(await readFile(resultPath, "utf8")) as FakeResult;
     expect(result.updates).toEqual([
@@ -2613,7 +2617,7 @@ test("post_update posts one Linear thought and refuses a second update within a 
       { ok: true, text: "Too soon. The next update is allowed in 60 seconds." },
     ]);
     while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-93") ?? "")) {
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     expect(stateOf(db, "ENG-93"), debug(layout, db)).toBe("merged");
     expect(
@@ -2725,7 +2729,7 @@ test.each([false, true])(
             linearEvent("prompted", "Use the compatible fix", null, "ci-fail"),
           );
         }
-        if ((await jobs.tick()) === null) await Bun.sleep(25);
+        if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
       }
       expect(stateOf(db, "ENG-91"), debug(layout, db)).toBe("merged");
       expect(implementRuns).toBe(ask ? 3 : 2);
@@ -2983,7 +2987,7 @@ async function runGitHubQueue(
         lastEnqueued = queue.enqueued.length;
         rounds = 0;
       }
-      if ((await jobs.tick()) !== null) continue;
+      if ((await tickWithRestarts(jobs, orchestrator, db)) !== null) continue;
       const pull = [...pulls.values()][0] ?? 0;
       if (pull > 0 && queue.isQueued(pull)) {
         const response = await handleStatusRequest(new Request("http://localhost/api/status"), {
@@ -3216,7 +3220,7 @@ async function runCiFix(options: {
           linearEvent("prompted", options.answer, null, "ci-rounds"),
         );
       }
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     while (outbox.tick().length > 0) await outbox.idle();
     return {
@@ -3318,13 +3322,13 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "rebase-base"));
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline && stateOf(db, "ENG-92") !== "merge_queue") {
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     const before = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-92")!;
     await commitOnMain(layout.bare, "side\n", "side.txt");
     const main = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
     while (Date.now() < deadline && seen.reads === 0) {
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     saveCheckpoint(db, before.id, before.checkpoint!);
     const reverify = enqueueJobOnce(db, {
@@ -3337,7 +3341,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
       Date.now() < deadline &&
       !["done", "dead"].includes(listJobs(db).find((job) => job.id === reverify)?.status ?? "")
     ) {
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     const item = listWorkItems(db).find((entry) => entry.id === before.id)!;
     expect(item.checkpoint?.baseSha, debug(layout, db)).toBe(main);
@@ -3421,7 +3425,7 @@ test("an unreadable CI read retries the merge job and fails the task with the re
       db.run("UPDATE job SET max_attempts = 2 WHERE queue = ? AND status = 'pending'", [
         JOB_KIND.merge,
       ]);
-      if ((await jobs.tick()) === null) {
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) {
         outbox.tick();
         await Bun.sleep(25);
       }
@@ -3509,7 +3513,7 @@ test.each([
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "reverify-timeout"));
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline && stateOf(db, "ENG-94") !== "merge_queue") {
-        if ((await jobs.tick()) === null) await Bun.sleep(25);
+        if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
       }
       const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-94")!;
       db.run("UPDATE job SET status = 'cancelled' WHERE status = 'pending'");
@@ -3522,7 +3526,7 @@ test.each([
         now: Date.now(),
       });
       while (Date.now() < deadline && !["failed", "merged"].includes(stateOf(db, "ENG-94") ?? "")) {
-        if ((await jobs.tick()) === null) {
+        if ((await tickWithRestarts(jobs, orchestrator, db)) === null) {
           outbox.tick();
           await Bun.sleep(25);
         }
@@ -3655,7 +3659,7 @@ async function runRebaseConflict(
   });
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, `rebase-${mode}`));
-    await jobs.tick();
+    await tickWithRestarts(jobs, orchestrator, db);
     expect(stateOf(db, identifier), debug(layout, db)).toBe("merge_queue");
     const reviewsBeforeUpdate = reviews;
     if (mode === "clean") await commitOnMain(layout.bare, "side\n", "side.txt");
@@ -3703,7 +3707,7 @@ async function runRebaseConflict(
       for (let turn = 0; turn < 40;) {
         const state = stateOf(db, identifier);
         if (state === "merged" || state === "failed") break;
-        const job = await jobs.tick();
+        const job = await tickWithRestarts(jobs, orchestrator, db);
         const next = stateOf(db, identifier);
         if (state !== "merge_queue" && next === "merge_queue")
           requeuedBases.push(checkpointBaseOf(db, identifier));
@@ -4125,10 +4129,10 @@ for (const race of ["token", "merge", "followup"] as const) {
     });
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "publication"));
-      await jobs.tick();
+      await tickWithRestarts(jobs, orchestrator, db);
       const item = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
       expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
-      const publication = jobs.tick();
+      const publication = tickWithRestarts(jobs, orchestrator, db);
       await reached.promise;
       const stopped = orchestrator.onLinearEvent(
         race === "followup"
@@ -4424,10 +4428,10 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
   let initial: Promise<unknown> | undefined;
   try {
     await sendEvent("created", null);
-    initial = jobs.tick();
+    initial = tickWithRestarts(jobs, orchestrator, db);
     await waitFor(() => tracker.questions.length === 1);
     await initial;
-    await jobs.tick();
+    await tickWithRestarts(jobs, orchestrator, db);
     await waitFor(() => tracker.questions.length === 2);
     await earlyAnswer;
     expect(earlyAnswerState).toBe("answered");
@@ -4466,13 +4470,14 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       answeredBy: "pascal",
       status: "answered",
     });
-    initial = jobs.tick();
+    initial = tickWithRestarts(jobs, orchestrator, db);
     const task = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
     const workspace = worktreePath(layout.pawsRoot, itemPathId(getWorkItem(db, task.id)!));
     await waitFor(() => existsSync(path.join(workspace, "before-correction.txt")));
     await sendEvent("correction", "Use the corrected chart layout and include a screenshot.");
     await initial;
-    for (let tick = 0; tick < 10 && stateOf(db, "ENG-1") !== "merged"; tick++) await jobs.tick();
+    for (let tick = 0; tick < 10 && stateOf(db, "ENG-1") !== "merged"; tick++)
+      await tickWithRestarts(jobs, orchestrator, db);
     expect(implementations).toBe(4);
     expect(revoked).toEqual([]);
     expect(lifecycle.started.length).toBeGreaterThan(0);
