@@ -1,12 +1,7 @@
 import type { Database } from "bun:sqlite";
+import type { Migration } from "./migration";
 
-export type Migration = {
-  id: string;
-  sql: string;
-  foreignKeys?: false;
-  /** Runs in the migration's transaction before `sql`. Throw to stop the migration. */
-  guard?: (db: Database) => void;
-};
+export type { Migration };
 
 const HEX = "[0-9a-f]";
 const UUID_V4_GLOB = [
@@ -18,12 +13,13 @@ const UUID_V4_GLOB = [
 ].join("-");
 
 /**
- * Append-only. Shipped ids are never edited; add the next numbered migration.
+ * Frozen at 155. Shipped ids are never edited, and nothing is added here: a new
+ * migration is its own file under `src/db/migrations/` (see `migration-files.ts`).
  * Epic and work item landed in 002. Recovery columns, runs, and wake rows are 003.
  * Open questions for ask_team are 004.
  * GitHub issue poll cursors and ETags are 005.
  */
-export const migrations: readonly Migration[] = [
+export const frozenMigrations: readonly Migration[] = [
   {
     id: "001_jobs_outbox",
     sql: `
