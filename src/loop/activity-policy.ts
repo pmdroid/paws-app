@@ -21,12 +21,11 @@ export function canReportProgress(
   generation: number,
   rowId?: number,
 ): boolean {
-  if (rowId === undefined) return !hasPublishedPullRequest(db, sessionId, generation);
   return (
     db
       .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=?
-    AND delivery_generation=? AND idempotency_key LIKE 'pull-request-ready:%'
-    AND status!='dropped' AND (id < ? OR status='sent') LIMIT 1`)
-      .get(sessionId, generation, rowId) === null
+    AND delivery_generation=? AND (idempotency_key LIKE 'pull-request-ready:%' OR idempotency_key LIKE 'merged:%' OR idempotency_key LIKE 'closed:%')
+    AND status!='dropped' AND (? IS NULL OR id < ? OR status='sent') LIMIT 1`)
+      .get(sessionId, generation, rowId ?? null, rowId ?? null) === null
   );
 }

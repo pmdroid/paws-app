@@ -141,3 +141,30 @@ test.each([true, false])(
     }
   },
 );
+
+test("a closed response fences later activities even without a PR response in its generation", async () => {
+  const db = tempDb();
+  try {
+    const tracker = createFakeTracker();
+    const dispatcher = new OutboxDispatcher(db, new FakeClock(Date.now()));
+    dispatcher.setHandler((row, context) =>
+      deliverLinearOutbox(row, tracker, async () => {}, context, db),
+    );
+    for (const [key, kind] of [
+      ["closed:item:0", "response"],
+      ["late", "thought"],
+    ])
+      enqueueOutbox(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "session",
+        delivery: "ordered",
+        idempotencyKey: key!,
+        payload: { sessionId: "session", kind, body: "Closed: cancelled" },
+      });
+    while (dispatcher.tick().length) await dispatcher.idle();
+    expect(tracker.progress.map((update) => update.kind)).toEqual(["response"]);
+  } finally {
+    db.close();
+  }
+});

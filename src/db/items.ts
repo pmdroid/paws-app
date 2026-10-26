@@ -736,12 +736,24 @@ function commitFailure(
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
   cancelOpenJobs(db, { itemId: item.id, reason, now });
+  const sessionId = item.sessionKey ?? item.id;
+  const generation = getLinearSessionGeneration(db, sessionId);
+  const afterPr =
+    db
+      .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=?
+    AND delivery_generation=? AND idempotency_key LIKE 'pull-request-ready:%' AND status!='dropped' LIMIT 1`)
+      .get(sessionId, generation) !== null;
   enqueueOutboxOnce(db, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
-    orderingKey: item.sessionKey ?? item.id,
-    idempotencyKey: idempotencyKey(version),
-    payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
+    orderingKey: sessionId,
+    ...(afterPr ? { delivery: "ordered" as const, generation } : {}),
+    idempotencyKey: afterPr ? `closed:${item.id}:${generation}` : idempotencyKey(version),
+    payload: {
+      sessionId,
+      kind: afterPr ? "response" : "error",
+      body: afterPr ? `Closed: ${text}` : text,
+    },
     now,
   });
 }
