@@ -103,7 +103,7 @@ export {
 } from "./poller";
 export type { CatchUpPoller, PollSignals, Sleeper } from "./poller";
 export { REDELEGATION_CHECK_DELAY_MS, checkRedelegation } from "./redelegation";
-export { linearTokenPath, openLinear } from "./runtime";
+export { linearTokenPath, openLinear, sessionHasItemInFlight } from "./runtime";
 export type { LinearRunning, OpenLinear } from "./runtime";
 export { createLinearTracker } from "./tracker";
 export { subIssueDescription, subIssueId, type SubIssueRequest } from "./sub-issues";
