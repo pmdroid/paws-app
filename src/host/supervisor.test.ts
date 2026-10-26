@@ -68,6 +68,79 @@ function activities(db: ReturnType<typeof boot>["db"]) {
   return listOutbox(db).filter((message) => message.op === "activity");
 }
 
+describe("supervisor accrual writes", () => {
+  test("only changed awake items are written once per tick", () => {
+    const { clock, db, host } = boot();
+    try {
+      for (const id of ["awake", "paused", "idle"]) {
+        insertQueuedItem(db, { id, now: clock.now() });
+        if (id !== "idle") beginImplementRun(db, id, clock.now());
+      }
+      applyWorkItemEvent(db, "paused", "pause");
+      db.exec(`
+        CREATE TEMP TABLE item_write (id TEXT);
+        CREATE TEMP TRIGGER count_item_write AFTER UPDATE ON work_item BEGIN
+          INSERT INTO item_write VALUES (NEW.id);
+        END;
+      `);
+      const writes = () => db.query<{ id: string }, []>("SELECT id FROM item_write").all();
+
+      host.tick();
+      host.tick();
+      expect(writes()).toEqual([]);
+      clock.advance(250);
+      host.tick();
+      expect(writes()).toEqual([{ id: "awake" }]);
+      expect(getWorkItem(db, "awake")).toMatchObject({ awakeMs: 250, agentMs: 250 });
+      expect(getWorkItem(db, "paused")).toMatchObject({ awakeMs: 0, lastMonoMs: null });
+      expect(getWorkItem(db, "idle")).toMatchObject({ awakeMs: 0, lastMonoMs: null });
+      host.tick();
+      clock.sleep(1_000);
+      host.tick();
+      expect(writes()).toEqual([{ id: "awake" }]);
+      clock.advance(250);
+      host.tick();
+      expect(writes()).toEqual([{ id: "awake" }, { id: "awake" }]);
+
+      applyWorkItemEvent(db, "paused", "resume");
+      db.exec("DELETE FROM item_write");
+      clock.advance(250);
+      host.tick();
+      expect(writes()).toEqual([{ id: "awake" }, { id: "paused" }]);
+      expect(getWorkItem(db, "paused")).toMatchObject({ awakeMs: 250, agentMs: 250 });
+    } finally {
+      host.stop();
+      db.close();
+    }
+  });
+
+  test("all item writes in a tick commit or roll back together", () => {
+    const { clock, db, host } = boot();
+    try {
+      for (const id of ["first", "second"]) {
+        insertQueuedItem(db, { id, now: clock.now() });
+        beginImplementRun(db, id, clock.now());
+      }
+      host.tick();
+      clock.advance(250);
+      db.exec(`
+        CREATE TEMP TRIGGER reject_second BEFORE UPDATE ON work_item
+        WHEN NEW.id = 'second' BEGIN SELECT RAISE(ABORT, 'tick failed'); END;
+      `);
+      expect(() => host.tick()).toThrow("tick failed");
+      expect(getWorkItem(db, "first")).toMatchObject({ awakeMs: 0, agentMs: 0, lastMonoMs: null });
+      expect(getWorkItem(db, "second")).toMatchObject({ awakeMs: 0, agentMs: 0, lastMonoMs: null });
+      db.exec("DROP TRIGGER reject_second");
+      host.tick();
+      expect(getWorkItem(db, "first")).toMatchObject({ awakeMs: 250, agentMs: 250 });
+      expect(getWorkItem(db, "second")).toMatchObject({ awakeMs: 250, agentMs: 250 });
+    } finally {
+      host.stop();
+      db.close();
+    }
+  });
+});
+
 describe("laptop sleep and wake", () => {
   test("an active run does not acquire a system sleep inhibitor", () => {
     const db = openDatabase(":memory:");
