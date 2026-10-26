@@ -44,6 +44,15 @@ export async function laneTurn(actions: LaneActions): Promise<LaneTurn> {
   if (verdict.ok) {
     const result = await actions.squash(pull.head, pull);
     if (result.merged) return { kind: "merged", result };
+    // CI failed or went pending, or a thread opened, while main was fetched: judge S again on the
+    // fresh read and release like any other turn that finds S not mergeable.
+    const recheck = result.readiness;
+    if (recheck && (recheck.outcome === "ci_failed" || recheck.outcome === "pending")) {
+      const fresh: PullFacts = { ...pull, readiness: recheck };
+      const again = mergeable(actions.facts(fresh));
+      if (!again.ok && again.block !== "behind_main")
+        return { kind: "blocked", block: again.block, pull: fresh };
+    }
     if (result.outcome === "sha_moved")
       return {
         kind: "blocked",

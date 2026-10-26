@@ -33,6 +33,19 @@ function pull(readiness: Partial<Readiness> = {}, rest: Partial<PullFacts> = {})
   };
 }
 
+/** CI and thread facts as the lane derives them from a readiness read. */
+function fromReadiness({ readiness }: PullFacts): Partial<MergeFacts> {
+  return {
+    ci:
+      readiness.outcome === "ci_failed"
+        ? "failed"
+        : readiness.outcome === "ready" || readiness.unresolvedThreads !== undefined
+          ? "green"
+          : "pending",
+    unresolvedThreads: readiness.unresolvedThreads ?? 0,
+  };
+}
+
 /** A lane over fakes that records every action it takes. */
 function fakeLane(
   judged: Partial<MergeFacts>,
@@ -48,7 +61,7 @@ function fakeLane(
       calls.push("read");
       return { kind: "facts", ...(options.read ?? pull()) };
     },
-    facts: () => facts(judged),
+    facts: (read) => facts({ ...fromReadiness(read), ...judged }),
     rebase: async () => {
       calls.push("rebase");
       return options.rebase ?? { rebased: true, branch: "paws/eng-1", base: MAIN, head: S2 };
@@ -234,6 +247,55 @@ describe("merge lane turn", () => {
     );
     await next.turn;
     expect(next.calls).toEqual(["read", "rebase"]);
+  });
+
+  test("CI or threads changing on the read just before the squash release the lane, judged afresh", async () => {
+    const failed = await fakeLane(
+      {},
+      {
+        squash: {
+          merged: false,
+          outcome: "blocked",
+          branch: "paws/eng-1",
+          head: S,
+          message: "CI failed on the candidate commit",
+          readiness: {
+            outcome: "ci_failed",
+            message: "CI failed on the candidate commit",
+            failedChecks: [{ name: "ci", url: null }],
+          },
+        },
+      },
+    ).turn;
+    expect(failed).toMatchObject({
+      kind: "blocked",
+      block: "ci_failed",
+      pull: { readiness: { outcome: "ci_failed" } },
+    });
+    expect(stepFor(failed).step).toEqual({ kind: "return", reason: "ci-failed" });
+
+    // The lane's facts come from the fresh read, so the open thread is what blocks S.
+    const threads = fakeLane(
+      {},
+      {
+        squash: {
+          merged: false,
+          outcome: "blocked",
+          branch: "paws/eng-1",
+          head: S,
+          message: "Waiting for 1 unresolved review thread(s).",
+          readiness: {
+            outcome: "pending",
+            message: "Waiting for 1 unresolved review thread(s).",
+            unresolvedThreads: 1,
+          },
+        },
+      },
+    );
+    const turn = await threads.turn;
+    expect(threads.calls).toEqual(["read", `squash:${S}`]);
+    expect(turn).toMatchObject({ kind: "blocked", block: "review_threads" });
+    expect(stepFor(turn).step).toMatchObject({ kind: "wait", reason: "review" });
   });
 
   test("pending CI waits on S and keeps the place", async () => {

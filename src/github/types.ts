@@ -1,3 +1,4 @@
+import type { Readiness } from "./readiness";
 export const MAX_TOKEN_TTL_MS = 60 * 60 * 1000;
 export const TOKEN_TTL_SKEW_MS = 30 * 1000;
 
@@ -147,4 +148,6 @@ export type SerialMergeResult = {
   conflictFiles?: string[];
   /** Every check on the head when CI failed, with the failing checks' log tails. */
   checks?: CiCheck[];
+  /** The readiness read just before the squash, set when it stopped the squash. */
+  readiness?: Readiness;
 };

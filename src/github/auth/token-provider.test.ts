@@ -189,8 +189,13 @@ describe("GitHub operation tokens", () => {
     const result = await squashPull(lane, { head, base }, "Closeout: accepted");
     expect(result.merged).toBe(true);
     expect(tokens).toEqual(["ghs_fake_1", "ghs_fake_3"]);
-    // The fetch and readiness read share a token; the review read and the merge each mint their own.
-    expect(readTokens).toEqual([...Array(3).fill("ghs_fake_1"), "ghs_fake_2"]);
+    // The fetch and readiness read share a token and the review read mints its own. The squash
+    // mints the merge token and uses it for its own fetch and the readiness read before the merge.
+    expect(readTokens).toEqual([
+      ...Array(3).fill("ghs_fake_1"),
+      "ghs_fake_2",
+      ...Array(3).fill("ghs_fake_3"),
+    ]);
     expect(provider.issued).toHaveLength(3);
     await fake.cleanup();
 
