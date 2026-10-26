@@ -68,6 +68,10 @@ export interface FakeScript {
   ignoreCancel?: boolean;
   hangInitialize?: boolean;
   loadSession?: boolean;
+  /** session/load reads this file, like Claude reads its session, and fails when it is missing. */
+  loadFile?: string;
+  /** session/load answers with this error. */
+  loadError?: string;
   steps: FakeStep[];
   /** Steps for each successive spawn of the agent; the last entry repeats. */
   sessions?: FakeStep[][];
@@ -97,6 +101,8 @@ export interface FakeResult {
   }>;
   sessionMeta?: unknown;
   loaded?: unknown;
+  /** What session/load read from `loadFile`. */
+  loadedFile?: string;
   codexHome?: string;
   permissions: Array<{ toolCallId?: string; outcome: unknown }>;
   fs: Array<{ op: "read" | "write"; path: string; ok: boolean; error?: string; content?: string }>;

@@ -70,6 +70,12 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     notice: z.literal(true).optional(),
   }),
   z.strictObject({ type: z.literal("activity"), update: RunnerActivitySchema }),
+  /** Whether the runner continued a moved run's saved session, and why not. */
+  z.strictObject({
+    type: z.literal("session_restore"),
+    restored: z.boolean(),
+    reason: z.enum(["download", "integrity", "unpack", "load"]).optional(),
+  }),
   z.strictObject({
     type: z.literal("hook_failed"),
     hookId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/),

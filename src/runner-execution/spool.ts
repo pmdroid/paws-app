@@ -112,7 +112,11 @@ function bundleHash(file: number): string {
   }
 }
 
-function openBundleSource(path: string, spool: RunnerSpool): number {
+/** The largest gzipped agent session bundle a job carries, as Paws caps a snapshot. */
+const SESSION_BUNDLE_MAX_BYTES = 1_073_741_824;
+const SESSION_BUNDLE_FILE = "session.ndjson.gz";
+
+function openBundleSource(path: string, spool: RunnerSpool, limit = 536_870_912): number {
   if (!isAbsolute(path) || path.endsWith("/")) throw new Error("Invalid repository bundle path");
   const directory = openAbsoluteDirectory(dirname(path));
   let source: number;
@@ -131,7 +135,7 @@ function openBundleSource(path: string, spool: RunnerSpool): number {
     info.nlink !== 1 ||
     (info.mode & 0o7027) !== 0 ||
     info.size === 0 ||
-    info.size > 536_870_912
+    info.size > limit
   ) {
     closeSync(source);
     throw new Error("Unsafe repository bundle source");
@@ -428,6 +432,41 @@ export function runnerTaskRepositoryPath(spool: RunnerSpool, executionId: string
   return join(spool.root, executionId, "repository");
 }
 
+/**
+ * The session snapshot bundle Paws sent for a moved run, or undefined when the runner could not
+ * download it. The worker checks its sha256 against the signed command before unpacking.
+ */
+export function runnerSessionBundlePath(
+  spool: RunnerSpool,
+  executionId: string,
+): string | undefined {
+  const job = readRunnerJob(spool, executionId);
+  if (job.command.type !== "run" || !job.command.restoreSession) return undefined;
+  const path = join(spool.root, executionId, SESSION_BUNDLE_FILE);
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  try {
+    const info = fstatSync(fd);
+    if (
+      !info.isFile() ||
+      info.nlink !== 1 ||
+      info.uid !== spool.runnerUid ||
+      info.gid !== spool.agentGid ||
+      (info.mode & 0o7777) !== 0o640 ||
+      info.size > SESSION_BUNDLE_MAX_BYTES
+    )
+      throw new Error("Unsafe runner session bundle");
+  } finally {
+    closeSync(fd);
+  }
+  return path;
+}
+
 export function runnerJobDirectory(spool: RunnerSpool, executionId: string): string {
   readRunnerJob(spool, executionId);
   return join(spool.root, executionId);
@@ -441,6 +480,8 @@ export function publishRunnerJob(
     repositorySnapshot?: string;
     inputFiles?: readonly Uint8Array[];
     promptContext?: Uint8Array;
+    /** A downloaded session snapshot for a run command that carries `restoreSession`. */
+    sessionBundle?: string;
   } = {},
 ): RunnerJob {
   const job = RunnerJobSchema.parse(input);
@@ -472,6 +513,11 @@ export function publishRunnerJob(
   const needsSnapshot = job.command.type === "task" && job.command.repository !== undefined;
   if (needsSnapshot !== (options.repositorySnapshot !== undefined))
     throw new Error("Repository snapshot must match task context");
+  if (
+    options.sessionBundle !== undefined &&
+    (job.command.type !== "run" || !job.command.restoreSession)
+  )
+    throw new Error("Session bundle must match a restoring run");
   if (process.getuid?.() !== spool.runnerUid) throw new Error("Only the runner may publish jobs");
   const root = openRoot(spool);
   let directory: number | undefined;
@@ -531,10 +577,10 @@ export function publishRunnerJob(
     directory = openDirectory(staging);
     fchownSync(directory, spool.runnerUid, spool.agentGid);
     fchmodSync(directory, 0o700);
-    if (options.repositoryBundle !== undefined) {
-      const source = openBundleSource(options.repositoryBundle, spool);
+    const copy = (from: string, name: string, limit: number, validate: (fd: number) => void) => {
+      const source = openBundleSource(from, spool, limit);
       try {
-        const destination = `/proc/self/fd/${directory}/repository.bundle`;
+        const destination = `/proc/self/fd/${directory}/${name}`;
         const bundle = openSync(
           destination,
           constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
@@ -549,11 +595,11 @@ export function publishRunnerJob(
             const count = readSync(source, chunk, 0, chunk.length, total);
             if (count === 0) break;
             total += count;
-            if (total > 536_870_912) throw new Error("Runner bundle exceeds size limit");
+            if (total > limit) throw new Error("Runner bundle exceeds size limit");
             let written = 0;
             while (written < count) written += writeSync(bundle, chunk, written, count - written);
           }
-          validateBundle(bundle, spool);
+          validate(bundle);
           fsyncSync(bundle);
         } finally {
           closeSync(bundle);
@@ -561,7 +607,13 @@ export function publishRunnerJob(
       } finally {
         closeSync(source);
       }
-    }
+    };
+    if (options.repositoryBundle !== undefined)
+      copy(options.repositoryBundle, "repository.bundle", 536_870_912, (fd) =>
+        validateBundle(fd, spool),
+      );
+    if (options.sessionBundle !== undefined)
+      copy(options.sessionBundle, SESSION_BUNDLE_FILE, SESSION_BUNDLE_MAX_BYTES, () => undefined);
     if (options.repositorySnapshot !== undefined) {
       const source = openAbsoluteDirectory(options.repositorySnapshot);
       let target: number | undefined;

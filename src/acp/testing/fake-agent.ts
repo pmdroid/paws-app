@@ -194,7 +194,18 @@ async function handle(message: {
 
   if (message.method === "session/load") {
     state.loaded = message.params ?? {};
+    let loadError = script.loadError;
+    if (!loadError && script.loadFile)
+      try {
+        state.loadedFile = readFileSync(script.loadFile, "utf8");
+      } catch {
+        loadError = `No conversation found with session ID: ${String(message.params?.sessionId)}`;
+      }
     persist();
+    if (loadError) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: loadError } });
+      return;
+    }
     send({
       jsonrpc: "2.0",
       method: "session/update",

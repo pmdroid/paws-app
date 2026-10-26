@@ -5,6 +5,7 @@ export {
   readRunnerJobInputs,
   type RunnerJobInputs,
   runnerRepositoryBundlePath,
+  runnerSessionBundlePath,
   runnerTaskRepositoryPath,
   runnerJobDirectory,
   type RunnerSpool,
