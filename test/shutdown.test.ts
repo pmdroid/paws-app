@@ -18,10 +18,14 @@ for (const requestedCode of [0, 75]) {
     try {
       await shutdownPaws(paws, requestedCode, (code) => exits.push(code));
       expect(exits).toEqual([requestedCode]);
-      expect(lines).toHaveLength(1);
-      expect(lines[0]).toContain(
+      const shutdownLines = lines.filter((line) => line.startsWith("Paws shutdown failed"));
+      expect(shutdownLines).toHaveLength(1);
+      expect(shutdownLines[0]).toContain(
         "Paws shutdown failed at server: Error: fake server stop rejected",
       );
+      expect(lines.filter((line) => !shutdownLines.includes(line))).toEqual([
+        "catch item=none operation=index.startPaws.ready expected=shutdown interrupted startup error=Paws is stopping.",
+      ]);
       expect(() => paws.db.query("SELECT 1").get()).toThrow();
     } finally {
       restore();
