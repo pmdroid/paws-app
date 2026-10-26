@@ -8,6 +8,8 @@ import {
   leaveMergeQueue,
   markMergeQueueNotified,
   mergeQueuePosition,
+  pendingChangeRequests,
+  wakePullReviews,
   recordCiRound,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
@@ -31,6 +33,31 @@ const CI_FIX_SOURCE = {
   queue:
     "GitHub's merge queue removed the pull request because a check failed on the combined commit it tested with the pull requests ahead of it. Main may have changed since this branch was made.",
 };
+
+/**
+ * A changes-requested review that has not reached the agent yet holds the merge. Checked before
+ * the merge work and again, synchronously, right before the squash or enqueue call: webhook
+ * ingestion runs on the same thread, so a review recorded before that call always wins.
+ */
+export function reviewHold(db: Database, itemId: string, now: number): MergeStep | null {
+  if (pendingChangeRequests(db, itemId).length === 0) return null;
+  wakePullReviews(db, itemId, now);
+  return {
+    kind: "wait",
+    message: "Requested changes go back to the agent before this pull request merges.",
+    queued: true,
+    reason: "review",
+  };
+}
+
+/** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
+export function mergeHeld({ db, item, caps }: MergeContext): boolean {
+  return (
+    caps.stopped() ||
+    !artifactPublicationReady(db, item.id) ||
+    pendingChangeRequests(db, item.id).length > 0
+  );
+}
 
 export type MergeVoice = {
   thought(item: WorkItemRecord, body: string, key: string): void;
@@ -199,10 +226,14 @@ export async function mergeThroughGitHubQueue(
     privateKeyPem: github.privateKeyPem,
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     queued: watch.queued,
-    isCancelled: () => caps.stopped() || !artifactPublicationReady(db, item.id),
+    isCancelled: () => mergeHeld(merge),
     signal: published.signal,
   });
   if (caps.stopped()) return { kind: "obsolete" };
+  if (result.outcome === "blocked") {
+    const held = reviewHold(db, item.id, caps.now());
+    if (held) return held;
+  }
   switch (result.outcome) {
     case "no_queue":
       caps.voice.status(
