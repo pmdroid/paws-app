@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
-  createReadStream,
   fchmodSync,
   fstatSync,
   fsyncSync,
@@ -16,6 +15,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { Readable } from "node:stream";
 import { createGunzip } from "node:zlib";
 
 /** The bundle's checksum or size is not the one the signed command names. */
@@ -70,6 +70,21 @@ function allowedPath(path: string, cwd: string, sessionId: string): string[] {
 }
 
 /** Hashes the whole bundle file and checks it against the signed size and sha256. */
+/**
+ * The bundle's bytes, read in step with the consumer. Each read is synchronous, so none is in flight
+ * when an early exit destroys the stream and closes the descriptor.
+ */
+function* bundleChunks(fd: number): Generator<Buffer> {
+  let position = 0;
+  while (true) {
+    const buffer = Buffer.alloc(1_048_576);
+    const count = readSync(fd, buffer, 0, buffer.length, position);
+    if (count === 0) return;
+    position += count;
+    yield buffer.subarray(0, count);
+  }
+}
+
 function verifyBundle(fd: number, sizeBytes: number, sha256: string): void {
   const info = fstatSync(fd);
   if (!info.isFile() || info.size !== sizeBytes)
@@ -104,6 +119,7 @@ export async function restoreClaudeSessionBundle(options: {
 }): Promise<RestoredClaudeSession> {
   const restored: RestoredClaudeSession = { files: [], directories: [] };
   const source = openSync(options.bundle, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let input: Readable | undefined;
   try {
     verifyBundle(source, options.sizeBytes, options.sha256);
     const home = options.home.replace(/\/+$/, "");
@@ -185,9 +201,8 @@ export async function restoreClaudeSessionBundle(options: {
     };
 
     try {
-      const gunzip = createReadStream("", { fd: source, start: 0, autoClose: false }).pipe(
-        createGunzip(),
-      );
+      input = Readable.from(bundleChunks(source));
+      const gunzip = input.pipe(createGunzip());
       for await (const chunk of gunzip as AsyncIterable<Buffer>) {
         let text = chunk.toString("latin1");
         while (text.length) {
@@ -248,6 +263,7 @@ export async function restoreClaudeSessionBundle(options: {
       );
     }
   } finally {
+    input?.destroy();
     closeSync(source);
   }
 }

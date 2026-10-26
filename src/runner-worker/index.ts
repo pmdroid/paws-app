@@ -77,6 +77,7 @@ import {
   type LoginCommandRunner,
 } from "../install";
 import {
+  RUNNER_ARTIFACT_COUNT_LIMIT,
   RunnerArtifactSchema,
   RunnerEventSchema,
   RunnerHelperResultSchema,
@@ -670,6 +671,7 @@ export async function executeRunnerCommand(
     let agentLimits: AgentLimit[] = [];
     let tokens = 0;
     let eventFailure: Error | undefined;
+    let artifactsPublished = 0;
     const mise = runnerMiseDirectories(options.home);
     const providerCli = options.providerCli ?? ((cli: "claude" | "codex") => providerCliPath(cli));
     // The runner's own bin folder (its Bun, mise, launchers) never reaches the task. Paws starts
@@ -857,6 +859,10 @@ export async function executeRunnerCommand(
         ? {
             async publish(snapshot, context) {
               if (!options.answer) throw new Error("Runner artifact publication is unavailable");
+              if (artifactsPublished >= RUNNER_ARTIFACT_COUNT_LIMIT)
+                throw new ArtifactRejectedError(
+                  `publish_artifact allows ${RUNNER_ARTIFACT_COUNT_LIMIT} artifacts per run and this run has used all ${RUNNER_ARTIFACT_COUNT_LIMIT}; 0 slots are left. ${snapshot.path} was not published. Link the artifacts you already published instead.`,
+                );
               const bytes = Buffer.from(await snapshot.bytes.arrayBuffer());
               context.signal.throwIfAborted();
               const artifact = RunnerArtifactSchema.parse({
@@ -886,6 +892,7 @@ export async function executeRunnerCommand(
                 closeSync(file);
               }
               emit({ type: "artifact", requestId: artifact.id, artifact });
+              artifactsPublished++;
               const reply = await options.answer(artifact.id, context.signal);
               context.signal.throwIfAborted();
               const publication = JSON.parse(reply.answer) as {
@@ -897,9 +904,10 @@ export async function executeRunnerCommand(
                 throw new ArtifactRejectedError(publication.error);
               if (typeof publication.url !== "string")
                 throw new Error("Runner artifact publication response is invalid");
+              const slots = `${RUNNER_ARTIFACT_COUNT_LIMIT - artifactsPublished} of ${RUNNER_ARTIFACT_COUNT_LIMIT} artifact slots are left in this run.`;
               return {
                 url: publication.url,
-                ...(typeof publication.note === "string" ? { note: publication.note } : {}),
+                note: typeof publication.note === "string" ? `${publication.note} ${slots}` : slots,
               };
             },
           }
