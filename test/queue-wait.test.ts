@@ -72,7 +72,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
 
     orchestrator.reconcileExecution();
     orchestrator.reconcileExecution();
-    expect(bodies("thought").filter((body) => body.startsWith("Queued"))).toHaveLength(1);
+    expect(bodies("response").filter((body) => body.startsWith("Queued"))).toHaveLength(1);
 
     clock.advance(DAY - 1_000);
     orchestrator.reconcileExecution();
@@ -88,7 +88,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
   }
 });
 
-test("the queued thought shows the place in line, and the start timeout comes from settings", async () => {
+test("the queued response shows the place in line, and the start timeout comes from settings", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const pawsRoot = tempHome();
@@ -116,8 +116,8 @@ test("the queued thought shows the place in line, and the start timeout comes fr
         .map((payload) => payload.body ?? "");
 
     orchestrator.reconcileExecution();
-    expect(bodies("thought")).toContain(
-      "Queued, 2nd in line. 1 of 1 runner slot is busy. Paws starts PAS-1 when a slot frees.",
+    expect(bodies("response")).toContain(
+      "Queued, 2nd in line. 1 of 1 runner slot is busy. I'll start when one frees up.",
     );
 
     clock.advance(2 * HOUR - 1_000);

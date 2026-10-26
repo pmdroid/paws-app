@@ -155,8 +155,8 @@ test("a delegator whose only runner is busy still gets the queue notice with the
     paws.reconcileExecution();
     expect(startJobs(db, "busy")).toBe(1);
     expect(startJobs(db, "mine")).toBe(0);
-    expect(bodies(db, "thought")).toContain(
-      "Queued, 1st in line. 1 of 1 runner slot is busy. Paws starts PAS-1 when a slot frees.",
+    expect(bodies(db, "response")).toContain(
+      "Queued, 1st in line. 1 of 1 runner slot is busy. I'll start when one frees up.",
     );
     expect(bodies(db, "thought").filter((body) => body.includes("runner you can use"))).toEqual([]);
   } finally {
