@@ -219,9 +219,9 @@ test.each([false, true, "cap"] as const)(
       const progressDeadline = performance.now() + 10_000;
       while (
         performance.now() < progressDeadline &&
-        (!tracker.progress.some((update) => /fix attempt 1 of 3/i.test(update.body)) ||
+        (!tracker.progress.some((update) => /fix attempt 1 of 2/i.test(update.body)) ||
           metadata("linear.session.summary")?.summary !==
-            "ENG-302: fixing Closeout findings (1 of 3)" ||
+            "ENG-302: fixing Closeout findings (1 of 2)" ||
           metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress")
       ) {
         while (outbox.tick().length > 0) await outbox.idle();
@@ -231,9 +231,9 @@ test.each([false, true, "cap"] as const)(
         "Fixing the missing output.",
       );
       expect(tracker.progress.map((update) => update.body)).not.toContain("Write repaired output");
-      expect(tracker.progress.some((update) => /fix attempt 1 of 3/i.test(update.body))).toBe(true);
+      expect(tracker.progress.some((update) => /fix attempt 1 of 2/i.test(update.body))).toBe(true);
       expect(metadata("linear.session.summary")?.summary).toBe(
-        "ENG-302: fixing Closeout findings (1 of 3)",
+        "ENG-302: fixing Closeout findings (1 of 2)",
       );
       expect(metadata("linear.session.plan")?.plan?.[0]).toEqual({
         content: "Repair missing output",
@@ -377,7 +377,7 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
   const seed = path.join(layout.root, "seed");
   await writeFile(
     path.join(seed, ".agents", "closeout.yaml"),
-    `${CLOSEOUT_POLICY}  - id: visual-proof
+    `${CLOSEOUT_POLICY.replace("  scope: task\n", "  scope: task\n  fix_rounds_per_item: 35\n")}  - id: visual-proof
     kind: evidence
     gate: beforePR
     paths: ["web/**"]
@@ -455,8 +455,9 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
     await tickWithRestarts(jobs, orchestrator, db);
     expect(stateOf(db, "ENG-303"), debug(layout, db)).toBe("merge_queue");
     const fixes = tracker.progress.filter((update) => update.body.startsWith("Fixing Closeout"));
+    // Three attempts per check leave two fix attempts, which stops the item long before 35 rounds.
     expect(fixes.map((update) => update.body)).toEqual([
-      "Fixing Closeout findings for ENG-303, fix attempt 1 of 3.",
+      "Fixing Closeout findings for ENG-303, fix attempt 1 of 2.",
     ]);
     expect(prompts.get("fix")).toContain("visual-proof (evidence): failed");
     expect(prompts.get("fix")).toContain('publish_artifact with checkId "visual-proof"');

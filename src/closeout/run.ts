@@ -22,8 +22,10 @@ import { isSha, readHead } from "./worktree";
 import {
   addReview,
   credentialSecrets,
+  fixAttemptLimit,
   policyFixBudget,
   preExistingFindings,
+  policyFixLimits,
   loadReviewMaterial,
   renderReviewPrompt,
   retryBaseline as readRetryBaseline,
@@ -359,6 +361,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
 
   let fixAttempts = 0;
   let evaluations = 0;
+  let attemptsPerCheck: number | undefined;
 
   for (;;) {
     evaluations += 1;
@@ -384,6 +387,9 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
 
     maxFixAttempts ??=
       policyFixBudget(input.worktree, input.home, input.policyRoot) ?? MAX_FIX_ATTEMPTS;
+    attemptsPerCheck ??=
+      policyFixLimits(input.worktree, input.home, input.policyRoot)?.attemptsPerCheck ??
+      maxFixAttempts;
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
@@ -409,7 +415,10 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
         worktree: input.worktree,
         taskId: input.taskId,
         fixAttempt: fixAttempts,
-        maxFixAttempts,
+        maxFixAttempts: fixAttemptLimit(
+          { fixRounds: maxFixAttempts, attemptsPerCheck },
+          fixAttempts,
+        ),
         base: input.base,
         head,
         items: evaluation.decision?.items ?? [],

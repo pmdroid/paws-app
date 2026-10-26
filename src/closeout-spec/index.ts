@@ -87,6 +87,8 @@ export {
   policyCheckPaths,
   policyFixBudget,
   preExistingFindings,
+  fixAttemptLimit,
+  policyFixLimits,
   retryBaseline,
   reviewRequirements,
   run,
@@ -98,6 +100,7 @@ export {
 } from "./facade";
 export { approvalsAtHead, samePatch } from "./published";
 export { decodePolicyFiles, encodePolicyFiles } from "./policy/transfer";
+export type { FixLimits } from "./facade";
 export type { PolicyFilesLoad, RootFilesLoad } from "./policy/load";
 export type {
   AddReviewInput,
