@@ -3,17 +3,22 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  CHECK_LOG_TAIL_BYTES,
   parseStatusItemDetail,
   parseStatusSnapshot,
+  statusCheckLogPath,
   STATUS_API_PATH,
   STATUS_ITEM_API_PATH,
   STATUS_PAGE_PATH,
+  type StatusCheckLog,
   type StatusItemDetail,
   type StatusSnapshot,
 } from "../contract";
 import {
   createLiveStatusProvider,
   emptyLiveSnapshot,
+  type CheckLogRequest,
+  type CheckOutput,
   type LiveStatusOptions,
 } from "../live/provider";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
@@ -26,6 +31,8 @@ export interface StatusProvider {
   snapshot(): StatusSnapshot | Promise<StatusSnapshot>;
   /** One issue for its page. Null, or no reader, answers 404. */
   item?(id: string): StatusItemDetail | null | Promise<StatusItemDetail | null>;
+  /** One check's whole output. Null, or no reader, answers 404. */
+  checkLog?(request: CheckLogRequest): CheckOutput | null | Promise<CheckOutput | null>;
 }
 
 export interface StatusServerOptions {
@@ -60,6 +67,9 @@ export function fakeStatusProvider(): StatusProvider {
       return emptyLiveSnapshot();
     },
     item() {
+      return null;
+    },
+    checkLog() {
       return null;
     },
   };
@@ -183,7 +193,7 @@ function liveProvider(options?: {
       ...(options.linearUsage ? { linearUsage: options.linearUsage } : {}),
     });
   }
-  return { snapshot: () => emptyLiveSnapshot(), item: () => null };
+  return { snapshot: () => emptyLiveSnapshot(), item: () => null, checkLog: () => null };
 }
 
 function artifactResponse(request: Request, options: StatusServerOptions): Response {
@@ -255,7 +265,9 @@ async function itemResponse(
   if (request.method !== "GET" && request.method !== "HEAD") {
     return json({ error: "Method not allowed" }, 405);
   }
-  const id = itemId(pathname.slice(STATUS_ITEM_API_PATH.length + 1));
+  const rest = pathname.slice(STATUS_ITEM_API_PATH.length + 1).split("/");
+  if (rest.length > 1) return checkLogResponse(request, provider, rest);
+  const id = itemId(rest[0]!);
   if (id === null || provider.item === undefined) return json({ error: "Not found" }, 404);
   try {
     const detail = await provider.item(id);
@@ -268,6 +280,63 @@ async function itemResponse(
     journalCaught(caughtError3, "handler.itemResponse.item", null);
     return json({ error: "status unavailable" }, 500);
   }
+}
+
+/**
+ * `<id>/attempts/<n>/checks/<check id>/log`: the check's `stdout` and `stderr`, the last
+ * `CHECK_LOG_TAIL_BYTES` of each unless the query has `full=1`. `run` picks a run's agent
+ * Closeout. A check outside the reader's visible issue answers 404.
+ */
+async function checkLogResponse(
+  request: Request,
+  provider: StatusProvider,
+  segments: readonly string[],
+): Promise<Response> {
+  const [rawId, attempts, rawAttempt, checks, rawCheck, log] = segments;
+  const id = itemId(rawId ?? "");
+  const checkId = itemId(rawCheck ?? "");
+  const attempt = /^[1-9]\d{0,5}$/.test(rawAttempt ?? "") ? Number(rawAttempt) : null;
+  const query = new URL(request.url).searchParams;
+  const run = query.get("run");
+  if (
+    segments.length !== 6 ||
+    attempts !== "attempts" ||
+    checks !== "checks" ||
+    log !== "log" ||
+    id === null ||
+    checkId === null ||
+    attempt === null ||
+    (run !== null && !/^[^/\\\0]{1,128}$/.test(run)) ||
+    provider.checkLog === undefined
+  )
+    return json({ error: "Not found" }, 404);
+  try {
+    const output = await provider.checkLog({ itemId: id, attempt, checkId, run });
+    if (output === null) return json({ error: "Not found" }, 404);
+    const full = query.get("full") === "1";
+    const stdout = full ? output.stdout : tail(output.stdout);
+    const stderr = full ? output.stderr : tail(output.stderr);
+    const truncated = stdout !== output.stdout || stderr !== output.stderr;
+    const body: StatusCheckLog = {
+      stdout,
+      stderr,
+      truncated,
+      fullPath: truncated ? statusCheckLogPath(id, attempt, checkId, { run, full: true }) : null,
+    };
+    return json(body, 200);
+  } catch (caughtError5) {
+    journalCaught(caughtError5, "handler.checkLogResponse.checkLog", null);
+    return json({ error: "status unavailable" }, 500);
+  }
+}
+
+/** The last `CHECK_LOG_TAIL_BYTES` of `output`, starting on a whole UTF-8 character. */
+function tail(output: string): string {
+  const bytes = new TextEncoder().encode(output);
+  if (bytes.length <= CHECK_LOG_TAIL_BYTES) return output;
+  let start = bytes.length - CHECK_LOG_TAIL_BYTES;
+  while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1;
+  return new TextDecoder().decode(bytes.subarray(start));
 }
 
 function itemId(raw: string): string | null {

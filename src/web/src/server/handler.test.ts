@@ -36,6 +36,70 @@ describe("status HTTP stub", () => {
     expect(body.items).toEqual([]);
   });
 
+  test("a check log is the last 64 KB of each stream unless the full log is asked for", async () => {
+    const requests: unknown[] = [];
+    // Two-byte characters, so the cut has to land on a character boundary.
+    const stdout = `${"first line\n"}${"é".repeat(40_000)}`;
+    const provider = {
+      ...fakeStatusProvider(),
+      checkLog(request: unknown) {
+        requests.push(request);
+        return { stdout, stderr: "short" };
+      },
+    };
+    const get = async (path: string) => {
+      const response = (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
+        provider,
+      }))!;
+      return {
+        status: response.status,
+        body: (await response.json()) as {
+          stdout: string;
+          stderr: string;
+          truncated: boolean;
+          fullPath: string | null;
+        },
+      };
+    };
+
+    const tail = await get("/api/status/items/PAS-1/attempts/2/checks/unit%20tests/log");
+    expect(tail.status).toBe(200);
+    expect(tail.body.truncated).toBe(true);
+    expect(Buffer.byteLength(tail.body.stdout)).toBe(64 * 1024);
+    expect(stdout.endsWith(tail.body.stdout)).toBe(true);
+    expect(tail.body.stdout).not.toContain("first line");
+    expect(tail.body.stderr).toBe("short");
+    expect(tail.body.fullPath).toBe(
+      "/api/status/items/PAS-1/attempts/2/checks/unit%20tests/log?full=1",
+    );
+
+    const full = await get(tail.body.fullPath!);
+    expect(full.body).toEqual({ stdout, stderr: "short", truncated: false, fullPath: null });
+
+    await get("/api/status/items/PAS-1/attempts/1/checks/lint/log?run=run-7");
+    expect(requests).toEqual([
+      { itemId: "PAS-1", attempt: 2, checkId: "unit tests", run: null },
+      { itemId: "PAS-1", attempt: 2, checkId: "unit tests", run: null },
+      { itemId: "PAS-1", attempt: 1, checkId: "lint", run: "run-7" },
+    ]);
+    for (const path of [
+      "/api/status/items/PAS-1/attempts/0/checks/lint/log",
+      "/api/status/items/PAS-1/attempts/x/checks/lint/log",
+      "/api/status/items/PAS-1/attempts/1/checks/lint",
+      "/api/status/items/PAS-1/attempts/1/checks/lint/log/more",
+    ])
+      expect((await get(path)).status).toBe(404);
+    expect(requests).toHaveLength(3);
+  });
+
+  test("a check the provider does not know answers 404", async () => {
+    const response = await handleStatusRequest(
+      new Request("http://127.0.0.1/api/status/items/PAS-1/attempts/1/checks/lint/log"),
+      { provider: fakeStatusProvider() },
+    );
+    expect(response?.status).toBe(404);
+  });
+
   test("provider selection has only the serving process source", async () => {
     const provider = fakeStatusProvider();
     expect(providerFor({ provider, env: { PAWS_STATUS_DEMO: "1" } })).toBe(provider);

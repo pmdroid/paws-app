@@ -504,7 +504,8 @@ export interface StatusSnapshot {
  * One issue for its page, from `GET /api/status/items/<id>`: every visible session of the issue
  * (`items`, an earlier one with `endedAt`), its runs, questions, Closeout verdicts with every
  * attempt, agent Closeout, evidence, CI rounds and merge state. `events` is empty and check
- * `stdout` and `stderr` are left out. `blocks` lists the issues this one blocks.
+ * `stdout` and `stderr` are left out; `statusCheckLogPath` loads one check's log. `blocks` lists
+ * the issues this one blocks.
  */
 export interface StatusItemDetail extends StatusSnapshot {
   id: string;
@@ -517,6 +518,59 @@ export type ItemDetailParseResult =
 
 export function statusItemPath(id: string): string {
   return `${STATUS_ITEM_API_PATH}/${encodeURIComponent(id)}`;
+}
+
+/** Bytes of each stream the check log endpoint returns unless the full log is asked for. */
+export const CHECK_LOG_TAIL_BYTES = 64 * 1024;
+
+/**
+ * One check's output, from `GET /api/status/items/<id>/attempts/<n>/checks/<check id>/log`.
+ * Each stream is its last `CHECK_LOG_TAIL_BYTES` unless the path carries `full=1`.
+ */
+export interface StatusCheckLog {
+  stdout: string;
+  stderr: string;
+  /** True when either stream was cut here. `fullPath` returns all of both. */
+  truncated: boolean;
+  fullPath: string | null;
+}
+
+export type CheckLogParseResult = { ok: true; log: StatusCheckLog } | { ok: false; error: string };
+
+/**
+ * The log path of check `checkId` in Closeout attempt `attempt` of the issue `itemId`. `run`
+ * names the run whose agent Closeout holds the check; without it the check is Paws' Closeout.
+ */
+export function statusCheckLogPath(
+  itemId: string,
+  attempt: number,
+  checkId: string,
+  options: { run?: string | null; full?: boolean } = {},
+): string {
+  const query = new URLSearchParams();
+  if (options.run) query.set("run", options.run);
+  if (options.full) query.set("full", "1");
+  const search = query.toString() ? `?${query.toString()}` : "";
+  return `${statusItemPath(itemId)}/attempts/${attempt}/checks/${encodeURIComponent(checkId)}/log${search}`;
+}
+
+export function parseStatusCheckLog(input: unknown): CheckLogParseResult {
+  try {
+    const body = object(input, "log");
+    return {
+      ok: true,
+      log: {
+        stdout: string(body, "stdout", "log"),
+        stderr: string(body, "stderr", "log"),
+        truncated: boolean(body, "truncated", "log"),
+        fullPath: body.fullPath === null ? null : text(body, "fullPath", "log"),
+      },
+    };
+  } catch (error) {
+    journalCaught(error, "contract.parseStatusCheckLog.object", null);
+    const message = error instanceof Error ? error.message : "Invalid check log";
+    return { ok: false, error: message };
+  }
 }
 
 export function parseStatusItemDetail(input: unknown): ItemDetailParseResult {
