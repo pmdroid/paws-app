@@ -916,7 +916,7 @@ async function pausedForReview(
       while (!done()) {
         if (Date.now() > deadline) throw new Error(JSON.stringify(listJobs(db)));
         const state = listWorkItems(db)[0]!.state;
-        if (state === "failed" || state === "exhausted")
+        if (state === "failed")
           throw new Error(`task ${state}: ${JSON.stringify(listWorkItems(db)[0])}`);
         const job = await jobs.tick();
         await outboxIdle(outbox);

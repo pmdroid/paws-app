@@ -26,7 +26,6 @@ type Edge<State extends string, Event extends string> = {
 
 /**
  * Legal work-item edges. `cancel` is not listed: it leaves every non-terminal state.
- * High-risk acceptance is its own event so this module does not learn risk policy.
  */
 export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "planning", event: "plan_approved", to: "queued" },
@@ -45,14 +44,12 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "merge_queue", event: "lease_expired", to: "verifying" },
   { from: "queued", event: "restart", to: "queued" },
   { from: "failed", event: "restart", to: "queued" },
-  { from: "exhausted", event: "restart", to: "queued" },
   { from: "running", event: "restart", to: "queued" },
   { from: "paused", event: "restart", to: "queued" },
   { from: "awaiting_input", event: "restart", to: "queued" },
   { from: "recovering", event: "restart", to: "queued" },
   { from: "verifying", event: "restart", to: "queued" },
   { from: "merge_queue", event: "restart", to: "queued" },
-  { from: "awaiting_signoff", event: "restart", to: "queued" },
   { from: "recovering", event: "recovered", to: "running" },
   { from: "recovering", event: "crash_budget_used", to: "failed" },
   { from: "running", event: "turn_ended", to: "verifying" },
@@ -61,21 +58,12 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "running", event: "run_failed", to: "failed" },
   { from: "verifying", event: "closeout_rejected", to: "running" },
   { from: "verifying", event: "commit_while_verifying", to: "verifying" },
-  { from: "verifying", event: "closeout_exhausted", to: "exhausted" },
   { from: "verifying", event: "closeout_infra_failed", to: "failed" },
   { from: "verifying", event: "closeout_accepted", to: "merge_queue" },
-  { from: "verifying", event: "closeout_accepted_high_risk", to: "awaiting_signoff" },
-  { from: "awaiting_signoff", event: "signed_off", to: "merge_queue" },
-  { from: "awaiting_signoff", event: "changes_requested", to: "running" },
-  { from: "awaiting_signoff", event: "signoff_sla_expired", to: "manual" },
   { from: "merge_queue", event: "main_moved", to: "merge_queue" },
   { from: "merge_queue", event: "reverify_requested", to: "verifying" },
   { from: "merge_queue", event: "merge_accepted", to: "merged" },
-  { from: "merge_queue", event: "rebase_high_risk", to: "awaiting_signoff" },
   { from: "merge_queue", event: "ejected", to: "running" },
-  { from: "merge_queue", event: "train_budget_used", to: "exhausted" },
-  { from: "exhausted", event: "requeue", to: "queued" },
-  { from: "exhausted", event: "take_over", to: "manual" },
   { from: "failed", event: "requeue", to: "queued" },
   { from: "failed", event: "take_over", to: "manual" },
   { from: "manual", event: "human_completed", to: "merged" },

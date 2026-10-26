@@ -18,11 +18,9 @@ export const ITEM_STATES = [
   "running",
   "awaiting_input",
   "verifying",
-  "signoff",
   "merge_queue",
   "merged",
   "completed",
-  "exhausted",
   "stopped",
   "needs_human",
 ] as const;

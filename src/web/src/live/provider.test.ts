@@ -55,6 +55,39 @@ function seedQuestion(db: Database, itemId: string, sessionId: string): void {
 }
 
 describe("live status provider", () => {
+  test("HTTP status exposes migrated failures and budget questions without obsolete item states", async () => {
+    const db = openDatabase(":memory:");
+    open.push(db);
+    migrate(db, { until: "147_job_item_version_and_question_reason" });
+    insertQueuedItem(db, { id: "legacy-budget" });
+    db.run("UPDATE work_item SET state='exhausted' WHERE id='legacy-budget'");
+    migrate(db);
+    insertQueuedItem(db, { id: "budget-question" });
+    beginImplementRun(db, "budget-question", 1);
+    applyWorkItemEvent(db, "budget-question", "blocking_question");
+    seedQuestion(db, "budget-question", "session");
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    expect(response?.status).toBe(200);
+    const body = parseStatusSnapshot(await response!.json());
+    expect(body.ok).toBe(true);
+    if (!body.ok) return;
+    expect(body.snapshot.items.find((item) => item.id === "legacy-budget")?.state).toBe(
+      "needs_human",
+    );
+    expect(body.snapshot.items.find((item) => item.id === "budget-question")?.state).toBe(
+      "awaiting_input",
+    );
+    expect(body.snapshot.questions).toHaveLength(1);
+    expect(
+      body.snapshot.items.every(
+        (item) => !["exhausted", "awaiting_signoff", "signoff"].includes(item.state),
+      ),
+    ).toBe(true);
+  });
+
   test("HTTP questions hand off to their own persisted Linear session", async () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "new-session" });

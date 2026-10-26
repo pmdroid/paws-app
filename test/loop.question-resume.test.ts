@@ -496,7 +496,7 @@ async function drive(
   while (Date.now() < deadline) {
     const state = getWorkItem(fixture.db, listWorkItems(fixture.db)[0]!.id)?.state;
     if (state && states.includes(state)) return;
-    if (state === "failed" || state === "exhausted") {
+    if (state === "failed") {
       throw new Error(JSON.stringify(listJobs(fixture.db)));
     }
     workspaceDispatch(fixture.db, { now: Date.now() });
