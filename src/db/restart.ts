@@ -7,7 +7,14 @@ import { enqueueJobOnce } from "./jobs";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
-export type RestartHandoff = { reason: RestartReason; body: string; now: number; jobKey?: string };
+export type RestartHandoff = {
+  reason: RestartReason;
+  body: string;
+  now: number;
+  jobKey?: string;
+  /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
+  limit?: number;
+};
 
 /** One admission path back to the agent. Keeps the run, branch and Linear session. */
 export function restart(
@@ -36,6 +43,7 @@ export function restart(
         runId: item.currentRunId,
         handoff: handoff.body,
         reason: handoff.reason,
+        ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
       },
       now: handoff.now,
     });
@@ -55,4 +63,17 @@ export function fixRounds(db: Database, itemId: string): number {
   `)
       .get(JOB_KIND.resume, itemId, JOB_KIND.resume, itemId)?.count ?? 0
   );
+}
+
+/** The limit the latest restart of `itemId` recorded for its fix-attempt lines, if any. */
+export function restartLimit(db: Database, itemId: string): number | null {
+  const row = db
+    .query<{ limit: number | null }, [string, string]>(`
+    SELECT json_extract(payload, '$.limit') AS "limit" FROM job
+    WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
+      AND json_extract(payload, '$.reason') IS NOT NULL
+    ORDER BY id DESC LIMIT 1
+  `)
+    .get(JOB_KIND.resume, itemId);
+  return typeof row?.limit === "number" ? row.limit : null;
 }

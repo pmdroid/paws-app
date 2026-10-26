@@ -1,9 +1,9 @@
 export { candidatePolicyDigest, FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export {
   fixAttemptLimit,
+  fixesLeft,
   policyFixBudget,
   policyCheckPaths,
-  policyFixLimits,
   approvalsAtHead,
   samePatch,
   reviewRequirements,
@@ -11,7 +11,7 @@ export {
   trustedRootFiles,
   visualReviewRequirements,
 } from "../closeout-spec";
-export type { FixLimits, RootFilesLoad } from "../closeout-spec";
+export type { RootFilesLoad } from "../closeout-spec";
 export { createFakeCloseoutGate } from "./fake";
 export type { FakeCloseoutGate } from "./fake";
 export { awaitsVisualReview, createCloseoutGate } from "./gate";

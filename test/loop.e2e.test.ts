@@ -455,9 +455,9 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
     await tickWithRestarts(jobs, orchestrator, db);
     expect(stateOf(db, "ENG-303"), debug(layout, db)).toBe("merge_queue");
     const fixes = tracker.progress.filter((update) => update.body.startsWith("Fixing Closeout"));
-    // Three attempts per check leave two fix attempts, which stops the item long before 35 rounds.
+    // Evidence checks have no attempt limit, so only the 35 fix rounds bound this repair.
     expect(fixes.map((update) => update.body)).toEqual([
-      "Fixing Closeout findings for ENG-303, fix attempt 1 of 2.",
+      "Fixing Closeout findings for ENG-303, fix attempt 1 of 35.",
     ]);
     expect(prompts.get("fix")).toContain("visual-proof (evidence): failed");
     expect(prompts.get("fix")).toContain('publish_artifact with checkId "visual-proof"');

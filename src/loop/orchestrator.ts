@@ -2,7 +2,7 @@ import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity
 import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
-import { saveHumanRetryWindow, fixRounds, jobVersionCurrent } from "../db";
+import { saveHumanRetryWindow, fixRounds, jobVersionCurrent, restartLimit } from "../db";
 import { journalCaught } from "../journal";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
@@ -51,7 +51,6 @@ import {
 import {
   fixAttemptLimit,
   policyFixBudget,
-  policyFixLimits,
   approvalsAtHead,
   awaitsVisualReview,
   createCloseoutGate,
@@ -2411,7 +2410,7 @@ export class Orchestrator {
       if (!fixing) sessionProgress?.phase("implementing");
       if (fixing) {
         const round = fixRounds(this.db, item.id);
-        const limit = this.fixAttemptLimit(item, returned.reason, round);
+        const limit = this.fixAttemptLimit(item, returned.reason);
         const label =
           returned.reason === "ci"
             ? "CI"
@@ -3211,6 +3210,7 @@ export class Orchestrator {
         reason: "findings",
         body: result?.handoff ?? summary,
         now: this.now(),
+        limit: fixAttemptLimit(limit, rounds + 1, result?.fixesLeft ?? null),
       });
       return;
     }
@@ -3614,19 +3614,13 @@ export class Orchestrator {
   }
 
   /**
-   * The limit a fix-attempt line names for this round. Closeout findings also end when a check
-   * spends its attempts, so those lines name whichever limit stops the item first.
+   * The limit a fix-attempt line names for this round. Closeout findings also end when a failed
+   * check spends its attempts, so their restart records whichever limit stops the item first.
    */
-  private fixAttemptLimit(item: WorkItemRecord, reason: string, round: number): number {
+  private fixAttemptLimit(item: WorkItemRecord, reason: string): number {
     const rounds = this.fixRoundLimit(item);
     if (reason !== "findings") return rounds;
-    const { home, policyRoot } = this.closeoutHome(item);
-    const limits = policyFixLimits(
-      worktreePath(this.options.pawsRoot, itemPathId(item)),
-      home,
-      policyRoot,
-    );
-    return limits ? fixAttemptLimit({ ...limits, fixRounds: rounds }, round) : rounds;
+    return Math.min(rounds, restartLimit(this.db, item.id) ?? rounds);
   }
 
   /**
@@ -4425,7 +4419,7 @@ export class Orchestrator {
         const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
         progress.wait(`Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
       } else if (wait.kind === "runner" && wait.restart) {
-        const limit = this.fixAttemptLimit(item, wait.restart, round);
+        const limit = this.fixAttemptLimit(item, wait.restart);
         const restarted = this.db
           .query<{ version: number }, [string]>(
             "SELECT version FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
