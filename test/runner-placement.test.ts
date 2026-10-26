@@ -453,3 +453,33 @@ test("a runner low on quota follows equally loaded runners", () =>
     pool.occupy("b");
     expect(await pool.ids()).toEqual(["a", "c", "b"]);
   }));
+
+test("run pins apply to every role and never expire while the host is online", async () => {
+  const placed = await placeItem();
+  try {
+    const pinnedRunnerId = "second";
+    const run = insertRun(placed.db, { itemId: "item", now: placed.now(), status: "active" });
+    placed.db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,ended_at) VALUES(?,'second',?,1,0,'held',?,0,?)",
+      [run.id, placed.workspaceId, placed.now(), placed.now()],
+    );
+    for (const role of ["implementer", "reviewer", "implementer"] as const) {
+      expect(await placed.ids({ pinnedRunnerId, role })).toEqual(["second"]);
+      placed.tick(3 * SESSION_GRACE_MS);
+    }
+    // Even occupied capacity cannot make placement abandon an online run's pin.
+    placed.db.run("UPDATE runner_work SET ended_at=NULL,lease_until=?", [placed.now() + 60_000]);
+    expect(await placed.ids({ pinnedRunnerId })).toEqual(["second"]);
+    expect(await placed.ids({ pinnedRunnerId, excludeRunnerIds: ["second"] })).toEqual(["second"]);
+    // Exclusions still apply to new runs and unavailable pins.
+    expect(await placed.ids({ excludeRunnerIds: ["second"] })).toEqual(["own"]);
+    placed.db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id='second'", [
+      placed.now() + 60_000,
+    ]);
+    expect(await placed.ids({ pinnedRunnerId })).toEqual([]);
+    expect(await placed.ids({ pinnedRunnerId, excludeRunnerIds: ["second"] })).toEqual([]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});

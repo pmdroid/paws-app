@@ -20,6 +20,8 @@ import {
   recordAgentCloseout,
   resumeUsagePauseNow,
   usagePause,
+  runnerSlotsHeldBetweenCommands,
+  runnerOccupancy,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/web/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
@@ -841,7 +843,7 @@ export async function probeRunnerBackend(
       executionId: string,
       bytes: Buffer,
     ) {
-      const access = { runnerId, runId: command.runId, token };
+      const access = { runnerId: command.runnerId, runId: command.runId, token };
       for (let offset = 0; offset < bytes.length; offset += RUNNER_TRANSCRIPT_CHUNK_BYTES) {
         const chunk = bytes.subarray(offset, offset + RUNNER_TRANSCRIPT_CHUNK_BYTES);
         await transcripts.upload(access, {
@@ -1814,6 +1816,198 @@ export async function probeRunnerBackend(
         },
       },
     });
+    {
+      const affinityBackend = createRemoteAgentRunner({
+        ...backendOptions,
+        placement,
+        async fetchCandidate(candidate) {
+          assert.equal(candidate.candidateSha, head);
+          await git(["-C", candidate.worktree, "reset", "--hard", head]);
+        },
+      });
+      for (const host of hostIds)
+        db.run(
+          "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.26',?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+          [host, now],
+        );
+      for (const unavailable of ["offline", "revoked", "draining", "paused"] as const) {
+        const record = item();
+        const affinityNotices: string[] = [];
+        const firstHost = (
+          await placement.candidates({
+            itemId: record.id,
+            profile: { agent: "codex", model: "model" },
+            role: "implementer",
+            purpose: "work",
+          })
+        )[0]!.id;
+        const step = async (host: string, role: "implementer" | "reviewer") => {
+          const model = role === "reviewer" ? "review-model" : "model";
+          const affinityTurn = affinityBackend.forItem(record.id)(
+            input(record, {
+              role,
+              readOnly: role === "reviewer",
+              profile: { agent: "codex", model },
+              onEvent(event) {
+                if (event.type === "progress") affinityNotices.push(event.text);
+              },
+            }),
+          );
+          const command = await next(host);
+          assert(command.type === "run" || command.type === "review");
+          assert.equal(command.runnerId, host);
+          assert.equal(
+            hostIds.reduce(
+              (total, id) =>
+                total +
+                runnerOccupancy(db, id, now).occupied +
+                runnerSlotsHeldBetweenCommands(db, id, now),
+              0,
+            ),
+            1,
+          );
+          const affinityGrant = work.issueGrant({
+            runnerId: host,
+            runId: command.runId,
+            commandId: command.id,
+            generation: command.generation,
+          });
+          results.submit({
+            runnerId: host,
+            runId: command.runId,
+            generation: command.generation,
+            token: affinityGrant.token,
+            result: {
+              ...result(command, role),
+              identity: { ...result(command, role).identity, model },
+              ...(role === "reviewer"
+                ? { reviewText: "Independent approval" }
+                : { candidateSha: head, sessionId: `agent-${command.id}` }),
+            },
+          });
+          await affinityTurn;
+          assert.equal(
+            hostIds.reduce((total, id) => total + runnerSlotsHeldBetweenCommands(db, id, now), 0),
+            1,
+          );
+          return command;
+        };
+        const implemented = await step(firstHost, "implementer");
+        // An idle runner and more than the old grace period cannot draw this run away.
+        now += 180_001;
+        for (const id of hostIds) work.heartbeat(id);
+        await step(firstHost, "reviewer");
+        const sameRunnerFix = await step(firstHost, "implementer");
+        assert.equal(
+          "resumeSessionId" in sameRunnerFix && sameRunnerFix.resumeSessionId,
+          `agent-${implemented.id}`,
+        );
+        affinityNotices.length = 0;
+        if (unavailable === "offline")
+          db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, firstHost]);
+        else if (unavailable === "revoked")
+          db.run("UPDATE runner SET revoked_at=? WHERE id=?", [now, firstHost]);
+        else db.run("UPDATE runner SET status=? WHERE id=?", [unavailable, firstHost]);
+        const replacement = (
+          await placement.candidates({
+            itemId: record.id,
+            profile: { agent: "codex", model: "review-model" },
+            role: "reviewer",
+            purpose: "work",
+            pinnedRunnerId: firstHost,
+          })
+        )[0]!.id;
+        assert.notEqual(replacement, firstHost);
+        const moved = await step(replacement, "reviewer");
+        assert(!("resumeSessionId" in moved));
+        assert.equal(runnerSlotsHeldBetweenCommands(db, firstHost, now), 0);
+        // Bringing the original host back must not pull the run back or repeat its notice.
+        db.run("UPDATE runner SET status='active',revoked_at=NULL,last_seen_at=? WHERE id=?", [
+          now,
+          firstHost,
+        ]);
+        const fixed = await step(replacement, "implementer");
+        assert(!("resumeSessionId" in fixed));
+        assert.equal(
+          affinityNotices.filter((notice) => notice.startsWith("Starting a new session on")).length,
+          1,
+        );
+        db.run("UPDATE run SET status='ended' WHERE id=?", [record.run.id]);
+      }
+      for (const host of hostIds)
+        db.run("DELETE FROM runner_host_status WHERE runner_id=?", [host]);
+      observe(
+        "Implementation, review and fixes keep one runner slot, replacing unavailable hosts once",
+        true,
+        { states: ["offline", "revoked", "draining", "paused"] },
+      );
+    }
+    {
+      const responseBackend = createRemoteAgentRunner({
+        ...backendOptions,
+        placement,
+        transcripts,
+      });
+      for (const purpose of ["answer", "artifact"] as const) {
+        const record = item();
+        saveTaskMode(db, record.id, purpose);
+        const host = (
+          await placement.candidates({
+            itemId: record.id,
+            profile: { agent: "codex", model: "model" },
+            role: "implementer",
+            purpose: "work",
+          })
+        )[0]!.id;
+        for (let round = 0; round < 2; round++) {
+          const affinityTurn = responseBackend.forItem(record.id)(
+            input(record, { readOnly: purpose === "answer" }),
+          );
+          const command = await next(host);
+          assert.equal(command.type, "task");
+          if (command.type !== "task") throw new Error("Expected response task");
+          const affinityGrant = work.issueGrant({
+            runnerId: host,
+            runId: command.runId,
+            commandId: command.id,
+            generation: command.generation,
+          });
+          const receipt = result(command);
+          await seal(
+            command,
+            affinityGrant.token,
+            receipt.executionId,
+            Buffer.from(
+              JSON.stringify({
+                event: {
+                  type: "session_update",
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: "Response" },
+                  },
+                },
+              }) + "\n",
+            ),
+          );
+          results.submit({
+            runnerId: host,
+            runId: command.runId,
+            generation: command.generation,
+            token: affinityGrant.token,
+            result: receipt,
+          });
+          await affinityTurn;
+          assert.equal(
+            hostIds.reduce((total, id) => total + runnerSlotsHeldBetweenCommands(db, id, now), 0),
+            1,
+          );
+        }
+        db.run("UPDATE run SET status='ended' WHERE id=?", [record.run.id]);
+      }
+      observe("Response tasks keep the run's runner and a single slot across turns", true, {
+        modes: ["answer", "artifact"],
+      });
+    }
     const beforeFailoverImports = fetched;
     await git(["-C", source, "reset", "--hard", base]);
     const selectionsBeforeWork = selectionReads;
@@ -1934,11 +2128,19 @@ export async function probeRunnerBackend(
       ) as RunnerCommand;
       if (command.type === "cancel") work.acknowledge(hostIds[1]!, command.id);
     }
-    const thirdAttempt = await next(hostIds[2]!);
+    // An online pin waits out its quota instead of taking the idle third runner.
+    for (let poll = 0; poll < 500 && !usagePause(db, failoverItem.run.id); poll++) await delay(1);
+    const pinnedPause = usagePause(db, failoverItem.run.id);
+    assert(pinnedPause);
+    assert.equal(work.commands(hostIds[2]!).length, 0);
+    now = pinnedPause.resumeAt;
+    for (const hostId of hostIds) work.heartbeat(hostId);
+    db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [now, principal.userId]);
+    const thirdAttempt = await next(hostIds[1]!);
     if (thirdAttempt.type !== "run") throw new Error("Expected third failover work");
     assert.equal(thirdAttempt.generation, secondAttempt.generation + 1);
     const thirdToken = work.issueGrant({
-      runnerId: hostIds[2]!,
+      runnerId: hostIds[1]!,
       runId: thirdAttempt.runId,
       commandId: thirdAttempt.id,
       generation: thirdAttempt.generation,
@@ -1946,7 +2148,7 @@ export async function probeRunnerBackend(
     assert.match(thirdAttempt.prompt, /Retained work before heartbeat loss/);
     for (let eventSequence = 1; eventSequence <= 130; eventSequence++)
       work.event({
-        runnerId: hostIds[2]!,
+        runnerId: hostIds[1]!,
         runId: thirdAttempt.runId,
         generation: thirdAttempt.generation,
         token: thirdToken.token,
@@ -1960,7 +2162,7 @@ export async function probeRunnerBackend(
         },
       });
     results.submit({
-      runnerId: hostIds[2]!,
+      runnerId: hostIds[1]!,
       runId: thirdAttempt.runId,
       generation: thirdAttempt.generation,
       token: thirdToken.token,
@@ -1968,19 +2170,19 @@ export async function probeRunnerBackend(
     });
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
       now - 60_001 - RUNNER_LEASE_GRACE_MS,
-      hostIds[2]!,
+      hostIds[1]!,
     ]);
     assert.equal((await failover).stopReason, "end_turn");
     assert.match(
       readFileSync(`${runDir(root, failoverItem.run.id)}/acp.jsonl`, "utf8"),
       /Final event 130/,
     );
-    assert.deepEqual(placements, hostIds);
+    assert.deepEqual(placements, [hostIds[0]!, hostIds[1]!, hostIds[1]!]);
     assert.deepEqual(observedFailures, ["heartbeat_lost", "quota_exhausted"]);
     assert.equal(fetched, beforeFailoverImports + 1);
     assert.equal(getWorkItem(db, failoverItem.id)?.currentRunId, failoverItem.run.id);
     observe(
-      "Three paired hosts join cancellation before fresh heartbeat and quota failover with one candidate import",
+      "An offline host moves once and quota recovery retains the online replacement with one candidate import",
       true,
       {
         hostIds,
@@ -1992,14 +2194,14 @@ export async function probeRunnerBackend(
       },
     );
     work.heartbeat(hostIds[0]!);
-    work.heartbeat(hostIds[2]!);
+    work.heartbeat(hostIds[1]!);
     const preparing = placedBackend.forItem(failoverItem.id)(
       input(failoverItem, { prepareOnly: true, signal: failoverAbort.signal }),
     );
     pendingFailover = preparing;
-    const failoverProbe = await next(hostIds[0]!);
+    const failoverProbe = await next(hostIds[1]!);
     assert.equal(failoverProbe.type, "probe");
-    health.submit(hostIds[0]!, {
+    health.submit(hostIds[1]!, {
       ...result(failoverProbe),
       models: [{ id: "model", name: "Model" }],
     });
@@ -2109,17 +2311,26 @@ export async function probeRunnerBackend(
     assert.equal(work.commands(hostIds[2]!).length, 0);
     assert.equal(publications, 1);
     continuationState.answer = "Keep the existing artifact and continue without republishing it.";
-    const approvedCommand = await next(hostIds[2]!);
+    const continuationHost = (
+      await placement.candidates({
+        itemId: artifactItem.id,
+        profile: { agent: "codex", model: "model" },
+        role: "implementer",
+        purpose: "work",
+        pinnedRunnerId: hostIds[0]!,
+      })
+    )[0]!.id;
+    const approvedCommand = await next(continuationHost);
     if (approvedCommand.type !== "run") throw new Error("Expected approved continuation");
     assert.match(approvedCommand.prompt, /Keep the existing artifact/);
     const approvedToken = work.issueGrant({
-      runnerId: hostIds[2]!,
+      runnerId: continuationHost,
       runId: approvedCommand.runId,
       commandId: approvedCommand.id,
       generation: approvedCommand.generation,
     });
     results.submit({
-      runnerId: hostIds[2]!,
+      runnerId: continuationHost,
       runId: approvedCommand.runId,
       generation: approvedCommand.generation,
       token: approvedToken.token,
@@ -2160,16 +2371,16 @@ export async function probeRunnerBackend(
       );
       pendingFailover = independentReview;
       void independentReview.catch(() => undefined);
-      const conflicting = await next(hostIds[0]!);
+      const conflicting = await next(continuationHost);
       if (conflicting.type !== "review") throw new Error("Expected independent review command");
       const conflictGrant = work.issueGrant({
-        runnerId: hostIds[0]!,
+        runnerId: continuationHost,
         runId: conflicting.runId,
         commandId: conflicting.id,
         generation: conflicting.generation,
       });
       work.event({
-        runnerId: hostIds[0]!,
+        runnerId: continuationHost,
         runId: conflicting.runId,
         generation: conflicting.generation,
         token: conflictGrant.token,
@@ -2177,7 +2388,7 @@ export async function probeRunnerBackend(
         event: { type: "progress", text: "Conflicting review must remain unpublished" },
       });
       results.submit({
-        runnerId: hostIds[0]!,
+        runnerId: continuationHost,
         runId: conflicting.runId,
         generation: conflicting.generation,
         token: conflictGrant.token,
@@ -2186,23 +2397,37 @@ export async function probeRunnerBackend(
           reviewText: "Conflicting review must remain unpublished",
         },
       });
-      assert.equal((await next(hostIds[0]!, false)).type, "cancel");
-      for (const envelope of work.commands(hostIds[0]!)) {
+      assert.equal((await next(continuationHost, false)).type, "cancel");
+      for (const envelope of work.commands(continuationHost)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
-        if (command.type === "cancel") work.acknowledge(hostIds[0]!, command.id);
+        if (command.type === "cancel") work.acknowledge(continuationHost, command.id);
       }
-      const independent = await next(hostIds[1]!);
+      const independentHost = continuationHost;
+      const independent = await next(independentHost);
       if (independent.type !== "review") throw new Error("Expected fresh independent review");
+      assert.equal(independent.runnerId, conflicting.runnerId);
+      assert.equal(independent.generation, conflicting.generation + 1);
+      assert.equal(
+        hostIds.reduce(
+          (total, id) =>
+            total +
+            runnerOccupancy(db, id, now).occupied +
+            runnerSlotsHeldBetweenCommands(db, id, now),
+          0,
+        ),
+        1,
+      );
+      assert.match(independent.prompt, /fresh agent session/);
       const independentGrant = work.issueGrant({
-        runnerId: hostIds[1]!,
+        runnerId: independentHost,
         runId: independent.runId,
         commandId: independent.id,
         generation: independent.generation,
       });
       results.submit({
-        runnerId: hostIds[1]!,
+        runnerId: independentHost,
         runId: independent.runId,
         generation: independent.generation,
         token: independentGrant.token,
@@ -2227,6 +2452,88 @@ export async function probeRunnerBackend(
         "Unexpected reviewer model reuse joins before fresh independent review without publishing conflicting output",
         true,
         { conflicting: conflicting.id, independent: independent.id, reviewEvents },
+      );
+    }
+    {
+      const pinnedReviewHost = db
+        .query<{ runnerId: string }, [string]>(
+          "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
+        )
+        .get(artifactItem.run.id)!.runnerId;
+      const rejectedReviewEvents: string[] = [];
+      const repeatedConflict = placedBackend.forItem(artifactItem.id)(
+        input(artifactItem, {
+          role: "reviewer",
+          readOnly: true,
+          profile: { agent: "codex", model: null },
+          signal: failoverAbort.signal,
+          onEvent(event) {
+            if (event.type === "session_update") rejectedReviewEvents.push(JSON.stringify(event));
+          },
+        }),
+      );
+      pendingFailover = repeatedConflict;
+      const boundedRejection = assert.rejects(
+        repeatedConflict,
+        /reviewer runner requires a fresh eligible agent/,
+      );
+      let previousGeneration = 0;
+      for (let retry = 0; retry < 3; retry++) {
+        const conflictingReview = await next(pinnedReviewHost);
+        assert.equal(conflictingReview.type, "review");
+        if (conflictingReview.type !== "review") throw new Error("Expected conflicting review");
+        if (previousGeneration) assert.equal(conflictingReview.generation, previousGeneration + 1);
+        previousGeneration = conflictingReview.generation;
+        assert.equal(
+          hostIds.reduce(
+            (total, id) =>
+              total +
+              runnerOccupancy(db, id, now).occupied +
+              runnerSlotsHeldBetweenCommands(db, id, now),
+            0,
+          ),
+          1,
+        );
+        const retryGrant = work.issueGrant({
+          runnerId: pinnedReviewHost,
+          runId: conflictingReview.runId,
+          commandId: conflictingReview.id,
+          generation: conflictingReview.generation,
+        });
+        results.submit({
+          runnerId: pinnedReviewHost,
+          runId: conflictingReview.runId,
+          generation: conflictingReview.generation,
+          token: retryGrant.token,
+          result: {
+            ...result(conflictingReview, "reviewer"),
+            reviewText: "Conflicting review remains private",
+          },
+        });
+        assert.equal((await next(pinnedReviewHost, false)).type, "cancel");
+        for (const envelope of work.commands(pinnedReviewHost)) {
+          const cancelCommand = JSON.parse(
+            Buffer.from(envelope.payload, "base64url").toString(),
+          ) as RunnerCommand;
+          if (cancelCommand.type === "cancel") work.acknowledge(pinnedReviewHost, cancelCommand.id);
+        }
+      }
+      await boundedRejection;
+      assert(
+        !rejectedReviewEvents.some((event) => event.includes("Conflicting review remains private")),
+      );
+      assert.equal(
+        db
+          .query<{ runnerId: string }, [string]>(
+            "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
+          )
+          .get(artifactItem.run.id)!.runnerId,
+        pinnedReviewHost,
+      );
+      observe(
+        "Repeated model conflicts retry fresh sessions on the online pin within the retry budget",
+        true,
+        { attempts: 3, runnerId: pinnedReviewHost },
       );
     }
     {
