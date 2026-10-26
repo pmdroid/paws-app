@@ -4,12 +4,13 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { onboardingPage } from "../src/workspace";
-import { demoStatus, handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/web";
+import { statusFixture } from "../src/web/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 snapshot.source = "live";
 const runner = {
   id: "01JRUNNER0000000000000000A",

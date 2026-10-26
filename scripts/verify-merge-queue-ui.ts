@@ -1,14 +1,15 @@
+import { statusFixture } from "../src/web/test/fixtures";
 // The run page of a task second in its repository's merge queue, against the real status handler.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-merge-queue-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { demoStatus, handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/web";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 snapshot.source = "live";
 const run = snapshot.runs.find((entry) => entry.id === "r-102");
 const item = snapshot.items.find((entry) => entry.id === run?.itemId);

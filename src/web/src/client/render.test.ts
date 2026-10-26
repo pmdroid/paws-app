@@ -1,5 +1,5 @@
+import { statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { demoStatus } from "../demo";
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 import { checkKey } from "./closeout";
@@ -9,8 +9,7 @@ function model(patch: Partial<RenderModel> = {}): RenderModel {
   return {
     route: { view: "overview" },
     phase: "ready",
-    snapshot: demoStatus(),
-    via: "bundled",
+    snapshot: statusFixture(),
     error: null,
     engineUrl: null,
     ...patch,
@@ -19,7 +18,7 @@ function model(patch: Partial<RenderModel> = {}): RenderModel {
 
 describe("status views", () => {
   test("overview follows only the current run after recovery and summarizes queued work", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const run = snapshot.runs[0];
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
@@ -53,7 +52,7 @@ describe("status views", () => {
       ["blocked", "Closeout blocked"],
       ["exhausted", "Closeout exhausted"],
     ] as const) {
-      const snapshot = demoStatus();
+      const snapshot = statusFixture();
       const verdict = snapshot.verdicts[0];
       const item = snapshot.items.find((entry) => entry.id === verdict?.itemId);
       const run = snapshot.runs.find((entry) => entry.itemId === item?.id);
@@ -68,7 +67,7 @@ describe("status views", () => {
     }
   });
   test("artifact links use the selected engine and wait for completed checks", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const verdict = snapshot.verdicts[0];
     const check = verdict?.checks[0];
     const run = snapshot.runs.find((entry) => entry.itemId === verdict?.itemId);
@@ -115,7 +114,7 @@ describe("status views", () => {
   });
 
   test("overview includes sign-off and input holds without a question and excludes blocked or paused work", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.questions = [];
     snapshot.verdicts = [];
     snapshot.items[0]!.state = "signoff";
@@ -133,7 +132,7 @@ describe("status views", () => {
   });
 
   test("overview does not count stale runs and keeps completed work out of active work", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.questions = [];
     snapshot.items = snapshot.items.filter((item) => item.state === "merged");
     const html = render(model({ snapshot })).content;
@@ -144,7 +143,7 @@ describe("status views", () => {
   });
 
   test("overview keeps questions reachable with no items and gives new work a useful empty state", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.items = [];
     const html = render(model({ snapshot })).content;
     expect(html).toContain('href="/questions/Q-41"');
@@ -153,7 +152,7 @@ describe("status views", () => {
   });
 
   test("overview bounds the active list and links to all remaining work", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const item = snapshot.items[2]!;
     snapshot.items = Array.from({ length: 9 }, (_, index) => ({
       ...item,
@@ -172,7 +171,7 @@ describe("status views", () => {
   });
 
   test("issue filters keep in-progress work out of Done", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const html = render(model({ snapshot, route: { view: "issues", id: null } })).content;
     expect(issueRow(html, "ENG-102")).toContain('data-issue-state="active"');
     expect(issueRow(html, "ENG-100")).toContain('data-issue-state="needs"');
@@ -205,7 +204,7 @@ describe("status views", () => {
   });
 
   test("a queued item shows its place in line on the run and issue pages", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
@@ -228,7 +227,7 @@ describe("status views", () => {
   });
 
   test("a held item shows why it waits on its issue page", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const item = snapshot.items[0]!;
     item.state = "queued";
     item.blockers = [];
@@ -262,7 +261,7 @@ describe("status views", () => {
   });
 
   test("the issue page shows how many Linear requests the item made", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
@@ -272,7 +271,7 @@ describe("status views", () => {
   });
 
   test("an item in the merge queue shows its place on the run and issue pages", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
@@ -295,7 +294,7 @@ describe("status views", () => {
   });
 
   test("an item in the GitHub merge queue shows GitHub's position and state", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
@@ -331,7 +330,7 @@ describe("status views", () => {
   });
 
   test("item activity is a plain section with its links as one row of buttons", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.source = "live";
     const run = snapshot.runs.find((entry) => entry.state === "running");
     if (!run) throw new Error("missing running run");
@@ -369,7 +368,7 @@ describe("status views", () => {
     expect(render(model({ route: { view: "questions", id: "Q-40" } })).content).toContain(
       "legal-hold",
     );
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const question = snapshot.questions[0]!;
     question.links = [
       { label: "Answer in Linear", href: "https://linear.app/paws/issue/ENG-1#session" },
@@ -381,7 +380,7 @@ describe("status views", () => {
   });
 
   test("escapes text and drops non-http links", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const item = snapshot.items.find((entry) => entry.id === "ENG-104");
     if (!item) throw new Error("missing item");
     item.title = `<script>alert(1)</script>`;
@@ -393,9 +392,9 @@ describe("status views", () => {
   });
 
   test("a live snapshot hides the engine address and live banner", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.source = "live";
-    const view = render(model({ snapshot, via: "engine", engineUrl: "http://127.0.0.1:8787" }));
+    const view = render(model({ snapshot, engineUrl: "http://127.0.0.1:8787" }));
     expect(view.top).not.toContain("Live");
     expect(view.top).not.toContain("Demo data");
     expect(view.top).not.toContain("Engine");
@@ -404,7 +403,7 @@ describe("status views", () => {
   });
 
   test("an empty live database tells the operator to delegate a Linear issue", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.source = "live";
     snapshot.items = [];
     snapshot.runs = [];
@@ -412,7 +411,7 @@ describe("status views", () => {
     snapshot.verdicts = [];
     snapshot.mergeQueue = [];
     snapshot.events = [];
-    const view = render(model({ snapshot, via: "engine", engineUrl: "http://127.0.0.1:8787" }));
+    const view = render(model({ snapshot, engineUrl: "http://127.0.0.1:8787" }));
     expect(view.top).not.toContain("Live");
     expect(view.top).not.toContain("Demo data");
     expect(view.content).toContain("No issues yet. Delegate an issue to Paws in Linear.");
@@ -420,7 +419,7 @@ describe("status views", () => {
   });
 
   test("retired hashes fall back to issues, the matching run, or overview", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     expect(parseRoute("")).toEqual({ view: "overview" });
     expect(parseRoute("/issues/ENG-104")).toEqual({ view: "issues", id: "ENG-104" });
     expect(parseRoute("/runs/r-102")).toEqual({ view: "runs", id: "r-102" });

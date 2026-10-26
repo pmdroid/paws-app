@@ -1,8 +1,8 @@
+import { statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
 import { drawStrokes, reviewDrawMarkup, reviewShots, type Stroke } from "./review-draw";
 import { themedMarkup } from "./theme";
 
@@ -51,7 +51,7 @@ describe("drawing on review screenshots", () => {
   });
 
   test("only the review's images can be drawn on, each with its own file", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const item = snapshot.items[0]!;
     const shot = {
       itemId: item.id,

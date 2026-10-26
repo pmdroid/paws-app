@@ -3,8 +3,7 @@ export { holdsExecution, isBlockerSatisfied } from "../../core";
 /**
  * Read-only status snapshot served by the local Paws engine.
  *
- * `GET /api/status` returns JSON of this shape. `source` is `"demo"` for the
- * sample stub and `"live"` when the body was read from the engine's own state.
+ * `GET /api/status` returns JSON of this shape. `source` is `"live"` because the body comes from the serving process.
  * The array `questions` lists open questions only.
  */
 
@@ -70,7 +69,7 @@ export const ACTIVITY_KINDS = [
 ] as const;
 export const EVENT_LEVELS = ["info", "ok", "warn", "err"] as const;
 export const ITEM_EVENT_KINDS = ["transition", "restart", "ask"] as const;
-export const SOURCES = ["demo", "live"] as const;
+export const SOURCES = ["live"] as const;
 
 export type ItemState = (typeof ITEM_STATES)[number];
 export type RunState = (typeof RUN_STATES)[number];

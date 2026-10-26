@@ -1,11 +1,12 @@
+import { statusFixture } from "../src/web/test/fixtures";
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { demoStatus, handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/web";
 
 const directory = await mkdtemp(join(tmpdir(), "paws-status-ui-"));
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 snapshot.source = "live";
 let settings = {
   defaults: {

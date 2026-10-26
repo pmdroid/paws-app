@@ -1,8 +1,8 @@
+import { statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
 import { NAVIGATION, PAGES } from "./navigation";
 import { render } from "./render";
 import { issueRedirect, parseRoute, type Route } from "./route";
@@ -33,7 +33,7 @@ function taskHrefs(html: string): string[] {
 }
 
 function snapshotWithEvidence(): StatusSnapshot {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   const item = snapshot.items[0]!;
   const shot = {
     itemId: item.id,
@@ -58,7 +58,6 @@ function page(route: Route, snapshot: StatusSnapshot = snapshotWithEvidence()): 
     route,
     phase: "ready",
     snapshot,
-    via: "bundled",
     error: null,
     engineUrl: null,
   }).content;
@@ -84,7 +83,7 @@ describe("pages outside the issue page talk about issues", () => {
     });
 
   test("the old runs list opens the issues list and run links still open their issue", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const run = snapshot.runs[0]!;
     expect(parseRoute("/runs")).toEqual({ view: "issues", id: null });
     expect(issueRedirect(`/runs/${run.id}`, snapshot)).toBe(`/issues/${run.itemId}`);
@@ -92,7 +91,7 @@ describe("pages outside the issue page talk about issues", () => {
   });
 
   test("the issues list says why a queued issue waits, and wraps at 390 px", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     for (const item of snapshot.items) {
       if (item.id === "ENG-100") Object.assign(item, { state: "queued", blockers: ["ENG-102"] });
       if (item.id === "ENG-103")
@@ -123,7 +122,7 @@ describe("pages outside the issue page talk about issues", () => {
   });
 
   test("the overview calls a paused task a paused issue", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     const run = snapshot.runs[0]!;
     const item = snapshot.items.find((entry) => entry.id === run.itemId)!;
     item.state = "running";

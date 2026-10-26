@@ -317,3 +317,18 @@ export function clock24(iso: string): string {
     hourCycle: "h23",
   }).format(date);
 }
+
+const HTTP = new Set(["http:", "https:"]);
+
+export function parseEngineUrl(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (!HTTP.has(url.protocol) || url.username || url.password) return null;
+  return url.toString();
+}

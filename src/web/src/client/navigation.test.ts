@@ -1,3 +1,4 @@
+import { statusFixture } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
@@ -11,12 +12,10 @@ import {
   type Route,
 } from "./route";
 import { render } from "./render";
-import { demoStatus } from "../demo";
 
 const model = {
   phase: "ready" as const,
-  snapshot: demoStatus(),
-  via: "bundled" as const,
+  snapshot: statusFixture(),
   error: null,
   engineUrl: null,
 };
@@ -45,7 +44,7 @@ test("sidebar exposes every page exactly once and all page links round-trip", ()
 
 test("empty pages retain their own heading and empty state", () => {
   const snapshot = {
-    ...demoStatus(),
+    ...statusFixture(),
     items: [],
     runs: [],
     questions: [],
@@ -101,7 +100,7 @@ test("the Conversations page is gone and its old links open the issue list", () 
   expect(Object.values(PAGES).map((page) => page.title)).not.toContain("Conversations");
   expect(parseRoute("/sessions")).toEqual({ view: "issues", id: null });
   expect(parseRoute("/sessions/unknown")).toEqual({ view: "issues", id: null });
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   expect(issueRedirect("/sessions", snapshot)).toBe("/issues");
   expect(issueRedirect("/sessions/unknown-session", snapshot)).toBe("/issues");
   expect(issueRedirect("/sessions", null)).toBeNull();

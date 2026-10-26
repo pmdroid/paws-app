@@ -1,15 +1,16 @@
+import { statusFixture } from "../../src/web/test/fixtures";
 // Captures an issue page showing its Linear project and the Issues page filtered by project,
 // at desktop and 390 px, for visual proof.
 // Usage: bun run build:status && bun --no-env-file test/local/issue-project-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { demoStatus, handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/web";
 
 const directory = resolve(process.argv[2] ?? "issue-project-evidence");
 await mkdir(directory, { recursive: true });
 
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 snapshot.source = "live";
 const runtimes = { id: "linear-runtimes", name: "Paws runner runtimes with mise" };
 for (const item of snapshot.items) if (item.id === "ENG-101") item.project = runtimes;

@@ -1,3 +1,4 @@
+import { statusFixture } from "../../src/web/test/fixtures";
 // Screenshots Settings → Agents → Hooks at desktop width and 390 px, after adding a hook
 // through the form. Run `bun run build:status` first. Prints the output directory.
 import { chromium } from "@playwright/test";
@@ -8,7 +9,6 @@ import { migrate, openDatabase } from "../../src/db";
 import { saveHook } from "../../src/db";
 import { handleHookSettingsRequest, handleSkillSettingsRequest } from "../../src/settings";
 import { addSkill, fakeSkillResolver } from "../../src/skills";
-import { demoStatus } from "../../src/web/src/demo";
 
 const root = resolve(import.meta.dir, "../..");
 const output = mkdtempSync(join(tmpdir(), "paws-hook-settings-browser-"));
@@ -65,7 +65,8 @@ const server = Bun.serve({
         authenticatedAt: Date.now(),
         workspaces: [{ id: "workspace", name: "Team workspace", role: "admin" }],
       });
-    if (url.pathname === "/api/status") return Response.json({ ...demoStatus(), source: "live" });
+    if (url.pathname === "/api/status")
+      return Response.json({ ...statusFixture(), source: "live" });
     if (url.pathname === "/api/settings/skills")
       return (await handleSkillSettingsRequest(req, {
         db,

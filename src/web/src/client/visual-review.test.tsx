@@ -1,8 +1,8 @@
+import { statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusEvidence, StatusSnapshot, StatusVisualReview } from "../contract";
-import { demoStatus } from "../demo";
 import { render } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -53,7 +53,7 @@ function fixture(
   reviews: StatusVisualReview[],
   state: "awaiting_input" | "running" | "verifying",
 ): { snapshot: StatusSnapshot; runId: string } {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   snapshot.generatedAt = NOW;
   const run = snapshot.runs[0]!;
   const item = snapshot.items.find((entry) => entry.id === run.itemId)!;
@@ -93,7 +93,6 @@ function runPage(snapshot: StatusSnapshot, runId: string): string {
     route: { view: "runs", id: runId },
     phase: "ready",
     snapshot,
-    via: "engine",
     error: null,
     engineUrl: null,
   }).content;

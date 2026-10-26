@@ -1,15 +1,15 @@
+import { statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusSnapshot, statusIntegrity, type StatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
 import { emptyCloseoutView } from "./closeout";
 import { plainTask, render } from "./render";
 import { themedMarkup } from "./theme";
 
 /** ENG-101 delegated twice: the current session shares a Linear session with ENG-102. */
 function redelegated(): StatusSnapshot {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   const item = snapshot.items.find((entry) => entry.id === "ENG-101")!;
   const run = snapshot.runs.find((entry) => entry.itemId === "ENG-101")!;
   item.session = {
@@ -45,7 +45,6 @@ function page(snapshot: StatusSnapshot, id = "ENG-101"): string {
     route: { view: "issues", id },
     phase: "ready",
     snapshot,
-    via: "bundled",
     error: null,
     engineUrl: null,
     closeout: emptyCloseoutView(),
@@ -81,7 +80,7 @@ describe("issue page", () => {
   });
 
   test("the item timeline lists every state change from the fake, the restart with its reason", () => {
-    const snapshot = parseStatusSnapshot(JSON.parse(JSON.stringify(demoStatus())));
+    const snapshot = parseStatusSnapshot(JSON.parse(JSON.stringify(statusFixture())));
     if (!snapshot.ok) throw new Error(snapshot.error);
     const html = page(snapshot.snapshot);
     const section = html.slice(html.indexOf('id="item-timeline-heading"'));
@@ -96,7 +95,7 @@ describe("issue page", () => {
   });
 
   test("an item without recorded state changes has no item timeline", () => {
-    expect(page(demoStatus(), "ENG-102")).not.toContain("item-timeline");
+    expect(page(statusFixture(), "ENG-102")).not.toContain("item-timeline");
   });
 
   test("an internal path id reads as the issue identifier", () => {

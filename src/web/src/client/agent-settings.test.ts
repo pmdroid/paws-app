@@ -130,7 +130,6 @@ describe("agent settings", () => {
       route: { view: "settings" },
       phase: "loading",
       snapshot: null,
-      via: null,
       error: null,
       engineUrl: "http://localhost:8787",
     });

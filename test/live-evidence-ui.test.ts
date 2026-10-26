@@ -64,7 +64,6 @@ function page(snapshot: StatusSnapshot, route: RenderModel["route"]): string {
     route,
     phase: "ready",
     snapshot,
-    via: "engine",
     error: null,
     engineUrl: null,
     mediaInfo: new Map([
