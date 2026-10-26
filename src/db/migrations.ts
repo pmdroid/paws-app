@@ -3121,6 +3121,15 @@ CREATE TABLE item_pull_request (
   opened_at INTEGER NOT NULL
 ) STRICT;`,
   },
+  {
+    id: "152_item_wait",
+    sql: `
+CREATE TABLE item_wait (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  version INTEGER NOT NULL,
+  since INTEGER NOT NULL
+) STRICT;`,
+  },
 ];
 
 /**

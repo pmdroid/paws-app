@@ -50,6 +50,7 @@ export function createLinearSessionProgress(
         hostPlan?: SessionPlanStep[];
         phase?: Phase;
         restartVersion?: number;
+        waits?: SessionPlanStep[];
       })
     | undefined;
   let steps: readonly SessionPlanStep[] =
@@ -62,10 +63,22 @@ export function createLinearSessionProgress(
   if (!hostSteps.length) milestones = [];
   let phase: Phase = saved?.phase ?? (mode === "code" ? "implementing" : "working");
   let restartVersion = saved?.restartVersion;
+  // Wait steps lead the plan. Each completes when the wait ends and never returns to pending.
+  let waits: SessionPlanStep[] = saved?.waits ?? [];
+  let started = false;
   const afterPr = () => hasPublishedPullRequest(db, sessionId, generation);
 
   function preserveHostProgress() {
     const latest = latestPlan()?.payload as typeof saved;
+    if (latest?.waits)
+      waits = latest.waits
+        .map((step, index) => {
+          const current = waits[index];
+          return step.status === "completed" || !current || current.content !== step.content
+            ? step
+            : current;
+        })
+        .concat(waits.slice(latest.waits.length));
     if (!latest?.hostPlan) return;
     if (
       latest.restartVersion !== undefined &&
@@ -91,7 +104,7 @@ export function createLinearSessionProgress(
       const at = now();
       const metadata =
         op === "linear.session.plan"
-          ? { agentSteps: steps, hostPlan: milestones, phase, restartVersion }
+          ? { agentSteps: steps, hostPlan: milestones, phase, restartVersion, waits }
           : {};
       const payload = JSON.stringify({ ...update, ...metadata, identifier, mode, ...owner });
       const pending = db
@@ -158,8 +171,15 @@ export function createLinearSessionProgress(
     });
   }
 
+  function endWaits() {
+    waits = waits.map((step) =>
+      step.status === "inProgress" ? { ...step, status: "completed" } : step,
+    );
+  }
+
   function publishPlan() {
     preserveHostProgress();
+    if (started) endWaits();
     const phaseIndex =
       phase === "fixing"
         ? 1
@@ -190,17 +210,31 @@ export function createLinearSessionProgress(
     });
     publish(
       "linear.session.plan",
-      { sessionId, plan: [...agentSteps, ...milestones] },
+      { sessionId, plan: [...waits, ...agentSteps, ...milestones] },
       phase === "completed",
     );
   }
 
   return {
     plan(plan: readonly SessionPlanStep[]) {
+      started = true;
       steps = plan;
       publishPlan();
     },
+    /** The item waits before it starts: "Wait for PAS-m" in progress and the title saying so. */
+    wait(step: string | null, title: string) {
+      preserveHostProgress();
+      started = false;
+      const last = waits.at(-1);
+      if (step !== null && (last?.content !== step || last.status !== "inProgress")) {
+        endWaits();
+        waits.push({ content: step, status: "inProgress" });
+      }
+      publishPlan();
+      publish("linear.session.summary", { sessionId, summary: title.slice(0, 255) });
+    },
     restart(reason: string, round: number, version: number, limit = 3) {
+      started = true;
       preserveHostProgress();
       if (
         restartVersion === version ||
@@ -228,12 +262,13 @@ export function createLinearSessionProgress(
         "linear.session.summary",
         {
           sessionId,
-          summary: `${identifier}: ${reason === "ci" ? "fixing CI" : reason === "review" ? "fixing review findings" : reason === "conflict" ? "resolving merge conflict" : `fixing Closeout findings (${round} of 3)`}`,
+          summary: `${identifier}: ${reason === "ci" ? "fixing CI" : reason === "review" ? "fixing review findings" : reason === "conflict" ? "resolving merge conflict" : `fixing Closeout findings (${round} of ${limit})`}`,
         },
         true,
       );
     },
     phase(next: Phase) {
+      started = true;
       preserveHostProgress();
       if (afterPr() && ["working", "implementing", "fixing", "verifying"].includes(next)) {
         if (next === "verifying") {
