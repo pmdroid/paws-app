@@ -67,6 +67,7 @@ export type CodexReviewerOptions = {
   evaluator?: ProducerIdentity;
   attempt?: number;
   diffBudget?: number;
+  maxPromptChars?: number;
 };
 
 /**
