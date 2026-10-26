@@ -44,7 +44,7 @@ const NO_BUDGET: LinearRateBudget = {
   complexity: null,
 };
 
-test("100 tasks stay under 1,700 Linear requests and spend none while they wait for a runner", async () => {
+test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes while they wait for a runner", async () => {
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
@@ -178,10 +178,14 @@ test("100 tasks stay under 1,700 Linear requests and spend none while they wait 
     const queued = count("queued");
     const before = { requests, perTask: linearRequestsByItem(db) };
     for (let waited = 0; waited < HOUR_MS; waited += WAIT_STEP_MS) await step(WAIT_STEP_MS);
+    const after = linearRequestsByItem(db);
     const waiting = {
       queued: count("queued"),
       requests: requests - before.requests,
-      perTask: linearRequestsByItem(db),
+      // A waiting task's only Linear request is its "still in line" ephemeral at minutes 25 and 50.
+      spent: new Set(
+        [...after].map(([itemId, spent]) => spent - (before.perTask.get(itemId) ?? 0)),
+      ),
     };
     runner.free();
     for (let index = 0; index < QUESTIONS; index++)
@@ -196,7 +200,11 @@ test("100 tasks stay under 1,700 Linear requests and spend none while they wait 
       counted: perTask.length,
     }).toEqual({
       queued: TASKS - STARTED,
-      waiting: { queued: TASKS - STARTED, requests: 0, perTask: before.perTask },
+      waiting: {
+        queued: TASKS - STARTED,
+        requests: 2 * (TASKS - STARTED),
+        spent: new Set([0, 2]),
+      },
       asked: QUESTIONS,
       completed: TASKS,
       counted: TASKS,

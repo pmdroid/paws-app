@@ -15,6 +15,7 @@ import {
   saveQueuePositions,
   syncWorkspaceMember,
 } from "../src/db";
+import { createFakeTracker, type SessionUpdate } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { createLiveStatusProvider } from "../src/web";
 import { tempDb, tempHome } from "./helpers";
@@ -171,6 +172,123 @@ test("the status API shows a queued item's place in line until it starts", () =>
     saveQueuePositions(db, ["waiting"], { busy: 4, total: 4 }, 4, new Map([["waiting", 3]]));
     expect(queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4, ownerCap: 3 });
   } finally {
+    db.close();
+  }
+});
+
+test("a runner-queued item names its place in the title and plan, and a restart names its reason", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const orchestrator = new Orchestrator({
+    db,
+    admission: workspaceAdmission(db),
+    jobs: new JobLoop(db, clock),
+    outbox: new OutboxDispatcher(db, clock),
+    clock,
+    pawsRoot: tempHome(),
+    tracker: createFakeTracker(),
+    scheduling: () => ({}),
+  });
+  try {
+    oneBusyRunnerSlot(db);
+    insertQueuedItem(db, { id: "ahead", now: 0, sessionKey: "ahead-session" });
+    const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
+    db.run("UPDATE work_item SET linear_identifier='PAS-1' WHERE id='waiting'");
+    ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId, now: 1_000 });
+    bindLinearSessionTask(db, "session", item.delegationId);
+    const latest = (op: string) =>
+      listOutbox(db, "session").findLast((row) => row.op === op)?.payload as SessionUpdate;
+
+    orchestrator.reconcileExecution();
+    expect(latest("linear.session.summary").summary).toBe("PAS-1: 2nd in line for a runner");
+    expect(latest("linear.session.plan").plan?.[0]).toEqual({
+      content: "Wait for a runner",
+      status: "inProgress",
+    });
+
+    clock.advance(25 * 60_000);
+    orchestrator.reconcileExecution();
+    expect(
+      listOutbox(db, "session")
+        .map((row) => row.payload as { body?: string; ephemeral?: boolean })
+        .filter((payload) => payload.ephemeral),
+    ).toEqual([expect.objectContaining({ body: "Still 2nd in line for a runner." })]);
+
+    // A Closeout restart that is still waiting for a runner shows what it waits to do.
+    db.run(
+      `INSERT INTO work_item_event(item_id,version,at,from_state,to_state,event,kind,reason)
+       VALUES('waiting',(SELECT version FROM work_item WHERE id='waiting'),0,'verifying','queued','restart','restart','findings')`,
+    );
+    db.run(
+      `INSERT INTO job(queue,payload,run_at,max_attempts,created_at)
+       VALUES('run.resume',json_object('itemId','waiting','reason','findings'),0,3,0)`,
+    );
+    orchestrator.reconcileExecution();
+    expect(latest("linear.session.summary").summary).toBe(
+      "PAS-1: waiting for a runner to fix Closeout findings (1 of 3)",
+    );
+    const plan = latest("linear.session.plan").plan ?? [];
+    expect(
+      plan.find((step) => step.status === "inProgress" && step.content.startsWith("Fix")),
+    ).toEqual({
+      content: "Fix Closeout findings (1 of 3)",
+      status: "inProgress",
+    });
+    expect(plan.filter((step) => step.content.startsWith("Wait"))).toEqual([
+      { content: "Wait for a runner", status: "completed" },
+    ]);
+  } finally {
+    await orchestrator.shutdown();
+    db.close();
+  }
+});
+
+test("paused and recovering items get a waiting title and no ephemeral", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const orchestrator = new Orchestrator({
+    db,
+    admission: workspaceAdmission(db),
+    jobs: new JobLoop(db, clock),
+    outbox: new OutboxDispatcher(db, clock),
+    clock,
+    pawsRoot: tempHome(),
+    tracker: createFakeTracker(),
+    scheduling: () => ({}),
+  });
+  try {
+    const item = insertQueuedItem(db, { id: "paused", now: 1_000, sessionKey: "session" });
+    db.run("UPDATE work_item SET linear_identifier='PAS-2' WHERE id='paused'");
+    ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId, now: 1_000 });
+    bindLinearSessionTask(db, "session", item.delegationId);
+    applyWorkItemEvent(db, "paused", "dispatched");
+    applyWorkItemEvent(db, "paused", "pause");
+    putWorkspaceUser(db, {
+      id: "pascal",
+      linearUserId: "pascal",
+      name: "Pascal",
+      email: "pascal@example.invalid",
+    });
+    db.run(
+      "INSERT INTO workspace_access_audit(workspace_id,user_id,action,subject,created_at) VALUES(NULL,'pascal','execution.pause','paused',0)",
+    );
+    const summary = () =>
+      (
+        listOutbox(db, "session").findLast((row) => row.op === "linear.session.summary")
+          ?.payload as SessionUpdate | undefined
+      )?.summary;
+    orchestrator.reconcileExecution();
+    expect(summary()).toBe("PAS-2: paused by Pascal");
+    clock.advance(60 * 60_000);
+    orchestrator.reconcileExecution();
+    expect(listOutbox(db, "session").filter((row) => row.op === "activity")).toEqual([]);
+
+    db.run("UPDATE work_item SET state='recovering' WHERE id='paused'");
+    clock.advance(5 * 60_000);
+    orchestrator.reconcileExecution();
+    expect(summary()).toBe("PAS-2: recovering an interrupted turn");
+  } finally {
+    await orchestrator.shutdown();
     db.close();
   }
 });
