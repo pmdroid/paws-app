@@ -23,7 +23,11 @@ import {
   type RunnerSpool,
   type RunnerResults,
 } from "../runner-execution";
-import { publishRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
+import {
+  publishRunnerAnswer,
+  runnerFollowUpRequestId,
+  RUNNER_HANDOVER_REQUEST_ID,
+} from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
@@ -103,6 +107,8 @@ type Active = {
   /** Set once the worker's runtime install report is in the inventory. */
   runtimesRecorded?: boolean;
   sessionTries?: number;
+  /** Paws asked for a handover; the worker hears it once it runs. */
+  handover?: "requested" | "sent";
 };
 
 /** The session description the worker writes next to its bundle. */
@@ -1066,9 +1072,15 @@ export async function openRunnerRuntime(options: {
     if (closed) return;
     const commands = options.daemon.pendingCommands();
     for (const command of commands) {
-      if (command.type !== "cancel") continue;
+      if (command.type !== "cancel" && command.type !== "handover") continue;
       const entry = active.get(`${command.runId}:${command.generation}`);
-      if (entry) await interrupt(entry, "cancelled by Paws");
+      if (command.type === "cancel" && entry) await interrupt(entry, "cancelled by Paws");
+      if (command.type === "handover") {
+        if (entry?.execution.command.type === "run" && !entry.abort.signal.aborted)
+          entry.handover ??= "requested";
+        else
+          report(new Error(`Runner has no running session of run ${command.runId} to hand over`));
+      }
       await options.daemon.acknowledgeCommand(command.id);
     }
     for (const entry of active.values()) {
@@ -1109,6 +1121,13 @@ export async function openRunnerRuntime(options: {
     }
     for (const entry of active.values()) {
       if (entry.execution.phase !== "running" && entry.execution.phase !== "publishing") continue;
+      if (entry.handover === "requested" && entry.execution.phase === "running") {
+        publishRunnerAnswer(options.spool, entry.execution.id, {
+          requestId: RUNNER_HANDOVER_REQUEST_ID,
+          answer: "handover",
+        });
+        entry.handover = "sent";
+      }
       entry.delivering ??= advance(entry).finally(() => {
         entry.delivering = undefined;
       });
