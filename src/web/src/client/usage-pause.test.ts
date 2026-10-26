@@ -1,11 +1,11 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, pageData, statusList, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
+import { parseStatusSnapshot } from "../contract";
 import { emptyCloseoutView } from "./closeout";
 import { render } from "./render";
 
-function pausedSnapshot(): StatusSnapshot {
-  const snapshot = statusFixture();
+function pausedSnapshot(): FullStatus {
+  const snapshot = fullStatusFixture();
   snapshot.runs = snapshot.runs.map((run) =>
     run.id === "r-102"
       ? {
@@ -18,14 +18,13 @@ function pausedSnapshot(): StatusSnapshot {
   return snapshot;
 }
 
-function runPage(snapshot: StatusSnapshot): string {
+function runPage(snapshot: FullStatus): string {
   return render({
-    route: { view: "runs", id: "r-102" },
     phase: "ready",
-    snapshot,
     error: null,
     engineUrl: null,
     closeout: emptyCloseoutView(),
+    ...pageData(snapshot, { view: "runs", id: "r-102" }),
   }).content;
 }
 
@@ -44,20 +43,20 @@ describe("run page while the agent waits for its usage limit", () => {
   });
 
   test("a run without a pause renders as before", () => {
-    const html = runPage(statusFixture());
+    const html = runPage(fullStatusFixture());
     expect(html).not.toContain("usage limit");
     expect(html).not.toContain("usage-pause");
     expect(html).toContain('id="execution-controls"');
   });
 
   test("the status contract carries the pause and rejects a bad reset time", () => {
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(pausedSnapshot())));
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(statusList(pausedSnapshot()))));
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.snapshot.runs.find((run) => run.id === "r-102")?.usagePause).toEqual({
       agent: "Claude",
       resumeAt: "2026-10-21T18:00:00.000Z",
     });
-    const broken = JSON.parse(JSON.stringify(pausedSnapshot()));
+    const broken = JSON.parse(JSON.stringify(statusList(pausedSnapshot())));
     broken.runs.find((run: { id: string }) => run.id === "r-102").usagePause.resumeAt = "soon";
     expect(parseStatusSnapshot(broken).ok).toBe(false);
   });

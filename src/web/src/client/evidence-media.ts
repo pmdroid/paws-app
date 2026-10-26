@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import type { StatusEvidence, StatusSnapshot } from "../contract";
+import type { StatusEvidence, StatusSnapshotBase } from "../contract";
 import {
   EVIDENCE_FILTERS,
   evidenceFileUrl,
@@ -36,7 +36,7 @@ export interface EvidenceMedia {
   /** Takes the gallery and the player out of `#page-content` right before it is re-rendered. */
   detach(): void;
   /** Puts them back into their placeholders, so thumbnails and playback are not reloaded. */
-  attach(snapshot: StatusSnapshot | null, engineUrl: string | null): void;
+  attach(snapshot: StatusSnapshotBase | null, engineUrl: string | null): void;
   copyLink(id: string, button: HTMLButtonElement | null): void;
 }
 

@@ -29,7 +29,7 @@ describe("server", () => {
       expect(api.headers.get("content-type")).toContain("application/json");
       expect(api.headers.get("access-control-allow-origin")).toBe("*");
       const snapshot = await api.json();
-      expect(snapshot).toMatchObject({ version: 1, source: "live" });
+      expect(snapshot).toMatchObject({ version: 2, source: "live" });
 
       const missing = await fetch(`${base}/webhooks/linear`, { method: "POST" });
       expect(missing.status).toBe(404);

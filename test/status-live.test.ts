@@ -207,7 +207,6 @@ test("fake e2e rows show up on /api/status as live work", async () => {
     const verdict = parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-3");
     expect(verdict?.decision).toBe("accepted");
     expect(verdict?.checks.map((check) => check.id)).toEqual(["typecheck", "adversarial-review"]);
-    expect(verdict?.baseSha).toBe(BASE);
     expect(verdict?.headSha).toBe(HEAD);
 
     expect(

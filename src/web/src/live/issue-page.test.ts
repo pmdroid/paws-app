@@ -14,7 +14,9 @@ import {
 import {
   parseStatusSnapshot,
   statusIntegrity,
+  parseStatusItemDetail,
   type StatusDeadDelivery,
+  type StatusItemDetail,
   type StatusSnapshot,
 } from "../contract";
 import { emptyCloseoutView } from "../client/closeout";
@@ -86,22 +88,33 @@ function threeRuns(db: Database): string[] {
   return [first.id, second.id, third.id];
 }
 
-function snapshotOf(db: Database): StatusSnapshot {
-  const snapshot = createLiveStatusProvider(db, {
+/** The status list, with each listed issue's detail as its page loads it. */
+type Status = StatusSnapshot & { details: Map<string, StatusItemDetail> };
+
+function snapshotOf(db: Database): Status {
+  const provider = createLiveStatusProvider(db, {
     now: () => new Date(T0 + 300_000),
     env: {},
-  }).snapshot();
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+  });
+  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
   if (!parsed.ok) throw new Error(parsed.error);
   expect(statusIntegrity(parsed.snapshot)).toEqual([]);
-  return parsed.snapshot;
+  const details = new Map<string, StatusItemDetail>();
+  for (const item of parsed.snapshot.items) {
+    const detail = parseStatusItemDetail(JSON.parse(JSON.stringify(provider.item(item.id))));
+    if (!detail.ok) throw new Error(detail.error);
+    details.set(item.id, detail.detail);
+  }
+  return { ...parsed.snapshot, details };
 }
 
-function issuePage(snapshot: StatusSnapshot, id = "PAS-367"): string {
+function issuePage(snapshot: Status, id = "PAS-367"): string {
+  const route = parseRoute(`/issues/${id}`, snapshot);
   return render({
-    route: parseRoute(`/issues/${id}`, snapshot),
+    route,
     phase: "ready",
     snapshot,
+    detail: route?.view === "issues" && route.id ? (snapshot.details.get(route.id) ?? null) : null,
     error: null,
     engineUrl: null,
     closeout: emptyCloseoutView(),

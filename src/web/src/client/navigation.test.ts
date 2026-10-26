@@ -1,4 +1,4 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, pageData, statusFixture, statusList } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
@@ -15,7 +15,7 @@ import { render } from "./render";
 
 const model = {
   phase: "ready" as const,
-  snapshot: statusFixture(),
+  snapshot: statusList(fullStatusFixture()),
   error: null,
   engineUrl: null,
 };
@@ -75,7 +75,10 @@ test("issues list offers state filters and a simple item list", () => {
   expect(list).toContain('data-issue-filter="done"');
   expect(list).toContain("data-issue-state=");
   expect(list).not.toContain("data-view-tabs");
-  const detail = render({ ...model, route: { view: "issues", id: "ENG-104" } }).content;
+  const detail = render({
+    ...model,
+    ...pageData(fullStatusFixture(), { view: "issues", id: "ENG-104" }),
+  }).content;
   expect(detail).toContain('<a href="/issues">Issues</a>');
   expect(detail).not.toContain("Linear agent session");
 });

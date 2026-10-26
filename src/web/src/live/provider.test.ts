@@ -30,9 +30,9 @@ import {
   upsertCloseoutStep,
   type CloseoutStepWrite,
 } from "../../../db";
-import { parseStatusSnapshot, statusIntegrity } from "../contract";
+import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
-import { createLiveStatusProvider } from "./provider";
+import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from "./provider";
 import { waitReason } from "../client/format";
 
 const open: Database[] = [];
@@ -455,7 +455,8 @@ describe("live status provider", () => {
       now,
     });
 
-    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now) }).snapshot();
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
+    const snapshot = provider.snapshot();
     const parsed = parseStatusSnapshot(snapshot);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -493,8 +494,8 @@ describe("live status provider", () => {
     ]);
     const verdict = parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-3");
     expect(verdict?.decision).toBe("accepted");
-    expect(verdict?.baseSha).toBe(base);
     expect(verdict?.headSha).toBe(head);
+    expect(provider.item("ENG-3")?.verdicts[0]?.baseSha).toBe(base);
     expect(verdict?.checks.map((check) => [check.id, check.kind, check.state])).toEqual([
       ["typecheck", "command", "passed"],
       ["adversarial-review", "review", "passed"],
@@ -738,6 +739,42 @@ describe("live status provider", () => {
     ]);
   });
 
+  test("the list carries open items and finished items of the last 24 hours, at most 50", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const finish = (id: string, at: number) => {
+      insertQueuedItem(db, { id, title: id, now: at - 1_000 });
+      applyWorkItemEvent(db, id, "cancel", { now: at });
+    };
+    // Open for a week: open items stay whatever their age.
+    insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: now - 7 * STATUS_RECENT_MS });
+    finish("ENG-OLD", now - STATUS_RECENT_MS - 60_000);
+    finish("ENG-RECENT", now - 60_000);
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
+    const ids = provider.snapshot().items.map((item) => item.id);
+    expect(ids).toContain("ENG-OPEN");
+    expect(ids).toContain("ENG-RECENT");
+    expect(ids).not.toContain("ENG-OLD");
+    // An item that left the list still has its own page.
+    expect(provider.item("ENG-OLD")?.items.map((item) => [item.id, item.state])).toEqual([
+      ["ENG-OLD", "stopped"],
+    ]);
+
+    for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
+      finish(`ENG-${100 + index}`, now - 120_000 - index * 1_000);
+    const capped = provider.snapshot().items;
+    const finished = capped.filter((item) => item.state !== "queued").map((item) => item.id);
+    expect(finished).toHaveLength(STATUS_RECENT_LIMIT);
+    // The most recently finished stay; the oldest of the window fall off.
+    expect(finished).toContain("ENG-RECENT");
+    expect(finished).toContain("ENG-100");
+    expect(finished).not.toContain(`ENG-${100 + STATUS_RECENT_LIMIT + 4}`);
+    expect(capped.map((item) => item.id)).toContain("ENG-OPEN");
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
+  });
+
   test("the item detail carries one issue's Closeout attempts without check logs", async () => {
     const db = database();
     const now = 1_700_000_000_000;
@@ -797,12 +834,20 @@ describe("live status provider", () => {
       now: () => new Date(now + 5000),
       sessionIds: ["ses_8"],
     });
-    // Check logs load per check, so neither the list nor the detail carries them.
-    expect(JSON.stringify(provider.snapshot())).not.toContain("secret log");
+    // The list carries one summary per item: no attempts, output or findings.
+    const list = JSON.stringify(provider.snapshot());
+    expect(list).not.toContain("secret log");
+    expect(list).not.toContain("test failed");
+    expect(Object.keys(provider.snapshot().verdicts[0]!)).toEqual([
+      "itemId",
+      "runId",
+      "decision",
+      "headSha",
+      "checks",
+    ]);
     const detail = provider.item("ENG-8")!;
     expect(detail.items.map((entry) => entry.id)).toEqual(["ENG-8"]);
     expect(detail.blocks).toEqual(["ENG-9"]);
-    expect(detail.events).toEqual([]);
     const attempts = detail.verdicts[0]!.attempts!;
     expect(attempts.map((attempt) => [attempt.decision, attempt.checks[0]?.findings])).toEqual([
       ["rejected", "test failed"],
@@ -966,13 +1011,13 @@ describe("live status provider", () => {
     finishCloseoutProgress(db, item.id, identity, "accepted", now + 900_000);
     const check = createLiveStatusProvider(db, {
       now: () => new Date(now + 900_000),
-    }).snapshot().verdicts[0]?.checks[0];
+    }).item("ENG-7")?.verdicts[0]?.checks[0];
     expect(check?.elapsedMs).toBe(180_000);
     expect(check?.tokens).toBe(52_000);
     review("running", now + 950_000);
     const rerun = createLiveStatusProvider(db, {
       now: () => new Date(now + 960_000),
-    }).snapshot().verdicts[0]?.checks[0];
+    }).item("ENG-7")?.verdicts[0]?.checks[0];
     expect(rerun?.elapsedMs).toBe(10_000);
     expect(rerun?.tokens ?? null).toBeNull();
   });
@@ -1038,14 +1083,14 @@ describe("live status provider", () => {
       startedAt: now + 2,
     });
     attempt("c".repeat(40), now + 3, "passed");
-    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now + 4) }).snapshot();
-    const attempts = snapshot.verdicts.find((verdict) => verdict.itemId === "ENG-6")?.attempts;
+    const detail = createLiveStatusProvider(db, { now: () => new Date(now + 4) }).item("ENG-6");
+    const attempts = detail?.verdicts.find((verdict) => verdict.itemId === "ENG-6")?.attempts;
     expect(attempts?.map((entry) => [entry.number, entry.round, entry.headSha?.[0]])).toEqual([
       [1, 1, "a"],
       [2, 1, "b"],
       [3, 2, "c"],
     ]);
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok).toBe(true);
   });
 

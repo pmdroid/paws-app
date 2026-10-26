@@ -77,20 +77,23 @@ import {
   listWorkItemFacts,
   listWorkItemsByStates,
   listWorkItemEventRows,
+  listLastWorkItemEventTimes,
   type CloseoutProgressRecord,
   type CloseoutRound,
   type CloseoutStepRecord,
 } from "../../../db";
+import { isTerminalWorkItemState } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
 import {
   STATUS_API_VERSION,
+  agentCloseoutSummary,
   isBlockerSatisfied,
+  verdictSummary,
   type StatusDeadDelivery,
   type ActivityKind,
   type CheckKind,
   type CheckState,
-  type EventLevel,
   type ItemState,
   type RunState,
   type StatusActivity,
@@ -98,7 +101,6 @@ import {
   type StatusCiRound,
   type StatusCheck,
   type StatusCloseoutAttempt,
-  type StatusEvent,
   type StatusEvidence,
   type StatusGitHubQueue,
   type StatusHeld,
@@ -114,6 +116,7 @@ import {
   type StatusQuestion,
   type StatusRun,
   type StatusSnapshot,
+  type StatusSnapshotBase,
   type StatusVerdict,
   type StatusVisualReview,
   type VerdictDecision,
@@ -185,7 +188,7 @@ export function createLiveStatusProvider(
 } {
   return {
     snapshot() {
-      return withoutOutputs({ ...readLiveSnapshot(db, options), ...readIntake(db, options) });
+      return { ...readLiveSnapshot(db, options), ...readIntake(db, options) };
     },
     item(id) {
       return readItemDetail(db, id, options);
@@ -209,10 +212,63 @@ export interface CheckOutput {
   stderr: string;
 }
 
+/** Finished items stay in `/api/status` this long after their last state change. */
+export const STATUS_RECENT_MS = 24 * 60 * 60 * 1000;
+/** At most this many finished items are in `/api/status`, the most recently finished first. */
+export const STATUS_RECENT_LIMIT = 50;
+
+/** Every field of the visible items, before the list trims it or the detail picks one item. */
+type FullSnapshot = StatusSnapshotBase & {
+  verdicts: StatusVerdict[];
+  agentCloseout?: StatusAgentCloseout[];
+};
+
+/**
+ * The status list: one Closeout summary per item and each run's latest agent Closeout state.
+ * Attempts, check output and findings are only in the item detail.
+ */
+function toList(snapshot: FullSnapshot): StatusSnapshot {
+  const { verdicts, agentCloseout, ...rest } = snapshot;
+  return {
+    ...rest,
+    verdicts: verdicts.map(verdictSummary),
+    ...(agentCloseout ? { agentCloseout: agentCloseout.map(agentCloseoutSummary) } : {}),
+  };
+}
+
+/**
+ * The items `/api/status` lists, in `visible` order: every open item, and the
+ * `STATUS_RECENT_LIMIT` most recently finished ones that finished within `STATUS_RECENT_MS`.
+ * An item finished when it last changed state; one from before `work_item_event` counts from
+ * its creation.
+ */
+function listedRecords(
+  db: Database,
+  visible: readonly WorkItemRecord[],
+  facts: ReadonlyMap<string, WorkItemFact>,
+  nowMs: number,
+): WorkItemRecord[] {
+  const changed = listLastWorkItemEventTimes(db);
+  const recent = new Set(
+    visible
+      .filter((record) => isTerminalWorkItemState(record.state))
+      .map((record) => ({
+        record,
+        at: changed.get(record.id) ?? facts.get(record.id)?.createdAt ?? 0,
+      }))
+      .filter(({ at }) => nowMs - at <= STATUS_RECENT_MS)
+      .sort((left, right) => right.at - left.at)
+      .slice(0, STATUS_RECENT_LIMIT)
+      .map(({ record }) => record),
+  );
+  return visible.filter((record) => !isTerminalWorkItemState(record.state) || recent.has(record));
+}
+
 /**
  * One issue's sessions with their runs, Closeout attempts, agent Closeout, evidence and CI
- * rounds, for `GET /api/status/items/:id`. Null when no visible item has that id.
- * Check `stdout` and `stderr` are left out; the issue page loads logs separately.
+ * rounds, for `GET /api/status/items/:id`, also for an issue that left the list. Null when no
+ * visible item has that id. Check `stdout` and `stderr` are left out; the issue page loads
+ * logs separately.
  */
 function readItemDetail(
   db: Database,
@@ -254,7 +310,7 @@ function readCheckLog(
 }
 
 /** The snapshot without check `stdout` and `stderr`, which the issue page loads per check. */
-function withoutOutputs<T extends StatusSnapshot>(snapshot: T): T {
+function withoutOutputs<T extends FullSnapshot>(snapshot: T): T {
   return {
     ...snapshot,
     verdicts: snapshot.verdicts.map((verdict) => ({
@@ -286,6 +342,10 @@ export function emptyLiveSnapshot(
   now = new Date(),
   project?: LiveStatusOptions["project"],
 ): StatusSnapshot {
+  return { ...emptyBase(now, project), verdicts: [] };
+}
+
+function emptyBase(now: Date, project: LiveStatusOptions["project"]): StatusSnapshotBase {
   return {
     version: STATUS_API_VERSION,
     source: "live",
@@ -294,9 +354,7 @@ export function emptyLiveSnapshot(
     items: [],
     runs: [],
     questions: [],
-    verdicts: [],
     mergeQueue: [],
-    events: [],
   };
 }
 
@@ -345,11 +403,11 @@ function readIntake(
 }
 
 function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnapshot {
-  return readScopedSnapshot(db, options).snapshot;
+  return toList(readScopedSnapshot(db, options).snapshot);
 }
 
 /**
- * The snapshot of every visible item, or with `only` of the visible items with that public id.
+ * The listed items (see `listedRecords`), or with `only` the visible items with that public id.
  * Blockers, shared sessions and merge places still read every visible item; `blocks` lists
  * the issues `only` blocks.
  */
@@ -357,7 +415,7 @@ function readScopedSnapshot(
   db: Database,
   options: LiveStatusOptions,
   only?: string,
-): { snapshot: StatusSnapshot; blocks: string[] } {
+): { snapshot: FullSnapshot; blocks: string[] } {
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
   const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
@@ -369,9 +427,11 @@ function readScopedSnapshot(
     )
     .sort((left, right) => compareNewest(left, right, facts));
   const records =
-    only === undefined ? visible : visible.filter((record) => publicId(record) === only);
+    only === undefined
+      ? listedRecords(db, visible, facts, now.getTime())
+      : visible.filter((record) => publicId(record) === only);
   if (records.length === 0)
-    return { snapshot: emptyLiveSnapshot(now, options.project), blocks: [] };
+    return { snapshot: { ...emptyBase(now, options.project), verdicts: [] }, blocks: [] };
   const rows = listOutbox(db).filter(
     (row) =>
       options.sessionIds === undefined ||
@@ -433,7 +493,8 @@ function readScopedSnapshot(
     now: now.getTime(),
     repo: options.project?.repo,
   });
-  const snapshot: StatusSnapshot = {
+  const listed = new Set(items.map((item) => item.id));
+  const snapshot: FullSnapshot = {
     version: STATUS_API_VERSION,
     source: "live",
     generatedAt,
@@ -447,19 +508,10 @@ function readScopedSnapshot(
         runId === undefined ? verdict : { ...verdict, runId },
       );
     }),
-    mergeQueue:
-      only === undefined
-        ? merge.mergeQueue
-        : merge.mergeQueue.filter((entry) => entry.itemId === only),
+    mergeQueue: merge.mergeQueue.filter((entry) => listed.has(entry.itemId)),
     ...(merge.mergeHistory === undefined
       ? {}
-      : {
-          mergeHistory:
-            only === undefined
-              ? merge.mergeHistory
-              : merge.mergeHistory.filter((entry) => entry.itemId === only),
-        }),
-    events: only === undefined ? eventsFor(rows) : [],
+      : { mergeHistory: merge.mergeHistory.filter((entry) => listed.has(entry.itemId)) }),
     evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
     ciRounds: ciRoundsFor(db, records, env),
@@ -1655,18 +1707,6 @@ function turnAuthor(payload: string): string {
   }
 }
 
-function eventsFor(rows: readonly OutboxRow[]): StatusEvent[] {
-  const events: StatusEvent[] = [];
-  for (const row of rows) {
-    if (row.op !== "activity" && row.op !== "elicitation") continue;
-    const body = readString(row.payload, "body")?.trim() ?? "";
-    if (!body) continue;
-    const kind = row.op === "elicitation" ? "elicitation" : (readString(row.payload, "kind") ?? "");
-    events.push({ at: iso(row.createdAt), level: eventLevel(kind), text: body });
-  }
-  return events;
-}
-
 function concerns(row: OutboxRow, record: WorkItemRecord, runId: string): boolean {
   if (row.op !== "activity" && row.op !== "elicitation") return false;
   const key = row.idempotencyKey;
@@ -1951,13 +1991,6 @@ function activityKind(kind: string | null): ActivityKind {
   if (kind === "error") return "err";
   if (kind === "response") return "ok";
   return "system";
-}
-
-function eventLevel(kind: string): EventLevel {
-  if (kind === "error") return "err";
-  if (kind === "response") return "ok";
-  if (kind === "elicitation") return "warn";
-  return "info";
 }
 
 function latest(

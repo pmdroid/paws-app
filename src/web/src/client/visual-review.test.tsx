@@ -1,8 +1,8 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { StatusEvidence, StatusSnapshot, StatusVisualReview } from "../contract";
+import type { StatusEvidence, StatusVisualReview } from "../contract";
 import { render } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -52,8 +52,8 @@ const CHANGES = round({
 function fixture(
   reviews: StatusVisualReview[],
   state: "awaiting_input" | "running" | "verifying",
-): { snapshot: StatusSnapshot; runId: string } {
-  const snapshot = statusFixture();
+): { snapshot: FullStatus; runId: string } {
+  const snapshot = fullStatusFixture();
   snapshot.generatedAt = NOW;
   const run = snapshot.runs[0]!;
   const item = snapshot.items.find((entry) => entry.id === run.itemId)!;
@@ -88,13 +88,12 @@ function fixture(
   return { snapshot, runId: run.id };
 }
 
-function runPage(snapshot: StatusSnapshot, runId: string): string {
+function runPage(snapshot: FullStatus, runId: string): string {
   return render({
-    route: { view: "runs", id: runId },
     phase: "ready",
-    snapshot,
     error: null,
     engineUrl: null,
+    ...pageData(snapshot, { view: "runs", id: runId }),
   }).content;
 }
 

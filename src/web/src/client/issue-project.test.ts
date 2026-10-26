@@ -1,8 +1,9 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, pageData, statusList } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { issueRowMatches, NO_PROJECT_FILTER, render } from "./render";
 
-const snapshot = statusFixture();
+const full = fullStatusFixture();
+const snapshot = statusList(full);
 const model = {
   phase: "ready" as const,
   snapshot,
@@ -19,9 +20,15 @@ function rows(html: string): { id: string; state: string; project: string }[] {
 }
 
 test("the issue page shows the issue's Linear project, or none", () => {
-  const withProject = render({ ...model, route: { view: "issues", id: "ENG-104" } }).content;
+  const withProject = render({
+    ...model,
+    ...pageData(full, { view: "issues", id: "ENG-104" }),
+  }).content;
   expect(withProject).toContain("Audit log export");
-  const without = render({ ...model, route: { view: "issues", id: "ENG-102" } }).content;
+  const without = render({
+    ...model,
+    ...pageData(full, { view: "issues", id: "ENG-102" }),
+  }).content;
   expect(without).toContain("No project");
   expect(without).not.toContain("Audit log export");
 });
