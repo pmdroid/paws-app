@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { initializeDecisions } from "./decisions";
 import type { SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
@@ -25,7 +26,9 @@ function rememberSignInReturn(): void {
     if (location.pathname.replace(/\/+$/, "") === "/status" || location.pathname === "/")
       sessionStorage.removeItem(SIGN_IN_RETURN);
     else sessionStorage.setItem(SIGN_IN_RETURN, path);
-  } catch {}
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "workspace.rememberSignInReturn.replace", null);
+  }
 }
 
 export function takeSignInReturn(): string | null {
@@ -33,7 +36,8 @@ export function takeSignInReturn(): string | null {
     const path = sessionStorage.getItem(SIGN_IN_RETURN);
     sessionStorage.removeItem(SIGN_IN_RETURN);
     return path?.startsWith("/") && !path.startsWith("//") ? path : null;
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "workspace.takeSignInReturn.getItem", null);
     return null;
   }
 }
@@ -51,7 +55,8 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
       await new Promise((resolve) => setTimeout(resolve, 250));
       response = await fetch("/api/auth/session", { cache: "no-store" });
     }
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "workspace.initializeWorkspaceAccess.fetch", null);
     if (root !== null) {
       root.hidden = false;
       root.textContent = "Paws could not be reached. Reload to try again.";
@@ -69,7 +74,10 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     return true;
   }
   if (response.status === 401) {
-    const state = (await response.json().catch(() => null)) as {
+    const state = (await response.json().catch((caughtError4) => {
+      journalCaught(caughtError4, "workspace.initializeWorkspaceAccess.json", null);
+      return null;
+    })) as {
       onboarding?: boolean;
       configured?: boolean;
       reconnect?: boolean;
@@ -124,7 +132,8 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
       root.querySelector("#workspace-signout")?.addEventListener("click", () => {
         const csrf =
           document.querySelector('meta[name="paws-csrf"]')?.getAttribute("content") ?? "";
-        void signOut(csrf).catch(() => {
+        void signOut(csrf).catch((caughtError5) => {
+          journalCaught(caughtError5, "workspace.initializeWorkspaceAccess.signOut", null);
           root.querySelector("p")!.textContent = "Sign-out failed. Reload to try again.";
         });
       });
@@ -153,7 +162,10 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!result.ok) {
-      const data = (await result.json().catch(() => null)) as { error?: string } | null;
+      const data = (await result.json().catch((caughtError6) => {
+        journalCaught(caughtError6, "workspace.change.json", null);
+        return null;
+      })) as { error?: string } | null;
       throw new Error(data?.error ?? "The change could not be saved. Try again.");
     }
   }
@@ -162,6 +174,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     try {
       await action();
     } catch (error) {
+      journalCaught(error, "workspace.report.action", null);
       if (feedback !== null)
         feedback.textContent =
           error instanceof Error ? error.message : "The change could not be saved.";
@@ -213,7 +226,8 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
               });
             });
         }
-      } catch {
+      } catch (caughtError7) {
+        journalCaught(caughtError7, "workspace.loadMembers.fetch", null);
         renderMarkup(
           root!.querySelector("#workspace-members-list")!,
           '<p role="status">Members could not be loaded. Refresh members to try again.</p>',

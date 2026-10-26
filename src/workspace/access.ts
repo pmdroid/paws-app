@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
 import type { Database } from "bun:sqlite";
@@ -123,7 +124,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     const key = `${workspaceKey}:${userId}`;
     let operation = pending.get(key);
     if (force && operation !== undefined) {
-      await operation.catch(() => {});
+      await operation.catch((caughtError1) => {
+        journalCaught(caughtError1, "access.refresh", null);
+      });
       return refresh(workspaceKey, userId, true, permitted);
     }
     if (operation === undefined) {
@@ -180,7 +183,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   async function createVmAvailable(): Promise<boolean> {
     try {
       return (await options.createVmAvailable?.()) === true;
-    } catch {
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "access.createVmAvailable", null);
       return false;
     }
   }
@@ -296,7 +300,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         let body: string;
         try {
           body = await smallBody(request);
-        } catch {
+        } catch (caughtError3) {
+          journalCaught(caughtError3, "access.handle.smallBody", null);
           return json({ error: "Invalid bootstrap grant" }, 400);
         }
         bootstrap = new URLSearchParams(body).get("bootstrap");
@@ -443,7 +448,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         "__Host-paws-login=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
       );
       return new Response(null, { status: 303, headers });
-    } catch {
+    } catch (caughtError4) {
+      journalCaught(caughtError4, "access.callback.completeWorkspaceOAuth", null);
       return json({ error: "Linear sign-in could not be completed. Start sign-in again." }, 400);
     }
   }
@@ -454,7 +460,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         path === "/api/auth/logout"
           ? requestWorkspaceSession(options.db, request, now())
           : await authenticate(request);
-    } catch {
+    } catch (caughtError5) {
+      journalCaught(caughtError5, "access.sessionRoutes.requestWorkspaceSession", null);
       return json({ error: "Linear membership could not be refreshed." }, 503);
     }
     if (access === null) return json({ error: "Sign in to Paws." }, 401);
@@ -465,7 +472,10 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
       if (request.headers.get("origin") !== origin || !validWorkspaceCsrf(request, access.session))
         return json({ error: "CSRF token required." }, 403);
-      const body = await readWorkspaceJson(request).catch(() => null);
+      const body = await readWorkspaceJson(request).catch((caughtError6) => {
+        journalCaught(caughtError6, "access.sessionRoutes.readWorkspaceJson", null);
+        return null;
+      });
       if (
         typeof body !== "object" ||
         body === null ||

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { timingSafeEqual } from "node:crypto";
 import {
   DEFAULT_CI_FIX_ATTEMPTS,
@@ -52,7 +53,8 @@ export async function handleAgentSettingsRequest(
         merge: { ciFixAttempts: readMergeSettings(config).ciFixAttempts },
         queue: readQueueSettings(config),
       });
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "handler.handleAgentSettingsRequest.loadConfigFile", null);
       return json({ error: "Agent settings could not be read" }, 503);
     }
   }
@@ -62,7 +64,8 @@ export async function handleAgentSettingsRequest(
   let body: unknown;
   try {
     body = await readJson(request);
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "handler.handleAgentSettingsRequest.readJson", null);
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   let settings;
@@ -84,6 +87,7 @@ export async function handleAgentSettingsRequest(
     mergeBody = merge;
     queueBody = queue;
   } catch (error) {
+    journalCaught(error, "handler.handleAgentSettingsRequest.isRecord", null);
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
   // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
@@ -93,7 +97,9 @@ export async function handleAgentSettingsRequest(
     const config = loadConfigFile(options.configPath);
     previous = storedMerge(config);
     previousQueue = readQueueSettings(config);
-  } catch {}
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "handler.handleAgentSettingsRequest.loadConfigFile", null);
+  }
   let merge: StoredMerge | undefined;
   let queue: QueueSettings | undefined;
   try {
@@ -107,6 +113,7 @@ export async function handleAgentSettingsRequest(
         ...parseQueueSettings(queueBody),
       };
   } catch (error) {
+    journalCaught(error, "handler.handleAgentSettingsRequest.parseMergeSettings", null);
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
   let saved: number;
@@ -118,7 +125,8 @@ export async function handleAgentSettingsRequest(
     saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);
     if (applyToWaiting) waitingRuns = options.applyToWaiting?.() ?? 0;
-  } catch {
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "handler.handleAgentSettingsRequest.writeAgentSettings", null);
     return json({ error: "Agent settings could not be saved" }, 503);
   }
   const before = previous.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS;

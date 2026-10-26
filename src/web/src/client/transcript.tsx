@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { ArrowDown } from "lucide-react";
@@ -154,6 +155,7 @@ function TranscriptPage({ runId }: { runId: string | null }) {
               same && current.state === "ready" ? current : { state: "ready", entries: next },
             );
         } catch (caught) {
+          journalCaught(caught, "transcript.TranscriptPage.fetchTranscript", null);
           if (!stopped)
             setLoad((current) => ({
               state: "failed",

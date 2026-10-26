@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
@@ -69,7 +70,10 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
             body: JSON.stringify(body),
           }),
     });
-    const data = (await response.json().catch(() => null)) as {
+    const data = (await response.json().catch((caughtError1) => {
+      journalCaught(caughtError1, "github-repository-setup.request.json", null);
+      return null;
+    })) as {
       error?: string;
       code?: string;
     } | null;
@@ -170,7 +174,10 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     paintActions();
     try {
       const healthResponse = await fetch("/api/workspaces/github-connect", { cache: "no-store" });
-      const health = (await healthResponse.json().catch(() => null)) as {
+      const health = (await healthResponse.json().catch((caughtError2) => {
+        journalCaught(caughtError2, "github-repository-setup.load.json", null);
+        return null;
+      })) as {
         status?: string;
         requiresSignIn?: boolean;
         installationUrl?: string;
@@ -223,6 +230,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
       }
       paintActions();
     } catch (error) {
+      journalCaught(error, "github-repository-setup.load.fetch", null);
       status.textContent = "GitHub connection unavailable.";
       feedback.textContent =
         error instanceof Error ? error.message : "GitHub could not be reached.";
@@ -240,7 +248,13 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     if (target.hasAttribute("data-signin")) {
       try {
         sessionStorage.setItem("paws.settingsReturn", "/settings/integrations");
-      } catch {}
+      } catch (caughtError3) {
+        journalCaught(
+          caughtError3,
+          "github-repository-setup.initializeGitHubRepositorySetup.setItem",
+          null,
+        );
+      }
     }
     if (target.hasAttribute("data-install")) waitingForInstall = true;
     if (target.hasAttribute("data-refresh")) void load(catalog?.installationId ?? undefined);
@@ -263,6 +277,11 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
           );
         })
         .catch((error: unknown) => {
+          journalCaught(
+            error,
+            "github-repository-setup.initializeGitHubRepositorySetup.then",
+            null,
+          );
           feedback.textContent =
             error instanceof Error ? error.message : "GitHub sign-in could not start.";
         })
@@ -322,6 +341,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
         document.dispatchEvent(new Event("paws:github-access-changed"));
       })
       .catch((error: unknown) => {
+        journalCaught(error, "github-repository-setup.initializeGitHubRepositorySetup.then", null);
         feedback.textContent =
           error instanceof Error ? error.message : "Repository access could not be saved.";
       })

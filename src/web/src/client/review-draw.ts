@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import type { StatusSnapshot } from "../contract";
 import { evidenceFileUrl } from "./evidence";
 import { esc } from "./format";
@@ -167,11 +168,15 @@ export function openReviewDraw(
         headers: { "x-paws-csrf": readCsrfToken(document) },
         body: form,
       });
-      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      const body = (await response.json().catch((caughtError1) => {
+        journalCaught(caughtError1, "review-draw.openReviewDraw.json", null);
+        return null;
+      })) as { error?: string } | null;
       if (!response.ok) throw new Error(body?.error ?? "The changes could not be sent. Try again.");
       dialog.close();
       await done();
     } catch (error) {
+      journalCaught(error, "review-draw.openReviewDraw.append", null);
       message.textContent =
         error instanceof Error ? error.message : "The changes could not be sent. Try again.";
       submit.disabled = false;

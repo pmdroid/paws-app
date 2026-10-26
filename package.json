@@ -37,6 +37,7 @@
     "happy-dom": "^21.0.4",
     "html-react-parser": "^6.1.8",
     "lucide-react": "^1.56.0",
+    "oxc-parser": "^0.155.0",
     "oxfmt": "^0.72.0",
     "oxlint": "^1.87.0",
     "react": "^19.3.0",

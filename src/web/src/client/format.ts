@@ -1,3 +1,4 @@
+import { journalCaught } from "../../../journal";
 import type {
   HeldReason,
   ItemState,
@@ -219,7 +220,8 @@ export function safeHref(href: string): string | null {
     const url = new URL(href);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
     return url.toString();
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "format.safeHref.toString", null);
     return null;
   }
 }
