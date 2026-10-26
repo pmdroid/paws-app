@@ -1925,7 +1925,7 @@ export class Orchestrator {
         this.post(
           item,
           "thought",
-          "Preparing the requested answer.",
+          sessionProgress?.keepalive(live.progress) ?? "Preparing the requested answer.",
           `${run.id}:keep:${this.now()}`,
           { ephemeral: true },
           "critical",
@@ -2068,12 +2068,20 @@ export class Orchestrator {
     const live = this.beginLive(item.id, run.id);
     const controller = live.controller;
     let posted = true;
+    const sessionProgress = this.sessionProgress(item);
     const first = setTimeout(() => {
       if (posted || !this.canReportProgress(item.id)) return;
       posted = true;
-      this.post(item, "thought", `Working on ${item.linearIdentifier}.`, `${run.id}:first`, {
-        ephemeral: true,
-      });
+      const working = `Working on ${item.linearIdentifier}.`;
+      this.post(
+        item,
+        "thought",
+        sessionProgress?.keepalive(working) ?? working,
+        `${run.id}:first`,
+        {
+          ephemeral: true,
+        },
+      );
       void this.flush();
     }, FIRST_ACTIVITY_MS);
     const keepAlive = setInterval(() => {
@@ -2081,7 +2089,9 @@ export class Orchestrator {
       this.post(
         item,
         "thought",
-        live.progress ?? `Working on ${item.linearIdentifier}.`,
+        sessionProgress?.keepalive(live.progress) ??
+          live.progress ??
+          `Working on ${item.linearIdentifier}.`,
         `${run.id}:keep:${this.now()}`,
         { ephemeral: true },
         "critical",
@@ -2091,7 +2101,6 @@ export class Orchestrator {
     first.unref?.();
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
-    const sessionProgress = this.sessionProgress(item);
     const activity = createAcpActivityReporter(
       (update) => {
         if (
@@ -4031,9 +4040,9 @@ export class Orchestrator {
         progress.status(
           `${name}: waiting for a runner to ${
             wait.restart === "ci"
-              ? "fix CI"
+              ? `fix CI (${round} of ${limit})`
               : wait.restart === "review"
-                ? "address the review"
+                ? `address the review (${round} of ${limit})`
                 : wait.restart === "conflict"
                   ? "resolve a merge conflict"
                   : `fix Closeout findings (${round} of ${limit})`
@@ -4205,7 +4214,9 @@ export class Orchestrator {
           throw new Error("Progress updates are closed for this run");
         const allowed = this.updates.take(item.id);
         if (allowed.posted) {
-          this.post(item, "thought", publicToolText(text), `update:${item.id}:${this.now()}`);
+          const line = publicToolText(text);
+          for (const live of this.live.values()) if (live.itemId === item.id) live.progress = line;
+          this.post(item, "thought", line, `update:${item.id}:${this.now()}`);
           await this.flush();
         }
         return allowed;

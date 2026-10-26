@@ -19,6 +19,16 @@ const METADATA_INTERVAL_MS = 120_000;
 
 const HOST_STEPS = ["Verify changes", "Open pull request", "Merge verified changes"];
 
+const PHASE_LINES: Record<Phase, string> = {
+  working: "Creating files for",
+  implementing: "Implementing",
+  fixing: "Fixing Closeout findings for",
+  verifying: "Verifying",
+  publishing: "Opening the pull request for",
+  merging: "Merging",
+  completed: "Finishing",
+};
+
 export function createLinearSessionProgress(
   db: Database,
   sessionId: string,
@@ -260,7 +270,7 @@ export function createLinearSessionProgress(
         "linear.session.summary",
         {
           sessionId,
-          summary: `${identifier}: ${reason === "ci" ? "fixing CI" : reason === "review" ? "fixing review findings" : reason === "conflict" ? "resolving merge conflict" : `fixing Closeout findings (${round} of ${limit})`}`,
+          summary: `${identifier}: ${reason === "ci" ? `fixing CI (${round} of ${limit})` : reason === "review" ? `fixing review findings (${round} of ${limit})` : reason === "conflict" ? "resolving merge conflict" : `fixing Closeout findings (${round} of ${limit})`}`,
         },
         true,
       );
@@ -307,6 +317,29 @@ export function createLinearSessionProgress(
             : next;
       const summary = `${identifier}: ${status}`.slice(0, 255);
       publish("linear.session.summary", { sessionId, summary }, next === "completed");
+    },
+    /**
+     * The keepalive line: the agent's current plan step while it works, else the last
+     * line it posted, else the phase name.
+     */
+    keepalive(lastLine: string | null): string {
+      const latest = latestPlan()?.payload as typeof saved;
+      const current = latest?.phase ?? phase;
+      const agentSteps = latest?.agentSteps ?? steps;
+      if (current === "working" || current === "implementing" || current === "fixing") {
+        const active = agentSteps.findIndex((step) => step.status === "inProgress");
+        const index =
+          active >= 0 ? active : agentSteps.findIndex((step) => step.status === "pending");
+        const step = agentSteps[index]?.content.trim();
+        if (step)
+          return `Step ${index + 1} of ${agentSteps.length}: ${step}${/[.!?]$/.test(step) ? "" : "."}`;
+      }
+      if (lastLine !== null && lastLine.trim() !== "") return lastLine;
+      const line =
+        current === "working" && mode === "answer"
+          ? "Preparing the answer for"
+          : PHASE_LINES[current];
+      return `${line} ${identifier}.`;
     },
     status(text: string) {
       publish("linear.session.summary", { sessionId, summary: text.slice(0, 255) }, true);

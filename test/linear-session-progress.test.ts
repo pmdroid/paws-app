@@ -627,3 +627,115 @@ test("a restarted item waiting for a runner shows its appended step, once, not a
     db.close();
   }
 });
+
+test("repeated phases, plans and status lines enqueue no duplicate title or plan rows", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  const plan = [
+    { content: "Read the scheduler", status: "completed" as const },
+    { content: "Rank runners by load share", status: "inProgress" as const },
+  ];
+  try {
+    for (let round = 0; round < 3; round++) {
+      // A fresh reporter per round, as each job and callback builds its own.
+      const progress = createLinearSessionProgress(db, "session", "PAS-1", () => clock.now());
+      progress.phase("implementing");
+      progress.plan(plan);
+      progress.plan(plan.map((step) => ({ ...step })));
+      progress.phase("implementing");
+      await flush(dispatcher);
+      clock.advance(150_000);
+      await flush(dispatcher);
+    }
+    const voice = createLinearSessionProgress(db, "session", "PAS-1", () => clock.now());
+    voice.status("PAS-1: CI running");
+    await flush(dispatcher);
+    voice.status("PAS-1: CI running");
+    createLinearSessionProgress(db, "session", "PAS-1", () => clock.now()).status(
+      "PAS-1: CI running",
+    );
+    clock.advance(150_000);
+    await flush(dispatcher);
+
+    const rows = (op: string) =>
+      listOutbox(db, "session").filter((row) => row.op === op && row.status !== "dropped");
+    expect(
+      rows("linear.session.summary").map((row) => (row.payload as SessionUpdate).summary),
+    ).toEqual(["PAS-1: implementing", "PAS-1: CI running"]);
+    expect(rows("linear.session.plan")).toHaveLength(1);
+    expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(2);
+    expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("a plan step status change replaces the plan and an unchanged step does not", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  try {
+    const progress = createLinearSessionProgress(db, "session", "PAS-1", () => clock.now());
+    progress.phase("implementing");
+    progress.plan([{ content: "Rank runners", status: "inProgress" }]);
+    await flush(dispatcher);
+    clock.advance(150_000);
+    progress.plan([{ content: "Rank runners", status: "inProgress" }]);
+    await flush(dispatcher);
+    progress.plan([{ content: "Rank runners", status: "completed" }]);
+    clock.advance(150_000);
+    await flush(dispatcher);
+    expect(
+      tracker.sessionUpdates.flatMap((update) => (update.plan ? [update.plan[0]?.status] : [])),
+    ).toEqual(["inProgress", "completed"]);
+    expect(
+      listOutbox(db, "session").filter(
+        (row) => row.op === "linear.session.plan" && row.status !== "dropped",
+      ),
+    ).toHaveLength(2);
+  } finally {
+    db.close();
+  }
+});
+
+test("the keepalive names the current agent step, else the last line, else the phase", () => {
+  const db = tempDb();
+  try {
+    const progress = createLinearSessionProgress(db, "session", "PAS-1");
+    progress.phase("implementing");
+    expect(progress.keepalive(null)).toBe("Implementing PAS-1.");
+    expect(progress.keepalive("Found the cause in the scheduler.")).toBe(
+      "Found the cause in the scheduler.",
+    );
+    progress.plan([
+      { content: "Read the scheduler", status: "completed" },
+      { content: "Add coverage", status: "completed" },
+      { content: "rank runners by load share", status: "inProgress" },
+      { content: "Wire the setting", status: "pending" },
+      { content: "Document it", status: "pending" },
+    ]);
+    expect(progress.keepalive("Found the cause.")).toBe("Step 3 of 5: rank runners by load share.");
+    // Another reporter for the same session reads the step from the saved plan.
+    expect(createLinearSessionProgress(db, "session", "PAS-1").keepalive(null)).toBe(
+      "Step 3 of 5: rank runners by load share.",
+    );
+    progress.plan([
+      { content: "Read the scheduler", status: "completed" },
+      { content: "Wire the setting", status: "pending" },
+    ]);
+    expect(progress.keepalive(null)).toBe("Step 2 of 2: Wire the setting.");
+    progress.phase("verifying");
+    expect(progress.keepalive(null)).toBe("Verifying PAS-1.");
+  } finally {
+    db.close();
+  }
+});
