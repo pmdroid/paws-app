@@ -1,15 +1,19 @@
-import { restart } from "./operations";
+import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyLinearTurns,
   announceLinearTurn,
   applyWorkItemEvent,
+  completePlanTask,
   enqueueJobOnce,
+  enqueueOutboxOnce,
   extendAwakeCap,
   failWorkItem,
+  getPlanProposal,
   getWorkItem,
   listCloseoutRecoveries,
+  savePlanProposal,
   saveCheckpoint,
   saveVisualReviewMarks,
   type VisualReviewMark,
@@ -23,6 +27,13 @@ import {
 } from "../questions";
 import { askCloseoutHelp } from "./closeout-help";
 import { parseRecoveryAnswer } from "./closeout-recovery";
+import {
+  PLAN_DISCARDED,
+  PLAN_EDIT_QUESTION,
+  planDecision,
+  planEditHandoff,
+  planOptions,
+} from "./plan-proposal";
 import { worktreeBranch } from "./sources";
 import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
 
@@ -185,7 +196,70 @@ export function questionEffects(
       now: input.now,
     });
   };
+  /**
+   * Create completes the plan task and queues the filing, keyed on this
+   * question so a redelivered answer files nothing twice. Discard completes it
+   * with one response. A bare Edit asks what to change; any other reply is the
+   * next planning turn.
+   */
+  const planApproval = (question: StoredQuestion) => {
+    const proposal = getPlanProposal(db, question.id);
+    const item = getWorkItem(db, question.itemId);
+    if (proposal === null || item === null) return;
+    consumeTurn(question);
+    if (item.state !== "awaiting_input" || item.cancelRequested) return;
+    if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
+    const answer = question.answer ?? "";
+    const decision = planDecision(answer, proposal.drafts.length);
+    db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
+    if (decision === "edit-ask") {
+      const asked = ask(
+        db,
+        { itemId: item.id, runId: null, sessionId: question.sessionId, version: item.version },
+        "plan-approval",
+        PLAN_EDIT_QUESTION,
+        { options: planOptions(proposal.drafts.length), now: input.now },
+      );
+      savePlanProposal(db, { ...proposal, questionId: asked.question.id, now: input.now });
+      return;
+    }
+    if (decision === "edit") {
+      restart(db, item, {
+        reason: "answer",
+        body: planEditHandoff(proposal.drafts, answer),
+        jobKey: `plan-edit:${question.id}`,
+        now: input.now,
+      });
+      return;
+    }
+    completePlanTask(db, item.id, input.now);
+    if (decision === "discard")
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: question.sessionId,
+        idempotencyKey: `plan-discarded:${question.id}`,
+        payload: { sessionId: question.sessionId, kind: "response", body: PLAN_DISCARDED },
+        now: input.now,
+      });
+    else
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "linear.sub_issues",
+        orderingKey: question.sessionId,
+        idempotencyKey: `plan-create:${question.id}`,
+        payload: {
+          questionId: question.id,
+          itemId: item.id,
+          sessionId: question.sessionId,
+          issueId: proposal.parentIssueId,
+          identifier: item.linearIdentifier,
+        },
+        now: input.now,
+      });
+  };
   return {
+    "plan-approval": planApproval,
     "visual-review": visualReview,
     "runner-wait": (question) => {
       consumeTurn(question);

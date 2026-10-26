@@ -1,6 +1,18 @@
 export { NotImplementedError } from "./errors";
 export type { IssueBrief, WorkBrief } from "./brief";
-export { TASK_MODES, type TaskMode } from "./task";
+export {
+  TASK_MODES,
+  isReadOnlyTaskMode,
+  isResponseTaskMode,
+  type ResponseTaskMode,
+  type TaskMode,
+} from "./task";
+export {
+  MAX_SUB_ISSUE_DRAFTS,
+  validateSubIssueDrafts,
+  type FiledSubIssue,
+  type SubIssueDraft,
+} from "./plan";
 export type { RepositoryBinding } from "./repository";
 export {
   DELEGATION_STATES,

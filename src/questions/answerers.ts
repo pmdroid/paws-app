@@ -11,7 +11,8 @@ export type AnswerableQuestion =
   | { kind: "closeout-bypass" }
   | { kind: "ci-help" }
   | { kind: "visual-review"; delegatorId: string | null; leadId: string | null }
-  | { kind: "github-auth"; actorId: string };
+  | { kind: "github-auth"; actorId: string }
+  | { kind: "plan-approval" };
 
 type Policy = {
   [K in AnswerableQuestion["kind"]]: (
@@ -44,4 +45,5 @@ export const ANSWER_POLICY: Policy = {
   "ci-help": canAnswer,
   "visual-review": canAnswer,
   "github-auth": canAnswer,
+  "plan-approval": canAnswer,
 };

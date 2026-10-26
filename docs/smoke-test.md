@@ -51,6 +51,18 @@ Configure the Linear app callbacks described in [Workspace access](workspace-acc
 
 Sign in on the website and authorize the app as a workspace admin. Delegate the sandbox issue and verify its first activity, questions, Closeout result and GitHub pull request.
 
+### Plan outcome
+
+This run proves a planning request becomes sub-issues that intake can run. Use an issue with no sub-issues in the sandbox team, labelled with the demo repository, such as **Plan CSV export**: "Plan this: split CSV export into sub-issues we can ship one at a time." Delegate it to the Paws app.
+
+1. The session's title reads `ENG-n: planning sub-issues`. The plan turn runs read-only on the runner: it reads the repository and `.agents/closeout.yaml` and changes no files.
+2. The session asks one question. It lists the proposed sub-issues in blocks order, each with a description and acceptance criteria that name Closeout checks and any screenshots they need. The buttons are **Create k sub-issues**, **Edit** and **Discard**.
+3. Press **Edit**. Paws asks what to change. Reply with a change such as "Merge the last two sub-issues." A new plan turn runs, and the question comes back with the revised list.
+4. Press **Create k sub-issues**. The session ends with one response that links each created identifier. In Linear, the sub-issues sit under the parent in the proposed order, carry the repository label, and are linked by `blocks` relations. None is delegated.
+5. Delegate the first sub-issue. Intake runs it, and the next one waits for it to merge.
+
+**Discard** instead of Create ends the session with "Discarded the proposal. Nothing was filed." Only someone who may answer Paws questions in the workspace can press the buttons.
+
 ## Runtimes
 
 This run proves a runner installs a repository's runtimes and puts them on `PATH`. How a repository declares them is in [Declare a repository's runtimes](runtimes.md).

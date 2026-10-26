@@ -156,7 +156,7 @@ export function createRunnerWork(options: {
       !session ||
       session.stoppedAt !== null ||
       !installation?.clientId ||
-      (purpose !== "answer" && purpose !== "artifact") ||
+      (purpose !== "answer" && purpose !== "artifact" && purpose !== "plan") ||
       !db
         .query("SELECT 1 FROM workspace WHERE id=? AND linear_organization_id=?")
         .get(workspaceId, session.organizationId) ||
@@ -590,7 +590,7 @@ export function createRunnerWork(options: {
         if (
           command.type === "task" &&
           (input.event.type === "candidate" ||
-            (command.purpose === "answer" && input.event.type === "artifact"))
+            (command.purpose !== "artifact" && input.event.type === "artifact"))
         )
           throw new Error("Response task event is not authorized");
         if (saved) {

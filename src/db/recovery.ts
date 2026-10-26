@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   decideStartup,
+  isResponseTaskMode,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   type StartupDecision,
@@ -130,8 +131,7 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
   const mode = getTaskMode(db, item.id);
   return (
     item.state === "running" &&
-    mode !== "answer" &&
-    mode !== "artifact" &&
+    !isResponseTaskMode(mode) &&
     item.currentRunId !== null &&
     db
       .query(
