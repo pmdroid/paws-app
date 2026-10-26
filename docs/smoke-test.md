@@ -92,6 +92,23 @@ Expect these results:
 
 For each run, keep the Linear session, the GitHub pull request and the Paws run page. Publish a screenshot of each session and of each run page's Closeout results on the PAS issue for the run, and link the merged pull requests.
 
+### Recorded runs
+
+| Date       | Kind                   | Head       | Scenarios                                                        | Result          | Evidence                                                                                                                                                                                                                                                                                                |
+| ---------- | ---------------------- | ---------- | ---------------------------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-26 | Rehearsal over fakes   | `50977106` | Rebase after main moved, changes-requested review, conflict loop | 55 pass, 0 fail | [Report](https://uploads.linear.app/b887619d-5cb4-463d-9824-983433dbc4b3/c2456404-f6fc-4904-b90f-089c31fa06b5/2f2a6f0b-57f8-4618-9f64-fe5d22d1e5bb), [JUnit](https://uploads.linear.app/b887619d-5cb4-463d-9824-983433dbc4b3/9d95d275-6015-4268-b721-3666e4d5d272/8d150f99-78c6-44f9-9bda-f78cc0e8f22f) |
+| —          | Live (Linear + GitHub) | —          | Rebase after main moved, changes-requested review, conflict loop | Not run yet     | —                                                                                                                                                                                                                                                                                                       |
+
+The rehearsal drives Paws' merge lane, review handler and loop over the module fakes, because the runner that wrote these docs had no Linear workspace, GitHub App or agent logins. It is not a live run. It reproduces the expected results above, but not Linear's rendering or GitHub's behaviour. Rerun it with:
+
+```sh
+bun test src/merge/advance-merge.test.ts src/merge/step.test.ts src/merge/budget.test.ts \
+  src/loop/pull-reviews.test.ts test/linear-session-progress.test.ts test/loop.e2e.test.ts \
+  -t "main moved|behind main|rebase|review|conflict|quiet through"
+```
+
+Add a row for each live run, with links to the sessions, pull requests and published evidence.
+
 ### Linear agent sessions
 
 Configure the Linear app callbacks described in [Workspace access](workspace-access.md). Enable **Agent session events** and set the webhook URL to the Paws HTTPS origin followed by `/webhooks/linear`. Set `LINEAR_WEBHOOKS=true` and the matching signing secret on the server.
