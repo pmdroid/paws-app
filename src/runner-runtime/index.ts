@@ -149,6 +149,8 @@ export async function openRunnerRuntime(options: {
   concurrency?: number | (() => number);
   stopWaitMs?: number;
   deliveryWaitMs?: number;
+  /** The first wait before a session upload is retried during restart recovery; it doubles. */
+  sessionRetryMs?: number;
 }) {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
@@ -335,9 +337,21 @@ export async function openRunnerRuntime(options: {
           token,
         );
       }
-      await uploadSession(execution, async () => token).catch((error: unknown) =>
-        skipSession(execution, error),
-      );
+      // An outage during recovery retries from the stored offset, a few times at most.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await uploadSession(execution, async () => token);
+          break;
+        } catch (error) {
+          if (!(error instanceof RemoteFailure) || attempt >= SESSION_UPLOAD_TRIES) {
+            skipSession(execution, error);
+            break;
+          }
+          await new Promise((resolve) =>
+            setTimeout(resolve, (options.sessionRetryMs ?? 1_000) * 2 ** (attempt - 1)),
+          );
+        }
+      }
       const tail = (broker.log?.(execution.id) ?? "")
         .replace(/gh[opsu]_[A-Za-z0-9]{10,}/g, "[redacted]")
         .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@");
