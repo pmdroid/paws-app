@@ -159,6 +159,8 @@ import {
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
+  recordItemBranchState,
+  recordItemPullRequest,
   saveVisualReviewMarks,
   type VisualReviewMark,
   saveRunResult,
@@ -2230,6 +2232,19 @@ export class Orchestrator {
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
       ).trim();
       saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
+      const commits = Number(
+        (
+          await git(["-C", executed.worktreePath, "rev-list", "--count", `${base}..${head}`])
+        ).trim(),
+      );
+      recordItemBranchState(this.db, {
+        itemId: item.id,
+        runId: run.id,
+        head,
+        base,
+        commits,
+        recordedAt: this.now(),
+      });
       if (this.options.remoteExecution)
         writeSessionCloseout(
           sessionCloseoutPath(this.options.pawsRoot, pathId),
@@ -3062,6 +3077,12 @@ export class Orchestrator {
     if (getWorkItem(this.db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
     if (!published.published)
       return { kind: "failed", reason: "publish", message: published.reason };
+    recordItemPullRequest(this.db, {
+      itemId: item.id,
+      pullNumber: published.pull.number,
+      pullUrl: published.pull.url ?? null,
+      openedAt: this.now(),
+    });
     this.post(
       item,
       "response",
