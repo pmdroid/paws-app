@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { getWorkItem, immediate } from "../db";
-import { RUNNER_HANDOVER_LIMIT_MS, RunnerResultSchema } from "../runner-protocol";
+import {
+  RUNNER_HANDOVER_LIMIT_MS,
+  RunnerResultSchema,
+  type RunnerHandoverFailure,
+} from "../runner-protocol";
 import type { RunnerWork } from "../runner-work";
 import { versionAtLeast } from "./session-restore";
 
@@ -11,8 +15,8 @@ export const HANDOVER_RUNNER_VERSION = [0, 1, 44];
 /** Past the runner's deadline: polling and delivery of its decision. */
 const DELIVERY_GRACE_MS = 30_000;
 /**
- * Once the runner committed to the handover, its agent is stopped and the session is saved;
- * publishing the WIP commit and the session may take this long before Paws stops waiting.
+ * Once the runner stopped the agent, it makes the WIP commit and the session snapshot and
+ * publishes them under their own timeouts; Paws waits this long for the outcome.
  */
 const PUBLICATION_WAIT_MS = 30 * 60_000;
 
@@ -21,14 +25,16 @@ export type RunnerHandoverOutcome =
   | { status: "handed_over"; wipCommit: string | null }
   /** The run ended on its own before the runner stopped it. */
   | { status: "finished" }
-  /**
-   * The runner could not stop at a safe point, commit and save the session within 2 minutes:
-   * the session keeps running on its runner.
-   */
+  /** The runner found no safe point within 2 minutes: the session keeps running there. */
   | { status: "timed_out" }
   /**
-   * The runner decided nothing within 2 minutes, published nothing after it committed, or Paws
-   * could not keep the WIP commit.
+   * The runner stopped the agent, then could not make the WIP commit, save the session or
+   * publish them. The run stays on its runner, and its next turn loads the session there.
+   */
+  | { status: "failed"; reason: RunnerHandoverFailure }
+  /**
+   * The runner sent nothing within 2 minutes, published nothing after it stopped the agent, or
+   * Paws could not keep the WIP commit.
    */
   | { status: "unanswered" }
   /** The runner's release cannot hand over; nothing was asked of it. */
@@ -99,6 +105,7 @@ export function createRemoteHandover(options: {
         )
         .get(request.runId, request.generation);
       const result = stored ? RunnerResultSchema.parse(JSON.parse(stored.payload)) : null;
+      if (result?.handoverFailure) return { status: "failed", reason: result.handoverFailure };
       if (result && !result.handedOver) return { status: "finished" };
       // The attempt ends the work once it has imported the WIP commit, or once it failed to.
       if (
@@ -114,18 +121,26 @@ export function createRemoteHandover(options: {
           ? { status: "handed_over", wipCommit }
           : { status: "unanswered" };
       }
-      const decision = result
-        ? null
+      const events = result
+        ? []
         : db
-            .query<{ handedOver: number }, [string, number, number]>(
-              `SELECT json_extract(payload,'$.handedOver') AS handedOver FROM runner_event
-               WHERE run_id=? AND generation=? AND sequence>? AND json_extract(payload,'$.type')='handover'
-               ORDER BY sequence LIMIT 1`,
+            .query<
+              { type: string; handedOver: number | null; reason: string | null },
+              [string, number, number]
+            >(
+              `SELECT json_extract(payload,'$.type') AS type,
+               json_extract(payload,'$.handedOver') AS handedOver,
+               json_extract(payload,'$.reason') AS reason FROM runner_event
+               WHERE run_id=? AND generation=? AND sequence>?
+               AND json_extract(payload,'$.type') IN ('handover','handover_interrupted')
+               ORDER BY sequence`,
             )
-            .get(request.runId, request.generation, request.after);
-      if (decision && !decision.handedOver) return { status: "timed_out" };
-      // Committed: the session left its agent, so only its publication is left to wait for.
-      if (decision) deadline = Math.max(deadline, request.deadline + PUBLICATION_WAIT_MS);
+            .all(request.runId, request.generation, request.after);
+      const failure = events.find((event) => event.type === "handover" && !event.handedOver);
+      if (failure?.reason === "timeout") return { status: "timed_out" };
+      if (failure) return { status: "failed", reason: failure.reason as RunnerHandoverFailure };
+      // The agent stopped: only the commit, the snapshot and their publication are left.
+      if (events.length) deadline = Math.max(deadline, request.deadline + PUBLICATION_WAIT_MS);
       await delay(options.pollIntervalMs ?? 250, undefined, { signal });
     }
     return { status: "unanswered" };
