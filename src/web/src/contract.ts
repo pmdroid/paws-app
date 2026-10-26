@@ -67,6 +67,7 @@ export const ACTIVITY_KINDS = [
   "prompt",
 ] as const;
 export const EVENT_LEVELS = ["info", "ok", "warn", "err"] as const;
+export const ITEM_EVENT_KINDS = ["transition", "restart", "ask"] as const;
 export const SOURCES = ["demo", "live"] as const;
 
 export type ItemState = (typeof ITEM_STATES)[number];
@@ -79,6 +80,7 @@ export type CheckKind = (typeof CHECK_KINDS)[number];
 export type StepState = (typeof STEP_STATES)[number];
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 export type EventLevel = (typeof EVENT_LEVELS)[number];
+export type ItemEventKind = (typeof ITEM_EVENT_KINDS)[number];
 export type StatusSource = (typeof SOURCES)[number];
 
 export interface StatusLink {
@@ -118,6 +120,23 @@ export interface StatusItem {
   session?: StatusItemSession;
   /** Set on an earlier attempt that a newer Linear session on the same issue replaced. */
   endedAt?: string;
+  /** Every state change of the item, oldest first, from `work_item_event`. */
+  timeline?: StatusItemEvent[];
+}
+
+/**
+ * One committed state change. `from` and `to` are the engine's work-item states, finer than
+ * `ItemState`. A `restart` sent the item back to the agent and an `ask` asked a person; both
+ * carry their `reason`.
+ */
+export interface StatusItemEvent {
+  at: string;
+  kind: ItemEventKind;
+  from: string;
+  to: string;
+  event: string;
+  reason: string | null;
+  actor: string | null;
 }
 
 export interface StatusItemSession {
@@ -826,6 +845,26 @@ function readItem(input: unknown, index: number): StatusItem {
       ? {}
       : { session: readItemSession(body.session, `${path}.session`) }),
     ...(body.endedAt === undefined ? {} : { endedAt: dateString(body, "endedAt", path) }),
+    ...(body.timeline === undefined
+      ? {}
+      : {
+          timeline: array(body, "timeline", path).map((entry, at) =>
+            readItemEvent(entry, `${path}.timeline[${at}]`),
+          ),
+        }),
+  };
+}
+
+function readItemEvent(input: unknown, path: string): StatusItemEvent {
+  const body = object(input, path);
+  return {
+    at: dateString(body, "at", path),
+    kind: oneOf(string(body, "kind", path), ITEM_EVENT_KINDS, `${path}.kind`),
+    from: text(body, "from", path),
+    to: text(body, "to", path),
+    event: text(body, "event", path),
+    reason: nullableText(body, "reason", path),
+    actor: nullableText(body, "actor", path),
   };
 }
 

@@ -1,4 +1,4 @@
-import type { StatusSnapshot } from "./contract";
+import type { StatusItemEvent, StatusSnapshot } from "./contract";
 
 const AT = "2026-10-09T22:15:00.000Z";
 const AUDIT = { id: "linear-audit", name: "Audit log export" };
@@ -69,6 +69,18 @@ const DEMO: StatusSnapshot = {
       branch: "jonas/eng-101-export-job-worker",
       runId: "r-101",
       pr: 479,
+      timeline: [
+        step("2026-10-09T20:58:00.000Z", "queued", "running", "dispatched"),
+        step("2026-10-09T21:20:00.000Z", "running", "verifying", "turn_ended"),
+        {
+          ...step("2026-10-09T21:31:00.000Z", "verifying", "queued", "restart"),
+          kind: "restart",
+          reason: "findings",
+        },
+        step("2026-10-09T21:33:00.000Z", "queued", "running", "dispatched"),
+        step("2026-10-09T21:52:00.000Z", "running", "verifying", "turn_ended"),
+        step("2026-10-09T22:04:00.000Z", "verifying", "merge_queue", "closeout_accepted"),
+      ],
     }),
     item({
       id: "ENG-100",
@@ -476,6 +488,7 @@ function item(input: {
   branch: string | null;
   runId: string | null;
   pr: number | null;
+  timeline?: StatusItemEvent[];
 }): StatusSnapshot["items"][number] {
   const pr =
     input.pr === null
@@ -498,7 +511,12 @@ function item(input: {
       { label: "Linear", href: `https://linear.app/acme/issue/${input.id}` },
       ...(pr === null ? [] : [{ label: `PR #${pr.number}`, href: pr.url }]),
     ],
+    ...(input.timeline ? { timeline: input.timeline } : {}),
   };
+}
+
+function step(at: string, from: string, to: string, event: string): StatusItemEvent {
+  return { at, kind: "transition", from, to, event, reason: null, actor: null };
 }
 
 type DemoCheck = StatusSnapshot["verdicts"][number]["checks"][number];
