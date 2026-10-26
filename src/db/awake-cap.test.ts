@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { FakeClock } from "../core";
+import { FakeClock, JOB_KIND } from "../core";
 import {
   accrueAwake,
   applyWorkItemEvent,
   beginImplementRun,
+  claimNextJob,
+  completeJob,
   configureWorkItem,
   enqueueJob,
   getRun,
@@ -22,7 +24,17 @@ import {
 const MINUTE = 60_000;
 
 function jobStatuses(db: ReturnType<typeof openDatabase>): Record<string, string> {
-  return Object.fromEntries(listJobs(db).map((job) => [job.queue, job.status]));
+  return Object.fromEntries(
+    listJobs(db)
+      .filter((job) => job.status !== "done")
+      .map((job) => [job.queue, job.status]),
+  );
+}
+
+/** Claims a job for the item, as one holds it while Closeout verifies. */
+function verifyingJob(db: ReturnType<typeof openDatabase>, itemId: string, now: number) {
+  enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId }, now });
+  return claimNextJob(db, { now, leaseMs: 24 * 60 * MINUTE, queues: [JOB_KIND.reverify] })!;
 }
 
 function acceptedItem(maxAwakeMs: number) {
@@ -40,8 +52,10 @@ function acceptedItem(maxAwakeMs: number) {
   clock.advance(10 * MINUTE);
   accrueAwake(db, item.id, clock.mono(), clock.now());
   applyWorkItemEvent(db, item.id, "turn_ended");
+  const verifying = verifyingJob(db, item.id, clock.now());
   clock.advance(5 * MINUTE);
   accrueAwake(db, item.id, clock.mono(), clock.now());
+  completeJob(db, verifying, clock.now());
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   markCloseoutAccepted(db, item.id, "accepted");
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "accepted" });
@@ -135,6 +149,40 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(listOutbox(db).at(-1)?.payload).toMatchObject({
       kind: "error",
       body: "Run hit the awake time cap (30 min). Counted: agent turns 30 min, Closeout 0 min. Not counted: waiting for answers 1 h 30 min.",
+    });
+  });
+
+  test("verifying with no job working on it is not counted as Closeout time", () => {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
+    beginImplementRun(db, item.id, clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    clock.advance(41 * MINUTE);
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    const job = verifyingJob(db, item.id, clock.now());
+    clock.advance(10 * MINUTE);
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    // The job ends with the item still in verifying, as PAS-629's did: two idle hours.
+    completeJob(db, job, clock.now());
+    clock.advance(2 * 60 * MINUTE);
+    const idle = accrueAwake(db, item.id, clock.mono(), clock.now());
+    expect(idle.capped).toBe(false);
+    expect(idle.item).toMatchObject({
+      state: "verifying",
+      awakeMs: 51 * MINUTE,
+      agentMs: 41 * MINUTE,
+      closeoutMs: 10 * MINUTE,
+    });
+
+    verifyingJob(db, item.id, clock.now());
+    clock.advance(9 * MINUTE);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(true);
+    expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+      kind: "error",
+      body: "Run hit the awake time cap (60 min). Counted: agent turns 41 min, Closeout 19 min.",
     });
   });
 

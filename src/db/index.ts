@@ -100,6 +100,7 @@ export {
   enqueueJob,
   enqueueJobOnce,
   extendJobLease,
+  hasLiveJob,
   failJob,
   getJob,
   listJobs,
