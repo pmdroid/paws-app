@@ -11,7 +11,15 @@ import type {
   TrackerRequestOptions,
 } from "../linear";
 import type { OutboxRow, OutboxDeliveryContext } from "../db";
-import { getEvidence, prepareLinearActivity, setEvidenceAssetUrl, listOutbox } from "../db";
+import {
+  enqueueOutboxOnce,
+  getEvidence,
+  getPlanProposal,
+  prepareLinearActivity,
+  recordPlanFiled,
+  setEvidenceAssetUrl,
+  listOutbox,
+} from "../db";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -19,6 +27,7 @@ import { join } from "node:path";
 import { visualReviewBody } from "../questions";
 import { AFTER_PULL_REQUEST_RESPONSE, canReportProgress } from "./activity-policy";
 import { enqueueEvidenceAttachment, evidenceActivityBody } from "./artifacts";
+import { planFiledResponse } from "./plan-proposal";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
 export type EvidenceUploads = { files: LinearFileTransfer; root: string };
@@ -94,6 +103,10 @@ export async function deliverLinearOutbox(
     if (!issueId || !repository) throw new Error("Repository label is missing required fields");
     return tracker.addRepositoryLabel({ issueId, repository }, options);
   }
+  if (message.op === "linear.sub_issues") {
+    if (!db) throw new Error("Sub-issue filing needs the database");
+    return fileSubIssues(message, payload, tracker, db, options);
+  }
   if (message.op === "activity" || message.op === "linear.activity") {
     const terminal =
       payload.kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(message.idempotencyKey);
@@ -132,6 +145,52 @@ export async function deliverLinearOutbox(
     return catchUp();
   }
   throw new Error(`unknown linear outbox op ${message.op}`);
+}
+
+/**
+ * File an approved plan, then queue the one response that lists what was filed.
+ * The tracker call is idempotent per approval question, and the recorded result
+ * stops a retried row from calling it again.
+ */
+async function fileSubIssues(
+  message: OutboxRow,
+  payload: Record<string, unknown>,
+  tracker: TrackerAdapter,
+  db: Database,
+  options?: TrackerRequestOptions,
+): Promise<void> {
+  if (!tracker.createSubIssues) throw new Error("Linear sub-issue creation is unavailable");
+  const questionId = readString(payload, "questionId");
+  const sessionId = readString(payload, "sessionId") ?? message.orderingKey;
+  const proposal = questionId ? getPlanProposal(db, questionId) : null;
+  if (!questionId || !sessionId || !proposal)
+    throw new Error("Sub-issue filing is missing its approved proposal");
+  const filed =
+    proposal.filed ??
+    (await tracker.createSubIssues(
+      {
+        key: questionId,
+        parentIssueId: proposal.parentIssueId,
+        drafts: proposal.drafts,
+        repository: proposal.repository,
+      },
+      options,
+    ));
+  const recorded = recordPlanFiled(db, questionId, filed, Date.now());
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "activity",
+    orderingKey: sessionId,
+    idempotencyKey: `plan-filed:${questionId}`,
+    payload: {
+      sessionId,
+      kind: "response",
+      body: planFiledResponse(
+        readString(payload, "identifier") ?? "the issue",
+        recorded.filed ?? filed,
+      ),
+    },
+  });
 }
 
 async function postActivity(
