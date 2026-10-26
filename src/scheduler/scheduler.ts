@@ -74,7 +74,6 @@ export type SchedulerOptions = {
   ownerHasRunner?: (itemId: string) => boolean | null;
   /** Queued items whose owner has no runner they may use, after every admission pass. */
   onRunnerSetup?: (itemIds: readonly string[]) => void;
-  /** Each session's waiting face after every admission pass: blocked, queued, paused or recovering. */
   onWaits?: (waits: readonly ItemWait[]) => void;
   ownerCap?: number | null;
   log?: (line: string) => void;

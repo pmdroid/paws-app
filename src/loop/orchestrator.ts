@@ -535,7 +535,6 @@ export class Orchestrator {
   private readonly runtimeLists = new Map<string, { runId: string; list: RuntimeList }>();
   private shuttingDown = false;
   private activitySeq = 0;
-  /** The waiting face last applied per item, so a scheduler tick only writes a change. */
   private waitFaces = new Map<string, string>();
   private readonly activityRequests = new Map<number, AbortSignal>();
   private readonly updates = createUpdateLimiter(() => this.now());
@@ -2143,7 +2142,6 @@ export class Orchestrator {
                 ? "merge conflicts"
                 : "Closeout findings";
         const counter = returned.reason === "conflict" ? "" : ` (${round} of ${limit})`;
-        // Keyed by the restart, so the step appended while it waited for a runner is this one.
         sessionProgress?.restart(returned.reason, round, returned.version, limit);
         sessionProgress?.status(`${item.linearIdentifier}: fixing ${label}${counter}`);
         live.progress =
@@ -4002,11 +4000,6 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * The session of a waiting item names what it waits for: the title, and a Wait step in
-   * progress until the item starts. A restarted item shows the step its restart appended. The
-   * scheduler posts the "still waiting" ephemerals.
-   */
   private noteWaits(waits: readonly ItemWait[]): void {
     const current = new Set(waits.map((wait) => wait.itemId));
     for (const itemId of this.waitFaces.keys())

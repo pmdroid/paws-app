@@ -63,7 +63,6 @@ export function createLinearSessionProgress(
   if (!hostSteps.length) milestones = [];
   let phase: Phase = saved?.phase ?? (mode === "code" ? "implementing" : "working");
   let restartVersion = saved?.restartVersion;
-  // Wait steps lead the plan. Each completes when the wait ends and never returns to pending.
   let waits: SessionPlanStep[] = saved?.waits ?? [];
   let started = false;
   const afterPr = () => hasPublishedPullRequest(db, sessionId, generation);
@@ -221,7 +220,6 @@ export function createLinearSessionProgress(
       steps = plan;
       publishPlan();
     },
-    /** The item waits before it starts: "Wait for PAS-m" in progress and the title saying so. */
     wait(step: string | null, title: string) {
       preserveHostProgress();
       started = false;
