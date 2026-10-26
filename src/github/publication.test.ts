@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { runGitHubGit } from "./auth/git-transport";
-import { serialMerge } from "./merge";
+import { rebaseOntoMain, squashPull } from "./merge";
 import { publishAccepted, pushBranch } from "./pulls";
 import { defaultGitExec } from "./git";
 import { fakeMergeReadiness, fakeRequiredChecks } from "./fake";
@@ -170,7 +170,7 @@ test("clone, refresh, push, PR and serial rebase merge retain ordinary behavior"
   await f.git("config", "core.hooksPath", f.root);
   await writeFile(path.join(f.root, "pre-rebase"), await readFile(f.hook));
   await chmod(path.join(f.root, "pre-rebase"), 0o700);
-  const merged = await serialMerge({
+  const lane = {
     worktree: f.worktree,
     issue: "ENG-38",
     owner: "synthetic",
@@ -182,8 +182,10 @@ test("clone, refresh, push, PR and serial rebase merge retain ordinary behavior"
     remoteUrl: f.remote,
     tokenProvider,
     client,
-    reverify: async () => ({ accepted: true, outcome: "merged", summary: "synthetic verified" }),
-  });
+  };
+  const rebased = await rebaseOntoMain(lane);
+  if (!rebased.rebased) throw new Error(`rebase failed: ${rebased.result.message}`);
+  const merged = await squashPull(lane, rebased.head, "synthetic verified");
   expect(merged.merged).toBe(true);
   expect(await captured(f.canary)).not.toContain(token);
 });

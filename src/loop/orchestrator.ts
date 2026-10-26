@@ -41,7 +41,6 @@ import {
   readMergeSettings,
   readQueueSettings,
   resolveAgentProfiles,
-  repositoryPackages,
   resolveMergeSettings,
   type AgentProfile,
 } from "../config";
@@ -68,6 +67,7 @@ import {
   type CloseoutVerdict,
   type ResolvedEvidence,
   type CandidateIdentity,
+  candidatePolicyDigest,
 } from "../closeout";
 import {
   CommandBus,
@@ -223,7 +223,6 @@ import {
   UPSTREAM_MAIN_REF,
   type GitHubBinding,
   type GitHubTokenProvider,
-  type ReverifyInput,
 } from "../github";
 import { intakeDelegatedIssue, stopAdoptedParent, type IntakeResult } from "../intake";
 import {
@@ -298,7 +297,6 @@ import {
 } from "./visual-review";
 import {
   acceptCloseout,
-  applyCloseoutAcceptance,
   retryMergeLater,
   waitForMergeTurn,
   waitForRunnerSlot,
@@ -313,7 +311,6 @@ import {
   wakeMergesBehind,
   type MergePublication,
   type MergeStep,
-  type MergeVerdict,
   type MergeWait,
   type OrderCapabilities,
   type RebaseConflict,
@@ -486,12 +483,7 @@ class LinearReconciliationPendingError extends Error {}
 
 type MergeRun = {
   payload: unknown;
-  closeoutFailure: CloseoutVerdict | null;
-  /** The head the lane re-verified, for a pending-human check left on it. */
-  reverified?: ReverifyInput;
   publicationCandidate?: { sha: string; baseSha: string };
-  candidate?: CandidateIdentity;
-  verifying?: WorkItemRecord;
   signal?: AbortSignal;
 };
 
@@ -2523,11 +2515,7 @@ export class Orchestrator {
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
     const repository = this.repositoryForItem(item);
-    const checkoutExclusions = repository
-      ? (loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects?.[
-          `${repository.owner}/${repository.repo}`.toLowerCase()
-        ]?.exclude ?? [])
-      : [];
+    const checkoutExclusions = this.checkoutExclusions(item);
     const deps = this.agentDeps(item);
     const networkGit =
       repository && deps.signal
@@ -2956,7 +2944,9 @@ export class Orchestrator {
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
     const candidate = await this.candidateForItem(item);
     if (!candidate) return;
-    if (item.state === "merge_queue") await this.startCloseoutRound(item, head);
+    // The merge lane moves a rebased item to verifying; its checkpoint is still the merge queue's.
+    if (item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue")
+      await this.startCloseoutRound(item, head);
     await this.evaluateHead(item, worktree, base, head, candidate, {
       decide: readBoolean(payload, "decide") === true,
       reverifyJobId: jobId,
@@ -2966,7 +2956,7 @@ export class Orchestrator {
   private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
-    const run: MergeRun = { payload, closeoutFailure: null };
+    const run: MergeRun = { payload };
     return advanceMerge(
       this.db,
       { itemId, payload, jobId },
@@ -2974,26 +2964,12 @@ export class Orchestrator {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
         settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        accept: (candidate) => {
-          run.publicationCandidate = candidate;
+        policyDigest: (item, worktree) => {
+          const { home, policyRoot } = this.closeoutHome(item);
+          return candidatePolicyDigest(worktree, home, policyRoot, this.checkoutExclusions(item));
         },
-        verify: (input) => this.verifyForMerge(run, input),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
-        askCloseoutHelp: async (item) => {
-          const failure = run.closeoutFailure;
-          if (!failure) return;
-          const head = run.reverified;
-          if (
-            head &&
-            awaitsVisualReview(failure.result) &&
-            (await this.awaitVisualReview(item, head.worktree, head.base, head.head))
-          )
-            return;
-          this.cancelVisualReview(item);
-          await this.askCloseoutHelp(item, failure.result, failure.summary);
-        },
-        packages: (repository) => this.repositoryPackages(repository),
         completed: () => this.dispatch(),
       },
     );
@@ -3142,8 +3118,6 @@ export class Orchestrator {
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
     sessionProgress?.phase("merging");
     await this.flush(live.controller.signal);
-    run.candidate = candidate;
-    run.verifying = item;
     run.signal = live.controller.signal;
     return {
       github,
@@ -3163,39 +3137,6 @@ export class Orchestrator {
           : {}),
       },
       signal: live.controller.signal,
-    };
-  }
-
-  private async verifyForMerge(run: MergeRun, input: ReverifyInput): Promise<MergeVerdict> {
-    const verifying = run.verifying!;
-    run.reverified = input;
-    await this.startCloseoutRound(verifying, input.head);
-    const verdict = await this.runVerification(
-      verifying,
-      input.worktree,
-      input.base,
-      input.head,
-      run.candidate!,
-    );
-    if (verdict.decision === "accepted" && !verdict.exhausted)
-      applyCloseoutAcceptance(this.db, verifying.id, verdict.owner);
-    run.verifying = getWorkItem(this.db, verifying.id) ?? verifying;
-    if (verdict.decision === "accepted")
-      run.publicationCandidate = { sha: input.head, baseSha: input.base };
-    if (verdict.decision !== "accepted") run.closeoutFailure = verdict;
-    const filesReady = artifactPublicationReady(this.db, verifying.id);
-    return {
-      accepted: verdict.decision === "accepted" && filesReady,
-      outcome:
-        verdict.decision === "accepted"
-          ? filesReady
-            ? "merged"
-            : "blocked"
-          : verdict.exhausted
-            ? "exhausted"
-            : verdict.decision,
-      summary: filesReady ? verdict.summary : "A requested artifact has not been uploaded.",
-      rejected: verdict.decision !== "accepted",
     };
   }
 
@@ -3268,17 +3209,6 @@ export class Orchestrator {
         .startTimeoutHours;
     } catch {
       return DEFAULT_QUEUE_START_TIMEOUT_HOURS;
-    }
-  }
-
-  private repositoryPackages(repository: string): string[] {
-    try {
-      return repositoryPackages(
-        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
-        repository,
-      );
-    } catch {
-      return [];
     }
   }
 
@@ -5565,6 +5495,17 @@ export class Orchestrator {
     const list = runtimeList(trustedRootFiles(repo, RUNTIME_FILES));
     this.runtimeLists.set(item.id, { runId, list });
     return list;
+  }
+
+  /** `[checkout.projects."owner/repo"] exclude`, which Closeout folds into its policy digest. */
+  private checkoutExclusions(item: WorkItemRecord): string[] {
+    const repository = this.repositoryForItem(item);
+    if (!repository) return [];
+    return (
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects?.[
+        `${repository.owner}/${repository.repo}`.toLowerCase()
+      ]?.exclude ?? []
+    );
   }
 
   private closeoutHome(item: WorkItemRecord): {

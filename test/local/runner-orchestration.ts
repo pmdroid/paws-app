@@ -53,7 +53,6 @@ export const RUNNER_ORCHESTRATION_SCENARIOS = [
   "start-lease",
   "resume-lease",
   "reverify-lease",
-  "merge-lease",
   "rebase",
   "rebase-failing",
   "rebase-unreachable",
@@ -131,7 +130,7 @@ export async function probeRunnerOrchestration(
     const unavailable = scenario === "unavailable";
     const rebase = scenario.startsWith("rebase");
     let rateLimited = 0;
-    const merging = scenario === "merge" || scenario === "merge-lease" || rebase;
+    const merging = scenario === "merge" || rebase;
     const home = join(root, scenario);
     mkdirSync(home, { mode: 0o700 });
     const db = migratedDatabase(join(home, "paws.db"));
@@ -595,8 +594,7 @@ export async function probeRunnerOrchestration(
                   readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
                   originalProfile,
                 );
-              if (scenario === "reverify-lease" || scenario === "merge-lease")
-                await reclaim(options.signal);
+              if (scenario === "reverify-lease") await reclaim(options.signal);
               if (scenario === "error") throw new Error("fixture remote verification unavailable");
               if (!changed) {
                 changed = true;
@@ -914,6 +912,27 @@ export async function probeRunnerOrchestration(
               now: clock.now(),
             });
         assert.equal((await tickWithRestarts(jobs, orchestrator, db))?.id, reverifyId);
+        if (rebase) {
+          // The lane only rebases: the new head goes back to verifying, Closeout runs it in the
+          // reverify job, and a later lane turn merges it.
+          assert.equal(getWorkItem(db, item.id)?.state, "verifying");
+          assert.equal(
+            calls.filter((call) => call.checks && call.reverifying).length,
+            0,
+            "the merge job ran Closeout",
+          );
+          for (let idle = 0, turns = 0; turns < 40 && idle < 400;) {
+            const state = getWorkItem(db, item.id)?.state;
+            if (state === "merged" || state === "awaiting_input" || state === "failed") break;
+            if (await tickWithRestarts(jobs, orchestrator, db)) {
+              turns++;
+              idle = 0;
+            } else {
+              idle++;
+              await Bun.sleep(25);
+            }
+          }
+        }
         const verified = getWorkItem(db, item.id)!;
         if (rebase) {
           const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);
@@ -966,7 +985,35 @@ export async function probeRunnerOrchestration(
             state: verified.state,
             checks: reverifyChecks.length,
           });
-        } else if (scenario === "reverify-lease" || scenario === "merge-lease") {
+        } else if (scenario === "merge") {
+          // Nothing changed since Closeout accepted the head, so the lane squashes it as it is.
+          assert.equal(verified.state, "merged");
+          assert.equal(reviewRunId, "");
+          assert.equal(laterDispatches, 0);
+          assert.equal(listJobs(db).find((job) => job.id === reverifyId)?.status, "done");
+          assert.equal(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify).length, 0);
+          assert.equal(listRuns(db, item.id).length, 1);
+          if (mergeDependencyYield) {
+            assert.equal(getLinearSession(db, "session")?.activeItemId, item.id);
+            observe(
+              "The original merge reacquires its canonical session and completes a verified local squash merge",
+              true,
+              {
+                state: verified.state,
+                head: await git(["--git-dir", origin, "rev-parse", "main"]),
+              },
+            );
+          }
+          observe(
+            "the merge lane squashes the accepted head without running Closeout again",
+            true,
+            {
+              state: verified.state,
+              accepted,
+              jobStatus: listJobs(db).find((job) => job.id === reverifyId)?.status,
+            },
+          );
+        } else if (scenario === "reverify-lease") {
           assert(leaseAborted);
           assert.equal(verified.currentRunId, replacementRunId);
           assert.equal(verified.state, "verifying");
@@ -1008,16 +1055,13 @@ export async function probeRunnerOrchestration(
           assert.notEqual(reviewRunId, "");
           assert.equal(getRun(db, reviewRunId)?.status, "ended");
           assert.equal(getRun(db, originalRunId)?.status, "ended");
-          if (scenario === "success" || scenario === "merge" || scenario === "merge-lease") {
+          if (scenario === "success") {
             assert.equal(
               listJobs(db).find((job) => job.id === reverifyId)?.status,
               "done",
               JSON.stringify(listJobs(db).find((job) => job.id === reverifyId)),
             );
-            assert.equal(
-              verified.state,
-              scenario === "merge" || scenario === "merge-lease" ? "merged" : "merge_queue",
-            );
+            assert.equal(verified.state, "merge_queue");
             assert(laterDispatches > 0);
             assert.equal(witnessCalls, 0);
             assert.deepEqual(

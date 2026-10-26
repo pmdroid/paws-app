@@ -46,11 +46,18 @@ export type { FetchLike } from "./client";
 export { branchForIssue, fixesLine, githubHttpsUrl, pullRequestBody } from "./branch";
 export { createPullRequests, openPullRequest, publishAccepted, pushBranch } from "./pulls";
 export type { PullRequestClientOptions } from "./pulls";
-export { fetchUpstreamMain, serialMerge } from "./merge";
+export { fetchUpstreamMain, readPullFacts, rebaseOntoMain, squashPull } from "./merge";
 export { repositoriesRequiringUpToDate } from "./overlap";
 export { readPullReview } from "./review";
 export type { PullReview } from "./review";
-export type { FetchUpstreamMainInput, SerialMergeInput } from "./merge";
+export type {
+  FetchUpstreamMainInput,
+  PullFacts,
+  PullFactsRead,
+  RebaseResult,
+  SerialMergeInput,
+} from "./merge";
+export type { Readiness } from "./readiness";
 export {
   createAppTokenProvider,
   inferGitHubRepository,
@@ -68,7 +75,6 @@ export {
   GitHubTokenError,
   GitHubHttpError,
   INSTALLATION_PERMISSIONS,
-  MAX_SHA_GUARD_CYCLES,
   MAX_TOKEN_TTL_MS,
   TOKEN_TTL_SKEW_MS,
   UPSTREAM_MAIN_REF,
@@ -80,8 +86,6 @@ export type {
   GitHubResponse,
   OpenedPull,
   PublishResult,
-  ReverifyInput,
-  ReverifyResult,
   SerialMergeResult,
   CiCheck,
   CiCheckState,

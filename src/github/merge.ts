@@ -5,17 +5,14 @@ import type { GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitFailureReason, redact, withCredential } from "./git";
-import { mainOverlap, readUpToDateRule } from "./overlap";
-import { pushWithLease, remoteBranchSha } from "./push";
-import { waitForMergeReadiness } from "./readiness";
+import { pushWithLease } from "./push";
+import { waitForMergeReadiness, type Readiness } from "./readiness";
+import { readPullReview, type PullReview } from "./review";
 import { isTransient } from "../core";
 import {
-  MAX_SHA_GUARD_CYCLES,
   UPSTREAM_MAIN_REF,
   type GitExec,
   type GitHubClient,
-  type ReverifyInput,
-  type ReverifyResult,
   type SerialMergeResult,
 } from "./types";
 
@@ -32,7 +29,6 @@ export type SerialMergeInput = {
   client: GitHubClient;
   /** When set, push and merge each ask this provider. Otherwise the App mint path is used. */
   tokenProvider?: GitHubTokenProvider;
-  reverify: (input: ReverifyInput) => Promise<ReverifyResult>;
   remoteUrl?: string;
   now?: () => Date;
   gitExec?: GitExec;
@@ -43,251 +39,142 @@ export type SerialMergeInput = {
   commitEnv?: Record<string, string>;
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
-  onWait?: (message: string) => Promise<void>;
-  releaseWhilePending?: boolean;
-  priorVerification?: {
-    base: string;
-    head: string;
-    summary: string;
-  };
-  updateOnOverlap?: {
-    packages: readonly string[];
-    onUpToDateRule?: () => Promise<void>;
-  };
 };
 
-type Pushed = { base: string; head: string; kept?: boolean; overlap?: string[] };
+/** What the merge lane reads about the branch head S under the repository lock. */
+export type PullFacts = {
+  branch: string;
+  /** S: the branch head in the worktree, which is the head the pull request should carry. */
+  head: string;
+  /** Main as just fetched. */
+  base: string;
+  containsMain: boolean;
+  /** CI and review threads for S, and whether the pull request still carries S. */
+  readiness: Readiness;
+  review: PullReview;
+};
+
+export type PullFactsRead =
+  | ({ kind: "facts" } & PullFacts)
+  | { kind: "stopped"; result: SerialMergeResult };
 
 /**
- * Rebase onto the fetched main, re-run Closeout, and squash-merge only if
- * the verified head and base are still current. A moved SHA fails closed
- * and is verified again, up to {@link MAX_SHA_GUARD_CYCLES}.
+ * Fetch main and read the facts `mergeable(S)` needs. Changes nothing: no rebase, no push, no
+ * merge. CI that is still pending is read once and not waited for.
  */
-export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeResult> {
-  if (!Number.isInteger(input.prNumber) || input.prNumber < 1) {
+export async function readPullFacts(input: SerialMergeInput): Promise<PullFactsRead> {
+  const branch = laneBranch(input);
+  if (typeof branch !== "string") return { kind: "stopped", result: branch };
+  const gitExec = input.gitExec ?? defaultGitExec();
+  const status = await git(input.worktree, ["status", "--porcelain"], gitExec);
+  if (status !== "")
+    return {
+      kind: "stopped",
+      result: {
+        merged: false,
+        outcome: "dirty",
+        branch,
+        message: "worktree has uncommitted changes",
+      },
+    };
+  if (input.isCancelled?.()) return { kind: "stopped", result: cancelled(branch) };
+  const token = await operationToken(input, "merge");
+  input.onCredential?.("merge", token);
+  const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
+  await fetchMain(input.worktree, url, token, gitExec, input.sleep);
+  const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
+  const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
+  const containsMain = await git(
+    input.worktree,
+    ["merge-base", "--is-ancestor", UPSTREAM_MAIN_REF, "HEAD"],
+    gitExec,
+  ).then(
+    () => true,
+    () => false,
+  );
+  const readiness = await waitForMergeReadiness({
+    ...input,
+    head,
+    token: async () => token,
+    releaseWhilePending: true,
+  });
+  const review = await readPullReview({ ...input, tokenProvider: input.tokenProvider });
+  return { kind: "facts", branch, head, base, containsMain, readiness, review };
+}
+
+export type RebaseResult =
+  | { rebased: true; branch: string; base: string; head: string }
+  | { rebased: false; result: SerialMergeResult };
+
+/** Rebase the branch onto the fetched main and push it. The new head still needs Closeout. */
+export async function rebaseOntoMain(input: SerialMergeInput): Promise<RebaseResult> {
+  const branch = laneBranch(input);
+  if (typeof branch !== "string") return { rebased: false, result: branch };
+  if (input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
+  const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
+  const pushed = await pushRebased(input, url, branch, input.gitExec ?? defaultGitExec());
+  if (!pushed.ok) return { rebased: false, result: pushed.result };
+  return { rebased: true, branch, base: pushed.base, head: pushed.head };
+}
+
+/**
+ * Squash-merge the pull request only if GitHub still carries `expectedHead`. GitHub refuses a
+ * moved head with 409, which is reported as `sha_moved` and never retried here.
+ */
+export async function squashPull(
+  input: SerialMergeInput,
+  expectedHead: string,
+  summary: string,
+): Promise<SerialMergeResult> {
+  const branch = laneBranch(input);
+  if (typeof branch !== "string") return branch;
+  if (input.isCancelled?.()) return cancelled(branch);
+  const token = await operationToken(input, "merge");
+  input.onCredential?.("merge", token);
+  // A stop or withdrawn publication while the token was minted must still win.
+  if (input.isCancelled?.()) return cancelled(branch);
+  const merged = await squash(input, token, expectedHead, summary);
+  if (merged.status === 409)
+    return {
+      merged: false,
+      outcome: "sha_moved",
+      branch,
+      head: expectedHead,
+      message: "pull request head changed before merge",
+    };
+  if (merged.status !== 200 || !isRecord(merged.body) || merged.body.merged !== true)
+    return {
+      merged: false,
+      outcome: "merge_denied",
+      branch,
+      head: expectedHead,
+      summary,
+      message: `merge failed with status ${merged.status}`,
+    };
+  const sha = typeof merged.body.sha === "string" ? merged.body.sha : undefined;
+  return {
+    merged: true,
+    outcome: "merged",
+    branch,
+    head: expectedHead,
+    ...(sha ? { sha } : {}),
+    summary,
+  };
+}
+
+function laneBranch(input: SerialMergeInput): string | SerialMergeResult {
+  if (!Number.isInteger(input.prNumber) || input.prNumber < 1)
     return {
       merged: false,
       outcome: "merge_denied",
       branch: safeBranch(input.branchKey ?? input.issue),
       message: "pull number is invalid",
     };
-  }
-  const branch = branchForIssue(input.branchKey ?? input.issue);
-  const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
-  const gitExec = input.gitExec ?? defaultGitExec();
-  const status = await git(input.worktree, ["status", "--porcelain"], gitExec);
-  if (status !== "") {
-    return { merged: false, outcome: "dirty", branch, message: "worktree has uncommitted changes" };
-  }
-
-  let lastGuard: "sha" | "http_409" = "sha";
-  let keepWhenApart = input.updateOnOverlap !== undefined;
-  for (let cycle = 1; cycle <= MAX_SHA_GUARD_CYCLES; cycle++) {
-    if (input.isCancelled?.()) {
-      return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
-    }
-    let pushed: Pushed | undefined;
-    let overlap: string[] | undefined;
-    if (keepWhenApart) {
-      const apart = await keepHead(input, url, branch, gitExec);
-      if ("kept" in apart) pushed = apart.kept;
-      else {
-        overlap = apart.overlap;
-        if (apart.ruleOn) {
-          keepWhenApart = false;
-          await input.updateOnOverlap?.onUpToDateRule?.();
-        }
-      }
-    }
-    if (pushed === undefined) {
-      const rebased = await pushRebased(input, url, branch, gitExec);
-      if (!rebased.ok) return { ...rebased.result, cycle };
-      pushed = { base: rebased.base, head: rebased.head, ...(overlap ? { overlap } : {}) };
-    }
-
-    const verified =
-      reuseVerification(input, pushed) ??
-      (await input.reverify({
-        worktree: input.worktree,
-        base: pushed.base,
-        head: pushed.head,
-        cycle,
-        ...(pushed.kept ? { kept: true } : {}),
-        ...(pushed.overlap?.length ? { overlap: pushed.overlap } : {}),
-      }));
-    if (!verified.accepted) {
-      return {
-        merged: false,
-        outcome: verified.outcome,
-        branch,
-        base: pushed.base,
-        head: pushed.head,
-        summary: verified.summary,
-        cycle,
-      };
-    }
-
-    const readiness = await waitForMergeReadiness({
-      ...input,
-      head: pushed.head,
-      token: () => operationToken(input, "merge"),
-    });
-    if (readiness.outcome === "pending") {
-      return {
-        merged: false,
-        outcome: "waiting",
-        branch,
-        base: pushed.base,
-        head: pushed.head,
-        summary: verified.summary,
-        cycle,
-        message: readiness.message,
-      };
-    }
-    if (readiness.outcome !== "ready") {
-      return {
-        merged: false,
-        outcome: readiness.outcome,
-        branch,
-        base: pushed.base,
-        head: pushed.head,
-        cycle,
-        message: readiness.message,
-        ...(readiness.failedChecks ? { failedChecks: readiness.failedChecks } : {}),
-        ...(readiness.checks ? { checks: readiness.checks } : {}),
-      };
-    }
-    const mergeToken = await operationToken(input, "merge");
-    input.onCredential?.("merge", mergeToken);
-    const headNow = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
-    await fetchMain(input.worktree, url, mergeToken, gitExec, input.sleep);
-    const baseNow = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
-    if (headNow !== pushed.head || baseNow !== pushed.base) {
-      const apart =
-        pushed.kept === true &&
-        headNow === pushed.head &&
-        (await mainOverlap(input.worktree, input.updateOnOverlap?.packages ?? [], gitExec)).shared
-          .length === 0;
-      if (!apart) {
-        lastGuard = "sha";
-        continue;
-      }
-      pushed = { ...pushed, base: baseNow };
-    }
-
-    if (input.isCancelled?.()) {
-      return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
-    }
-    // Checks can change while the base is fetched. Read them once more; the
-    // merge call also carries the head SHA so GitHub refuses a moved head.
-    const recheck = await waitForMergeReadiness({
-      ...input,
-      head: pushed.head,
-      token: async () => mergeToken,
-      releaseWhilePending: true,
-    });
-    if (recheck.outcome === "sha_moved") {
-      lastGuard = "sha";
-      continue;
-    }
-    if (recheck.outcome !== "ready") {
-      return {
-        merged: false,
-        outcome: recheck.outcome === "pending" ? "waiting" : recheck.outcome,
-        branch,
-        base: pushed.base,
-        head: pushed.head,
-        ...(recheck.outcome === "pending" ? { summary: verified.summary } : {}),
-        cycle,
-        message: recheck.message,
-        ...(recheck.failedChecks ? { failedChecks: recheck.failedChecks } : {}),
-        ...(recheck.checks ? { checks: recheck.checks } : {}),
-      };
-    }
-    // A stop or withdrawn publication during the recheck must still win.
-    if (input.isCancelled?.()) {
-      return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
-    }
-    const merged = await squash(input, mergeToken, pushed.head, verified.summary);
-    if (merged.status === 409) {
-      lastGuard = "http_409";
-      continue;
-    }
-    if (pushed.kept && (merged.status !== 200 || !isRecord(merged.body) || !merged.body.merged)) {
-      keepWhenApart = false;
-      lastGuard = "sha";
-      continue;
-    }
-    if (merged.status !== 200 || !isRecord(merged.body) || merged.body.merged !== true) {
-      return {
-        merged: false,
-        outcome: "merge_denied",
-        branch,
-        base: pushed.base,
-        head: pushed.head,
-        summary: verified.summary,
-        cycle,
-        message: `merge failed with status ${merged.status}`,
-      };
-    }
-    const sha = typeof merged.body.sha === "string" ? merged.body.sha : undefined;
-    return {
-      merged: true,
-      outcome: "merged",
-      branch,
-      base: pushed.base,
-      head: pushed.head,
-      ...(sha ? { sha } : {}),
-      summary: verified.summary,
-      cycle,
-    };
-  }
-
-  return {
-    merged: false,
-    outcome: "sha_moved",
-    branch,
-    message:
-      lastGuard === "http_409" ? "merge API returned 409" : "head or base changed before merge",
-  };
+  return branchForIssue(input.branchKey ?? input.issue);
 }
 
-async function keepHead(
-  input: SerialMergeInput,
-  url: string,
-  branch: string,
-  gitExec: GitExec,
-): Promise<{ kept: Pushed } | { overlap?: string[]; ruleOn?: true }> {
-  const minted = await operationToken(input, "push");
-  input.onCredential?.("push", minted);
-  try {
-    await fetchMain(input.worktree, url, minted, gitExec, input.sleep);
-    const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
-    const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
-    const compared = await mainOverlap(
-      input.worktree,
-      input.updateOnOverlap?.packages ?? [],
-      gitExec,
-    );
-    if (compared.base === base) return {};
-    if (compared.shared.length > 0) return { overlap: compared.shared };
-    const rule = await readUpToDateRule({ ...input, token: minted, branch: "main" });
-    if (rule === true) return { ruleOn: true };
-    if (
-      (await remoteBranchSha({
-        worktree: input.worktree,
-        url,
-        branch,
-        token: minted,
-        gitExec,
-        sleep: input.sleep,
-      })) !== head
-    )
-      return {};
-    return { kept: { base, head, kept: true } };
-  } catch {
-    return {};
-  }
+function cancelled(branch: string): SerialMergeResult {
+  return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
 }
 
 async function pushRebased(
@@ -445,14 +332,6 @@ function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"
     },
     purpose,
   );
-}
-
-function reuseVerification(input: SerialMergeInput, pushed: Pushed): ReverifyResult | undefined {
-  const prior = input.priorVerification;
-  if (prior === undefined || prior.base !== pushed.base || prior.head !== pushed.head) {
-    return undefined;
-  }
-  return { accepted: true, outcome: "merged", summary: prior.summary };
 }
 
 function safeBranch(issue: string): string {
