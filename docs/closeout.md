@@ -126,7 +126,7 @@ Three causes are fix rounds:
 | `ci`       | CI fails on the pull request head                              | The failing CI checks                                                              |
 | `review`   | A changes-requested review or new comments on the pull request | The review or comments and their unresolved threads, once per review or comment id |
 
-They share one counter, `retry.fix_rounds_per_item`, which defaults to 3 and only counts rounds since the latest reply from a person in the item's session. Adding checks does not raise it. The session title counts the round, for example "fixing Closeout findings (2 of 3)". Each check still stops at its own limit, `retry.attempts_per_check`, so a check that keeps failing is exhausted before the fix rounds run out.
+They share one counter, `retry.fix_rounds_per_item`, which defaults to 3 and only counts rounds since the latest reply from a person in the item's session. Adding checks does not raise it. Each check still stops at its own limit, `retry.attempts_per_check`, so a check that keeps failing is exhausted before the fix rounds run out. The first Closeout run spends one of those attempts, so a check that fails every round is exhausted after `attempts_per_check` minus one fixes. The session title, the progress line and the agent prompt name whichever limit comes first: with the defaults, "fixing Closeout findings (1 of 2)".
 
 A fix round that ends without a usable commit still counts. The next round gets the same findings plus the reason the last one failed. A cancelled fix stops at once.
 

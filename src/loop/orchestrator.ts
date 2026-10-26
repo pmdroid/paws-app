@@ -49,7 +49,9 @@ import {
   type CheckoutExclusions,
 } from "../config";
 import {
+  fixAttemptLimit,
   policyFixBudget,
+  policyFixLimits,
   approvalsAtHead,
   awaitsVisualReview,
   createCloseoutGate,
@@ -2409,7 +2411,7 @@ export class Orchestrator {
       if (!fixing) sessionProgress?.phase("implementing");
       if (fixing) {
         const round = fixRounds(this.db, item.id);
-        const limit = this.fixRoundLimit(item);
+        const limit = this.fixAttemptLimit(item, returned.reason, round);
         const label =
           returned.reason === "ci"
             ? "CI"
@@ -3612,6 +3614,22 @@ export class Orchestrator {
   }
 
   /**
+   * The limit a fix-attempt line names for this round. Closeout findings also end when a check
+   * spends its attempts, so those lines name whichever limit stops the item first.
+   */
+  private fixAttemptLimit(item: WorkItemRecord, reason: string, round: number): number {
+    const rounds = this.fixRoundLimit(item);
+    if (reason !== "findings") return rounds;
+    const { home, policyRoot } = this.closeoutHome(item);
+    const limits = policyFixLimits(
+      worktreePath(this.options.pawsRoot, itemPathId(item)),
+      home,
+      policyRoot,
+    );
+    return limits ? fixAttemptLimit({ ...limits, fixRounds: rounds }, round) : rounds;
+  }
+
+  /**
    * Settings → Merging for this task: an issue rule, then the Linear project, then the workspace
    * default. Resolved from the issue's project and labels once, then kept with the task. A failed
    * Linear read uses the workspace default for now and tries again next time.
@@ -4407,7 +4425,7 @@ export class Orchestrator {
         const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
         progress.wait(`Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
       } else if (wait.kind === "runner" && wait.restart) {
-        const limit = this.fixRoundLimit(item);
+        const limit = this.fixAttemptLimit(item, wait.restart, round);
         const restarted = this.db
           .query<{ version: number }, [string]>(
             "SELECT version FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",

@@ -322,9 +322,35 @@ export function visualReviewRequirements(
 }
 
 export function policyFixBudget(repo: string, home?: string, policyRoot?: string): number | null {
+  return policyFixLimits(repo, home, policyRoot)?.fixRounds ?? null;
+}
+
+/** The two retry limits that end a Closeout fix loop: fix rounds per item and attempts per check. */
+export type FixLimits = { fixRounds: number; attemptsPerCheck: number };
+
+export function policyFixLimits(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): FixLimits | null {
   const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return null;
-  return loaded.policy.source === "none" ? 3 : (loaded.policy.retry?.fix_rounds_per_item ?? 3);
+  if (loaded.policy.source === "none") return { fixRounds: 3, attemptsPerCheck: 3 };
+  return {
+    fixRounds: loaded.policy.retry?.fix_rounds_per_item ?? 3,
+    attemptsPerCheck: loaded.policy.retry?.maxFailedAttemptsPerItem ?? 3,
+  };
+}
+
+/**
+ * The limit a fix-attempt line names for attempt `attempt`: whichever of the two limits stops the
+ * loop first. The first evaluation spends one of a check's attempts, so a check that fails every
+ * time is exhausted after `attemptsPerCheck - 1` fix attempts. Once the attempt passes that,
+ * different checks failed in different rounds and only the fix-round limit still bounds the count.
+ */
+export function fixAttemptLimit(limits: FixLimits, attempt: number): number {
+  const perCheck = limits.attemptsPerCheck - 1;
+  return attempt <= perCheck ? Math.min(limits.fixRounds, perCheck) : limits.fixRounds;
 }
 
 export async function retryBaseline(evidenceDir: string): Promise<string[]> {
