@@ -3079,7 +3079,10 @@ async function runCiFix(options: {
     await withGitIdentity(() => commitOnMain(layout.bare, configured, ".agents/closeout.yaml"));
   }
   if (options.rebaseAfterPr)
-    await writeFile(path.join(layout.pawsRoot, "config.toml"), '[merge]\nmain_moved = "closeout"\n');
+    await writeFile(
+      path.join(layout.pawsRoot, "config.toml"),
+      '[merge]\nmain_moved = "closeout"\n',
+    );
   const linearCalls: string[] = [];
   const tracker = new Proxy(
     Object.assign(
