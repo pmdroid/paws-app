@@ -122,6 +122,7 @@ function fixture(options: { claudeVersion?: string } = {}) {
       repositoryRoot: join(root, "repositories"),
       home: root,
       agents,
+      sessionRetryMs: 1,
       onError: (error) => errors.push(error.message),
       async networkGit(input) {
         if (input.operation === "clone")
@@ -333,7 +334,7 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  "after a restart the runner resumes the session upload at the offset in its journal",
+  "after a restart the runner resumes the session upload at the offset in its journal and retries an outage",
   async () => {
     const context = fixture({ claudeVersion: "2.1.7" });
     const bundle = randomBytes(1_200_000);
@@ -353,9 +354,11 @@ test.skipIf(!linux)(
     journal.sessionUploaded(id, 0, 524_288);
     journal.close();
     context.finishWorker(id, bundle);
+    // The connection drops during recovery too; the retry resumes there instead of skipping.
+    context.failAt.add(1_048_576);
     const runtime = await context.open();
     try {
-      expect(context.chunks.map((chunk) => chunk.offset)).toEqual([524_288, 1_048_576]);
+      expect(context.chunks.map((chunk) => chunk.offset)).toEqual([524_288, 1_048_576, 1_048_576]);
       expect(context.finishes).toHaveLength(1);
       expect((await context.read(3)).equals(bundle)).toBe(true);
       expect(context.posted).toHaveLength(1);
