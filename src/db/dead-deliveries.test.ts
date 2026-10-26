@@ -3,7 +3,9 @@ import type { Database } from "bun:sqlite";
 import { FakeClock, JOB_KIND } from "../core";
 import {
   DEFAULT_OUTBOX_MAX_ATTEMPTS,
+  ELICITATION_REASK_SUFFIX,
   OutboxDispatcher,
+  QUESTION_LINKS,
   claimNextJob,
   enqueueJob,
   enqueueOutbox,
@@ -16,6 +18,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  recordQuestionReask,
   retryDeadDelivery,
   setJournalSink,
 } from "./index";
@@ -106,7 +109,7 @@ describe("dead outbox rows and jobs", () => {
     ]);
   });
 
-  test("a dead elicitation of a waiting item is re-enqueued once, then re-asked once per run", async () => {
+  test("a dead elicitation of a waiting item is re-enqueued once, then re-asked", async () => {
     const { clock, db, dispatcher } = harness();
     waiting(db, "item-q", "ses-q");
     elicit(db, "item-q", "ses-q");
@@ -138,31 +141,91 @@ describe("dead outbox rows and jobs", () => {
     ]);
     const reask = listJobs(db).filter((job) => job.queue === JOB_KIND.reaskQuestion);
     expect(reask.map((job) => [job.jobKey, job.payload])).toEqual([
-      [`${JOB_KIND.reaskQuestion}:item-q:-`, { itemId: "item-q", questionId: "q-item-q" }],
+      [`${JOB_KIND.reaskQuestion}:q-item-q`, { itemId: "item-q", questionId: "q-item-q" }],
+    ]);
+  });
+
+  test("each question gets its own re-ask, and a re-asked question does not get another", async () => {
+    const { clock, db, dispatcher } = harness();
+    waiting(db, "item-q", "ses-q");
+    dispatcher.setHandler(() => {
+      throw new Error("Linear is down");
+    });
+    const question = (id: string) => {
+      db.run(
+        `INSERT INTO question (id, item_id, session_id, body, status, created_at)
+         VALUES (?, 'item-q', 'ses-q', 'And the branch?', 'open', 0)`,
+        [id],
+      );
+      enqueueOutbox(db, {
+        target: "linear",
+        op: "elicitation",
+        orderingKey: "ses-q",
+        idempotencyKey: `question:${id}`,
+        payload: { id, sessionId: "ses-q", questionId: id, body: "And the branch?" },
+        maxAttempts: 1,
+      });
+    };
+    const reasks = () =>
+      listJobs(db)
+        .filter((job) => job.queue === JOB_KIND.reaskQuestion)
+        .map((job) => job.jobKey);
+    // A question that is answered drops its dead rows (answerQuestion does this in src/questions).
+    const settle = (id: string) => {
+      db.run("UPDATE question SET status = 'answered' WHERE id = ?", [id]);
+      db.run("UPDATE outbox SET status = 'dropped' WHERE status = 'dead'");
+    };
+
+    elicit(db, "item-q", "ses-q");
+    await deliverAll(dispatcher, clock, 10);
+    settle("q-item-q");
+    // A later, independent question in the same run still gets its own re-ask.
+    question("q2");
+    await deliverAll(dispatcher, clock, 10);
+    expect(reasks()).toEqual([
+      `${JOB_KIND.reaskQuestion}:q-item-q`,
+      `${JOB_KIND.reaskQuestion}:q2`,
     ]);
 
-    // A second question of the same run that dies twice is not re-asked again.
-    // Answering drops the question's dead rows (answerQuestion does this in src/questions).
-    db.run("UPDATE question SET status = 'answered' WHERE id = 'q-item-q'");
-    db.run("UPDATE outbox SET status = 'dropped' WHERE id = 2");
+    // The loop re-asked q2 as q3. When q3 dies twice too, it shares q2's allowance.
+    const q2Job = listJobs(db).find((job) => job.jobKey === `${JOB_KIND.reaskQuestion}:q2`)!;
+    recordQuestionReask(db, q2Job.id, "q3");
+    settle("q2");
+    question("q3");
+    lines = [];
+    await deliverAll(dispatcher, clock, 10);
+    expect(reasks()).toHaveLength(2);
+    expect(lines.filter((line) => line.startsWith("outbox ")).at(-1)).toMatch(
+      /^outbox \d+ elicitation dead again item=item-q; retry it from the issue page$/,
+    );
+
+    // A question kept by id is delivered again under :reask; when that dies, it stays dead.
+    settle("q3");
     db.run(
       `INSERT INTO question (id, item_id, session_id, body, status, created_at)
-       VALUES ('q2', 'item-q', 'ses-q', 'And the branch?', 'open', 0)`,
+       VALUES ('q4', 'item-q', 'ses-q', 'Accept?', 'open', 0)`,
     );
+    const reaskJob = enqueueJob(db, {
+      queue: JOB_KIND.reaskQuestion,
+      jobKey: `${JOB_KIND.reaskQuestion}:q4`,
+      payload: { itemId: "item-q", questionId: "q4", reaskedAs: "q4" },
+    });
     enqueueOutbox(db, {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses-q",
-      idempotencyKey: "question:q2",
-      payload: { id: "q2", sessionId: "ses-q", questionId: "q2", body: "And the branch?" },
+      idempotencyKey: `question:q4${ELICITATION_REASK_SUFFIX}`,
+      payload: { id: "q4", sessionId: "ses-q", questionId: "q4", body: "Accept?" },
       maxAttempts: 1,
     });
-    lines = [];
     await deliverAll(dispatcher, clock, 10);
-    expect(lines.filter((line) => line.startsWith("outbox ")).at(-1)).toBe(
-      "outbox 4 elicitation dead again item=item-q; retry it from the issue page",
-    );
-    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reaskQuestion)).toHaveLength(1);
+    expect(
+      listOutbox(db, "ses-q")
+        .filter((row) => row.idempotencyKey.startsWith("question:q4"))
+        .map((row) => [row.idempotencyKey, row.status]),
+    ).toEqual([[`question:q4${ELICITATION_REASK_SUFFIX}`, "dead"]]);
+    expect(reasks()).toHaveLength(3);
+    expect(getJob(db, reaskJob)?.status).toBe("pending");
   });
 
   test("the re-enqueued elicitation is delivered when Linear recovers", async () => {
@@ -222,9 +285,7 @@ describe("dead outbox rows and jobs", () => {
     ]);
 
     expect(retryDeadDelivery(db, "other", { kind: "job", id: job!.id })).toBe(false);
-    // The item moved on since the job was enqueued; the retried job must still count as current.
-    db.run("UPDATE work_item SET version = version + 1 WHERE id = 'item-q'");
-    expect(jobVersionCurrent(db, job!)).toBe(false);
+    expect(listDeadDeliveries(db, "item-q").map((dead) => dead.retryable)).toEqual([true, true]);
     expect(retryDeadDelivery(db, "item-q", { kind: "job", id: job!.id })).toBe(true);
     expect(getJob(db, job!.id)?.status).toBe("pending");
     expect(jobVersionCurrent(db, job!)).toBe(true);
@@ -235,5 +296,38 @@ describe("dead outbox rows and jobs", () => {
     await deliverAll(dispatcher, clock, 1);
     expect(listOutbox(db, "ses-q").map((row) => row.status)).toEqual(["sent"]);
     expect(lines).toContain("outbox 1 retried item=item-q");
+  });
+
+  test("a dead job from an earlier item version is listed but never retried", () => {
+    const { db } = harness();
+    waiting(db, "item-q", "ses-q");
+    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item-q" }, maxAttempts: 1 });
+    const job = claimNextJob(db, { workerId: "w", queues: [JOB_KIND.resume] });
+    failJob(db, job!, new Error("runner lost"));
+    // A restart, answer or stop moved the item on; the job's payload is now obsolete.
+    db.run("UPDATE work_item SET version = version + 1 WHERE id = 'item-q'");
+
+    expect(listDeadDeliveries(db, "item-q").map((dead) => [dead.kind, dead.retryable])).toEqual([
+      ["job", false],
+    ]);
+    expect(retryDeadDelivery(db, "item-q", { kind: "job", id: job!.id })).toBe(false);
+    expect(getJob(db, job!.id)?.status).toBe("dead");
+    expect(jobVersionCurrent(db, job!)).toBe(false);
+  });
+
+  test("every question id column in the schema is a known question link", () => {
+    const { db } = harness();
+    const columns = db
+      .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .flatMap(({ name }) =>
+        db
+          .query<{ name: string }, []>(`SELECT name FROM pragma_table_info('${name}')`)
+          .all()
+          .filter((column) => column.name.endsWith("question_id"))
+          .map((column) => `${name}.${column.name}`),
+      )
+      .sort();
+    expect(columns).toEqual(QUESTION_LINKS.map(({ table, column }) => `${table}.${column}`).sort());
   });
 });

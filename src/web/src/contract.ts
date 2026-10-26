@@ -505,6 +505,8 @@ export interface StatusDeadDelivery {
   attempts: number;
   lastError: string | null;
   at: string;
+  /** False for a job from an earlier state of the item; retrying it would revive obsolete work. */
+  retryable?: boolean;
 }
 
 export interface StatusLinearWebhook {
@@ -731,6 +733,7 @@ function readDeadDelivery(input: unknown, path: string): StatusDeadDelivery {
     attempts: count(body, "attempts", path),
     lastError: nullableText(body, "lastError", path),
     at: dateString(body, "at", path),
+    ...(body.retryable === undefined ? {} : { retryable: boolean(body, "retryable", path) }),
   };
 }
 

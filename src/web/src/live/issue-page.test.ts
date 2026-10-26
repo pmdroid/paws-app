@@ -300,6 +300,7 @@ describe("one page per issue", () => {
         attempts: 10,
         lastError: "runner lost",
         at: new Date(T0 + 150_000).toISOString(),
+        retryable: true,
       },
       {
         itemId: "PAS-367",
@@ -309,6 +310,7 @@ describe("one page per issue", () => {
         attempts: 5,
         lastError: "Linear is down",
         at: new Date(T0 + 130_000).toISOString(),
+        retryable: true,
       },
       {
         itemId: "PAS-367",
@@ -318,6 +320,7 @@ describe("one page per issue", () => {
         attempts: 10,
         lastError: "runner lost",
         at: new Date(T0 + 150_000).toISOString(),
+        retryable: true,
       },
     ];
     expect(snapshot.dead).toEqual(expected.sort((left, right) => left.at.localeCompare(right.at)));
@@ -333,5 +336,17 @@ describe("one page per issue", () => {
     expect(text).toContain("Job run.resume");
     expect(text).not.toMatch(ULID);
     expect(issuePage(snapshot, "PAS-368")).toContain(`data-retry="job:${otherJob}"`);
+    expect(text).not.toContain("Paws will not retry it");
+
+    // After the item moves on, its dead job is still listed, but without a retry.
+    db.run("UPDATE work_item SET version = version + 1 WHERE id = ?", [ITEM]);
+    const moved = snapshotOf(db);
+    expect(moved.dead?.find((entry) => entry.target === `job:${job}`)?.retryable).toBe(false);
+    const after = issuePage(moved);
+    expect(after).toContain(`data-retry="outbox:${elicitation}"`);
+    expect(after).not.toContain(`data-retry="job:${job}"`);
+    expect(visibleText(after)).toContain(
+      "From an earlier state of this issue. Paws will not retry it.",
+    );
   });
 });

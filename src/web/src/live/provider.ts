@@ -350,6 +350,7 @@ function deadFor(db: Database, records: readonly WorkItemRecord[]): StatusDeadDe
         attempts: dead.attempts,
         lastError: dead.error,
         at: iso(dead.at),
+        retryable: dead.retryable,
       })),
     )
     .sort((left, right) => left.at.localeCompare(right.at));
