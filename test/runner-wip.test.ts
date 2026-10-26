@@ -60,7 +60,7 @@ test("a remote run that stops early still reports its work as a WIP candidate", 
     mkdirSync(spool.root);
     chmodSync(spool.root, 0o750);
     publishRunnerJob(spool, job, { repositoryBundle });
-    const checkout = join(workRoot, job.executionId);
+    const checkout = join(workRoot, "run");
     const script = join(root, "script.json");
     writeFileSync(
       script,

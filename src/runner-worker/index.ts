@@ -18,6 +18,8 @@ import {
   writeFileSync,
   renameSync,
   rmSync,
+  rmdirSync,
+  unlinkSync,
 } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -254,6 +256,28 @@ function appendJournal(directory: string): number {
   );
 }
 
+/** Removes an earlier command's checkout of the same run, so the new one is never merged into it. */
+function removeLeftoverCheckout(path: string): void {
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid!())
+    throw new Error("Unsafe runner workspace");
+  function remove(entry: string): void {
+    const entryInfo = lstatSync(entry);
+    if (!entryInfo.isDirectory()) return unlinkSync(entry);
+    // Agents may leave read-only folders; never follow a link while making them removable.
+    chmodSync(entry, 0o700);
+    for (const name of readdirSync(entry)) remove(join(entry, name));
+    rmdirSync(entry);
+  }
+  remove(path);
+}
+
 function resumedSession(directory: string): string | undefined {
   let sessionId: string | undefined;
   for (const line of readFileSync(join(directory, "events.jsonl"), "utf8").split("\n")) {
@@ -357,7 +381,12 @@ export async function executeRunnerCommand(
       };
     }
     if (!task) mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
-    const worktree = join(options.workRoot, job.executionId);
+    // A run checks out at one path on every runner so cwd-keyed agent sessions keep their key.
+    const worktree = join(
+      options.workRoot,
+      command.type === "run" ? command.runId : job.executionId,
+    );
+    if (command.type === "run" && !resumed) removeLeftoverCheckout(worktree);
     if (task) {
       const directory = openSync(
         worktree,
