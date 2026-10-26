@@ -106,9 +106,10 @@ async function refreshMirror(
     ]);
   } catch (error) {
     if (options.networkGit) throw error;
-    journalCaught(error, "worktree.refreshMirror", null);
+
     const cached = await resolveStartRef(path);
     if (!cached) throw error;
+    journalCaught(error, "worktree.refreshMirror", null);
   }
 
   return { path, owner: options.owner, repo: options.repo };

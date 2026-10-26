@@ -20,7 +20,6 @@ import {
   writeStoredToken,
 } from "../../src/linear";
 
-// This ingress proof records poller failures while keeping other fixture diagnostics quiet.
 setJournalSink((line) => {
   if (
     line.startsWith("catch ") &&

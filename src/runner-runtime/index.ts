@@ -567,13 +567,15 @@ export async function openRunnerRuntime(options: {
     try {
       raw = readRunnerResultFile(options.results, entry.execution.id, "events.jsonl");
     } catch (error) {
-      journalCaught(
-        error,
-        "runner-runtime.drainTranscript.readRunnerResultFile",
-        null,
-        "optional file may be absent",
-      );
-      if (!final && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (!final && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        journalCaught(
+          error,
+          "runner-runtime.drainTranscript.readRunnerResultFile",
+          null,
+          "optional file may be absent",
+        );
+        return;
+      }
       throw error;
     }
     journal.ingest(entry.execution.id, raw);

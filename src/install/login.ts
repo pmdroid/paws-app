@@ -61,8 +61,8 @@ export async function checkDeveloperLogin(options: {
   try {
     outcome = await run(spec.command, spec.args, env);
   } catch (error) {
-    journalCaught(error, "login.checkDeveloperLogin.run", null, "prerequisite may be absent");
     if (isMissingExecutable(error)) {
+      journalCaught(error, "login.checkDeveloperLogin.run", null, "prerequisite may be absent");
       return {
         cli: options.cli,
         command: spec.command,

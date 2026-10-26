@@ -83,7 +83,7 @@ export function createInboxStore(db: Database): InboxStore {
         return { inserted: true, handled: false };
       } catch (error) {
         if (!isUniqueViolation(error)) throw error;
-        journalCaught(error, "inbox.commit.transaction", null);
+        journalCaught(error, "inbox.commit.transaction", null, "duplicate inbox delivery");
         const existing = findExisting(db, event);
         return { inserted: false, handled: existing?.handled === 1 };
       }

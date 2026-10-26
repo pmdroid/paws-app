@@ -82,9 +82,9 @@ function killRecorded(pid: number): void {
   try {
     process.kill(-pid, "SIGKILL");
   } catch (error) {
-    journalCaught(error, "supervisor.killRecorded.kill", null, "process may have exited");
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ESRCH" && code !== "EPERM") throw error;
+    journalCaught(error, "supervisor.killRecorded.kill", null, "process may have exited");
     try {
       process.kill(pid, "SIGKILL");
     } catch (direct) {
@@ -183,8 +183,10 @@ export function createDirectWorkerSupervisor(options: {
     try {
       text = readFileSync(receipt(executionId), "utf8").trim();
     } catch (error) {
-      journalCaught(error, "supervisor.recorded.trim", null, "optional file may be absent");
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        journalCaught(error, "supervisor.recorded.trim", null, "optional file may be absent");
+        return;
+      }
       throw error;
     }
     const [pidText, born] = text.split(" ");
@@ -247,8 +249,10 @@ export function createDirectWorkerSupervisor(options: {
     try {
       fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
     } catch (error) {
-      journalCaught(error, "supervisor.admit.openSync", null, "path may already exist");
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return { alreadyAdmitted: true };
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        journalCaught(error, "supervisor.admit.openSync", null, "path may already exist");
+        return { alreadyAdmitted: true };
+      }
       throw error;
     }
     let child: ReturnType<typeof launch> | undefined;

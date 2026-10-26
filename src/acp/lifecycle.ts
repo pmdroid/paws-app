@@ -54,8 +54,15 @@ export function createAcpPromptLifecycle(
           const offset = await stat(path).then(
             (info) => info.size,
             (error: NodeJS.ErrnoException) => {
-              journalCaught(error, "lifecycle.prompt.stat", null, "optional file may be absent");
-              if (error.code === "ENOENT") return 0;
+              if (error.code === "ENOENT") {
+                journalCaught(
+                  error,
+                  "lifecycle.prompt.stat",
+                  options.itemId,
+                  "optional file may be absent",
+                );
+                return 0;
+              }
               throw error;
             },
           );

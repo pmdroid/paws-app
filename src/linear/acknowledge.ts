@@ -92,7 +92,7 @@ export async function acknowledgeNewSession(
     return accepted;
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    journalCaught(error, "acknowledge.acknowledgeNewSession.followUp", null);
+
     if (error instanceof LinearIntakeRefusedError) {
       if (
         !error.quiet &&
@@ -108,6 +108,8 @@ export async function acknowledgeNewSession(
           },
           { signal: options.signal },
         );
+
+      journalCaught(error, "acknowledge.acknowledgeNewSession.followUp", null);
       return false;
     }
     if (error instanceof LinearIssueClosedError && event.sessionId !== null) {
@@ -115,6 +117,8 @@ export async function acknowledgeNewSession(
         { sessionId: event.sessionId, kind: "error", body: error.message },
         { signal: options.signal },
       );
+
+      journalCaught(error, "acknowledge.acknowledgeNewSession.followUp", null);
       return false;
     }
     const waiting =

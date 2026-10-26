@@ -1080,8 +1080,10 @@ export function createRemoteAgentRunner(options: {
                     ...(evidence ? { evidence } : {}),
                   })
                   .catch((error: unknown) => {
-                    journalCaught(error, "runner-backend.forItem.publish", itemId);
-                    if (error instanceof ArtifactRejectedError) return { error: error.message };
+                    if (error instanceof ArtifactRejectedError) {
+                      journalCaught(error, "runner-backend.forItem.publish", itemId);
+                      return { error: error.message };
+                    }
                     throw error;
                   });
                 publishedEffects = true;
@@ -1322,15 +1324,15 @@ export function createRemoteAgentRunner(options: {
           await emit({ type: "prompt_complete", stopReason: complete.stopReason });
           return { ...complete, transcriptPath: transcript };
         } catch (error) {
+          if (!(error instanceof Error) || error.message !== "cancelled" || !signal.aborted) {
+            throw error;
+          }
           journalCaught(
             error,
             "runner-backend.forItem.scopeTask",
             itemId,
             "cancellation may interrupt work",
           );
-          if (!(error instanceof Error) || error.message !== "cancelled" || !signal.aborted) {
-            throw error;
-          }
           return {
             role: input.role,
             stopReason: "cancelled",

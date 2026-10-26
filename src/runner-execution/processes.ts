@@ -20,8 +20,10 @@ export function startTime(pid: number, proc = "/proc"): string | undefined {
     if (fields[0] === "Z" || fields[0] === "X") return;
     return fields[19];
   } catch (error) {
-    journalCaught(error, "processes.startTime.readFileSync", null, "optional file may be absent");
-    if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+      journalCaught(error, "processes.startTime.readFileSync", null, "process may have exited");
+      return;
+    }
     throw error;
   }
 }
@@ -47,7 +49,12 @@ export function listExecutionProcesses(scope: string, proc = "/proc"): Execution
         .split("\0")
         .find((value) => prefixes.some((prefix) => value.startsWith(prefix)));
     } catch (caughtError1) {
-      journalCaught(caughtError1, "processes.listExecutionProcesses.find", null);
+      journalCaught(
+        caughtError1,
+        "processes.listExecutionProcesses.find",
+        null,
+        "process may be absent or inaccessible",
+      );
       continue;
     }
     const executionId = ExecutionIdSchema.safeParse(tag?.slice(tag.indexOf("/") + 1));

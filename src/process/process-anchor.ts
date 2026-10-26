@@ -47,7 +47,7 @@ const table = (): Entry[] =>
         caughtError3,
         "process-anchor.table.readFileSync",
         null,
-        "optional file may be absent",
+        "process may be absent or inaccessible",
       );
       return [];
     }

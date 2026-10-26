@@ -177,8 +177,10 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     try {
       lstatSync(target);
     } catch (error) {
-      journalCaught(error, "skills.removeFolder.lstatSync", null, "optional file may be absent");
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        journalCaught(error, "skills.removeFolder.lstatSync", null, "optional file may be absent");
+        return;
+      }
       throw error;
     }
     const retired = join(ownedDirectory(home, ".paws-skills"), `${name}.${randomUUID()}.old`);

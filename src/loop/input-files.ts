@@ -223,8 +223,10 @@ async function excludeInputs(workspace: string, name: string): Promise<void> {
   try {
     info = await lstat(join(workspace, ".git"));
   } catch (error) {
-    journalCaught(error, "input-files.excludeInputs.lstat", null, "optional file may be absent");
-    if (isMissing(error)) return;
+    if (isMissing(error)) {
+      journalCaught(error, "input-files.excludeInputs.lstat", null, "optional file may be absent");
+      return;
+    }
     throw error;
   }
   if (!info.isFile() && !info.isDirectory())

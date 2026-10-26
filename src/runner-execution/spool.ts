@@ -156,7 +156,7 @@ function snapshotTree(
       return openSync(path, flags);
     } catch (error) {
       if (stored || (error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
-      journalCaught(error, "spool.openSource.openSync", null);
+
       const target = realpathSync(path);
       if (
         !target.startsWith(`${repositoryRoot}/`) ||
@@ -166,6 +166,7 @@ function snapshotTree(
           .some((part) => part.toLowerCase() === ".git")
       )
         throw new Error("Task repository link escapes its source snapshot", { cause: error });
+      journalCaught(error, "spool.openSource.openSync", null);
       const parts = target.slice(repositoryRoot.length + 1).split("/");
       let parent = openDirectory(`/proc/self/fd/${directory}/.`);
       try {

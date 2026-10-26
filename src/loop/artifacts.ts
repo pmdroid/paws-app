@@ -525,8 +525,10 @@ async function writeSnapshot(path: string, bytes: Uint8Array): Promise<void> {
       0o600,
     );
   } catch (error) {
-    journalCaught(error, "artifacts.writeSnapshot.open", null, "path may already exist");
-    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") return;
+    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      journalCaught(error, "artifacts.writeSnapshot.open", null, "path may already exist");
+      return;
+    }
     throw error;
   }
   try {

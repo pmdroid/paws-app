@@ -514,8 +514,10 @@ export async function authorizeLinearTask(
     await access.assert(item, signal);
     return true;
   } catch (error) {
-    journalCaught(error, "linear-task-access.authorizeLinearTask.assert", item?.id);
-    if (error instanceof LinearAccessRemovedError) return false;
+    if (error instanceof LinearAccessRemovedError) {
+      journalCaught(error, "linear-task-access.authorizeLinearTask.assert", item?.id);
+      return false;
+    }
     throw error;
   }
 }

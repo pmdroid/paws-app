@@ -50,7 +50,7 @@ export function startBrowserOnboarding(
           active = start(server);
           await active.ready;
         })().catch((caughtError1) => {
-          journalCaught(caughtError1, "onboarding-start.installed.allSettled", null);
+          journalCaught(caughtError1, "Paws could not start after Linear authorization.", null);
           failed = true;
         });
       }, 0);
