@@ -32,7 +32,7 @@ bun run build:status
 bun run paws --no-tunnel
 ```
 
-Open the HTTPS dashboard. Sign in as a Linear workspace admin and authorize Paws in the same workspace. In Integrations, connect GitHub, choose the sandbox repository and map it to the sandbox Linear team. Commit the repository's Closeout policy before delegating work. Pair a runner and connect its coding-agent accounts through Runners.
+Open the HTTPS dashboard. Sign in as a Linear workspace admin and authorize Paws in the same workspace. In Integrations, connect GitHub, choose the sandbox repository and map it to the sandbox Linear team. Commit the repository's Closeout policy before delegating work. Enroll a runner and connect its coding-agent accounts through Runners.
 
 ## 3. Connect Slack, about three minutes
 

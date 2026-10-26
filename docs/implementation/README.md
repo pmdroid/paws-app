@@ -10,12 +10,12 @@ This implementation reference follows the source changes linked on each page. Th
 
 ## Start here
 
-| Question                                                 | Read                                                   |
-| -------------------------------------------------------- | ------------------------------------------------------ |
-| What happens after I delegate an issue?                  | [The execution loop](execution.md)                     |
-| Who can sign in, administer a workspace, or pair a host? | [The control plane](control-plane.md)                  |
-| How does the VM connect, fetch code, and run an agent?   | [Remote Linux hosts](remote-hosts.md)                  |
-| How do we prove a change works?                          | [Verification and implementation map](verification.md) |
+| Question                                                   | Read                                                   |
+| ---------------------------------------------------------- | ------------------------------------------------------ |
+| What happens after I delegate an issue?                    | [The execution loop](execution.md)                     |
+| Who can sign in, administer a workspace, or enroll a host? | [The control plane](control-plane.md)                  |
+| How does the VM connect, fetch code, and run an agent?     | [Remote Linux hosts](remote-hosts.md)                  |
+| How do we prove a change works?                            | [Verification and implementation map](verification.md) |
 
 ## Linear is the working interface
 
@@ -30,7 +30,7 @@ GitHub holds repositories, branches, pull requests, and merge checks. Linear hol
 | Component                  | Responsibility                                                                                                            |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Paws control plane         | Own the workflow, workspace authorization, durable state, runner assignments, verification coordination, and publication. |
-| Linux runner daemon        | Pair the host, authenticate to Paws, receive authorized work, and report ordered events and results.                      |
+| Linux runner daemon        | Enroll the host, authenticate to Paws, receive authorized work, and report ordered events and results.                    |
 | Agent process              | Work on a particular repository snapshot through the selected ACP adapter.                                                |
 | Closeout                   | Evaluate the candidate and provide the verification decision used by the workflow.                                        |
 | Linear and GitHub adapters | Deliver external updates and reconcile them with the recorded run.                                                        |

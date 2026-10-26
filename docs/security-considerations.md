@@ -4,7 +4,7 @@ Paws runs coding agents on input it doesn't control: Linear issues, repository f
 
 ## The runner release key
 
-`PAWS_RUNNER_RELEASE_KEY` signs every runner release. The `runner release` workflow (`.github/workflows/runner-release.yml`) signs `manifest.json` with it, and `deploy/linux/install-runner.sh` installs a release only if its signature matches `deploy/linux/release.pub`. Anyone holding the key can publish a runner package that every paired runner installs.
+`PAWS_RUNNER_RELEASE_KEY` signs every runner release. The `runner release` workflow (`.github/workflows/runner-release.yml`) signs `manifest.json` with it, and `deploy/linux/install-runner.sh` installs a release only if its signature matches `deploy/linux/release.pub`. Anyone holding the key can publish a runner package that every enrolled runner installs.
 
 The key lives only in the `runner-release` environment, never as a repository secret:
 
