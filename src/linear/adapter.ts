@@ -28,6 +28,7 @@ export type TrackerRequestOptions = {
 export interface TrackerAdapter {
   listIssuePullRequests?(id: string, options?: TrackerRequestOptions): Promise<IssuePullRequest[]>;
   getIssueContext?(id: string, options?: TrackerRequestOptions): Promise<LinearIssueContext>;
+  deleteIssueAttachment?(id: string, options?: TrackerRequestOptions): Promise<void>;
   createIssueAttachment?(input: IssueAttachment, options?: TrackerRequestOptions): Promise<void>;
   getSession?(id: string, options?: TrackerRequestOptions): Promise<LinearSessionSnapshot>;
   listSessionActivities?(

@@ -11,13 +11,14 @@ import type {
   TrackerRequestOptions,
 } from "../linear";
 import type { OutboxRow, OutboxDeliveryContext } from "../db";
-import { getEvidence, prepareLinearActivity, setEvidenceAssetUrl } from "../db";
+import { getEvidence, prepareLinearActivity, setEvidenceAssetUrl, listOutbox } from "../db";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { visualReviewBody } from "../questions";
-import { evidenceActivityBody } from "./artifacts";
+import { canReportProgress } from "./activity-policy";
+import { enqueueEvidenceAttachment, evidenceActivityBody } from "./artifacts";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
 export type EvidenceUploads = { files: LinearFileTransfer; root: string };
@@ -54,7 +55,37 @@ export async function deliverLinearOutbox(
     const url = readString(payload, "url");
     if (!id || !issueId || !title || !url)
       throw new Error("Issue attachment is missing required fields");
-    return tracker.createIssueAttachment({ id, issueId, title, url }, options);
+    const evidenceId = readString(payload, "evidenceId");
+    if (evidenceId && !db) throw new Error("Evidence attachment needs the database");
+    const evidence = evidenceId && db ? getEvidence(db, evidenceId) : null;
+    await tracker.createIssueAttachment(
+      {
+        id,
+        issueId,
+        title,
+        url: evidence?.assetUrl ?? url,
+        ...(evidenceId ? { evidence: true } : {}),
+      },
+      options,
+    );
+    if (db && evidence) {
+      for (const row of listOutbox(db, message.orderingKey ?? undefined)) {
+        const old = row.payload as Record<string, unknown>;
+        if (
+          row.op === "linear.attachment" &&
+          old.itemId === payload.itemId &&
+          old.evidenceId &&
+          old.headCommit !== evidence.headCommit &&
+          row.id < message.id &&
+          row.status === "sent"
+        ) {
+          if (!tracker.deleteIssueAttachment)
+            throw new Error("Evidence attachment replacement is unavailable");
+          await tracker.deleteIssueAttachment(String(old.id), options);
+        }
+      }
+    }
+    return;
   }
   if (message.op === "linear.repository_label") {
     if (!tracker.addRepositoryLabel) throw new Error("Linear repository labels are unavailable");
@@ -64,6 +95,15 @@ export async function deliverLinearOutbox(
     return tracker.addRepositoryLabel({ issueId, repository }, options);
   }
   if (message.op === "activity" || message.op === "linear.activity") {
+    const terminal =
+      payload.kind === "response" &&
+      /^(merged:|closed:|command:stop:)/.test(message.idempotencyKey);
+    if (
+      db &&
+      !terminal &&
+      !canReportProgress(db, message.orderingKey ?? "", message.generation ?? 0, message.id)
+    )
+      return;
     return postActivity(message, payload, tracker, options);
   }
   if (message.op === "linear.evidence") {
@@ -74,6 +114,16 @@ export async function deliverLinearOutbox(
     return postSession(payload, tracker, options);
   }
   if (message.op === "elicitation") {
+    if (
+      db &&
+      !canReportProgress(db, message.orderingKey ?? "", message.generation ?? 0, message.id) &&
+      !db
+        .query(
+          "SELECT 1 FROM work_item_event e JOIN question q ON q.id=e.payload_digest WHERE e.kind='ask' AND q.session_id=? AND q.id=? LIMIT 1",
+        )
+        .get(message.orderingKey, readString(payload, "questionId"))
+    )
+      return;
     return postElicitation(payload, tracker, options, db);
   }
   if (message.op === "status") {
@@ -168,7 +218,19 @@ async function postEvidence(
       note = "Paws could not upload this file to Linear.";
     }
   }
-  if (payload["uploadOnly"] === true) return;
+  const quiet = !canReportProgress(db, sessionId, message.generation ?? 0, message.id);
+  if (quiet)
+    enqueueEvidenceAttachment(db, {
+      sessionId,
+      generation: message.generation ?? 0,
+      itemId: evidence.itemId,
+      evidenceId,
+      title: evidence.displayName,
+      url: link,
+      headCommit: evidence.headCommit,
+      now: Date.now(),
+    });
+  if (payload["uploadOnly"] === true || quiet) return;
   await tracker.postProgress(
     {
       sessionId,

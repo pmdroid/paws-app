@@ -3036,6 +3036,7 @@ async function runGitHubQueue(
 }
 
 async function runCiFix(options: {
+  rebaseAfterPr?: boolean;
   attempts?: number;
   /** How many distinct head commits report a failing `test` check, in order. */
   failRounds: number;
@@ -3050,6 +3051,7 @@ async function runCiFix(options: {
   reviewerLaunches: number;
   lines: string[];
   bodies: string[];
+  activities: { kind: string; body: string }[];
   questions: string[];
   prompts: string[];
   detail: string;
@@ -3068,6 +3070,8 @@ async function runCiFix(options: {
             .replace(/\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: task/, "");
     await withGitIdentity(() => commitOnMain(layout.bare, configured, ".agents/closeout.yaml"));
   }
+  if (options.rebaseAfterPr)
+    await writeFile(path.join(layout.pawsRoot, "config.toml"), '[merge]\nmain_moved = "closeout"\n');
   const linearCalls: string[] = [];
   const tracker = new Proxy(
     Object.assign(
@@ -3134,6 +3138,7 @@ async function runCiFix(options: {
   let implementRuns = 0;
   let launches = 0;
   let reviewerLaunches = 0;
+  let movedMain = false;
   const orchestrator = attachOrchestrator({
     db,
     admission: workspaceAdmission(db),
@@ -3153,6 +3158,10 @@ async function runCiFix(options: {
           if (req.path.endsWith("/actions/jobs/77/logs"))
             return { status: 200, body: "bun test v1.4.2\n✗ formats an empty list\n 1 fail\n" };
           if (!isMergeReadiness(req)) return client.request(req);
+          if (options.rebaseAfterPr && implementRuns > 1 && !movedMain) {
+            movedMain = true;
+            await withGitIdentity(() => commitOnMain(layout.bare, "side\n", "side.txt"));
+          }
           const head = (req.body as { variables: { head: string } }).variables.head;
           if (!heads.includes(head)) heads.push(head);
           if (heads.indexOf(head) >= options.failRounds) return client.request(req);
@@ -3242,6 +3251,7 @@ async function runCiFix(options: {
       reviewerLaunches,
       lines: queuedSummary().filter((body) => body.startsWith("CI: ")),
       bodies: tracker.progress.map((update) => update.body),
+      activities: tracker.progress.map(({ kind, body }) => ({ kind, body })),
       questions: tracker.questions.map((question) => question.body),
       prompts,
       detail: debug(layout, db),
@@ -4558,3 +4568,18 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await layout.cleanup();
   }
 }, 30000);
+
+test("a PR session stays quiet through a CI fix and rebase re-verification until its merged response", async () => {
+  const result = await runCiFix({ failRounds: 1, rebaseAfterPr: true });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  expect(result.reviewerLaunches, result.detail).toBeGreaterThan(2);
+  const responses = result.activities.filter((activity) => activity.kind === "response");
+  expect(responses, result.detail).toHaveLength(2);
+  expect(responses[0]!.body).toContain("Opened");
+  expect(responses[1]!.body).toMatch(/^Merged #\d+ into main at [0-9a-f]+\. ENG-94 is Done\.$/);
+  expect(
+    result.activities.slice(result.activities.indexOf(responses[0]!) + 1),
+    result.detail,
+  ).toEqual([responses[1]!]);
+}, 120_000);
