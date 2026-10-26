@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { enqueueJob, getJob } from "../src/db";
+import { enqueueJob, enqueueOutbox, getJob, getOutbox, getWorkItem } from "../src/db";
 import { createExecutionControlsFixture, probeExecutionControls } from "./local/execution-controls";
 
 test("Workspace execution controls reach canonical Stop, Pause and Resume with current authorization", async () => {
@@ -59,6 +59,29 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     db.run("UPDATE job SET status = 'dead', item_version = -1 WHERE id = ?", [stale]);
     assert.equal((await retry(`job:${stale}`)).status, 409);
     assert.equal(getJob(db, stale)!.status, "dead");
+
+    // Once the session is stopped, only its dead final Stop delivery can be retried.
+    const session = getWorkItem(db, "controlled")!.sessionKey!;
+    const stop = enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: session,
+      delivery: "stop",
+      idempotencyKey: "stop:controlled:retry-test",
+      payload: { itemId: "controlled", kind: "response", body: "Stopped." },
+    });
+    const late = dead("controlled-late");
+    db.run("UPDATE job SET payload = json_set(payload, '$.itemId', 'controlled') WHERE id = ?", [
+      late,
+    ]);
+    db.run("UPDATE job SET status = 'dead', item_version = NULL WHERE id = ?", [late]);
+    db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE id = ?", [stop]);
+    db.run("UPDATE linear_session SET stopped_at = ? WHERE session_id = ?", [Date.now(), session]);
+    assert.equal((await retry(`job:${late}`)).status, 403);
+    assert.equal(getJob(db, late)!.status, "dead");
+    assert.equal((await retry(`outbox:${stop}`, "observer")).status, 403);
+    assert.equal((await retry(`outbox:${stop}`)).status, 200);
+    assert.equal(getOutbox(db, stop)!.status, "pending");
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });

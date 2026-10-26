@@ -5,6 +5,7 @@ import {
   ELICITATION_REASK_SUFFIX,
   enqueueOutboxOnce,
   OUTBOX_ITEM_SQL,
+  type OutboxDelivery,
 } from "./outbox";
 import { immediate } from "./tx";
 
@@ -176,32 +177,36 @@ export function questionHasLinkedRecords(db: Database, questionId: string): bool
 }
 
 /**
- * Deliver an open question once more under a fresh key, keeping its id, and drop its dead rows.
+ * Deliver an open question once more under a fresh key, keeping its id, its delivery kind and
+ * its session generation, and drop its dead rows once the new delivery is pending.
  * Used for a question with linked records, which cannot be replaced by a new question.
- * Returns the new outbox id, or null when the question has no earlier elicitation to copy.
+ * Returns the new outbox id, or null when nothing could be queued: the question has no earlier
+ * elicitation, or the session fence rejected the delivery. Its dead rows then stay listed on
+ * the issue page with a retry, so the item is never left waiting on nothing visible.
  */
 export function redeliverQuestion(db: Database, questionId: string, now: number): number | null {
   return immediate(db, () => {
     const last = db
       .query<
         {
-          target: string;
           op: string;
           ordering_key: string | null;
           payload: string;
           priority: number;
           idempotency_key: string;
+          delivery_kind: OutboxDelivery;
+          delivery_generation: number;
         },
         [string]
       >(
-        `SELECT target, op, ordering_key, payload, priority, idempotency_key FROM outbox
+        `SELECT op, ordering_key, payload, priority, idempotency_key, delivery_kind, delivery_generation
+         FROM outbox
          WHERE target = 'linear' AND op = 'elicitation' AND json_extract(payload, '$.questionId') = ?
          ORDER BY id DESC LIMIT 1`,
       )
       .get(questionId);
     if (last === null || last.ordering_key === null) return null;
     const base = last.idempotency_key.replace(/(:redelivery|:reask)+$/, "");
-    dropDeadElicitations(db, questionId, "Delivered again after its redelivery died.");
     const id = enqueueOutboxOnce(db, {
       target: "linear",
       op: last.op,
@@ -209,11 +214,40 @@ export function redeliverQuestion(db: Database, questionId: string, now: number)
       idempotencyKey: `${base}${ELICITATION_REASK_SUFFIX}`,
       payload: JSON.parse(last.payload) as unknown,
       priority: last.priority,
+      delivery: last.delivery_kind,
+      generation: last.delivery_generation,
       now,
     });
+    const queued = db
+      .query<{ status: string; error: string | null }, [number]>(
+        "SELECT status, error FROM outbox WHERE id = ?",
+      )
+      .get(id);
+    if (queued?.status !== "pending") {
+      journal(
+        `question ${questionId} could not be delivered again: ${queued?.error ?? "not queued"}; retry it from the issue page`,
+      );
+      return null;
+    }
+    dropDeadElicitations(db, questionId, `Delivered again as outbox ${id}.`);
     journal(`question ${questionId} delivered again as outbox ${id}`);
     return id;
   });
+}
+
+/**
+ * True for a dead final Stop delivery. Its session is stopped by design, so retrying it must
+ * not require a running session, unlike every other retry.
+ */
+export function deadDeliveryIsFinalStop(db: Database, ref: DeadDeliveryRef): boolean {
+  if (ref.kind !== "outbox") return false;
+  return (
+    db
+      .query<{ id: number }, [number]>(
+        "SELECT id FROM outbox WHERE id = ? AND status = 'dead' AND delivery_kind = 'stop'",
+      )
+      .get(ref.id) !== null
+  );
 }
 
 /**
