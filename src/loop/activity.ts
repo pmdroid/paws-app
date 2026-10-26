@@ -7,9 +7,9 @@ export const FIRST_ACTIVITY_MS = 10_000;
 
 /**
  * Keepalive cadence. Linear marks an agent session stale after 30 minutes
- * without an activity, so this stays strictly under that window.
+ * without an activity, so this stays under that window with room for delivery lag.
  */
-export const KEEPALIVE_MS = 10 * 60 * 1000;
+export const KEEPALIVE_MS = 25 * 60 * 1000;
 
 export const LINEAR_STALE_MS = 30 * 60 * 1000;
 
