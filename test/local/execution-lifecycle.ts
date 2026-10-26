@@ -235,6 +235,7 @@ export async function probeExecutionLifecycle(
       );
       guard.reconcileExecution();
       allowed = false;
+      guard.reconcileExecution();
       await guardJobs.tick();
       guard.reconcileExecution();
       const held = guardDb

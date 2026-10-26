@@ -468,6 +468,7 @@ async function runTask(input: {
         mainMoved = true;
         await commitOnMain(layout.bare, "side.txt", "side\n");
       }
+      orchestrator.reconcileExecution();
       if ((await jobs.tick()) === null) {
         clock.advance(60_000);
         await Bun.sleep(5);
@@ -528,7 +529,7 @@ test("Linear requests for a long Closeout with an agent question and a visual re
   expect(result.asked).toEqual(["agent", "visual-review"]);
   expect(result.perCaller, result.operations).toEqual({
     context: 1,
-    outbox: 13,
+    outbox: 12,
     "session-read": 1,
     "task-access": 7,
   });

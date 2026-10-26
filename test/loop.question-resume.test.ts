@@ -1,4 +1,4 @@
-import { workspaceAdmission } from "./fake-workspace";
+import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -119,7 +119,7 @@ test("asking ends the run and an answer resumes through verification", async () 
     expect(resume?.status).toBe("pending");
     expect(resume?.payload).toMatchObject({
       itemId: item.id,
-      freshSession: true,
+      runId: item.currentRunId,
       reason: "answer",
       handoff: handoffNote({
         question: "Include archived rows?",
@@ -143,7 +143,7 @@ test("asking ends the run and an answer resumes through verification", async () 
     expect(received.find((prompt) => prompt.includes("Answer: parquet"))).toContain(firstRequest);
     expect(fixture.resumeHeads).toEqual([head]);
     const resumed = getWorkItem(fixture.db, item.id)!;
-    expect(resumed.currentRunId).not.toBe(item.currentRunId);
+    expect(resumed.currentRunId).toBe(item.currentRunId);
     const status = getRun(fixture.db, resumed.currentRunId!)?.status ?? "";
     expect(["active", "ended"]).toContain(status);
   } finally {
@@ -160,14 +160,14 @@ test("startup leaves an open question parked and its answer resumes the run", as
     const open = findOpenQuestion(fixture.db, "ses_1");
     expect(open?.status).toBe("open");
     const jobsBefore = listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume);
-    expect(recoverOnStartup(fixture.db)).toEqual([]);
+    expect(recoverOnStartup(fixture.db)).toEqual([{ type: "none" }]);
     expect(getWorkItem(fixture.db, item.id)?.state).toBe("awaiting_input");
     expect(listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual(jobsBefore);
     expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
 
     await fixture.orchestrator.onLinearEvent(prompted("parquet"));
     expect(getWorkItem(fixture.db, item.id)).toMatchObject({
-      state: "running",
+      state: "queued",
       recoveryAttempts: 0,
     });
     const resume = listJobs(fixture.db).find(
@@ -175,7 +175,7 @@ test("startup leaves an open question parked and its answer resumes the run", as
     );
     expect(resume?.jobKey).toBe(`resume:answer:${open!.id}`);
     expect(resume?.payload).toMatchObject({
-      freshSession: true,
+      runId: item.currentRunId,
       reason: "answer",
       handoff: handoffNote({
         question: open!.body,
@@ -197,7 +197,7 @@ test("an answer that arrives before the asking turn ends resumes once after the 
   const fixture = await askOnce("parquet");
   try {
     const item = listWorkItems(fixture.db)[0]!;
-    expect(fixture.resumeJobsDuringTurn).toEqual([0]);
+    expect(fixture.resumeJobsDuringTurn).toEqual([1]);
     expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
     const resumes = listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume);
     expect(resumes).toHaveLength(1);
@@ -383,15 +383,8 @@ async function askOnce(answerDuringTurn?: string): Promise<{
       await ask(question, options);
       setImmediate(() => {
         answered = orchestrator.onLinearEvent(prompted(answerDuringTurn)).then(() => {
-          const run = db
-            .query<{ status: string }, []>(
-              "SELECT status FROM run ORDER BY created_at DESC, id DESC LIMIT 1",
-            )
-            .get();
           resumeJobsDuringTurn.push(
-            run?.status === "ended"
-              ? -1
-              : listJobs(db).filter((job) => job.queue === JOB_KIND.resume).length,
+            listJobs(db).filter((job) => job.queue === JOB_KIND.resume).length,
           );
         });
       });
@@ -506,6 +499,7 @@ async function drive(
     if (state === "failed" || state === "exhausted") {
       throw new Error(JSON.stringify(listJobs(fixture.db)));
     }
+    workspaceDispatch(fixture.db, { now: Date.now() });
     const job = await fixture.jobs.tick();
     if (job === null) {
       idle += 1;

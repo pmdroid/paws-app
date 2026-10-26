@@ -19,7 +19,7 @@ import { createFakeTracker, parseAgentEvent } from "../src/linear";
 import { FakeGitHubIntegration, attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import { tempDb, tempHome } from "./helpers";
-import { workspaceAdmission } from "./fake-workspace";
+import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 
 const turns = (db: ReturnType<typeof tempDb>) =>
   db.query<{ state: string }, []>("SELECT state FROM linear_turn ORDER BY rowid").all();
@@ -50,12 +50,7 @@ function fixture(launch?: AgentLaunch) {
     launch,
     repository: { owner: "acme", repo: "app", remoteUrl: "https://github.example/acme/app.git" },
   });
-  enqueueJobOnce(db, {
-    queue: JOB_KIND.start,
-    jobKey: "start",
-    payload: { itemId: item.id },
-    now: clock.now(),
-  });
+  workspaceDispatch(db, { now: clock.now() });
   return { db, home, clock, item, jobs, outbox, host, tracker, orchestrator };
 }
 
