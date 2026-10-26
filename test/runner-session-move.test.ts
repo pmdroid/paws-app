@@ -317,8 +317,12 @@ async function setup() {
           if (event.type === "progress") notices.push(event.text);
         },
       });
+    // B waits out the first turn: runners enrolled in the same millisecond tie on everything but
+    // their ids, so placement could otherwise start the run on B.
+    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
     const first = turn();
     const onA = (await next(runners.a)) as RunCommand;
+    db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
     const sealed = options.snapshot === false ? undefined : await seal(onA);
     finish(onA, runners.a);
     await first;
