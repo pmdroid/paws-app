@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
  *

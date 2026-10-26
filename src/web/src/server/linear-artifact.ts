@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 export type ReadLinearArtifact = (
   id: string,
   signal?: AbortSignal,

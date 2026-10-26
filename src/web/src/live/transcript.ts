@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import type { StatusActivity } from "../contract";

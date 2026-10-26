@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { getRun, getWorkItem } from "../../../db";
 import { fullAgentTranscript } from "../live/transcript";
 import { dashboardOrigin } from "./request-origin";

@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import type { StatusEvidence, StatusSnapshot } from "../contract";
 import {
   EVIDENCE_FILTERS,

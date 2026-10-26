@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { initializeDecisions } from "./decisions";
 import type { SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";

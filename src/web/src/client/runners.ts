@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { durationLabel, esc, skillVersionLabel, statePill } from "./format";
 import { readCsrfToken } from "./csrf";

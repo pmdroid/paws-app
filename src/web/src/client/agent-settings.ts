@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { routeHref } from "./route";
 import { renderMarkup } from "./theme";
 import type { AgentModelCatalog, AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
@@ -307,11 +307,12 @@ export function createAgentSettings(invalidate: () => void): {
       try {
         data = await settingsRequest<AgentSettings>(engine!, "GET");
       } catch (error) {
-        journalCaught(error, "agent-settings.createAgentSettings.settingsRequest", null);
         if (started === generation && error instanceof Error && error.cause === 403) {
           view.denied = true;
           view.data = null;
           view.error = null;
+
+          journalCaught(error, "agent-settings.createAgentSettings.settingsRequest", null);
           return;
         }
         throw error;

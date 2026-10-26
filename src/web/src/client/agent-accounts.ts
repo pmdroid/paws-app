@@ -1,4 +1,4 @@
-import { journalCaught } from "../../../journal";
+import { journalCaught } from "../journal";
 import { readCsrfToken } from "./csrf";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
