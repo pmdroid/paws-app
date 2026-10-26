@@ -173,9 +173,9 @@ const assert = require("node:assert/strict");
     observe("normal authenticated dashboard has three areas and a real empty runner list", {
       anonymous: 401,
     });
-    await owner.getByRole("button", { name: "Add a host" }).click();
-    await owner.getByRole("dialog", { name: "Add a host" }).waitFor();
-    await owner.getByRole("textbox", { name: "Host name" }).fill("Linux proof host");
+    await owner.getByRole("button", { name: "Add a runner" }).click();
+    await owner.getByRole("dialog", { name: "Add a runner" }).waitFor();
+    await owner.getByRole("textbox", { name: "Runner name" }).fill("Linux proof host");
     const enrollment = await submit(owner, "Create command", "/enrollments");
     const claimed = await exchange(port, "/api/runner-enrollments", {
       token: enrollment.token,
@@ -295,8 +295,8 @@ const assert = require("node:assert/strict");
     assert.equal(await member.locator("#runner-health").count(), 0);
     assert.equal(await mutation(member, healthPath, { type: "login_check", agent: "codex" }), 403);
     const stale = await pageFor("stale");
-    await stale.getByRole("button", { name: "Pair a host" }).waitFor();
-    assert(await stale.getByRole("button", { name: "Pair a host" }).isEnabled());
+    await stale.getByRole("button", { name: "Add a runner" }).waitFor();
+    assert(await stale.getByRole("button", { name: "Add a runner" }).isEnabled());
     assert.equal(await stale.getByRole("link", { name: "Sign in again" }).count(), 0);
     observe(
       "persisted member role denies mutations, missing CSRF fails closed and an older administrator sign-in keeps its controls",

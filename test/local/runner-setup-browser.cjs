@@ -65,9 +65,9 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
       });
       configured = true;
       await page.getByRole("button", { name: "Check setup" }).click();
-      await page.getByRole("button", { name: "Add a host" }).click();
-      await page.getByRole("dialog", { name: "Add a host" }).waitFor();
-      assert.equal(await page.getByRole("textbox", { name: "Host name" }).count(), 1);
+      await page.getByRole("button", { name: "Add a runner" }).click();
+      await page.getByRole("dialog", { name: "Add a runner" }).waitFor();
+      assert.equal(await page.getByRole("textbox", { name: "Runner name" }).count(), 1);
       assert.equal(
         await page.getByText("Workspace execution permission", { exact: true }).count(),
         0,
