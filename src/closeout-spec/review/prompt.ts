@@ -2,9 +2,13 @@ import { journalCaught } from "../../journal";
 import { sha256Hex } from "../policy/canonical";
 import type { ReviewScope } from "../types";
 import { FINDING_FORMAT } from "./findings";
-import { gitOutput } from "./git";
+import { gitOutput, gitRun } from "./git";
 
 const SHA = /^([0-9a-f]{40}|[0-9a-f]{64})$/;
+
+export const DIFF_BUDGET = 300_000;
+
+export type OmittedFile = { path: string; added: number; removed: number; generated: boolean };
 
 export type ReviewMaterial = {
   skillPath: string;
@@ -12,6 +16,7 @@ export type ReviewMaterial = {
   references: Array<{ path: string; text: string }>;
   files: string[];
   diff: string;
+  omitted?: OmittedFile[];
 };
 
 export function assertCommit(value: string, label: string): void {
@@ -30,6 +35,7 @@ export async function loadReviewMaterial(input: {
   skillFiles?: ReadonlyMap<string, Uint8Array>;
   base: string;
   head: string;
+  diffBudget?: number;
 }): Promise<ReviewMaterial> {
   assertCommit(input.base, "base");
   assertCommit(input.head, "head");
@@ -59,19 +65,105 @@ export async function loadReviewMaterial(input: {
     "--name-only",
     range,
   ]);
-  const diff = await gitOutput(input.repo, [
-    "-c",
-    "core.quotepath=false",
-    "diff",
-    "--no-ext-diff",
-    "--no-color",
-    range,
-  ]);
   const files = filesText
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  return { skillPath: input.skill, skill, references, files, diff };
+  const { diff, omitted } = await budgetedDiff(
+    input.repo,
+    input.base,
+    input.head,
+    input.diffBudget ?? DIFF_BUDGET,
+  );
+  return {
+    skillPath: input.skill,
+    skill,
+    references,
+    files,
+    diff,
+    ...(omitted.length ? { omitted } : {}),
+  };
+}
+
+async function budgetedDiff(
+  repo: string,
+  base: string,
+  head: string,
+  budget: number,
+): Promise<{ diff: string; omitted: OmittedFile[] }> {
+  const range = `${base}..${head}`;
+  const numstat = await gitOutput(repo, [
+    "diff",
+    "--no-ext-diff",
+    "--no-renames",
+    "--numstat",
+    "-z",
+    range,
+  ]);
+  const changed = numstat
+    .split("\0")
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const [added = "", removed = "", ...rest] = record.split("\t");
+      return { path: rest.join("\t"), added: Number(added) || 0, removed: Number(removed) || 0 };
+    });
+  const generated = await generatedPaths(
+    repo,
+    head,
+    changed.map((file) => file.path),
+  );
+  const kept: string[] = [];
+  const omitted: OmittedFile[] = [];
+  let used = 0;
+  for (const file of changed) {
+    if (generated.has(file.path)) {
+      omitted.push({ ...file, generated: true });
+      continue;
+    }
+    if (used >= budget) {
+      omitted.push({ ...file, generated: false });
+      continue;
+    }
+    const text = await gitOutput(repo, [
+      "-c",
+      "core.quotepath=false",
+      "diff",
+      "--no-ext-diff",
+      "--no-color",
+      "--no-renames",
+      range,
+      "--",
+      `:(literal)${file.path}`,
+    ]);
+    if (used + text.length > budget) {
+      omitted.push({ ...file, generated: false });
+      continue;
+    }
+    kept.push(text);
+    used += text.length;
+  }
+  return { diff: kept.join(""), omitted };
+}
+
+async function generatedPaths(repo: string, head: string, paths: string[]): Promise<Set<string>> {
+  if (paths.length === 0) return new Set();
+  const result = await gitRun(repo, [
+    "check-attr",
+    "-z",
+    "--source",
+    head,
+    "linguist-generated",
+    "--",
+    ...paths,
+  ]);
+  if (result.exitCode !== 0) return new Set();
+  const fields = result.stdout.split("\0");
+  const generated = new Set<string>();
+  for (let index = 0; index + 2 < fields.length; index += 3) {
+    const value = fields[index + 2];
+    if (value === "set" || value === "true") generated.add(fields[index] ?? "");
+  }
+  return generated;
 }
 
 export const DIFF_SCOPE =
@@ -106,10 +198,33 @@ export function renderReviewPrompt(
     "",
     `# Diff ${base}..${head}`,
     material.diff.trimEnd() || "(empty)",
+    ...omittedSection(material.omitted ?? [], base, head, scope),
     "",
     "# Finding format",
     FINDING_FORMAT,
   ].join("\n");
+}
+
+function omittedSection(
+  omitted: OmittedFile[],
+  base: string,
+  head: string,
+  scope: ReviewScope,
+): string[] {
+  if (omitted.length === 0) return [];
+  const how =
+    scope === "diff"
+      ? "Open them in the read-only checkout when they matter."
+      : `Open them in the read-only checkout when they matter; \`git diff ${base} ${head} -- <path>\` shows the change.`;
+  return [
+    "",
+    "# Changed files not in the diff above",
+    `Generated files and files past the diff's size budget are left out. ${how}`,
+    ...omitted.map(
+      (file) =>
+        `- ${file.path} (+${file.added} -${file.removed}${file.generated ? ", generated" : ""})`,
+    ),
+  ];
 }
 
 async function loadReferences(

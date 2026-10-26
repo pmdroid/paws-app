@@ -66,6 +66,7 @@ export type CodexReviewerOptions = {
   model: string;
   evaluator?: ProducerIdentity;
   attempt?: number;
+  diffBudget?: number;
 };
 
 /**

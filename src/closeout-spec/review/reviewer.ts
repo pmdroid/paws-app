@@ -44,6 +44,7 @@ export type ReviewerOptions = {
   evaluator?: ProducerIdentity;
   /** Evidence attempt written on the review record. Defaults to 1. */
   attempt?: number;
+  diffBudget?: number;
 };
 
 export type RecordedReview = {
@@ -86,6 +87,7 @@ export function createReviewer(agent: ReviewAgent, options: ReviewerOptions) {
           skillFiles: request.skillFiles,
           base: request.base,
           head: request.head,
+          ...(options.diffBudget !== undefined ? { diffBudget: options.diffBudget } : {}),
         });
       } catch (error) {
         journalCaught(error, "reviewer.review.loadReviewMaterial", null);
