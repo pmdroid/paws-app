@@ -63,6 +63,12 @@ export type ServerOptions = {
     principal: WorkspacePrincipal,
     sessionIds: readonly string[],
   ) => Promise<Response | null>;
+  /** `POST /api/link-asks`: a decision a signed-in person makes on the item page. */
+  linkAsks?: (
+    request: Request,
+    principal: WorkspacePrincipal | undefined,
+    sessionIds: readonly string[] | undefined,
+  ) => Promise<Response | null>;
   hostname?: string;
   port?: number;
   linearWebhookSecret?: string | null;
@@ -164,6 +170,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
+          ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
           ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
           ...(options.agentSettings
@@ -202,6 +209,7 @@ type Secrets = {
   runnerHostEnrollment?: ServerOptions["runnerHostEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
   executionControls?: ServerOptions["executionControls"];
+  linkAsks?: ServerOptions["linkAsks"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
@@ -368,6 +376,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         if (response !== null) return response;
       }
     }
+  }
+  if (path === "/api/link-asks" && secrets.linkAsks !== undefined) {
+    const response = await secrets.linkAsks(request, principal, sessionIds);
+    if (response !== null) return response;
   }
   if (path === VISUAL_REVIEW_CHANGES_PATH) {
     if (!secrets.db || !secrets.evidenceDir || !secrets.visualReviewChanges)

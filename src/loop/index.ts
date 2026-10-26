@@ -77,3 +77,14 @@ export type { PullCommentFilter } from "./pull-comments";
 export { LinearAccessRemovedError } from "./linear-task-access";
 export { authorizeLinearTask } from "./linear-task-access";
 export { restart, halt, ask } from "./operations";
+export {
+  askWithLink,
+  closeLinkAsksOnHead,
+  decideLinkAsk,
+  guideLinkAsk,
+  LINK_ASK_NEEDS_PUBLIC_URL,
+  linkAskAvailable,
+  linkAskUrl,
+  remindLinkAsk,
+  type LinkAskEffects,
+} from "./link-ask";

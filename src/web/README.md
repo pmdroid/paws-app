@@ -10,7 +10,7 @@ The Paws process serves the dashboard files and status routes. The live reader i
 
 - `version` is `1`.
 - `source` is `"live"`. The serving process builds the body from its own state.
-- `questions` lists open questions only. The page does not answer them.
+- `questions` lists open questions only. The page answers only a link ask: a question with `linkAsk` (`kind` `bypass`, `screenshots`, `risk` or `question`, the `head` commit it is bound to, `title`, `detail` and the `link` Linear carries). The overview's Needs you list shows it with one button per kind, and the issue page shows its card at `#closeout`, `#visual-review`, `#risk` or `#question`, which posts the decision to `POST /api/link-asks` with the CSRF token.
 - Unknown fields are ignored. The parser rejects a body that does not match.
 
 `GET /api/status/items/<id>` returns one issue for its page, `StatusItemDetail`: the snapshot fields for that issue only (every session of it, its runs, questions, Closeout attempts with checks and findings, agent Closeout, evidence, CI rounds and merge state), plus `blocks`. `events` is empty and check `stdout` and `stderr` are left out. It has the same session gate and session filter as `/api/status`; an issue outside the reader's sessions is 404 like an unknown one. The issue page fetches it when it opens and polls only it while it stays open.

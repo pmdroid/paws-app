@@ -40,6 +40,8 @@ import { createCheckoutSettings } from "./checkout-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createExecutionControls } from "./execution-controls";
+import { linkAskAnchor } from "./link-ask";
+import { rememberLinkAskDraft, submitLinkAsk } from "./link-ask-submit";
 import { createDeadDeliveryRetry } from "./dead-delivery-retry";
 import { createReviewDraw } from "./review-draw";
 import { createEvidenceMedia } from "./evidence-media";
@@ -72,6 +74,8 @@ const painted = new Map<string, string>();
 
 const closeout = emptyCloseoutView();
 let linkedHash = "";
+/** The path and hash of the link ask card last scrolled to, so a repaint does not scroll again. */
+let linkedCard = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
 /** The open issue page's data. While an issue page is open, only this is polled. */
@@ -88,6 +92,8 @@ let issueFilter: "all" | "active" | "needs" | "done" = "all";
 let issueProject = "";
 
 document.addEventListener("click", onClick);
+document.addEventListener("submit", (event) => void submitLinkAsk(event, reload));
+document.addEventListener("input", (event) => rememberLinkAskDraft(event.target));
 router.subscribe((state) => {
   if (state.location.pathname === shownPath) {
     if (state.location.search === shownSearch) return;
@@ -284,6 +290,7 @@ function paint(): void {
   evidence.attach(data, currentEngine());
   applyIssueFilter();
   if (openLinkedCheck()) return;
+  scrollToLinkedCard();
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
@@ -368,7 +375,17 @@ function followLink(event: MouseEvent, target: Element): void {
   const path = appPath(link.href);
   if (path === null) return;
   event.preventDefault();
-  void router.navigate(path);
+  void router.navigate(`${path}${new URL(link.href).hash}`);
+}
+
+/** A link ask link (`/status/issues/PAS-633#risk`) scrolls to its card once the card is drawn. */
+function scrollToLinkedCard(): void {
+  const key = `${location.pathname}${location.hash}`;
+  if (!linkAskAnchor(location.hash) || key === linkedCard) return;
+  const card = document.getElementById(location.hash.slice(1));
+  if (card === null) return;
+  linkedCard = key;
+  card.scrollIntoView({ block: "start" });
 }
 
 function setHtml(selector: (typeof regions)[number], html: string): void {

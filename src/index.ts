@@ -161,6 +161,7 @@ import {
   teamMemberDenial,
   teamRepositoryDenial,
 } from "./loop";
+import { handleLinkAskAnswer } from "./questions";
 import {
   createItemReconciler,
   createParentDelegations,
@@ -892,6 +893,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       evidenceDir: paths.evidenceDir,
       visualReviewChanges: async (input) =>
         orchestrator ? orchestrator.requestVisualReviewChanges(input) : "rejected",
+      linkAsks: (request, principal, sessionIds) =>
+        handleLinkAskAnswer(request, {
+          db,
+          principal,
+          sessionIds,
+          submit: async (input) => (orchestrator ? orchestrator.decideLinkAsk(input) : "rejected"),
+        }),
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {

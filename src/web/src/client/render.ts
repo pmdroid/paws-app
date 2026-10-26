@@ -44,6 +44,7 @@ import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
+import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard } from "./link-ask";
 
 export interface RenderModel {
   route: Route;
@@ -157,14 +158,35 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
   }
 }
 
+/** One row of the overview's Needs you list. A primary button is a decision only a person makes. */
+type NeedsYou = {
+  itemId: string;
+  title: string;
+  reason: string;
+  action: string;
+  href: string;
+  primary?: boolean;
+};
+
 function viewOverview(snapshot: StatusSnapshot): string {
   const intake = renderIntake(snapshot);
   if (!snapshot.items.length && !snapshot.questions.length)
     return `${pageHeading("overview")}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
-  const attention = snapshot.items.flatMap((item) => {
+  const attention = snapshot.items.flatMap((item): NeedsYou[] => {
     const run = item.runId ? runs.get(item.runId) : undefined;
     const question = snapshot.questions.find((entry) => entry.itemId === item.id);
+    if (question?.linkAsk)
+      return [
+        {
+          itemId: item.id,
+          title: item.title,
+          reason: question.linkAsk.detail || question.linkAsk.title,
+          action: LINK_ASK_ACTIONS[question.linkAsk.kind],
+          href: `${routeHref({ view: "issues", id: item.id })}#${LINK_ASK_ANCHORS[question.linkAsk.kind]}`,
+          primary: question.linkAsk.kind !== "question",
+        },
+      ];
     if (question)
       return [
         {
@@ -230,7 +252,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
   return `${pageHeading("overview")}
     <div class="between"><p class="overview-summary">${esc(summary)}</p><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
     <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you</h2>
-      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p></div><a href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
+      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p></div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
     </section>
     ${intake}
     <section class="overview-section" aria-labelledby="work-heading"><h2 id="work-heading">Working now</h2>
@@ -405,9 +427,10 @@ function issuePage(
           (run === undefined || question.runId === null || inRun(run, question.runId)) &&
           !item.visualReviews?.some((review) => review.questionId === question.id),
       )
-      .map(
-        (question) =>
-          `<section class="closeout-result blocked"><div class="min-w-0"><h2>${esc(question.title)}</h2><p>${esc(plainTask(question.body))}</p><div class="row wrap">${linkList(question.links)}</div></div></section>`,
+      .map((question) =>
+        question.linkAsk
+          ? linkAskCard(question)
+          : `<section class="closeout-result blocked"><div class="min-w-0"><h2>${esc(question.title)}</h2><p>${esc(plainTask(question.body))}</p><div class="row wrap">${linkList(question.links)}</div></div></section>`,
       )
       .join("")}
     ${visualReviewSection(snapshot, item, engineUrl)}
