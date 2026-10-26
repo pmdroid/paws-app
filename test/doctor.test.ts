@@ -24,7 +24,6 @@ const NAMES = [
   "bun",
   "home",
   "linear",
-  "linear-mode",
   "linear-workspace",
   "linear-team",
   "github-app",
@@ -121,16 +120,6 @@ test("doctor fails while no Linear workspace admin has signed in", () => {
   expect(workspace?.detail).toContain("signed in");
 });
 
-test("doctor fails when comment mode is configured and says how to move off it", () => {
-  const configured = probe(true);
-  configured.facts.linearCommentMode = true;
-  const mode = doctorChecks(configured).find((item) => item.name === "linear-mode");
-  expect(mode?.ok).toBe(false);
-  expect(mode?.fix).toContain("comment mode");
-  expect(mode?.fix).toContain("docs/workspace-access.md");
-  expect(formatDoctor(doctorChecks(configured))).toContain("missing linear-mode:");
-});
-
 test("doctor names what is missing and does not print secret values", () => {
   const checks = doctorChecks(
     probe(
@@ -147,7 +136,8 @@ test("doctor names what is missing and does not print secret values", () => {
   expect(text).toContain("missing linear:");
   expect(text).toContain("missing github-app:");
   expect(text).toContain("ok linear-webhook:");
-  expect(text).toContain("missing ngrok:");
+  expect(text).not.toContain("ngrok");
+  expect(text).not.toContain("linear-mode");
   expect(text).toContain("missing public-url:");
   expect(text).toContain(".agents/closeout.yaml: invalid YAML");
   expect(checks.filter((item) => !item.ok).every((item) => item.fix !== undefined)).toBe(true);
@@ -522,7 +512,6 @@ function greenFacts(): ProbeFacts {
   return {
     configError: null,
     configured: true,
-    linearCommentMode: false,
     trackerKind: "linear",
     githubDoctor: githubReady(),
     webhooks: false,
@@ -551,7 +540,6 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
   return {
     configError: null,
     configured: false,
-    linearCommentMode: false,
     trackerKind: "linear",
     githubDoctor: {
       appId: null,

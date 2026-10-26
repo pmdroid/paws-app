@@ -327,7 +327,7 @@ export async function probeRunnerOrchestration(
     let verificationExclusions: readonly string[] = [];
     let exclusionsForReverify = false;
     // These scenarios check that a rebase before the merge runs Closeout again on the runner.
-    const mergeSettings = "[merge]\ncloseout_after_update = true\n";
+    const mergeSettings = '[merge]\nmain_moved = "closeout"\n';
     writeFileSync(
       join(home, "config.toml"),
       `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude = ["large"]\n`,

@@ -119,13 +119,7 @@ const tomlSchema = z.object({
 });
 
 export function storedMerge(config: PawsConfigFile): StoredMerge {
-  const mainMoved =
-    config.mainMoved ??
-    (config.closeoutAfterUpdate === undefined
-      ? undefined
-      : config.closeoutAfterUpdate
-        ? "closeout"
-        : "ci");
+  const mainMoved = config.mainMoved;
   return {
     ...(config.mergeOrder === undefined ? {} : { order: config.mergeOrder }),
     ...(mainMoved === undefined ? {} : { mainMoved }),

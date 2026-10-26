@@ -123,16 +123,6 @@ packages = ["apps/*", "packages/*"]
       ).toThrow();
   });
 
-  test("the PAS-389 switch is the workspace default for when main moved", () => {
-    expect(
-      readMergeSettings(parseConfigToml("[merge]\ncloseout_after_update = true\n")).default,
-    ).toEqual({ order: "queue", mainMoved: "closeout" });
-    expect(readMergeSettings(parseConfigToml("")).default).toEqual({
-      order: "queue",
-      mainMoved: "ci",
-    });
-  });
-
   test("unknown choices are rejected", () => {
     expect(() => parseConfigToml('[merge]\norder = "fast"\n')).toThrow("merge.order");
     expect(() => parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "x"\n')).toThrow();
@@ -197,7 +187,7 @@ describe("Merging settings API", () => {
     const { options, audits } = fixture();
     writeFileSync(
       options.configPath,
-      '[caps]\nmax_turns = 31\n\n[merge]\ncloseout_after_update = true\nci_fix_attempts = 5\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n',
+      '[caps]\nmax_turns = 31\n\n[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n',
     );
     const body = {
       default: { order: "queue", mainMoved: "ci" },
@@ -210,7 +200,6 @@ describe("Merging settings API", () => {
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
-    expect(text).not.toContain("closeout_after_update");
     expect(text).toContain(`[merge.projects."${PAWS}"]\n`);
     expect(text).toContain('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"');
     const config = loadConfigFile(options.configPath);

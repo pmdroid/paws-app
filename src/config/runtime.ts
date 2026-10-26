@@ -6,7 +6,6 @@ import { loadEnv, type EnvSource, type PawsEnv } from "./env";
 import {
   emptyConfigFile,
   loadConfigFile,
-  GITHUB_APP_ONLY_MESSAGE,
   type GitHubConfigAuth,
   type PawsConfigFile,
 } from "./file";
@@ -15,9 +14,6 @@ import { loadGitHubAppCredentials } from "./github-app";
 
 export const LINEAR_WORKSPACE_REQUIRED =
   "Paws needs a Linear workspace. Set PAWS_PUBLIC_DASHBOARD=1 with PAWS_PUBLIC_URL and the Linear app OAuth client, restart Paws, then sign in to the dashboard as a Linear workspace admin (docs/workspace-access.md).";
-
-export const LINEAR_COMMENT_MODE_REMOVED =
-  'Linear comment mode was removed and is ignored. Delete mode = "comments" from [linear] in config.toml and unset LINEAR_MODE, then connect a Linear workspace in agent-session mode (docs/workspace-access.md).';
 
 /**
  * What the process runs with. `config.toml` and the secret files it names
@@ -29,7 +25,6 @@ export type RuntimeConfig = {
   /** True when `config.toml` was present. */
   configured: boolean;
   configError: string | null;
-  linearCommentMode: boolean;
   linearTeam: string | null;
   linearTeamId: string | null;
   linearViewerId: string | null;
@@ -74,23 +69,15 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     }
   }
 
-  if (file.retiredTrackerConfigured || (file.trackerSpecified && file.trackerKind !== "linear")) {
-    configError =
-      'Paws uses Linear for issue tracking. Set [tracker] kind = "linear", remove [tracker.github], and connect Linear through the Paws website. Keep your existing database as an archive and use a new --home if it contains GitHub issue work.';
-  }
   const secrets = readLinearSecrets(env.home, file);
   const linearAccessToken = optional(source, "LINEAR_ACCESS_TOKEN") ?? secrets.accessToken;
   const githubAuth: GitHubConfigAuth = "app";
-  const flaggedAuth = optional(source, "GITHUB_AUTH") ?? optional(source, "PAWS_GITHUB_AUTH");
-  if (configError === null && flaggedAuth !== null && flaggedAuth !== "app")
-    configError = `GITHUB_AUTH must be "app". ${GITHUB_APP_ONLY_MESSAGE}`;
 
   return {
     env,
     file,
     configured,
     configError,
-    linearCommentMode: commentModeConfigured(file, source),
     linearTeam: optional(source, "LINEAR_TEAM") ?? file.linearTeam,
     linearTeamId: optional(source, "LINEAR_TEAM_ID") ?? file.linearTeamId,
     linearViewerId:
@@ -111,11 +98,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
       positiveInt(optional(source, "PAWS_MAX_AWAKE_MS")) ?? file.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,
     webhooks: resolveWebhooks(file, source),
   };
-}
-
-function commentModeConfigured(file: PawsConfigFile, source: EnvSource): boolean {
-  const flagged = optional(source, "LINEAR_MODE") ?? optional(source, "PAWS_LINEAR_MODE");
-  return flagged === "comments" || file.linearCommentMode;
 }
 
 function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {
