@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   FULL_CHECKOUT_LABEL,
   checkoutExclusionsFor,
@@ -81,8 +82,9 @@ export async function handleCheckoutSettingsRequest(
   let repos: string[] = [];
   try {
     ({ projects: before, repos } = read(options));
-  } catch {
+  } catch (caughtError) {
     // A malformed saved file is repaired by this write.
+    journalCaught(caughtError, "checkout.handleCheckoutSettingsRequest.read", null);
   }
   const after: CheckoutProjects = { ...before };
   for (const [repo, project] of Object.entries(changes)) {
