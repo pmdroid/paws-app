@@ -186,7 +186,7 @@ describe("GitHub operation tokens", () => {
       containsMain: true,
       review: "approved",
     });
-    const result = await squashPull(lane, head, "Closeout: accepted");
+    const result = await squashPull(lane, { head, base }, "Closeout: accepted");
     expect(result.merged).toBe(true);
     expect(tokens).toEqual(["ghs_fake_1", "ghs_fake_3"]);
     // The fetch and readiness read share a token; the review read and the merge each mint their own.

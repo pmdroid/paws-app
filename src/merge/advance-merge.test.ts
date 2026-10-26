@@ -118,6 +118,20 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     expect(h.bodies()).toEqual([]);
   });
 
+  test("a policy that changed or cannot be read since Closeout accepted the head sends it back", async () => {
+    for (const digest of ["sha256:changed-policy", null]) {
+      const h = await start();
+      const item = await h.addItem("ENG-1");
+      h.state.policyDigest = digest;
+      expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+      expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
+      expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:1`]);
+      expect(h.github.merged).toEqual([]);
+      await h.cleanup();
+      harness = undefined;
+    }
+  });
+
   test("a pull request head that changed releases the lane: no rebase, no merge, place kept", async () => {
     const h = await start();
     const item = await h.addItem("ENG-1");

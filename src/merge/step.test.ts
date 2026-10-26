@@ -120,8 +120,14 @@ describe("mergeable(S)", () => {
       ok: false,
       block: "not_accepted",
     });
-    // An acceptance from before Paws recorded Closeout runs binds the head alone.
-    expect(mergeable(facts({ accept: { head: S, policyDigest: null } }))).toEqual({ ok: true });
+    // An acceptance with no recorded Closeout run is not under any known policy: verify S again.
+    expect(mergeable(facts({ accept: { head: S, policyDigest: null } }))).toEqual({
+      ok: false,
+      block: "not_accepted",
+    });
+    expect(
+      mergeable(facts({ accept: { head: S, policyDigest: null }, policyDigest: null })),
+    ).toEqual({ ok: false, block: "not_accepted" });
   });
 });
 
@@ -192,6 +198,42 @@ describe("merge lane turn", () => {
     expect(lane.calls).toEqual(["read", `squash:${S}`]);
     expect(turn).toMatchObject({ kind: "blocked", block: "head_moved" });
     expect(stepFor(turn).step).toMatchObject({ kind: "wait", reason: "ci" });
+  });
+
+  test("main moving between the read and the squash releases the lane; the next turn rebases", async () => {
+    const moved = "e".repeat(40);
+    const lane = fakeLane(
+      {},
+      {
+        squash: {
+          merged: false,
+          outcome: "sha_moved",
+          branch: "paws/eng-1",
+          base: moved,
+          head: S,
+          message: "main moved before merge",
+        },
+      },
+    );
+    const turn = await lane.turn;
+    expect(lane.calls).toEqual(["read", `squash:${S}`]);
+    expect(turn).toMatchObject({ kind: "blocked", block: "main_moved" });
+    expect(stepFor(turn)).toEqual({
+      step: {
+        kind: "wait",
+        reason: "ci",
+        message: "Main moved before the merge. Reading it again.",
+        base: MAIN,
+        head: S,
+      },
+      leaveQueue: false,
+    });
+    const next = fakeLane(
+      { containsMain: false },
+      { read: pull({}, { base: moved, containsMain: false }) },
+    );
+    await next.turn;
+    expect(next.calls).toEqual(["read", "rebase"]);
   });
 
   test("pending CI waits on S and keeps the place", async () => {

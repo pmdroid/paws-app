@@ -70,7 +70,7 @@ describe("the merge lane runs Closeout on a rebased head before it merges", () =
       `${JSON.stringify({ recordedAt: new Date().toISOString(), base: rebased.base, head: rebased.head, evaluation }, null, 2)}\n`,
     );
     expect(evaluation.outcome).toBe("accepted");
-    const result = await squashPull(lane, rebased.head, evaluation.decision?.message ?? "accepted");
+    const result = await squashPull(lane, rebased, evaluation.decision?.message ?? "accepted");
     expect(result).toMatchObject({ merged: true, head: rebased.head });
     expect(reviewed).toBe(0);
     const report = JSON.parse(

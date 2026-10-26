@@ -1,4 +1,4 @@
-/** Closeout's record that it accepted head S, with the policy digest it ran under when known. */
+/** Closeout's record that it accepted head S, with the policy digest of its run (null if none). */
 export type AcceptRow = { head: string; policyDigest: string | null };
 
 /** What the merge lane read about head S while it held the repository lock. */
@@ -48,10 +48,11 @@ export function mergeable(facts: MergeFacts): Mergeable {
 }
 
 /**
- * The accept row binds S and the policy digest. An acceptance with no recorded Closeout run (from
- * before Paws kept one) matches on S alone.
+ * The accept row binds S and the policy digest. Both digests must be known and equal: an
+ * acceptance with no recorded Closeout run, or a policy that cannot be read now, sends S back
+ * through Closeout rather than merging it under a policy Closeout never applied.
  */
 function accepted({ accept, head, policyDigest }: MergeFacts): boolean {
   if (accept === null || accept.head !== head) return false;
-  return accept.policyDigest === null || accept.policyDigest === policyDigest;
+  return accept.policyDigest !== null && accept.policyDigest === policyDigest;
 }

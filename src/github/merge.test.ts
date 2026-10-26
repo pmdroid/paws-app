@@ -302,10 +302,51 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
         return { status: 409, body: { message: "Head branch was modified" } };
       });
       const head = await revParse(repo.work, "HEAD");
-      const result = await squashPull(lane(repo, client, 8), head, "accepted");
+      const result = await squashPull(
+        lane(repo, client, 8),
+        { head, base: await remoteBranch(repo.bare, "main") },
+        "accepted",
+      );
       expect(result).toMatchObject({ merged: false, outcome: "sha_moved", head });
       expect(merges).toBe(1);
       expect(shas).toEqual([head]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("main moving after the facts were read stops the squash before GitHub is asked", async () => {
+    const repo = await twoClones();
+    try {
+      let merges = 0;
+      const client = mergingClient(repo.bare, [], () => {
+        merges += 1;
+        return null;
+      });
+      await commitFile(repo.wtA, "file.txt", "candidate\n");
+      await pushBranch({
+        ...creds(client),
+        worktree: repo.wtA,
+        issue: "ENG-8",
+        remoteUrl: repo.bare,
+      });
+      const input = lane({ ...repo, work: repo.wtA }, client, 8);
+      const read = await readPullFacts(input);
+      if (read.kind !== "facts") throw new Error("facts were not read");
+      expect(read.containsMain).toBe(true);
+      // Another pull request merges while the CI and review reads were in flight.
+      await commitFile(repo.wtB, "other.txt", "new main\n");
+      await exec("git", ["-C", repo.wtB, "push", "origin", "HEAD:main"]);
+      const moved = await remoteBranch(repo.bare, "main");
+      const result = await squashPull(input, read, "accepted");
+      expect(result).toMatchObject({
+        merged: false,
+        outcome: "sha_moved",
+        base: moved,
+        head: read.head,
+        message: "main moved before merge",
+      });
+      expect(merges).toBe(0);
     } finally {
       await repo.cleanup();
     }
@@ -322,7 +363,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       });
       const result = await squashPull(
         { ...lane(repo, client, 8), isCancelled: () => true },
-        await revParse(repo.work, "HEAD"),
+        { head: await revParse(repo.work, "HEAD"), base: await remoteBranch(repo.bare, "main") },
         "accepted",
       );
       expect(result).toMatchObject({
@@ -364,7 +405,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
           commitMessage:
             "accepted\n\nCo-authored-by: Lead <7+lead@users.noreply.github.com>\nCo-authored-by: Steerer <8+steerer@users.noreply.github.com>\n",
         },
-        await revParse(repo.work, "HEAD"),
+        { head: await revParse(repo.work, "HEAD"), base: await remoteBranch(repo.bare, "main") },
         "accepted",
       );
       expect(result.merged).toBe(true);
@@ -406,7 +447,15 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       const factsA = await readPullFacts(a);
       expect(factsA).toMatchObject({ kind: "facts", containsMain: true });
       const headA = await revParse(repo.wtA, "HEAD");
-      expect((await squashPull(a, headA, "Closeout: accepted")).merged).toBe(true);
+      expect(
+        (
+          await squashPull(
+            a,
+            { head: headA, base: await remoteBranch(repo.bare, "main") },
+            "Closeout: accepted",
+          )
+        ).merged,
+      ).toBe(true);
 
       const changedTail = [...lines];
       changedTail[19] = "line-20-from-b";
@@ -432,7 +481,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
       expect(await remoteBranch(repo.bare, "paws/ENG-2")).toBe(rebased.head);
       const fresh = await readPullFacts(b);
       expect(fresh).toMatchObject({ kind: "facts", head: rebased.head, containsMain: true });
-      expect((await squashPull(b, rebased.head, "Closeout: accepted")).merged).toBe(true);
+      expect((await squashPull(b, rebased, "Closeout: accepted")).merged).toBe(true);
       const main = await showMain(repo.bare, "file.txt");
       expect(main.startsWith("line-1-from-a\n")).toBe(true);
       expect(main.endsWith("line-20-from-b\n")).toBe(true);
