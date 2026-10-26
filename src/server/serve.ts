@@ -31,12 +31,14 @@ import {
   HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
   handleAgentSettingsRequest,
+  handleCheckoutSettingsRequest,
   handleMergeSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
   MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
   type MergeChoices,
+  type RepositoryCheckoutFacts,
 } from "../settings";
 import type { SkillResolver, SkillUpdates } from "../skills";
 import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
@@ -91,6 +93,8 @@ export type ServerOptions = {
     /** Configured repositories whose main has a GitHub merge queue, for Settings → Merging. */
     githubQueues?: (signal: AbortSignal) => Promise<string[]>;
     upToDateRules?: (signal: AbortSignal) => Promise<string[]>;
+    /** Files and Closeout check paths of a repository's local mirror, for Repository checkout. */
+    checkoutFacts?: (repo: string) => Promise<RepositoryCheckoutFacts | null>;
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
@@ -427,7 +431,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const { mergeChoices, githubQueues, upToDateRules, ...agentSettings } = secrets.agentSettings;
+    const { mergeChoices, githubQueues, upToDateRules, checkoutFacts, ...agentSettings } =
+      secrets.agentSettings;
     const shared = {
       ...agentSettings,
       csrfToken,
@@ -447,6 +452,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     };
     const settings =
       (await handleAgentSettingsRequest(request, shared)) ??
+      (await handleCheckoutSettingsRequest(request, {
+        ...shared,
+        ...(checkoutFacts ? { inspect: checkoutFacts } : {}),
+      })) ??
       (await handleMergeSettingsRequest(request, {
         ...shared,
         ...(mergeChoices ? { choices: mergeChoices } : {}),

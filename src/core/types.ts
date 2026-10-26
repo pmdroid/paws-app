@@ -47,6 +47,11 @@ export type CheckpointPhase = "running" | "verifying" | "awaiting_input" | "merg
 
 export type Checkpoint = {
   commitPolicy?: GitCommitPolicy;
+  /**
+   * The paths this run leaves out, fixed when the run starts: `agent` for the agent's checkout,
+   * `checks` for Closeout and review. A later settings change applies to the next run.
+   */
+  checkout?: { agent: string[]; checks: string[] };
   resultBody?: string;
   phase: CheckpointPhase;
   wipCommit?: string;

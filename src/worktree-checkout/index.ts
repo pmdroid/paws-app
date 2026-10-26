@@ -3,23 +3,80 @@ import { promisify } from "node:util";
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
-export function exclusionPatterns(folders: readonly string[]): string[] {
-  for (const folder of folders) {
-    if (
-      folder.length === 0 ||
-      folder.includes("\\") ||
-      [...folder].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
-      folder
-        .split("/")
-        .some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
-    )
-      throw new Error(
-        `checkout exclusion must be a relative folder path: ${JSON.stringify(folder)}`,
-      );
-  }
-  return folders.length
-    ? ["/*", ...folders.map((folder) => `!/${folder.replace(/([*?[\] !#])/g, "\\$1")}/`)]
+/**
+ * A path the checkout leaves out: a folder (`docs/archive/`), a file or folder (`CHANGELOG.md`),
+ * or a simple glob of `*`, `**` and `?` (`fixtures/large/**`, `*.snap` below any folder). Paths
+ * are relative to the repository root. `.git`, `.`, `..` and a glob of wildcards only are refused.
+ */
+export function validateExclusion(entry: string): void {
+  const body = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+  const parts = body.split("/");
+  if (
+    body.length === 0 ||
+    entry.includes("\\") ||
+    [...entry].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
+    parts.some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
+  )
+    throw new Error(`checkout exclusion must be a relative path or glob: ${JSON.stringify(entry)}`);
+  if (parts.every((part) => /^[*?]+$/.test(part)))
+    throw new Error(`checkout exclusion would leave out every file: ${JSON.stringify(entry)}`);
+}
+
+/** Whether the entry uses `*` or `?`. Every other character is literal. */
+export function isGlobExclusion(entry: string): boolean {
+  return /[*?]/.test(entry);
+}
+
+/** Non-cone sparse-checkout patterns: everything, then each entry anchored at the root. */
+export function exclusionPatterns(entries: readonly string[]): string[] {
+  for (const entry of entries) validateExclusion(entry);
+  return entries.length
+    ? [
+        "/*",
+        ...entries.map(
+          (entry) =>
+            `!/${entry.replace(isGlobExclusion(entry) ? /([[\] !#])/g : /([*?[\] !#])/g, "\\$1")}`,
+        ),
+      ]
     : [];
+}
+
+/** `git archive` / `git add` pathspecs that leave the entries out, relative to the top. */
+export function exclusionPathspecs(entries: readonly string[]): string[] {
+  for (const entry of entries) validateExclusion(entry);
+  // A glob pathspec matches whole paths, so a glob that names a folder also needs `/**`.
+  return entries.flatMap((entry) => {
+    if (!isGlobExclusion(entry)) return [`:(top,exclude,literal)${entry.replace(/\/$/, "")}`];
+    const glob = escapeGlob(entry.replace(/\/$/, ""));
+    return entry.endsWith("/")
+      ? [`:(top,exclude,glob)${glob}/**`]
+      : [`:(top,exclude,glob)${glob}`, `:(top,exclude,glob)${glob}/**`];
+  });
+}
+
+/**
+ * Whether a repository path is left out by one of the entries. A folder entry covers everything
+ * below it; `*` and `?` stay within one segment and `**` spans any number of them.
+ */
+export function exclusionMatcher(entries: readonly string[]): (path: string) => boolean {
+  const tests = entries.map((entry): ((path: string) => boolean) => {
+    const body = entry.replace(/\/$/, "");
+    if (!isGlobExclusion(body)) return (path) => path === body || path.startsWith(`${body}/`);
+    const glob = new Bun.Glob(escapeGlob(body));
+    const folderOnly = entry.endsWith("/");
+    return (path) => {
+      if (!folderOnly && glob.match(path)) return true;
+      for (let end = path.indexOf("/"); end !== -1; end = path.indexOf("/", end + 1))
+        if (glob.match(path.slice(0, end))) return true;
+      return false;
+    };
+  });
+  return (path) => tests.some((test) => test(path));
+}
+
+/** Keep `[`, `]`, `{`, `}` and `!` literal, so only `*`, `**` and `?` match. */
+function escapeGlob(entry: string): string {
+  return entry.replace(/([[\]{}!])/g, "\\$1");
 }
 
 function readSparsePatternsSync(tree: string, env?: NodeJS.ProcessEnv): string[] {

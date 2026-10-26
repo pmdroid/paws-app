@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { exclusionPatterns } from "../worktree-checkout";
+import { exclusionPathspecs } from "../worktree-checkout";
 import { git } from "./git";
 import { resolveStartRef } from "./worktree";
 
@@ -22,7 +22,7 @@ export async function prepareRepositorySnapshot(options: {
 }): Promise<{ path: string; commit: string }> {
   options.signal.throwIfAborted();
   const checkoutExclusions = [...new Set(options.checkoutExclusions ?? [])].sort();
-  exclusionPatterns(checkoutExclusions);
+  const excludePathspecs = exclusionPathspecs(checkoutExclusions);
   if (options.commit !== undefined && !/^[a-f0-9]{40}$/.test(options.commit))
     throw new Error("Invalid snapshot commit");
   if (
@@ -89,7 +89,7 @@ export async function prepareRepositorySnapshot(options: {
         commit,
         "--",
         ".",
-        ...checkoutExclusions.map((folder) => `:(top,exclude,literal)${folder}`),
+        ...excludePathspecs,
       ],
       gitOptions,
     );
