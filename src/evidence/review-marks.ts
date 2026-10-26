@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import type { Database } from "bun:sqlite";
@@ -50,7 +51,8 @@ export async function handleVisualReviewChanges(
   let form: Awaited<ReturnType<Request["formData"]>>;
   try {
     form = await request.formData();
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "review-marks.handleVisualReviewChanges.formData", null);
     return Response.json({ error: "Send the review as a form." }, { status: 400 });
   }
   const questionId = form.get("questionId");

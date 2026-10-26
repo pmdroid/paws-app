@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import {
@@ -99,7 +100,8 @@ export function createExecutionControls(input: {
             Object.keys(body).some((key) => !["itemId", "action", "target"].includes(key))
           )
             throw new Error();
-        } catch {
+        } catch (caughtError1) {
+          journalCaught(caughtError1, "execution-controls.handle.getReader", null);
           return Response.json(
             { error: "Send an itemId and action as bounded JSON." },
             { status: 400 },
@@ -233,7 +235,8 @@ export function createExecutionControls(input: {
             canAct,
             onCommitted,
           );
-      } catch {
+      } catch (caughtError2) {
+        journalCaught(caughtError2, "execution-controls.handle.immediate", item.id);
         return Response.json(
           { error: "Execution cleanup could not be confirmed. Refresh the run." },
           { status: 503 },

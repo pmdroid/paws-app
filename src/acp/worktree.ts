@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { loadConfigFile } from "../config";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdir, stat } from "node:fs/promises";
@@ -26,7 +27,8 @@ async function exists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "worktree.exists.stat", null, "optional file may be absent");
     return false;
   }
 }
@@ -35,7 +37,8 @@ async function revParse(gitDir: string, ref: string): Promise<string | undefined
   try {
     const sha = (await git(["--git-dir", gitDir, "rev-parse", "--verify", "--quiet", ref])).trim();
     return sha || undefined;
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "worktree.revParse.trim", null);
     return undefined;
   }
 }
@@ -50,7 +53,12 @@ const mirrorWork = new Map<string, Promise<unknown>>();
 
 async function onMirror<T>(path: string, work: () => Promise<T>): Promise<T> {
   const previous = mirrorWork.get(path) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(work);
+  const next = previous
+    .catch((caughtError3) => {
+      journalCaught(caughtError3, "worktree.onMirror", null);
+      return undefined;
+    })
+    .then(work);
   mirrorWork.set(path, next);
   try {
     return await next;
@@ -98,8 +106,10 @@ async function refreshMirror(
     ]);
   } catch (error) {
     if (options.networkGit) throw error;
+
     const cached = await resolveStartRef(path);
     if (!cached) throw error;
+    journalCaught(error, "worktree.refreshMirror", null);
   }
 
   return { path, owner: options.owner, repo: options.repo };
@@ -182,7 +192,12 @@ async function addWorktree(
   try {
     await checkoutPatterns(path, patterns);
   } catch (error) {
-    await git(["--git-dir", gitDir, "worktree", "remove", "--force", path]).catch(() => undefined);
+    await git(["--git-dir", gitDir, "worktree", "remove", "--force", path]).catch(
+      (caughtError4) => {
+        journalCaught(caughtError4, "worktree.addWorktree.git", options.itemId);
+        return undefined;
+      },
+    );
     throw error;
   }
   return { path, branch, mirrorPath: gitDir, itemId: options.itemId, startRef };
@@ -202,12 +217,18 @@ export async function removeWorktree(options: {
 
 export async function worktreeMergedInto(path: string, heads: readonly string[]): Promise<boolean> {
   if (heads.length === 0) return false;
-  const status = await git(["-C", path, "status", "--porcelain"]).catch(() => null);
+  const status = await git(["-C", path, "status", "--porcelain"]).catch((caughtError5) => {
+    journalCaught(caughtError5, "worktree.worktreeMergedInto.git", null);
+    return null;
+  });
   if (status === null || status.trim()) return false;
   for (const head of heads) {
     const contained = await git(["-C", path, "merge-base", "--is-ancestor", "HEAD", head]).then(
       () => true,
-      () => false,
+      (caughtError1) => {
+        journalCaught(caughtError1, "worktree.worktreeMergedInto.git", null);
+        return false;
+      },
     );
     if (contained) return true;
   }

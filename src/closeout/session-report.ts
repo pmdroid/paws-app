@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -18,7 +19,8 @@ export function sessionCloseoutAccepted(report: string | undefined): boolean {
   let parsed: unknown;
   try {
     parsed = JSON.parse(report);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "session-report.sessionCloseoutAccepted.parse", null);
     return false;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
@@ -46,7 +48,8 @@ export function readSessionCloseout(path: string): { head: string; report: strin
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "session-report.readSessionCloseout.parse", null);
     return undefined;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
@@ -88,7 +91,8 @@ export function sessionCloseoutResult(
         typeof entry.result.timedOut === "boolean" &&
         typeof entry.result.truncated === "boolean",
     )?.result;
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "session-report.sessionCloseoutResult.parse", request.itemId);
     return undefined;
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   accrueAwake,
@@ -146,7 +147,8 @@ export class HostSupervisor {
     for (const item of restarts) {
       try {
         this.restartFromMain(item);
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "supervisor.handleWake.restartFromMain", null);
         // item.start is already queued with from: fresh_main. The WIP branch stays as it was.
       }
     }

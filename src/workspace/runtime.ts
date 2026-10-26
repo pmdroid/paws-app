@@ -1,3 +1,4 @@
+import { journalCaught, journalRejection } from "../journal";
 import type { Database } from "bun:sqlite";
 import { MEMBERSHIP_BACKSTOP_MS } from "../db";
 import type { WorkspaceAssignments } from "./assignments";
@@ -43,7 +44,9 @@ export function startWorkspaceAccess(
     handle: (request: Request) => accepting(() => value.handle(request)),
     refreshMemberships: () => accepting(() => value.refreshMemberships()),
   }));
-  void access.catch(options.onError);
+  void access.catch(
+    journalRejection("workspace/runtime.startWorkspaceAccess.access", options.onError, null),
+  );
   let pending: Promise<void> | undefined;
   let requested = 0;
   function refresh(): Promise<void> {
@@ -61,6 +64,7 @@ export function startWorkspaceAccess(
                 : value.refreshMemberships());
             } catch (error) {
               if (generation === requested) throw error;
+              journalCaught(error, "runtime.refresh.then", null);
             }
             if (generation === requested) return;
           }
@@ -76,7 +80,10 @@ export function startWorkspaceAccess(
   }
 
   const timer = setInterval(() => {
-    if (pending === undefined) void refresh().catch(options.onError);
+    if (pending === undefined)
+      void refresh().catch(
+        journalRejection("workspace/runtime.startWorkspaceAccess.refresh", options.onError, null),
+      );
   }, options.refreshIntervalMs ?? MEMBERSHIP_BACKSTOP_MS);
   timer.unref();
   return {
@@ -86,7 +93,11 @@ export function startWorkspaceAccess(
       stopping = true;
       clearInterval(timer);
       await Promise.allSettled([pending]);
-      await access.then((value) => value.stop()).catch(() => {});
+      await access
+        .then((value) => value.stop())
+        .catch((caughtError1) => {
+          journalCaught(caughtError1, "runtime.stop.then", null);
+        });
     },
   };
 }

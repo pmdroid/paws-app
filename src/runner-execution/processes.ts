@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -19,7 +20,10 @@ export function startTime(pid: number, proc = "/proc"): string | undefined {
     if (fields[0] === "Z" || fields[0] === "X") return;
     return fields[19];
   } catch (error) {
-    if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+      journalCaught(error, "processes.startTime.readFileSync", null, "process may have exited");
+      return;
+    }
     throw error;
   }
 }
@@ -44,7 +48,13 @@ export function listExecutionProcesses(scope: string, proc = "/proc"): Execution
       tag = readFileSync(join(proc, entry, "environ"), "latin1")
         .split("\0")
         .find((value) => prefixes.some((prefix) => value.startsWith(prefix)));
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(
+        caughtError1,
+        "processes.listExecutionProcesses.find",
+        null,
+        "process may be absent or inaccessible",
+      );
       continue;
     }
     const executionId = ExecutionIdSchema.safeParse(tag?.slice(tag.indexOf("/") + 1));
@@ -62,6 +72,7 @@ function signal(targets: readonly ExecutionProcess[], name: NodeJS.Signals): voi
       process.kill(target.pid, name);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      journalCaught(error, "processes.signal.kill", null, "process may have exited");
     }
   }
 }

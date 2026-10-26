@@ -17,3 +17,25 @@ test("protected transcript configuration feeds explicit storage and startup with
     rmSync(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("transcript configuration stdin failures retain fixed guidance without credential contents", async () => {
+  const secret = "StdinOnlyS3Credential";
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "--no-env-file",
+      "-e",
+      `
+    import { runRunnerTranscriptStorageCli } from "./src/runner-transcript-config";
+    Object.defineProperty(process, "stdin", { value: { async *[Symbol.asyncIterator]() { throw new Error("${secret}"); } } });
+    process.exitCode = await runRunnerTranscriptStorageCli(["configure"], "/unused");
+  `,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [exit, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(exit).toBe(1);
+  expect(stderr.trim().split("\n")).toHaveLength(1);
+  expect(stderr).toContain("Runner transcript storage configuration is missing or invalid.");
+  expect(stderr).not.toContain(secret);
+});

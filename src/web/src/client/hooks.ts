@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
@@ -111,7 +112,10 @@ async function hookRequest(
     },
     ...(init.method === "POST" ? { body: JSON.stringify(init.body) } : {}),
   });
-  const data = await response.json().catch(() => ({}));
+  const data = await response.json().catch((caughtError1) => {
+    journalCaught(caughtError1, "hooks.hookRequest.json", null);
+    return {};
+  });
   if (!response.ok)
     throw new Error(
       typeof data.error === "string" ? data.error : `Request failed (${response.status}).`,
@@ -165,6 +169,7 @@ export function createHookSettings(): {
       view.notice = data.notice ?? null;
       if (reset) view.draft = undefined;
     } catch (error) {
+      journalCaught(error, "hooks.createHookSettings.hookRequest", null);
       if (started !== generation) return;
       if (error instanceof Error && error.cause === 403 && body === undefined) view.denied = true;
       else view.error = error instanceof Error ? error.message : "Could not change hooks.";

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { OwnedProcess } from "./process";
 import * as fs from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -143,7 +144,14 @@ async function processFamily(): Promise<{
         leader > 0
       )
         return { child, descendant, leader };
-    } catch {}
+    } catch (caughtError1) {
+      journalCaught(
+        caughtError1,
+        "host-process.test.processFamily.Number",
+        null,
+        "test fixture cleanup",
+      );
+    }
     await Bun.sleep(10);
   }
   await stopChild(child, 100);

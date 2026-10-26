@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { immediate, runnerLeaseCutoff, workspaceMember } from "../db";
@@ -212,7 +213,8 @@ export function createRunnerModels(options: {
           { catalogs: read(principal) },
           { headers: { "cache-control": "no-store" } },
         );
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "runner-models.browser.json", null);
         return Response.json({ error: "Agent model choices are unavailable." }, { status: 403 });
       }
     },

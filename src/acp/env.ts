@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 /** Variables an agent and its hooks may inherit. Everything else stays with Paws. */
 export const ALLOWED_AGENT_ENV: readonly string[] = [
   "HOME",
@@ -117,7 +118,8 @@ function isBenignProxy(value: string): boolean {
       !url.search &&
       !url.hash
     );
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "env.isBenignProxy.includes", null);
     return false;
   }
 }

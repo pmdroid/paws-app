@@ -1,4 +1,5 @@
 import { ask } from "./operations";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, sleep } from "../core";
 import { LinearRateLimitError } from "../linear";
@@ -350,6 +351,12 @@ export class GitHubInstallationCheck {
       else this.lastReady.delete(item.id);
       return result;
     } catch (error) {
+      journalCaught(
+        error,
+        "github-integration.probe.check",
+        item?.id,
+        "cancellation may interrupt work",
+      );
       const limited =
         error instanceof LinearRateLimitError
           ? error.retryAfterMs

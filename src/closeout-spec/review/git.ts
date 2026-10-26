@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 export type GitResult = {
   exitCode: number;
   stdout: string;
@@ -21,6 +22,7 @@ export async function gitRun(cwd: string, args: string[]): Promise<GitResult> {
       },
     });
   } catch (error) {
+    journalCaught(error, "git.gitRun.spawn", null);
     const message = error instanceof Error ? error.message : String(error);
     return { exitCode: 1, stdout: "", stderr: message };
   }

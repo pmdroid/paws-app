@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { z } from "zod";
 import type { PolicyFilesLoad } from "./load";
 import type { PublishedEvidence } from "../types";
@@ -55,7 +56,8 @@ export function decodePolicyFiles(text: string): PolicyFilesLoad {
   let parsed: z.infer<typeof Transfer>;
   try {
     parsed = Transfer.parse(JSON.parse(text));
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "transfer.decodePolicyFiles.parse", null);
     return { ok: false, message: "Paws sent an invalid Closeout policy" };
   }
   if ("absent" in parsed) return { ok: true, absent: true };

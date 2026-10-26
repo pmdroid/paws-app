@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { assertCommand, assertVmName, shellQuote } from "./names";
 import {
   ProvisioningError,
@@ -117,6 +118,7 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
       parseListed(vm, status, text);
       return false;
     } catch (error) {
+      journalCaught(error, "client.unlisted.call", null);
       return error instanceof ProvisioningError && error.code === "missing";
     }
   }
@@ -146,13 +148,18 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
         );
         return parseDeleted(vm, status, text);
       } catch (error) {
-        if (error instanceof ProvisioningError && error.code === "missing") return "missing";
+        if (error instanceof ProvisioningError && error.code === "missing") {
+          journalCaught(error, "client.deleteVm.call", null);
+          return "missing";
+        }
         if (
           error instanceof ProvisioningError &&
           error.code === "invalid_response" &&
           (await unlisted(vm))
-        )
+        ) {
+          journalCaught(error, "client.deleteVm.call", null);
           return "missing";
+        }
         throw error;
       }
     },
@@ -193,7 +200,8 @@ async function bearer(operation: ProvisioningOperation, read: ExeDevTokenReader)
   let token: string | null;
   try {
     token = await read();
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "client.bearer.read", null);
     token = null;
   }
   const trimmed = typeof token === "string" ? token.trim() : "";
@@ -218,6 +226,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
         resolve(value);
       },
       (error: unknown) => {
+        journalCaught(error, "client.abortable", null);
         signal.removeEventListener("abort", onAbort);
         reject(error instanceof Error ? error : new Error("request failed"));
       },
@@ -232,12 +241,17 @@ async function readCapped(
 ): Promise<string | null> {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > limit) {
-    await response.body?.cancel().catch(() => {});
+    await response.body?.cancel().catch((caughtError2) => {
+      journalCaught(caughtError2, "client.readCapped.cancel", null);
+    });
     return null;
   }
   if (response.body === null) return "";
   const reader = response.body.getReader();
-  const onAbort = () => void reader.cancel().catch(() => {});
+  const onAbort = () =>
+    void reader.cancel().catch((caughtError3) => {
+      journalCaught(caughtError3, "client.readCapped.cancel", null);
+    });
   signal.addEventListener("abort", onAbort, { once: true });
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -247,7 +261,9 @@ async function readCapped(
       if (done) break;
       size += value.byteLength;
       if (size > limit) {
-        await reader.cancel().catch(() => {});
+        await reader.cancel().catch((caughtError4) => {
+          journalCaught(caughtError4, "client.readCapped.cancel", null);
+        });
         return null;
       }
       chunks.push(value);
@@ -418,7 +434,8 @@ function invalid(operation: ProvisioningOperation, vm: string, status: number): 
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
-  } catch {
+  } catch (caughtError5) {
+    journalCaught(caughtError5, "client.parseJson.parse", null);
     return undefined;
   }
 }
@@ -435,7 +452,8 @@ function isHttpsUrl(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 2048) return false;
   try {
     return new URL(value).protocol === "https:";
-  } catch {
+  } catch (caughtError6) {
+    journalCaught(caughtError6, "client.isHttpsUrl", null);
     return false;
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -80,6 +81,7 @@ function envelopeKey(dir: string): Buffer {
         syncDirectory(dir);
       } catch (error) {
         if (!existsSync(path)) throw error;
+        journalCaught(error, "files.envelopeKey.linkSync", null);
       }
     } finally {
       rmSync(temporary, { force: true });

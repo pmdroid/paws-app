@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState, type LinearCommand, type WorkItemState } from "../core";
 import {
@@ -281,6 +282,7 @@ async function deliver(
   try {
     for (const command of commands) options.notify(command);
   } catch (error) {
+    journalCaught(error, "linear-administration.deliver.notify", null);
     failures.push(error);
   }
   const results = await Promise.allSettled(

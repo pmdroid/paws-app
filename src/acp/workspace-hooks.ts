@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -158,7 +159,8 @@ export function readHookFailures(
   let fd: number;
   try {
     fd = openSync(path, "r");
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "workspace-hooks.readHookFailures.openSync", null);
     return { failures: [], offset };
   }
   try {
@@ -184,7 +186,9 @@ export function readHookFailures(
             command: value.command.slice(0, 512),
             reason: value.reason.slice(0, 1024),
           });
-      } catch {}
+      } catch (caughtError2) {
+        journalCaught(caughtError2, "workspace-hooks.readHookFailures.parse", null);
+      }
     }
     return { failures, offset: offset + Buffer.byteLength(text.slice(0, end)) };
   } finally {

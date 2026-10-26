@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { z } from "zod";
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
@@ -173,8 +174,9 @@ export async function hasMergeQueue(
     if (response.status !== 200 || !parsed.success || parsed.data.errors?.length) return null;
     return parsed.data.data.repository?.mergeQueue != null;
   } catch (error) {
+    journalCaught(error, "merge-queue.hasMergeQueue.graphql", null);
     input.signal?.throwIfAborted();
-    console.error(`GitHub merge queue read failed: ${safeMessage(error)}`);
+
     return null;
   }
 }
@@ -217,8 +219,9 @@ export async function readMergeQueueEntry(
           : null,
     };
   } catch (error) {
+    journalCaught(error, "merge-queue.readMergeQueueEntry.graphql", null);
     input.signal?.throwIfAborted();
-    console.error(`GitHub merge queue entry read failed: ${safeMessage(error)}`);
+
     return null;
   }
 }
@@ -274,6 +277,7 @@ export async function enqueuePullRequest(
     const entry = parsed.data.data?.enqueuePullRequest?.mergeQueueEntry;
     return { ok: true, position: entry?.position ?? null, state: entry?.state ?? "QUEUED" };
   } catch (error) {
+    journalCaught(error, "merge-queue.enqueuePullRequest.graphql", null);
     input.signal?.throwIfAborted();
     return { ok: false, retry: true, message: `merge queue request failed: ${safeMessage(error)}` };
   }
@@ -487,7 +491,10 @@ export async function repositoriesWithMergeQueue<R extends { owner: string; repo
 }): Promise<string[]> {
   const results = await Promise.all(
     input.repositories.map(async (repository) => {
-      const token = await input.token(repository).catch(() => null);
+      const token = await input.token(repository).catch((caughtError1) => {
+        journalCaught(caughtError1, "merge-queue.repositoriesWithMergeQueue.token", null);
+        return null;
+      });
       if (token === null) return null;
       const found = await hasMergeQueue({
         client: input.client,

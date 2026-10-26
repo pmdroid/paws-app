@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { acquireOperationToken } from "./auth/provider";
@@ -258,6 +259,7 @@ async function pushRebased(
   } catch (error) {
     if (isTransient(error)) throw error;
     const message = redact(minted, error instanceof Error ? error.message : String(error));
+    journalCaught(message, "merge.pushRebased", input.issue);
     return { ok: false, result: { merged: false, outcome: "push_rejected", branch, message } };
   }
 }
@@ -313,9 +315,13 @@ async function rebaseOnto(
   try {
     await git(worktree, ["rebase", onto], gitExec);
     return { kind: "ok" };
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "merge.rebaseOnto.git", null);
     const gitPath = await git(worktree, ["rev-parse", "--git-path", "rebase-merge"], gitExec).catch(
-      () => "",
+      (caughtError3) => {
+        journalCaught(caughtError3, "merge.rebaseOnto.git", null);
+        return "";
+      },
     );
     const resolved =
       gitPath === "" ? "" : path.isAbsolute(gitPath) ? gitPath : path.resolve(worktree, gitPath);
@@ -324,8 +330,14 @@ async function rebaseOnto(
         worktree,
         ["diff", "--name-only", "--diff-filter=U"],
         gitExec,
-      ).catch(() => "");
-      await git(worktree, ["rebase", "--abort"], gitExec).catch(() => "");
+      ).catch((caughtError4) => {
+        journalCaught(caughtError4, "merge.rebaseOnto.git", null);
+        return "";
+      });
+      await git(worktree, ["rebase", "--abort"], gitExec).catch((caughtError5) => {
+        journalCaught(caughtError5, "merge.rebaseOnto.git", null);
+        return "";
+      });
       return { kind: "conflict", files: unmerged.split("\n").filter((file) => file !== "") };
     }
     return { kind: "failed" };
@@ -370,7 +382,8 @@ function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"
 function safeBranch(issue: string): string {
   try {
     return branchForIssue(issue);
-  } catch {
+  } catch (caughtError6) {
+    journalCaught(caughtError6, "merge.safeBranch.branchForIssue", null);
     return "paws/invalid";
   }
 }

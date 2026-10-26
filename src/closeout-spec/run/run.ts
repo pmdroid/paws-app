@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { checkoutPatterns, exclusionPatterns } from "../../worktree-checkout";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -156,7 +157,8 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     try {
       try {
         await checkoutPatterns(tree, exclusionPatterns(input.checkoutExclusions ?? []), env);
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "run.runCloseoutCommands.checkoutPatterns", null);
         const blocked = "could not populate a worktree at the candidate commit";
         blockPending(input.progress, identity, actions, blocked);
         return { blocked, dispositions: [] };

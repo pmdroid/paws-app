@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "./eligibility";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
@@ -82,7 +83,12 @@ export async function handleWorkspaceAdministration(
   let body: unknown;
   try {
     body = await readWorkspaceJson(request);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(
+      caughtError1,
+      "administration.handleWorkspaceAdministration.readWorkspaceJson",
+      null,
+    );
     return Response.json({ error: "Expected a JSON body of at most 16 KiB." }, { status: 400 });
   }
   if (!record(body))
@@ -158,6 +164,7 @@ export async function handleWorkspaceAdministration(
     }
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    journalCaught(error, "administration.handleWorkspaceAdministration.endsWith", null);
     return Response.json(
       {
         error: error instanceof Error ? error.message : "Workspace settings could not be changed.",

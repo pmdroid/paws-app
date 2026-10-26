@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { stripVTControlCharacters } from "node:util";
 import { spawn } from "node:child_process";
 import { resolveGrokCommand } from "../acp";
@@ -29,7 +30,9 @@ export async function runGrokLogin(options: {
     if (child.pid) {
       try {
         process.kill(-child.pid, "SIGKILL");
-      } catch {}
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "grok.runGrokLogin.kill", null, "process may have exited");
+      }
     }
   };
   const exited = new Promise<number | null>((resolve, reject) => {
@@ -89,6 +92,9 @@ export async function runGrokLogin(options: {
   } finally {
     options.signal.removeEventListener("abort", kill);
     kill();
-    await exited.catch(() => undefined);
+    await exited.catch((caughtError2) => {
+      journalCaught(caughtError2, "grok.runGrokLogin", null);
+      return undefined;
+    });
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { policyCanonicalJson, sha256Hex, sha256Text, sortPolicyFiles } from "./canonical";
@@ -264,12 +265,19 @@ function fsTree(root: string): PolicyTree {
       if (absolute === undefined) return { status: "missing" };
       try {
         if (!statSync(absolute).isFile()) return { status: "missing" };
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "resolve.read.isFile", null);
         return { status: "missing" };
       }
       try {
         return { status: "file", bytes: new Uint8Array(readFileSync(absolute)) };
-      } catch {
+      } catch (caughtError2) {
+        journalCaught(
+          caughtError2,
+          "resolve.read.readFileSync",
+          null,
+          "optional file may be absent",
+        );
         return { status: "error", message: "could not read the policy file" };
       }
     },
@@ -294,7 +302,13 @@ function listSkillFiles(root: string, skillFile: string): TreeList {
   let dirStat;
   try {
     dirStat = lstatSync(dirAbs);
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(
+      caughtError3,
+      "resolve.listSkillFiles.lstatSync",
+      null,
+      "optional file may be absent",
+    );
     return { ok: false, message: `skill is missing: ${skillFile}` };
   }
   if (dirStat.isSymbolicLink()) return { ok: false, message: `skill file is a symlink: ${dirAbs}` };
@@ -307,7 +321,13 @@ function listSkillFiles(root: string, skillFile: string): TreeList {
     let entries;
     try {
       entries = readdirSync(current, { withFileTypes: true });
-    } catch {
+    } catch (caughtError4) {
+      journalCaught(
+        caughtError4,
+        "resolve.listSkillFiles.readdirSync",
+        null,
+        "optional file may be absent",
+      );
       return { ok: false, message: "could not read the skill directory" };
     }
     for (const entry of entries) {

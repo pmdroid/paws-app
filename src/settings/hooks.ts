@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "../workspace";
+import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -60,7 +61,8 @@ export async function handleHookSettingsRequest(
   let body: unknown;
   try {
     body = await readJson(request);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "hooks.handleHookSettingsRequest.readJson", null);
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   if (!isRecord(body)) return json({ error: "Expected a JSON object" }, 400);

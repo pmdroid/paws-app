@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   listSkills,
   recordRunAgentSetup,
@@ -459,7 +460,8 @@ export function createRunnerWork(options: {
           if (payload.type === "run" || payload.type === "review" || payload.type === "task") {
             try {
               live(runnerId, row.runId!, row.generation!, now());
-            } catch {
+            } catch (caughtError1) {
+              journalCaught(caughtError1, "control.commands.live", null);
               continue;
             }
           }
@@ -528,7 +530,8 @@ export function createRunnerWork(options: {
               generation: row.generation,
               expiresAt: renew(row, at),
             });
-          } catch {
+          } catch (caughtError2) {
+            journalCaught(caughtError2, "control.heartbeat.live", null);
             db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [at, row.runId]);
             db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]);
             fenced.push({ runId: row.runId, generation: row.generation });

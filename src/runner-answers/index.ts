@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   closeSync,
   constants,
@@ -35,6 +36,12 @@ export function removeRunnerAnswers(spool: RunnerSpool, executionId: string): vo
     rmSync(directory, { recursive: true, force: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    journalCaught(
+      error,
+      "runner-answers.removeRunnerAnswers.runnerJobDirectory",
+      null,
+      "optional file may be absent",
+    );
   }
 }
 
@@ -58,6 +65,7 @@ function openAnswers(spool: RunnerSpool, executionId: string, create: boolean): 
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      journalCaught(error, "runner-answers.openAnswers.mkdirSync", null, "path may already exist");
     }
   }
   const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -113,7 +121,15 @@ export function readRunnerAnswer(
     if (answer.requestId !== requestId) throw new Error("Runner answer identity mismatch");
     return answer;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      journalCaught(
+        error,
+        "runner-answers.readRunnerAnswer.openAnswers",
+        null,
+        "optional file may be absent",
+      );
+      return null;
+    }
     throw error;
   } finally {
     if (file !== undefined) closeSync(file);
@@ -160,6 +176,12 @@ export function publishRunnerAnswer(
         JSON.stringify(answer)
       )
         throw new Error("Runner answer is immutable", { cause: error });
+      journalCaught(
+        error,
+        "runner-answers.publishRunnerAnswer.renameSync",
+        null,
+        "path may already exist",
+      );
     }
     fsyncSync(directory);
   } finally {

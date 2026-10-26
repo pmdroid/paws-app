@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { readFile, stat } from "node:fs/promises";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { runAgent } from "./run";
@@ -53,7 +54,15 @@ export function createAcpPromptLifecycle(
           const offset = await stat(path).then(
             (info) => info.size,
             (error: NodeJS.ErrnoException) => {
-              if (error.code === "ENOENT") return 0;
+              if (error.code === "ENOENT") {
+                journalCaught(
+                  error,
+                  "lifecycle.prompt.stat",
+                  options.itemId,
+                  "optional file may be absent",
+                );
+                return 0;
+              }
               throw error;
             },
           );
@@ -144,7 +153,8 @@ export function requestText(prompt: string): string {
   let entries: unknown;
   try {
     entries = JSON.parse(context);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "lifecycle.requestText.parse", null);
     return prompt;
   }
   if (!Array.isArray(entries)) return prompt;
@@ -174,7 +184,15 @@ async function readConversation(path: string, offset: number): Promise<AcpConver
     try {
       parsed = JSON.parse(line) as { event?: AcpEvent } | null;
     } catch (error) {
-      if (index === lines.length - 1) break;
+      if (index === lines.length - 1) {
+        journalCaught(
+          error,
+          "lifecycle.readConversation.parse",
+          null,
+          "incomplete trailing transcript record",
+        );
+        break;
+      }
       throw error;
     }
     const event = parsed?.event;

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { ZodError } from "zod";
 import { RunnerRequestError, RunnerTransportError } from "../runner-daemon";
 
@@ -117,4 +118,18 @@ export function describeRunnerFailure(error: unknown, secrets: readonly string[]
 /** The single stderr line a failed command prints, so callers that keep the tail still see it. */
 export function runnerFailureLine(error: unknown, secrets: readonly string[] = []): string {
   return `${RUNNER_FAILURE} Cause: ${describeRunnerFailure(error, secrets)}`;
+}
+
+export function journalRunnerFailure(
+  caught: unknown,
+  secrets: readonly string[],
+  write: (line: string) => void,
+): void {
+  journalCaught(
+    runnerFailureLine(caught, secrets),
+    "runner-cli.runRunnerCli",
+    null,
+    undefined,
+    write,
+  );
 }

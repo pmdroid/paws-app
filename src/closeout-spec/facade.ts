@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 /**
  * In-process Closeout draft 0.1 operations.
  *
@@ -458,6 +459,7 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
     try {
       await evidence.add(record);
     } catch (error) {
+      journalCaught(error, "facade.addReview.add", input.itemId);
       const message = error instanceof Error ? error.message : String(error);
       return { ok: false, message };
     }
@@ -769,7 +771,8 @@ function blankCandidate(): CandidateIdentity {
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory() && !lstatSync(path).isSymbolicLink();
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "facade.isDirectory", null);
     return false;
   }
 }
@@ -825,7 +828,8 @@ function splitNul(bytes: Buffer): Buffer[] {
 function utf8(bytes: Buffer): string | undefined {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "facade.utf8.decode", null);
     return undefined;
   }
 }

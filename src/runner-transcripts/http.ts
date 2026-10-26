@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { SQLiteError } from "bun:sqlite";
 import { RunnerTranscriptStorageError, type RunnerTranscripts } from "./store";
 import { RunnerWorkFencedError } from "../runner-work";
@@ -21,7 +22,11 @@ export function createRunnerTranscriptsHttp(transcripts: RunnerTranscripts) {
       const reader = request.body?.getReader();
       if (!reader) throw new Error("Transcript body is required");
       const deadline = AbortSignal.timeout(10_000);
-      const abort = () => void reader.cancel().catch(() => undefined);
+      const abort = () =>
+        void reader.cancel().catch((caughtError1) => {
+          journalCaught(caughtError1, "http.createRunnerTranscriptsHttp.cancel", null);
+          return undefined;
+        });
       request.signal.addEventListener("abort", abort, { once: true });
       deadline.addEventListener("abort", abort, { once: true });
       let raw: unknown;
@@ -43,7 +48,10 @@ export function createRunnerTranscriptsHttp(transcripts: RunnerTranscripts) {
       } finally {
         request.signal.removeEventListener("abort", abort);
         deadline.removeEventListener("abort", abort);
-        await reader.cancel().catch(() => undefined);
+        await reader.cancel().catch((caughtError2) => {
+          journalCaught(caughtError2, "http.createRunnerTranscriptsHttp.cancel", null);
+          return undefined;
+        });
         reader.releaseLock();
       }
       const access = {
@@ -57,6 +65,7 @@ export function createRunnerTranscriptsHttp(transcripts: RunnerTranscripts) {
           : await transcripts.finish(access, RunnerTranscriptFinishSchema.parse(raw));
       return Response.json(result, { headers: { "cache-control": "no-store" } });
     } catch (error) {
+      journalCaught(error, "http.createRunnerTranscriptsHttp.get", null);
       return Response.json(
         { error: "Runner transcript request failed" },
         {

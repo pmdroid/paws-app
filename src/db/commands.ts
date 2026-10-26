@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   CommandBus,
@@ -53,7 +54,8 @@ export function applyLinearCommand(
         if (!halt(db, item, now)) throw new Error("Stop owner changed");
         applyWorkItemEvent(db, item.id, "cancel");
       });
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "commands.applyLinearCommand.applyWorkItemEvent", command.itemId);
       return { applied: false };
     }
     db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
@@ -159,6 +161,7 @@ export function drainCommands(db: Database, bus: CommandBus, now = Date.now()): 
       try {
         bus.emit(command);
       } catch (error) {
+        journalCaught(error, "commands.drainCommands.emit", command.itemId);
         noteJobError(db, job.id, errorText(error));
       }
     }

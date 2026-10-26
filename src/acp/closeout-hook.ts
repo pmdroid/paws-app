@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -31,7 +32,8 @@ export function closeoutFinishLine(report: string): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(report);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "closeout-hook.closeoutFinishLine.parse", null);
     return CLOSEOUT_FINISH_UNAVAILABLE;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -349,7 +351,15 @@ async function linkCodexHome(
   try {
     entries = await readdir(source, { withFileTypes: true });
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return undefined;
+    if (errorCode(error) === "ENOENT") {
+      journalCaught(
+        error,
+        "closeout-hook.linkCodexHome.readdir",
+        null,
+        "optional file may be absent",
+      );
+      return undefined;
+    }
     throw error;
   }
   for (const entry of entries) {
@@ -360,7 +370,15 @@ async function linkCodexHome(
   try {
     await lstat(configPath);
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return undefined;
+    if (errorCode(error) === "ENOENT") {
+      journalCaught(
+        error,
+        "closeout-hook.linkCodexHome.lstat",
+        null,
+        "optional file may be absent",
+      );
+      return undefined;
+    }
     throw error;
   }
   return readFile(configPath, "utf8");
@@ -385,7 +403,10 @@ async function names(directory: string): Promise<string[]> {
   try {
     return await readdir(directory);
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return [];
+    if (errorCode(error) === "ENOENT") {
+      journalCaught(error, "closeout-hook.names.readdir", null, "optional file may be absent");
+      return [];
+    }
     throw error;
   }
 }

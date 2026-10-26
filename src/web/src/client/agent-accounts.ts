@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { readCsrfToken } from "./csrf";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
@@ -148,7 +149,10 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    const result = await response.json().catch(() => null);
+    const result = await response.json().catch((caughtError1) => {
+      journalCaught(caughtError1, "agent-accounts.request.json", null);
+      return null;
+    });
     if (!response.ok || !result)
       throw new Error(
         result?.error ?? "Agent accounts could not be reached. Refresh to try again.",
@@ -191,6 +195,7 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
       );
       paint();
     } catch (error) {
+      journalCaught(error, "agent-accounts.load.all", null);
       feedback.textContent = error instanceof Error ? error.message : "Refresh to try again.";
     } finally {
       busy = false;
@@ -217,6 +222,7 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
       account.connected = login.state === "connected";
       paint();
     } catch (error) {
+      journalCaught(error, "agent-accounts.act.request", null);
       feedback.textContent = error instanceof Error ? error.message : "Refresh to try again.";
     } finally {
       busy = false;

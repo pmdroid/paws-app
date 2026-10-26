@@ -1,4 +1,5 @@
 import { createPrivateKey, createPublicKey, X509Certificate, type KeyObject } from "node:crypto";
+import { journalCaught } from "../journal";
 import {
   chmodSync,
   closeSync,
@@ -31,7 +32,8 @@ export const SigningKeysSchema = z
               key.asymmetricKeyType === "ed25519" &&
               key.export({ type: "spki", format: "pem" }) === pem
             );
-          } catch {
+          } catch (caughtError1) {
+            journalCaught(caughtError1, "state.recover.startsWith", null);
             return false;
           }
         }),

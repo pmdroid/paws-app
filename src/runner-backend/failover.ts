@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   DEFAULT_RUN_TIMEOUT_MS,
   recoverAcpConversation,
@@ -97,6 +98,12 @@ export async function runWithFailover(
         input.signal?.throwIfAborted();
         deadline += performance.now() - waitingAt;
         limit = undefined;
+        journalCaught(
+          error,
+          "failover.runWithFailover.pause",
+          input.itemId,
+          "waiting for usage reset",
+        );
         continue;
       }
       if (!(error instanceof RetryableRunnerError)) throw error;
@@ -154,11 +161,25 @@ export async function runWithFailover(
       const history = error.transcriptPath
         ? await recoverAcpConversation(error.transcriptPath).catch(
             (failure: NodeJS.ErrnoException) => {
-              if (failure.code === "ENOENT") return [];
+              if (failure.code === "ENOENT") {
+                journalCaught(
+                  failure,
+                  "failover.runWithFailover.recoverAcpConversation",
+                  input.itemId,
+                  "optional file may be absent",
+                );
+                return [];
+              }
               throw failure;
             },
           )
         : [];
+      journalCaught(
+        error,
+        "failover.runWithFailover.floor",
+        input.itemId,
+        "retrying runner failure",
+      );
       if (usageLimit) {
         // The run's transcript holds every earlier attempt, so each limit rebuilds from the base.
         if (approved) basePrompt = `${basePrompt}\n\nContinuation instructions:\n${approved}`;

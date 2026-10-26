@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { inflateSync } from "node:zlib";
 
 /** A pixel counts as changed when one channel moves by more than this, out of 255. */
@@ -51,7 +52,8 @@ async function decode(bytes: Uint8Array): Promise<Pixels | null> {
       .png({ compressionLevel: 0 })
       .bytes();
     return decodePng(png);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "screenshot-diff.decode.bytes", null);
     return null;
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { stat } from "node:fs/promises";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AuthCheckResult } from "./auth";
@@ -117,6 +118,12 @@ export async function runWithShellRecovery(
   const offset = await stat(transcript).then(
     (info) => info.size,
     (error: NodeJS.ErrnoException) => {
+      journalCaught(
+        error,
+        "shell-health.runWithShellRecovery.stat",
+        options.itemId,
+        "optional file may be absent",
+      );
       if (error.code === "ENOENT") return 0;
       throw error;
     },
@@ -177,6 +184,12 @@ export async function runWithShellRecovery(
     }
     const history = await recoverAcpConversation(transcript, offset).catch(
       (failure: NodeJS.ErrnoException) => {
+        journalCaught(
+          failure,
+          "shell-health.runWithShellRecovery.recoverAcpConversation",
+          options.itemId,
+          "optional file may be absent",
+        );
         if (failure.code === "ENOENT") return [];
         throw failure;
       },

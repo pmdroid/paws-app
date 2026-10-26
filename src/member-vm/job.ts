@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { immediate, parkLeasedJob, type Job, type JobContext, type JobLoop } from "../db";
 import {
@@ -72,8 +73,12 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
       const secrets = await Promise.resolve()
         .then(() => options.secrets?.())
         .then((list) => Promise.all(list ?? []))
-        .catch(() => []);
+        .catch((caughtError1) => {
+          journalCaught(caughtError1, "job.createMemberVmHandler.then", null);
+          return [];
+        });
       const text = redact(errorText(error), [...minted, ...secrets]);
+      journalCaught(text, "member-vm.provision");
       const at = now();
       db.run(
         "UPDATE member_vm SET failure=?,updated_at=? WHERE id=? AND step=? AND delete_step IS NULL",
@@ -121,6 +126,7 @@ async function runStep(
         await exeDev.createVm(vm);
       } catch (error) {
         const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
+        if (ours) journalCaught(error, "member-vm.createVm", null, "resuming our create request");
         if (!ours) {
           if (rejected(error))
             db.run(

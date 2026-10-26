@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { systemClock, type Clock } from "../core";
 import { OutboxDispatcher } from "./dispatcher";
@@ -29,7 +30,10 @@ export function startLoops(input: {
   });
   input.prepare?.({ jobs, outbox });
   const task = Promise.all([jobs.run(input.signal), outbox.run(input.signal)]);
-  void task.catch(() => undefined);
+  void task.catch((caughtError1) => {
+    journalCaught(caughtError1, "loops.startLoops", null);
+    return undefined;
+  });
   return {
     jobs,
     outbox,

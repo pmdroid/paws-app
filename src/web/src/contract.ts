@@ -1,5 +1,6 @@
 export { holdsExecution, isBlockerSatisfied } from "../../core";
 
+import { journalCaught } from "./journal";
 /**
  * Read-only status snapshot served by the local Paws engine.
  *
@@ -554,6 +555,7 @@ export function parseStatusSnapshot(input: unknown): ParseResult {
   try {
     return { ok: true, snapshot: readSnapshot(input) };
   } catch (error) {
+    journalCaught(error, "contract.parseStatusSnapshot.readSnapshot", null);
     const message = error instanceof Error ? error.message : "Invalid status snapshot";
     return { ok: false, error: message };
   }

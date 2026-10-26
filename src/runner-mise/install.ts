@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,6 +86,7 @@ export async function installRuntimes(
     );
   } catch (error) {
     if (!(error instanceof LockWaitTimeoutError)) throw error;
+    journalCaught(error, "install.installRuntimes.withFileLock", null);
     return {
       ok: false,
       durationMs: Date.now() - started,
@@ -195,7 +197,9 @@ function runMise(
     const killGroup = () => {
       try {
         if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-      } catch {}
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "install.runMise.kill", null, "process may have exited");
+      }
     };
     const timer = setTimeout(() => {
       timedOut = true;

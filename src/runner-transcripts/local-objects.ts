@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -70,7 +71,10 @@ export function createLocalRunnerTranscriptObjects(root: string): RunnerTranscri
           rmSync(temporary, { force: true });
         } finally {
           closeSync(rootFd);
-          await reader?.cancel().catch(() => undefined);
+          await reader?.cancel().catch((caughtError1) => {
+            journalCaught(caughtError1, "local-objects.write.cancel", null);
+            return undefined;
+          });
           reader?.releaseLock();
         }
       }

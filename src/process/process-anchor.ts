@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { dlopen, FFIType } from "bun:ffi";
 import { spawn } from "node:child_process";
 import { closeSync, readdirSync, readFileSync } from "node:fs";
@@ -14,14 +15,18 @@ const libc = (() => {
         },
         waitpid: { args: [FFIType.i32, FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
       }).symbols;
-    } catch {}
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "process-anchor.recover.dlopen", null);
+    }
   }
 })();
 // PR_SET_CHILD_SUBREAPER: a descendant that detaches and loses its parent, like a sandbox
 // started with setsid, is reparented here instead of to init, so teardown still finds it.
 try {
   libc?.prctl(36, 1, 0, 0, 0);
-} catch {}
+} catch (caughtError2) {
+  journalCaught(caughtError2, "process-anchor.recover.prctl", null);
+}
 type Entry = { pid: number; parent: number; group: number; live: boolean };
 const table = (): Entry[] =>
   readdirSync("/proc").flatMap((entry) => {
@@ -37,7 +42,13 @@ const table = (): Entry[] =>
           live: state !== "Z" && state !== "X",
         },
       ];
-    } catch {
+    } catch (caughtError3) {
+      journalCaught(
+        caughtError3,
+        "process-anchor.table.readFileSync",
+        null,
+        "process may be absent or inaccessible",
+      );
       return [];
     }
   });
@@ -62,13 +73,21 @@ const signalFamily = (signal: NodeJS.Signals): boolean => {
   let members: Entry[];
   try {
     members = family().filter((entry) => entry.live);
-  } catch {
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "process-anchor.signalFamily.filter", null);
     return false;
   }
   for (const member of members) {
     try {
       process.kill(member.pid, signal);
-    } catch {}
+    } catch (caughtError5) {
+      journalCaught(
+        caughtError5,
+        "process-anchor.signalFamily.kill",
+        null,
+        "process may have exited",
+      );
+    }
   }
   return members.length > 0;
 };
@@ -98,14 +117,17 @@ const reap = () => {
     for (const entry of table())
       if (entry.parent === process.pid && !entry.live && entry.pid !== commandProcess.pid)
         libc.waitpid(entry.pid, null, 1);
-  } catch {}
+  } catch (caughtError6) {
+    journalCaught(caughtError6, "process-anchor.reap.table", null);
+  }
 };
 setInterval(reap, 1000).unref();
 const familyRunning = () => {
   try {
     reap();
     return family().some((entry) => entry.live);
-  } catch {
+  } catch (caughtError7) {
+    journalCaught(caughtError7, "process-anchor.familyRunning.reap", null);
     return commandRunning();
   }
 };

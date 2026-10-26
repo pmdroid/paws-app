@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { readCsrfToken } from "./csrf";
 import { esc } from "./format";
@@ -72,6 +73,7 @@ export function createExecutionControls(reload: () => Promise<void>) {
       pending = "";
       await reload();
     } catch (error) {
+      journalCaught(error, "execution-controls.submit.fetch", itemId);
       if (acceptedGeneration === generation)
         message = error instanceof Error ? error.message : "The action failed. Try again.";
     } finally {
@@ -116,7 +118,8 @@ export function createExecutionControls(reload: () => Promise<void>) {
               : [];
           paint();
         })
-        .catch(() => {
+        .catch((caughtError1) => {
+          journalCaught(caughtError1, "execution-controls.mount.then", itemId);
           if (requestedGeneration === generation) {
             actions = [];
             paint();

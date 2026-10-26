@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { constants, createHash, createPublicKey, publicEncrypt } from "node:crypto";
 import { z } from "zod";
 import { isExeDevVmName, shellQuote } from "./names";
@@ -438,7 +439,8 @@ function origin(value: unknown): string | null {
   try {
     const url = new URL(value);
     return url.protocol === "https:" ? url.origin : null;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "bootstrap.origin", null);
     return null;
   }
 }
@@ -572,7 +574,8 @@ function parseTailscaleStatus(json: string): string {
     const status: unknown = JSON.parse(json);
     const state = (status as { BackendState?: unknown } | null)?.BackendState;
     if (typeof state === "string") return state;
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "bootstrap.parseTailscaleStatus.parse", null);
     // No tailscaled yet, or it printed no status: the VM is not on the tailnet.
   }
   return "";

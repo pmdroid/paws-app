@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   delegationHasOpenWork,
@@ -380,6 +381,7 @@ export function createItemReconciler(input: {
           resolve();
         },
         (error) => {
+          journalCaught(error, "reconciliation.waitForFlight", null);
           signal.removeEventListener("abort", abort);
           reject(error);
         },
@@ -406,6 +408,7 @@ export function createItemReconciler(input: {
         })
         .immediate();
     } catch (error) {
+      journalCaught(error, "reconciliation.reconcile.immediate", target.itemId);
       return Promise.reject(error);
     }
     const key = JSON.stringify([target.workspaceId, delegationId]);

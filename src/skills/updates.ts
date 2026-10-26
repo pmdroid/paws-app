@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { SkillPin } from "../db";
 import { commitRef, gitRemoteCommit } from "./resolve";
 
@@ -30,7 +31,8 @@ export function createSkillUpdates(options: { latest?: LatestCommit } = {}): Ski
               key,
               await latest(source.url, source.ref, AbortSignal.timeout(CHECK_TIMEOUT)),
             );
-          } catch {
+          } catch (caughtError1) {
+            journalCaught(caughtError1, "updates.check.set", null);
             commits.delete(key);
           }
         }),

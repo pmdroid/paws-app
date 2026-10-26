@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash, createHmac } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -128,7 +129,8 @@ export function createBrowserOnboarding(options: {
             "referrer-policy": "no-referrer",
           },
         });
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "route.createBrowserOnboarding.completeWorkspaceOAuth", null);
         return retry("failed");
       }
     }
@@ -242,7 +244,8 @@ export function createBrowserOnboarding(options: {
       );
       options.installed();
       return new Response(null, { status: 303, headers });
-    } catch {
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "route.createBrowserOnboarding.get", null);
       return retry("failed");
     } finally {
       installing = false;

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { z } from "zod";
 import {
   MAX_TOKEN_TTL_MS,
@@ -32,7 +33,8 @@ function remember<V>(cache: Map<string, Promise<V>>, key: string, load: () => Pr
   if (cached) return cached;
   const pending = load();
   cache.set(key, pending);
-  pending.catch(() => {
+  pending.catch((caughtError1) => {
+    journalCaught(caughtError1, "runner-repository-access.remember", null);
     if (cache.get(key) === pending) cache.delete(key);
   });
   return pending;
@@ -161,6 +163,7 @@ export function createRunnerRepositoryAccess(options: {
         { headers: { "cache-control": "no-store" } },
       );
     } catch (error) {
+      journalCaught(error, "runner-repository-access.createRunnerRepositoryAccess.trim", null);
       if (error instanceof RunnerWorkFencedError)
         return Response.json(
           { error: "Runner work is fenced.", code: "fenced" },

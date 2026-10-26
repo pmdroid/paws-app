@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readSecretFile } from "../credentials";
@@ -22,7 +23,8 @@ export function exeDevTokenStatus(home: string): ExeDevTokenStatus {
   if (!existsSync(exeDevTokenPath(home))) return "absent";
   try {
     return readExeDevToken(home, false) === null ? "empty" : "readable";
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "exe-dev.exeDevTokenStatus.readExeDevToken", null);
     return "unreadable";
   }
 }

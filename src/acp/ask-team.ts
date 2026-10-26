@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createServer, type Server, type Socket } from "node:net";
 import { chmod, mkdir, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -172,7 +173,15 @@ interface HostToolBridgeOptions {
 export async function startAskTeamBridge(options: HostToolBridgeOptions): Promise<AskTeamBridge> {
   options.signal.throwIfAborted();
   await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
-  await unlink(options.socketPath).catch(() => undefined);
+  await unlink(options.socketPath).catch((caughtError1) => {
+    journalCaught(
+      caughtError1,
+      "ask-team.startAskTeamBridge.unlink",
+      null,
+      "optional file may be absent",
+    );
+    return undefined;
+  });
   const lifetime = new AbortController();
   const finish = { pullRequestOpened: false, nudged: false };
   const sockets = new Set<Socket>();
@@ -214,7 +223,15 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     options.signal.removeEventListener("abort", onAbort);
     onAbort();
     server.close();
-    await unlink(options.socketPath).catch(() => undefined);
+    await unlink(options.socketPath).catch((caughtError2) => {
+      journalCaught(
+        caughtError2,
+        "ask-team.startAskTeamBridge.unlink",
+        null,
+        "optional file may be absent",
+      );
+      return undefined;
+    });
     throw error;
   }
 
@@ -249,7 +266,10 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
       options.signal.removeEventListener("abort", onAbort);
       onAbort();
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      await unlink(options.socketPath).catch(() => undefined);
+      await unlink(options.socketPath).catch((caughtError3) => {
+        journalCaught(caughtError3, "ask-team.close.unlink", null, "optional file may be absent");
+        return undefined;
+      });
     },
   };
 }
@@ -333,7 +353,8 @@ async function handleConnection(
           answer = OPEN_PULL_REQUEST_FIRST;
         }
         if (!socket.destroyed) socket.end(`${JSON.stringify({ id, answer })}\n`);
-      } catch {
+      } catch (caughtError4) {
+        journalCaught(caughtError4, "ask-team.handleConnection.closeoutFinishLine", null);
         if (!socket.destroyed) {
           socket.end(`${JSON.stringify({ id, answer: CLOSEOUT_FINISH_UNAVAILABLE })}\n`);
         }
@@ -472,6 +493,7 @@ async function handleConnection(
     await options.onAnswer?.(request.question, response.answer);
     socket.end(`${JSON.stringify({ id, answer: response.answer })}\n`);
   } catch (error) {
+    journalCaught(error, "ask-team.handleConnection.readLine", null);
     const message = error instanceof Error ? error.message : String(error);
     if (!socket.destroyed) socket.end(`${JSON.stringify({ id, error: message })}\n`);
   }
@@ -577,8 +599,13 @@ export function parsePostUpdate(value: { text?: unknown }): string {
 function progressListener(hook: CloseoutProgressHook): (event: CloseoutSessionEvent) => void {
   return (event) => {
     try {
-      void Promise.resolve(hook.record(event)).catch(() => undefined);
-    } catch {}
+      void Promise.resolve(hook.record(event)).catch((caughtError5) => {
+        journalCaught(caughtError5, "ask-team.progressListener.resolve", null);
+        return undefined;
+      });
+    } catch (caughtError6) {
+      journalCaught(caughtError6, "ask-team.progressListener.catch", null);
+    }
   };
 }
 

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { StatusEvidence, StatusSnapshot } from "../contract";
 import {
   EVIDENCE_FILTERS,
@@ -72,7 +73,10 @@ export function createEvidenceMedia(changed: () => void): EvidenceMedia {
     const href = new URL(evidencePageHref(id), location.href).href;
     void navigator.clipboard?.writeText(href).then(
       () => flash(button, "Copied"),
-      () => flash(button, "Copy failed"),
+      (caughtError1) => {
+        journalCaught(caughtError1, "evidence-media.copyLink.writeText", null);
+        return flash(button, "Copy failed");
+      },
     );
   }
 
@@ -316,7 +320,10 @@ function createLightbox(info: ReadonlyMap<string, MediaInfo>): Lightbox {
         ?.writeText(new URL(evidencePageHref(list[index]!.id), location.href).href)
         .then(
           () => flash(copy, "Copied"),
-          () => flash(copy, "Copy failed"),
+          (caughtError2) => {
+            journalCaught(caughtError2, "evidence-media.createLightbox.writeText", null);
+            return flash(copy, "Copy failed");
+          },
         );
     const delta = Number(
       target?.closest("[data-lightbox-step]")?.getAttribute("data-lightbox-step"),

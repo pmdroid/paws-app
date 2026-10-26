@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { routeHref } from "./route";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
@@ -111,9 +112,10 @@ export function initializeWorkspaceGitHub(
       button.disabled = true;
     try {
       const response = await fetch("/api/workspaces/github-connect", { cache: "no-store" });
-      const body = (await response.json().catch(() => null)) as
-        | (GitHubStatus & { error?: string })
-        | null;
+      const body = (await response.json().catch((caughtError1) => {
+        journalCaught(caughtError1, "workspace-github.load.json", null);
+        return null;
+      })) as (GitHubStatus & { error?: string }) | null;
       if (
         !response.ok ||
         !body ||
@@ -130,6 +132,7 @@ export function initializeWorkspaceGitHub(
       data = body;
       paint();
     } catch (error) {
+      journalCaught(error, "workspace-github.load.fetch", null);
       renderMarkup(status, "<span>Connection unavailable</span>");
       feedback.textContent =
         error instanceof Error ? error.message : "GitHub could not be checked. Try again.";
@@ -154,7 +157,10 @@ export function initializeWorkspaceGitHub(
         headers: { "content-type": "application/json", "x-paws-csrf": csrfToken },
         body: "{}",
       });
-      const body = (await response.json().catch(() => null)) as {
+      const body = (await response.json().catch((caughtError2) => {
+        journalCaught(caughtError2, "workspace-github.connect.json", null);
+        return null;
+      })) as {
         authorizationUrl?: string;
         installationUrl?: string;
         error?: string;
@@ -175,6 +181,7 @@ export function initializeWorkspaceGitHub(
         paint();
       } else throw new Error("GitHub could not connect. Refresh status and try again.");
     } catch (error) {
+      journalCaught(error, "workspace-github.connect.fetch", null);
       feedback.textContent =
         error instanceof Error ? error.message : "GitHub could not connect. Try again.";
     } finally {
@@ -192,7 +199,9 @@ export function initializeWorkspaceGitHub(
     if (target.hasAttribute("data-github-signin")) {
       try {
         sessionStorage.setItem("paws.settingsReturn", "/settings/integrations");
-      } catch {}
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "workspace-github.initializeWorkspaceGitHub.setItem", null);
+      }
     }
     if (target.hasAttribute("data-github-install")) waitingForInstall = true;
     if (target.hasAttribute("data-github-refresh")) void load();
