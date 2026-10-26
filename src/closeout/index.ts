@@ -25,9 +25,12 @@ export {
   evaluateCandidate,
   evidenceOnly,
   PolicyFetchError,
+  readReviewRounds,
   runCloseoutGate,
   snapshotRetryBaseline,
 } from "./run";
+export { bugClass, summarizeReviewRounds, UNCLASSIFIED } from "./rounds";
+export type { OpenFinding, ReviewRoundSummary, ReviewRounds } from "./rounds";
 export {
   CloseoutResultMissingError,
   loggedSessionCloseout,
