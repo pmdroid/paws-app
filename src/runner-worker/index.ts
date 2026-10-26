@@ -52,6 +52,7 @@ import {
   readRunnerJobInputs,
   type RunnerJobInputs,
   runnerRepositoryBundlePath,
+  runnerSessionBundlePath,
   runnerTaskRepositoryPath,
   runnerResultDirectory,
   RunnerJobSchema,
@@ -94,6 +95,12 @@ import {
   SessionTooLargeError,
   writeClaudeSessionBundle,
 } from "./session-snapshot";
+import {
+  removeRestoredSession,
+  restoreClaudeSessionBundle,
+  SessionIntegrityError,
+  type RestoredClaudeSession,
+} from "./session-restore";
 
 export {
   compactAcpEvent,
@@ -101,12 +108,15 @@ export {
   SESSION_METADATA_FILE,
   CLAUDE_SESSION_TOO_LARGE,
   writeClaudeSessionBundle,
+  restoreClaudeSessionBundle,
 };
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;
   repositoryBundle?: string;
   repositorySnapshot?: string;
+  /** The session snapshot a moved run restores, when the runner could download it. */
+  sessionBundle?: string;
   inputs?: RunnerJobInputs;
   outputDirectory: string;
   workRoot: string;
@@ -188,7 +198,9 @@ export type RunnerWorkerEvent =
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
   | Extract<
       RunnerEvent,
-      { type: "plan" | "pull_request" | "progress" | "closeout" | "hook_failed" }
+      {
+        type: "plan" | "pull_request" | "progress" | "closeout" | "hook_failed" | "session_restore";
+      }
     >;
 
 export interface RunnerWorkerResult {
@@ -681,7 +693,56 @@ export async function executeRunnerCommand(
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
-    const earlierSession = command.type === "run" ? command.resumeSessionId : undefined;
+    // A moved run unpacks its saved session at the same paths before the agent starts. Paws
+    // learns once whether the agent loaded it; otherwise the run starts a new session.
+    const restoreRequest =
+      command.type === "run" && !resumed && command.profile.agent === "claude"
+        ? command.restoreSession
+        : undefined;
+    let restored: RestoredClaudeSession | undefined;
+    let restoreReported = false;
+    const reportRestore = (
+      outcome:
+        | { restored: true }
+        | { restored: false; reason: "download" | "integrity" | "unpack" | "load" },
+    ) => {
+      if (restoreReported) return;
+      restoreReported = true;
+      if (!outcome.restored && restored) removeRestoredSession(options.home, restored);
+      emit({ type: "session_restore", ...outcome });
+    };
+    if (restoreRequest) {
+      if (!options.sessionBundle) reportRestore({ restored: false, reason: "download" });
+      else
+        try {
+          restored = await restoreClaudeSessionBundle({
+            bundle: options.sessionBundle,
+            home: options.home,
+            cwd: worktree,
+            sessionId: restoreRequest.sessionId,
+            sizeBytes: restoreRequest.sizeBytes,
+            sha256: restoreRequest.sha256,
+          });
+        } catch (error) {
+          console.warn(
+            JSON.stringify({
+              event: "agent_session_restore_failed",
+              executionId: job.executionId,
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          );
+          reportRestore({
+            restored: false,
+            reason: error instanceof SessionIntegrityError ? "integrity" : "unpack",
+          });
+        }
+    }
+    const earlierSession =
+      command.type === "run"
+        ? restoreRequest
+          ? restored && restoreRequest.sessionId
+          : command.resumeSessionId
+        : undefined;
     const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
@@ -751,6 +812,12 @@ export async function executeRunnerCommand(
       signal: options.signal,
       onEvent(event) {
         try {
+          if (restored && restoreRequest && event.type === "session_started")
+            reportRestore(
+              event.sessionId === restoreRequest.sessionId
+                ? { restored: true }
+                : { restored: false, reason: "load" },
+            );
           if (
             (command.type === "review" || command.type === "helper") &&
             event.type === "session_update" &&
@@ -931,6 +998,8 @@ export async function executeRunnerCommand(
         : command.type === "run" && options.followUp
           ? await runWithFollowUps(agent, options.followUp, runner)
           : await runner(agent);
+    // The agent never opened a session, so the restored one did not load either.
+    if (restored) reportRestore({ restored: false, reason: "load" });
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
@@ -1206,7 +1275,10 @@ export async function runRunnerWorker(options: {
     job,
     inputs: readRunnerJobInputs(spool, options.executionId),
     ...(job.command.type === "run" || job.command.type === "review"
-      ? { repositoryBundle: runnerRepositoryBundlePath(spool, options.executionId) }
+      ? {
+          repositoryBundle: runnerRepositoryBundlePath(spool, options.executionId),
+          sessionBundle: runnerSessionBundlePath(spool, options.executionId),
+        }
       : job.command.type === "task" && job.command.repository
         ? { repositorySnapshot: runnerTaskRepositoryPath(spool, options.executionId) }
         : {}),

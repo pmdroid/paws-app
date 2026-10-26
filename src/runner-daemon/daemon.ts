@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
-import type { KeyObject } from "node:crypto";
+import { createHash, type KeyObject } from "node:crypto";
 import { join } from "node:path";
-import { chmodSync } from "node:fs";
+import { chmodSync, writeSync } from "node:fs";
 import { z } from "zod";
 import { immediate, openDatabase } from "../db";
 import { describeRunnerCertificate } from "../runner-identity";
@@ -42,9 +42,11 @@ import {
 import {
   AgentSessionChunkSchema,
   AgentSessionFinishSchema,
+  AgentSessionReadSchema,
   AGENT_SESSION_MAX_BYTES,
   type AgentSessionChunk,
   type AgentSessionFinish,
+  type AgentSessionRead,
 } from "../agent-sessions";
 import {
   ApprovedIdentitySchema,
@@ -58,7 +60,13 @@ import {
   type PairedState,
 } from "./state";
 import { downloadRunnerInputs } from "./inputs";
-import { httpsOrigin, requestBytes, requestJson, RunnerRequestError } from "./transport";
+import {
+  httpsOrigin,
+  requestBytes,
+  requestJson,
+  requestStream,
+  RunnerRequestError,
+} from "./transport";
 import {
   RunnerAnswersRequestSchema,
   RunnerAnswersSchema,
@@ -513,6 +521,53 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       )
         throw new Error("Agent session receipt is invalid.");
       return receipt;
+    },
+    /**
+     * Streams a sealed agent session snapshot of the run into `output` under the run grant,
+     * without holding it in memory. Returns the size, the sha256 of the bytes received and the
+     * sha256 Paws sent; the caller compares them with the signed command.
+     */
+    async readSession(
+      runId: string,
+      read: AgentSessionRead,
+      grantToken: string,
+      output: number,
+      maxBytes: number,
+    ) {
+      ensureOpen();
+      identifier.parse(runId);
+      const body = AgentSessionReadSchema.parse(read);
+      RunnerGrantTokenSchema.parse(grantToken);
+      const identity = paired();
+      const digest = createHash("sha256");
+      let sizeBytes = 0;
+      const headers = await requestStream(
+        {
+          origin: origins.runnerApiUrl,
+          path: `/v1/runs/${encodeURIComponent(runId)}/session/read`,
+          method: "POST",
+          body,
+          runGrant: grantToken,
+          serverCa: options.serverCa,
+          identity: { certificate: identity.certificate, key: localKey(options.root) },
+        },
+        "application/octet-stream",
+        Math.min(maxBytes, AGENT_SESSION_MAX_BYTES),
+        (chunk) => {
+          digest.update(chunk);
+          sizeBytes += chunk.length;
+          for (let written = 0; written < chunk.length;)
+            written += writeSync(output, chunk, written);
+        },
+        30 * 60_000,
+      );
+      unchangedIdentity(identity);
+      const sent = headers["x-paws-session-sha256"];
+      return {
+        sizeBytes,
+        sha256: digest.digest("hex"),
+        sentSha256: typeof sent === "string" ? sent : null,
+      };
     },
     async readInputs(command: RunnerCommand, getGrant: () => Promise<string>, signal: AbortSignal) {
       ensureOpen();
