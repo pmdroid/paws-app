@@ -21,6 +21,7 @@ import { join } from "node:path";
 import {
   configureRunnerTranscriptStorage,
   loadRunnerTranscriptObjects,
+  loadRunnerTranscriptS3,
 } from "../../src/runner-transcript-config";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
@@ -72,6 +73,9 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     loadRunnerTranscriptObjects(home).uri("proof.jsonl"),
     "s3://fixture-transcripts/proof.jsonl",
   );
+  // Agent session snapshots use the same bucket.
+  assert.equal(loadRunnerTranscriptS3(home)?.bucket, "fixture-transcripts");
+  assert.equal(loadRunnerTranscriptS3(join(root, "unconfigured")), null);
   assert.equal((await cli(JSON.stringify(config))).code, 0);
   assert.equal(readFileSync(path, "utf8"), bytes);
   observe(
