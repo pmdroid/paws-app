@@ -603,7 +603,7 @@ export async function executeRunnerCommand(
       profile:
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
-      readOnly: command.type === "task" ? command.purpose === "answer" : command.type !== "run",
+      readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
       checkpoint: command.type === "run" && command.checkpoint !== false,
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,

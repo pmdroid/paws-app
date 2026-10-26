@@ -11,7 +11,8 @@ export type QuestionKind =
   | "ci-help"
   | "time-limit"
   | "visual-review"
-  | "github-auth";
+  | "github-auth"
+  | "plan-approval";
 
 export type StoredQuestion = {
   id: string;

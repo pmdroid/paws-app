@@ -179,7 +179,7 @@ export const RunnerCommandSchema = z
       sessionId: id,
       sessionGeneration: generation,
       taskModeGeneration: generation,
-      purpose: z.enum(["answer", "artifact"]),
+      purpose: z.enum(["answer", "artifact", "plan"]),
       repository: RunnerRepositorySchema.optional(),
       profile: RunnerProfileSchema,
       prompt: work.prompt,
