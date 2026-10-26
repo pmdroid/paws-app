@@ -96,7 +96,6 @@ function issuePage(snapshot: StatusSnapshot, id = "PAS-367"): string {
     route: parseRoute(`/issues/${id}`, snapshot),
     phase: "ready",
     snapshot,
-    via: "engine",
     error: null,
     engineUrl: null,
     closeout: emptyCloseoutView(),

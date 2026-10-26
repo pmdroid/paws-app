@@ -5,7 +5,7 @@ import type {
   StatusPullRequest,
   ItemState,
 } from "../contract";
-import { parseEngineUrl } from "../endpoint";
+import { parseEngineUrl } from "./format";
 import { ansiToHtml } from "./ansi";
 import { durationLabel, esc } from "./format";
 

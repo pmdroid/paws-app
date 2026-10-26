@@ -1,3 +1,4 @@
+import { statusFixture } from "../../../../test/fixtures/status";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -6,7 +7,6 @@ import { render } from "./render";
 import { identityLinkMarkup } from "./workspace-identities";
 import { linearConnectionMarkup } from "./workspace";
 import { runnerDetailMarkup, type Runner } from "./runners";
-import { demoStatus } from "../demo";
 
 function markup(html: string) {
   return renderToStaticMarkup(<>{themedMarkup(html)}</>);
@@ -16,8 +16,7 @@ function ready(view: "overview" | "questions" | "runs", id: string | null = null
   return render({
     route: { view, id },
     phase: "ready",
-    snapshot: demoStatus(),
-    via: "bundled",
+    snapshot: statusFixture(),
     error: null,
     engineUrl: null,
   });
@@ -48,8 +47,7 @@ test("every dashboard view renders without authored inline styles", () => {
     const rendered = render({
       route: { view, id: null },
       phase: "ready",
-      snapshot: demoStatus(),
-      via: "bundled",
+      snapshot: statusFixture(),
       error: null,
       engineUrl: null,
     });
@@ -146,12 +144,11 @@ test("light appearance does not let the system color scheme paint controls", () 
 });
 
 test("issues list shows blockers without positioned CSS", () => {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   const rendered = render({
     route: { view: "issues", id: null },
     phase: "ready",
     snapshot,
-    via: "bundled",
     error: null,
     engineUrl: null,
   });

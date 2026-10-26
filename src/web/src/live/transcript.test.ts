@@ -92,7 +92,6 @@ test("full transcript reads unfinished ACP output, tools and classification whil
     route: { view: "runs", id: run.id },
     phase: "ready",
     snapshot: first,
-    via: "engine",
     error: null,
     engineUrl: null,
   }).content;

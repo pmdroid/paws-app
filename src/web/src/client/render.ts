@@ -34,7 +34,7 @@ import {
   utcClock,
 } from "./format";
 import { needsSnapshot, routeHref, type Route } from "./route";
-import { parseEngineUrl } from "../endpoint";
+import { parseEngineUrl } from "./format";
 import { emptyCloseoutView, renderCloseoutChecks, type CloseoutView } from "./closeout";
 import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-closeout";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
@@ -47,7 +47,6 @@ export interface RenderModel {
   route: Route;
   phase: "loading" | "ready" | "error";
   snapshot: StatusSnapshot | null;
-  via: "bundled" | "engine" | null;
   error: string | null;
   engineUrl: string | null;
   closeout?: CloseoutView;

@@ -1,11 +1,11 @@
+import { statusFixture } from "../../../../test/fixtures/status";
 import { describe, expect, test } from "bun:test";
 import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
 import { emptyCloseoutView } from "./closeout";
 import { render } from "./render";
 
 function pausedSnapshot(): StatusSnapshot {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   snapshot.runs = snapshot.runs.map((run) =>
     run.id === "r-102"
       ? {
@@ -23,7 +23,6 @@ function runPage(snapshot: StatusSnapshot): string {
     route: { view: "runs", id: "r-102" },
     phase: "ready",
     snapshot,
-    via: "bundled",
     error: null,
     engineUrl: null,
     closeout: emptyCloseoutView(),
@@ -45,7 +44,7 @@ describe("run page while the agent waits for its usage limit", () => {
   });
 
   test("a run without a pause renders as before", () => {
-    const html = runPage(demoStatus());
+    const html = runPage(statusFixture());
     expect(html).not.toContain("usage limit");
     expect(html).not.toContain("usage-pause");
     expect(html).toContain('id="execution-controls"');

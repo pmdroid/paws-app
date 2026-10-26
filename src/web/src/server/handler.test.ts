@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { fakeStatusProvider, handleStatusRequest, startStatusServer } from "../engine";
+import { fakeStatusProvider, handleStatusRequest, startStatusServer, providerFor } from "../engine";
 import type { StatusSnapshot } from "../contract";
 
 const servers: Array<{ stop: (close?: boolean) => void }> = [];
@@ -23,7 +23,7 @@ describe("status HTTP stub", () => {
     expect(response).toBeNull();
   });
 
-  test("GET /api/status returns the sample snapshot and allows the static site to read it", async () => {
+  test("GET /api/status returns the serving process snapshot", async () => {
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
       provider: fakeStatusProvider(),
     });
@@ -32,8 +32,14 @@ describe("status HTTP stub", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
     const body = (await response.json()) as { source: string; items: unknown[] };
-    expect(body.source).toBe("demo");
-    expect(body.items.length).toBeGreaterThan(0);
+    expect(body.source).toBe("live");
+    expect(body.items).toEqual([]);
+  });
+
+  test("provider selection has only the serving process source", async () => {
+    const provider = fakeStatusProvider();
+    expect(providerFor({ provider, env: { PAWS_STATUS_DEMO: "1" } })).toBe(provider);
+    expect((await providerFor({}).snapshot()).source).toBe("live");
   });
 
   test("leaves engine routes it does not own", async () => {
@@ -61,7 +67,7 @@ describe("status HTTP stub", () => {
     expect(broken?.status).toBe(500);
   });
 
-  test("defaults to an empty live snapshot and serves demo only when asked", async () => {
+  test("always serves live status despite retired demo overrides", async () => {
     const server = startStatusServer({ port: 0, hostname: "127.0.0.1", staticDir: null, env: {} });
     servers.push(server);
     const base = `http://127.0.0.1:${server.port}`;
@@ -79,8 +85,8 @@ describe("status HTTP stub", () => {
 
     const demo = await fetch(`${base}/api/status?engine=demo`);
     const sample = (await demo.json()) as { source: string; items: unknown[] };
-    expect(sample.source).toBe("demo");
-    expect(sample.items.length).toBeGreaterThan(0);
+    expect(sample.source).toBe("live");
+    expect(sample.items).toEqual([]);
 
     const flagged = startStatusServer({
       port: 0,
@@ -91,7 +97,7 @@ describe("status HTTP stub", () => {
     servers.push(flagged);
     const forced = await fetch(`http://127.0.0.1:${flagged.port}/api/status`);
     const forcedBody = (await forced.json()) as { source: string };
-    expect(forcedBody.source).toBe("demo");
+    expect(forcedBody.source).toBe("live");
   });
 
   test("serves /status on loopback and ignores path traversal", async () => {

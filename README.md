@@ -45,7 +45,7 @@ exclude = ["large-assets", "packages/archived"]
 
 Paws applies these exclusions before checking out files, including in detached Closeout verification worktrees. The same per-repository settings travel in signed commands to enrolled runners and apply to their agent worktrees, trusted verification workspaces, and task source snapshots. Excluded files remain tracked in Git. The developer's checkout stays unchanged. Updated settings take effect when Paws next prepares an item worktree; an empty list restores a full checkout. Git preserves edited files when their folder becomes excluded.
 
-`GET /health` returns JSON with `ok`, `checks`, and `failedChecks`, using HTTP 200 when healthy and 503 when a check fails. Checks read the database, expired or missing running-job leases, dead jobs and outbox rows, and active runner heartbeats. A runner is stale after the one-minute offline window plus the five-minute lease grace; paused and revoked runners are excluded, and no active runners is reported as skipped. When webhook routes and a provider's signing secret are configured, its last verified Linear or accepted GitHub delivery must be no more than one hour old; no delivery yet fails that check. Disabled providers are reported as skipped. Health failures and recovery are written to the journal. The response is not cached. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
+`GET /health` returns JSON with `ok`, `checks`, and `failedChecks`, using HTTP 200 when healthy and 503 when a check fails. Checks read the database, expired or missing running-job leases, dead jobs and outbox rows, and active runner heartbeats. A runner is stale after the one-minute offline window plus the five-minute lease grace; paused and revoked runners are excluded, and no active runners is reported as skipped. When webhook routes and a provider's signing secret are configured, its last verified Linear or accepted GitHub delivery must be no more than one hour old; no delivery yet fails that check. Disabled providers are reported as skipped. Health failures and recovery are written to the journal. The response is not cached. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 
 ## Deploys
 
@@ -67,26 +67,7 @@ To connect a Linux VM, follow [Enroll a remote Linux runner](docs/runner-enrollm
 
 The QM-11 status page lives in [`src/web`](src/web/README.md). It is read-only: epics, items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
 
-The Paws engine stays on the developer's machine. The dashboard has two shapes:
-
-- **Local.** `bun run paws` serves `http://127.0.0.1:8787/status` and `GET /api/status` from the same process. The handler is mounted in `src/server` and implemented in `src/web`.
-- **Vercel.** A static build of the dashboard only. With no engine configured it shows clearly labeled demo data. Set an engine origin (build-time, the Engine control, or `?engine=`) to poll a local or tunneled `GET /api/status`.
-
-### Deploy
-
-From the repo root, with the [Vercel CLI](https://vercel.com/docs/cli):
-
-```sh
-vercel deploy --prod
-```
-
-`vercel.json` installs with Bun, runs `bun run build:status`, and publishes `src/web/dist`. That build does not start the engine. The deployed site shows demo data until you point it at an engine:
-
-```sh
-PAWS_ENGINE_URL=https://<tunnel-host> vercel deploy --prod
-```
-
-Or open `https://<deployment>/?engine=https://<tunnel-host>` after deploy. The tunnel must expose `GET /api/status`. The stub sends `Access-Control-Allow-Origin: *` on that route only.
+The dashboard reads `/api/status` from the Paws process that serves it. Build it with `bun run build:status`, then start Paws with `bun run paws` and open `http://127.0.0.1:8787/status`. An empty database shows no items.
 
 ## Checks
 

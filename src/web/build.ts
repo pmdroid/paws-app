@@ -1,16 +1,8 @@
 import { copyFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { parseEngineUrl } from "./src/endpoint";
 
 const root = import.meta.dir;
 const dist = join(root, "dist");
-const engineUrl = process.env.PAWS_ENGINE_URL?.trim() ?? "";
-
-if (engineUrl && !parseEngineUrl(engineUrl)) {
-  console.error("PAWS_ENGINE_URL must be an http or https URL");
-  process.exit(1);
-}
-
 await rm(dist, { recursive: true, force: true });
 await mkdir(join(dist, "assets"), { recursive: true });
 
@@ -78,6 +70,5 @@ for (const [page, script] of [
     .replaceAll("__JS__", `assets/${script}`);
   await Bun.write(join(dist, page), html);
 }
-await Bun.write(join(dist, "config.json"), `${JSON.stringify({ engineUrl }, null, 2)}\n`);
 
 console.log(`Built status dashboard → ${dist}`);

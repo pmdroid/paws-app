@@ -73,7 +73,7 @@ export type ServerOptions = {
    * Off, every `/webhooks/*` path is 404.
    */
   webhooks?: boolean;
-  /** Engine database. `/api/status` reads it. Omit it and the route stays on the demo snapshot. */
+  /** Engine database. `/api/status` reads it. Omit it for an empty live snapshot. */
   db?: Database;
   /** Clock for local health checks. */
   healthNow?: () => number;

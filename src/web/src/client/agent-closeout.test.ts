@@ -1,8 +1,8 @@
+import { statusFixture } from "../../../../test/fixtures/status";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusAgentCloseout, StatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
 import { agentSectionKey, agentVerdict, renderAgentCloseout } from "./agent-closeout";
 import { checkKey, emptyCloseoutView } from "./closeout";
 import { render } from "./render";
@@ -10,7 +10,7 @@ import { routeHref } from "./route";
 import { themedMarkup } from "./theme";
 
 function demoAgent(): StatusAgentCloseout {
-  return demoStatus().agentCloseout![0]!;
+  return statusFixture().agentCloseout![0]!;
 }
 
 function runPage(
@@ -22,7 +22,6 @@ function runPage(
     route: { view: "runs", id },
     phase: "ready",
     snapshot,
-    via: "bundled",
     error: null,
     engineUrl: null,
     closeout: { ...emptyCloseoutView(), open },
@@ -31,7 +30,7 @@ function runPage(
 
 describe("Agent Closeout", () => {
   test("while implementing, a running check shows its attempt, elapsed time and the progress", () => {
-    const html = runPage(demoStatus());
+    const html = runPage(statusFixture());
     expect(html).toContain('aria-label="Agent Closeout"');
     expect(html).toContain("<h2>Agent Closeout</h2>");
     expect(html).not.toContain('aria-label="Closeout"');
@@ -100,7 +99,7 @@ describe("Agent Closeout", () => {
   });
 
   test("once Paws Closeout starts, it sits above Agent Closeout, which stays collapsed until opened", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.items = snapshot.items.map((item) =>
       item.id === "ENG-102" ? { ...item, state: "verifying" } : item,
     );
@@ -186,7 +185,7 @@ describe("Agent Closeout", () => {
 const CURRENT = "c1b566d1-d000-4322-809e-0e36a2af3f93";
 
 function endedRun(): StatusSnapshot {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   const agent = snapshot.agentCloseout![0]!;
   agent.endedAt = "2026-10-22T04:15:48.000Z";
   agent.continuesIn = CURRENT;

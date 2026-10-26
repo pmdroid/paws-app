@@ -1,12 +1,8 @@
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
 import { mergeQueueCount } from "./merge-queue";
-import { createSourceDialog } from "./source-dialog";
 
-import { parseStatusSnapshot, STATUS_API_VERSION, type StatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
-import { parseEngineUrl, statusEndpoint } from "../endpoint";
-import { choiceFromValue, resolveEngineUrl, type SourceChoice } from "../source";
+import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
 import {
   attemptsOf,
   checkAnchor,
@@ -58,19 +54,15 @@ const executionControls = createExecutionControls(reload);
 const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
-const STORAGE_KEY = "paws.statusEngineUrl";
 const POLL_MS = 5000;
 
 const regions = ["#top", "#banner", "#page-content"] as const;
 const painted = new Map<string, string>();
 
-let choice: SourceChoice = { kind: "auto" };
-let baked: string | null = null;
 const closeout = emptyCloseoutView();
 let linkedHash = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
-let via: RenderModel["via"] = null;
 let error: string | null = null;
 let timer = 0;
 let workspaceReady = false;
@@ -78,7 +70,6 @@ let booted = false;
 let shownPath = router.state.location.pathname;
 let shownSearch = router.state.location.search;
 
-const sourceDialog = createSourceDialog(applyChoice);
 let issueFilter: "all" | "active" | "needs" | "done" = "all";
 /** A Linear project id, `none` for issues without one, or empty for any project. */
 let issueProject = "";
@@ -126,24 +117,10 @@ async function boot(): Promise<void> {
       if (back !== null) await router.navigate(back, { replace: true });
     }
   } catch {}
-  const query = new URLSearchParams(location.search).get("engine");
-  const fromQuery = query === null ? null : choiceFromValue(query);
-  if (fromQuery) {
-    choice = fromQuery;
-    persist(choice);
-  } else {
-    choice = choiceFromValue(storageGet(STORAGE_KEY)) ?? { kind: "auto" };
-  }
-  baked = await loadBakedEngineUrl();
   booted = true;
-  if (currentEngine()) {
-    phase = "loading";
-    paint();
-    await reload();
-  } else {
-    showFallback();
-    schedule();
-  }
+  phase = "loading";
+  paint();
+  await reload();
 }
 
 function routeChanged(): void {
@@ -153,20 +130,14 @@ function routeChanged(): void {
 }
 
 async function reload(): Promise<void> {
-  const engineUrl = currentEngine();
-  if (!engineUrl) {
-    showFallback();
-    schedule();
-    return;
-  }
   const route = currentRoute();
   if (!needsSnapshot(route)) {
     schedule();
     return;
   }
   try {
-    const response = await fetch(statusEndpoint(engineUrl), {
-      headers: { Accept: "application/json", "ngrok-skip-browser-warning": "1" },
+    const response = await fetch("/api/status", {
+      headers: { Accept: "application/json" },
       cache: "no-store",
     });
     if (response.status === 401) {
@@ -178,13 +149,11 @@ async function reload(): Promise<void> {
     const parsed = parseStatusSnapshot(await response.json());
     if (!parsed.ok) throw new Error(parsed.error);
     snapshot = parsed.snapshot;
-    via = "engine";
     phase = "ready";
     error = null;
   } catch (caught) {
     error = caught instanceof Error ? caught.message : "Could not load status";
     phase = "error";
-    if (via !== "engine") snapshot = null;
   }
   paint();
   schedule();
@@ -201,46 +170,10 @@ function followIssueRedirect(): boolean {
   return true;
 }
 
-function showFallback(): void {
-  if (choice.kind === "demo" || !servedLocally()) showDemo();
-  else showLocalEmpty();
-}
-
-function showDemo(): void {
-  snapshot = demoStatus();
-  via = "bundled";
-  phase = "ready";
-  error = null;
-  paint();
-}
-
-function showLocalEmpty(): void {
-  snapshot = {
-    version: STATUS_API_VERSION,
-    source: "live",
-    generatedAt: new Date().toISOString(),
-    project: { name: "Paws", team: "Paws", repo: "local", workspace: null },
-    items: [],
-    runs: [],
-    questions: [],
-    verdicts: [],
-    mergeQueue: [],
-    events: [],
-  };
-  via = "engine";
-  phase = "ready";
-  error = null;
-  paint();
-}
-
-function servedLocally(): boolean {
-  return location.pathname === "/status" || location.pathname.startsWith("/status/");
-}
-
 function schedule(): void {
   window.clearInterval(timer);
   const route = currentRoute();
-  if (!currentEngine() || !needsSnapshot(route)) return;
+  if (!needsSnapshot(route)) return;
   // Stored evidence does not change, and a repaint would interrupt the video.
   if (route.view === "evidence") return;
   timer = window.setInterval(() => {
@@ -255,7 +188,6 @@ function paint(): void {
     route: currentRoute(),
     phase,
     snapshot,
-    via,
     error,
     engineUrl: currentEngine(),
     closeout,
@@ -326,7 +258,7 @@ function settingsPage(route: Route): SettingsPage | null {
 }
 
 function source(): string {
-  return snapshot?.source ?? (currentEngine() ? "live" : "demo");
+  return "live";
 }
 
 function appPath(href: string): string | null {
@@ -484,7 +416,6 @@ function onClick(event: MouseEvent): void {
     void reload();
     if (currentRoute().view === "runners") void runners.refresh();
   }
-  if (action === "source") openDialog();
   if (action === "issue-filter") {
     const filter = target.closest("[data-issue-filter]")?.getAttribute("data-issue-filter");
     if (filter === "all" || filter === "active" || filter === "needs" || filter === "done") {
@@ -602,10 +533,6 @@ function openLinkedCheck(): boolean {
   return true;
 }
 
-function openDialog(): void {
-  sourceDialog.open(sourceHelp());
-}
-
 function applyIssueFilter(): void {
   const root = document.querySelector("#content");
   if (!root) return;
@@ -637,56 +564,8 @@ function applyIssueFilter(): void {
   }
 }
 
-function applyChoice(next: SourceChoice): void {
-  choice = next;
-  persist(next);
-  const url = new URL(location.href);
-  if (url.searchParams.has("engine")) {
-    url.searchParams.delete("engine");
-    history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-  }
-  if (!currentEngine()) showFallback();
-  else {
-    phase = "loading";
-    snapshot = null;
-    via = null;
-    paint();
-  }
-  void reload();
-}
-
-function sourceHelp(): string {
-  if (choice.kind === "demo") return "Showing bundled demo data.";
-  return "Status comes from this Paws server.";
-}
-
-function currentEngine(): string | null {
-  return resolveEngineUrl({
-    choice,
-    baked,
-    pathname: location.pathname,
-    origin: location.origin,
-  });
-}
-
-function persist(next: SourceChoice): void {
-  if (next.kind === "auto") storageSet(STORAGE_KEY, null);
-  else if (next.kind === "demo") storageSet(STORAGE_KEY, "demo");
-  else storageSet(STORAGE_KEY, next.url);
-}
-
-async function loadBakedEngineUrl(): Promise<string | null> {
-  try {
-    const response = await fetch(new URL("config.json", document.baseURI), { cache: "no-store" });
-    if (!response.ok) return null;
-    const body: unknown = await response.json();
-    if (!body || typeof body !== "object" || !("engineUrl" in body)) return null;
-    const value = body.engineUrl;
-    if (typeof value !== "string") return null;
-    return parseEngineUrl(value);
-  } catch {
-    return null;
-  }
+function currentEngine(): string {
+  return location.origin;
 }
 
 async function errorText(response: Response): Promise<string> {
@@ -712,21 +591,4 @@ function downloadOutput(itemId: string, attempt: number, checkId: string): void 
   link.download = `${checkId.replace(/[^A-Za-z0-9_-]/g, "_")}-${attempt}.log`;
   link.click();
   URL.revokeObjectURL(url);
-}
-
-function storageGet(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function storageSet(key: string, value: string | null): void {
-  try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {
-    /* private mode */
-  }
 }
