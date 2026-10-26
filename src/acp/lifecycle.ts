@@ -184,7 +184,15 @@ async function readConversation(path: string, offset: number): Promise<AcpConver
     try {
       parsed = JSON.parse(line) as { event?: AcpEvent } | null;
     } catch (error) {
-      if (index === lines.length - 1) break;
+      if (index === lines.length - 1) {
+        journalCaught(
+          error,
+          "lifecycle.readConversation.parse",
+          null,
+          "incomplete trailing transcript record",
+        );
+        break;
+      }
       throw error;
     }
     const event = parsed?.event;
