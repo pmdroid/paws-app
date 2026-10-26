@@ -137,8 +137,14 @@ export {
   savePullRequestDraft,
   type PullRequestDraft,
 } from "./pull-request-drafts";
-export { migrations } from "./migrations";
-export type { Migration } from "./migrations";
+export { frozenMigrations } from "./migrations";
+export {
+  MIGRATION_DIRECTORY,
+  combineMigrations,
+  loadMigrationFiles,
+  migrations,
+} from "./migration-files";
+export type { Migration } from "./migration";
 export { openDatabase } from "./open";
 export { journal, setJournalSink } from "./journal";
 export { assertLinearQueue } from "./legacy-tracker";

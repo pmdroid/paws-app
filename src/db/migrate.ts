@@ -1,8 +1,16 @@
 import type { Database } from "bun:sqlite";
-import { migrations } from "./migrations";
+import type { Migration } from "./migration";
+import { migrations as allMigrations } from "./migration-files";
 
-/** Applies pending migrations in order. `until` stops after that id, for migration tests. */
-export function migrate(db: Database, options: { until?: string } = {}): void {
+/**
+ * Applies pending migrations in order. `until` stops after that id, for migration tests.
+ * `migrations` replaces the list, for tests of the migration files themselves.
+ */
+export function migrate(
+  db: Database,
+  options: { until?: string; migrations?: readonly Migration[] } = {},
+): void {
+  const migrations = options.migrations ?? allMigrations;
   if (options.until !== undefined && !migrations.some((m) => m.id === options.until))
     throw new Error(`Unknown migration ${options.until}`);
   db.run(`
