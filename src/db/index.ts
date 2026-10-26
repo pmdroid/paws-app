@@ -106,6 +106,7 @@ export {
   listWorkItems,
   listWorkItemsByStates,
   listWorkItemEventRows,
+  listLastWorkItemEventTimes,
   type WorkItemEventRecord,
   type WorkItemEventRow,
   recordTurn,
