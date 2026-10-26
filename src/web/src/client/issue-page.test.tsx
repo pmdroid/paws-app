@@ -80,7 +80,7 @@ describe("issue page", () => {
   });
 
   test("the item timeline lists every state change from the fake, the restart with its reason", () => {
-    const snapshot = parseStatusSnapshot(JSON.parse(JSON.stringify(demoStatus())));
+    const snapshot = parseStatusSnapshot(JSON.parse(JSON.stringify(statusFixture())));
     if (!snapshot.ok) throw new Error(snapshot.error);
     const html = page(snapshot.snapshot);
     const section = html.slice(html.indexOf('id="item-timeline-heading"'));
@@ -95,7 +95,7 @@ describe("issue page", () => {
   });
 
   test("an item without recorded state changes has no item timeline", () => {
-    expect(page(demoStatus(), "ENG-102")).not.toContain("item-timeline");
+    expect(page(statusFixture(), "ENG-102")).not.toContain("item-timeline");
   });
 
   test("an internal path id reads as the issue identifier", () => {
