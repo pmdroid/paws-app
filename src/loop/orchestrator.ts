@@ -1,4 +1,4 @@
-import { hasPublishedPullRequest } from "./activity-policy";
+import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity-policy";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
 import { saveHumanRetryWindow, fixRounds, jobVersionCurrent } from "../db";
@@ -219,6 +219,7 @@ import {
   publishAccepted,
   closeStoppedPull,
   fetchUpstreamMain,
+  readReviewThreads,
   mergedPullHeads,
   UPSTREAM_MAIN_REF,
   type GitHubBinding,
@@ -302,6 +303,7 @@ import {
   waitForRunnerSlot,
   type VerificationOwner,
 } from "./merge-jobs";
+import { PULL_REVIEW_POLL_MS, handlePullReview } from "./pull-reviews";
 import {
   REBASE_CONFLICT_INSTRUCTION,
   advanceMerge,
@@ -1325,6 +1327,38 @@ export class Orchestrator {
         ...this.gitHubCredentials(github),
         signal: context.signal,
       });
+    });
+    jobs.register(JOB_KIND.pullReview, async (job, context) => {
+      const reviewId = (job.payload as { reviewId?: unknown }).reviewId;
+      if (typeof reviewId !== "number" || !context.isCurrent()) return;
+      const step = await handlePullReview(this.db, reviewId, {
+        now: () => this.now(),
+        busy: (item) =>
+          this.jobContexts.has(item.id) ||
+          this.db
+            .query(
+              "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
+            )
+            .get(this.now(), item.id) !== null,
+        threads: async (item, pullNumber) => {
+          const repository = this.repositoryForItem(item);
+          const github = repository ? this.githubForRepository(repository) : null;
+          if (!repository || !github) return [];
+          return readReviewThreads({
+            client: github.client,
+            owner: repository.owner,
+            repo: repository.repo,
+            prNumber: pullNumber,
+            ...this.gitHubCredentials(github),
+          });
+        },
+        fixRoundLimit: (item) => this.fixRoundLimit(item),
+        session: (item) => this.activitySession(item),
+        post: (item, body, key) => this.postAfterPullRequest(item, body, key),
+        flush: () => this.flush(),
+      });
+      if (step === "wait" && context.isCurrent())
+        waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
     });
     this.options.outbox.setHandler((message, context) =>
       linearCaller(
@@ -4185,7 +4219,7 @@ export class Orchestrator {
     if (
       !this.canReportProgress(item.id) &&
       (kind === "thought" || kind === "action" || this.hasPublishedPullRequest(sessionId)) &&
-      !(kind === "response" && /^(merged:|closed:|command:stop:)/.test(key))
+      !(kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(key))
     )
       return;
     return enqueueOutboxOnce(this.db, {
