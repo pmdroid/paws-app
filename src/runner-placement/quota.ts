@@ -16,7 +16,7 @@ export function quotaSignal(message: string, now: number): QuotaSignal | null {
     );
   const percent = remaining ? Number(remaining[1]) : null;
   const exhausted =
-    /(?:quota|usage|rate|request|token)\s*limit(?:\s+(?:has been|was|is))?\s*(?:exceeded|reached|exhausted)|(?:exceeded|reached|exhausted)\s+(?:your\s+)?(?:quota|usage|rate|request|token)\s*limit|insufficient\s+quota|quota\s+(?:exceeded|exhausted)|hit\s+(?:your\s+|the\s+)?(?:usage\s+|rate\s+|quota\s+|session\s+)?limit|(?:HTTP|status(?:\s+code)?)\s*:?\s*429/i.test(
+    /(?:quota|usage|rate|request|token)\s*limit(?:\s+(?:has been|was|is))?\s*(?:exceeded|reached|exhausted)|(?:exceeded|reached|exhausted)\s+(?:your\s+)?(?:quota|usage|rate|request|token)\s*limit|insufficient\s+quota|quota\s+(?:exceeded|exhausted)|hit\s+(?:your\s+|the\s+)?(?:usage\s+|rate\s+|quota\s+|session\s+|weekly\s+|daily\s+|monthly\s+|\d+-hour\s+)?limit|(?:weekly|daily|monthly|session|\d+-hour)\s+limit\s+reached|(?:HTTP|status(?:\s+code)?)\s*:?\s*429/i.test(
       text,
     ) || percent === 0;
   const low =
@@ -51,9 +51,57 @@ export function quotaSignal(message: string, now: number): QuotaSignal | null {
       if (Number.isSafeInteger(parsed) && parsed >= now) resetsAt = parsed;
     }
   }
+  if (resetsAt === null) resetsAt = clockReset(text, now);
   return {
     state: exhausted ? "exhausted" : "low",
     resetsAt,
     cooldownUntil: exhausted ? (resetsAt ?? now + 15 * 60_000) : now,
   };
+}
+
+function clockReset(text: string, now: number): number | null {
+  const match = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)/i.exec(text);
+  if (!match || Number(match[1]) > 12) return null;
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat("en-US", {
+      timeZone: match[4]!.trim(),
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+  } catch {
+    return null;
+  }
+  const wall = (at: number) => {
+    const parts = Object.fromEntries(
+      format.formatToParts(at).map((part) => [part.type, Number(part.value)]),
+    );
+    return Date.UTC(
+      parts.year!,
+      parts.month! - 1,
+      parts.day!,
+      parts.hour!,
+      parts.minute!,
+      parts.second!,
+    );
+  };
+  const today = new Date(wall(now));
+  const hour = (Number(match[1]) % 12) + (match[3]!.toLowerCase() === "pm" ? 12 : 0);
+  for (const day of [0, 1]) {
+    const local = Date.UTC(
+      today.getUTCFullYear(),
+      today.getUTCMonth(),
+      today.getUTCDate() + day,
+      hour,
+      Number(match[2] ?? 0),
+    );
+    const at = local - (wall(local) - local);
+    if (at >= now) return at;
+  }
+  return null;
 }
