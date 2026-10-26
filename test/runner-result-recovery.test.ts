@@ -215,7 +215,7 @@ test("a cancelled item does not consume its accepted result after expiry", async
   try {
     const { command, submit } = f.admit(1);
     submit();
-    f.clock.at += 60_001;
+    f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [f.item.id]);
     expect(() => f.results.read(f.run.id, 1, command.id)).toThrow();
     expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
@@ -236,7 +236,7 @@ test("a superseding generation fences the earlier accepted result", async () => 
     expect(() => f.results.read(f.run.id, 1, first.command.id)).toThrow();
     expect(() => f.results.read(f.run.id, 2, first.command.id)).toThrow();
     expect(f.results.read(f.run.id, 2, second.command.id)).toBeNull();
-    f.clock.at += 60_001;
+    f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);

@@ -7,6 +7,7 @@ import {
   type Job,
   type JobContext,
   type JobLoop,
+  runnerLeaseCutoff,
 } from "../db";
 import { isProvisioningError, type ExeDev } from "../provisioning";
 import { redact } from "./job";
@@ -228,7 +229,7 @@ export function blockingTasks(db: Database, runnerId: string, now: number): Memb
       WHERE w.runner_id=? AND ((w.ended_at IS NULL AND w.lease_until>?) OR r.status IN ('active','provisioning'))
       ORDER BY r.created_at,i.id`,
     )
-    .all(runnerId, now);
+    .all(runnerId, runnerLeaseCutoff(now));
 }
 
 function stopRequested(db: Database, itemId: string): boolean {

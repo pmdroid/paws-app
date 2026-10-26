@@ -7,6 +7,7 @@ import {
   releaseRunCapacity,
   syncWorkspaceMember,
 } from "../src/db";
+import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { tempDb } from "./helpers";
 
 function fixture(now: number) {
@@ -68,7 +69,7 @@ test("the runner overview reports used and total slots like placement counts the
   expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 0, total: 1 });
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,3)", ["runner-1"]);
   work(0, now + 60_000);
-  markRun(db, work(1, now - 1), "ended", now);
+  markRun(db, work(1, now - RUNNER_LEASE_GRACE_MS - 1), "ended", now);
   expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 1, total: 3 });
   work(2, now - 1);
   expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 2, total: 3 });
@@ -87,7 +88,7 @@ test("the runner overview lists each live session with its issue and phase", () 
     [now - 20_000, now - 20_000, now - 20_000],
   );
   const merging = work(3, lease, { state: "merge_queue", startedAt: now - 20_000 });
-  markRun(db, work(4, now - 1, { startedAt: now - 10_000 }), "ended", now);
+  markRun(db, work(4, now - RUNNER_LEASE_GRACE_MS - 1, { startedAt: now - 10_000 }), "ended", now);
   releaseRunCapacity(db, work(5, lease, { startedAt: now - 5_000 }), now);
 
   expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([

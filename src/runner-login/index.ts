@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccess, getRunner, immediate, workspaceMember } from "../db";
+import {
+  auditWorkspaceAccess,
+  getRunner,
+  immediate,
+  runnerLeaseCutoff,
+  workspaceMember,
+} from "../db";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerWork } from "../runner-work";
 import {
@@ -149,7 +155,7 @@ export function createRunnerLogin(options: {
             .query(
               "SELECT 1 FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>? UNION ALL SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>? LIMIT 1",
             )
-            .get(runnerId, at, runnerId, at)
+            .get(runnerId, runnerLeaseCutoff(at), runnerId, at)
         )
           throw new SignInRefused(
             "This runner is working on a task. Sign in once its work has finished.",
