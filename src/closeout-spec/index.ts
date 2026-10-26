@@ -90,6 +90,7 @@ export {
   fixAttemptLimit,
   fixesLeft,
   retryBaseline,
+  reviewRecordsSince,
   reviewRequirements,
   run,
   trustedPolicyFiles,

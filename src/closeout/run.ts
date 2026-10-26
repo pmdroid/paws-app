@@ -7,6 +7,7 @@ import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
 import type { FixRequest, FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
 import type { CodexReviewer } from "./reviewer";
+import { summarizeReviewRounds, type ReviewRounds } from "./rounds";
 import { formatEvidenceSummary, formatFixFeedback } from "./summary";
 import {
   CLOSEOUT_GATE,
@@ -29,6 +30,7 @@ import {
   loadReviewMaterial,
   renderReviewPrompt,
   retryBaseline as readRetryBaseline,
+  reviewRecordsSince,
   reviewRequirements,
   decision as decide,
   run,
@@ -557,6 +559,15 @@ function publishedOf(input: EvaluateInput): {
 
 export function snapshotRetryBaseline(taskId: string, pawsHome?: string): Promise<string[]> {
   return readRetryBaseline(evidencePath(taskId, pawsHome));
+}
+
+/** The task's review rounds since `baseline`: each commit, its finding count, and the open findings. */
+export async function readReviewRounds(
+  taskId: string,
+  baseline: readonly string[],
+  pawsHome?: string,
+): Promise<ReviewRounds> {
+  return summarizeReviewRounds(await reviewRecordsSince(evidencePath(taskId, pawsHome), baseline));
 }
 
 async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise<string> {
