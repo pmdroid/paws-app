@@ -79,6 +79,7 @@ export async function runWithFailover(
   let deadline = performance.now() + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
   let limit: UsageLimit | undefined;
   let usageLimitEvents = 0;
+  const limitedSincePause = new Set<string>();
   for (let index = 0; index < 3;) {
     input.signal?.throwIfAborted();
     try {
@@ -92,6 +93,7 @@ export async function runWithFailover(
         // Waiting does not consume execution time, but does consume the usage-limit budget.
         const waitingAt = performance.now();
         await usageLimits.pause(error);
+        limitedSincePause.clear();
         input.signal?.throwIfAborted();
         deadline += performance.now() - waitingAt;
         limit = undefined;
@@ -103,8 +105,13 @@ export async function runWithFailover(
       input.signal?.throwIfAborted();
       const usageLimit = usageLimits ? error.usageLimit : undefined;
       if ((!usageLimit && index === 2) || performance.now() >= deadline) throw error;
-      if (usageLimit && ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
+      if (
+        usageLimit &&
+        limitedSincePause.has(error.runnerId) &&
+        ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS
+      )
         throw new UsageLimitExhaustedError(error.runnerId, error);
+      if (usageLimit) limitedSincePause.add(error.runnerId);
       if (usageLimit)
         // The runner stays eligible: its cooldown keeps it out until the reset, and another
         // runner with an available account can take the work meanwhile.

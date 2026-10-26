@@ -119,11 +119,11 @@ describe("usage limits pause the task instead of failing it", () => {
     await expect(run).rejects.toBeInstanceOf(UsageLimitExhaustedError);
     await expect(run).rejects.toMatchObject({
       runnerId: "agentbox",
-      cause: { name: "RetryableRunnerError", usageLimit: { resetsAt: null } },
+      cause: { name: "UsageLimitPause", agent: "claude" },
     });
-    expect(runners.calls).toHaveLength(2);
-    expect(settled).toBe(2);
-    expect(runners.pauses).toHaveLength(1);
+    expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS);
+    expect(settled).toBe(MAX_USAGE_LIMIT_EVENTS);
+    expect(runners.pauses).toHaveLength(MAX_USAGE_LIMIT_EVENTS - 1);
     expect(runners.pauses[0]!.resumeAt - runners.pauses[0]!.at).toBe(15 * 60_000);
     expect(runners.calls.at(-1)!.prompt.match(/usage limit/g)).toHaveLength(1);
   });
@@ -147,7 +147,7 @@ describe("usage limits pause the task instead of failing it", () => {
     await expect(
       runWithFailover(input(), runners.attempt, async () => undefined, runners.wait),
     ).rejects.toBeInstanceOf(UsageLimitExhaustedError);
-    expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS);
+    expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS + 1);
     expect(runners.pauses).toHaveLength(0);
   });
 
