@@ -195,6 +195,15 @@ describe("config", () => {
     );
   });
 
+  test("the retired [update] section from older installs is ignored, not fatal", () => {
+    const config = parseConfigToml(
+      '[agents]\nimplementer = "codex"\n\n[update]\nautomatic = false\n\n[merge]\norder = "queue"\n',
+    );
+    expect(config).toEqual(
+      parseConfigToml('[agents]\nimplementer = "codex"\n\n[merge]\norder = "queue"\n'),
+    );
+  });
+
   test("missing config.toml defaults the implementer to claude", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
