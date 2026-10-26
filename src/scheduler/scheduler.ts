@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import {
   JOB_KIND,
   delegationHasOpenWork,
-  holdsExecution as itemHoldsExecution,
+  holdsExecution,
   isBlockerSatisfied,
   isTerminalWorkItemState,
   type RepositoryBinding,
@@ -15,6 +15,7 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getTaskMode,
+  getConfirmedRemoteMerge,
   immediate,
   mergeLaneSql,
   requeueOrphanedWork,
@@ -101,7 +102,14 @@ function openBlockers(db: Database, item: Item): string[] {
        WHERE b.blocked_linear_issue_id=? AND i.linear_identifier IS NOT NULL ORDER BY i.position,i.id`,
     )
     .all(item.issueId)
-    .filter((blocker) => !isBlockerSatisfied({ ...blocker, mode: getTaskMode(db, blocker.id) }))
+    .filter(
+      (blocker) =>
+        !isBlockerSatisfied({
+          ...blocker,
+          mode: getTaskMode(db, blocker.id),
+          mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
+        }),
+    )
     .map((blocker) => blocker.identifier);
 }
 
@@ -220,14 +228,6 @@ function allItems(db: Database, now: number): Item[] {
     WHERE ${delegationHasOpenWork("i.delegation_id")} OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
     OR EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning'))`)
     .all(now, runnerLeaseCutoff(now), now);
-}
-
-function holdsExecution(item: Item): boolean {
-  return itemHoldsExecution({
-    state: item.state,
-    liveRun: Boolean(item.liveRun),
-    liveJob: Boolean(item.liveJob),
-  });
 }
 
 function taskSlots(db: Database, now: number): { total: number; busy: number } | null {

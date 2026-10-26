@@ -1,3 +1,4 @@
+import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import { ensureLinearSession } from "../src/db";
 import type { EpicSnapshot } from "../src/linear";
@@ -50,6 +51,10 @@ async function pass(f: Fixture) {
 }
 
 function merge(f: Fixture, issueId: string) {
+  const item = f.db
+    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id=?")
+    .get(issueId)!;
+  confirmFakeMerge(f.db, item.id);
   f.db.run("UPDATE work_item SET state='merged' WHERE linear_issue_id=?", [issueId]);
 }
 

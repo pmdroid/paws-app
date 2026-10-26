@@ -7,7 +7,7 @@ import {
   type WorkItemState,
   type TaskMode,
 } from "../core";
-import { enqueueOutboxOnce, saveTaskBlocks } from "../db";
+import { enqueueOutboxOnce, getConfirmedRemoteMerge, saveTaskBlocks } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
 import { managedBlockerSatisfied } from "./blocker-policy";
@@ -259,7 +259,10 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
       );
     if (blocker.cancelRequested || blocker.state === "cancelled") return false;
     if (blocker.state === "manual") return states.get(id) === "completed";
-    return isBlockerSatisfied(blocker);
+    return isBlockerSatisfied({
+      ...blocker,
+      mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
+    });
   };
   const blocking = blocks.filter((edge) => edge.blockedLinearIssueId === item.linearIssueId);
   const ready =

@@ -25,7 +25,6 @@ import {
   queueLine,
   capLine,
   heldLine,
-  unmergedBlockers,
   waitReason,
   runLabel,
   skillVersionLabel,
@@ -202,7 +201,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
       !needsYou.has(item.id) &&
       ["planning", "running", "verifying"].includes(item.state) &&
       (!run || ["running", "verifying"].includes(run.state)) &&
-      !unmergedBlockers(snapshot, item).length
+      !item.blockers.length
     );
   });
   const queued = snapshot.items.filter((item) => item.state === "queued").length;
@@ -302,9 +301,8 @@ function projectFilter(items: readonly StatusItem[]): string {
 }
 
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
-  const blockers = unmergedBlockers(snapshot, item);
-  const reason =
-    waitReason(snapshot, item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
+  const blockers = item.blockers;
+  const reason = waitReason(item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
   return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
 }
 
