@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { listCloseoutRecoveries, listCloseoutRounds, type CloseoutRecovery } from "../db";
+import { listCloseoutRecoveries, humanRetryBaseline, type CloseoutRecovery } from "../db";
 import type { CloseoutBypass } from "../closeout";
 import { canAnswer } from "../questions";
 
@@ -24,12 +24,9 @@ export function recoveryOptions(
   db: Database,
   itemId: string,
 ): { retryBaseline: readonly string[]; bypasses: CloseoutBypass[] } {
-  const retryBaseline = new Set<string>();
+  const retryBaseline = new Set<string>(humanRetryBaseline(db, itemId));
   const bypasses: CloseoutBypass[] = [];
-  // Evidence only grows, so the union is the newest snapshot: a guidance
-  // answer or a rebased head (closeout_round) each start a fresh budget.
-  for (const round of listCloseoutRounds(db, itemId))
-    for (const key of round.retryBaseline) retryBaseline.add(key);
+  // Only a human answer authorizes fresh check attempts. Rebases retain failures.
   for (const recovery of listCloseoutRecoveries(db, itemId)) {
     if (recovery.answer === null || recovery.answeredBy === null) continue;
     const answer = parseRecoveryAnswer(recovery.answer, recovery.failedChecks);

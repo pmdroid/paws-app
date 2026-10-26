@@ -95,7 +95,7 @@ export async function probeCloseoutCommandRunner(
           mkdirSync(dirname(request.logFile), { recursive: true });
           writeFileSync(request.logFile, logBytes);
           request.onOutput?.("stdout", `Scripted ${variant}`, false);
-          const setup = calls.length === 1;
+          const setup = calls.length === 1 || (variant === "failedSetup" && calls.length === 2);
           return {
             argv: request.argv,
             exitCode:
@@ -131,7 +131,9 @@ export async function probeCloseoutCommandRunner(
       for (const call of calls) assert.deepEqual(readFileSync(call.logFile), logBytes);
     } else {
       assert.notEqual(verdict.decision, "accepted", verdict.summary);
-      const failed = verdict.result.decision.items.filter((item) => item.state === "failed");
+      const failed = verdict.result.decision.items.filter(
+        (item) => item.state === "failed" || item.state === "exhausted",
+      );
       assert.equal(failed.length, 1, verdict.summary);
       assert.equal(failed[0]!.id, variant === "failedSetup" ? "prepare" : "check");
       assert.equal(failed[0]!.kind, variant === "failedSetup" ? "setup" : "command");
@@ -142,10 +144,10 @@ export async function probeCloseoutCommandRunner(
           headMoved: "command moved HEAD",
           timedOut: "command timed out",
           exit: "command exited 1",
-          failedSetup: "command exited 1",
+          failedSetup: "2 of 2 allowed failed attempts used. Stop retrying and ask for help.",
         }[variant],
       );
-      assert.equal(calls.length, variant === "failedSetup" ? 1 : 2);
+      assert.equal(calls.length, 2);
     }
     observe(`native Closeout preserves ${variant} injected execution evidence`, true, {
       decision: verdict.decision,

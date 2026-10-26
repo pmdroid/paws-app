@@ -249,15 +249,15 @@ describe("advanceMerge on a rebase conflict", () => {
     ]);
   });
 
-  test("a conflict with a newer main does not spend the used-up budget", async () => {
+  test("a newer main cannot refill the used-up conflict budget", async () => {
     const { h } = await conflicting();
     for (let attempt = 0; attempt < 3; attempt++) {
       await h.pass("ENG-1");
       backInQueue(h, "ENG-1");
     }
     await h.moveMain("ok.txt", "from-main-again\n");
-    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(resumes(h)).toHaveLength(4);
+    expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+    expect(resumes(h)).toHaveLength(3);
   });
 
   test("a person's reply after the returns ran out returns the next conflict to the agent", async () => {

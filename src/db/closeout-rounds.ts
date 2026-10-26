@@ -45,3 +45,25 @@ export function listCloseoutRounds(db: Database, itemId?: string): CloseoutRound
     startedAt: row.started_at,
   }));
 }
+
+/** Capture evidence only at admission of a human turn, never on redispatch. */
+export function saveHumanRetryWindow(
+  db: Database,
+  itemId: string,
+  jobId: number,
+  baseline: readonly string[],
+): void {
+  db.run(
+    "INSERT OR IGNORE INTO closeout_retry_window(job_id,item_id,retry_baseline) VALUES (?,?,?)",
+    [jobId, itemId, JSON.stringify(baseline)],
+  );
+}
+
+export function humanRetryBaseline(db: Database, itemId: string): string[] {
+  const row = db
+    .query<{ baseline: string }, [string]>(
+      "SELECT retry_baseline AS baseline FROM closeout_retry_window WHERE item_id=? ORDER BY job_id DESC LIMIT 1",
+    )
+    .get(itemId);
+  return row ? (JSON.parse(row.baseline) as string[]) : [];
+}

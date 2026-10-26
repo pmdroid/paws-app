@@ -3095,6 +3095,14 @@ CREATE TABLE agent_session_snapshot_chunk (
 ) STRICT;
 `,
   },
+  {
+    id: "150_closeout_retry_window",
+    sql: `CREATE TABLE closeout_retry_window (
+      job_id INTEGER PRIMARY KEY REFERENCES job(id),
+      item_id TEXT NOT NULL REFERENCES work_item(id),
+      retry_baseline TEXT NOT NULL CHECK(json_valid(retry_baseline))
+    );`,
+  },
 ];
 
 /**

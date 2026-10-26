@@ -11,6 +11,9 @@ import {
   migrate,
   openDatabase,
   recordRebaseReturn,
+  fixRounds,
+  saveHumanRetryWindow,
+  humanRetryBaseline,
 } from "../db";
 import { ask as rawAsk, findOpenQuestion, getQuestion } from "../questions";
 import { askMergeHelp, ciFixes, rebaseReturns, returnToAgent } from "./returns";
@@ -94,6 +97,41 @@ describe("merge returns", () => {
       now: 3,
     });
     expect(rebaseReturns(db, "eng-1")).toBe(0);
+  });
+
+  test("findings, CI and review share one budget until a person replies", () => {
+    const db = queued();
+    try {
+      for (const reason of ["findings", "ci", "review"]) {
+        enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "eng-1", reason }, now: 2 });
+      }
+      expect(fixRounds(db, "eng-1")).toBe(3);
+      expect(ciFixes(db, "eng-1")).toBe(3);
+      enqueueJob(db, {
+        queue: JOB_KIND.resume,
+        payload: { itemId: "eng-1", reason: "conflict" },
+        now: 3,
+      });
+      expect(fixRounds(db, "eng-1")).toBe(3);
+      const reply = enqueueJob(db, {
+        queue: JOB_KIND.resume,
+        jobKey: "linear-turn:s-1:2",
+        payload: { itemId: "eng-1" },
+        now: 4,
+      });
+      saveHumanRetryWindow(db, "eng-1", reply, ["failed-evidence"]);
+      saveHumanRetryWindow(db, "eng-1", reply, ["redispatched-evidence"]);
+      expect(humanRetryBaseline(db, "eng-1")).toEqual(["failed-evidence"]);
+      expect(fixRounds(db, "eng-1")).toBe(0);
+      enqueueJob(db, {
+        queue: JOB_KIND.resume,
+        payload: { itemId: "eng-1", reason: "ci" },
+        now: 5,
+      });
+      expect(fixRounds(db, "eng-1")).toBe(1);
+    } finally {
+      db.close();
+    }
   });
 
   test("asking for help opens a question through the lifecycle and waits for input", () => {

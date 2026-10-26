@@ -24,12 +24,11 @@ function play(conflicts: readonly RebaseConflict[], spacing = 30 * MINUTE): Reba
 }
 
 describe("rebase budget", () => {
-  test("conflicts each caused by a newer main commit do not fail the task", () => {
+  test("newer main commits do not refill the consecutive budget", () => {
     const results = play(
       [1, 2, 3, 4].map((n) => ({ base: sha(n), files: ["src/loop/orchestrator.ts"] })),
     );
-    expect(results.every((result) => result.allowed)).toBe(true);
-    expect(results.map((result) => (result.allowed ? result.spent : -1))).toEqual([0, 0, 0, 0]);
+    expect(results.map((result) => (result.allowed ? result.spent : -1))).toEqual([0, 1, 2, -1]);
   });
 
   test("conflicts on the same main commit fail once the budget is spent", () => {
@@ -42,28 +41,28 @@ describe("rebase budget", () => {
     });
   });
 
-  test("a newer main gives a fresh attempt after repeats on an older one", () => {
+  test("a newer main cannot refill a spent budget", () => {
     const old = { base: sha(1), files: ["a.ts"] };
     const results = play([old, old, old, { base: sha(2), files: ["a.ts"] }]);
-    expect(results.every((result) => result.allowed)).toBe(true);
+    expect(results.at(-1)?.allowed).toBe(false);
   });
 
-  test("without a main commit, the same files count as the same conflict", () => {
+  test("without a main commit, files do not count toward the consecutive limit", () => {
     const same = { base: null, files: ["a.ts"] };
-    expect(play([same, same, same, same]).at(-1)?.allowed).toBe(false);
+    expect(play([same, same, same, same]).at(-1)?.allowed).toBe(true);
     const moving = ["a.ts", "b.ts", "c.ts", "d.ts"].map((file) => ({ base: null, files: [file] }));
     expect(play(moving).every((result) => result.allowed)).toBe(true);
   });
 
-  test("returns without a main commit or files count as before", () => {
+  test("unknown main returns count only toward the hour", () => {
     const unknown = { base: null, files: null };
-    expect(play([unknown, unknown, unknown, unknown]).at(-1)?.allowed).toBe(false);
+    expect(play([unknown, unknown, unknown, unknown]).at(-1)?.allowed).toBe(true);
   });
 
   test("an hourly cap stops a busy main from looping forever", () => {
     const spacing = REBASE_RETURN_WINDOW_MS / (MAX_REBASE_RETURNS_PER_HOUR + 1);
     const conflicts = Array.from({ length: MAX_REBASE_RETURNS_PER_HOUR + 1 }, (_, n) => ({
-      base: sha(n + 1),
+      base: null,
       files: [`f${n}.ts`],
     }));
     const results = play(conflicts, spacing);
@@ -74,7 +73,6 @@ describe("rebase budget", () => {
       expect(last.message).toStartWith(
         `The branch conflicted with main ${MAX_REBASE_RETURNS_PER_HOUR + 1} times within an hour.`,
       );
-      expect(last.message).toContain("7777777");
       expect(last.message).toContain("f6.ts");
     }
     expect(play(conflicts, REBASE_RETURN_WINDOW_MS / 2).every((result) => result.allowed)).toBe(
