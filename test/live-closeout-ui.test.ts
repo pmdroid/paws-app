@@ -8,6 +8,8 @@ import {
   appendCloseoutOutput,
   applyWorkItemEvent,
   beginImplementRun,
+  claimNextJob,
+  enqueueJob,
   enqueueOutbox,
   enterMergeQueue,
   ensureCloseoutProgress,
@@ -179,6 +181,9 @@ describe("live closeout ui", () => {
     const id = "ENG-302";
     insertQueuedItem(db, { id, title: "Capped repair", maxAwakeMs: 1_000, now });
     seedVerifying(db, id, sha("b"), now);
+    // Closeout time counts while a job verifies the item.
+    enqueueJob(db, { queue: "run.reverify", payload: { itemId: id }, now });
+    claimNextJob(db, { now, leaseMs: 60_000, queues: ["run.reverify"] });
     accrueAwake(db, id, 0, now);
     accrueAwake(db, id, 1_000, now + 1_000);
     const run = snapshotOf(db, now + 1_000).runs.find((entry) => entry.itemId === id);

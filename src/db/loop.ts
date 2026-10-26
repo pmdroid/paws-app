@@ -9,6 +9,7 @@ import {
   type Clock,
 } from "../core";
 import { journal } from "./journal";
+import { accrueAtJobBoundary } from "./items";
 import { claimNextJob, completeJob, extendJobLease, failJob, isJobCurrent, type Job } from "./jobs";
 
 export type JobContext = {
@@ -69,6 +70,7 @@ export class JobLoop {
       if (result.changes > 0) journal(`job ${job.id} ${job.queue} cancelled: ${reason}`);
       return job;
     }
+    this.settleAwake(job, "claimed");
     const controller = new AbortController();
     const current = () => {
       if (!controller.signal.aborted && !isJobCurrent(this.db, job))
@@ -93,15 +95,29 @@ export class JobLoop {
     renewal.unref?.();
     try {
       await handler(job, context);
-      if (current()) completeJob(this.db, job, this.clock.now());
+      if (current()) {
+        this.settleAwake(job, "ending");
+        completeJob(this.db, job, this.clock.now());
+      }
     } catch (error) {
       journalCaught(error, "loop.tick.handler", journalItemId(job.payload));
-      if (current())
+      if (current()) {
+        this.settleAwake(job, "ending");
         failJob(this.db, job, error, { now: this.clock.now(), baseMs: this.options.backoffBaseMs });
+      }
     } finally {
       clearInterval(renewal);
     }
     return job;
+  }
+
+  /** Closeout time counts only while a job holds the item, so settle it at each claim and end. */
+  private settleAwake(job: Job, boundary: "claimed" | "ending"): void {
+    try {
+      accrueAtJobBoundary(this.db, job, boundary, this.clock.mono(), this.clock.now());
+    } catch (error) {
+      journalCaught(error, "loop.settleAwake", journalItemId(job.payload));
+    }
   }
 
   async run(

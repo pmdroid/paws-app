@@ -3,6 +3,7 @@ import {
   DEFAULT_MAX_AWAKE_MS,
   DEFAULT_MAX_TURNS,
   FakeClock,
+  JOB_KIND,
   LONG_SLEEP_MS,
   type Checkpoint,
 } from "../core";
@@ -16,6 +17,7 @@ import {
   getRun,
   getWorkItem,
   insertQueuedItem,
+  JobLoop,
   listJobs,
   listOutbox,
   markCloseoutAccepted,
@@ -62,6 +64,16 @@ function startRun(
     now: clock.now(),
   });
   return beginImplementRun(db, "eng-9", clock.now(), checkpoint);
+}
+
+/** A job that holds the item's lease, as one does while Closeout verifies it. */
+function verifyingJob(db: ReturnType<typeof boot>["db"], clock: FakeClock) {
+  enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "eng-9" }, now: clock.now() });
+  return claimNextJob(db, {
+    now: clock.now(),
+    leaseMs: 24 * 60 * 60_000,
+    queues: [JOB_KIND.reverify],
+  })!;
 }
 
 function activities(db: ReturnType<typeof boot>["db"]) {
@@ -344,6 +356,7 @@ describe("laptop sleep and wake", () => {
       host.tick();
       expect(getWorkItem(db, "eng-9")?.state).toBe("running");
       applyWorkItemEvent(db, "eng-9", "turn_ended");
+      verifyingJob(db, clock);
       clock.advance(135 * 60_000 - 1);
       host.tick();
       expect(getWorkItem(db, "eng-9")?.state).toBe("verifying");
@@ -353,6 +366,50 @@ describe("laptop sleep and wake", () => {
       expect(activities(db).at(-1)?.payload).toMatchObject({
         kind: "error",
         body: "Run hit the awake time cap (180 min). Counted: agent turns 45 min, Closeout 2 h 15 min.",
+      });
+    } finally {
+      host.stop();
+      db.close();
+    }
+  });
+
+  test("verifying with no job working on it is not Closeout time", async () => {
+    const { clock, db, host } = boot();
+    const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * 60_000 });
+    let finish = () => {};
+    jobs.register(
+      JOB_KIND.reverify,
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const verify = () => {
+      enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "eng-9" }, now: clock.now() });
+      return jobs.tick([JOB_KIND.reverify]);
+    };
+    try {
+      startRun(db, clock);
+      host.tick();
+      clock.advance(40 * 60_000);
+      host.tick();
+      applyWorkItemEvent(db, "eng-9", "turn_ended");
+      // Two idle hours pass without a tick, then a job claims the item.
+      clock.advance(2 * 60 * 60_000);
+      const running = verify();
+      clock.advance(20 * 60_000);
+      host.tick();
+      // The job ends between ticks, and the item sits in verifying for two hours.
+      clock.advance(5 * 60_000);
+      finish();
+      await running;
+      clock.advance(2 * 60 * 60_000);
+      host.tick();
+      expect(getWorkItem(db, "eng-9")).toMatchObject({
+        state: "verifying",
+        awakeMs: 65 * 60_000,
+        agentMs: 40 * 60_000,
+        closeoutMs: 25 * 60_000,
       });
     } finally {
       host.stop();

@@ -302,6 +302,22 @@ export function isJobCurrent(db: Database, job: Job): boolean {
   return current?.status === "running" && current.lockedBy === job.lockedBy;
 }
 
+/** Whether a claimed job with an unexpired lease, other than `exceptJobId`, is working on the item. */
+export function hasLiveJob(
+  db: Database,
+  itemId: string,
+  now: number,
+  exceptJobId?: number,
+): boolean {
+  return (
+    db
+      .query(
+        "SELECT 1 FROM job WHERE status = 'running' AND locked_until > ? AND json_extract(payload, '$.itemId') = ? AND id != ?",
+      )
+      .get(now, itemId, exceptJobId ?? -1) !== null
+  );
+}
+
 export function extendJobLease(db: Database, job: Job, now: number, leaseMs: number): boolean {
   const result = db.run(
     `UPDATE job SET locked_until = ? WHERE id = ? AND status = 'running' AND locked_by = ?`,

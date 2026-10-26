@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { FakeClock } from "../core";
+import { FakeClock, JOB_KIND } from "../core";
 import {
   accrueAwake,
   applyWorkItemEvent,
   beginImplementRun,
+  claimNextJob,
+  completeJob,
   configureWorkItem,
   enqueueJob,
   getRun,
+  JobLoop,
   getWorkItem,
   insertQueuedItem,
   listJobs,
@@ -22,7 +25,17 @@ import {
 const MINUTE = 60_000;
 
 function jobStatuses(db: ReturnType<typeof openDatabase>): Record<string, string> {
-  return Object.fromEntries(listJobs(db).map((job) => [job.queue, job.status]));
+  return Object.fromEntries(
+    listJobs(db)
+      .filter((job) => job.status !== "done")
+      .map((job) => [job.queue, job.status]),
+  );
+}
+
+/** Claims a job for the item, as one holds it while Closeout verifies. */
+function verifyingJob(db: ReturnType<typeof openDatabase>, itemId: string, now: number) {
+  enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId }, now });
+  return claimNextJob(db, { now, leaseMs: 24 * 60 * MINUTE, queues: [JOB_KIND.reverify] })!;
 }
 
 function acceptedItem(maxAwakeMs: number) {
@@ -40,8 +53,10 @@ function acceptedItem(maxAwakeMs: number) {
   clock.advance(10 * MINUTE);
   accrueAwake(db, item.id, clock.mono(), clock.now());
   applyWorkItemEvent(db, item.id, "turn_ended");
+  const verifying = verifyingJob(db, item.id, clock.now());
   clock.advance(5 * MINUTE);
   accrueAwake(db, item.id, clock.mono(), clock.now());
+  completeJob(db, verifying, clock.now());
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   markCloseoutAccepted(db, item.id, "accepted");
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "accepted" });
@@ -136,6 +151,63 @@ describe("awake-time cap after Closeout accepted the work", () => {
       kind: "error",
       body: "Run hit the awake time cap (30 min). Counted: agent turns 30 min, Closeout 0 min. Not counted: waiting for answers 1 h 30 min.",
     });
+  });
+
+  test("verifying with no job working on it is not counted as Closeout time", async () => {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
+    const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * MINUTE });
+    let finish = () => {};
+    jobs.register(
+      JOB_KIND.reverify,
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const verify = () => {
+      enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: clock.now() });
+      // The claim is synchronous; the handler then holds the job until finish().
+      return jobs.tick([JOB_KIND.reverify]);
+    };
+    const accrue = () => accrueAwake(db, item.id, clock.mono(), clock.now());
+    beginImplementRun(db, item.id, clock.now());
+    accrue();
+    clock.advance(41 * MINUTE);
+    accrue();
+    applyWorkItemEvent(db, item.id, "turn_ended");
+
+    // Two idle hours in verifying, then a job claims the item before the next accrual.
+    clock.advance(2 * 60 * MINUTE);
+    let running = verify();
+    expect(getWorkItem(db, item.id)).toMatchObject({ awakeMs: 41 * MINUTE, closeoutMs: 0 });
+    clock.advance(10 * MINUTE);
+    accrue();
+    // The job ends between accruals: its last five minutes still count.
+    clock.advance(5 * MINUTE);
+    finish();
+    await running;
+    clock.advance(2 * 60 * MINUTE);
+    const idle = accrue();
+    expect(idle.capped).toBe(false);
+    expect(idle.item).toMatchObject({
+      state: "verifying",
+      awakeMs: 56 * MINUTE,
+      agentMs: 41 * MINUTE,
+      closeoutMs: 15 * MINUTE,
+    });
+
+    running = verify();
+    clock.advance(4 * MINUTE);
+    expect(accrue().capped).toBe(true);
+    expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+      kind: "error",
+      body: "Run hit the awake time cap (60 min). Counted: agent turns 41 min, Closeout 19 min.",
+    });
+    finish();
+    await running;
   });
 
   test("a task Closeout accepted before the upgrade is still protected after a restart", () => {
