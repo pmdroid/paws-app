@@ -3,6 +3,8 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyLinearTurns,
+  applyWorkItemEvent,
+  approveCloseoutBypassChecks,
   auditWorkspaceAccess,
   closeLinkAsk,
   delegatedLinearUserId,
@@ -11,8 +13,11 @@ import {
   getLinkAsk,
   getWorkItem,
   immediate,
+  listCloseoutBypassChecks,
+  listCloseoutRecoveries,
   openLinkAsks,
   recordLinkAskDecision,
+  saveCheckpoint,
   type LinkAsk,
   type LinkAskDecision,
   type LinkAskKind,
@@ -34,6 +39,7 @@ import {
   type StoredQuestion,
 } from "../questions";
 import { projectLeadId } from "../scheduler";
+import { BYPASS_REPLY } from "./closeout-recovery";
 import { postNote } from "./visual-review";
 
 /** A Paws that only listens on localhost has no link a person can open, so it cannot ask this way. */
@@ -74,6 +80,8 @@ export function askWithLink(
     publicUrl: string | null;
     now: number;
     pending?: boolean;
+    /** The item version the ask was decided on; a newer item makes the ask stale. */
+    version?: number;
   },
 ): { question: StoredQuestion; linkAsk: LinkAsk } {
   if (!linkAskAvailable(input.publicUrl)) throw new Error(LINK_ASK_NEEDS_PUBLIC_URL);
@@ -85,7 +93,15 @@ export function askWithLink(
   return immediate(db, () => {
     const opened = openLinkAsk(db, {
       ask: (store, asker, ...rest) =>
-        ask(store, { ...asker, ...(input.pending ? { pending: true } : {}) }, ...rest),
+        ask(
+          store,
+          {
+            ...asker,
+            ...(input.pending ? { pending: true } : {}),
+            ...(input.version === undefined ? {} : { version: input.version }),
+          },
+          ...rest,
+        ),
       asker: { itemId: item.id, runId: input.runId, sessionId: item.sessionKey! },
       kind: input.kind,
       head: input.head,
@@ -144,6 +160,12 @@ export type LinkAskEffects = Partial<
   Record<LinkAskKind, (linkAsk: LinkAsk, item: WorkItemRecord, now: number) => boolean>
 >;
 
+/** One failed check a person bypasses on the item page, with their reason. */
+export type LinkAskBypass = { checkId: string; reason: string };
+
+export const BYPASS_REPLY_NOTE =
+  "A reply in Linear cannot bypass a Closeout check. I sent it to the agent as guidance. Bypass a check with a reason on the item page in Paws:";
+
 /**
  * A signed-in person decided on the item page. Checks `canAnswer` against the
  * delegator and the project lead, writes the Audit history row, closes the
@@ -155,6 +177,8 @@ export function decideLinkAsk(
     questionId: string;
     decision: LinkAskDecision;
     note: string | null;
+    /** The checks a bypass approval bypasses, each with its reason. */
+    bypasses?: readonly LinkAskBypass[];
     answeredBy: string;
     actor: { workspaceId: string; userId: string; name: string };
     now: number;
@@ -173,8 +197,15 @@ export function decideLinkAsk(
       return "forbidden";
     if ((input.decision === "answer") !== (linkAsk.kind === "question")) return "rejected";
     if (input.decision !== "approve" && !input.note) return "rejected";
+    const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
+    const bypasses = bypassing ? validBypasses(db, linkAsk, input.bypasses ?? []) : null;
+    if (bypassing && bypasses === null) return "rejected";
+    // The reasons are the note of a bypass: Audit history, the session note and the handoff carry them.
+    const note = bypasses
+      ? bypasses.map((entry) => `${entry.checkId}: ${entry.reason}`).join("; ")
+      : input.note;
     const answered = answerQuestion(db, question.id, {
-      answer: input.note ? `${input.decision}: ${input.note}` : input.decision,
+      answer: note ? `${input.decision}: ${note}` : input.decision,
       answeredBy: input.answeredBy,
       eventKey: `dashboard:${crypto.randomUUID()}`,
       now,
@@ -182,10 +213,20 @@ export function decideLinkAsk(
     if (answered === null) return "rejected";
     recordLinkAskDecision(db, linkAsk.questionId, {
       decision: input.decision,
-      note: input.note,
+      note,
       decidedBy: input.answeredBy,
       now,
     });
+    if (
+      bypasses &&
+      !approveCloseoutBypassChecks(db, linkAsk.questionId, {
+        checks: bypasses,
+        approvedBy: input.answeredBy,
+        approvedByName: input.actor.name,
+        now,
+      })
+    )
+      throw new Error("Closeout bypass checks changed while deciding");
     auditWorkspaceAccess(db, {
       workspaceId: input.actor.workspaceId,
       userId: input.actor.userId,
@@ -193,7 +234,7 @@ export function decideLinkAsk(
       subject: [
         item.linearIdentifier ?? item.id,
         shortCommit(linkAsk.headCommit),
-        ...(input.note ? [input.note] : []),
+        ...(note ? [note] : []),
       ].join(" · "),
       now,
     });
@@ -202,16 +243,76 @@ export function decideLinkAsk(
       db,
       question.sessionId,
       item,
-      linkAskDecidedNote(linkAsk, input.decision, input.actor.name, input.note),
+      linkAskDecidedNote(linkAsk, input.decision, input.actor.name, note),
       `link-ask-decided:${linkAsk.questionId}`,
       now,
     );
     const current = getWorkItem(db, item.id)!;
     if (input.decision === "approve" && effects[linkAsk.kind]?.(linkAsk, current, now))
       return "answered";
-    handBack(db, current, question, linkAskHandoff(linkAsk, input), now);
+    handBack(db, current, question, linkAskHandoff(linkAsk, { ...input, note }), now);
     return "answered";
   });
+}
+
+/**
+ * The checks a bypass may waive: at least one, each offered by this ask and
+ * not decided yet, each once, each with a reason. Null otherwise.
+ */
+function validBypasses(
+  db: Database,
+  linkAsk: LinkAsk,
+  bypasses: readonly LinkAskBypass[],
+): LinkAskBypass[] | null {
+  const offered = new Set(
+    listCloseoutBypassChecks(db, linkAsk.questionId)
+      .filter((check) => check.approvedAt === null)
+      .map((check) => check.checkId),
+  );
+  const chosen = bypasses.map((entry) => ({
+    checkId: entry.checkId,
+    reason: entry.reason.trim(),
+  }));
+  const ids = new Set(chosen.map((entry) => entry.checkId));
+  if (
+    chosen.length === 0 ||
+    ids.size !== chosen.length ||
+    chosen.some((entry) => !offered.has(entry.checkId) || entry.reason === "")
+  )
+    return null;
+  return chosen;
+}
+
+/**
+ * A person bypassed checks on the item page: the item verifies the same head
+ * again, and the bypass rows (bound to that head and policy digest) waive the
+ * checks, as `recoveryOptions` reads them.
+ */
+export function reverifyBypassed(
+  db: Database,
+  linkAsk: LinkAsk,
+  item: WorkItemRecord,
+  now: number,
+): boolean {
+  const recovery = listCloseoutRecoveries(db, item.id).find(
+    (entry) => entry.questionId === linkAsk.questionId,
+  );
+  if (recovery === undefined || item.state !== "awaiting_input") return false;
+  db.run("UPDATE question SET handoff_version=0 WHERE id=?", [linkAsk.questionId]);
+  applyWorkItemEvent(db, item.id, "answer_received");
+  applyWorkItemEvent(db, item.id, "turn_ended");
+  saveCheckpoint(db, item.id, {
+    phase: "verifying",
+    baseSha: recovery.base,
+    wipCommit: recovery.head,
+  });
+  enqueueJobOnce(db, {
+    queue: JOB_KIND.reverify,
+    jobKey: `closeout-bypass:${linkAsk.questionId}`,
+    payload: { itemId: item.id },
+    now,
+  });
+  return true;
 }
 
 /**
@@ -250,7 +351,9 @@ export function guideLinkAsk(
       db,
       question.sessionId,
       item,
-      LINK_ASK_GUIDANCE_NOTE,
+      linkAsk.kind === "bypass" && BYPASS_REPLY.test(input.body)
+        ? `${BYPASS_REPLY_NOTE} ${linkAsk.link}`
+        : LINK_ASK_GUIDANCE_NOTE,
       `link-ask-guidance:${linkAsk.questionId}`,
       now,
     );

@@ -282,10 +282,17 @@ export {
 } from "./agent-closeout";
 
 export {
+  getCloseoutRecovery,
   listCloseoutRecoveries,
   saveCloseoutRecovery,
   type CloseoutRecovery,
 } from "./closeout-recovery";
+export {
+  approveCloseoutBypassChecks,
+  listCloseoutBypassChecks,
+  saveCloseoutBypassChecks,
+  type CloseoutBypassCheck,
+} from "./closeout-bypass";
 export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./closeout-rounds";
 export {
   countCiFixes,

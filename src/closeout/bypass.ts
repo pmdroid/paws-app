@@ -7,7 +7,10 @@ export type CloseoutBypass = {
   head: string;
   policyDigest: string;
   checkIds: readonly string[];
+  /** Linear user id of the person who approved the bypass. */
   actor: string;
+  /** Their name as Paws shows it, for the pull request body. */
+  actorName?: string;
   reason: string;
 };
 
@@ -57,11 +60,16 @@ export function applyBypasses(
   return { ...evaluation, outcome, bypasses: used };
 }
 
+/** The pull request body's list of bypassed checks: each check, its reason and who approved it. */
 export function bypassSummary(approvals: readonly CloseoutBypass[]): string {
-  return approvals
-    .map(
-      (approval) =>
-        `Human bypass: ${approval.checkIds.join(", ")} approved by ${approval.actor}. Reason: ${approval.reason}. Approval question: ${approval.questionId}. Base: ${approval.base}. Head: ${approval.head}. Policy: ${approval.policyDigest}.`,
-    )
-    .join("\n");
+  const flat = (text: string) => text.replace(/\s+/g, " ").trim();
+  return [
+    "Bypassed checks:",
+    ...approvals.flatMap((approval) =>
+      approval.checkIds.map(
+        (id) =>
+          `- ${id}: ${flat(approval.reason)} — approved by ${flat(approval.actorName || approval.actor)} in Paws for head ${approval.head} and policy ${approval.policyDigest} (question ${approval.questionId}).`,
+      ),
+    ),
+  ].join("\n");
 }

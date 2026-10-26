@@ -5,7 +5,7 @@ import { handleLinkAskAnswer, LINK_ASK_ANSWER_PATH, type LinkAskAnswer } from ".
 
 const NOW = 1_700_000_000_000;
 
-function setup(role: "member" | "observer" = "member") {
+function setup(role: "member" | "observer" = "member", kind: "risk" | "bypass" = "risk") {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1" });
@@ -31,7 +31,7 @@ function setup(role: "member" | "observer" = "member") {
   });
   const { question } = openLinkAsk(db, {
     asker: { itemId: "PAS-633", runId: null, sessionId: "ses_1" },
-    kind: "risk",
+    kind,
     head: "7f65200aa",
     link: "https://paws.example/status/issues/PAS-633#risk",
     detail: "High-risk paths changed: src/auth/session.ts.",
@@ -142,4 +142,48 @@ test("signed out, another session, a wrong decision or no note are refused", asy
       })
     )?.status,
   ).toBe(400);
+});
+
+test("a bypass approval sends each selected check with its reason", async () => {
+  const { db, questionId, calls } = setup("member", "bypass");
+  const options = {
+    db,
+    principal: { workspaceId: "ws", userId: "user-1" },
+    sessionIds: ["ses_1"],
+    submit: (async (input) => (calls.push(input), "answered")) as LinkAskAnswer,
+  };
+  for (const bypasses of [
+    undefined,
+    [],
+    [{ checkId: "test", reason: " " }],
+    [{ checkId: "test" }],
+    [
+      { checkId: "test", reason: "Flaky" },
+      { checkId: "test", reason: "Flaky" },
+    ],
+  ])
+    expect(
+      (await handleLinkAskAnswer(post({ questionId, decision: "approve", bypasses }), options))
+        ?.status,
+    ).toBe(400);
+  expect(calls).toEqual([]);
+  const response = await handleLinkAskAnswer(
+    post({
+      questionId,
+      decision: "approve",
+      bypasses: [{ checkId: "test", reason: " Fixture is known to fail. " }],
+    }),
+    options,
+  );
+  expect(response?.status).toBe(200);
+  expect(calls).toEqual([
+    {
+      questionId,
+      decision: "approve",
+      note: null,
+      bypasses: [{ checkId: "test", reason: "Fixture is known to fail." }],
+      answeredBy: "linear-1",
+      actor: { workspaceId: "ws", userId: "user-1", name: "Sam" },
+    },
+  ]);
 });

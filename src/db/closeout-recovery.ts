@@ -68,3 +68,22 @@ export function listCloseoutRecoveries(db: Database, itemId: string): CloseoutRe
       answeredBy: row.answered_by,
     }));
 }
+
+/** The candidate a Closeout help question was asked about, by its question. */
+export function getCloseoutRecovery(
+  db: Database,
+  questionId: string,
+): Pick<CloseoutRecovery, "head" | "policyDigest" | "failedChecks"> | null {
+  const row = db
+    .query<Pick<RecoveryRow, "head" | "policy_digest" | "failed_checks">, [string]>(
+      "SELECT head, policy_digest, failed_checks FROM closeout_recovery WHERE question_id = ?",
+    )
+    .get(questionId);
+  return row === null
+    ? null
+    : {
+        head: row.head,
+        policyDigest: row.policy_digest,
+        failedChecks: JSON.parse(row.failed_checks) as string[],
+      };
+}

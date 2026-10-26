@@ -289,6 +289,26 @@ export interface StatusLinkAsk {
   title: string;
   detail: string;
   link: string;
+  /** For a `bypass` ask: the failed checks a person may bypass on this head. */
+  bypass?: StatusBypassAsk;
+}
+
+/** What the "Closeout needs your help" card shows and binds a bypass to. */
+export interface StatusBypassAsk {
+  policyDigest: string;
+  /** Checks that passed on the head, by id. */
+  passed: string[];
+  checks: StatusBypassCheck[];
+}
+
+/** One failed check a bypass may waive, as Closeout judged it on the head. */
+export interface StatusBypassCheck {
+  id: string;
+  kind: string;
+  state: string;
+  attempt: number | null;
+  /** The finding, or the last lines of the check's output. */
+  finding: string;
 }
 
 export interface StatusCheck {
@@ -1214,6 +1234,26 @@ function readLinkAsk(input: unknown, path: string): StatusLinkAsk {
     title: text(body, "title", path),
     detail: string(body, "detail", path),
     link: text(body, "link", path),
+    ...(body.bypass === undefined ? {} : { bypass: readBypassAsk(body.bypass, `${path}.bypass`) }),
+  };
+}
+
+function readBypassAsk(input: unknown, path: string): StatusBypassAsk {
+  const body = object(input, path);
+  return {
+    policyDigest: string(body, "policyDigest", path),
+    passed: stringArray(body, "passed", path),
+    checks: array(body, "checks", path).map((entry, index) => {
+      const at = `${path}.checks[${index}]`;
+      const check = object(entry, at);
+      return {
+        id: text(check, "id", at),
+        kind: string(check, "kind", at),
+        state: text(check, "state", at),
+        attempt: optionalCount(check, "attempt", at),
+        finding: string(check, "finding", at),
+      };
+    }),
   };
 }
 

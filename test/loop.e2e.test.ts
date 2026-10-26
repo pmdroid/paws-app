@@ -1271,6 +1271,8 @@ for (const recovery of [
   "guidance",
   "bypass",
   "stale bypass",
+  "reply bypass",
+  "refused bypass",
   "missing bypass reason",
   "unfailed bypass check",
 ] as const) {
@@ -1310,6 +1312,18 @@ for (const recovery of [
     const dbPath = path.join(layout.pawsRoot, "paws.db");
     let db = openDatabase(dbPath);
     migrate(db);
+    // Bypass is decided on the item page, which needs a link a person can open.
+    const publicUrl = recovery === "guidance" ? null : "https://paws.example";
+    db.run(
+      "INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)",
+      ["ws", "org", "Kyku", Date.now()],
+    );
+    db.run("INSERT INTO workspace_user (id, linear_user_id, name, email) VALUES (?,?,?,?)", [
+      "user-pascal",
+      "pascal",
+      "Pascal",
+      "pascal@example.com",
+    ]);
     const launches: string[] = [];
     const prompts: string[] = [];
     const launch: AgentLaunch = (input) => {
@@ -1344,6 +1358,7 @@ for (const recovery of [
         outbox,
         pawsRoot: layout.pawsRoot,
         home: layout.home,
+        publicUrl,
         tracker,
         launch,
         repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
@@ -1354,6 +1369,7 @@ for (const recovery of [
     try {
       let runtime = attach();
       await runtime.orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-8"));
+      db.run("UPDATE work_item SET delegated_by = 'pascal'");
       await tickWithRestarts(runtime.jobs, runtime.orchestrator, db);
       expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
       expect(launches).toEqual(["implement", "fix"]);
@@ -1362,7 +1378,12 @@ for (const recovery of [
       const context = listCloseoutRecoveries(db, question.itemId)[0]!;
       expect(context.failedChecks).toEqual(["test"]);
       expect(context.retryBaseline).toHaveLength(2);
-      expect(question.body).toContain("same Closeout retry limit");
+      expect(question.body).toContain(
+        recovery === "guidance"
+          ? "same Closeout retry limit"
+          : "Decide in Paws: https://paws.example/status/issues/ENG-8#closeout",
+      );
+      expect(question.body).not.toContain("/paws bypass");
       db.close();
       db = openDatabase(dbPath);
       runtime = attach();
@@ -1372,35 +1393,62 @@ for (const recovery of [
         await gitIdentity(worktree);
         await exec("git", ["-C", worktree, "commit", "--allow-empty", "-m", "candidate changed"]);
       }
+      const reason = "Approved known fixture failure";
+      const decide = (answeredBy: string, bypasses: { checkId: string; reason: string }[]) =>
+        runtime.orchestrator.decideLinkAsk({
+          questionId: question.id,
+          decision: "approve",
+          note: null,
+          bypasses,
+          answeredBy,
+          actor: { workspaceId: "ws", userId: "user-pascal", name: "Pascal" },
+        });
       const answer =
         recovery === "guidance"
           ? "Create ok.txt to satisfy the command"
-          : recovery === "missing bypass reason"
-            ? "/paws bypass test"
-            : recovery === "unfailed bypass check"
-              ? "/paws bypass unrelated -- Wrong check"
-              : "/paws bypass test -- Approved known fixture failure";
-      const event = {
-        ...linearEvent("prompted", answer, null),
-        payload: JSON.stringify({ questionId: question.id, answeredBy: "pascal" }),
-      };
-      await runtime.orchestrator.onLinearEvent(event);
-      await runtime.orchestrator.onLinearEvent(event);
-      expect(getQuestion(db, question.id)?.answeredBy).toBe("pascal");
-      if (recovery === "missing bypass reason" || recovery === "unfailed bypass check") {
+          : `/paws bypass test -- ${reason}`;
+      if (recovery === "guidance" || recovery === "reply bypass") {
+        const event = {
+          ...linearEvent("prompted", answer, null),
+          payload: JSON.stringify({ questionId: question.id, answeredBy: "pascal" }),
+        };
+        await runtime.orchestrator.onLinearEvent(event);
+        await runtime.orchestrator.onLinearEvent(event);
+        expect(getQuestion(db, question.id)?.answeredBy).toBe("pascal");
+      } else if (recovery === "refused bypass") {
+        expect(await decide("someone-else", [{ checkId: "test", reason }])).toBe("forbidden");
+      } else if (recovery === "missing bypass reason") {
+        expect(await decide("pascal", [{ checkId: "test", reason: " " }])).toBe("rejected");
+      } else if (recovery === "unfailed bypass check") {
+        expect(await decide("pascal", [{ checkId: "unrelated", reason }])).toBe("rejected");
+      } else {
+        expect(await decide("pascal", [{ checkId: "test", reason }])).toBe("answered");
+      }
+      if (recovery === "reply bypass") {
+        // The reply goes to the agent as guidance and Paws answers with the link.
+        expect(
+          listJobs(db).filter((job) => job.status === "pending" && job.queue === JOB_KIND.reverify),
+        ).toHaveLength(0);
+        expect(
+          listJobs(db).filter((job) => job.status === "pending" && job.queue === JOB_KIND.resume),
+        ).toHaveLength(1);
+        expect(
+          listOutbox(db).some((row) =>
+            JSON.stringify(row.payload).includes(
+              "Bypass a check with a reason on the item page in Paws: https://paws.example/status/issues/ENG-8#closeout",
+            ),
+          ),
+        ).toBe(true);
+        expect(github.merged).toHaveLength(0);
+        return;
+      }
+      if (
+        recovery === "refused bypass" ||
+        recovery === "missing bypass reason" ||
+        recovery === "unfailed bypass check"
+      ) {
         expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
-        const replacement = findOpenQuestion(db, "ses_1")!;
-        expect(replacement.id).not.toBe(question.id);
-        expect(replacement.body).toContain("Use /paws bypass check-id -- your reason");
-        await runtime.orchestrator.onLinearEvent({
-          ...event,
-          dedupeKey: `${event.dedupeKey}:old-question`,
-          activityId: "old-question-reply",
-          updatedAtMs: Math.max(Date.now(), replacement.createdAt + 1),
-          body: "/paws bypass test -- Approved known fixture failure",
-        });
-        expect(getQuestion(db, replacement.id)?.status).toBe("open");
-        expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
+        expect(getQuestion(db, question.id)?.status).toBe("open");
         expect(
           listJobs(db).filter(
             (job) =>
@@ -1408,11 +1456,6 @@ for (const recovery of [
               (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.reverify),
           ),
         ).toHaveLength(0);
-        expect(
-          listCloseoutRecoveries(db, question.itemId).find(
-            (entry) => entry.questionId === replacement.id,
-          )?.retryBaseline,
-        ).toEqual(context.retryBaseline);
         expect(launches).toEqual(["implement", "fix"]);
         expect(github.opened).toHaveLength(0);
         expect(github.merged).toHaveLength(0);
@@ -1443,8 +1486,10 @@ for (const recovery of [
         );
         if (recovery === "guidance") expect(prompts.at(-1)).toContain(answer);
         if (recovery === "bypass") {
-          expect(github.opened[0]?.body).toContain("approved by pascal");
-          expect(github.opened[0]?.body).toContain("Approved known fixture failure");
+          expect(github.opened[0]?.body).toContain("Bypassed checks:");
+          expect(github.opened[0]?.body).toContain(
+            `- test: ${reason} — approved by Pascal in Paws`,
+          );
         }
       }
     } finally {

@@ -25,8 +25,6 @@ import {
   type AnswerEffects,
   type StoredQuestion,
 } from "../questions";
-import { askCloseoutHelp } from "./closeout-help";
-import { parseRecoveryAnswer } from "./closeout-recovery";
 import {
   PLAN_DISCARDED,
   PLAN_EDIT_QUESTION,
@@ -36,9 +34,6 @@ import {
 } from "./plan-proposal";
 import { worktreeBranch } from "./sources";
 import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
-
-const CLOSEOUT_HELP_RETRY =
-  "Use /paws bypass check-id -- your reason from an identifiable trusted account, or reply with guidance.";
 
 export function questionEffects(
   db: Database,
@@ -105,42 +100,17 @@ export function questionEffects(
       `resume:answer:${question.id}`,
     );
   };
+  /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */
   const closeoutHelp = (question: StoredQuestion) => {
     const recovery = listCloseoutRecoveries(db, question.itemId).find(
       (entry) => entry.questionId === question.id,
     );
     if (recovery === undefined) return;
-    const parsed = parseRecoveryAnswer(question.answer ?? "", recovery.failedChecks);
-    if (parsed === null) {
-      db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
-      askCloseoutHelp(db, question.sessionId, recovery, {
-        now: input.now,
-        error: CLOSEOUT_HELP_RETRY,
-      });
-      return;
-    }
     consumeTurn(question);
     if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
-    if (parsed.kind === "bypass") {
-      db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
-      applyWorkItemEvent(db, question.itemId, "answer_received");
-      applyWorkItemEvent(db, question.itemId, "turn_ended");
-      saveCheckpoint(db, question.itemId, {
-        phase: "verifying",
-        baseSha: recovery.base,
-        wipCommit: recovery.head,
-      });
-      enqueueJobOnce(db, {
-        queue: JOB_KIND.reverify,
-        jobKey: `closeout-bypass:${question.id}`,
-        payload: { itemId: question.itemId },
-        now: input.now,
-      });
-      return;
-    }
     restartWithAnswers(
       question,
-      handoffNote({ question: recovery.summary, answer: parsed.body }),
+      handoffNote({ question: recovery.summary, answer: question.answer ?? "" }),
       `closeout-guidance:${question.id}`,
     );
   };
