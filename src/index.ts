@@ -814,7 +814,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (runnerStopping) throw new Error("Paws is stopping.");
   });
   void ready.catch((caughtError6) => {
-    journalCaught(caughtError6, "index.startPaws", null);
+    journalCaught(
+      caughtError6,
+      "index.startPaws.ready",
+      null,
+      runnerStopping &&
+        caughtError6 instanceof Error &&
+        caughtError6.message === "Paws is stopping."
+        ? "shutdown interrupted startup"
+        : undefined,
+    );
   });
   let server: Bun.Server<undefined>;
   try {
