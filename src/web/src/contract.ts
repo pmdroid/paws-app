@@ -11,6 +11,8 @@ import { journalCaught } from "./journal";
 export const STATUS_API_VERSION = 1 as const;
 
 export const STATUS_API_PATH = "/api/status";
+/** `GET /api/status/items/<id>` returns a `StatusItemDetail` for the issue with that id. */
+export const STATUS_ITEM_API_PATH = "/api/status/items";
 export const STATUS_PAGE_PATH = "/status";
 
 export const ITEM_STATES = [
@@ -481,6 +483,43 @@ export interface StatusSnapshot {
   dead?: StatusDeadDelivery[];
   linearBudget?: StatusLinearBudget;
   linearWebhook?: StatusLinearWebhook;
+}
+
+/**
+ * One issue for its page, from `GET /api/status/items/<id>`: every visible session of the issue
+ * (`items`, an earlier one with `endedAt`), its runs, questions, Closeout verdicts with every
+ * attempt, agent Closeout, evidence, CI rounds and merge state. `events` is empty and check
+ * `stdout` and `stderr` are left out. `blocks` lists the issues this one blocks.
+ */
+export interface StatusItemDetail extends StatusSnapshot {
+  id: string;
+  blocks: string[];
+}
+
+export type ItemDetailParseResult =
+  | { ok: true; detail: StatusItemDetail }
+  | { ok: false; error: string };
+
+export function statusItemPath(id: string): string {
+  return `${STATUS_ITEM_API_PATH}/${encodeURIComponent(id)}`;
+}
+
+export function parseStatusItemDetail(input: unknown): ItemDetailParseResult {
+  try {
+    const body = object(input, "detail");
+    return {
+      ok: true,
+      detail: {
+        ...readSnapshot(input),
+        id: text(body, "id", "detail"),
+        blocks: stringArray(body, "blocks", "detail"),
+      },
+    };
+  } catch (error) {
+    journalCaught(error, "contract.parseStatusItemDetail.readSnapshot", null);
+    const message = error instanceof Error ? error.message : "Invalid item detail";
+    return { ok: false, error: message };
+  }
 }
 
 export interface StatusIntakeEntry {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  appendCloseoutOutput,
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
@@ -687,6 +688,91 @@ describe("live status provider", () => {
     expect(snapshot.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
       ["test", "passed"],
     ]);
+  });
+
+  test("the item detail carries one issue's Closeout attempts without check logs", async () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const base = "d".repeat(40);
+    const item = insertQueuedItem(db, { id: "ENG-8", title: "Detail", sessionKey: "ses_8", now });
+    const blocked = insertQueuedItem(db, { id: "ENG-9", sessionKey: "ses_8", now: now + 1 });
+    insertQueuedItem(db, { id: "ENG-10", sessionKey: "ses_other", now });
+    saveTaskBlocks(
+      db,
+      [blocked.linearIssueId],
+      [{ blockerLinearIssueId: item.linearIssueId, blockedLinearIssueId: blocked.linearIssueId }],
+    );
+    beginImplementRun(db, item.id, now);
+    enterMergeQueue(db, item.id, {
+      phase: "merge_queue",
+      baseSha: base,
+      wipCommit: "c".repeat(40),
+    });
+    for (const [index, head] of ["a".repeat(40), "c".repeat(40)].entries()) {
+      const at = now + index * 1000;
+      const identity = {
+        taskId: item.id,
+        base,
+        head,
+        policyDigest: "sha256:policy",
+        policyPath: null,
+      };
+      upsertCloseoutStep(
+        db,
+        item.id,
+        identity,
+        {
+          id: "test",
+          kind: "command",
+          state: index === 0 ? "failed" : "passed",
+          command: "bun test",
+          detail: null,
+          attempt: index + 1,
+          timeoutSeconds: null,
+          startedAt: at,
+          finishedAt: at,
+          exitCode: index === 0 ? 1 : 0,
+          timedOut: false,
+          timeoutReason: null,
+          truncated: false,
+          logPath: null,
+          evidencePath: null,
+          findings: index === 0 ? "test failed" : null,
+          ordinal: 0,
+        },
+        at,
+      );
+      appendCloseoutOutput(db, item.id, identity, "test", "stderr", "secret log", false, at);
+      finishCloseoutProgress(db, item.id, identity, index === 0 ? "rejected" : "accepted", at);
+    }
+    const provider = createLiveStatusProvider(db, {
+      now: () => new Date(now + 5000),
+      sessionIds: ["ses_8"],
+    });
+    expect(JSON.stringify(provider.snapshot())).toContain("secret log");
+    const detail = provider.item("ENG-8")!;
+    expect(detail.items.map((entry) => entry.id)).toEqual(["ENG-8"]);
+    expect(detail.blocks).toEqual(["ENG-9"]);
+    expect(detail.events).toEqual([]);
+    const attempts = detail.verdicts[0]!.attempts!;
+    expect(attempts.map((attempt) => [attempt.decision, attempt.checks[0]?.findings])).toEqual([
+      ["rejected", "test failed"],
+      ["accepted", null],
+    ]);
+    expect(JSON.stringify(detail)).not.toContain("secret log");
+    expect(provider.item("ENG-10")).toBeNull();
+    expect(createLiveStatusProvider(db).item("ENG-10")?.id).toBe("ENG-10");
+
+    const get = (id: string) =>
+      handleStatusRequest(new Request(`http://127.0.0.1/api/status/items/${id}`), {
+        db,
+        sessionIds: ["ses_8"],
+      });
+    const response = (await get("ENG-8"))!;
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { id: string }).id).toBe("ENG-8");
+    expect((await get("ENG-10"))?.status).toBe(404);
+    expect((await get("ENG-404"))?.status).toBe(404);
   });
 
   test("a review keeps its measured duration and tokens when a later evaluation reads it again", () => {

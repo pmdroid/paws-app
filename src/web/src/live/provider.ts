@@ -100,6 +100,7 @@ import {
   type StatusGitHubQueue,
   type StatusHeld,
   type StatusItem,
+  type StatusItemDetail,
   type StatusItemEvent,
   type StatusMergeQueue,
   type StatusMergeEntry,
@@ -174,12 +175,56 @@ export type LinearUsageView = {
 export function createLiveStatusProvider(
   db: Database,
   options: LiveStatusOptions = {},
-): { snapshot(): StatusSnapshot } {
+): { snapshot(): StatusSnapshot; item(id: string): StatusItemDetail | null } {
   return {
     snapshot() {
       return { ...readLiveSnapshot(db, options), ...readIntake(db, options) };
     },
+    item(id) {
+      return readItemDetail(db, id, options);
+    },
   };
+}
+
+/**
+ * One issue's sessions with their runs, Closeout attempts, agent Closeout, evidence and CI
+ * rounds, for `GET /api/status/items/:id`. Null when no visible item has that id.
+ * Check `stdout` and `stderr` are left out; the issue page loads logs separately.
+ */
+function readItemDetail(
+  db: Database,
+  id: string,
+  options: LiveStatusOptions,
+): StatusItemDetail | null {
+  const { snapshot, blocks } = readScopedSnapshot(db, options, id);
+  if (snapshot.items.length === 0) return null;
+  return {
+    ...snapshot,
+    id,
+    blocks,
+    verdicts: snapshot.verdicts.map((verdict) => ({
+      ...verdict,
+      checks: verdict.checks.map(withoutOutput),
+      ...(verdict.attempts ? { attempts: verdict.attempts.map(attemptWithoutOutput) } : {}),
+    })),
+    ...(snapshot.agentCloseout
+      ? {
+          agentCloseout: snapshot.agentCloseout.map((entry) => ({
+            ...entry,
+            attempts: entry.attempts.map(attemptWithoutOutput),
+          })),
+        }
+      : {}),
+  };
+}
+
+function attemptWithoutOutput(attempt: StatusCloseoutAttempt): StatusCloseoutAttempt {
+  return { ...attempt, checks: attempt.checks.map(withoutOutput) };
+}
+
+function withoutOutput(check: StatusCheck): StatusCheck {
+  const { stdout: _stdout, stderr: _stderr, ...rest } = check;
+  return rest;
 }
 
 export function emptyLiveSnapshot(
@@ -245,29 +290,45 @@ function readIntake(
 }
 
 function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnapshot {
+  return readScopedSnapshot(db, options).snapshot;
+}
+
+/**
+ * The snapshot of every visible item, or with `only` of the visible items with that public id.
+ * Blockers, shared sessions and merge places still read every visible item; `blocks` lists
+ * the issues `only` blocks.
+ */
+function readScopedSnapshot(
+  db: Database,
+  options: LiveStatusOptions,
+  only?: string,
+): { snapshot: StatusSnapshot; blocks: string[] } {
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
   const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
-  const records = listWorkItemsByStates(db, WORK_ITEM_STATES)
+  const visible = listWorkItemsByStates(db, WORK_ITEM_STATES)
     .filter(
       (record) =>
         options.sessionIds === undefined ||
         (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
     )
     .sort((left, right) => compareNewest(left, right, facts));
-  if (records.length === 0) return emptyLiveSnapshot(now, options.project);
+  const records =
+    only === undefined ? visible : visible.filter((record) => publicId(record) === only);
+  if (records.length === 0)
+    return { snapshot: emptyLiveSnapshot(now, options.project), blocks: [] };
   const rows = listOutbox(db).filter(
     (row) =>
       options.sessionIds === undefined ||
       (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
   );
   const jobs = listJobs(db);
-  const itemsByIssue = latestByLinearIssue(records, facts);
+  const itemsByIssue = latestByLinearIssue(visible, facts);
   const openQuestions = listOpenQuestions(db);
   const env = options.env ?? process.env;
   const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
   const queue = new Map(listQueuePositions(db).map((entry) => [entry.itemId, entry]));
-  const recordsById = new Map(records.map((record) => [record.id, record]));
+  const recordsById = new Map(visible.map((record) => [record.id, record]));
   const queues = listMergeQueues(db);
   const merging = new Map<string, StatusMergeQueue>(
     queues.map((entry) => {
@@ -303,16 +364,25 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     ),
     linearRequests: linearRequests.get(record.id) ?? 0,
     ...heldOf(record, holds),
-    ...sessionAttempt(db, record, records, itemsByIssue, storedRuns, facts),
+    ...sessionAttempt(db, record, visible, itemsByIssue, storedRuns, facts),
     ...timelineOf(db, record),
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
-  return {
+  const merge = mergeQueueFor(db, {
+    records: visible,
+    items,
+    jobs,
+    queues,
+    generatedAt,
+    now: now.getTime(),
+    repo: options.project?.repo,
+  });
+  const snapshot: StatusSnapshot = {
     version: STATUS_API_VERSION,
     source: "live",
     generatedAt,
-    project: projectOf(records, options.project),
+    project: projectOf(visible, options.project),
     items,
     runs,
     questions: questionsFor(db, records, rows, runs, openQuestions),
@@ -322,21 +392,38 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
         runId === undefined ? verdict : { ...verdict, runId },
       );
     }),
-    ...mergeQueueFor(db, {
-      records,
-      items,
-      jobs,
-      queues,
-      generatedAt,
-      now: now.getTime(),
-      repo: options.project?.repo,
-    }),
-    events: eventsFor(rows),
+    mergeQueue:
+      only === undefined
+        ? merge.mergeQueue
+        : merge.mergeQueue.filter((entry) => entry.itemId === only),
+    ...(merge.mergeHistory === undefined
+      ? {}
+      : {
+          mergeHistory:
+            only === undefined
+              ? merge.mergeHistory
+              : merge.mergeHistory.filter((entry) => entry.itemId === only),
+        }),
+    events: only === undefined ? eventsFor(rows) : [],
     evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
     ciRounds: ciRoundsFor(db, records, env),
     dead: deadFor(db, records),
   };
+  const blocks =
+    only === undefined
+      ? []
+      : [
+          ...new Set(
+            visible
+              .filter(
+                (record) =>
+                  publicId(record) !== only && blockersFor(db, record, itemsByIssue).includes(only),
+              )
+              .map(publicId),
+          ),
+        ];
+  return { snapshot, blocks };
 }
 
 /** Dead outbox rows and dead jobs of the visible items, so none blocks a session unseen. */
