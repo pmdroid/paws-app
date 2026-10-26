@@ -73,6 +73,64 @@ export function fakeMergeReadiness(head: string) {
   };
 }
 
+export type FakeReviewThread = {
+  resolved?: boolean;
+  outdated?: boolean;
+  path?: string | null;
+  line?: number | null;
+  comments: { author?: string | null; body: string; reviewId?: number | null }[];
+};
+
+/**
+ * Pull request review threads as GitHub's `reviewThreads` GraphQL connection. `respond` answers
+ * the `ReviewThreads` query and returns null for any other request; `reads` counts the queries.
+ */
+export function createFakeReviewThreads(threads: FakeReviewThread[] = []): {
+  threads: FakeReviewThread[];
+  reads: number;
+  respond(request: { method: string; path: string; body?: unknown }): GitHubResponse | null;
+} {
+  const fake = {
+    threads,
+    reads: 0,
+    respond(request: { method: string; path: string; body?: unknown }): GitHubResponse | null {
+      const body = request.body as { query?: string } | undefined;
+      if (request.method !== "POST" || request.path !== "/graphql") return null;
+      if (!body?.query?.includes("query ReviewThreads")) return null;
+      fake.reads += 1;
+      return {
+        status: 200,
+        body: {
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: fake.threads.map((thread) => ({
+                    isResolved: thread.resolved ?? false,
+                    isOutdated: thread.outdated ?? false,
+                    path: thread.path ?? null,
+                    line: thread.line ?? null,
+                    comments: {
+                      nodes: thread.comments.map((comment) => ({
+                        body: comment.body,
+                        author: comment.author ? { login: comment.author } : null,
+                        pullRequestReview:
+                          comment.reviewId == null ? null : { databaseId: comment.reviewId },
+                      })),
+                    },
+                  })),
+                },
+              },
+            },
+          },
+        },
+      };
+    },
+  };
+  return fake;
+}
+
 /**
  * Answers the base branch reads that merge readiness makes for required
  * checks: `GET /branches/:branch` (branch protection) and
