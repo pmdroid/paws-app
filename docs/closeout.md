@@ -117,17 +117,17 @@ A fix round is one `restart(item, reason)`: the one operation that sends an item
 
 Three causes are fix rounds:
 
-| Reason     | Cause                                          | Handoff                                                        |
-| ---------- | ---------------------------------------------- | -------------------------------------------------------------- |
-| `findings` | Paws Closeout rejects the candidate            | The findings and the failing output                            |
-| `ci`       | CI fails on the pull request head              | The failing CI checks                                          |
-| `review`   | A changes-requested review on the pull request | The review body and its unresolved threads, once per review id |
+| Reason     | Cause                                                          | Handoff                                                                            |
+| ---------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `findings` | Paws Closeout rejects the candidate                            | The findings and the failing output                                                |
+| `ci`       | CI fails on the pull request head                              | The failing CI checks                                                              |
+| `review`   | A changes-requested review or new comments on the pull request | The review or comments and their unresolved threads, once per review or comment id |
 
 They share one counter, `retry.fix_rounds_per_item`, which defaults to 3 and only counts rounds since the latest reply from a person in the item's session. Adding checks does not raise it. The session title counts the round, for example "fixing Closeout findings (2 of 3)". Each check still stops at its own limit, `retry.attempts_per_check`, so a check that keeps failing is exhausted before the fix rounds run out.
 
 A fix round that ends without a usable commit still counts. The next round gets the same findings plus the reason the last one failed. A cancelled fix stops at once.
 
-For a review, the handoff tells the agent to fix what it is confident about and to ask the team in the session before changing anything unclear. A comment-only review restarts nothing: Paws posts its threads to the session once, and the unresolved threads keep the merge waiting.
+For a review, the handoff tells the agent to fix what it is confident about and to ask the team in the session before changing anything unclear. A new comment restarts the item the same way: a comment-only review, a single inline comment or a conversation comment, from a person or another bot such as Cursor Bugbot. Comments that arrive while a turn or evaluation runs wait for it, and comments less than a minute apart (up to five minutes in all) become one restart. The merge waits for them. Paws ignores edits and deletions, its own App's comments, forks, ended items, and bots that only post status: the default list in `DEFAULT_IGNORED_COMMENT_BOTS` (Cloudflare Pages, Linear, Codecov, Netlify, Vercel, changesets), or `ignore_comment_bots` under `[merge.repositories."owner/repo"]` in its place. With the fix rounds spent, the next comment asks the team instead.
 
 Two other reasons send an item back without spending a fix round: `conflict`, a rebase return from the merge lane (see [After acceptance](#after-acceptance)), and `follow_up` or `answer`, a person's message in the session. Setup faults retry once and then ask, without spending a fix round. Infrastructure faults spend nothing.
 

@@ -11,7 +11,7 @@ Create a GitHub App under **Settings > Developer settings > GitHub Apps**. Regis
 
 Grant repository **Contents**, **Pull requests**, **Checks**, **Issues**, and **Workflows** permissions with **Read and write** access, and **Commit statuses** and **Merge queues** with **Read-only** access. GitHub grants **Metadata** read access automatically. Grant **Workflows** only after the release key is set up as described in [Security considerations](security-considerations.md).
 
-Under **Webhook**, check **Active** and set the URL to your HTTPS origin followed by `/webhooks/github`. Choose a webhook secret and set `GITHUB_WEBHOOK_SECRET`, or save it as `~/.paws/secrets/github-webhook`. Subscribe to **Check runs**, **Check suites**, **Statuses**, **Pull requests**, **Pull request reviews**, **Merge groups**, **Pushes**, **Installations** and **Installation repositories**.
+Under **Webhook**, check **Active** and set the URL to your HTTPS origin followed by `/webhooks/github`. Choose a webhook secret and set `GITHUB_WEBHOOK_SECRET`, or save it as `~/.paws/secrets/github-webhook`. Subscribe to **Check runs**, **Check suites**, **Statuses**, **Pull requests**, **Pull request reviews**, **Pull request review comments**, **Issue comments**, **Merge groups**, **Pushes**, **Installations** and **Installation repositories**.
 
 Generate a client secret and a private key. Install the App on the repositories Paws will work on.
 
@@ -58,13 +58,14 @@ bun run paws doctor
 
 Doctor reports these GitHub checks:
 
-| Check                     | Passes when                                                               |
-| ------------------------- | ------------------------------------------------------------------------- |
-| `github-app`              | The App ID and a private key at mode `0600` or `0400` are configured.     |
-| `github-app-installation` | The App is installed on `github.repo` and the installation is active.     |
-| `github-app-push`         | Paws can mint a write token for that repository with the App's grants.    |
-| `github-rate`             | The installation has at least 100 core REST calls left.                   |
-| `github-webhook`          | A signed GitHub webhook delivery has arrived. Shown once one is expected. |
+| Check                     | Passes when                                                                 |
+| ------------------------- | --------------------------------------------------------------------------- |
+| `github-app`              | The App ID and a private key at mode `0600` or `0400` are configured.       |
+| `github-app-installation` | The App is installed on `github.repo` and the installation is active.       |
+| `github-app-push`         | Paws can mint a write token for that repository with the App's grants.      |
+| `github-rate`             | The installation has at least 100 core REST calls left.                     |
+| `github-app-events`       | The App subscribes to every webhook event Paws acts on, including comments. |
+| `github-webhook`          | A signed GitHub webhook delivery has arrived. Shown once one is expected.   |
 
 Each failing check prints one fix.
 
