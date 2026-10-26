@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -91,6 +92,7 @@ function immutable(path: string, bytes: Buffer) {
         !privateFile(path, bytes.length).equals(bytes)
       )
         throw new Error("Runner input is immutable", { cause: error });
+      journalCaught(error, "runner-inputs.immutable.linkSync", null, "path may already exist");
     }
   } finally {
     closeSync(fd);
@@ -324,6 +326,7 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
           { headers: { "cache-control": "no-store" } },
         );
       } catch (error) {
+        journalCaught(error, "runner-inputs.fetch.get", null);
         return Response.json(
           { error: "Runner input request failed" },
           {
@@ -347,7 +350,11 @@ async function body(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("JSON is required");
   const timeout = AbortSignal.timeout(10_000);
-  const cancel = () => void reader.cancel().catch(() => undefined);
+  const cancel = () =>
+    void reader.cancel().catch((caughtError1) => {
+      journalCaught(caughtError1, "runner-inputs.body.cancel", null);
+      return undefined;
+    });
   timeout.addEventListener("abort", cancel, { once: true });
   request.signal.addEventListener("abort", cancel, { once: true });
   try {
@@ -368,7 +375,10 @@ async function body(request: Request) {
   } finally {
     timeout.removeEventListener("abort", cancel);
     request.signal.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch((caughtError2) => {
+      journalCaught(caughtError2, "runner-inputs.body.cancel", null);
+      return undefined;
+    });
     reader.releaseLock();
   }
 }

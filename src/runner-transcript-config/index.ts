@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { S3Client } from "bun";
 import {
   constants,
@@ -43,7 +44,8 @@ const s3Schema = z
             !/[?#\s]/.test(value) &&
             withoutControls(value)
           );
-        } catch {
+        } catch (caughtError1) {
+          journalCaught(caughtError1, "runner-transcript-config.recover.trim", null);
           return false;
         }
       }),
@@ -113,8 +115,13 @@ export async function runRunnerTranscriptStorageCli(args: string[], home: string
     configureRunnerTranscriptStorage(home, Buffer.concat(chunks).toString("utf8"));
     console.log("Runner transcript storage configured.");
     return 0;
-  } catch {
-    console.error(FAILURE);
+  } catch (caughtError1) {
+    journalCaught(
+      caughtError1,
+      "runner-transcript-config.runRunnerTranscriptStorageCli.from",
+      null,
+    );
+
     return 1;
   }
 }
@@ -133,6 +140,12 @@ function withSecrets<T>(home: string, create: boolean, action: (directory: strin
         mkdirSync(secrets, { mode: 0o700 });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        journalCaught(
+          error,
+          "runner-transcript-config.withSecrets.mkdirSync",
+          null,
+          "path may already exist",
+        );
       }
     }
     secretsFd = openDirectory(secrets, !create);
@@ -151,6 +164,12 @@ function openDirectory(path: string, optional: boolean): number | null {
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   } catch (error) {
+    journalCaught(
+      error,
+      "runner-transcript-config.openDirectory.openSync",
+      null,
+      "optional file may be absent",
+    );
     if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
@@ -176,6 +195,12 @@ function readProtected(
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       );
     } catch (error) {
+      journalCaught(
+        error,
+        "runner-transcript-config.readProtected.openSync",
+        null,
+        "optional file may be absent",
+      );
       if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }

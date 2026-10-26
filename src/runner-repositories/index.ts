@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { assertDescendsFromAny, commitCoauthorTrailers, validateCommitAttribution } from "../core";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -59,13 +60,21 @@ export function createRunnerRepositories(options: {
       `${createHash("sha256").update(repository.toLowerCase()).digest("hex")}.git`,
     );
     const previous = queues.get(key) ?? Promise.resolve();
-    const pending = previous.catch(() => undefined).then(() => operation(key));
+    const pending = previous
+      .catch((caughtError1) => {
+        journalCaught(caughtError1, "runner-repositories.serialize", null);
+        return undefined;
+      })
+      .then(() => operation(key));
     queues.set(key, pending);
     void pending
       .finally(() => {
         if (queues.get(key) === pending) queues.delete(key);
       })
-      .catch(() => undefined);
+      .catch((caughtError2) => {
+        journalCaught(caughtError2, "runner-repositories.serialize.finally", null);
+        return undefined;
+      });
     return pending;
   }
   function parse(input: WorkCommand): WorkCommand {
@@ -111,12 +120,19 @@ export function createRunnerRepositories(options: {
               (
                 await invoke(["--git-dir", mirror, "rev-parse", "--is-bare-repository"], signal)
               ).trim() === "true";
-          } catch {
+          } catch (caughtError3) {
             signal?.throwIfAborted();
+            journalCaught(caughtError3, "runner-repositories.prepare.trim", null);
           }
           if (!exists) rmSync(mirror, { recursive: true });
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          journalCaught(
+            error,
+            "runner-repositories.prepare.lstatSync",
+            null,
+            "optional file may be absent",
+          );
         }
         const destination = exists ? mirror : join(options.root, `clone-${randomUUID()}.git`);
         try {
@@ -241,7 +257,10 @@ export function createRunnerRepositories(options: {
             signal,
           ).then(
             () => false,
-            () => true,
+            (caughtError1) => {
+              journalCaught(caughtError1, "runner-repositories.publish.invoke", null);
+              return true;
+            },
           );
           if (command.commitPolicy) {
             const commits = (
@@ -330,7 +349,11 @@ export function createRunnerRepositories(options: {
                 signal,
               });
             if (!rebased) await push();
-            else await push().catch(() => push(command.repository.baseSha));
+            else
+              await push().catch((caughtError4) => {
+                journalCaught(caughtError4, "runner-repositories.publish.push", null);
+                return push(command.repository.baseSha);
+              });
           } finally {
             await invoke(["--git-dir", mirror, "update-ref", "-d", ref]);
           }

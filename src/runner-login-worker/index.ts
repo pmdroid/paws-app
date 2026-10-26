@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { runGrokLogin } from "./grok";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -77,10 +78,16 @@ export async function runProviderLogin(options: {
             options.emit({ ...state });
           }
         })();
-        void input.catch(() => abort.abort());
+        void input.catch((caughtError1) => {
+          journalCaught(caughtError1, "runner-login-worker.runProviderLogin", null);
+          return abort.abort();
+        });
         const code = await child.exited;
         abort.abort();
-        await input.catch(() => undefined);
+        await input.catch((caughtError2) => {
+          journalCaught(caughtError2, "runner-login-worker.runProviderLogin", null);
+          return undefined;
+        });
         options.signal.throwIfAborted();
         if (code !== 0) throw new Error("Provider login did not complete");
       } finally {
@@ -103,7 +110,9 @@ export async function runProviderLogin(options: {
         if (child.pid) {
           try {
             process.kill(-child.pid, "SIGKILL");
-          } catch {}
+          } catch (caughtError3) {
+            journalCaught(caughtError3, "runner-login-worker.runProviderLogin.kill", null);
+          }
         }
       };
       options.signal.addEventListener("abort", kill, { once: true });
@@ -179,7 +188,8 @@ export async function runProviderLogin(options: {
     }
     options.signal.throwIfAborted();
     options.emit({ state: "connected", terminal: "", authorization: null, inputId: null });
-  } catch {
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "runner-login-worker.runProviderLogin.runGrokLogin", null);
     options.emit({ state: "failed", terminal: "", authorization: null, inputId: null });
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { immediate } from "../db";
@@ -187,6 +188,7 @@ export function createRunnerTranscripts(options: {
             digest.update(bytes);
             controller.enqueue(bytes);
           } catch (error) {
+            journalCaught(error, "store.pull.digest", null);
             controller.error(error);
           }
         },
@@ -234,7 +236,10 @@ async function boundedObject(stream: ReadableStream<Uint8Array>, size: number) {
     if (total !== size) denied();
     return Buffer.concat(chunks);
   } finally {
-    await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch((caughtError1) => {
+      journalCaught(caughtError1, "store.boundedObject.cancel", null);
+      return undefined;
+    });
     reader.releaseLock();
   }
 }

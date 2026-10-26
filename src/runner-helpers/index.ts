@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { randomUUID, type KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -161,6 +162,7 @@ export function createRunnerHelpers(options: {
           result.push(current(row.id, runnerId).envelope);
         } catch (error) {
           if (!(error instanceof HelperFencedError)) throw error;
+          journalCaught(error, "runner-helpers.commands.push", null);
         }
         if (result.length === 16) break;
       }
@@ -222,6 +224,7 @@ export function createRunnerHelpers(options: {
         }
         return json({ expiresAt: current(id, runnerId).command.expiresAt });
       } catch (error) {
+        journalCaught(error, "runner-helpers.fetch.json", null);
         return error instanceof HelperFencedError
           ? json({ error: "Runner helper is fenced.", code: "fenced" }, 409)
           : json({ error: "Runner helper request is denied or invalid." }, 403);
@@ -237,7 +240,11 @@ async function body(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("JSON is required");
   const timeout = AbortSignal.timeout(10_000);
-  const cancel = () => void reader.cancel().catch(() => undefined);
+  const cancel = () =>
+    void reader.cancel().catch((caughtError1) => {
+      journalCaught(caughtError1, "runner-helpers.body.cancel", null);
+      return undefined;
+    });
   timeout.addEventListener("abort", cancel, { once: true });
   request.signal.addEventListener("abort", cancel, { once: true });
   const chunks: Uint8Array[] = [];
@@ -258,7 +265,10 @@ async function body(request: Request) {
   } finally {
     timeout.removeEventListener("abort", cancel);
     request.signal.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch((caughtError2) => {
+      journalCaught(caughtError2, "runner-helpers.body.cancel", null);
+      return undefined;
+    });
     reader.releaseLock();
   }
 }

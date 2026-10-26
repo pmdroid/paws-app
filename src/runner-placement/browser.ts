@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "../workspace";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { auditWorkspaceAccess, immediate, workspaceMember } from "../db";
@@ -141,6 +142,7 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
       });
       return json({ ok: true });
     } catch (error) {
+      journalCaught(error, "browser.createRunnerPlacementBrowser.member", null);
       if (error instanceof z.ZodError || error instanceof SyntaxError)
         return json({ error: "Choose a valid sharing setting." }, 400);
       return json(

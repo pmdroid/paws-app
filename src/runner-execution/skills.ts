@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -76,6 +77,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     try {
       return JSON.parse(readFileSync(statePath, "utf8")) as State;
     } catch (error) {
+      journalCaught(error, "skills.readState.parse", null, "optional file may be absent");
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") report(error);
       return { desired: [], refused: [], homes: {} };
     }
@@ -133,6 +135,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
         lchownSync(path, options.owner.uid, options.owner.gid);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        journalCaught(error, "skills.ownedDirectory.mkdirSync", null, "path may already exist");
       }
       if (!lstatSync(path).isDirectory()) throw new Error(`${path} is not a directory.`);
     }
@@ -174,6 +177,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     try {
       lstatSync(target);
     } catch (error) {
+      journalCaught(error, "skills.removeFolder.lstatSync", null, "optional file may be absent");
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
@@ -228,6 +232,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       buildFolder(home);
       pruneFolders(home);
     } catch (error) {
+      journalCaught(error, "skills.applyHome.buildFolder", null);
       report(error);
     }
     saveState();
@@ -250,6 +255,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
           modes: true,
         };
       } catch (error) {
+        journalCaught(error, "skills.applyHome.includes", null);
         report(error);
         if (have) next[skill.name] = have;
       }
@@ -259,6 +265,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       try {
         for (const agent of have.agents) removeFolder(home, agent, name);
       } catch (error) {
+        journalCaught(error, "skills.applyHome.removeFolder", null);
         report(error);
         next[name] = have;
       }
@@ -290,6 +297,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
         await fetchBundle(skill);
         desired.push(skill);
       } catch (error) {
+        journalCaught(error, "skills.apply.fetchBundle", null);
         report(error);
         refused.push({
           name: skill.name,
@@ -338,6 +346,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       try {
         applyHome(home);
       } catch (error) {
+        journalCaught(error, "skills.prepareHome.applyHome", null);
         report(error);
       }
     },

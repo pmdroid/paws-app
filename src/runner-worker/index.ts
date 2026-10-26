@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { runProviderLogin } from "../runner-login-worker";
 import type { RunnerLoginUpdate } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
@@ -127,7 +128,10 @@ export async function runWithFollowUps(
     const turn = lifecycle.prompt({ ...agent, prompt });
     const message = next(sequence, signal).then(
       (text) => ({ text }),
-      () => null,
+      (caughtError1) => {
+        journalCaught(caughtError1, "runner-worker.runWithFollowUps.next", null);
+        return null;
+      },
     );
     const first = await Promise.race([turn.then((result) => ({ result })), message]);
     if (first === null || "result" in first) {
@@ -151,6 +155,7 @@ export function remoteCloseoutPolicy(
       return decodePolicyFiles((await answer(requestId, signal)).answer);
     } catch (error) {
       signal.throwIfAborted();
+      journalCaught(error, "runner-worker.remoteCloseoutPolicy.emit", null);
       return {
         ok: false,
         message: `Paws could not provide the Closeout policy: ${error instanceof Error ? error.message : String(error)}`,
@@ -286,7 +291,9 @@ function resumedSession(directory: string): string | undefined {
       const entry = JSON.parse(line) as { type?: string; event?: AcpEvent };
       if (entry.type === "acp" && entry.event?.type === "session_started")
         sessionId = entry.event.sessionId;
-    } catch {}
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "runner-worker.resumedSession.parse", null);
+    }
   }
   return sessionId;
 }
@@ -322,6 +329,12 @@ export async function executeRunnerCommand(
       throw new Error(`Runner ${kind} already exists`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalCaught(
+        error,
+        "runner-worker.executeRunnerCommand.lstatSync",
+        "itemId" in command ? command.itemId : null,
+        "optional file may be absent",
+      );
     }
   }
   const resumed = options.resume === true;
@@ -527,6 +540,12 @@ export async function executeRunnerCommand(
             mkdirSync(parent, { mode: 0o700 });
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+            journalCaught(
+              error,
+              "runner-worker.executeRunnerCommand.mkdirSync",
+              command.itemId,
+              "path may already exist",
+            );
           }
           const info = lstatSync(parent);
           if (!info.isDirectory() || info.isSymbolicLink())
@@ -839,7 +858,10 @@ export async function executeRunnerCommand(
           await (options.codexRateLimits ?? readCodexRateLimits)(
             agentEnv,
             providerCli("codex"),
-          ).catch(() => null),
+          ).catch((caughtError2) => {
+            journalCaught(caughtError2, "runner-worker.executeRunnerCommand.providerCli", null);
+            return null;
+          }),
         );
       result.login = {
         agent: command.agent,
@@ -910,7 +932,12 @@ export async function executeRunnerCommand(
     };
     if (repository && run.agentExited && clean) await recordCandidate();
     else if (repository && run.agentExited && wip) {
-      await recordCandidate().catch(() => {
+      await recordCandidate().catch((caughtError3) => {
+        journalCaught(
+          caughtError3,
+          "runner-worker.executeRunnerCommand.recordCandidate",
+          command.itemId,
+        );
         delete result.candidateSha;
       });
       if (command.type === "run" && result.candidateSha === command.repository.baseSha)
@@ -1025,12 +1052,10 @@ async function installCommandRuntimes(
   try {
     replaceOutputFile(options, "runtimes.json", JSON.stringify(report));
   } catch (error) {
-    console.warn(
-      JSON.stringify({
-        event: "runtime_report_failed",
-        executionId,
-        message: error instanceof Error ? error.message : String(error),
-      }),
+    journalCaught(
+      error,
+      "runner-worker.installCommandRuntimes.replaceOutputFile",
+      "itemId" in command ? command.itemId : null,
     );
   }
   if (!result.ok) return { failure: result.message.slice(0, 500), binPaths: [] };

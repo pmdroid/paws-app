@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { X509Certificate } from "node:crypto";
 import { once } from "node:events";
 import { createSecureServer, type Http2ServerRequest, type Http2ServerResponse } from "node:http2";
@@ -50,7 +51,8 @@ export async function startRunnerListener(options: {
         connections.set(socket, peer.fingerprint);
         socket.once("close", () => connections.delete(socket));
         if (revoked.has(peer.fingerprint)) socket.destroy();
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "listener.createServer.readPeer", null);
         socket.destroy();
       }
     });
@@ -76,7 +78,9 @@ export async function startRunnerListener(options: {
     response.once("close", () => {
       if (!response.writableEnded) {
         abort.abort();
-        void cancelBody?.().catch(() => {});
+        void cancelBody?.().catch((caughtError2) => {
+          journalCaught(caughtError2, "listener.handle.cancelBody", null);
+        });
       }
     });
     try {
@@ -126,9 +130,12 @@ export async function startRunnerListener(options: {
         cancelBody = null;
       }
       response.end();
-    } catch {
+    } catch (caughtError3) {
+      journalCaught(caughtError3, "listener.handle.reject", null);
       abort.abort();
-      void cancelBody?.().catch(() => {});
+      void cancelBody?.().catch((caughtError4) => {
+        journalCaught(caughtError4, "listener.handle.cancelBody", null);
+      });
       if (!response.headersSent && !response.destroyed) reject(response, 403);
       else response.destroy();
     } finally {
@@ -174,7 +181,9 @@ export async function startRunnerListener(options: {
         server = replacement;
         await listen(address.port);
       });
-      lifecycle = operation.catch(() => {});
+      lifecycle = operation.catch((caughtError5) => {
+        journalCaught(caughtError5, "listener.reload", null);
+      });
       await operation;
     },
     async stop() {

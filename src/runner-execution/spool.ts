@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   closeSync,
   constants,
@@ -155,6 +156,7 @@ function snapshotTree(
       return openSync(path, flags);
     } catch (error) {
       if (stored || (error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
+      journalCaught(error, "spool.openSource.openSync", null);
       const target = realpathSync(path);
       if (
         !target.startsWith(`${repositoryRoot}/`) ||
@@ -480,6 +482,12 @@ export function publishRunnerJob(
       existingDirectory = openDirectory(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalCaught(
+        error,
+        "spool.publishRunnerJob.openDirectory",
+        null,
+        "optional file may be absent",
+      );
     }
     if (existingDirectory !== undefined) {
       try {

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -54,7 +55,8 @@ export function openRunnerAgents(
     try {
       const target = readlinkSync(join(folder(agent), "current"));
       return RunnerAgentVersionSchema.safeParse(target).success ? target : null;
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "agents.current.readlinkSync", null);
       return null;
     }
   }
@@ -62,6 +64,7 @@ export function openRunnerAgents(
     try {
       return StatusSchema.parse(JSON.parse(readFileSync(statusPath, "utf8"))).agents;
     } catch (error) {
+      journalCaught(error, "agents.readStatus.parse", null, "optional file may be absent");
       if ((error as NodeJS.ErrnoException).code !== "ENOENT")
         options.onError?.(new Error("Runner agent install status is unreadable."));
       return {};

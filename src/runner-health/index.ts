@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "../workspace";
+import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -204,6 +205,7 @@ export function createRunnerHealth(options: {
             }
           });
         } catch (error) {
+          journalCaught(error, "runner-health.refresh.immediate", null);
           errors.push(error);
         }
       }
@@ -364,7 +366,8 @@ export function createRunnerHealth(options: {
         if (request.method === "GET") return json(api.list(principal, match[1]!));
         if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
         return json(api.request(principal, match[1]!, requestSchema.parse(await body(request))));
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "runner-health.browser.json", null);
         return json({ error: "Runner health request is unavailable." }, 403);
       }
     },
@@ -378,7 +381,8 @@ export function createRunnerHealth(options: {
             RunnerHealthResultSchema.parse(await body(request, RUNNER_RESULT_BODY_LIMIT)),
           ),
         );
-      } catch {
+      } catch (caughtError2) {
+        journalCaught(caughtError2, "runner-health.fetch.json", null);
         return json({ error: "Runner health result was rejected." }, 403);
       }
     },
@@ -392,7 +396,11 @@ async function body(request: Request, limit = 131_072) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("JSON is required");
   const timeout = AbortSignal.timeout(10_000);
-  const cancel = () => void reader.cancel().catch(() => undefined);
+  const cancel = () =>
+    void reader.cancel().catch((caughtError3) => {
+      journalCaught(caughtError3, "runner-health.body.cancel", null);
+      return undefined;
+    });
   timeout.addEventListener("abort", cancel, { once: true });
   request.signal.addEventListener("abort", cancel, { once: true });
   const chunks: Uint8Array[] = [];
@@ -413,7 +421,10 @@ async function body(request: Request, limit = 131_072) {
   } finally {
     timeout.removeEventListener("abort", cancel);
     request.signal.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch((caughtError4) => {
+      journalCaught(caughtError4, "runner-health.body.cancel", null);
+      return undefined;
+    });
     reader.releaseLock();
   }
 }

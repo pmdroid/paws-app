@@ -1,3 +1,4 @@
+import { journalCaught, journalRejection } from "../journal";
 import { chmodSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -126,7 +127,12 @@ export async function openRunnerHealthRuntime(options: {
         if (!update) {
           try {
             update = readLogin(row.id);
-          } catch {
+          } catch (caughtError1) {
+            journalCaught(
+              caughtError1,
+              "runner-health-runtime.openRunnerHealthRuntime.readLogin",
+              null,
+            );
             update = null;
           }
         }
@@ -161,6 +167,12 @@ export async function openRunnerHealthRuntime(options: {
     try {
       journal = readRunnerResultFile(options.results, id, "events.jsonl").toString("utf8");
     } catch (error) {
+      journalCaught(
+        error,
+        "runner-health-runtime.readLogin.toString",
+        null,
+        "optional file may be absent",
+      );
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
@@ -186,7 +198,8 @@ export async function openRunnerHealthRuntime(options: {
           if (entry.login?.state !== "connected" && entry.login?.state !== "failed") {
             try {
               entry.login = readLogin(entry.id) ?? undefined;
-            } catch {
+            } catch (caughtError2) {
+              journalCaught(caughtError2, "runner-health-runtime.interrupt.readLogin", null);
               entry.login = undefined;
             }
           }
@@ -289,12 +302,19 @@ export async function openRunnerHealthRuntime(options: {
           try {
             raw = readRunnerResultFile(options.results, entry.id, "result.json");
           } catch (error) {
+            journalCaught(
+              error,
+              "runner-health-runtime.step.readRunnerResultFile",
+              null,
+              "optional file may be absent",
+            );
             if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
             throw error;
           }
           try {
             JSON.parse(raw.toString("utf8"));
-          } catch {
+          } catch (caughtError3) {
+            journalCaught(caughtError3, "runner-health-runtime.step.parse", null);
             return;
           }
           await broker.stop(entry.id);
@@ -347,13 +367,15 @@ export async function openRunnerHealthRuntime(options: {
           } else await options.daemon.postHealth(RunnerHealthResultSchema.parse(entry.result));
         } catch (error) {
           if (error instanceof RunnerRequestError && [403, 409].includes(error.status)) throw error;
+          journalCaught(error, "runner-health-runtime.step.pulse", null);
           report();
           return;
         }
         check(entry);
         db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]);
         active = undefined;
-      } catch {
+      } catch (caughtError4) {
+        journalCaught(caughtError4, "runner-health-runtime.step.check", null);
         await interrupt(entry);
         report();
       }
@@ -429,8 +451,11 @@ export async function openRunnerHealthRuntime(options: {
         if (command.type === "helper") await pulse();
         check(entry);
         db.run("UPDATE health_execution SET phase='running' WHERE id=?", [id]);
-        await options.daemon.acknowledgeCommand(command.id).catch(report);
-      } catch {
+        await options.daemon
+          .acknowledgeCommand(command.id)
+          .catch(journalRejection("runner-health-runtime.step.acknowledgeCommand", report, null));
+      } catch (caughtError5) {
+        journalCaught(caughtError5, "runner-health-runtime.step.check", null);
         await interrupt(entry);
         report();
       }
@@ -440,18 +465,22 @@ export async function openRunnerHealthRuntime(options: {
   const heartbeat = setInterval(() => {
     const entry = active;
     void pulse()
-      .catch(async () => {
+      .catch(async (caughtError6) => {
+        journalCaught(caughtError6, "runner-health-runtime.openRunnerHealthRuntime.pulse", null);
         if (active === entry && entry?.command.type === "helper") await interrupt(entry);
         report();
       })
-      .catch(report);
+      .catch(journalRejection("runner-health-runtime.openRunnerHealthRuntime.catch", report, null));
   }, 15_000);
   const watchdog = setInterval(() => {
     if (!active || active.stopped) return;
     try {
       check(active);
-    } catch {
-      void interrupt(active).catch(report);
+    } catch (caughtError7) {
+      journalCaught(caughtError7, "runner-health-runtime.openRunnerHealthRuntime.check", null);
+      void interrupt(active).catch(
+        journalRejection("runner-health-runtime.openRunnerHealthRuntime.interrupt", report, null),
+      );
     }
   }, 250);
   return {

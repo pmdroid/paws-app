@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { spawn } from "node:child_process";
 import {
   closeSync,
@@ -49,6 +50,7 @@ function ensureDirectory(path: string, uid: number, gid: number, mode: number): 
       mkdirSync(`/proc/self/fd/${parent}/${name}`, { mode });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      journalCaught(error, "supervisor.ensureDirectory.mkdirSync", null, "path may already exist");
     }
     const directory = openSync(
       `/proc/self/fd/${parent}/${name}`,
@@ -80,12 +82,14 @@ function killRecorded(pid: number): void {
   try {
     process.kill(-pid, "SIGKILL");
   } catch (error) {
+    journalCaught(error, "supervisor.killRecorded.kill", null, "process may have exited");
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ESRCH" && code !== "EPERM") throw error;
     try {
       process.kill(pid, "SIGKILL");
     } catch (direct) {
       if ((direct as NodeJS.ErrnoException).code !== "ESRCH") throw direct;
+      journalCaught(direct, "supervisor.killRecorded.kill", null, "process may have exited");
     }
   }
 }
@@ -179,6 +183,7 @@ export function createDirectWorkerSupervisor(options: {
     try {
       text = readFileSync(receipt(executionId), "utf8").trim();
     } catch (error) {
+      journalCaught(error, "supervisor.recorded.trim", null, "optional file may be absent");
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
@@ -204,6 +209,7 @@ export function createDirectWorkerSupervisor(options: {
         unlinkSync(receipt(executionId));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        journalCaught(error, "supervisor.resume.unlinkSync", null, "optional file may be absent");
       }
       await admit(executionId, true);
     },
@@ -212,7 +218,8 @@ export function createDirectWorkerSupervisor(options: {
       try {
         const text = readFileSync(logPath(executionId), "utf8").slice(-4000);
         return text.split("\n").slice(-20).join("\n");
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "supervisor.log.slice", null);
         return "";
       }
     },
@@ -240,6 +247,7 @@ export function createDirectWorkerSupervisor(options: {
     try {
       fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
     } catch (error) {
+      journalCaught(error, "supervisor.admit.openSync", null, "path may already exist");
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return { alreadyAdmitted: true };
       throw error;
     }
@@ -264,7 +272,9 @@ export function createDirectWorkerSupervisor(options: {
           } finally {
             closeSync(exit);
           }
-        } catch {}
+        } catch (caughtError2) {
+          journalCaught(caughtError2, "supervisor.admit.openSync", null);
+        }
       });
       if (child.pid === undefined) throw new Error("Runner worker did not start");
       const born = startTime(child.pid);
@@ -279,6 +289,12 @@ export function createDirectWorkerSupervisor(options: {
         unlinkSync(path);
       } catch (unlinkError) {
         if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;
+        journalCaught(
+          unlinkError,
+          "supervisor.admit.unlinkSync",
+          null,
+          "optional file may be absent",
+        );
       }
       syncDirectory(options.stateRoot);
       if (child?.pid !== undefined) killRecorded(child.pid);

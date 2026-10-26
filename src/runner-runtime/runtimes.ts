@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,6 +34,12 @@ export function openRunnerRuntimeInventory(options: {
     for (const entry of StoredSchema.parse(JSON.parse(readFileSync(path, "utf8"))))
       entries.set(key(entry), entry);
   } catch (error) {
+    journalCaught(
+      error,
+      "runtimes.openRunnerRuntimeInventory.parse",
+      null,
+      "optional file may be absent",
+    );
     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
       options.onError?.(new Error("Runner runtime inventory was unreadable and starts empty."));
   }

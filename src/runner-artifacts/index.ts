@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -61,6 +62,7 @@ function immutable(path: string, bytes: Buffer) {
         !privateRead(path, bytes.length).equals(bytes)
       )
         throw new Error("Runner artifact is immutable", { cause: error });
+      journalCaught(error, "runner-artifacts.immutable.linkSync", null, "path may already exist");
     }
   } finally {
     closeSync(fd);
@@ -195,6 +197,7 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
           { headers: { "cache-control": "no-store" } },
         );
       } catch (error) {
+        journalCaught(error, "runner-artifacts.fetch.get", null);
         return Response.json(
           { error: "Runner artifact access is denied" },
           {
@@ -213,7 +216,11 @@ async function body(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("JSON is required");
   const timeout = AbortSignal.timeout(10_000);
-  const cancel = () => void reader.cancel().catch(() => undefined);
+  const cancel = () =>
+    void reader.cancel().catch((caughtError1) => {
+      journalCaught(caughtError1, "runner-artifacts.body.cancel", null);
+      return undefined;
+    });
   timeout.addEventListener("abort", cancel, { once: true });
   request.signal.addEventListener("abort", cancel, { once: true });
   const chunks: Uint8Array[] = [];
@@ -234,7 +241,10 @@ async function body(request: Request) {
   } finally {
     timeout.removeEventListener("abort", cancel);
     request.signal.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch((caughtError2) => {
+      journalCaught(caughtError2, "runner-artifacts.body.cancel", null);
+      return undefined;
+    });
     reader.releaseLock();
   }
 }
