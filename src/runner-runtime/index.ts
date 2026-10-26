@@ -461,6 +461,15 @@ export async function openRunnerRuntime(options: {
     guard();
     journal.sessionDone(execution.id, "sealed");
   }
+  function hasSessionSnapshot(executionId: string) {
+    try {
+      readRunnerResultFile(options.results, executionId, "session.json");
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return false;
+    }
+  }
   /** A snapshot that cannot be saved never holds back or fails the run. */
   function skipSession(execution: Execution, error: unknown) {
     journal.sessionDone(execution.id, "skipped");
@@ -991,6 +1000,16 @@ export async function openRunnerRuntime(options: {
       entry.sessionTries = (entry.sessionTries ?? 0) + 1;
       if (error instanceof RemoteFailure && entry.sessionTries < SESSION_UPLOAD_TRIES) throw error;
       skipSession(entry.execution, error);
+    }
+    // A handover whose session could not be published is no handover: the run stays here, and
+    // its next turn loads the session on this runner. Checked on every pass, as delivery repeats.
+    if (
+      result.handedOver &&
+      journal.sessionCursor(entry.execution.id).state !== "sealed" &&
+      hasSessionSnapshot(entry.execution.id)
+    ) {
+      delete result.handedOver;
+      result.handoverFailure = "publication";
     }
     if (
       result.candidateSha &&

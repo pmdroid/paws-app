@@ -253,7 +253,7 @@ test.skipIf(!linux)(
         { type: "write_file", path: join(context.checkout, "done.txt"), content: "done\n" },
         { type: "end" },
       ],
-      { handover: context.requestWhen('"toolCallId":"tool-1"', 150), handoverReserveMs: 0 },
+      { handover: context.requestWhen('"toolCallId":"tool-1"', 150) },
     );
     expect(context.events()).toContain('{"type":"handover","handedOver":false,"reason":"timeout"}');
     // The agent finished its turn on this runner, as if no handover had been asked for.
@@ -328,7 +328,6 @@ test.skipIf(!linux)(
       ],
       {
         handover: context.requestWhen('"type":"question"', 300),
-        handoverReserveMs: 0,
         // The question is answered once the handover gave up, so the turn can end.
         answer: async (requestId, signal) => {
           if (context.events().includes(`{"type":"closeout_policy","requestId":"${requestId}"}`))
@@ -355,7 +354,6 @@ test.skipIf(!linux)("Paws can ask again after a handover timed out", async () =>
       { type: "hang" },
     ],
     {
-      handoverReserveMs: 0,
       async handover(sequence, signal) {
         if (sequence === 1) {
           await context.until('"toolCallId":"tool-1"', signal);
@@ -373,51 +371,85 @@ test.skipIf(!linux)("Paws can ask again after a handover timed out", async () =>
   expect(existsSync(join(context.output, "session.json"))).toBe(true);
 });
 
-for (const [cause, reason, steps, limitMs] of [
-  // The deadline passes while the agent stops and the WIP commit and snapshot are made.
-  ["reaches its deadline after the interrupt", "timeout", true, 50],
-  // Claude left no session file to save.
-  ["cannot save the Claude session", "snapshot", false, 120_000],
-] as const)
-  test.skipIf(!linux)(
-    `a handover that ${cause} is reported, and the session goes on on the runner from the WIP commit`,
-    async () => {
-      const context = await fixture();
-      const result = await context.execute(
-        [
-          ...(steps ? [context.sessionFile] : []),
-          { type: "write_file", path: join(context.checkout, "work.txt"), content: "work\n" },
-          {
-            type: "update",
-            update: {
-              sessionUpdate: "agent_thought_chunk",
-              content: { type: "text", text: "thinking" },
-            },
-          },
-          { type: "hang" },
-        ],
-        { handover: context.requestWhen('"thinking"', limitMs), handoverReserveMs: 0 },
-        [
-          [
-            { type: "write_file", path: join(context.checkout, "done.txt"), content: "done\n" },
-            { type: "end" },
-          ],
-        ],
-      );
-      expect(context.events()).toContain(
-        `{"type":"handover","handedOver":false,"reason":"${reason}"}`,
-      );
-      expect(context.events()).not.toContain('"handedOver":true');
-      // The session went on here and finished its turn; nothing was handed over.
-      expect(result.run.handedOver).toBeUndefined();
-      expect(result.run.stopReason).toBe("end_turn");
-      const clone = await context.published(result.candidateSha!);
-      expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
-      expect(readFileSync(join(clone, "done.txt"), "utf8")).toBe("done\n");
-      expect(await git(["-C", clone, "log", "--format=%s"])).toContain(HANDOVER_COMMIT_MESSAGE);
-      const trace = JSON.parse(readFileSync(join(context.root, "trace.json"), "utf8")) as {
-        prompts: unknown[];
-      };
-      expect(JSON.stringify(trace.prompts.at(-1))).toContain("could not finish in time");
+const thinking = (context: Awaited<ReturnType<typeof fixture>>, withSession: boolean) => [
+  ...(withSession ? [context.sessionFile] : []),
+  { type: "write_file" as const, path: join(context.checkout, "work.txt"), content: "work\n" },
+  {
+    type: "update" as const,
+    update: {
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: "thinking" },
     },
-  );
+  },
+  { type: "hang" as const },
+];
+
+test.skipIf(!linux)(
+  "once the agent stopped, the WIP commit and the session snapshot are made even past the deadline",
+  async () => {
+    const context = await fixture();
+    let deadline = 0;
+    const result = await context.execute(thinking(context, true), {
+      async handover(sequence, signal) {
+        if (sequence > 1)
+          await new Promise((_, reject) => signal.addEventListener("abort", reject));
+        await context.until('"thinking"', signal);
+        // The safe point is there at once; the commit and snapshot outlast this deadline.
+        deadline = Date.now() + 20;
+        return { deadline };
+      },
+    });
+    expect(Date.now()).toBeGreaterThan(deadline);
+    expect(context.events()).toContain('{"type":"handover_interrupted"}');
+    expect(context.events()).toContain('{"type":"handover","handedOver":true}');
+    expect(result.run.handedOver).toBe(true);
+    expect(result.run.handoverFailure).toBeUndefined();
+    const clone = await context.published(result.candidateSha!);
+    expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
+    const metadata = JSON.parse(readFileSync(join(context.output, "session.json"), "utf8"));
+    expect(metadata.commitSha).toBe(result.candidateSha);
+  },
+);
+
+test.skipIf(!linux)(
+  "a snapshot that fails after the interrupt ends the run with its reason, and the run stays on this runner",
+  async () => {
+    const context = await fixture();
+    // Claude left no session file to save.
+    const result = await context.execute(thinking(context, false), {
+      handover: context.requestWhen('"thinking"'),
+    });
+    expect(context.events()).toContain('{"type":"handover_interrupted"}');
+    expect(context.events()).toContain(
+      '{"type":"handover","handedOver":false,"reason":"snapshot"}',
+    );
+    expect(context.events()).not.toContain('"handedOver":true');
+    expect(result.run.handedOver).toBeUndefined();
+    expect(result.run.handoverFailure).toBe("snapshot");
+    // An interrupted turn, not a cancel: Paws keeps its session holder on this runner.
+    expect(result.run.cancelled).toBe(false);
+    expect(result.run.interrupted).toBe(true);
+    expect(result.run.sessionId).toBe(SESSION);
+    expect(existsSync(join(context.output, "session.json"))).toBe(false);
+    // The WIP commit is still published, so the next turn here starts from it.
+    const clone = await context.published(result.candidateSha!);
+    expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
+    expect(await git(["-C", clone, "log", "--format=%s"])).toContain(HANDOVER_COMMIT_MESSAGE);
+  },
+);
+
+test.skipIf(!linux)(
+  "a WIP commit that outlasts its own timeout fails the handover with that reason",
+  async () => {
+    const context = await fixture();
+    const result = await context.execute(thinking(context, true), {
+      handover: context.requestWhen('"thinking"'),
+      handoverStepTimeoutMs: 1,
+    });
+    expect(context.events()).toContain('{"type":"handover","handedOver":false,"reason":"commit"}');
+    expect(result.run.handedOver).toBeUndefined();
+    expect(result.run.handoverFailure).toBe("commit");
+    expect(result.run.cancelled).toBe(false);
+    expect(existsSync(join(context.output, "session.json"))).toBe(false);
+  },
+);
