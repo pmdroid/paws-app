@@ -41,6 +41,7 @@ export {
 export { RunnerHealthResultSchema, type RunnerHealthResult } from "./health";
 
 export {
+  RUNNER_ARTIFACT_COUNT_LIMIT,
   RUNNER_ARTIFACT_LIMITS,
   RunnerArtifactSchema,
   RunnerArtifactChunkSchema,
