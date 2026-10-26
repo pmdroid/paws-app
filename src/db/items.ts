@@ -350,18 +350,31 @@ const BREAKDOWN_COLUMN: Record<AwakeCategory, string> = {
   recheck: "recheck_ms",
 };
 
-export function accrueAwake(db: Database, id: string, mono: number, now = Date.now()): CapOutcome {
+export function accrueAwake(
+  db: Database,
+  id: string,
+  mono: number,
+  now = Date.now(),
+  /** An in-memory baseline lets the supervisor skip writes while an item is parked. */
+  sinceMono?: number,
+): CapOutcome {
   return immediate(db, () => {
     const current = getWorkItem(db, id);
     if (current === null) throw new Error(`work item ${id} not found`);
-    const delta = current.lastMonoMs === null ? 0 : Math.max(0, mono - current.lastMonoMs);
+    const baseline = sinceMono ?? current.lastMonoMs;
+    const delta = baseline === null ? 0 : Math.max(0, mono - baseline);
     const category = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
     const awake = countsAwakeTime(current.state, current.checkpoint, current.acceptedHead);
     const awakeMs = current.awakeMs + (awake ? delta : 0);
-    db.run("UPDATE work_item SET awake_ms = ?, last_mono_ms = ? WHERE id = ?", [awakeMs, mono, id]);
-    if (category !== null && delta > 0) {
-      const column = BREAKDOWN_COLUMN[category];
-      db.run(`UPDATE work_item SET ${column} = ${column} + ? WHERE id = ?`, [delta, id]);
+    if (delta > 0 || (current.lastMonoMs === null && sinceMono === undefined)) {
+      const breakdown =
+        category === null
+          ? ""
+          : `, ${BREAKDOWN_COLUMN[category]} = ${BREAKDOWN_COLUMN[category]} + ?`;
+      db.run(
+        `UPDATE work_item SET awake_ms = ?, last_mono_ms = ?${breakdown} WHERE id = ?`,
+        category === null ? [awakeMs, mono, id] : [awakeMs, mono, delta, id],
+      );
     }
     if (!awake) {
       const updated = getWorkItem(db, id);

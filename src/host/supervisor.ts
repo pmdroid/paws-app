@@ -12,13 +12,23 @@ import {
   postPauseNote,
 } from "../db";
 import type { WorkItemRecord } from "../db";
-import { decideWake, JOB_KIND, OUTBOX_ACTIVITY, pauseOutcome, sleep, type Clock } from "../core";
+import {
+  capReason,
+  countsAwakeTime,
+  decideWake,
+  JOB_KIND,
+  OUTBOX_ACTIVITY,
+  pauseOutcome,
+  sleep,
+  type Clock,
+} from "../core";
 import { WakeDetector, type WakeSample } from "./wake";
 
 export type AgentAlive = (runId: string) => boolean;
 
 export class HostSupervisor {
   private stopped = false;
+  private lastObservedMono = new Map<string, number>();
   readonly restartFromMain: (item: WorkItemRecord) => void;
 
   constructor(
@@ -64,9 +74,23 @@ export class HostSupervisor {
   private accrue(): void {
     const now = this.clock.now();
     const mono = this.clock.mono();
-    for (const item of listInFlightItems(this.db)) {
-      if (accrueAwake(this.db, item.id, mono, now).stopAgent) this.stopAgent?.(item.id);
-    }
+    const observed = new Map<string, number>();
+    const stops: string[] = [];
+    immediate(this.db, () => {
+      for (const item of listInFlightItems(this.db)) {
+        observed.set(item.id, mono);
+        if (!countsAwakeTime(item.state, item.checkpoint, item.acceptedHead)) continue;
+        // Skipped ticks still advance the baseline in memory, excluding parked time.
+        const since = Math.max(
+          item.lastMonoMs ?? this.lastObservedMono.get(item.id) ?? mono,
+          this.lastObservedMono.get(item.id) ?? -Infinity,
+        );
+        if (mono <= since && capReason(item) === null) continue;
+        if (accrueAwake(this.db, item.id, mono, now, since).stopAgent) stops.push(item.id);
+      }
+    });
+    this.lastObservedMono = observed;
+    for (const id of stops) this.stopAgent?.(id);
   }
 
   private handleWake(sample: WakeSample): void {
