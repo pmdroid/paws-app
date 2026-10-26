@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -204,7 +205,13 @@ export function createRunnerLogin(options: {
         if (row.runnerId !== runnerId) throw new Error("Login runner changed");
         try {
           access(row.workspaceId, row.userId, runnerId);
-        } catch {
+        } catch (caughtError1) {
+          journalCaught(
+            caughtError1,
+            "runner-login.exchange.access",
+            null,
+            "optional file may be absent",
+          );
           inputs.delete(id);
           db.run(
             "UPDATE runner_login SET state='cancelled',terminal='',authorization=NULL,input_id=NULL WHERE id=? AND state IN ('starting','waiting')",
@@ -256,7 +263,8 @@ export function createRunnerLogin(options: {
       if (signedIn) {
         try {
           options.onSignedIn?.(signedIn);
-        } catch {
+        } catch (caughtError2) {
+          journalCaught(caughtError2, "runner-login.exchange.onSignedIn", null);
           // The sign-in is already committed; the background check retries later.
         }
       }
@@ -303,6 +311,7 @@ export function createRunnerLogin(options: {
         }
         return json({ error: "Unsupported agent account request." }, 405);
       } catch (error) {
+        journalCaught(error, "runner-login.browser.json", null);
         if (error instanceof SignInRefused) return json({ error: error.message }, error.status);
         return json(
           { error: "Agent sign-in is unavailable. Refresh your sign-in and try again." },
@@ -318,7 +327,8 @@ export function createRunnerLogin(options: {
         return json(
           api.exchange(runnerId, match[1]!, RunnerLoginUpdateSchema.parse(await body(request))),
         );
-      } catch {
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "runner-login.fetch.json", null);
         return json({ error: "Login session was rejected." }, 403);
       }
     },
@@ -332,7 +342,11 @@ async function body(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("JSON is required");
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]);
-  const cancel = () => void reader.cancel().catch(() => undefined);
+  const cancel = () =>
+    void reader.cancel().catch((caughtError4) => {
+      journalCaught(caughtError4, "runner-login.body.cancel", null);
+      return undefined;
+    });
   signal.addEventListener("abort", cancel, { once: true });
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -349,7 +363,10 @@ async function body(request: Request) {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } finally {
     signal.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch((caughtError5) => {
+      journalCaught(caughtError5, "runner-login.body.cancel", null);
+      return undefined;
+    });
     reader.releaseLock();
   }
 }

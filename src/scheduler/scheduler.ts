@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import {
@@ -195,7 +196,8 @@ export function hintedPaths(brief: string | null): string[] {
     return schedulerPaths(
       hints.flatMap((line) => line.replace(/^\s*paths:\s*/i, "").split(/[,\s]+/)),
     );
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "scheduler.hintedPaths.schedulerPaths", null);
     return ["*"];
   }
 }
@@ -375,7 +377,8 @@ function reportDependencyCycles(
           (member) =>
             readyItems(db, { itemId: member.id, workspaceId }).cycleHeldItemIds.length > 0,
         );
-    } catch {
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "scheduler.reportDependencyCycles.filter", null);
       continue;
     }
     if (!held.length) continue;

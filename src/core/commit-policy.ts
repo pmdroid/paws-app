@@ -1,3 +1,4 @@
+import { journalCaught } from "./journal";
 import {
   appBotCommitIdentity,
   commitIdentityEnv,
@@ -91,6 +92,7 @@ export async function assertDescendsFromAny(
       await invoke(["merge-base", "--is-ancestor", base, head]);
       return;
     } catch (error) {
+      journalCaught(error, "commit-policy.assertDescendsFromAny.invoke", null);
       failure = error;
     }
   }

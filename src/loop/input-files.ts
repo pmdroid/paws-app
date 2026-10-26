@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -57,8 +58,10 @@ export function createLinearInputLoader(options: {
         if (
           error instanceof Error &&
           /^Linear file download HTTP (401|403|404)$/.test(error.message)
-        )
+        ) {
+          journalCaught(error, "input-files.download", null, "optional Linear file is unavailable");
           continue;
+        }
         throw error;
       }
       request.signal.throwIfAborted();
@@ -108,6 +111,7 @@ export function createLinearInputLoader(options: {
       }
     } catch (error) {
       if (!isMissing(error)) throw error;
+      journalCaught(error, "input-files.load.open", null, "optional file may be absent");
     }
     signal.throwIfAborted();
     const file = await options.files.download({ url, signal });
@@ -221,7 +225,10 @@ async function excludeInputs(workspace: string, name: string): Promise<void> {
   try {
     info = await lstat(join(workspace, ".git"));
   } catch (error) {
-    if (isMissing(error)) return;
+    if (isMissing(error)) {
+      journalCaught(error, "input-files.excludeInputs.lstat", null, "optional file may be absent");
+      return;
+    }
     throw error;
   }
   if (!info.isFile() && !info.isDirectory())
@@ -280,6 +287,7 @@ async function writeAtomic(path: string, bytes: Uint8Array): Promise<void> {
     } catch (error) {
       if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST")
         throw error;
+      journalCaught(error, "input-files.writeAtomic.link", null, "path may already exist");
       const existing = await open(
         path,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -305,7 +313,14 @@ async function writeAtomic(path: string, bytes: Uint8Array): Promise<void> {
       await directory.close();
     }
   } finally {
-    await unlink(temporary).catch(() => {});
+    await unlink(temporary).catch((caughtError1) => {
+      journalCaught(
+        caughtError1,
+        "input-files.writeAtomic.unlink",
+        null,
+        "optional file may be absent",
+      );
+    });
   }
 }
 

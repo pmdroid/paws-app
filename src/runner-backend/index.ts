@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -375,6 +376,7 @@ export function createRemoteAgentRunner(options: {
         reservations.set(item.currentRunId, runner.id);
         return { ...runner, runId: item.currentRunId };
       } catch (error) {
+        journalCaught(error, "runner-backend.place.getTaskMode", itemId);
         rejected.push(`${runner.id}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -693,7 +695,10 @@ export function createRemoteAgentRunner(options: {
                     "refs/paws/upstream-main^{commit}",
                   ]).then(
                     (sha) => sha.trim() || undefined,
-                    () => undefined,
+                    (caughtError1) => {
+                      journalCaught(caughtError1, "runner-backend.forItem.git", itemId);
+                      return undefined;
+                    },
                   )
                 : undefined;
               const fetchedMain =
@@ -708,7 +713,10 @@ export function createRemoteAgentRunner(options: {
                   checkpointBase,
                 ])
                   .then(() => true)
-                  .catch(() => false))
+                  .catch((caughtError1) => {
+                    journalCaught(caughtError1, "runner-backend.forItem.then", itemId);
+                    return false;
+                  }))
                   ? undefined
                   : upstreamMain;
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
@@ -728,7 +736,10 @@ export function createRemoteAgentRunner(options: {
                     baseSha,
                   ])
                     .then(() => true)
-                    .catch(() => false)))
+                    .catch((caughtError2) => {
+                      journalCaught(caughtError2, "runner-backend.forItem.then", itemId);
+                      return false;
+                    })))
                   ? mainCandidate
                   : undefined;
               const generation =
@@ -790,12 +801,15 @@ export function createRemoteAgentRunner(options: {
                   : undefined;
               const runtimeList =
                 input.runtimes && (!taskScope || taskScope.repository)
-                  ? await input.runtimes().catch((error: unknown) => ({
-                      runtimes: [],
-                      notices: [
-                        `Paws could not read the repository's runtime list: ${error instanceof Error ? error.message : String(error)}.`,
-                      ],
-                    }))
+                  ? await input.runtimes().catch((error: unknown) => {
+                      journalCaught(error, "runner-backend.forItem.runtimes", itemId);
+                      return {
+                        runtimes: [],
+                        notices: [
+                          `Paws could not read the repository's runtime list: ${error instanceof Error ? error.message : String(error)}.`,
+                        ],
+                      };
+                    })
                   : undefined;
               signal.throwIfAborted();
               const acceptsRuntimes = versionAtLeast(
@@ -1013,15 +1027,21 @@ export function createRemoteAgentRunner(options: {
                 !(event.notice && /^Installed runtimes /.test(event.text))
               ) {
                 if (input.postUpdate && !event.notice)
-                  await input.postUpdate.post(event.text).catch(() => undefined);
+                  await input.postUpdate.post(event.text).catch((caughtError3) => {
+                    journalCaught(caughtError3, "runner-backend.forItem.post", itemId);
+                    return undefined;
+                  });
                 else await emit({ type: "progress", text: event.text });
               }
               if (event.type === "closeout_policy") {
                 const policy = input.closeoutPolicy
-                  ? await input.closeoutPolicy().catch((error: unknown) => ({
-                      ok: false as const,
-                      message: error instanceof Error ? error.message : String(error),
-                    }))
+                  ? await input.closeoutPolicy().catch((error: unknown) => {
+                      journalCaught(error, "runner-backend.forItem.closeoutPolicy", itemId);
+                      return {
+                        ok: false as const,
+                        message: error instanceof Error ? error.message : String(error),
+                      };
+                    })
                   : {
                       ok: false as const,
                       message: "Paws has no trusted Closeout policy for this run",
@@ -1060,7 +1080,10 @@ export function createRemoteAgentRunner(options: {
                     ...(evidence ? { evidence } : {}),
                   })
                   .catch((error: unknown) => {
-                    if (error instanceof ArtifactRejectedError) return { error: error.message };
+                    if (error instanceof ArtifactRejectedError) {
+                      journalCaught(error, "runner-backend.forItem.publish", itemId);
+                      return { error: error.message };
+                    }
                     throw error;
                   });
                 publishedEffects = true;
@@ -1117,6 +1140,7 @@ export function createRemoteAgentRunner(options: {
                   });
                 })()
                   .catch((error) => {
+                    journalCaught(error, "runner-backend.forItem.ask", itemId);
                     questionError = error;
                   })
                   .finally(() => {
@@ -1303,6 +1327,12 @@ export function createRemoteAgentRunner(options: {
           if (!(error instanceof Error) || error.message !== "cancelled" || !signal.aborted) {
             throw error;
           }
+          journalCaught(
+            error,
+            "runner-backend.forItem.scopeTask",
+            itemId,
+            "cancellation may interrupt work",
+          );
           return {
             role: input.role,
             stopReason: "cancelled",
@@ -1332,7 +1362,9 @@ export function createRemoteAgentRunner(options: {
                 runId: command.runId,
                 generation: command.generation,
               });
-            } catch {}
+            } catch (caughtError4) {
+              journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
+            }
           }
           controller.abort();
           await question;

@@ -11,6 +11,7 @@ import {
   RUNNER_FAILURE,
   RunnerCliFailure,
   runnerFailureLine,
+  journalRunnerFailure,
 } from "../src/runner-cli";
 import { RunnerRequestError, RunnerTransportError, transportFailure } from "../src/runner-daemon";
 
@@ -219,4 +220,16 @@ describe("runner failure causes", () => {
     expect(error.code).toBe("ECONNREFUSED");
     expect((error.cause as Error).message).toContain("ECONNREFUSED");
   });
+});
+
+test("runner journal applies the file-token redactor before its only write", () => {
+  const token = "FileOnlyEnrollmentSecret";
+  const lines: string[] = [];
+  journalRunnerFailure(new RunnerCliFailure("token", `Leaked ${token}`), [token], (line) =>
+    lines.push(line),
+  );
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toContain("operation=runner-cli.runRunnerCli");
+  expect(lines[0]).toContain(RUNNER_FAILURE);
+  expect(lines[0]).not.toContain(token);
 });

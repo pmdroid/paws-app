@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { z } from "zod";
 import { repoApiPath } from "./client";
 import type { CiCheck, CiCheckState, GitHubClient } from "./types";
@@ -281,20 +282,13 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
         }
       : { outcome: "ready", message: "CI passed and all review threads are resolved" };
   } catch (error) {
+    journalCaught(error, "readiness.readMergeReadiness.token", null);
     if (error instanceof Error && LINEAR_WAIT.test(error.message))
       return {
         outcome: "pending",
         message: "Waiting for Linear's rate limit to reset before reading GitHub.",
       };
-    console.error(
-      `GitHub readiness read failed: ${
-        error instanceof Error
-          ? error.message
-              .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[redacted]")
-              .slice(0, 300)
-          : "unknown error"
-      }`,
-    );
+
     return unreadable();
   }
 }
@@ -417,11 +411,7 @@ async function readLogTail(
       if (tail !== "") return { tail, source: "actions" };
       console.error(`GitHub Actions log read for ${check.name} failed: status ${response.status}`);
     } catch (error) {
-      console.error(
-        `GitHub Actions log read for ${check.name} failed: ${
-          error instanceof Error ? error.name : "unknown error"
-        }`,
-      );
+      journalCaught(error, "readiness.readLogTail.request", null);
     }
   }
   const summary = logTail(check.summary ?? "");

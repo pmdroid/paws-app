@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
  *
@@ -698,7 +699,8 @@ function runReviewer(pawsHome: string | undefined, runId: string): string {
     );
     const reviewer = snapshot?.profiles?.reviewer?.agent;
     return ["claude", "codex", "grok"].includes(reviewer) ? agentName(reviewer) : "Unknown";
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "provider.runReviewer.parse", null);
     return "Unknown";
   }
 }
@@ -1429,7 +1431,8 @@ function turnAuthor(payload: string): string {
     const name = (JSON.parse(payload) as { agentActivity?: { user?: { name?: unknown } } })
       .agentActivity?.user?.name;
     return typeof name === "string" && name.trim() ? name.trim() : "Someone";
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "provider.turnAuthor.parse", null);
     return "Someone";
   }
 }
@@ -1796,7 +1799,8 @@ function httpUrl(value: string): string | null {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
     return url.toString();
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "provider.httpUrl.toString", null);
     return null;
   }
 }

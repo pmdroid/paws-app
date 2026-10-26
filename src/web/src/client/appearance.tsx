@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { useSyncExternalStore } from "react";
 import { NativeSelect } from "./ui/native-select";
 
@@ -30,7 +31,8 @@ function notify(): void {
 export function initializeAppearance(): void {
   try {
     preference = parseAppearance(localStorage.getItem(STORAGE_KEY));
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "appearance.initializeAppearance.parseAppearance", null);
     preference = "system";
   }
   const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -71,7 +73,9 @@ export function AppearanceControl() {
           preference = parseAppearance(event.currentTarget.value);
           try {
             localStorage.setItem(STORAGE_KEY, preference);
-          } catch {}
+          } catch (caughtError2) {
+            journalCaught(caughtError2, "appearance.AppearanceControl.setItem", null);
+          }
           notify();
         }}
       >

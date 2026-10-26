@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   closeSync,
   constants,
@@ -155,6 +156,7 @@ function snapshotTree(
       return openSync(path, flags);
     } catch (error) {
       if (stored || (error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
+
       const target = realpathSync(path);
       if (
         !target.startsWith(`${repositoryRoot}/`) ||
@@ -164,6 +166,7 @@ function snapshotTree(
           .some((part) => part.toLowerCase() === ".git")
       )
         throw new Error("Task repository link escapes its source snapshot", { cause: error });
+      journalCaught(error, "spool.openSource.openSync", null);
       const parts = target.slice(repositoryRoot.length + 1).split("/");
       let parent = openDirectory(`/proc/self/fd/${directory}/.`);
       try {
@@ -480,6 +483,12 @@ export function publishRunnerJob(
       existingDirectory = openDirectory(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalCaught(
+        error,
+        "spool.publishRunnerJob.openDirectory",
+        null,
+        "optional file may be absent",
+      );
     }
     if (existingDirectory !== undefined) {
       try {

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
@@ -93,6 +94,7 @@ export function initializeWorkspaceIdentities(root: HTMLElement, csrfToken: stri
                     : "unmatched · manual";
                 feedback.textContent = "Account link saved.";
               } catch (error) {
+                journalCaught(error, "workspace-identities.load.fetch", null);
                 feedback.textContent =
                   error instanceof Error ? error.message : "Account link could not be saved.";
               } finally {
@@ -104,6 +106,7 @@ export function initializeWorkspaceIdentities(root: HTMLElement, csrfToken: stri
         }
       }
     } catch (error) {
+      journalCaught(error, "workspace-identities.load.fetch", null);
       feedback.textContent =
         error instanceof Error ? error.message : "Account links could not be loaded.";
     }

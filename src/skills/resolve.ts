@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -192,9 +193,10 @@ async function resolveGit(
         ? ref.toLowerCase()
         : await remoteCommit(context, dir, url, ref);
     const fetch = ["fetch", "--quiet", "--depth", "1", "--no-tags"];
-    await run([...fetch, "--filter=blob:none", "--", "origin", commit]).catch(() =>
-      run([...fetch, "--", "origin", commit]),
-    );
+    await run([...fetch, "--filter=blob:none", "--", "origin", commit]).catch((caughtError1) => {
+      journalCaught(caughtError1, "resolve.resolveGit.run", null);
+      return run([...fetch, "--", "origin", commit]);
+    });
     const subfolder = request.subfolder === undefined ? "" : skillPath(request.subfolder)!;
     const prefix = subfolder ? `${subfolder}/` : "";
     const tree = (await run(["ls-tree", "-r", "-z", "--name-only", "FETCH_HEAD"]))

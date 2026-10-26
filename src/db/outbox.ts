@@ -1,3 +1,4 @@
+import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   DEFAULT_BACKOFF_BASE_MS,
@@ -379,6 +380,7 @@ export function dispatchOutbox(db: Database, options: DispatchOptions = {}): Out
       deliver(row);
       completeOutbox(db, row, options.now);
     } catch (error) {
+      journalCaught(error, "outbox.dispatchOutbox.deliver", journalItemId(row.payload));
       retryOutbox(db, row, error, { now: options.now });
     }
   }

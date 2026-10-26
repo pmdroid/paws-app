@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -87,7 +88,10 @@ export function createGitHubAttributionLink(options: {
         return reply({ error: "Use the configured Paws origin." }, 403);
       let access = requestWorkspaceSession(options.db, request, now());
       if (!access) return reply({ error: "Sign in to Paws." }, 401);
-      const form = await readForm(request).catch(() => null);
+      const form = await readForm(request).catch((caughtError1) => {
+        journalCaught(caughtError1, "github-attribution.startFromPage.readForm", null);
+        return null;
+      });
       if (form === null || !sameSecret(form.get("csrf"), access.session.csrfToken))
         return reply({ error: "CSRF token required." }, 403);
       if (form.get("consent") !== "yes")
@@ -122,7 +126,8 @@ export function createGitHubAttributionLink(options: {
             "referrer-policy": "no-referrer",
           },
         });
-      } catch {
+      } catch (caughtError2) {
+        journalCaught(caughtError2, "github-attribution.startFromPage.refresh", null);
         return reply(
           {
             error: "GitHub attribution could not be verified. Check membership and sign in again.",
@@ -289,7 +294,8 @@ export function createGitHubAttributionLink(options: {
             "set-cookie": `${COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
           },
         });
-      } catch {
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "github-attribution.handle.refresh", null);
         return reply(
           {
             error: "GitHub attribution could not be verified. Check membership and sign in again.",

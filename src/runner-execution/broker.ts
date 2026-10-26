@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createConnection } from "node:net";
 import { ExecutionIdSchema } from "./jobs";
 
@@ -67,7 +68,8 @@ function createBrokerRequest(options: { socketPath?: string } = {}) {
           clearTimeout(timer);
           resolve({ alreadyAdmitted });
           socket.destroy();
-        } catch {
+        } catch (caughtError1) {
+          journalCaught(caughtError1, "broker.request.parse", null);
           fail(new Error("Runner broker rejected request"));
         }
       });

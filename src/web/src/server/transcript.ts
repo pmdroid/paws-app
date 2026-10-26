@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { getRun, getWorkItem } from "../../../db";
 import { fullAgentTranscript } from "../live/transcript";
 import { dashboardOrigin } from "./request-origin";
@@ -63,6 +64,7 @@ export function handleAgentTranscriptRequest(
           );
         first = false;
       } catch (error) {
+        journalCaught(error, "transcript.pull.next", run.itemId);
         iterator.return(undefined);
         controller.error(error);
       }

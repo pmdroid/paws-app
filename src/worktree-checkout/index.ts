@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { promisify } from "node:util";
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -58,6 +59,7 @@ export function checkoutPatternsSync(
     current = readSparsePatternsSync(tree, env);
   } catch (error) {
     if ((error as { status?: number }).status !== 1) throw error;
+    journalCaught(error, "worktree-checkout.checkoutPatternsSync.readSparsePatternsSync", null);
   }
   if (patterns.length) {
     if (unpopulated || JSON.stringify(current) !== JSON.stringify(patterns)) {
@@ -95,7 +97,10 @@ async function readSparsePatterns(tree: string, env?: NodeJS.ProcessEnv): Promis
   try {
     enabled = await gitAsync(tree, ["config", "--bool", "--get", "core.sparseCheckout"], env);
   } catch (error) {
-    if ((error as { code?: number }).code === 1) return [];
+    if ((error as { code?: number }).code === 1) {
+      journalCaught(error, "worktree-checkout.readSparsePatterns.gitAsync", null);
+      return [];
+    }
     throw error;
   }
   if (enabled.trim() !== "true") return [];

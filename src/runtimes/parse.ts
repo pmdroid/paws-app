@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 /**
  * A task repository's runtime list, read from its mise config on `origin/main`.
  *
@@ -104,7 +105,8 @@ function miseToml(text: string): Entry[] | undefined {
   let parsed: unknown;
   try {
     parsed = Bun.TOML.parse(text);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "parse.miseToml.parse", null);
     return undefined;
   }
   if (!isRecord(parsed)) return undefined;
@@ -145,7 +147,8 @@ function plainVersion(value: unknown): string | undefined {
 function decode(bytes: Uint8Array): string | undefined {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "parse.decode", null);
     return undefined;
   }
 }

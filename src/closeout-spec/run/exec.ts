@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -281,6 +282,7 @@ function spawnArgv(
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
+      journalCaught(error, "exec.spawnArgv.spawn", null);
       resolve(notStarted(errorText(error)));
       return;
     }
@@ -350,10 +352,12 @@ function killGroup(pid: number | undefined): void {
   if (pid === undefined) return;
   try {
     process.kill(-pid, "SIGKILL");
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "exec.killGroup.kill", null, "process may have exited");
     try {
       process.kill(pid, "SIGKILL");
-    } catch {
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "exec.killGroup.kill", null, "process may have exited");
       // The process already exited.
     }
   }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type {
   StatusCheck,
   StatusCloseoutAttempt,
@@ -82,7 +83,8 @@ export function parseCheckHash(hash: string): { attempt: number; checkId: string
   if (!match) return null;
   try {
     return { attempt: Number(match[1]), checkId: decodeURIComponent(match[2]!) };
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "closeout.parseCheckHash.Number", null);
     return null;
   }
 }

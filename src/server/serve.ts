@@ -1,4 +1,5 @@
 import { createHealthReport } from "./health";
+import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { handleSlackWebhook } from "../slack";
@@ -127,7 +128,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
       (value) => {
         workspaceAccess = value;
       },
-      () => {},
+      (caughtError1) => {
+        journalCaught(caughtError1, "serve.startServer.resolve", null);
+      },
     );
   const requests = new Set<Promise<Response>>();
   let stopping = false;
@@ -256,7 +259,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     ) {
       try {
         await workspace.authenticate(request);
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "serve.route.authenticate", null);
         return Response.json({ error: "Workspace access could not be verified." }, { status: 503 });
       }
       const env = secrets.statusEnv ?? process.env;
@@ -280,7 +284,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       let access;
       try {
         access = await workspace.authenticate(request);
-      } catch {
+      } catch (caughtError2) {
+        journalCaught(caughtError2, "serve.route.authenticate", null);
         return Response.json({ error: "Workspace access could not be verified." }, { status: 503 });
       }
       if (access === null || secrets.db === undefined)

@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "./eligibility";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
@@ -67,7 +68,8 @@ export async function handleWorkspaceGitHubIntegration(
     for (const repository of new Set(repositories.map((entry) => entry.repository))) {
       if (!(await options.check(repository, signal))) ready = false;
     }
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "github-integration.handleWorkspaceGitHubIntegration.map", null);
     ready = false;
   }
   return immediate(options.db, () => {

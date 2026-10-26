@@ -1,3 +1,4 @@
+import { journalCaught, journalRejection } from "../journal";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -115,6 +116,7 @@ export async function openRunnerCoordinator(options: {
       try {
         health.afterSignIn(runnerId, agent);
       } catch (error) {
+        journalCaught(error, "runner-coordinator.onSignedIn.afterSignIn", null);
         options.onError(error);
       }
     },
@@ -154,7 +156,8 @@ export async function openRunnerCoordinator(options: {
       try {
         control.authenticate(peer);
         return true;
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "runner-coordinator.authorize.authenticate", null);
         return false;
       }
     },
@@ -181,8 +184,13 @@ export async function openRunnerCoordinator(options: {
     try {
       control.expireConnections();
     } catch (error) {
+      journalCaught(error, "runner-coordinator.openRunnerCoordinator.expireConnections", null);
       options.onError(error);
-      void listener?.stop().catch(options.onError);
+      void listener
+        ?.stop()
+        .catch(
+          journalRejection("runner-coordinator.openRunnerCoordinator.stop", options.onError, null),
+        );
     }
   }, 1000);
   timer.unref();
@@ -190,6 +198,7 @@ export async function openRunnerCoordinator(options: {
     try {
       models.refresh();
     } catch (error) {
+      journalCaught(error, "runner-coordinator.openRunnerCoordinator.refresh", null);
       options.onError(error);
     }
   };
@@ -200,6 +209,7 @@ export async function openRunnerCoordinator(options: {
     try {
       health.refresh();
     } catch (error) {
+      journalCaught(error, "runner-coordinator.openRunnerCoordinator.refresh", null);
       options.onError(error);
     }
   };

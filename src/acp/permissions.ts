@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -133,7 +134,8 @@ export function isLocalSkillPath(input: string, ctx: GuardContext): boolean {
     if (!isInside(root, candidate)) return false;
     try {
       return isInside(root, realpathSync(candidate));
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "permissions.isLocalSkillPath.isInside", null);
       return false;
     }
   });
@@ -206,7 +208,8 @@ function escapesWorktree(candidate: string, worktree: string): boolean {
       const suffix = [...missing].reverse();
       const full = suffix.length === 0 ? real : resolve(real, ...suffix);
       return !isInside(root, full);
-    } catch {
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "permissions.escapesWorktree.realpathSync", null);
       const parent = dirname(current);
       if (parent === current) return false;
       missing.push(basename(current));

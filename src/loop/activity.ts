@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { AcpEvent } from "../acp";
 import type { ActivityKind, ProgressUpdate, SessionPlanStep } from "../linear";
 import { scrubText } from "../closeout";
@@ -131,7 +132,8 @@ export function publicToolText(value: unknown): string {
           url.search = "";
           url.hash = "";
           return url.href;
-        } catch {
+        } catch (caughtError1) {
+          journalCaught(caughtError1, "activity.text", null);
           return "[redacted URL]";
         }
       });
@@ -159,7 +161,9 @@ export function publicToolText(value: unknown): string {
   if (typeof value === "string" && /^[\s]*[[{]/.test(value)) {
     try {
       value = JSON.parse(value);
-    } catch {}
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "activity.publicToolText.parse", null);
+    }
   }
   const cleaned = clean(value, 0);
   return typeof cleaned === "string" ? cleaned : JSON.stringify(cleaned);

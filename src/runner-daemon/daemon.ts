@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
 import { join } from "node:path";
 import { chmodSync } from "node:fs";
@@ -214,6 +215,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         error.status !== 409
       )
         throw error;
+      journalCaught(error, "daemon.acknowledgeCommand.authenticated", null);
     }
     unchangedIdentity(identity);
     db.run("UPDATE pending_command SET acknowledged=2 WHERE id=?", [id]);
@@ -369,6 +371,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
             error.status !== 403
           )
             throw error;
+          journalCaught(error, "daemon.heartbeat.authenticated", null);
         }
       }
       const response = RunnerHeartbeatSchema.parse(reply);

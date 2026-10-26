@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   advanceLinearSessionGeneration,
@@ -202,8 +203,15 @@ export class LinearTaskAccess {
         if (
           error instanceof LinearAccessRemovedError ||
           getWorkItem(this.db, item.id)?.state === "cancelled"
-        )
+        ) {
+          journalCaught(
+            error,
+            "linear-task-access.reconcileItems.assert",
+            item.id,
+            "work-item access removed or item cancelled",
+          );
           continue;
+        }
         throw error;
       }
     }
@@ -513,7 +521,10 @@ export async function authorizeLinearTask(
     await access.assert(item, signal);
     return true;
   } catch (error) {
-    if (error instanceof LinearAccessRemovedError) return false;
+    if (error instanceof LinearAccessRemovedError) {
+      journalCaught(error, "linear-task-access.authorizeLinearTask.assert", item?.id);
+      return false;
+    }
     throw error;
   }
 }
@@ -527,6 +538,7 @@ async function outlastRateLimits<T>(signal: AbortSignal, read: () => Promise<T>)
       return await read();
     } catch (error) {
       if (!(error instanceof LinearRateLimitError) || Date.now() >= deadline) throw error;
+      journalCaught(error, "linear-task-access.outlastRateLimits.read", null);
       await sleep(Math.min(Math.max(error.retryAfterMs, 1_000), 60_000), signal);
       signal.throwIfAborted();
     }

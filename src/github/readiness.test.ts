@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { setJournalSink } from "../journal";
 import { fakeMergeReadiness, fakeRequiredChecks, type FakeCheckContext } from "./fake";
 import { createFetchGitHubClient } from "./client";
 import { logTail, waitForMergeReadiness } from "./readiness";
@@ -395,12 +396,11 @@ test("a failed read logs the error message with GitHub tokens redacted", async (
     throw new Error(`The Linear publication was superseded. ${token}`);
   });
   const logged: string[] = [];
-  const original = console.error;
-  console.error = (message: string) => logged.push(message);
+  const restore = setJournalSink((line) => logged.push(line));
   try {
     await waitForMergeReadiness(f.input);
   } finally {
-    console.error = original;
+    restore();
   }
   expect(logged[0]).toContain("The Linear publication was superseded.");
   expect(logged.join("\n")).not.toContain(token);

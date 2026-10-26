@@ -1,3 +1,4 @@
+import { setJournalSink } from "../journal";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   lstatSync,
@@ -20,6 +21,7 @@ import {
   codexConfigWithStopHook,
   codexStopHookTrustHash,
   installCloseoutStopHook,
+  installCodexSkillsHome,
 } from "./closeout-hook";
 
 const roots: string[] = [];
@@ -326,3 +328,25 @@ function callTool(
     socket.on("end", () => resolve(data));
   });
 }
+
+test("overlay propagates unexpected source errors without logging them twice", async () => {
+  const root = temp();
+  const source = join(root, "source");
+  const skills = join(root, "skills");
+  mkdirSync(skills);
+  writeFileSync(source, "not a directory");
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    await expect(
+      installCodexSkillsHome({
+        runDirectory: join(root, "run"),
+        sourceEnv: { CODEX_HOME: source },
+        codexSkills: skills,
+      }),
+    ).rejects.toThrow();
+    expect(lines).toEqual([]);
+  } finally {
+    restore();
+  }
+});

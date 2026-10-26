@@ -1,4 +1,5 @@
 import { LinearHttpError } from "./graphql";
+import { journalCaught } from "../journal";
 import type { LinearClient } from "./graphql";
 import type { FetchLike, LinearAuth } from "./oauth";
 import { isRecord, readString } from "./read";
@@ -246,7 +247,8 @@ function filenameFromUrl(url: URL): string {
   let filename: string;
   try {
     filename = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "files.filenameFromUrl.decodeURIComponent", null);
     filename = "download";
   }
   return (
@@ -308,7 +310,9 @@ async function readBytes(
       chunks.push(result.value);
     }
   } finally {
-    void reader.cancel().catch(() => {});
+    void reader.cancel().catch((caughtError2) => {
+      journalCaught(caughtError2, "files.readBytes.cancel", null);
+    });
     reader.releaseLock();
   }
   const bytes = new Uint8Array(size);
@@ -321,7 +325,9 @@ async function readBytes(
 }
 
 function discardBody(response: Response): void {
-  void response.body?.cancel().catch(() => {});
+  void response.body?.cancel().catch((caughtError3) => {
+    journalCaught(caughtError3, "files.discardBody.cancel", null);
+  });
 }
 
 async function transfer<T>(
@@ -351,7 +357,9 @@ async function transfer<T>(
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
-      void promise.catch(() => {});
+      void promise.catch((caughtError4) => {
+        journalCaught(caughtError4, "files.abortable", null);
+      });
       reject(signal.reason);
       return;
     }

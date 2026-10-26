@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { connect } from "node:net";
 
 /**
@@ -216,6 +217,7 @@ function askParent(
         if (message.error) reject(new Error(message.error));
         else resolve(message.answer ?? "");
       } catch (error) {
+        journalCaught(error, "ask-team-mcp.askParent.parse", null);
         reject(error);
       }
     });
@@ -271,6 +273,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
         const answer = await askParent(socketPath, name, args);
         respond(message.id, { content: [{ type: "text", text: answer }], isError: false });
       } catch (error) {
+        journalCaught(error, "ask-team-mcp.handle.askParent", null);
         const text = error instanceof Error ? error.message : String(error);
         respond(message.id, { content: [{ type: "text", text }], isError: true });
       }
@@ -361,6 +364,7 @@ async function main(): Promise<void> {
 const entry = process.argv[1] ?? "";
 if (entry.endsWith("ask-team-mcp.ts") || entry.endsWith("ask-team-mcp.js")) {
   main().catch((error: unknown) => {
+    journalCaught(error, "ask-team-mcp.recover.main", null);
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
     process.exit(1);

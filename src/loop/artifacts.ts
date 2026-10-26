@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -370,6 +371,12 @@ export function createLinearArtifactPublisher(options: {
       await readPrivate(snapshotPath, 10 * 1024 * 1024);
     } catch (error) {
       if (!isMissing(error)) throw error;
+      journalCaught(
+        error,
+        "artifacts.publish.readPrivate",
+        options.itemId,
+        "optional file may be absent",
+      );
       await writeAtomic(snapshotPath, bytes);
     }
     const persisted = await readPrivate(snapshotPath, 10 * 1024 * 1024);
@@ -386,6 +393,12 @@ export function createLinearArtifactPublisher(options: {
         } catch (error) {
           if (!isMissing(error))
             throw new Error("Artifact upload state is invalid", { cause: error });
+          journalCaught(
+            error,
+            "artifacts.publish.parse",
+            options.itemId,
+            "optional file may be absent",
+          );
         }
         let remoteMissing = false;
         if (upload !== null) {
@@ -402,6 +415,7 @@ export function createLinearArtifactPublisher(options: {
           } catch (error) {
             signal.throwIfAborted();
             if (!(error instanceof Error) || !error.message.includes("HTTP 404")) throw error;
+            journalCaught(error, "artifacts.publish.download", options.itemId);
             remoteMissing = true;
           }
         }
@@ -422,6 +436,7 @@ export function createLinearArtifactPublisher(options: {
             signal.throwIfAborted();
             if (!remoteMissing || !(error instanceof Error) || !error.message.includes("HTTP 403"))
               throw error;
+            journalCaught(error, "artifacts.publish.uploadPrepared", options.itemId);
             upload = await options.files.prepareUpload({
               filename: row.displayName,
               contentType: row.mimeType,
@@ -510,7 +525,10 @@ async function writeSnapshot(path: string, bytes: Uint8Array): Promise<void> {
       0o600,
     );
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") return;
+    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      journalCaught(error, "artifacts.writeSnapshot.open", null, "path may already exist");
+      return;
+    }
     throw error;
   }
   try {
@@ -549,7 +567,14 @@ async function writeAtomic(path: string, bytes: Uint8Array): Promise<void> {
       await directory.close();
     }
   } finally {
-    await unlink(temporary).catch(() => {});
+    await unlink(temporary).catch((caughtError1) => {
+      journalCaught(
+        caughtError1,
+        "artifacts.writeAtomic.unlink",
+        null,
+        "optional file may be absent",
+      );
+    });
   }
 }
 

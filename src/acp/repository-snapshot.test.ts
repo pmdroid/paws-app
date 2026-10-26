@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
@@ -166,7 +167,14 @@ test("stopping a source Git command joins its shell and running descendant", asy
     if (pid > 0) {
       try {
         process.kill(pid, "SIGKILL");
-      } catch {}
+      } catch (caughtError1) {
+        journalCaught(
+          caughtError1,
+          "repository-snapshot.test.recover.kill",
+          null,
+          "test fixture cleanup",
+        );
+      }
     }
     await rm(root, { recursive: true, force: true });
   }
@@ -211,7 +219,14 @@ test.skipIf(process.platform !== "linux")(
       if (pid > 0) {
         try {
           process.kill(pid, "SIGKILL");
-        } catch {}
+        } catch (caughtError2) {
+          journalCaught(
+            caughtError2,
+            "repository-snapshot.test.recover.kill",
+            null,
+            "test fixture cleanup",
+          );
+        }
       }
       await rm(root, { recursive: true, force: true });
     }

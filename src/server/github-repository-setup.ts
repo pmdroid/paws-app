@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
@@ -386,7 +387,8 @@ export function createGitHubRepositorySetup(options: {
       } finally {
         if (!committed) activation.remove(activeId);
       }
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "github-repository-setup.createGitHubRepositorySetup.all", null);
       return reply(
         { error: "GitHub setup could not be completed. Refresh or sign in with GitHub again." },
         409,

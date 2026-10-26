@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHash, randomBytes } from "node:crypto";
 import {
   exchangeLinearCode,
@@ -55,7 +56,8 @@ export async function authorizeLinear(input: {
         });
         result.resolve(token);
         return response("Linear authorization received. Return to Paws.", 200);
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "authorize.fetch.exchangeLinearCode", null);
         result.reject(
           new Error(
             "Could not exchange the Linear authorization code. Retry Linear authorization.",

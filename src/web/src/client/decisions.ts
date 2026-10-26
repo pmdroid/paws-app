@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
@@ -46,6 +47,7 @@ export function initializeDecisions(root: HTMLElement, csrfToken: string, canEdi
       if (!response.ok) throw new Error(result.error ?? "Save failed. Try again.");
       await load();
     } catch (error) {
+      journalCaught(error, "decisions.save.fetch", null);
       status.textContent = error instanceof Error ? error.message : "Save failed. Try again.";
     } finally {
       button.disabled = false;
@@ -107,6 +109,7 @@ export function initializeDecisions(root: HTMLElement, csrfToken: string, canEdi
           );
         });
     } catch (error) {
+      journalCaught(error, "decisions.load.fetch", null);
       if (generation !== active) return;
       renderMarkup(
         section,

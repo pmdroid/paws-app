@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { skillDescription, skillManifestName, skillPath, type SkillFiles } from "./bundle";
 
 export type SkillFolder = { path: string; name: string; description: string };
@@ -67,7 +68,8 @@ export function manifestJson(files: SkillFiles, path: string): Record<string, un
     return value !== null && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "discover.manifestJson.parse", null);
     return {};
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { z } from "zod";
 
 const textContent = z.object({ type: z.literal("text"), text: publicString(262_144) });
@@ -141,7 +142,8 @@ function publicText(text: string): string {
         url.search = "";
         url.hash = "";
         return url.href;
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "activity.publicText", null);
         return "[redacted URL]";
       }
     });

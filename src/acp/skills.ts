@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { projectSkillsRoot, type PawsConfigFile } from "../config";
@@ -17,7 +18,10 @@ export async function loadImplementationSkills(input: {
   if (!repository) {
     const origin = await git(["-C", input.worktree, "config", "--get", "remote.origin.url"], {
       signal: input.signal,
-    }).catch(() => "");
+    }).catch((caughtError1) => {
+      journalCaught(caughtError1, "skills.loadImplementationSkills.git", null);
+      return "";
+    });
     repository = /(?:github\.com[:/])([^/]+\/[^/]+?)(?:\.git)?$/.exec(origin.trim())?.[1];
   }
   const configured =
@@ -38,7 +42,15 @@ export async function loadImplementationSkills(input: {
     try {
       skillInfo = lstatSync(skillPath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        journalCaught(
+          error,
+          "skills.loadImplementationSkills.lstat",
+          null,
+          "optional file may be absent",
+        );
+        continue;
+      }
       throw error;
     }
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) || !skillInfo.isFile())

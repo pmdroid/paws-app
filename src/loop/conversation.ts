@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { stat } from "node:fs/promises";
 import type { Database } from "bun:sqlite";
 import {
@@ -24,6 +25,12 @@ export async function durableConversation(
       history.push(...(await recoverAcpConversation(stored.transcript, stored.transcriptOffset)));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalCaught(
+        error,
+        "conversation.durableConversation.push",
+        itemId,
+        "optional file may be absent",
+      );
     }
     saveConversation(db, itemId, JSON.stringify(history), null);
   }
@@ -37,6 +44,12 @@ export async function durableConversation(
       const offset = await stat(transcript).then(
         (info) => info.size,
         (error: NodeJS.ErrnoException) => {
+          journalCaught(
+            error,
+            "conversation.durableConversation.stat",
+            itemId,
+            "optional file may be absent",
+          );
           if (error.code === "ENOENT") return 0;
           throw error;
         },

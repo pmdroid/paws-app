@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "../workspace";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { listSkills, SKILL_AGENTS, skillRollouts, type SkillPin, type SkillSource } from "../db";
 import {
@@ -92,7 +93,8 @@ export async function handleSkillSettingsRequest(
     let body: unknown;
     try {
       body = await readJson(request);
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "skills.handleSkillSettingsRequest.readJson", null);
       return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
     }
     if (!isRecord(body)) return json({ error: "Expected a JSON object" }, 400);
@@ -154,6 +156,7 @@ export async function handleSkillSettingsRequest(
         return json({ error: "Unknown skill action" }, 400);
     }
   } catch (error) {
+    journalCaught(error, "skills.handleSkillSettingsRequest.trim", null);
     if (error instanceof SkillError) return json({ error: error.message }, error.status);
     return json({ error: "The skill could not be saved" }, 503);
   }

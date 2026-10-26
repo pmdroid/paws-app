@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { loadConfigFile } from "../config";
 import { checkoutPatternsSync, exclusionPatterns } from "../worktree-checkout";
 import { spawnSync } from "node:child_process";
@@ -198,7 +199,8 @@ export function commitCheckpointSync(
   let status: string;
   try {
     status = gitSync(["-C", tree, "status", "--porcelain"]).trim();
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "checkpoint.commitCheckpointSync.trim", null);
     return { committed: false, message };
   }
   if (!status) return { committed: false, message };
@@ -325,7 +327,8 @@ function gitSyncOrEmpty(args: string[]): string | undefined {
   try {
     const value = gitSync(args).trim();
     return value.length > 0 ? value : undefined;
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "checkpoint.gitSyncOrEmpty.trim", null);
     return undefined;
   }
 }

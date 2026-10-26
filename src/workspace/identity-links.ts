@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "./eligibility";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
@@ -30,7 +31,9 @@ export function createWorkspaceIdentityLinks(options: {
     try {
       externalId = await options.slack.lookup(candidate.email, AbortSignal.timeout(10_000));
       status = externalId === null ? "unmatched" : "linked";
-    } catch {}
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "identity-links.syncUser.lookup", null);
+    }
     if (!workspaceMember(options.db, workspaceId, userId)?.active) return;
     const input = {
       workspaceId,
@@ -42,7 +45,8 @@ export function createWorkspaceIdentityLinks(options: {
     };
     try {
       saveWorkspaceIdentityLink(options.db, { ...input, externalId, status });
-    } catch {
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "identity-links.syncUser.saveWorkspaceIdentityLink", null);
       saveWorkspaceIdentityLink(options.db, { ...input, externalId: null, status: "error" });
     }
   }
@@ -125,6 +129,7 @@ export function createWorkspaceIdentityLinks(options: {
         });
         return reply({ ok: true });
       } catch (error) {
+        journalCaught(error, "identity-links.handle.readWorkspaceJson", null);
         const actor = workspaceMember(options.db, principal.workspaceId, principal.userId);
         if (!actor?.active || !isWorkspaceAdmin(actor.role))
           return deny("Workspace administration is required.");

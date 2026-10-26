@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 
@@ -28,7 +29,10 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
       headers: { "content-type": "application/json", "x-paws-csrf": csrfToken },
       ...(method === "POST" ? { body: JSON.stringify({ consent: true }) } : {}),
     });
-    const data = (await response.json().catch(() => null)) as {
+    const data = (await response.json().catch((caughtError1) => {
+      journalCaught(caughtError1, "workspace-attribution.request.json", null);
+      return null;
+    })) as {
       configured?: boolean;
       identity?: { login: string } | null;
       authorizeUrl?: string;
@@ -56,6 +60,7 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
       canLink = data.configured !== false;
       connect.disabled = !canLink || !consent.checked;
     } catch (error) {
+      journalCaught(error, "workspace-attribution.load.request", null);
       feedback.textContent =
         error instanceof Error
           ? error.message
@@ -75,6 +80,7 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
           throw new Error("Invalid GitHub authorization redirect.");
         window.location.assign(url.href);
       } catch (error) {
+        journalCaught(error, "workspace-attribution.initializeWorkspaceAttribution.request", null);
         feedback.textContent =
           error instanceof Error ? error.message : "Linking failed. Try again.";
         connect.disabled = !canLink || !consent.checked;
@@ -86,6 +92,7 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
     void request("DELETE")
       .then(load)
       .catch((error: unknown) => {
+        journalCaught(error, "workspace-attribution.initializeWorkspaceAttribution.then", null);
         feedback.textContent =
           error instanceof Error ? error.message : "Revocation failed. Try again.";
       })

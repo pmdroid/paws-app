@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import {
@@ -166,7 +167,8 @@ export async function realProbe(env: EnvSource = process.env): Promise<DoctorPro
     stat(path) {
       try {
         return { mode: statSync(path).mode };
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "doctor.stat.statSync", null, "prerequisite may be absent");
         return null;
       }
     },
@@ -174,7 +176,13 @@ export async function realProbe(env: EnvSource = process.env): Promise<DoctorPro
       try {
         accessSync(dir, constants.W_OK);
         return true;
-      } catch {
+      } catch (caughtError2) {
+        journalCaught(
+          caughtError2,
+          "doctor.canWrite.accessSync",
+          null,
+          "prerequisite may be absent",
+        );
         return false;
       }
     },

@@ -1,4 +1,5 @@
 import { isWorkspaceAdmin } from "../workspace";
+import { journalCaught } from "../journal";
 import { realpathSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 import {
@@ -254,7 +255,8 @@ function runnerName(name: string): string {
 function installedVersion() {
   try {
     return releaseVersionFromPath(realpathSync(import.meta.dir));
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "pairing.installedVersion.releaseVersionFromPath", null);
     return null;
   }
 }

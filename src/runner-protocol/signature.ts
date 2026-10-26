@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { sign, verify, type KeyObject } from "node:crypto";
 import {
   RunnerCommandSchema,
@@ -72,7 +73,8 @@ export function verifyRunnerCommand(
   let payload: unknown;
   try {
     payload = JSON.parse(bytes.toString("utf8"));
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "signature.verifyRunnerCommand.parse", null);
     return { ok: false, reason: "invalid_payload" };
   }
   const result = RunnerCommandSchema.safeParse(payload);
@@ -101,7 +103,8 @@ export function verifyRunnerCommand(
     if (!context.claimCommand(command.id, command.expiresAt)) {
       return { ok: false, reason: "replayed" };
     }
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "signature.verifyRunnerCommand.claimCommand", null);
     return { ok: false, reason: "replay_unavailable" };
   }
   return { ok: true, command };

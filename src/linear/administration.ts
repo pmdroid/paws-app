@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { AcceptedLinearEvent } from "./events";
 import { isRecord, readString } from "./read";
 
@@ -239,7 +240,8 @@ function polledIssueClosed(event: AcceptedLinearEvent): LinearIssueClosed | null
   let payload: unknown;
   try {
     payload = JSON.parse(event.payload);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "administration.polledIssueClosed.parse", null);
     return null;
   }
   if (!isRecord(payload) || readString(payload, "kind") !== CLOSED_ISSUE_EVENT) return null;
@@ -293,7 +295,8 @@ function verifiedPayload(event: AcceptedLinearEvent): Record<string, unknown> | 
   try {
     const parsed: unknown = JSON.parse(event.payload);
     return isRecord(parsed) ? parsed : null;
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "administration.verifiedPayload.parse", null);
     return null;
   }
 }

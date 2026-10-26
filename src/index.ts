@@ -1,4 +1,5 @@
 import { shutdownPaws, stopPawsComponents } from "./shutdown";
+import { journalCaught } from "./journal";
 import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
@@ -359,7 +360,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
   if (options?.refreshAgentCatalog) {
     const agentCatalog = createAgentCatalog({ db, registry: createNpmRegistry() });
-    const check = () => void agentCatalog.refreshIfDue(abort.signal).catch(() => {});
+    const check = () =>
+      void agentCatalog.refreshIfDue(abort.signal).catch((caughtError1) => {
+        journalCaught(caughtError1, "index.startPaws.refreshIfDue", null);
+      });
     check();
     // Hourly checks keep the daily read on schedule across sleep and restarts.
     const agentCatalogTimer = setInterval(check, 60 * 60 * 1000);
@@ -600,7 +604,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           try {
             const { clientId, clientSecret } = appActivation.template();
             return { clientId, clientSecret };
-          } catch {
+          } catch (caughtError2) {
+            journalCaught(caughtError2, "index.startPaws.template", null);
             return undefined;
           }
         })(),
@@ -672,7 +677,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           return value;
         });
   if (runnerConfig !== null)
-    void runnerReady.catch(() => console.error("Paws runner startup failed."));
+    void runnerReady.catch((caughtError1) => {
+      journalCaught(caughtError1, "index.startPaws", null);
+      return undefined;
+    });
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmExeDev = createExeDev({ readToken: exeDevToken });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
@@ -685,7 +693,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     installer: () => {
       try {
         return readFileSync(new URL("../deploy/linux/install-runner.sh", import.meta.url), "utf8");
-      } catch {
+      } catch (caughtError3) {
+        journalCaught(
+          caughtError3,
+          "index.installer.readFileSync",
+          null,
+          "optional file may be absent",
+        );
         return null;
       }
     },
@@ -757,7 +771,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         };
       })
     : undefined;
-  void remote?.catch(() => {});
+  void remote?.catch((caughtError4) => {
+    journalCaught(caughtError4, "index.startPaws", null);
+  });
   const remoteExecution: OrchestratorOptions["remoteExecution"] = remote
     ? {
         cancelItem: async (itemId) => {
@@ -789,13 +805,26 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     : unavailableRemoteExecution();
   async function stopRunner() {
     runnerStopping = true;
-    await runnerReady.catch(() => {});
+    await runnerReady.catch((caughtError5) => {
+      journalCaught(caughtError5, "index.stopRunner", null);
+    });
     await runner?.stop();
   }
   const ready = Promise.all([workspace?.access, runnerReady, remote]).then(() => {
     if (runnerStopping) throw new Error("Paws is stopping.");
   });
-  void ready.catch(() => {});
+  void ready.catch((caughtError6) => {
+    journalCaught(
+      caughtError6,
+      "index.startPaws.ready",
+      null,
+      runnerStopping &&
+        caughtError6 instanceof Error &&
+        caughtError6.message === "Paws is stopping."
+        ? "shutdown interrupted startup"
+        : undefined,
+    );
+  });
   let server: Bun.Server<undefined>;
   try {
     server = startServer({
@@ -949,14 +978,18 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             requestedAt: Date.now(),
           });
           await Promise.race([
-            orchestrator.interruptItem(itemId).catch(() => {}),
+            orchestrator.interruptItem(itemId).catch((caughtError7) => {
+              journalCaught(caughtError7, "index.stopTask.interruptItem", itemId);
+            }),
             Bun.sleep(MEMBER_VM_STOP_WAIT_MS),
           ]);
         },
         disconnect: () =>
           void runnerReady
             .then((coordinator) => coordinator?.control.expireConnections())
-            .catch(() => {}),
+            .catch((caughtError8) => {
+              journalCaught(caughtError8, "index.disconnect.then", null);
+            }),
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
       });
       const attached = attachOrchestrator({
@@ -1306,7 +1339,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     signal: abort.signal,
     agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
     stopAgent: (itemId) => {
-      void orchestrator?.stopAgent(itemId).catch(() => undefined);
+      void orchestrator?.stopAgent(itemId).catch((caughtError9) => {
+        journalCaught(caughtError9, "index.stopAgent", itemId);
+        return undefined;
+      });
     },
     restartFromMainBlocked: (item) => {
       const policy = getItemRunCommitPolicy(db, item.id);
@@ -1315,7 +1351,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           policyCoauthors(policy);
           return null;
         }
-      } catch {}
+      } catch (caughtError10) {
+        journalCaught(caughtError10, "index.restartFromMainBlocked.policyCoauthors", item?.id);
+      }
       return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
     },
     restartFromMain: (item) => {
@@ -1446,7 +1484,8 @@ function pullCommentFilter(
 function ownerCap(configFile: string): number | null {
   try {
     return readQueueSettings(loadConfigFile(configFile)).maxRunningPerOwner;
-  } catch {
+  } catch (caughtError11) {
+    journalCaught(caughtError11, "index.ownerCap.readQueueSettings", null);
     return null;
   }
 }
@@ -1469,7 +1508,8 @@ function repositoryBinding(value: string | null): RepositoryBinding | null {
   const repo = value.slice(slash + 1);
   try {
     return { owner, repo, remoteUrl: githubHttpsUrl(owner, repo) };
-  } catch {
+  } catch (caughtError12) {
+    journalCaught(caughtError12, "index.repositoryBinding.githubHttpsUrl", null);
     return null;
   }
 }
@@ -1508,7 +1548,8 @@ export function runnerRepositoryAccess(
     installationForRepository: (repository) => {
       try {
         return resolveApp?.(repository).installationId ?? null;
-      } catch {
+      } catch (caughtError13) {
+        journalCaught(caughtError13, "index.installationForRepository.resolveApp", null);
         return null;
       }
     },
@@ -1567,7 +1608,8 @@ export function authProvider(
   if (env.githubAppPrivateKeyPath !== null) {
     try {
       privateKeyPem = readSecretFile(env.githubAppPrivateKeyPath, false);
-    } catch {
+    } catch (caughtError14) {
+      journalCaught(caughtError14, "index.authProvider.readSecretFile", null);
       return null;
     }
   }
@@ -1580,7 +1622,8 @@ export function authProvider(
       privateKeyPem,
       client: createFetchGitHubClient(),
     });
-  } catch {
+  } catch (caughtError15) {
+    journalCaught(caughtError15, "index.authProvider.createGitHubTokenProvider", null);
     return null;
   }
 }
@@ -1684,8 +1727,9 @@ if (import.meta.main) {
       const keys = await initializeRunnerCoordinator(join(paths.secretsDir, "runner-identity"));
       console.log(`Runner authority initialized. Command key: ${keys[0].keyId}`);
       process.exit(0);
-    } catch {
-      console.error("Runner authority initialization failed.");
+    } catch (caughtError2) {
+      journalCaught(caughtError2, "Runner authority initialization failed.", null);
+
       process.exit(1);
     }
   }
@@ -1695,8 +1739,9 @@ if (import.meta.main) {
       validatePublicTls(process.env);
       console.log("Public HTTPS certificate is valid.");
       process.exit(0);
-    } catch {
-      console.error("Public HTTPS certificate validation failed.");
+    } catch (caughtError3) {
+      journalCaught(caughtError3, "Public HTTPS certificate validation failed.", null);
+
       process.exit(1);
     }
   }
@@ -1721,7 +1766,8 @@ if (import.meta.main) {
       console.log("Slack connected.");
       process.exit(0);
     } catch (error) {
-      console.error(error instanceof Error ? error.message : "Slack login failed");
+      journalCaught(error, "Slack authorization failed.", null);
+
       process.exit(1);
     }
   }
@@ -1752,16 +1798,17 @@ if (import.meta.main) {
       if (exiting) return;
       try {
         validatePublicTls(process.env);
-      } catch {
-        console.error("Public HTTPS certificate renewal rejected.");
+      } catch (caughtError4) {
+        journalCaught(caughtError4, "public TLS certificate renewal rejected", null);
+
         return;
       }
       shutdown(PUBLIC_TLS_RESTART_EXIT);
     });
   try {
     await paws.ready;
-  } catch {
-    console.error("Paws startup failed.");
+  } catch (caughtError5) {
+    journalCaught(caughtError5, "Paws startup failed.", null);
     await shutdownPaws(paws, 1);
     process.exit(1);
   }
@@ -1789,7 +1836,8 @@ function acceptedIssueChange(event: AcceptedLinearEvent): {
   let payload: unknown;
   try {
     payload = JSON.parse(event.payload);
-  } catch {
+  } catch (caughtError17) {
+    journalCaught(caughtError17, "index.acceptedIssueChange.parse", null);
     return null;
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;

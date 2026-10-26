@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { isTransient, RunnerSlotsBusyError, UserFacingError } from "../core";
 import { LinearRateLimitError } from "./budget";
@@ -91,6 +92,7 @@ export async function acknowledgeNewSession(
     return accepted;
   } catch (error) {
     if (options.signal?.aborted) throw error;
+
     if (error instanceof LinearIntakeRefusedError) {
       if (
         !error.quiet &&
@@ -106,6 +108,8 @@ export async function acknowledgeNewSession(
           },
           { signal: options.signal },
         );
+
+      journalCaught(error, "acknowledge.acknowledgeNewSession.followUp", null);
       return false;
     }
     if (error instanceof LinearIssueClosedError && event.sessionId !== null) {
@@ -113,12 +117,13 @@ export async function acknowledgeNewSession(
         { sessionId: event.sessionId, kind: "error", body: error.message },
         { signal: options.signal },
       );
+
+      journalCaught(error, "acknowledge.acknowledgeNewSession.followUp", null);
       return false;
     }
-    const message = error instanceof Error ? error.message : "follow-up failed";
     const waiting =
       error instanceof LinearIntakePendingError || error instanceof RunnerSlotsBusyError;
-    console.error(`linear session follow-up failed: ${message}`);
+
     if (
       event.sessionId !== null &&
       options.reportFailure !== false &&
@@ -139,8 +144,8 @@ export async function acknowledgeNewSession(
           },
           { signal: options.signal },
         );
-      } catch {
-        console.error("linear follow-up error activity failed");
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "acknowledge.acknowledgeNewSession.postProgress", null);
       }
     }
     throw error;

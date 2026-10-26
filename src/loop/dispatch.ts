@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type {
   ActionDetails,
   ActivityKind,
@@ -273,6 +274,7 @@ async function postEvidence(
     } catch (error) {
       options.signal?.throwIfAborted();
       if (message.attempts < message.maxAttempts) throw error;
+      journalCaught(error, "dispatch.postEvidence.readFile", null, "optional file may be absent");
       note = "Paws could not upload this file to Linear.";
     }
   }
