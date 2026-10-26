@@ -22,7 +22,22 @@ export interface CloseoutView {
   /** Rows whose output wraps long lines, by `checkKey`. */
   wrap: Record<string, boolean>;
   stream?: Record<string, "stdout" | "stderr">;
+  /** Logs loaded for opened rows, by `checkKey`. A row without one shows the check's own output. */
+  logs?: Record<string, CheckLogView>;
 }
+
+/** A check log the issue page fetched when its row opened. `checkState` is the state it was read in. */
+export type CheckLogView =
+  | { status: "loading"; checkState: string }
+  | { status: "error"; checkState: string; error: string }
+  | {
+      status: "loaded";
+      checkState: string;
+      stdout: string;
+      stderr: string;
+      truncated: boolean;
+      full: boolean;
+    };
 
 export function emptyCloseoutView(): CloseoutView {
   return { attempt: {}, open: {}, wrap: {} };
@@ -234,9 +249,11 @@ function checkBody(
     finished && check.logPath
       ? artifactLink(verdict, attempt, check, "log", "Full log", engineUrl)
       : "";
+  const log = view.logs?.[key];
+  const streams = logStreams(check, log);
   const download =
     fullLog ||
-    (check.stdout || check.stderr
+    (streams.stdout || streams.stderr
       ? `<button class="btn sm ghost" type="button" data-action="download-output" ${data}>Download output</button>`
       : "");
   const evidence =
@@ -247,17 +264,25 @@ function checkBody(
   const truncated = check.truncated
     ? `<p class="muted" role="note">Output was cut at the size limit. ${fullLog ? `${fullLog} has the complete output.` : "The full log is available once the check finishes."}</p>`
     : "";
+  const tailOnly =
+    log?.status === "loaded" && log.truncated && !log.full
+      ? `<p class="muted" role="note">Showing the last 64 KB of each stream. <button class="btn sm ghost" type="button" data-action="check-log-full" ${data}>Load the full log</button></p>`
+      : "";
+  const failed =
+    log?.status === "error"
+      ? `<p class="muted" role="alert">Could not load the log: ${esc(log.error)}</p>`
+      : "";
   const findings = check.findings
     ? `<div class="stream"><span>Findings</span><pre class="out ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}" tabindex="0" data-log="${logKey(verdict.itemId, attempt.number, check.id, "findings")}">${esc(check.findings)}</pre></div>`
     : "";
-  const selectedStream = view.stream?.[key] ?? (check.stdout ? "stdout" : "stderr");
+  const selectedStream = view.stream?.[key] ?? (streams.stdout ? "stdout" : "stderr");
   const tabs = (["stdout", "stderr"] as const)
     .map(
       (stream) =>
         `<button type="button" class="btn sm" data-action="check-stream" ${data} data-stream="${stream}" aria-pressed="${selectedStream === stream}">${stream}</button>`,
     )
     .join("");
-  return `<div class="between"><span class="mono check-command">$ ${esc(check.kind === "review" ? "closeout review --independent" : check.command)}</span>${tools}</div><div class="check-terminal"><div class="between terminal-toolbar"><div class="row" role="group" aria-label="Output stream">${tabs}</div><span>attempt ${shown} · ${esc(checkMeta(check))}</span></div>${output(verdict.itemId, attempt.number, check, wrap, selectedStream)}${truncated}</div>${findings}`;
+  return `<div class="between"><span class="mono check-command">$ ${esc(check.kind === "review" ? "closeout review --independent" : check.command)}</span>${tools}</div><div class="check-terminal"><div class="between terminal-toolbar"><div class="row" role="group" aria-label="Output stream">${tabs}</div><span>attempt ${shown} · ${esc(checkMeta(check))}</span></div>${output(verdict.itemId, attempt.number, check, streams, wrap, selectedStream, log?.status === "loading")}${tailOnly}${truncated}${failed}</div>${findings}`;
 }
 
 /** A running check that Paws has not sent to its runner yet; `detail` says why. */
@@ -265,18 +290,29 @@ function waitingForRunner(check: StatusCheck): boolean {
   return check.state === "running" && check.detail?.startsWith("Waiting:") === true;
 }
 
+/** The loaded log of the row, or the output the check carries itself. */
+function logStreams(
+  check: StatusCheck,
+  log: CheckLogView | undefined,
+): { stdout: string; stderr: string } {
+  if (log?.status === "loaded") return { stdout: log.stdout, stderr: log.stderr };
+  return { stdout: check.stdout ?? "", stderr: check.stderr ?? "" };
+}
+
 function output(
   itemId: string,
   attempt: number,
   check: StatusCheck,
+  streams: { stdout: string; stderr: string },
   wrap: boolean,
   selected: "stdout" | "stderr",
+  loading = false,
 ): string {
   const lines = wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre";
   return (["stdout", "stderr"] as const)
     .map(
       (stream) =>
-        `<pre class="out ${lines}" tabindex="0" aria-label="${stream}" data-log="${logKey(itemId, attempt, check.id, stream)}"${selected === stream ? "" : " hidden"}>${ansiToHtml(check[stream] || (waitingForRunner(check) || (check.state === "stopped" && check.detail) ? check.detail! : check.state === "running" ? "Waiting for output." : "No output."))}</pre>`,
+        `<pre class="out ${lines}" tabindex="0" aria-label="${stream}" data-log="${logKey(itemId, attempt, check.id, stream)}"${selected === stream ? "" : " hidden"}>${ansiToHtml(streams[stream] || (loading ? "Loading output." : waitingForRunner(check) || (check.state === "stopped" && check.detail) ? check.detail! : check.state === "running" ? "Waiting for output." : "No output."))}</pre>`,
     )
     .join("");
 }
