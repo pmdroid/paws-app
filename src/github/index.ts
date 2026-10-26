@@ -11,16 +11,18 @@ export type {
 export {
   createFakeGitHub,
   createFakeMergeQueue,
+  createFakeReviewThreads,
   fakeMergeReadiness,
   fakeRequiredChecks,
 } from "./fake";
-export type { FakeGitHub, FakeMergeQueue } from "./fake";
+export type { FakeGitHub, FakeMergeQueue, FakeReviewThread } from "./fake";
 export {
   classifyRemoval,
   enqueuePullRequest,
   githubQueueLine,
   githubQueueMerge,
   hasMergeQueue,
+  leaveGitHubMergeQueue,
   readMergeQueueEntry,
   repositoriesWithMergeQueue,
 } from "./merge-queue";
@@ -28,6 +30,7 @@ export type {
   EnqueueResult,
   GitHubQueueMergeInput,
   GitHubQueueMergeResult,
+  LeaveMergeQueueResult,
   MergeQueueEntryRead,
   MergeQueueEntryState,
   MergeQueueRemoval,
@@ -50,6 +53,8 @@ export { fetchUpstreamMain, readPullFacts, rebaseOntoMain, squashPull } from "./
 export { repositoriesRequiringUpToDate } from "./overlap";
 export { readPullReview } from "./review";
 export type { PullReview } from "./review";
+export { readReviewThreads } from "./review-threads";
+export type { ReviewThread, ReviewThreadComment } from "./review-threads";
 export type {
   FetchUpstreamMainInput,
   PullFacts,

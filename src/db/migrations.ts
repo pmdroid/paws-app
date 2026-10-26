@@ -3130,6 +3130,26 @@ CREATE TABLE item_wait (
   since INTEGER NOT NULL
 ) STRICT;`,
   },
+  {
+    // PAS-632. One row per GitHub pull request review id Paws acted on, so a redelivered
+    // `pull_request_review` webhook does nothing. `handled_at` is set once the review restarted
+    // the item, asked the team, posted its threads or was dropped for an ended item.
+    id: "153_pull_review",
+    sql: `
+CREATE TABLE pull_review (
+  review_id INTEGER PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  state TEXT NOT NULL CHECK (state IN ('changes_requested','commented')),
+  pull_number INTEGER NOT NULL CHECK (pull_number > 0),
+  head TEXT,
+  reviewer TEXT,
+  body TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  handled_at INTEGER,
+  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('restarted','asked','posted','dropped'))
+) STRICT;
+CREATE INDEX pull_review_open ON pull_review(item_id) WHERE handled_at IS NULL;`,
+  },
 ];
 
 /**

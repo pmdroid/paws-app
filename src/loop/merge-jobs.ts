@@ -16,6 +16,7 @@ import {
   markCloseoutAccepted,
 } from "../db";
 import { githubQueueWatch } from "../merge";
+import { recordReviewDelivery } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 
 export const MERGE_OWNER_POLL_MS = 5_000;
@@ -74,7 +75,9 @@ export function acceptGitHubDelivery(
   now: number,
 ): boolean {
   if (!recordGitHubDelivery(db, delivery, now)) return false;
-  const facts = deliveryFacts(delivery.event, JSON.parse(delivery.payload));
+  const body: unknown = JSON.parse(delivery.payload);
+  recordReviewDelivery(db, delivery.event, body, now);
+  const facts = deliveryFacts(delivery.event, body);
   const jobs = db
     .query<{ id: number; payload: string }, [string]>(
       "SELECT id, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
