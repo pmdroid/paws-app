@@ -11,6 +11,7 @@ import {
   workspaceMember,
   workspaceIdentityLinks,
 } from "../../src/db";
+import type { HealthReport } from "../../src/server";
 import { startPaws } from "../../src/index";
 import {
   issueWorkspaceBootstrap,
@@ -175,6 +176,7 @@ function createOwner() {
 
 try {
   const health = await read("/health");
+  const healthReport = JSON.parse(health.body) as HealthReport;
   if (mode === "pending-stop") {
     const { userId, workspace } = createOwner();
     runtimeLinear.active = false;
@@ -261,10 +263,18 @@ try {
     mode === "legacy"
       ? "public URL alone retains local dashboard behavior"
       : "public opt-in protects production API over verified HTTPS",
-    health.status === 200 &&
+    health.status === (mode === "legacy" ? 200 : 503) &&
+      JSON.stringify(healthReport.failedChecks) ===
+        JSON.stringify(mode === "legacy" ? [] : ["linearWebhook"]) &&
       paws.server.hostname === "127.0.0.1" &&
       status.status === (mode === "legacy" ? 200 : mode === "failed" ? 503 : 401),
-    { health: health.status, status: status.status, hostname: paws.server.hostname, tls },
+    {
+      health: health.status,
+      healthReport,
+      status: status.status,
+      hostname: paws.server.hostname,
+      tls,
+    },
   );
   if (mode === "public") {
     const { userId, workspace, issued } = createOwner();
