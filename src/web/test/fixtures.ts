@@ -1,5 +1,5 @@
 // Test data for dashboard rendering. Never imported by production code.
-import type { StatusItemEvent, StatusSnapshot } from "../../src/web/src/contract";
+import type { StatusItemEvent, StatusSnapshot } from "../src/contract";
 
 const AT = "2026-10-09T22:15:00.000Z";
 const AUDIT = { id: "linear-audit", name: "Audit log export" };

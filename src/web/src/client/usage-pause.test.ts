@@ -1,4 +1,4 @@
-import { statusFixture } from "../../../../test/fixtures/status";
+import { statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
 import { emptyCloseoutView } from "./closeout";

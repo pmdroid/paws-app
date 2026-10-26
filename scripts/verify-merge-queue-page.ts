@@ -1,4 +1,4 @@
-import { statusFixture } from "../test/fixtures/status";
+import { statusFixture } from "../src/web/test/fixtures";
 // The Merge queue page with two repositories, against the real status handler.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-merge-queue-page.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";

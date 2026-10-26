@@ -1,4 +1,4 @@
-import { statusFixture } from "../../../../test/fixtures/status";
+import { statusFixture } from "../../test/fixtures";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";

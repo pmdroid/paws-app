@@ -1,4 +1,4 @@
-import { statusFixture } from "../../../../test/fixtures/status";
+import { statusFixture } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { issueRowMatches, NO_PROJECT_FILTER, render } from "./render";
 

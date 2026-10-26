@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 // Captures the dashboard navigation without a Projects entry, at desktop and 390 px, and checks
 // that /status/projects answers 404, for visual proof.
 // Usage: bun run build:status && bun --no-env-file test/local/projects-removed-browser.ts <evidence-directory>

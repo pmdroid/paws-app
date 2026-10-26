@@ -1,4 +1,4 @@
-import { statusFixture } from "../test/fixtures/status";
+import { statusFixture } from "../src/web/test/fixtures";
 // Settings → Merging against the real settings handler and a temporary config.toml, and a run
 // page whose pull request waits in the GitHub merge queue.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-merge-settings-ui.ts <screenshot dir>

@@ -1,4 +1,4 @@
-import { statusFixture } from "../test/fixtures/status";
+import { statusFixture } from "../src/web/test/fixtures";
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

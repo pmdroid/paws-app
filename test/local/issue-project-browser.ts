@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 // Captures an issue page showing its Linear project and the Issues page filtered by project,
 // at desktop and 390 px, for visual proof.
 // Usage: bun run build:status && bun --no-env-file test/local/issue-project-browser.ts <evidence-directory>

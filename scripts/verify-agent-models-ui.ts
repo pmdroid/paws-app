@@ -1,4 +1,4 @@
-import { statusFixture } from "../test/fixtures/status";
+import { statusFixture } from "../src/web/test/fixtures";
 // Settings → Agents with a Claude catalog that offers a 1M context entry.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-agent-models-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
