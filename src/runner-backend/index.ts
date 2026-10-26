@@ -1549,7 +1549,7 @@ export { fetchRunnerCandidate } from "./candidate";
 
 export {
   createRemoteHandover,
-  RUNNER_HANDOVER_LIMIT_MS,
+  HANDOVER_RUNNER_VERSION,
   type RunnerHandoverOutcome,
 } from "./handover";
 

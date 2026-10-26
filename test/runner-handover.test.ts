@@ -88,6 +88,13 @@ async function setup() {
     await control.enroll({ ...pending, token: control.createEnrollment(principal, pending).token })
   ).runnerId;
   db.run("UPDATE runner SET status='active',owner_user_id=? WHERE id=?", [userId, runnerId]);
+  const release = (version: string) =>
+    db.run(
+      `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)
+       ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
+      [runnerId, version, now()],
+    );
+  release("0.1.44");
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({ db, keyId: "fixture", privateKey: signing.privateKey, now });
   const results = createRunnerResults({ db, work, now });
@@ -298,6 +305,8 @@ async function setup() {
     submit,
     handOver,
     next,
+    release,
+    work,
     cleanup() {
       db.close();
       rmSync(root, { recursive: true, force: true });
@@ -405,4 +414,23 @@ test("a handover the runner cannot finish within 2 minutes is reported and the s
 
 test("an item with no running session has nothing to hand over", async () => {
   expect(await context.backend.handOverItem("missing-item")).toEqual({ status: "not_running" });
+});
+
+test("a runner release that cannot hand over is never sent the command", async () => {
+  const record = context.item();
+  context.release("0.1.43");
+  try {
+    const { result } = await context.turn(record, async (command) => {
+      expect(await context.backend.handOverItem(record.id)).toEqual({ status: "old_runner" });
+      expect(
+        context.db
+          .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='handover'")
+          .get(command.runId),
+      ).toBeNull();
+      context.submit(command, { candidateSha: context.base });
+    });
+    expect(result.stopReason).toBe("end_turn");
+  } finally {
+    context.release("0.1.44");
+  }
 });

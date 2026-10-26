@@ -1,5 +1,6 @@
 export {
   RUNNER_LEASE_GRACE_MS,
+  RUNNER_HANDOVER_LIMIT_MS,
   RunnerCommandSchema,
   RunnerRepositorySchema,
   RunnerCheckoutExclusionsSchema,
