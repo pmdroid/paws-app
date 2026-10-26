@@ -150,6 +150,7 @@ export {
   type OutboxTarget,
 } from "./outbox";
 export {
+  deadDeliveryIsFinalStop,
   deadDeliveryItemId,
   dropDeadElicitations,
   QUESTION_LINKS,

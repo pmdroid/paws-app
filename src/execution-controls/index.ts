@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import {
   auditWorkspaceAccess,
+  deadDeliveryIsFinalStop,
   deadDeliveryItemId,
   getLinearSession,
   getWorkItem,
@@ -33,6 +34,7 @@ export function createExecutionControls(input: {
     itemId: string,
     principal: WorkspacePrincipal,
     sessionIds: readonly string[],
+    options: { stoppedSession?: boolean } = {},
   ) {
     const member = workspaceMember(input.db, principal.workspaceId, principal.userId);
     const item = getWorkItem(input.db, itemId);
@@ -51,7 +53,7 @@ export function createExecutionControls(input: {
       session &&
       workspace &&
       client &&
-      session.stoppedAt === null &&
+      (session.stoppedAt === null || options.stoppedSession === true) &&
       session.delegationId === item.delegationId &&
       session.organizationId === workspace.organizationId &&
       sessionIds.includes(session.sessionId) &&
@@ -120,7 +122,12 @@ export function createExecutionControls(input: {
           : request.method === "GET"
             ? url.searchParams.get("itemId")
             : body["itemId"];
-      const item = typeof itemId === "string" ? authorized(itemId, principal, sessionIds) : null;
+      // A dead final Stop delivery belongs to a stopped session; retrying it resumes nothing.
+      const stoppedSession = retryRef !== null && deadDeliveryIsFinalStop(input.db, retryRef);
+      const item =
+        typeof itemId === "string"
+          ? authorized(itemId, principal, sessionIds, { stoppedSession })
+          : null;
       if (!item) {
         auditWorkspaceAccess(input.db, {
           workspaceId: principal.workspaceId,

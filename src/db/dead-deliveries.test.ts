@@ -6,6 +6,9 @@ import {
   ELICITATION_REASK_SUFFIX,
   OutboxDispatcher,
   QUESTION_LINKS,
+  deadDeliveryIsFinalStop,
+  getOutbox,
+  redeliverQuestion,
   claimNextJob,
   enqueueJob,
   enqueueOutbox,
@@ -329,5 +332,82 @@ describe("dead outbox rows and jobs", () => {
       )
       .sort();
     expect(columns).toEqual(QUESTION_LINKS.map(({ table, column }) => `${table}.${column}`).sort());
+  });
+
+  test("a question delivered again after the PR keeps its ordered delivery past the PR response", () => {
+    const { db } = harness();
+    waiting(db, "item-q", "ses-q");
+    // The PR response is a terminal activity; later critical elicitations are fenced off.
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "ses-q",
+      idempotencyKey: "pull-request-ready:item-q",
+      payload: { itemId: "item-q", kind: "response", body: "Opened PR #9." },
+    });
+    const dead = enqueueOutbox(db, {
+      target: "linear",
+      op: "elicitation",
+      orderingKey: "ses-q",
+      delivery: "ordered",
+      idempotencyKey: "question:q-item-q:redelivery",
+      payload: { id: "q-item-q", sessionId: "ses-q", questionId: "q-item-q", body: "Accept?" },
+    });
+    db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE id = ?", [dead]);
+
+    const id = redeliverQuestion(db, "q-item-q", 9_000);
+
+    expect(id).not.toBeNull();
+    expect(getOutbox(db, id!)).toMatchObject({
+      status: "pending",
+      delivery: "ordered",
+      idempotencyKey: `question:q-item-q${ELICITATION_REASK_SUFFIX}`,
+    });
+    expect(getOutbox(db, dead)?.status).toBe("dropped");
+    expect(listDeadDeliveries(db, "item-q")).toEqual([]);
+  });
+
+  test("a redelivery the session fence rejects leaves the dead row listed for a retry", () => {
+    const { db } = harness();
+    waiting(db, "item-q", "ses-q");
+    const dead = elicit(db, "item-q", "ses-q");
+    db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE id = ?", [dead]);
+    // A terminal response arrived since; a critical elicitation can no longer follow it.
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "ses-q",
+      idempotencyKey: "pull-request-ready:item-q",
+      payload: { itemId: "item-q", kind: "response", body: "Opened PR #9." },
+    });
+    db.run("UPDATE outbox SET status = 'dead' WHERE id = ?", [dead]);
+    lines = [];
+
+    expect(redeliverQuestion(db, "q-item-q", 9_000)).toBeNull();
+    expect(getOutbox(db, dead)?.status).toBe("dead");
+    expect(listDeadDeliveries(db, "item-q").map((entry) => [entry.id, entry.retryable])).toEqual([
+      [dead, true],
+    ]);
+    expect(lines.at(-1)).toMatch(
+      /^question q-item-q could not be delivered again: .*retry it from the issue page$/,
+    );
+  });
+
+  test("only a dead final Stop delivery counts as one for a stopped session", () => {
+    const { db } = harness();
+    waiting(db, "item-q", "ses-q");
+    const question = elicit(db, "item-q", "ses-q");
+    const stop = enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "ses-q",
+      delivery: "stop",
+      idempotencyKey: "stop:item-q",
+      payload: { itemId: "item-q", kind: "response", body: "Stopped." },
+    });
+    db.run("UPDATE outbox SET status = 'dead' WHERE id IN (?, ?)", [question, stop]);
+    expect(deadDeliveryIsFinalStop(db, { kind: "outbox", id: stop })).toBe(true);
+    expect(deadDeliveryIsFinalStop(db, { kind: "outbox", id: question })).toBe(false);
+    expect(deadDeliveryIsFinalStop(db, { kind: "job", id: stop })).toBe(false);
   });
 });
