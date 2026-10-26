@@ -196,10 +196,13 @@ import type { RunnerTranscriptObjects } from "./runner-transcripts";
 import {
   AGENT_SESSION_KEY_FILE,
   createLocalAgentSessionObjects,
+  createS3AgentSessionObjects,
   loadAgentSessionKey,
+  withLocalAgentSessionFallback,
 } from "./agent-sessions";
 import {
   loadRunnerTranscriptObjects,
+  loadRunnerTranscriptS3,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
 import {
@@ -642,6 +645,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw new Error("Attribution App bot authority changed");
     return policy;
   };
+  // Snapshots go to the transcript S3 bucket when one is configured; local chunks still read.
+  const agentSessionObjects = () => {
+    const local = createLocalAgentSessionObjects(join(paths.home, "agent-sessions"));
+    const s3 = options?.runnerTranscriptObjects ? null : loadRunnerTranscriptS3(runtime.env.home);
+    return s3 ? withLocalAgentSessionFallback(local, createS3AgentSessionObjects(s3)) : local;
+  };
   let runner: RunnerCoordinator | undefined;
   let runnerStopping = false;
   const runnerReady =
@@ -659,7 +668,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           transcriptObjects,
           agentSessions: placeOnRunner
             ? {
-                objects: createLocalAgentSessionObjects(join(paths.home, "agent-sessions")),
+                objects: agentSessionObjects(),
                 key: loadAgentSessionKey(join(paths.secretsDir, AGENT_SESSION_KEY_FILE)),
               }
             : undefined,

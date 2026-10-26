@@ -1,3 +1,4 @@
+import type { S3Client } from "bun";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -100,6 +101,54 @@ export function createLocalAgentSessionObjects(root: string): AgentSessionObject
       } finally {
         if (fd !== undefined) closeSync(fd);
         closeSync(rootFd);
+      }
+    },
+  };
+}
+
+/** Chunks in the configured transcript S3 bucket. Each object is one sealed chunk. */
+export function createS3AgentSessionObjects(options: {
+  client: S3Client;
+  bucket: string;
+}): AgentSessionObjects {
+  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(options.bucket))
+    throw new Error("Invalid agent session bucket");
+  return {
+    async write(key, bytes) {
+      if (bytes.byteLength > AGENT_SESSION_OBJECT_MAX_BYTES)
+        throw new Error("Agent session chunk exceeds size limit");
+      await options.client.file(key).write(bytes, { type: "application/octet-stream", retry: 1 });
+    },
+    async read(key) {
+      const parts: Uint8Array[] = [];
+      let size = 0;
+      for await (const part of options.client.file(key).stream()) {
+        size += part.byteLength;
+        if (size > AGENT_SESSION_OBJECT_MAX_BYTES)
+          throw new Error("Agent session object exceeds size limit");
+        parts.push(part);
+      }
+      return Buffer.concat(parts);
+    },
+  };
+}
+
+/**
+ * Writes go to `remote`. Reads use the local chunk when one exists, so snapshots sealed before
+ * S3 was configured still restore.
+ */
+export function withLocalAgentSessionFallback(
+  local: AgentSessionObjects,
+  remote: AgentSessionObjects,
+): AgentSessionObjects {
+  return {
+    write: (key, bytes) => remote.write(key, bytes),
+    async read(key) {
+      try {
+        return await local.read(key);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return remote.read(key);
       }
     },
   };
