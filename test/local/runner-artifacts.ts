@@ -28,7 +28,11 @@ import {
   type RunnerCommand,
   type RunnerArtifact,
 } from "../../src/runner-protocol";
-import { createRunnerArtifactStore, RUNNER_ARTIFACT_CHUNK_BYTES } from "../../src/runner-artifacts";
+import {
+  createRunnerArtifactStore,
+  RUNNER_ARTIFACT_CHUNK_BYTES,
+  RunnerArtifactRejectedError,
+} from "../../src/runner-artifacts";
 import { createRunnerWork } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 
@@ -319,14 +323,34 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
             },
           },
         }),
-      /count exceeds/,
+      RunnerArtifactRejectedError,
+    );
+    const extra = {
+      ...chunk(0),
+      artifact: {
+        ...descriptor,
+        id: randomUUID(),
+        sizeBytes: 0,
+        sha256: createHash("sha256").update("").digest("hex"),
+      },
+      data: "",
+    };
+    const overLimit = (await artifacts.fetch(request(extra), runnerId))!;
+    assert.equal(overLimit.status, 422);
+    assert.deepEqual(await overLimit.json(), {
+      error: "Paws keeps at most 20 artifacts per run",
+    });
+    assert.equal((await artifacts.fetch(request(extra, "a".repeat(43)), runnerId))!.status, 403);
+    assert.equal(
+      (await artifacts.fetch(request({ ...extra, generation: 2 }), runnerId))!.status,
+      409,
     );
     work.finish(run.id, 1);
     assert.equal((await artifacts.fetch(request(chunk(0)), runnerId))!.status, 409);
     assert.throws(() => artifacts.snapshot(run.id, 1, descriptor));
     observe("per-command evidence is bounded and finished work loses storage access", true, {
       maximumArtifacts: 20,
-      extraArtifactDenied: true,
+      extraArtifactDenied: 422,
       finishedGrant: 409,
     });
   } finally {

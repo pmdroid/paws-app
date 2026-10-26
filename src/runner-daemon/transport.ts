@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { request } from "node:https";
 
 export class RunnerRequestError extends Error {
@@ -6,6 +7,8 @@ export class RunnerRequestError extends Error {
     readonly method?: string,
     readonly path?: string,
     readonly durationMs?: number,
+    /** The `error` text of a JSON error body, such as why Paws refused an artifact. */
+    readonly reason?: string,
   ) {
     super(
       method === undefined
@@ -213,7 +216,13 @@ export function requestBytes(
         response.on("end", () => {
           if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
             reject(
-              new RunnerRequestError(response.statusCode ?? 0, input.method, input.path, elapsed()),
+              new RunnerRequestError(
+                response.statusCode ?? 0,
+                input.method,
+                input.path,
+                elapsed(),
+                errorReason(Buffer.concat(chunks)),
+              ),
             );
             return;
           }
@@ -231,4 +240,22 @@ export function requestBytes(
     );
     req.end(body);
   });
+}
+
+function errorReason(body: Buffer): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(body.toString("utf8"));
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "error" in parsed &&
+      typeof parsed.error === "string" &&
+      parsed.error.length > 0 &&
+      parsed.error.length <= 1024
+    )
+      return parsed.error;
+  } catch (error) {
+    journalCaught(error, "runner-daemon.errorReason.parse", null, "error body may not be JSON");
+  }
+  return undefined;
 }

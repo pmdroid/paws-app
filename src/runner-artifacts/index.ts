@@ -17,6 +17,7 @@ import {
 import { isAbsolute, join } from "node:path";
 import { assertNonSecretArtifactPath, type ArtifactSnapshot } from "../acp";
 import {
+  RUNNER_ARTIFACT_COUNT_LIMIT,
   RunnerArtifactSchema,
   RunnerArtifactChunkSchema,
   type RunnerArtifact,
@@ -25,6 +26,13 @@ import {
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 
 export const RUNNER_ARTIFACT_CHUNK_BYTES = 524288;
+/** An authorized upload Paws will not keep. The message is safe to show the runner. */
+export class RunnerArtifactRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunnerArtifactRejectedError";
+  }
+}
 function hash(bytes: Uint8Array | string) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -121,9 +129,11 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
         const names = readdirSync(root);
         if (
           !names.includes(metadata) &&
-          names.filter((name) => name.endsWith(".json")).length >= 20
+          names.filter((name) => name.endsWith(".json")).length >= RUNNER_ARTIFACT_COUNT_LIMIT
         )
-          throw new Error("Runner artifact count exceeds limit");
+          throw new RunnerArtifactRejectedError(
+            `Paws keeps at most ${RUNNER_ARTIFACT_COUNT_LIMIT} artifacts per run`,
+          );
         immutable(join(root, metadata), Buffer.from(JSON.stringify(value.artifact)));
         immutable(join(root, `${value.artifact.id}.${value.index}.bytes`), bytes);
         fsyncSync(fd);
@@ -198,6 +208,12 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
         );
       } catch (error) {
         journalCaught(error, "runner-artifacts.fetch.get", null);
+        // The runner drops a rejected artifact and keeps the run; every other refusal stays fatal.
+        if (error instanceof RunnerArtifactRejectedError)
+          return Response.json(
+            { error: error.message },
+            { status: 422, headers: { "cache-control": "no-store" } },
+          );
         return Response.json(
           { error: "Runner artifact access is denied" },
           {
