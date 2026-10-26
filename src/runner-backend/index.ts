@@ -23,6 +23,8 @@ import {
   getWorkItem,
   immediate,
   listHooks,
+  pinnedSlotsReserved,
+  releasePinnedSlot,
   runnerHasCapacity,
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
@@ -379,7 +381,9 @@ export function createRemoteAgentRunner(options: {
         rejected.push(`${runner.id}: the run is already being placed`);
         continue;
       }
-      const held = runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId);
+      const held =
+        runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId) +
+        pinnedSlotsReserved(db, runner.id, itemId, now());
       if (!runnerHasCapacity(db, runner.id, now(), item.currentRunId, reserved + held)) {
         rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
         continue;
@@ -390,6 +394,7 @@ export function createRemoteAgentRunner(options: {
           work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
         else work.scope(item.currentRunId, runner.workspaceId);
         reservations.set(item.currentRunId, runner.id);
+        releasePinnedSlot(db, itemId);
         return { ...runner, runId: item.currentRunId };
       } catch (error) {
         journalCaught(error, "runner-backend.place.getTaskMode", itemId);

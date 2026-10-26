@@ -23,7 +23,9 @@ import {
   runnerCapacityWait,
   saveItemHolds,
   saveQueuePositions,
+  savePinnedSlots,
   type ItemHold,
+  type PinnedSlot,
   type JobLoop,
   runnerLeaseCutoff,
 } from "../db";
@@ -527,22 +529,26 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           .sort((a, b) => rank(byId.get(a.itemId)!, byId.get(b.itemId)!))
       : [];
     let pinned = 0;
+    const reservedSlots = new Map<number, PinnedSlot>();
     // Pinned waits ranked ahead of `before` take their runner's next free slot, and are woken
-    // when that slot is free now. On a full runner the wait holds the slot that frees next.
+    // when that slot is free now. On a full runner the wait holds the slot that frees next. The
+    // reservation is saved on the wait's job, so runner placement keeps queued work off it.
     const claimPinned = (before?: Item) => {
       for (; pinned < pins.length; pinned += 1) {
         const pin = pins[pinned]!;
         if (before && rank(byId.get(pin.itemId)!, before) > 0) return;
         const open = slots!.open.get(pin.runnerId)!;
-        if (open > 0 && free > 0) {
-          db.run("UPDATE job SET run_at=? WHERE id=? AND status='pending' AND run_at>?", [
-            now,
-            pin.jobId,
-            now,
-          ]);
-          free -= 1;
-        }
         slots!.open.set(pin.runnerId, open - 1);
+        // Queued work ranked ahead already took every free slot; this wait waits its turn.
+        if (open > 0 && free <= 0) continue;
+        reservedSlots.set(pin.jobId, { runnerId: pin.runnerId, order: pinned });
+        if (open <= 0) continue;
+        db.run("UPDATE job SET run_at=? WHERE id=? AND status='pending' AND run_at>?", [
+          now,
+          pin.jobId,
+          now,
+        ]);
+        free -= 1;
       }
     };
     const reserved = items.filter(
@@ -607,6 +613,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       free -= 1;
     }
     claimPinned();
+    savePinnedSlots(db, reservedSlots);
     const waiting = order.filter(({ item }) => !admitted.includes(item.id) && !setup.has(item.id));
     const line = [
       ...waiting.filter(({ capped }) => !capped),
