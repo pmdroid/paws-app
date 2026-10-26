@@ -1,6 +1,7 @@
 export { candidatePolicyDigest, FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export {
   policyFixBudget,
+  policyCheckPaths,
   approvalsAtHead,
   samePatch,
   reviewRequirements,

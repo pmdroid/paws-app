@@ -330,7 +330,7 @@ export async function probeRunnerOrchestration(
     const mergeSettings = '[merge]\nmain_moved = "closeout"\n';
     writeFileSync(
       join(home, "config.toml"),
-      `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude = ["large"]\n`,
+      `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude_from_checks = ["large"]\n`,
     );
     const orchestrator = attachOrchestrator({
       db,
@@ -440,7 +440,7 @@ export async function probeRunnerOrchestration(
                 assert(verificationExclusions.length > 0);
                 writeFileSync(
                   join(home, "config.toml"),
-                  `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude = ["changed-after-capture"]\n`,
+                  `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude_from_checks = ["changed-after-capture"]\n`,
                 );
               }
               assert.deepEqual(

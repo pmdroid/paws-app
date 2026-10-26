@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { loadConfigFile } from "../config";
+import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { checkoutPatternsSync, exclusionPatterns } from "../worktree-checkout";
 import { spawnSync } from "node:child_process";
 import {
@@ -234,9 +234,11 @@ export function restartFromFreshMain(options: {
   if (!safeBranch(options.wipBranch)) return { ...base, reason: "bad_branch" };
   if (!existsSync(gitDir)) return { ...base, reason: "no_mirror" };
 
-  const config = loadConfigFile(join(options.pawsRoot, "config.toml"));
   const patterns = exclusionPatterns(
-    config.checkoutProjects?.[`${options.owner}/${options.repo}`.toLowerCase()]?.exclude ?? [],
+    checkoutExclusionsFor(
+      loadConfigFile(join(options.pawsRoot, "config.toml")).checkoutProjects,
+      `${options.owner}/${options.repo}`,
+    ).agent,
   );
   let wipSha: string | undefined;
   if (isRegisteredWorktree(gitDir, tree)) {

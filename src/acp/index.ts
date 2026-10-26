@@ -137,6 +137,7 @@ export {
 export {
   createWorktree,
   ensureBareMirror,
+  mirrorFiles,
   removeWorktree,
   resolveStartRef,
   worktreeMergedInto,

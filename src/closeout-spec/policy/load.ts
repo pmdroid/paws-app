@@ -172,6 +172,22 @@ export function loadOriginMainRootFiles(
   return { ok: true, files };
 }
 
+/**
+ * The policy committed at `commit` in `repo`, read from local objects only: no fetch, no
+ * `ls-remote` and no home fallback. `null` policy means the commit has no entry.
+ */
+export function loadCommitPolicy(
+  input: Pick<LoadPolicyInput, "repo" | "git">,
+  commit: string,
+): { ok: true; policy: TreePolicy | null } | { ok: false; message: string } {
+  if (!isSha(commit.toLowerCase())) return { ok: false, message: "not a commit" };
+  const staged = materialize(input.git, input.repo, commit.toLowerCase());
+  if (!staged.ok) return staged;
+  const loaded = loadMemoryPolicy(staged.files);
+  if (!loaded.ok) return { ok: false, message: loaded.message };
+  return { ok: true, policy: loaded.absent ? null : loaded.policy };
+}
+
 function originMainFiles(
   input: LoadPolicyInput,
 ): { ok: true; files: Map<string, Uint8Array> } | { ok: false; message: string } {
