@@ -189,6 +189,11 @@ import {
 import { cacheRepositoryCredentials } from "./runner-repository-access";
 import type { RunnerTranscriptObjects } from "./runner-transcripts";
 import {
+  AGENT_SESSION_KEY_FILE,
+  createLocalAgentSessionObjects,
+  loadAgentSessionKey,
+} from "./agent-sessions";
+import {
   loadRunnerTranscriptObjects,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
@@ -642,6 +647,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           tls: tls!,
           repositoryAccess,
           transcriptObjects,
+          agentSessions: placeOnRunner
+            ? {
+                objects: createLocalAgentSessionObjects(join(paths.home, "agent-sessions")),
+                key: loadAgentSessionKey(join(paths.secretsDir, AGENT_SESSION_KEY_FILE)),
+              }
+            : undefined,
           skillsRoot: paths.skillsDir,
           publicUrl: runtime.publicUrl,
           repositories: () =>
