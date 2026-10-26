@@ -27,6 +27,7 @@ import {
 } from "../db";
 import { readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
+import { itemWaits, postWaitKeepalives, type ItemWait } from "./waits";
 
 const TICK = "scheduler.tick";
 const RUNNER_SEEN_MS = 60_000;
@@ -73,6 +74,8 @@ export type SchedulerOptions = {
   ownerHasRunner?: (itemId: string) => boolean | null;
   /** Queued items whose owner has no runner they may use, after every admission pass. */
   onRunnerSetup?: (itemIds: readonly string[]) => void;
+  /** Each session's waiting face after every admission pass: blocked, queued, paused or recovering. */
+  onWaits?: (waits: readonly ItemWait[]) => void;
   ownerCap?: number | null;
   log?: (line: string) => void;
 };
@@ -541,11 +544,13 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       free -= 1;
     }
     const waiting = order.filter(({ item }) => !admitted.includes(item.id) && !setup.has(item.id));
+    const line = [
+      ...waiting.filter(({ capped }) => !capped),
+      ...waiting.filter(({ capped }) => capped),
+    ].map(({ item }) => item.id);
     saveQueuePositions(
       db,
-      [...waiting.filter(({ capped }) => !capped), ...waiting.filter(({ capped }) => capped)].map(
-        ({ item }) => item.id,
-      ),
+      line,
       slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
       now,
       new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
@@ -581,8 +586,16 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         ? `item ${name} held: ${holdLine(change.held)}`
         : `item ${name} no longer held`;
     });
+    const waits = itemWaits(
+      db,
+      items.map((item) => (admitted.includes(item.id) ? { ...item, liveJob: 1 } : item)),
+      holds,
+      new Map(slots ? line.map((id, index) => [id, index + 1]) : []),
+    );
+    postWaitKeepalives(db, waits, now);
     return {
       admitted,
+      waits,
       waiting: waiting.map(({ item }) => item.id),
       setup: [...setup],
       changes,
@@ -591,6 +604,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
   if (options.log) for (const line of result.changes) options.log(line);
   options.onWaiting?.(result.waiting);
   options.onRunnerSetup?.(result.setup);
+  options.onWaits?.(result.waits);
   return result.admitted;
 }
 

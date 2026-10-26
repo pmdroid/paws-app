@@ -87,6 +87,7 @@ import {
   type RepositoryBinding,
   PawsShutdown,
   RunnerSlotsBusyError,
+  ordinal,
   queueLine,
   systemClock,
   parseLinearCommand,
@@ -230,6 +231,7 @@ import {
   dispatch,
   projectLeadId,
   type ItemAdmission,
+  type ItemWait,
   type SchedulerOptions,
 } from "../scheduler";
 import type {
@@ -533,6 +535,8 @@ export class Orchestrator {
   private readonly runtimeLists = new Map<string, { runId: string; list: RuntimeList }>();
   private shuttingDown = false;
   private activitySeq = 0;
+  /** The waiting face last applied per item, so a scheduler tick only writes a change. */
+  private waitFaces = new Map<string, string>();
   private readonly activityRequests = new Map<number, AbortSignal>();
   private readonly updates = createUpdateLimiter(() => this.now());
   private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
@@ -2120,8 +2124,8 @@ export class Orchestrator {
         { ephemeral: true },
       );
       const returned = this.db
-        .query<{ reason: string }, [string]>(
-          "SELECT reason FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
+        .query<{ reason: string; version: number }, [string]>(
+          "SELECT reason,version FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
         )
         .get(item.id);
       const fixing =
@@ -2139,7 +2143,8 @@ export class Orchestrator {
                 ? "merge conflicts"
                 : "Closeout findings";
         const counter = returned.reason === "conflict" ? "" : ` (${round} of ${limit})`;
-        sessionProgress?.restart(returned.reason, round, item.version, limit);
+        // Keyed by the restart, so the step appended while it waited for a runner is this one.
+        sessionProgress?.restart(returned.reason, round, returned.version, limit);
         sessionProgress?.status(`${item.linearIdentifier}: fixing ${label}${counter}`);
         live.progress =
           returned.reason === "conflict"
@@ -3932,6 +3937,7 @@ export class Orchestrator {
       },
       ...this.options.scheduling?.(),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
+      onWaits: (waits) => this.noteWaits(waits),
       ...(ownerHasRunner && config
         ? {
             ownerHasRunner: (itemId: string) => {
@@ -3993,6 +3999,62 @@ export class Orchestrator {
         },
         now,
       });
+    }
+  }
+
+  /**
+   * The session of a waiting item names what it waits for: the title, and a Wait step in
+   * progress until the item starts. A restarted item shows the step its restart appended. The
+   * scheduler posts the "still waiting" ephemerals.
+   */
+  private noteWaits(waits: readonly ItemWait[]): void {
+    const current = new Set(waits.map((wait) => wait.itemId));
+    for (const itemId of this.waitFaces.keys())
+      if (!current.has(itemId)) this.waitFaces.delete(itemId);
+    for (const wait of waits) {
+      const round = wait.kind === "runner" && wait.restart ? fixRounds(this.db, wait.itemId) : 0;
+      const face = JSON.stringify([wait, round]);
+      if (this.waitFaces.get(wait.itemId) === face) continue;
+      const item = getWorkItem(this.db, wait.itemId);
+      if (!item || item.version !== wait.version || item.sessionKey !== wait.sessionId) continue;
+      const mode = getTaskMode(this.db, item.id);
+      const progress = this.sessionProgress(
+        item,
+        mode === "answer" || mode === "artifact" ? mode : "code",
+      );
+      if (!progress) continue;
+      const name = item.linearIdentifier;
+      if (wait.kind === "blocked") {
+        const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
+        progress.wait(`Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
+      } else if (wait.kind === "runner" && wait.restart) {
+        const limit = this.fixRoundLimit(item);
+        const restarted = this.db
+          .query<{ version: number }, [string]>(
+            "SELECT version FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
+          )
+          .get(item.id);
+        if (restarted) progress.restart(wait.restart, round, restarted.version, limit);
+        progress.status(
+          `${name}: waiting for a runner to ${
+            wait.restart === "ci"
+              ? "fix CI"
+              : wait.restart === "review"
+                ? "address the review"
+                : wait.restart === "conflict"
+                  ? "resolve a merge conflict"
+                  : `fix Closeout findings (${round} of ${limit})`
+          }`,
+        );
+      } else if (wait.kind === "runner")
+        progress.wait(
+          "Wait for a runner",
+          `${name}: ${ordinal(wait.position)} in line for a runner`,
+        );
+      else if (wait.kind === "paused")
+        progress.status(`${name}: paused by ${wait.by ?? "a workspace member"}`);
+      else progress.status(`${name}: recovering an interrupted turn`);
+      this.waitFaces.set(wait.itemId, face);
     }
   }
 
