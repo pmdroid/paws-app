@@ -16,7 +16,7 @@ import {
   errorText,
   noteJobError,
 } from "./jobs";
-import { enqueueOutboxOnce, stopOutboxSession } from "./outbox";
+import { enqueueOutboxOnce, stopOutboxSession, advanceOutboxSession } from "./outbox";
 import { markRun } from "./runs";
 import { halt } from "./halt";
 import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
@@ -78,7 +78,10 @@ export function applyLinearCommand(
       });
 
     const sessionId = item.sessionKey ?? item.id;
-    const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
+    const closed = response?.startsWith("Closed:") === true;
+    const generation = !closed
+      ? stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now)
+      : advanceOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, { now });
     const origin = command.source === "dashboard" ? "Paws" : "Linear";
     const lead =
       response ??
@@ -95,9 +98,11 @@ export function applyLinearCommand(
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: sessionId,
-      delivery: "stop",
+      delivery: closed ? "ordered" : "stop",
       generation,
-      idempotencyKey: `command:stop:${sessionId}:${generation}`,
+      idempotencyKey: !closed
+        ? `command:stop:${sessionId}:${generation}`
+        : `closed:${item.id}:${generation}`,
       payload: { sessionId, kind: "response", body: text, id: crypto.randomUUID() },
       now,
     });

@@ -453,6 +453,10 @@ export function attachSessionUpdates(db: Database, id: number, now = Date.now())
 }
 
 const SESSION_FIELDS = new Set([
+  "agentSteps",
+  "hostPlan",
+  "phase",
+  "restartVersion",
   "sessionId",
   "plan",
   "summary",

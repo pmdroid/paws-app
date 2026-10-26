@@ -108,6 +108,7 @@ test.each([false, true, "cap"] as const)(
     ]);
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
+    let implementationTurns = 0;
     let entered = "";
     let release = "";
     const heartbeats: (() => void)[] = [];
@@ -130,7 +131,9 @@ test.each([false, true, "cap"] as const)(
       caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
       repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
       launch(input) {
-        if (input.purpose === "fix") {
+        const fixing =
+          input.purpose === "fix" || (input.purpose === "implement" && ++implementationTurns > 1);
+        if (fixing) {
           entered = path.join(input.worktree, "fix-entered");
           release = path.join(input.worktree, "fix-release");
         }
@@ -140,7 +143,7 @@ test.each([false, true, "cap"] as const)(
           steps:
             input.purpose === "review"
               ? emptyReview().steps
-              : input.purpose === "fix"
+              : fixing
                 ? [
                     {
                       type: "update",
@@ -644,11 +647,13 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
       ),
     ).toBe(true);
     const completedPlan = tracker.sessionUpdates.findLast((update) => update.plan)?.plan;
-    expect(completedPlan?.slice(-3).map((step) => step.content)).toEqual([
-      "Verify changes",
-      "Open pull request",
-      "Merge verified changes",
-    ]);
+    expect(
+      completedPlan
+        ?.filter((step) =>
+          ["Verify changes", "Open pull request", "Merge verified changes"].includes(step.content),
+        )
+        .map((step) => step.content),
+    ).toEqual(["Verify changes", "Open pull request", "Merge verified changes"]);
     expect(completedPlan?.every((step) => step.status === "completed")).toBe(true);
 
     expect(
@@ -2510,7 +2515,10 @@ test.each(["pending", "merged"] as const)(
           if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
         }
         expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merged");
-        expect(tracker.progress.at(-1)).toEqual(firstResponse);
+        expect(tracker.progress.at(-1)).toMatchObject({
+          kind: "response",
+          body: expect.stringContaining("Merged #"),
+        });
       }
       const followup = {
         ...linearEvent("prompted", "Add the requested follow-up change", null, "pr-tool"),
@@ -2528,14 +2536,14 @@ test.each(["pending", "merged"] as const)(
       expect(getWorkItem(db, active.id)?.state, debug(layout, db)).toBe("merged");
       expect(prompts).toHaveLength(2);
       expect(prompts[1]).toContain("Add the requested follow-up change");
-      expect(responses()).toHaveLength(2);
+      expect(responses()).toHaveLength(followupAt === "merged" ? 4 : 3);
       expect(responses()[1]?.sessionId).toBe("ses_1");
       expect(responses()[1]?.id).not.toBe(firstResponse.id);
-      expect(tracker.progress.at(-1)).toEqual(responses()[1]);
+      expect(tracker.progress.at(-1)).toEqual(responses().at(-1));
       await orchestrator.onLinearEvent(followup);
       await tickWithRestarts(jobs, orchestrator, db);
       expect(prompts).toHaveLength(2);
-      expect(responses()).toHaveLength(2);
+      expect(responses()).toHaveLength(followupAt === "merged" ? 4 : 3);
       expect(github.opened[0]?.title).toBe("Add ok.txt for the seeded check");
       expect(titles).toEqual(
         github.merged.map((pull) => `Add ok.txt for the seeded check (#${pull.number})`),
@@ -2745,7 +2753,7 @@ test.each([false, true])(
       );
       expect(queuedSummary()).toContain("CI: `test` failed. Sent back to the agent, fix 1 of 3.");
       expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(
-        ask ? 2 : 1,
+        ask ? 3 : 2,
       );
       if (ask) expect(prompts[2]).toContain("Use the compatible fix");
     } finally {
@@ -3036,6 +3044,7 @@ async function runGitHubQueue(
 }
 
 async function runCiFix(options: {
+  rebaseAfterPr?: boolean;
   attempts?: number;
   /** How many distinct head commits report a failing `test` check, in order. */
   failRounds: number;
@@ -3050,6 +3059,7 @@ async function runCiFix(options: {
   reviewerLaunches: number;
   lines: string[];
   bodies: string[];
+  activities: { kind: string; body: string }[];
   questions: string[];
   prompts: string[];
   detail: string;
@@ -3068,6 +3078,11 @@ async function runCiFix(options: {
             .replace(/\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: task/, "");
     await withGitIdentity(() => commitOnMain(layout.bare, configured, ".agents/closeout.yaml"));
   }
+  if (options.rebaseAfterPr)
+    await writeFile(
+      path.join(layout.pawsRoot, "config.toml"),
+      '[merge]\nmain_moved = "closeout"\n',
+    );
   const linearCalls: string[] = [];
   const tracker = new Proxy(
     Object.assign(
@@ -3134,6 +3149,7 @@ async function runCiFix(options: {
   let implementRuns = 0;
   let launches = 0;
   let reviewerLaunches = 0;
+  let movedMain = false;
   const orchestrator = attachOrchestrator({
     db,
     admission: workspaceAdmission(db),
@@ -3153,6 +3169,10 @@ async function runCiFix(options: {
           if (req.path.endsWith("/actions/jobs/77/logs"))
             return { status: 200, body: "bun test v1.4.2\n✗ formats an empty list\n 1 fail\n" };
           if (!isMergeReadiness(req)) return client.request(req);
+          if (options.rebaseAfterPr && implementRuns > 1 && !movedMain) {
+            movedMain = true;
+            await withGitIdentity(() => commitOnMain(layout.bare, "side\n", "side.txt"));
+          }
           const head = (req.body as { variables: { head: string } }).variables.head;
           if (!heads.includes(head)) heads.push(head);
           if (heads.indexOf(head) >= options.failRounds) return client.request(req);
@@ -3242,6 +3262,7 @@ async function runCiFix(options: {
       reviewerLaunches,
       lines: queuedSummary().filter((body) => body.startsWith("CI: ")),
       bodies: tracker.progress.map((update) => update.body),
+      activities: tracker.progress.map(({ kind, body }) => ({ kind, body })),
       questions: tracker.questions.map((question) => question.body),
       prompts,
       detail: debug(layout, db),
@@ -3446,9 +3467,11 @@ test("an unreadable CI read retries the merge job and fails the task with the re
     expect(stateOf(db, "ENG-93"), debug(layout, db)).toBe("failed");
     expect(reads, debug(layout, db)).toBe(6);
     expect(
-      tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
+      tracker.progress
+        .filter((update) => update.kind === "response" && update.body.startsWith("Closed:"))
+        .map((update) => update.body),
     ).toEqual([
-      `Stopped after 2 attempts. could not read GitHub CI and review threads. The accepted work is on branch \`${branchOf(db, "ENG-93")}\`.`,
+      `Closed: Stopped after 2 attempts. could not read GitHub CI and review threads. The accepted work is on branch \`${branchOf(db, "ENG-93")}\`.`,
     ]);
     expect(
       listJobs(db)
@@ -4558,3 +4581,18 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await layout.cleanup();
   }
 }, 30000);
+
+test("a PR session stays quiet through a CI fix and rebase re-verification until its merged response", async () => {
+  const result = await runCiFix({ failRounds: 1, rebaseAfterPr: true });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  expect(result.reviewerLaunches, result.detail).toBeGreaterThan(2);
+  const responses = result.activities.filter((activity) => activity.kind === "response");
+  expect(responses, result.detail).toHaveLength(2);
+  expect(responses[0]!.body).toContain("Opened");
+  expect(responses[1]!.body).toMatch(/^Merged #\d+ into main at [0-9a-f]+\. ENG-94 is Done\.$/);
+  expect(
+    result.activities.slice(result.activities.indexOf(responses[0]!) + 1),
+    result.detail,
+  ).toEqual([responses[1]!]);
+}, 120_000);

@@ -98,6 +98,11 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
       return context;
     },
     attachments,
+    async deleteIssueAttachment(id, options) {
+      options?.signal?.throwIfAborted();
+      const index = attachments.findIndex((attachment) => attachment.id === id);
+      if (index >= 0) attachments.splice(index, 1);
+    },
     async createIssueAttachment(input, options) {
       options?.signal?.throwIfAborted();
       const existing = attachments.findIndex(

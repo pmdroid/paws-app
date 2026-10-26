@@ -63,8 +63,11 @@ test.each(cells)(
   async (phase, fault) => {
     const result = await runWithFault(phase, fault, Infinity);
     expect(result.state, result.detail).toBe("failed");
-    expect(result.errors.length, result.detail).toBe(1);
-    expect(result.errors[0], result.detail).toStartWith("Stopped after");
+    const terminal = phase === "merge readiness read" ? result.closed : result.errors;
+    expect(terminal.length, result.detail).toBe(1);
+    expect(terminal[0], result.detail).toStartWith(
+      phase === "merge readiness read" ? "Closed: Stopped after" : "Stopped after",
+    );
     expect(result.questions, result.detail).toEqual([]);
     expect(result.pending, result.detail).toEqual([]);
     if (phase === "token mint" && fault === "a rate limit") {
@@ -85,6 +88,7 @@ async function runWithFault(
 ): Promise<{
   state: string | null;
   errors: string[];
+  closed: string[];
   questions: string[];
   pending: string[];
   injected: number;
@@ -210,6 +214,7 @@ async function runWithFault(
     return {
       state: stateOf(db, "ENG-7"),
       errors: progress("error"),
+      closed: progress("response").filter((body) => body.startsWith("Closed:")),
       questions: progress("elicitation"),
       pending: listJobs(db)
         .filter((job) => job.status === "pending" || job.status === "running")
