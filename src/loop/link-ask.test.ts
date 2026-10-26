@@ -25,7 +25,10 @@ import {
 const NOW = 1_700_000_000_000;
 const HEAD = "7f65200aa1b2c3d4e5f6";
 
-function asked(publicUrl: string | null = "https://paws.example/") {
+function asked(
+  publicUrl: string | null = "https://paws.example/",
+  kind: "bypass" | "risk" = "bypass",
+) {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
@@ -48,7 +51,7 @@ function asked(publicUrl: string | null = "https://paws.example/") {
   const opened = askWithLink(db, {
     item: getWorkItem(db, item.id)!,
     runId: run.id,
-    kind: "bypass",
+    kind,
     head: HEAD,
     detail: "independent-review failed (P1, docs/smoke-test.md). 7 other checks passed.",
     publicUrl,
@@ -115,7 +118,7 @@ test("an answer from someone who did not delegate and does not lead the project 
 });
 
 test("the project lead decides on the item page: audit row, decided note, back to the agent", () => {
-  const { db, itemId, question } = asked();
+  const { db, itemId, question } = asked("https://paws.example/", "risk");
   expect(
     decideLinkAsk(db, {
       questionId: question.id,
@@ -136,13 +139,13 @@ test("the project lead decides on the item page: audit row, decided note, back t
   ).toEqual([
     {
       userId: "user-lead",
-      action: "decision.bypass.approve",
+      action: "decision.risk.approve",
       subject: "PAS-633 · 7f65200 · Flaky reviewer finding, docs only.",
     },
   ]);
   const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-decided:"));
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
-    "Lea bypassed the failed checks on 7f65200 in Paws: Flaky reviewer finding, docs only.",
+    "Lea approved the high-risk changes in 7f65200 in Paws: Flaky reviewer finding, docs only.",
   ]);
   expect(
     listOutbox(db).some(
