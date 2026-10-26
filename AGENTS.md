@@ -93,7 +93,7 @@ Import another module only through its `index.ts`. `test/boundaries.test.ts` fai
 
 `src/core` does not open SQLite and does not talk to Linear. `transition()` is pure. The single writer that commits a transition, outbox rows, and jobs in one `BEGIN IMMEDIATE` transaction comes later; call `transition()` and do not add a second state machine.
 
-SQLite, when opened, uses WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`, and `temp_store=MEMORY`. Migrations in `src/db/migrations.ts` are append-only. Add `002_…` for new tables. Do not edit `001_jobs_outbox`.
+SQLite, when opened, uses WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`, and `temp_store=MEMORY`. The migration list in `src/db/migrations.ts` is frozen at `155_pull_comment`: do not edit its entries or add to it. A new migration is one file under `src/db/migrations/`, named for the current UTC time and what it does (`20261026T0512_pull_comment_author.ts`), exporting `migration` with that id (see `src/db/migrations/README.md`). Paws applies the frozen list, then the files sorted by id. Shipped migration files are never edited.
 
 External adapters are async. Database helpers are sync because `bun:sqlite` is sync. Keep transactions short.
 
