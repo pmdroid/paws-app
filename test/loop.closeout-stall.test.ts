@@ -12,6 +12,7 @@ import {
   JobLoop,
   OutboxDispatcher,
   enqueueJob,
+  getLinkAsk,
   getRun,
   getWorkItem,
   listCloseoutRecoveries,
@@ -172,6 +173,82 @@ test("a resume job claimed for an item in verifying journals and asks instead of
   }
 }, 90_000);
 
+/** Review attempts ran out at `head`: the independent review is exhausted, the rest passed. */
+function reviewExhausted(head: string): CloseoutVerdict {
+  const verdict = fixFailed(head);
+  const summary = "Closeout: exhausted\nindependent-review: exhausted";
+  return {
+    ...verdict,
+    decision: "rejected",
+    exhausted: true,
+    summary,
+    result: {
+      ...verdict.result!,
+      outcome: "exhausted",
+      summary,
+      decision: {
+        ...verdict.result!.decision!,
+        items: [
+          { id: "test", kind: "command", state: "passed", message: "" },
+          {
+            id: "independent-review",
+            kind: "review",
+            state: "exhausted",
+            message: "4 of 4 allowed failed review attempts used. Stop retrying and ask for help.",
+          },
+        ],
+      },
+    },
+  };
+}
+
+test("running out of review attempts asks on the item page instead of failing", async () => {
+  const f = await verifyingWithHeldGate({ publicUrl: "https://paws.example" });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    f.gate.next = reviewExhausted(f.gate.runs[0]!.headSha);
+    f.release();
+    await f.turn;
+    await f.flush();
+
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    const question = findOpenQuestion(f.db, "ses_1")!;
+    expect(question.kind).toBe("link");
+    expect(getLinkAsk(f.db, question.id)).toMatchObject({
+      kind: "rounds",
+      link: "https://paws.example/status/issues/ENG-7#review-rounds",
+      rounds: { limit: 4, handoff: "Fix the P1 review finding." },
+    });
+    // The recovery row keeps the retry baseline a Rethink or Keep going grants.
+    expect(listCloseoutRecoveries(f.db, item.id).map((entry) => entry.questionId)).toEqual([
+      question.id,
+    ]);
+    const asked = f.tracker.questions.at(-1)!;
+    expect(asked.options ?? []).toEqual([]);
+    expect(asked.body).toContain(
+      "Decide in Paws: https://paws.example/status/issues/ENG-7#review-rounds",
+    );
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
+test("a Paws without a public link asks in Linear when review attempts run out", async () => {
+  const f = await verifyingWithHeldGate();
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    f.gate.next = reviewExhausted(f.gate.runs[0]!.headSha);
+    f.release();
+    await f.turn;
+    await f.flush();
+
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(findOpenQuestion(f.db, "ses_1")?.kind).toBe("closeout-help");
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
 function restartReasons(db: Database, itemId: string): string[] {
   return db
     .query<{ reason: string }, [string]>(
@@ -182,7 +259,7 @@ function restartReasons(db: Database, itemId: string): string[] {
 }
 
 /** One item whose turn ended and whose Closeout run is held open by the fake gate. */
-async function verifyingWithHeldGate() {
+async function verifyingWithHeldGate(options: { publicUrl?: string } = {}) {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
     {
@@ -249,6 +326,7 @@ async function verifyingWithHeldGate() {
     launch,
     closeoutGate: () => gate,
     journal: (line) => lines.push(line),
+    ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
   });
   await orchestrator.onLinearEvent(created());
   db.run("UPDATE work_item SET delegated_by = 'delegator-1'");

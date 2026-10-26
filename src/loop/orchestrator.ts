@@ -2,7 +2,13 @@ import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity
 import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
-import { saveHumanRetryWindow, fixRounds, jobVersionCurrent, restartLimit } from "../db";
+import {
+  saveHumanRetryWindow,
+  fixRounds,
+  jobVersionCurrent,
+  recordReviewRounds,
+  restartLimit,
+} from "../db";
 import { journalCaught } from "../journal";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
@@ -62,6 +68,7 @@ import {
   trustedRootFiles,
   visualReviewRequirements,
   bypassable,
+  readReviewRounds,
   snapshotRetryBaseline,
   loggedSessionCloseout,
   readSessionCloseout,
@@ -69,6 +76,7 @@ import {
   sessionCloseoutResult,
   writeSessionCloseout,
   type GateResult,
+  type ReviewRounds,
   type CloseoutGate,
   type CloseoutGateOptions,
   type CloseoutVerdict,
@@ -320,6 +328,7 @@ import {
   closeLinkAsksOnHead,
   decideLinkAsk,
   guideLinkAsk,
+  linkAskAvailable,
   remindLinkAsk,
   reverifyBypassed,
   type LinkAskEffects,
@@ -353,7 +362,8 @@ import {
   publicToolText,
 } from "./activity";
 import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
-import { askCloseoutHelp } from "./closeout-help";
+import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
+import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
@@ -2678,6 +2688,7 @@ export class Orchestrator {
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
       const verdict = await this.runVerification(item, worktree, base, head, candidate, decide);
+      await this.recordReviewRounds(item, verdict.owner.runId);
       if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
       if (after === null) return;
@@ -3277,6 +3288,12 @@ export class Orchestrator {
       summary,
     };
     this.assertJobCurrent(item.id);
+    if (
+      exhausted &&
+      checks.every((check) => check.state !== "exhausted" || check.kind === "review") &&
+      (await this.askReviewRounds(current, sessionId, result, context))
+    )
+      return;
     askCloseoutHelp(this.db, sessionId, context, {
       now: this.now(),
       version: current.version,
@@ -3296,6 +3313,72 @@ export class Orchestrator {
             : "setup_fault",
     });
     await this.flush();
+  }
+
+  /** Records on the verifying run how many review rounds the item has needed so far. */
+  private async recordReviewRounds(item: WorkItemRecord, runId: string | null): Promise<void> {
+    if (runId === null) return;
+    try {
+      const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
+      if (rounds.length > 0) recordReviewRounds(this.db, runId, rounds.length);
+    } catch (caught) {
+      journalCaught(
+        caught,
+        "orchestrator.recordReviewRounds",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+    }
+  }
+
+  /**
+   * Review attempts ran out: ask on the item page whether to rethink, keep going
+   * or stop. Returns false when Paws has no link a person can open, so the
+   * caller asks in Linear instead.
+   */
+  private async askReviewRounds(
+    item: WorkItemRecord,
+    sessionId: string,
+    result: GateResult | undefined,
+    help: CloseoutHelp,
+  ): Promise<boolean> {
+    if (!linkAskAvailable(this.options.publicUrl) || item.sessionKey !== sessionId) return false;
+    let rounds: ReviewRounds;
+    try {
+      rounds = await readReviewRounds(
+        itemPathId(item),
+        recoveryOptions(this.db, item.id).retryBaseline,
+        this.options.pawsRoot,
+      );
+    } catch (caught) {
+      journalCaught(
+        caught,
+        "orchestrator.askReviewRounds.readReviewRounds",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return false;
+    }
+    const exhausted = result?.decision?.items.find(
+      (check) => check.kind === "review" && check.state === "exhausted",
+    );
+    this.assertJobCurrent(item.id);
+    const question = askReviewRounds(this.db, {
+      item,
+      help,
+      rounds: {
+        ...rounds,
+        limit: reviewRoundLimit(exhausted?.message),
+        handoff: result?.handoff ?? help.summary,
+      },
+      publicUrl: this.options.publicUrl ?? null,
+      now: this.now(),
+    });
+    if (question === null) return false;
+    await this.flush();
+    return true;
   }
 
   private async reverify(payload: unknown, jobId: number): Promise<void> {
