@@ -12,6 +12,7 @@ import type {
   PolledSession,
 } from "./catchup";
 import { activityKey, promptMetadata, sessionCreatedKey, type AcceptedLinearEvent } from "./events";
+import { flightsFor, isPawsStop } from "./event-dispatch";
 import type { InboxStore } from "./inbox";
 import type { IntakeQueue } from "./intake-queue";
 import {
@@ -41,7 +42,6 @@ export const CATCH_UP_CURSOR = "linear";
 const INITIAL_LOOKBACK_MS = 60 * 60 * 1000;
 const OVERLAP_MS = 5_000;
 const MISSED_DELIVERY_GRACE_MS = 60_000;
-const STOP_COMMENT = /^\/paws\s+stop\b/i;
 
 export type PollSignals = {
   now: number;
@@ -261,12 +261,17 @@ export function startCatchUpPoller(options: {
   }
 
   async function deliverOrSkip(event: AcceptedLinearEvent): Promise<void> {
+    const inFlight = flightsFor(options.store);
+    if (inFlight.has(event.dedupeKey)) return;
+    inFlight.add(event.dedupeKey);
     try {
       await deliver(event);
     } catch (error) {
       if (error instanceof LinearRateLimitError || control.stopped) throw error;
       const message = error instanceof Error ? error.message : "delivery failed";
       console.error(`linear event ${event.dedupeKey} stays pending: ${message}`);
+    } finally {
+      inFlight.delete(event.dedupeKey);
     }
   }
 
@@ -588,11 +593,6 @@ function intakeMode(payload: string): "label" | "delegate" | "both" | null {
   } catch {
     return null;
   }
-}
-
-function isPawsStop(body: string | null): boolean {
-  if (body === null) return false;
-  return STOP_COMMENT.test(body.trim());
 }
 
 function rank(eventRow: AcceptedLinearEvent): number {

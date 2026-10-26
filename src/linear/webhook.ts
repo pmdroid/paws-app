@@ -7,6 +7,7 @@ import {
   type AcceptedLinearEvent,
   type LinearEventAction,
 } from "./events";
+import { flightsFor } from "./event-dispatch";
 import type { InboxStore } from "./inbox";
 import type { IntakeQueue } from "./intake-queue";
 import { isRecord, readNumber, readString } from "./read";
@@ -41,7 +42,6 @@ export type LinearWebhookDeps = {
   now?: () => number;
 };
 
-const flights = new WeakMap<InboxStore, Set<string>>();
 const failures = new WeakMap<InboxStore, number>();
 
 export const WEBHOOK_CURSOR = "linear:webhook";
@@ -138,7 +138,8 @@ function schedule(deps: LinearWebhookDeps, event: AcceptedLinearEvent): void {
   const pending = flightsFor(deps.store);
   if (pending.has(event.dedupeKey)) return;
   pending.add(event.dedupeKey);
-  void Promise.resolve(deps.onEvent(event))
+  void Promise.resolve()
+    .then(() => deps.onEvent!(event))
     .then(() => {
       deps.store.markHandled(event.dedupeKey);
     })
@@ -153,14 +154,6 @@ function schedule(deps: LinearWebhookDeps, event: AcceptedLinearEvent): void {
 
 function noteFailure(store: InboxStore | undefined): void {
   if (store !== undefined) failures.set(store, webhookVerificationFailures(store) + 1);
-}
-
-function flightsFor(store: InboxStore): Set<string> {
-  const existing = flights.get(store);
-  if (existing !== undefined) return existing;
-  const created = new Set<string>();
-  flights.set(store, created);
-  return created;
 }
 
 function reject(reason: string): Response {

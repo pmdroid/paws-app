@@ -308,43 +308,47 @@ export function confirmDecision(
 ): string | null {
   const match = /^\/paws decision ([a-f0-9-]{36})$/.exec(command);
   if (!match) return null;
-  const target = scope(db, questionId);
-  if (!target) throw new Error("This question is no longer accessible.");
-  const member = workspaceLinearMember(db, target.workspaceId, linearUserId);
-  const actor = {
-    workspaceId: target.workspaceId,
-    userId: member?.userId ?? "",
-    clientId: target.clientId,
-  };
-  const saved = db
-    .query<{ decisionId: string; revision: number; statement: string }, [string, string]>(
-      "SELECT decision_id AS decisionId,revision,statement FROM decision_suggestion WHERE id=? AND question_id=? AND accepted_at IS NULL",
-    )
-    .get(match[1]!, questionId);
-  const decision = saved
-    ? db
-        .query<Row, [string]>(`${SELECT} WHERE d.id=? AND d.retired_at IS NULL`)
-        .get(saved.decisionId)
-    : null;
-  const source = decision ? scope(db, decision.questionId) : null;
-  if (
-    !member?.active ||
-    member.role === "observer" ||
-    !saved ||
-    !decision ||
-    saved.revision !== decision.revision ||
-    !accessible(db, actor, target) ||
-    !accessible(db, actor, source) ||
-    source.repository !== target.repository ||
-    source.teamId !== target.teamId
-  )
-    throw new Error(
-      "This suggestion changed or is no longer accessible. Answer the question in your own words.",
-    );
-  db.run("UPDATE decision_suggestion SET accepted_by=?,accepted_at=? WHERE id=?", [
-    linearUserId,
-    now,
-    match[1]!,
-  ]);
-  return saved.statement;
+  return db
+    .transaction(() => {
+      const target = scope(db, questionId);
+      if (!target) throw new Error("This question is no longer accessible.");
+      const member = workspaceLinearMember(db, target.workspaceId, linearUserId);
+      const actor = {
+        workspaceId: target.workspaceId,
+        userId: member?.userId ?? "",
+        clientId: target.clientId,
+      };
+      const saved = db
+        .query<{ decisionId: string; revision: number; statement: string }, [string, string]>(
+          "SELECT decision_id AS decisionId,revision,statement FROM decision_suggestion WHERE id=? AND question_id=? AND accepted_at IS NULL",
+        )
+        .get(match[1]!, questionId);
+      const decision = saved
+        ? db
+            .query<Row, [string]>(`${SELECT} WHERE d.id=? AND d.retired_at IS NULL`)
+            .get(saved.decisionId)
+        : null;
+      const source = decision ? scope(db, decision.questionId) : null;
+      if (
+        !member?.active ||
+        member.role === "observer" ||
+        !saved ||
+        !decision ||
+        saved.revision !== decision.revision ||
+        !accessible(db, actor, target) ||
+        !accessible(db, actor, source) ||
+        source.repository !== target.repository ||
+        source.teamId !== target.teamId
+      )
+        throw new Error(
+          "This suggestion changed or is no longer accessible. Answer the question in your own words.",
+        );
+      db.run("UPDATE decision_suggestion SET accepted_by=?,accepted_at=? WHERE id=?", [
+        linearUserId,
+        now,
+        match[1]!,
+      ]);
+      return saved.statement;
+    })
+    .immediate();
 }
