@@ -26,7 +26,7 @@ import {
 import {
   publishRunnerAnswer,
   runnerFollowUpRequestId,
-  RUNNER_HANDOVER_REQUEST_ID,
+  runnerHandoverRequestId,
 } from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
@@ -107,8 +107,11 @@ type Active = {
   /** Set once the worker's runtime install report is in the inventory. */
   runtimesRecorded?: boolean;
   sessionTries?: number;
-  /** Paws asked for a handover; the worker hears it once it runs. */
-  handover?: "requested" | "sent";
+  /**
+   * Handovers Paws asked for: the deadline of one the worker has not heard yet, and how many it
+   * was sent. Each request goes to the worker on its own, so a timed-out one can be asked again.
+   */
+  handover?: { pending?: number; sent: number; deadline?: number };
 };
 
 /** The session description the worker writes next to its bundle. */
@@ -976,6 +979,14 @@ export async function openRunnerRuntime(options: {
     });
     journal.phase(entry.execution.id, "publishing");
     entry.execution.phase = "publishing";
+    // A handover past its deadline hands over with the WIP commit only.
+    const handoverDeadline = result.handedOver ? entry.handover?.deadline : undefined;
+    if (
+      handoverDeadline !== undefined &&
+      now() >= handoverDeadline &&
+      !journal.sessionCursor(entry.execution.id).state
+    )
+      skipSession(entry.execution, new Error("the handover passed its 2-minute deadline"));
     try {
       await uploadSession(
         entry.execution,
@@ -1076,9 +1087,10 @@ export async function openRunnerRuntime(options: {
       const entry = active.get(`${command.runId}:${command.generation}`);
       if (command.type === "cancel" && entry) await interrupt(entry, "cancelled by Paws");
       if (command.type === "handover") {
-        if (entry?.execution.command.type === "run" && !entry.abort.signal.aborted)
-          entry.handover ??= "requested";
-        else
+        if (entry?.execution.command.type === "run" && !entry.abort.signal.aborted) {
+          entry.handover ??= { sent: 0 };
+          entry.handover.pending = command.expiresAt;
+        } else
           report(new Error(`Runner has no running session of run ${command.runId} to hand over`));
       }
       await options.daemon.acknowledgeCommand(command.id);
@@ -1121,12 +1133,12 @@ export async function openRunnerRuntime(options: {
     }
     for (const entry of active.values()) {
       if (entry.execution.phase !== "running" && entry.execution.phase !== "publishing") continue;
-      if (entry.handover === "requested" && entry.execution.phase === "running") {
+      if (entry.handover?.pending !== undefined && entry.execution.phase === "running") {
         publishRunnerAnswer(options.spool, entry.execution.id, {
-          requestId: RUNNER_HANDOVER_REQUEST_ID,
-          answer: "handover",
+          requestId: runnerHandoverRequestId(entry.handover.sent + 1),
+          answer: String(entry.handover.pending),
         });
-        entry.handover = "sent";
+        entry.handover = { sent: entry.handover.sent + 1, deadline: entry.handover.pending };
       }
       entry.delivering ??= advance(entry).finally(() => {
         entry.delivering = undefined;

@@ -21,7 +21,7 @@ import {
   type AgentSessionFinish,
 } from "../src/agent-sessions";
 import { RunnerRequestError } from "../src/runner-daemon";
-import { readRunnerAnswer, RUNNER_HANDOVER_REQUEST_ID } from "../src/runner-answers";
+import { readRunnerAnswer, runnerHandoverRequestId } from "../src/runner-answers";
 import { openExecutionJournal } from "../src/runner-journal";
 import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 import { openRunnerRuntime, type RunnerAgents } from "../src/runner-runtime";
@@ -535,30 +535,33 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  "a handover command reaches the running worker, and the handed-over run seals its session before the result",
+  "each handover command reaches the running worker with its deadline, and the handed-over run seals its session before the result",
   async () => {
     const context = fixture({ claudeVersion: "2.1.7" });
     const runtime = await context.open();
     try {
       await context.drive(runtime, () => context.started() !== "");
       const id = context.started();
-      expect(readRunnerAnswer(context.spool, id, RUNNER_HANDOVER_REQUEST_ID)).toBeNull();
-      context.queue({
-        id: "handover",
-        type: "handover",
-        runnerId: "runner",
-        workspaceId: "workspace",
-        runId: "run",
-        generation: 3,
-        issuedAt: Date.now(),
-        expiresAt: Date.now() + 60_000,
-      });
-      await context.drive(
-        runtime,
-        () => readRunnerAnswer(context.spool, id, RUNNER_HANDOVER_REQUEST_ID) !== null,
-      );
-      expect(readRunnerAnswer(context.spool, id, RUNNER_HANDOVER_REQUEST_ID)).not.toBeNull();
-      expect(context.pending().some((command) => command.id === "handover")).toBe(false);
+      const request = (sequence: number) =>
+        readRunnerAnswer(context.spool, id, runnerHandoverRequestId(sequence));
+      expect(request(1)).toBeNull();
+      // The first request timed out on the worker; Paws asks again and the worker hears it too.
+      const deadlines = [Date.now() + 120_000, Date.now() + 240_000];
+      for (const [index, expiresAt] of deadlines.entries()) {
+        context.queue({
+          id: `handover-${index + 1}`,
+          type: "handover",
+          runnerId: "runner",
+          workspaceId: "workspace",
+          runId: "run",
+          generation: 3,
+          issuedAt: Date.now(),
+          expiresAt,
+        });
+        await context.drive(runtime, () => request(index + 1) !== null);
+        expect(request(index + 1)?.answer).toBe(String(expiresAt));
+      }
+      expect(context.pending().some((command) => command.type === "handover")).toBe(false);
       // The worker stopped at a safe point; a WIP commit equal to the base publishes nothing.
       const bundle = randomBytes(600_000);
       context.finishWorker(id, bundle, { stopReason: "cancelled", handedOver: true });
@@ -577,6 +580,41 @@ test.skipIf(!linux)(
         stopReason: "cancelled",
       });
       expect(context.errors).toEqual([]);
+    } finally {
+      await runtime.stop();
+      context.cleanup();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "a handed-over run whose deadline passed posts its result without the session",
+  async () => {
+    const context = fixture({ claudeVersion: "2.1.7" });
+    const runtime = await context.open();
+    try {
+      await context.drive(runtime, () => context.started() !== "");
+      const id = context.started();
+      context.queue({
+        id: "handover",
+        type: "handover",
+        runnerId: "runner",
+        workspaceId: "workspace",
+        runId: "run",
+        generation: 3,
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 100,
+      });
+      await context.drive(
+        runtime,
+        () => readRunnerAnswer(context.spool, id, runnerHandoverRequestId(1)) !== null,
+      );
+      await Bun.sleep(150);
+      context.finishWorker(id, randomBytes(600_000), { stopReason: "cancelled", handedOver: true });
+      await context.drive(runtime, () => context.posted.length > 0);
+      expect(context.posted[0]).toMatchObject({ handedOver: true });
+      expect(context.chunks).toEqual([]);
+      expect(context.finishes).toEqual([]);
     } finally {
       await runtime.stop();
       context.cleanup();

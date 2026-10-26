@@ -8,8 +8,8 @@ import { versionAtLeast } from "./session-restore";
 
 /** First runner release that hands a running session over. */
 export const HANDOVER_RUNNER_VERSION = [0, 1, 44];
-/** Past the wait: the WIP commit, its push, the session snapshot and the result. */
-const RESULT_SLACK_MS = 5 * 60_000;
+/** Past the runner's deadline: polling and delivery of its result or report. */
+const DELIVERY_GRACE_MS = 30_000;
 
 export type RunnerHandoverOutcome =
   /** The run ended with its WIP commit as the item's checkpoint, or nothing to commit. */
@@ -18,7 +18,7 @@ export type RunnerHandoverOutcome =
   | { status: "finished" }
   /** No safe point within 2 minutes: the session keeps running on its runner. */
   | { status: "timed_out" }
-  /** The runner sent nothing in time, or Paws could not keep the WIP commit. */
+  /** The runner sent nothing within 2 minutes, or Paws could not keep the WIP commit. */
   | { status: "unanswered" }
   /** The runner's release cannot hand over; nothing was asked of it. */
   | { status: "old_runner" }
@@ -67,14 +67,15 @@ export function createRemoteHandover(options: {
         workspaceId: row.workspaceId,
         generation: row.generation,
         issuedAt: at,
-        expiresAt: at + RUNNER_HANDOVER_LIMIT_MS + RESULT_SLACK_MS,
+        // The runner finishes the handover by the command's expiry, or reports it could not.
+        expiresAt: at + RUNNER_HANDOVER_LIMIT_MS,
       });
       const after = db
         .query<{ sequence: number }, [string, number]>(
           "SELECT COALESCE(MAX(sequence),0) AS sequence FROM runner_event WHERE run_id=? AND generation=?",
         )
         .get(row.runId, row.generation)!.sequence;
-      return { ...row, after, deadline: at + RUNNER_HANDOVER_LIMIT_MS + RESULT_SLACK_MS };
+      return { ...row, after, deadline: at + RUNNER_HANDOVER_LIMIT_MS + DELIVERY_GRACE_MS };
     });
     if (!request) return { status: "not_running" };
     if (request === "old_runner") return { status: "old_runner" };
