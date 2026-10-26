@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   enqueueOutboxOnce,
+  getLinkAsk,
   getWorkItem,
   immediate,
   journal,
@@ -9,6 +10,7 @@ import {
   type WorkItemRecord,
 } from "../db";
 import type { QuestionOption } from "./channel";
+import { addLinkAskUrl } from "./link-ask";
 import { elicitationBody } from "./note";
 import type { VisualReviewShown } from "./visual-review";
 import {
@@ -56,6 +58,7 @@ const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
   "visual-review": null,
   "github-auth": null,
   "plan-approval": null,
+  link: null,
 };
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);
@@ -208,6 +211,11 @@ function staleReason(db: Database, question: StoredQuestion): string | null {
   if (item.sessionKey !== question.sessionId && item.linearIssueId !== question.sessionId)
     return "its session moved";
   if (question.kind === "closeout-help") return closeoutCandidateMoved(db, question, item);
+  if (question.kind === "link") {
+    const head = getLinkAsk(db, question.id)?.headCommit;
+    if (head !== undefined && item.checkpoint?.wipCommit && item.checkpoint.wipCommit !== head)
+      return "its commit moved";
+  }
   return null;
 }
 
@@ -229,6 +237,7 @@ function closeoutCandidateMoved(
 
 function deliver(db: Database, question: StoredQuestion, now: number): void {
   if (question.kind === "github-auth") return;
+  if (question.kind === "link") addLinkAskUrl(db, question, now);
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "elicitation",
@@ -241,9 +250,12 @@ function deliver(db: Database, question: StoredQuestion, now: number): void {
       options: question.options,
       ...(question.kind === "visual-review"
         ? { body: question.body, ...(JSON.parse(question.context ?? "{}") as VisualReviewShown) }
-        : {
-            body: elicitationBody(question.body, question.context ?? undefined, question.options),
-          }),
+        : question.kind === "link"
+          ? // The Markdown body carries the link; the context only feeds the session link.
+            { body: question.body }
+          : {
+              body: elicitationBody(question.body, question.context ?? undefined, question.options),
+            }),
     },
     now,
   });
