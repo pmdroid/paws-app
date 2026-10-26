@@ -556,3 +556,74 @@ test("successive restart rounds preserve their newest identity across captured c
     db.close();
   }
 });
+
+function latest(db: ReturnType<typeof tempDb>, op: string) {
+  return listOutbox(db).findLast((row) => row.op === op)?.payload as SessionUpdate;
+}
+
+test("a waiting item leads its plan with a Wait step that completes when it starts", () => {
+  const db = tempDb();
+  try {
+    createLinearSessionProgress(db, "session", "PAS-619").wait(
+      "Wait for PAS-618",
+      "PAS-619: waiting for PAS-618",
+    );
+    expect(latest(db, "linear.session.summary").summary).toBe("PAS-619: waiting for PAS-618");
+    expect(latest(db, "linear.session.plan").plan).toEqual([
+      { content: "Wait for PAS-618", status: "inProgress" },
+      { content: "Verify changes", status: "pending" },
+      { content: "Open pull request", status: "pending" },
+      { content: "Merge verified changes", status: "pending" },
+    ]);
+    // Another tick with the same wait changes nothing; a new wait completes the previous one.
+    createLinearSessionProgress(db, "session", "PAS-619").wait(
+      "Wait for PAS-618",
+      "PAS-619: waiting for PAS-618",
+    );
+    createLinearSessionProgress(db, "session", "PAS-619").wait(
+      "Wait for a runner",
+      "PAS-619: 2nd in line for a runner",
+    );
+    expect(latest(db, "linear.session.plan").plan?.slice(0, 2)).toEqual([
+      { content: "Wait for PAS-618", status: "completed" },
+      { content: "Wait for a runner", status: "inProgress" },
+    ]);
+    // A run reporter created before the wait ended still completes it on start.
+    const run = createLinearSessionProgress(db, "session", "PAS-619");
+    run.phase("implementing");
+    run.plan([{ content: "Rank runners", status: "inProgress" }]);
+    expect(latest(db, "linear.session.plan").plan).toEqual([
+      { content: "Wait for PAS-618", status: "completed" },
+      { content: "Wait for a runner", status: "completed" },
+      { content: "Rank runners", status: "inProgress" },
+      { content: "Verify changes", status: "pending" },
+      { content: "Open pull request", status: "pending" },
+      { content: "Merge verified changes", status: "pending" },
+    ]);
+    expect(latest(db, "linear.session.summary").summary).toBe("PAS-619: implementing");
+  } finally {
+    db.close();
+  }
+});
+
+test("a restarted item waiting for a runner shows its appended step, once, not a Wait step", () => {
+  const db = tempDb();
+  try {
+    createLinearSessionProgress(db, "session", "PAS-7").phase("verifying");
+    const waiting = createLinearSessionProgress(db, "session", "PAS-7");
+    waiting.restart("findings", 1, 12, 3);
+    waiting.status("PAS-7: waiting for a runner to fix Closeout findings (1 of 3)");
+    expect(latest(db, "linear.session.summary").summary).toBe(
+      "PAS-7: waiting for a runner to fix Closeout findings (1 of 3)",
+    );
+    // The run starts with the same restart.
+    createLinearSessionProgress(db, "session", "PAS-7").restart("findings", 1, 12, 3);
+    const plan = latest(db, "linear.session.plan").plan ?? [];
+    expect(plan.filter((step) => step.content.startsWith("Fix Closeout findings"))).toEqual([
+      { content: "Fix Closeout findings (1 of 3)", status: "inProgress" },
+    ]);
+    expect(plan.some((step) => step.content.startsWith("Wait"))).toBe(false);
+  } finally {
+    db.close();
+  }
+});
