@@ -80,7 +80,13 @@ The setting is optional. Without it, published files are enough, as above.
 
 With it, `get_closeout` adds "Publish the screenshots, then Paws asks for a visual review in Linear." to the hint. Once enough files are published, it lists the check as `pending` and leaves it out of the pending ids, so the agent can finish its turn.
 
-When the turn ends, Paws asks for the review in Linear with every file the check counts, and posts nothing else in the session until it is answered, so Linear keeps showing the Accept and Request changes buttons. The files are not posted on their own. If files were published after an accepted review, Paws asks a new round with all of them before it runs Closeout. An accepted review belongs to the candidate commit it was asked at.
+The review is a pending-human check inside the Closeout evaluation of the candidate commit. When the turn ends, the item moves to `verifying`, and Paws asks for the review in Linear with every file the check counts while the command checks and the independent review run on the same commit. It posts nothing else in the session until the review is answered, so Linear keeps showing the Accept and Request changes buttons. The files are not posted on their own. When the other checks pass first, the item waits in `awaiting_input` and gives its runner back.
+
+- **Accept** passes the check. If the other checks are still running, the evaluation finishes when they do. If they are done, Paws completes the evaluation from their recorded results, without running them again, and the commit is accepted.
+- **Request changes** restarts the item with the feedback (restart reason `review`). The agent's next turn ends in a new evaluation of its new commit. After three rounds of changes Paws asks whether to keep going.
+- If another check fails, the pending review is cancelled: a fix round replaces the commit.
+
+The review and its approval belong to the candidate commit they were asked at, and to the files the reviewer saw. When the commit changes, Paws compares the task's patch against main. A rebase that leaves the patch the same keeps an open review open and carries an accepted one to the new commit, so the reviewer is not asked again for the same diff. A different patch cancels an open review and asks again with the latest files. If files were published after an accepted review, Paws asks a new round with all of them.
 
 A file published again for the same check, with the same display name, at the same commit replaces the earlier copy. Paws counts, asks about and lists in the pull request only the latest copy, so a review never needs to cover a superseded one. The run page shows the latest copy of each file and folds the earlier ones, from this or an older commit, under Earlier versions. The stored files stay.
 

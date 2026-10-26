@@ -1,6 +1,6 @@
 import type { PawsCommandRunner } from "../closeout-spec";
 import type { FixRunner } from "./fixer";
-import { runCloseoutGate, type GateInput } from "./run";
+import { decideCloseoutGate, runCloseoutGate, type GateInput } from "./run";
 import type { CodexReviewer } from "./reviewer";
 import type { CandidateIdentity, GateResult } from "./types";
 
@@ -29,6 +29,12 @@ export type CloseoutVerdict = {
  */
 export interface CloseoutGate {
   run(input: CloseoutRunInput): Promise<CloseoutVerdict>;
+  /**
+   * Decides the head from the evidence already recorded for it, without
+   * running commands or the review. Completes an evaluation that waited
+   * on a pending-human check.
+   */
+  decide(input: CloseoutRunInput): Promise<CloseoutVerdict>;
 }
 
 export type CloseoutGateOptions = {
@@ -58,8 +64,9 @@ export type CloseoutGateOptions = {
  * input is the caller's 1-based try and is recorded; it does not reset the loop.
  */
 export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
-  return {
-    async run(input) {
+  const evaluate =
+    (gate: (input: GateInput) => Promise<GateResult>) =>
+    async (input: CloseoutRunInput): Promise<CloseoutVerdict> => {
       if (!Number.isInteger(input.attempt) || input.attempt < 1) {
         return {
           decision: "invalid",
@@ -67,7 +74,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
           summary: "attempt must be a positive integer",
         };
       }
-      const result = await runCloseoutGate({
+      const result = await gate({
         checkoutExclusions: options.checkoutExclusions,
         worktree: input.worktree,
         taskId: input.taskId,
@@ -91,8 +98,8 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.approvals ? { approvals: options.approvals } : {}),
       });
       return toVerdict(result, input.attempt);
-    },
-  };
+    };
+  return { run: evaluate(runCloseoutGate), decide: evaluate(decideCloseoutGate) };
 }
 
 function toVerdict(result: GateResult, attempt: number): CloseoutVerdict {

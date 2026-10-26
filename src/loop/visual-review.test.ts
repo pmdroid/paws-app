@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
+  applyWorkItemEvent,
   beginImplementRun,
   getWorkItem,
   insertQueuedItem,
@@ -15,13 +16,13 @@ import {
   findOpenQuestion,
   getQuestion,
   getVisualReview,
-  visualReviewAcceptedHandoff,
   visualReviewContinueQuestion,
   VISUAL_REVIEW_CONTINUE_OPTIONS,
   VISUAL_REVIEW_OPTIONS,
   VISUAL_REVIEW_QUESTION,
   VISUAL_REVIEW_ROUNDS,
 } from "../questions";
+import { awaitQuestion } from "./operations";
 import { questionEffects } from "./question-effects";
 import { askForVisualReview } from "./visual-review";
 
@@ -32,6 +33,7 @@ function reviewing() {
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Hint" });
   const { run } = beginImplementRun(db, item.id, NOW - 10);
+  applyWorkItemEvent(db, item.id, "turn_ended");
   const asked = askForVisualReview(db, {
     item: getWorkItem(db, item.id)!,
     runId: run.id,
@@ -55,6 +57,8 @@ function reviewing() {
     approved: new Map([["ev-2", "ev-9"]]),
   });
   expect(asked).toBe(true);
+  // A pending-human check: the commands and the review run while it waits.
+  expect(getWorkItem(db, item.id)?.state).toBe("verifying");
   return { db, itemId: item.id, question: findOpenQuestion(db, "ses_1")! };
 }
 
@@ -89,7 +93,7 @@ test("a visual review is asked as its own kind and shows its files in Linear", (
   });
 });
 
-test("an accepted visual review answered through answer() resumes the agent with the acceptance", () => {
+test("Accept while the other checks run passes the check and leaves the evaluation to them", () => {
   const { db, itemId, question } = reviewing();
   const outcome = answer(db, reply("Accept"), questionEffects(db, { now: NOW + 100 }));
   expect(outcome.status).toBe("answered");
@@ -98,23 +102,45 @@ test("an accepted visual review answered through answer() resumes the agent with
     answeredBy: "lead",
     headCommit: "head",
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("running");
+  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect(listJobs(db).filter((job) => job.queue !== JOB_KIND.visualReviewReminder)).toEqual([]);
+});
+
+test("Accept after the other checks finished completes the evaluation of the same head", () => {
+  const { db, itemId, question } = reviewing();
+  awaitQuestion(db, getWorkItem(db, itemId)!, question, NOW + 50);
+  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+
+  answer(db, reply("Accept"), questionEffects(db, { now: NOW + 100 }));
+
+  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
   expect(
     listJobs(db)
-      .filter((job) => job.queue === JOB_KIND.resume)
+      .filter((job) => job.queue !== JOB_KIND.visualReviewReminder)
       .map((job) => [job.queue, job.jobKey, job.payload]),
   ).toEqual([
-    [
-      JOB_KIND.resume,
-      `resume:answer:${question.id}`,
-      {
-        itemId,
-        freshSession: true,
-        handoff: visualReviewAcceptedHandoff("visual-proof"),
-        reason: "visual-review",
-      },
-    ],
+    [JOB_KIND.reverify, `visual-review-accepted:${question.id}`, { itemId, decide: true }],
   ]);
+});
+
+test("Request changes restarts the item for review with the feedback", () => {
+  const { db, itemId, question } = reviewing();
+  answer(db, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 }));
+
+  expect(getVisualReview(db, question.id)?.outcome).toBe("changes_requested");
+  const item = getWorkItem(db, itemId)!;
+  expect(item.state).toBe("queued");
+  expect(item.currentRunId).not.toBeNull();
+  const restarted = db
+    .query<{ reason: string }, [string]>(
+      "SELECT reason FROM work_item_event WHERE item_id = ? AND kind = 'restart'",
+    )
+    .all(itemId);
+  expect(restarted).toEqual([{ reason: "review" }]);
+  const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+  expect(resume).toMatchObject({ jobKey: `resume:answer:${question.id}` });
+  expect((resume!.payload as { handoff: string }).handoff).toContain("Make the hint shorter");
+  expect((resume!.payload as { reason: string }).reason).toBe("review");
 });
 
 test("the round-limit question waits behind a sibling's queued question", () => {
