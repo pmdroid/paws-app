@@ -749,7 +749,8 @@ describe("live status provider", () => {
       now: () => new Date(now + 5000),
       sessionIds: ["ses_8"],
     });
-    expect(JSON.stringify(provider.snapshot())).toContain("secret log");
+    // Check logs load per check, so neither the list nor the detail carries them.
+    expect(JSON.stringify(provider.snapshot())).not.toContain("secret log");
     const detail = provider.item("ENG-8")!;
     expect(detail.items.map((entry) => entry.id)).toEqual(["ENG-8"]);
     expect(detail.blocks).toEqual(["ENG-9"]);
@@ -773,6 +774,98 @@ describe("live status provider", () => {
     expect(((await response.json()) as { id: string }).id).toBe("ENG-8");
     expect((await get("ENG-10"))?.status).toBe(404);
     expect((await get("ENG-404"))?.status).toBe(404);
+  });
+
+  test("a check log is read only for a check of that issue's Closeout attempt", async () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const base = "d".repeat(40);
+    const seed = (id: string, session: string, check: string, output: string) => {
+      const item = insertQueuedItem(db, { id, sessionKey: session, now });
+      beginImplementRun(db, item.id, now);
+      enterMergeQueue(db, item.id, {
+        phase: "merge_queue",
+        baseSha: base,
+        wipCommit: "c".repeat(40),
+      });
+      const identity = {
+        taskId: item.id,
+        base,
+        head: "c".repeat(40),
+        policyDigest: "sha256:policy",
+        policyPath: null,
+      };
+      upsertCloseoutStep(
+        db,
+        item.id,
+        identity,
+        {
+          id: check,
+          kind: "command",
+          state: "failed",
+          command: "bun test",
+          detail: null,
+          attempt: 1,
+          timeoutSeconds: null,
+          startedAt: now,
+          finishedAt: now,
+          exitCode: 1,
+          timedOut: false,
+          timeoutReason: null,
+          truncated: false,
+          logPath: null,
+          evidencePath: null,
+          findings: null,
+          ordinal: 0,
+        },
+        now,
+      );
+      appendCloseoutOutput(db, item.id, identity, check, "stderr", output, false, now);
+      appendCloseoutOutput(db, item.id, identity, check, "stdout", `${id} out`, false, now);
+      finishCloseoutProgress(db, item.id, identity, "rejected", now);
+    };
+    seed("ENG-11", "ses_11", "unit", "unit failed");
+    seed("ENG-12", "ses_11", "lint", "lint failed");
+    seed("ENG-13", "ses_other", "unit", "hidden failure");
+    const provider = createLiveStatusProvider(db, {
+      now: () => new Date(now + 5000),
+      sessionIds: ["ses_11"],
+    });
+    const request = (itemId: string, checkId: string, attempt = 1) => ({
+      itemId,
+      attempt,
+      checkId,
+      run: null,
+    });
+    expect(provider.checkLog(request("ENG-11", "unit"))).toEqual({
+      stdout: "ENG-11 out",
+      stderr: "unit failed",
+    });
+    // `lint` is a check of ENG-12, not of ENG-11.
+    expect(provider.checkLog(request("ENG-11", "lint"))).toBeNull();
+    expect(provider.checkLog(request("ENG-11", "unit", 2))).toBeNull();
+    expect(provider.checkLog({ ...request("ENG-11", "unit"), run: "other-run" })).toBeNull();
+    // Outside the reader's sessions, as if the issue did not exist.
+    expect(provider.checkLog(request("ENG-13", "unit"))).toBeNull();
+
+    const get = (path: string) =>
+      handleStatusRequest(new Request(`http://127.0.0.1/api/status/items/${path}/log`), {
+        db,
+        sessionIds: ["ses_11"],
+      });
+    const mine = (await get("ENG-11/attempts/1/checks/unit"))!;
+    expect(mine.status).toBe(200);
+    expect(await mine.json()).toEqual({
+      stdout: "ENG-11 out",
+      stderr: "unit failed",
+      truncated: false,
+      fullPath: null,
+    });
+    const other = (await get("ENG-11/attempts/1/checks/lint"))!;
+    const hidden = (await get("ENG-13/attempts/1/checks/unit"))!;
+    expect(other.status).toBe(404);
+    expect(hidden.status).toBe(404);
+    expect(await hidden.text()).not.toContain("hidden failure");
   });
 
   test("a review keeps its measured duration and tokens when a later evaluation reads it again", () => {
