@@ -242,7 +242,8 @@ test.each([false, true, "cap"] as const)(
       });
       for (const heartbeat of heartbeats) heartbeat();
       await outbox.idle();
-      expect(tracker.progress.at(-1)?.body).toContain("fix attempt 1 of 3");
+      // The keepalive names the agent's current step ahead of the fix-round line.
+      expect(tracker.progress.at(-1)?.body).toBe("Step 1 of 1: Repair missing output.");
       const response = await handleStatusRequest(new Request("http://localhost/api/status"), {
         db,
       });
