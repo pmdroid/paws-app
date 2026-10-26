@@ -7,8 +7,12 @@ describe("server", () => {
     const base = `http://${server.hostname}:${server.port}`;
     try {
       const health = await fetch(`${base}/health`);
-      expect(health.status).toBe(200);
-      expect(await health.json()).toEqual({ ok: true, service: "paws" });
+      expect(health.status).toBe(503);
+      expect(await health.json()).toMatchObject({
+        ok: false,
+        service: "paws",
+        failedChecks: ["database"],
+      });
 
       const status = await fetch(`${base}/status`);
       expect(status.status).toBe(200);
