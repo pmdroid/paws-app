@@ -752,3 +752,21 @@ dialog.review-draw {
   gap: 0.5rem;
   min-width: 0;
 }
+/* The finding or output tail of a check the "Closeout needs your help" card offers to bypass. */
+.bypass-finding {
+  margin: 0.5rem 0;
+  border: 2px solid var(--border);
+  border-radius: 5px;
+  padding: 0.75rem 1rem;
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary-background));
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bypass-check {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 2px solid var(--border);
+}
