@@ -188,3 +188,64 @@ retry:
 ```
 
 `maxFailedAttemptsPerItem` remains a legacy alias for `attempts_per_check`. The legacy `[merge] ci_fix_attempts` setting in `config.toml` no longer sets a separate CI budget; CI fixes count against `fix_rounds_per_item`. `[merge] main_moved = "ci"` is rejected; see the [configuration reference](configuration.md#merge).
+
+## Review escapes
+
+A review escape is a bug that Closeout's independent review accepted and a later pull request had to fix. `evals/review-escapes.jsonl` collects the confirmed ones, so a change to the reviewer can be scored against real misses instead of guessed.
+
+### File format
+
+One JSON object per line:
+
+```json
+{
+  "id": "522-539",
+  "original": {
+    "pr": 522,
+    "title": "Send CPU, memory, disk, OS and version with the runner heartbeat (PAS-332)",
+    "base": "ef2d3bfa2ca0cf9a9994eef0b718a906636f44f9",
+    "head": "31a28934498edb884f5466d4c7993a4100df28b7",
+    "mergeCommit": "7c5ccb79…"
+  },
+  "fix": { "pr": 539, "title": "fix(runners): remove the runner account type", "mergeCommit": "…" },
+  "file": "src/runner-health/heartbeat.ts",
+  "line": 42,
+  "bug": "The heartbeat dropped the disk size when the runner reported it in bytes.",
+  "confirmedBy": "pmdroid",
+  "confirmedAt": "2026-10-26"
+}
+```
+
+| Field                  | Meaning                                                                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                   | `<original pr>-<fix pr>`. One case per pair.                                                                                      |
+| `original`             | The Paws pull request that let the bug through.                                                                                   |
+| `original.base`/`head` | The commits Closeout reviewed, from the `Base:` and `Head:` lines Paws writes into its squash message. Replay the review on them. |
+| `original.mergeCommit` | Its squash commit on `main`.                                                                                                      |
+| `fix`                  | The later pull request that fixed or reverted the lines.                                                                          |
+| `file`, `line`         | Where the bug is, as of `original.mergeCommit`.                                                                                   |
+| `bug`                  | One sentence on the defect, as a reviewer of the original diff should have stated it.                                             |
+| `confirmedBy`, `At`    | The person who confirmed the case, and the date.                                                                                  |
+
+The head of a squashed pull request is not on `main`. Fetch it with `git fetch origin pull/<pr>/head` before a replay.
+
+### Finding candidates
+
+```sh
+bun scripts/review-escapes.ts            # pull requests from gh, last 30 days
+bun scripts/review-escapes.ts --source git --branch origin/main   # without gh
+bun scripts/review-escapes.ts --days 60 --kinds fix,revert --jsonl
+```
+
+The script lists the pull requests merged in the window and keeps those authored by the Paws GitHub App (`--app`, default `paws-helper`) as originals. For every later pull request, it runs `git blame` on the parent of its merge commit over each line it removes or changes. A blamed line from a Paws squash makes a candidate: the original, the fix, the file and line, and a draft bug sentence from the fix's title. Lockfiles, snapshots, blank lines and brace-only lines are skipped, and pairs already in the file are left out.
+
+Each candidate is `revert`, `fix` (a title with words such as fix, bug, race, flaky or broken) or `change`. Most `change` candidates are refactors or new requirements; read them when a fix title doesn't say it is one. Blame needs the full history of `main` in the clone. `--source git` reads squash subjects (`Title (#12)`) and merge commits, so it misses pull requests merged another way.
+
+### Adding a case
+
+After an incident, or when a candidate holds up:
+
+1. Find the pull request that introduced the bug, and the one that fixed it. Run the script with `--jsonl` and copy the line for that pair, or write it by hand from the fields above.
+2. Check that the bug was in the original diff as merged, and that a reviewer reading that diff could have seen it. A requirement that changed later, a refactor, or a bug in code the original only moved is not an escape.
+3. Point `file` and `line` at the defect, rewrite `bug` as one sentence about the defect rather than the fix, and set `confirmedBy` and `confirmedAt`.
+4. Append the line to `evals/review-escapes.jsonl`. `scripts/review-escapes.test.ts` checks every line's shape.
