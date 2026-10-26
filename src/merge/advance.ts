@@ -3,10 +3,12 @@ import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   artifactPublicationReady,
+  closeoutPolicyDigest,
   completeMergedItem,
   enqueueJobOnce,
   getConfirmedRemoteMerge,
   getWorkItem,
+  immediate,
   leaveMergeQueue,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
@@ -15,13 +17,16 @@ import {
   type WorkItemRecord,
 } from "../db";
 import {
-  serialMerge,
+  readPullFacts,
+  rebaseOntoMain,
+  squashPull,
   type GitExec,
   type GitHubBinding,
-  type ReverifyInput,
-  type ReverifyResult,
+  type PullFacts,
+  type SerialMergeInput,
 } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
+import type { MergeFacts } from "./mergeable";
 import {
   REBASE_CONFLICT_INSTRUCTION,
   REBASE_CONFLICT_THOUGHT,
@@ -36,8 +41,14 @@ import {
 } from "./orders";
 import type { RebaseConflict } from "./budget";
 import { ciFixes, rebaseBudgetFor } from "./returns";
-import { serialMergeStep, type MergeStep } from "./step";
-import { ciWaitVerification, wakeMergesBehind } from "./wait";
+import {
+  laneTurn,
+  serialMergeStep,
+  type LaneTurn,
+  type MergeStep,
+  type SerialMergeStep,
+} from "./step";
+import { wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
   github: GitHubBinding & { gitExec: GitExec };
@@ -47,19 +58,20 @@ export type MergePublication = MergePull & {
   commit: { title: string; message?: string; env?: Record<string, string> };
 };
 
-export type MergeVerdict = ReverifyResult & { rejected: boolean };
-
 export type MergeCapabilities = OrderCapabilities & {
   publish(item: WorkItemRecord): Promise<MergePublication | MergeStep>;
   settings(item: WorkItemRecord, signal: AbortSignal): Promise<TaskMergeSettings>;
-  accept(candidate: { sha: string; baseSha: string }): void;
-  verify(input: ReverifyInput): Promise<MergeVerdict>;
+  /** Closeout's policy digest for the item's worktree now: `""` without a policy, null unreadable. */
+  policyDigest(item: WorkItemRecord, worktree: string): string | null;
   assertReady(item: WorkItemRecord): Promise<void>;
-  askCloseoutHelp(item: WorkItemRecord): Promise<void>;
-  packages(repository: string): string[];
   completed(): void;
 };
 
+/**
+ * One merge lane turn for an item in `merge_queue`. The lane squashes head S only when
+ * `mergeable(S)` holds, with GitHub's expected-head guard on S. A head behind main is rebased,
+ * pushed and sent back to `verifying`, so Closeout accepts every head that merges.
+ */
 export async function advanceMerge(
   db: Database,
   input: { itemId: string; payload: unknown; jobId: number },
@@ -82,26 +94,21 @@ export async function advanceMerge(
   const merge: MergeContext = { db, item, caps };
   const { repository, github, pull } = published;
   const { voice } = caps;
-  const priorVerification = ciWaitVerification(input.payload);
-  let closeoutFailed = false;
-  const acceptedHead = readString(input.payload, "head") ?? item.checkpoint?.wipCommit ?? null;
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
     if (handed !== "no_queue") return handed;
   }
-  const closeoutAfterUpdate = mergeSettings.mainMoved === "closeout";
   const queued = mergeSettings.order === "queue";
   if (queued) {
     const wait = await mergeQueueTurn(merge, repository, github, {
       number: pull.number,
-      head: priorVerification?.head ?? acceptedHead ?? "",
+      head: published.head,
     });
     if (wait) return { kind: "wait", ...wait };
     if (caps.stopped()) return { kind: "obsolete" };
   }
-  const repositoryName = `${repository.owner}/${repository.repo}`;
-  const merged = await serialMerge({
+  const lane: SerialMergeInput = {
     worktree: published.worktree,
     issue: item.linearIdentifier,
     branchKey: published.branchKey,
@@ -119,67 +126,22 @@ export async function advanceMerge(
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,
     isCancelled: () => caps.stopped() || !artifactPublicationReady(db, item.id),
-    releaseWhilePending: true,
-    ...(priorVerification === undefined ? {} : { priorVerification }),
-    ...(mergeSettings.mainMoved === "overlap"
-      ? {
-          updateOnOverlap: {
-            packages: caps.packages(repositoryName),
-            onUpToDateRule: async () => {
-              voice.afterPullRequest(
-                item,
-                upToDateRuleMessage(repositoryName),
-                `${item.id}:up-to-date-rule`,
-              );
-              await voice.flush();
-            },
-          },
-        }
-      : {}),
-    onWait: async (message) => {
-      voice.thought(item, message, `${item.id}:merge-wait:${message}`);
-      await voice.flush();
-    },
-    reverify: async (verify) => {
-      const updated = acceptedHead !== null && verify.head !== acceptedHead;
-      if (verify.kept || (updated && !closeoutAfterUpdate)) {
-        caps.accept({ sha: verify.head, baseSha: verify.base });
-        if (!verify.kept) {
-          voice.status(
-            item,
-            branchUpdatedMessage(verify.base, mergeSettings.mainMoved, verify.overlap),
-            `${item.id}:branch-updated:${verify.head}`,
-          );
-          await voice.flush();
-        }
-        const filesReady = artifactPublicationReady(db, item.id);
-        return {
-          accepted: filesReady,
-          outcome: filesReady ? "merged" : "blocked",
-          summary: filesReady ? published.summary : "A requested artifact has not been uploaded.",
-        };
-      }
-      if (updated)
-        voice.status(
-          item,
-          "Branch updated, running Closeout again.",
-          `${item.id}:branch-updated:${verify.head}`,
-        );
-      const verdict = await caps.verify(verify);
-      if (verdict.rejected) closeoutFailed = true;
-      return { accepted: verdict.accepted, outcome: verdict.outcome, summary: verdict.summary };
-    },
+  };
+  const turn = await laneTurn({
+    read: () => readPullFacts(lane),
+    facts: (facts) => mergeFacts(db, item.id, facts, caps.policyDigest(item, published.worktree)),
+    rebase: () => rebaseOntoMain(lane),
+    squash: (head, facts) => squashPull(lane, { head, base: facts.base }, published.summary),
   });
   const ciFixLimit = caps.ciFixAttempts(item);
+  const result = turn.kind === "merged" || turn.kind === "stopped" ? turn.result : null;
   const conflict: RebaseConflict = {
-    base: merged.base ?? null,
-    files: merged.conflictFiles ?? null,
+    base: result?.base ?? null,
+    files: result?.conflictFiles ?? null,
   };
   const { step, leaveQueue } = serialMergeStep({
-    result: merged,
+    turn,
     queued,
-    closeoutAfterUpdate,
-    closeoutFailed,
     rebaseBudget: rebaseBudgetFor(db, item.id, conflict, caps.now()),
     ciFixes: ciFixes(db, item.id),
     ciFixLimit,
@@ -190,24 +152,33 @@ export async function advanceMerge(
   }
   if (step.kind === "wait" && step.reason === "ci")
     return caps.stopped() ? { kind: "obsolete" } : step;
-  if (merged.merged)
+  if (turn.kind === "merged")
     recordConfirmedRemoteMerge(db, {
       itemId: item.id,
       repositoryOwner: repository.owner,
       repositoryName: repository.repo,
       pullNumber: pull.number,
       pullUrl: pull.url,
-      mergeSha: merged.sha ?? null,
+      mergeSha: turn.result.sha ?? null,
       confirmedAt: caps.now(),
     });
   if (caps.stopped()) {
-    if (merged.merged) completeMergedItem(db, { itemId: item.id, now: caps.now() });
+    if (turn.kind === "merged") completeMergedItem(db, { itemId: item.id, now: caps.now() });
     return { kind: "obsolete" };
   }
-  if (merged.merged) return { kind: "merged" };
+  if (turn.kind === "merged") return { kind: "merged" };
   await caps.assertReady(item);
   if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
+  if (step.kind === "reverify") {
+    reverify(merge, step, input.jobId);
+    if (step.rebased) await voice.flush();
+    return { kind: "returned" };
+  }
+  if (step.kind === "wait") {
+    voice.status(item, step.message, `${item.id}:merge-wait:${step.reason}:${step.head ?? ""}`);
+    return step;
+  }
   if (step.kind === "ask_conflict") {
     if (
       askHelp(
@@ -220,10 +191,6 @@ export async function advanceMerge(
       return { kind: "asked" };
     }
     return { kind: "failed", reason: "merge", message: step.message };
-  }
-  if (step.kind === "ask_closeout") {
-    await caps.askCloseoutHelp(item);
-    return { kind: "asked" };
   }
   if (
     step.kind === "return" &&
@@ -239,7 +206,7 @@ export async function advanceMerge(
           recordRebaseReturn(db, {
             itemId: item.id,
             jobId,
-            candidate: merged.head ?? null,
+            candidate: result?.head ?? null,
             reason: "merge",
             ...conflict,
             recordedAt: caps.now(),
@@ -248,10 +215,11 @@ export async function advanceMerge(
     )
   )
     return { kind: "returned" };
-  if (merged.outcome === "ci_failed") {
-    const checks = merged.failedChecks ?? [];
+  if (turn.kind === "blocked" && turn.block === "ci_failed") {
+    const { readiness, head } = turn.pull;
+    const checks = readiness.failedChecks ?? [];
     const round = (next: CiRound["next"], fix: number | null = null) =>
-      ciRound(merge, merged.head ?? "", merged.checks, next, ciFixLimit, fix);
+      ciRound(merge, head, readiness.checks, next, ciFixLimit, fix);
     if (
       step.kind === "return" &&
       sendBack(merge, "ci-failed", (fixes) => fixes < ciFixLimit, ciFixHandoff(checks), {
@@ -267,40 +235,77 @@ export async function advanceMerge(
     }
     round("failed");
   }
-  voice.thought(item, merged.message ?? merged.outcome, `${item.id}:merge:${merged.outcome}`);
-  if (step.kind === "wait") return step;
-  if (step.kind === "reverify") {
-    applyWorkItemEvent(db, item.id, "main_moved");
-    enqueueJobOnce(db, {
-      queue: JOB_KIND.reverify,
-      jobKey: `reverify:${item.id}:${merged.head ?? "again"}:merge:${input.jobId}`,
-      payload: { itemId: item.id },
-      now: caps.now(),
-    });
-    return { kind: "returned" };
-  }
+  const message = failure(turn, step);
+  voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
+  return { kind: "failed", reason: "merge", message };
+}
+
+/** The facts `mergeable(S)` judges: GitHub's and Git's read, plus Closeout's accept row for S. */
+function mergeFacts(
+  db: Database,
+  itemId: string,
+  pull: PullFacts,
+  policyDigest: string | null,
+): MergeFacts {
+  const acceptedHead = getWorkItem(db, itemId)?.acceptedHead ?? null;
+  const { readiness } = pull;
   return {
-    kind: "failed",
-    reason: "merge",
-    message: step.kind === "failed" ? step.message : (merged.message ?? merged.outcome),
+    head: pull.head,
+    headMoved: readiness.outcome === "sha_moved",
+    accept:
+      acceptedHead === null
+        ? null
+        : {
+            head: acceptedHead,
+            policyDigest: closeoutPolicyDigest(db, itemId, acceptedHead),
+          },
+    policyDigest,
+    containsMain: pull.containsMain,
+    ci:
+      readiness.outcome === "ci_failed"
+        ? "failed"
+        : readiness.outcome === "ready" || readiness.unresolvedThreads !== undefined
+          ? "green"
+          : "pending",
+    unresolvedThreads: readiness.unresolvedThreads ?? 0,
+    protection:
+      pull.review === "required"
+        ? "review_required"
+        : pull.review === "changes_requested"
+          ? "changes_requested"
+          : "satisfied",
   };
 }
 
-function branchUpdatedMessage(base: string, mainMoved: string, overlap?: string[]): string {
-  const updated = `Branch updated onto main ${base.slice(0, 7)}, waiting for CI.`;
-  if (mainMoved !== "overlap")
-    return `${updated} Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
-  if (!overlap?.length) return updated;
-  const listed = overlap.slice(0, 5).join(", ") + (overlap.length > 5 ? ", …" : "");
-  return `Main changed ${listed}, which this pull request changes too. ${updated}`;
+/**
+ * Send the item back to `verifying` for Closeout on `head`, keeping its place in the queue. After
+ * a rebase only the session title moves; the next merge job carries the accepted new head.
+ */
+function reverify(
+  { db, item, caps }: MergeContext,
+  step: Extract<SerialMergeStep, { kind: "reverify" }>,
+  jobId: number,
+): void {
+  immediate(db, () => {
+    applyWorkItemEvent(db, item.id, "reverify_requested");
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.reverify,
+      jobKey: `reverify:${item.id}:${step.head}:merge:${jobId}`,
+      payload: { itemId: item.id },
+      now: caps.now(),
+    });
+  });
+  if (step.rebased)
+    caps.voice.status(
+      item,
+      `Rebased onto main ${step.base.slice(0, 7)}, re-verifying.`,
+      `${item.id}:rebased:${step.head}`,
+    );
 }
 
-function upToDateRuleMessage(repository: string): string {
-  return `GitHub requires branches to be up to date before merging in ${repository}, so Paws updates the branch and waits for CI even when main changed other files. Turn off "Require branches to be up to date before merging" for the base branch to merge without an update.`;
-}
-
-function readString(payload: unknown, key: string): string | null {
-  if (typeof payload !== "object" || payload === null) return null;
-  const value = (payload as Record<string, unknown>)[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
+function failure(turn: LaneTurn, step: SerialMergeStep): string {
+  if (step.kind === "failed") return step.message;
+  if (turn.kind === "stopped") return turn.result.message ?? turn.result.outcome;
+  if (turn.kind === "blocked" && turn.block === "ci_failed") return turn.pull.readiness.message;
+  return step.kind;
 }

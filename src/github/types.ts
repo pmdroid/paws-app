@@ -1,6 +1,6 @@
+import type { Readiness } from "./readiness";
 export const MAX_TOKEN_TTL_MS = 60 * 60 * 1000;
 export const TOKEN_TTL_SKEW_MS = 30 * 1000;
-export const MAX_SHA_GUARD_CYCLES = 3;
 
 /** Permissions the Quick MVP GitHub App token is allowed to hold. */
 export const INSTALLATION_PERMISSIONS = {
@@ -142,26 +142,12 @@ export type SerialMergeResult = {
   head?: string;
   sha?: string;
   summary?: string;
-  cycle?: number;
   message?: string;
   failedChecks?: { name: string; url: string | null; logTail?: string | null }[];
   /** The files a rebase conflict stopped on. */
   conflictFiles?: string[];
   /** Every check on the head when CI failed, with the failing checks' log tails. */
   checks?: CiCheck[];
-};
-
-export type ReverifyInput = {
-  worktree: string;
-  base: string;
-  head: string;
-  cycle: number;
-  kept?: true;
-  overlap?: string[];
-};
-
-export type ReverifyResult = {
-  accepted: boolean;
-  outcome: SerialMergeResult["outcome"];
-  summary: string;
+  /** The readiness read just before the squash, set when it stopped the squash. */
+  readiness?: Readiness;
 };

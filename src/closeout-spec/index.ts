@@ -82,6 +82,7 @@ export {
   addReview,
   decision,
   digest,
+  candidatePolicyDigest,
   policyFixBudget,
   retryBaseline,
   reviewRequirements,

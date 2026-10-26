@@ -8,7 +8,6 @@ import {
   getWorkItem,
   listJobs,
   listRebaseReturns,
-  saveCheckpoint,
 } from "../db";
 import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
 import { REBASE_CONFLICT_INSTRUCTION, REBASE_CONFLICT_THOUGHT } from "./orders";
@@ -38,16 +37,21 @@ async function onMovedMain(h: MergeHarness, head: string, main: string): Promise
     .catch(() => false);
 }
 
-function backInQueue(h: MergeHarness, id: string): void {
+async function backInQueue(h: MergeHarness, id: string): Promise<void> {
   const item = getWorkItem(h.db, id)!;
   if (item.state === "queued") applyWorkItemEvent(h.db, id, "dispatched");
   applyWorkItemEvent(h.db, id, "turn_ended");
-  applyWorkItemEvent(h.db, id, "closeout_accepted");
-  saveCheckpoint(h.db, id, { ...item.checkpoint!, phase: "merge_queue" });
+  await h.closeout(id);
 }
 
-describe("advanceMerge on the serial merge", () => {
-  test("green CI merges the accepted head and records the remote merge", async () => {
+function reverifyJobs(h: MergeHarness): string[] {
+  return listJobs(h.db)
+    .filter((job) => job.queue === JOB_KIND.reverify)
+    .map((job) => job.jobKey ?? "");
+}
+
+describe("advanceMerge: the lane only merges mergeable(S)", () => {
+  test("green CI merges the accepted head with it as the expected head, without Closeout", async () => {
     const h = await start();
     const item = await h.addItem("ENG-1");
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
@@ -58,10 +62,10 @@ describe("advanceMerge on the serial merge", () => {
       pullNumber: 1,
       mergeSha: `fake-merge-${item.accepted}`,
     });
-    expect(h.verified.map((input) => input.head)).toEqual([item.accepted]);
+    expect(h.verified).toEqual([]);
   });
 
-  test("pending CI waits with the verified candidate, and the next pass merges without Closeout", async () => {
+  test("pending CI waits on the accepted head and the next pass merges it", async () => {
     const h = await start();
     const item = await h.addItem("ENG-1");
     h.state.ci = pendingCi;
@@ -70,123 +74,86 @@ describe("advanceMerge on the serial merge", () => {
       reason: "ci",
       base: item.base,
       head: item.accepted,
-      summary: "Re-verified.",
     });
-    expect(h.github.merged).toEqual([]);
-    h.state.ci = () => undefined;
-    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
-    expect(h.verified).toHaveLength(1);
-  });
-
-  test("with main moved set to wait for CI, a branch update merges without Closeout and says why", async () => {
-    const h = await start({ settings: { mainMoved: "ci" } });
-    const item = await h.addItem("ENG-1");
-    const main = await h.moveMain("side.txt", "side\n");
-    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
-    const merged = h.github.merged[0]!.expectedHeadSha;
-    expect(merged).not.toBe(item.accepted);
-    expect(await onMovedMain(h, merged, main)).toBe(true);
-    expect(h.verified).toEqual([]);
-    expect(h.accepted).toEqual([{ sha: merged, baseSha: main }]);
-    const updated = `Branch updated onto main ${main.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
-    expect(h.bodies("status")).toContain(updated);
-    expect(h.bodies("thought")).not.toContain(updated);
-  });
-
-  test("with Closeout after an update, a branch update runs Closeout on the new head", async () => {
-    const h = await start({ settings: { mainMoved: "closeout" } });
-    const item = await h.addItem("ENG-1");
-    const main = await h.moveMain("side.txt", "side\n");
-    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
-    expect(h.verified).toHaveLength(1);
-    expect(h.verified[0]).toMatchObject({ base: main });
-    expect(h.verified[0]!.head).not.toBe(item.accepted);
-    expect(h.github.merged[0]!.expectedHeadSha).toBe(h.verified[0]!.head);
-    expect(h.bodies("status")).toContain("Branch updated, running Closeout again.");
-    expect(h.bodies("thought")).not.toContain("Branch updated, running Closeout again.");
-  });
-
-  test("Closeout rejecting the updated head asks for Closeout help and merges nothing", async () => {
-    const h = await start();
-    await h.addItem("ENG-1");
-    await h.moveMain("side.txt", "side\n");
-    h.state.verdict = {
-      accepted: false,
-      outcome: "rejected",
-      summary: "The test fails.",
-      rejected: true,
-    };
-    expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
-    expect(h.closeoutHelp).toEqual(["ENG-1"]);
-    expect(h.github.merged).toEqual([]);
-  });
-
-  test("overlap only: main changed other files, so the accepted head merges without an update", async () => {
-    const h = await start({ settings: { mainMoved: "overlap" } });
-    const item = await h.addItem("ENG-1");
-    const main = await h.moveMain("side.txt", "side\n");
-    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
-    expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
-    expect(h.accepted).toEqual([{ sha: item.accepted, baseSha: main }]);
-    expect(h.verified).toEqual([]);
-    expect(h.bodies().filter((body) => body.startsWith("Branch updated"))).toEqual([]);
-    expect(h.bodies().filter((body) => body.startsWith("GitHub requires"))).toEqual([]);
-  });
-
-  test("overlap only with GitHub's up-to-date rule updates the branch, waits for CI and notes why once", async () => {
-    const h = await start({ settings: { mainMoved: "overlap" } });
-    const item = await h.addItem("ENG-1");
-    const main = await h.moveMain("side.txt", "side\n");
-    h.state.upToDateRule = true;
-    h.state.ci = pendingCi;
-    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
-    h.state.ci = () => undefined;
-    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
-    const merged = h.github.merged.map((merge) => merge.expectedHeadSha);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).not.toBe(item.accepted);
-    expect(await onMovedMain(h, merged[0]!, main)).toBe(true);
-    expect(h.verified).toEqual([]);
-    expect(h.bodies("afterPullRequest")).toEqual([
-      `GitHub requires branches to be up to date before merging in acme/app, so Paws updates the branch and waits for CI even when main changed other files. Turn off "Require branches to be up to date before merging" for the base branch to merge without an update.`,
-    ]);
-    expect(h.bodies("status")).toContain(
-      `Branch updated onto main ${main.slice(0, 7)}, waiting for CI.`,
-    );
-  });
-
-  test("main moving again before the merge sends the task back to Closeout", async () => {
-    const h = await start({ settings: { mainMoved: "closeout" } });
-    const item = await h.addItem("ENG-1");
-    h.state.pullHead = () => "c".repeat(40);
-    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
-    expect(
-      listJobs(h.db)
-        .filter((job) => job.queue === JOB_KIND.reverify)
-        .map((job) => job.jobKey),
-    ).toEqual([`reverify:ENG-1:${item.accepted}:merge:1`]);
     expect(h.github.merged).toEqual([]);
+    h.state.ci = () => undefined;
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(h.verified).toEqual([]);
   });
 
-  test("main moving again with Closeout off keeps waiting to update the branch", async () => {
-    const h = await start({ settings: { mainMoved: "ci" } });
-    await h.addItem("ENG-1");
+  test("main moved: the lane rebases, pushes and sends the new head to Closeout without merging", async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
+    const main = await h.moveMain("side.txt", "side\n");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    const rebased = await h.remoteHead("ENG-1");
+    expect(rebased).not.toBe(item.accepted);
+    expect(await onMovedMain(h, rebased, main)).toBe(true);
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
+    expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${rebased}:merge:1`]);
+    expect(h.github.merged).toEqual([]);
+    // After the pull request only the title moves.
+    expect(h.bodies("status")).toEqual([`Rebased onto main ${main.slice(0, 7)}, re-verifying.`]);
+    expect(h.bodies("thought")).toEqual([]);
+    expect(h.bodies("afterPullRequest")).toEqual([]);
+
+    expect(await h.closeout("ENG-1")).toBe(rebased);
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([rebased]);
+    expect(h.verified).toEqual([rebased]);
+  });
+
+  test("a head Closeout has not accepted goes back to verifying, unchanged", async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
+    await Bun.write(`${item.worktree}/late.txt`, "late\n");
+    await h.git(item.worktree, "add", ".");
+    await h.git(item.worktree, "commit", "-qm", "late change");
+    const head = await h.git(item.worktree, "rev-parse", "HEAD");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
+    expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:1`]);
+    expect(h.github.merged).toEqual([]);
+    expect(h.bodies()).toEqual([]);
+  });
+
+  test("a policy that changed or cannot be read since Closeout accepted the head sends it back", async () => {
+    for (const digest of ["sha256:changed-policy", null]) {
+      const h = await start();
+      const item = await h.addItem("ENG-1");
+      h.state.policyDigest = digest;
+      expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+      expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
+      expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:1`]);
+      expect(h.github.merged).toEqual([]);
+      await h.cleanup();
+      harness = undefined;
+    }
+  });
+
+  test("a pull request head that changed releases the lane: no rebase, no merge, place kept", async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
     h.state.pullHead = () => "c".repeat(40);
     expect(await h.pass("ENG-1")).toMatchObject({
       kind: "wait",
-      reason: "branch_update",
-      message: "Main moved again before the merge. Updating the branch and waiting for CI.",
+      reason: "ci",
+      head: item.accepted,
+      message: "The pull request head changed before the merge. Reading it again.",
     });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
+    expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
+    expect(reverifyJobs(h)).toEqual([]);
+    expect(h.github.merged).toEqual([]);
   });
 
-  test("a stop during the merge merges nothing and makes the pass obsolete", async () => {
+  test("a stop during the facts read merges nothing and makes the pass obsolete", async () => {
     const h = await start();
     await h.addItem("ENG-1");
-    h.state.verdict = () => {
+    h.state.ci = () => {
       h.state.stopped = true;
-      return { accepted: true, outcome: "merged", summary: "Re-verified.", rejected: false };
+      return undefined;
     };
     expect(await h.pass("ENG-1")).toEqual({ kind: "obsolete" });
     expect(h.github.merged).toEqual([]);
@@ -223,7 +190,9 @@ describe("advanceMerge on a rebase conflict", () => {
     await h.git(added.worktree, "reset", "-q", "--hard", "refs/paws/upstream-main");
     await Bun.write(`${added.worktree}/ok.txt`, "agent\n");
     await h.git(added.worktree, "commit", "-qam", "Resolve the conflict with main");
-    backInQueue(h, "ENG-1");
+    // Publication pushes the agent's resolution; the lane itself never pushes a head it merges.
+    await h.git(added.worktree, "push", "-qf", "origin", "HEAD:paws/ENG-1");
+    await backInQueue(h, "ENG-1");
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(await onMovedMain(h, h.github.merged[0]!.expectedHeadSha, main)).toBe(true);
   });
@@ -232,7 +201,7 @@ describe("advanceMerge on a rebase conflict", () => {
     const { h, main } = await conflicting();
     for (let attempt = 0; attempt < 3; attempt++) {
       expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-      backInQueue(h, "ENG-1");
+      await backInQueue(h, "ENG-1");
     }
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
@@ -253,7 +222,7 @@ describe("advanceMerge on a rebase conflict", () => {
     const { h } = await conflicting();
     for (let attempt = 0; attempt < 3; attempt++) {
       await h.pass("ENG-1");
-      backInQueue(h, "ENG-1");
+      await backInQueue(h, "ENG-1");
     }
     await h.moveMain("ok.txt", "from-main-again\n");
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
@@ -264,7 +233,7 @@ describe("advanceMerge on a rebase conflict", () => {
     const { h } = await conflicting();
     for (let attempt = 0; attempt < 3; attempt++) {
       await h.pass("ENG-1");
-      backInQueue(h, "ENG-1");
+      await backInQueue(h, "ENG-1");
     }
     enqueueJob(h.db, {
       queue: JOB_KIND.resume,

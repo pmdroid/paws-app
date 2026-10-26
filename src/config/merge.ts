@@ -8,8 +8,13 @@ export const MAX_CI_FIX_ATTEMPTS = 10;
 
 /** `queue`: one pull request at a time per repository. `ci-green`: each merges on its own green CI. */
 export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
-/** What happens when main moved before the merge. `closeout` was the PAS-389 switch. */
-export const MAIN_MOVED = ["overlap", "ci", "closeout"] as const;
+/**
+ * What happens when main moved before the merge. `closeout` is the only behaviour: the lane
+ * rebases and Closeout verifies the new head before it can merge. The key is deprecated.
+ */
+export const MAIN_MOVED = ["closeout"] as const;
+/** Values `main_moved` had before every rebased head went through Closeout. */
+const RETIRED_MAIN_MOVED = ["ci", "overlap"];
 
 export type MergeOrder = (typeof MERGE_ORDERS)[number];
 export type MainMoved = (typeof MAIN_MOVED)[number];
@@ -41,16 +46,28 @@ export type ResolvedMergeSettings = MergeChoice & {
   rule?: { project?: string; label: string };
 };
 
-export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "ci" };
+export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "closeout" };
 
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const PACKAGE_ROOT = /^(?:[^/*\s\\]+|\*)(?:\/(?:[^/*\s\\]+|\*))*\/?$/;
 const LABEL_MAX = 200;
 
+/**
+ * `main_moved` other than `"closeout"` merged heads Closeout never saw, so it is refused rather
+ * than read as `"closeout"`. The message names the value to use.
+ */
+export function mainMovedError(value: unknown): string {
+  const why = RETIRED_MAIN_MOVED.includes(value as string)
+    ? `${JSON.stringify(value)} is no longer supported: Paws runs Closeout on every rebased head before it merges`
+    : `must be "closeout"`;
+  return `${why}. Set it to "closeout" or remove the key.`;
+}
+
+const closeoutOnly = () => z.literal("closeout", { error: (issue) => mainMovedError(issue.input) });
 const override = {
   order: z.enum(MERGE_ORDERS).optional(),
-  mainMoved: z.enum(MAIN_MOVED).optional(),
+  mainMoved: closeoutOnly().optional(),
 };
 const projectId = z.string().regex(PROJECT_ID, "must be a Linear project id");
 const label = z
@@ -63,7 +80,7 @@ const label = z
     "has a control character",
   );
 const policySchema = z.strictObject({
-  default: z.strictObject({ order: z.enum(MERGE_ORDERS), mainMoved: z.enum(MAIN_MOVED) }),
+  default: z.strictObject({ order: z.enum(MERGE_ORDERS), mainMoved: closeoutOnly() }),
   projects: z
     .array(z.strictObject({ id: projectId, ...override }))
     .max(500)
@@ -86,7 +103,7 @@ const tomlSchema = z.object({
       projects: z
         .record(
           projectId,
-          z.strictObject({ order: override.order, main_moved: override.mainMoved }),
+          z.strictObject({ order: override.order, main_moved: closeoutOnly().optional() }),
         )
         .optional(),
       repositories: z
@@ -110,7 +127,7 @@ const tomlSchema = z.object({
             project: projectId.optional(),
             label,
             order: override.order,
-            main_moved: override.mainMoved,
+            main_moved: closeoutOnly().optional(),
           }),
         )
         .optional(),
@@ -197,7 +214,14 @@ export function parseMergeTables(
   text: string,
 ): Pick<PawsConfigFile, "mergeProjects" | "mergeRules" | "mergeRepositories"> {
   if (!/^\s*\[\[?\s*merge\.(projects|rules|repositories)/m.test(text)) return {};
-  const merge = tomlSchema.parse(Bun.TOML.parse(text)).merge;
+  const parsed = tomlSchema.safeParse(Bun.TOML.parse(text));
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(
+      `config.toml ${issue?.path.join(".") ?? "merge"} ${issue?.message ?? "is invalid"}`,
+    );
+  }
+  const merge = parsed.data.merge;
   const projects = Object.entries(merge?.projects ?? {});
   const repositories = Object.entries(merge?.repositories ?? {});
   return {
