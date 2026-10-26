@@ -76,10 +76,20 @@ async function fixture(agent: "claude" | "codex" = "claude") {
     existsSync(join(output, "events.jsonl"))
       ? readFileSync(join(output, "events.jsonl"), "utf8")
       : "";
-  /** Resolves the handover request once the worker's journal holds `marker`. */
-  const requestWhen = (marker: string) => async (signal: AbortSignal) => {
+  const until = async (marker: string, signal: AbortSignal) => {
     while (!events().includes(marker)) await delay(10, undefined, { signal });
   };
+  /**
+   * Paws asks for one handover once the worker's journal holds `marker`, with `limitMs` to
+   * finish it; it never asks again.
+   */
+  const requestWhen =
+    (marker: string, limitMs = 120_000) =>
+    async (sequence: number, signal: AbortSignal) => {
+      if (sequence > 1) await new Promise((_, reject) => signal.addEventListener("abort", reject));
+      await until(marker, signal);
+      return { deadline: Date.now() + limitMs };
+    };
   async function execute(
     steps: FakeScript["steps"],
     extra: Partial<Parameters<typeof executeRunnerCommand>[0]> = {},
@@ -138,6 +148,7 @@ async function fixture(agent: "claude" | "codex" = "claude") {
     execute,
     events,
     requestWhen,
+    until,
     sessionFile,
     toolCall,
     published,
@@ -233,7 +244,7 @@ test.skipIf(!linux)(
         { type: "write_file", path: join(context.checkout, "done.txt"), content: "done\n" },
         { type: "end" },
       ],
-      { handover: context.requestWhen('"toolCallId":"tool-1"'), handoverLimitMs: 150 },
+      { handover: context.requestWhen('"toolCallId":"tool-1"', 150), handoverReserveMs: 0 },
     );
     expect(context.events()).toContain('{"type":"handover","handedOver":false,"reason":"timeout"}');
     // The agent finished its turn on this runner, as if no handover had been asked for.
@@ -289,5 +300,93 @@ test.skipIf(!linux)(
     expect(readFileSync(join(clone, "draft.txt"), "utf8")).toBe("draft\n");
     const metadata = JSON.parse(readFileSync(join(context.output, "session.json"), "utf8"));
     expect(metadata.commitSha).toBe(result.candidateSha);
+  },
+);
+
+const TIMED_OUT = '{"type":"handover","handedOver":false,"reason":"timeout"}';
+
+test.skipIf(!linux)(
+  "a tool call running beside a waiting ask_team question holds the handover until it finishes",
+  async () => {
+    const context = await fixture();
+    const result = await context.execute(
+      [
+        context.sessionFile,
+        context.toolCall("in_progress"),
+        { type: "ask_team", question: "Which color should the button be?" },
+        context.toolCall("completed"),
+        { type: "end" },
+      ],
+      {
+        handover: context.requestWhen('"type":"question"', 300),
+        handoverReserveMs: 0,
+        // The question is answered once the handover gave up, so the turn can end.
+        answer: async (requestId, signal) => {
+          if (context.events().includes(`{"type":"closeout_policy","requestId":"${requestId}"}`))
+            return { answer: "{}" };
+          await context.until(TIMED_OUT, signal);
+          return { answer: "Blue" };
+        },
+      },
+    );
+    expect(context.events()).toContain(TIMED_OUT);
+    expect(result.run.handedOver).toBeUndefined();
+    expect(result.run.stopReason).toBe("end_turn");
+  },
+);
+
+test.skipIf(!linux)("Paws can ask again after a handover timed out", async () => {
+  const context = await fixture();
+  const result = await context.execute(
+    [
+      context.sessionFile,
+      { type: "write_file", path: join(context.checkout, "work.txt"), content: "work\n" },
+      context.toolCall("in_progress", 800),
+      context.toolCall("completed"),
+      { type: "hang" },
+    ],
+    {
+      handoverReserveMs: 0,
+      async handover(sequence, signal) {
+        if (sequence === 1) {
+          await context.until('"toolCallId":"tool-1"', signal);
+          return { deadline: Date.now() + 150 };
+        }
+        await context.until(TIMED_OUT, signal);
+        return { deadline: Date.now() + 120_000 };
+      },
+    },
+  );
+  expect(context.events()).toContain(TIMED_OUT);
+  expect(result.run.handedOver).toBe(true);
+  const clone = await context.published(result.candidateSha!);
+  expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
+  expect(existsSync(join(context.output, "session.json"))).toBe(true);
+});
+
+test.skipIf(!linux)(
+  "a handover that reaches its deadline after the interrupt publishes the WIP commit only",
+  async () => {
+    const context = await fixture();
+    const result = await context.execute(
+      [
+        context.sessionFile,
+        { type: "write_file", path: join(context.checkout, "work.txt"), content: "work\n" },
+        {
+          type: "update",
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: "thinking" },
+          },
+        },
+        { type: "hang" },
+      ],
+      { handover: context.requestWhen('"thinking"', 50), handoverReserveMs: 0 },
+    );
+    expect(result.run.handedOver).toBe(true);
+    const clone = await context.published(result.candidateSha!);
+    expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
+    expect(existsSync(join(context.output, "session.json"))).toBe(false);
+    expect(existsSync(join(context.output, "session.ndjson.gz"))).toBe(false);
   },
 );

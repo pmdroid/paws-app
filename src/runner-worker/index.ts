@@ -66,7 +66,7 @@ import {
 import {
   readRunnerAnswer,
   runnerFollowUpRequestId,
-  RUNNER_HANDOVER_REQUEST_ID,
+  runnerHandoverRequestId,
 } from "../runner-answers";
 import {
   installRuntimes,
@@ -88,7 +88,6 @@ import {
   RunnerArtifactSchema,
   RunnerEventSchema,
   RunnerHelperResultSchema,
-  RUNNER_HANDOVER_LIMIT_MS,
   RUNNER_SKILL_FOLDERS,
   type RunnerArtifact,
   type RunnerEvent,
@@ -145,11 +144,16 @@ export interface RunnerWorkerOptions {
   providerCli?: (cli: "claude" | "codex") => string;
   /** The largest gzipped Claude session bundle. Tests lower it. */
   sessionSnapshotMaxBytes?: number;
-  /** Resolves once Paws asks the runner to hand this run over to another runner. */
-  handover?: (signal: AbortSignal) => Promise<void>;
-  /** How long a handover waits for the current tool call. Tests lower it. */
-  handoverLimitMs?: number;
+  /**
+   * Resolves once Paws asks for the `sequence`th handover of this run, with the time (ms since
+   * the epoch) by which that handover must finish.
+   */
+  handover?: (sequence: number, signal: AbortSignal) => Promise<{ deadline: number }>;
+  /** The part of a handover's time kept for the WIP commit and the session snapshot. */
+  handoverReserveMs?: number;
 }
+
+export const HANDOVER_RESERVE_MS = 30_000;
 
 export const HANDOVER_COMMIT_MESSAGE =
   "Save work in progress to hand the session to another runner";
@@ -767,13 +771,14 @@ export async function executeRunnerCommand(
           });
         }
     }
-    // A handover stops the agent only between tool calls, or while ask_team waits for a person.
-    const toolCalls = new Set<string>();
+    // A handover stops the agent only when no tool call runs but ask_team calls waiting for a
+    // person. A call is ask_team when the agent names it so; any other must finish first.
+    const toolCalls = new Map<string, { askTeam: boolean }>();
     let waitingForAnswer = 0;
-    const safePoint = () => toolCalls.size === 0 || waitingForAnswer > 0;
+    const safePoint = () =>
+      [...toolCalls.values()].every((call) => call.askTeam && waitingForAnswer > 0);
     const handoverAbort = new AbortController();
     const handoverWatch = new AbortController();
-    let handoverStarted = false;
     const earlierSession =
       command.type === "run"
         ? restoreRequest
@@ -857,11 +862,14 @@ export async function executeRunnerCommand(
             (event.update.sessionUpdate === "tool_call" ||
               event.update.sessionUpdate === "tool_call_update")
           ) {
-            const status = event.update.status;
-            if (status === "completed" || status === "failed")
-              toolCalls.delete(event.update.toolCallId);
-            else if (event.update.sessionUpdate === "tool_call" || status)
-              toolCalls.add(event.update.toolCallId);
+            const { status, toolCallId } = event.update;
+            if (status === "completed" || status === "failed") toolCalls.delete(toolCallId);
+            else if (event.update.sessionUpdate === "tool_call" || status) {
+              const named = `${event.update.title ?? ""} ${JSON.stringify(event.update["_meta"] ?? {})}`;
+              toolCalls.set(toolCallId, {
+                askTeam: toolCalls.get(toolCallId)?.askTeam || named.includes("ask_team"),
+              });
+            }
           }
           if (restored && restoreRequest && event.type === "session_started")
             reportRestore(
@@ -1053,28 +1061,29 @@ export async function executeRunnerCommand(
         : runAgent;
     const handover =
       command.type === "run" && options.handover && installFailure === undefined
-        ? (async () => {
-            await options.handover!(handoverWatch.signal);
-            handoverStarted = true;
-            const deadline =
-              performance.now() + (options.handoverLimitMs ?? RUNNER_HANDOVER_LIMIT_MS);
-            while (!safePoint()) {
-              if (performance.now() >= deadline) {
-                console.warn(
-                  JSON.stringify({ event: "handover_timed_out", executionId: job.executionId }),
-                );
-                emit({ type: "handover", handedOver: false, reason: "timeout" });
-                return false;
+        ? (async (): Promise<number | null> => {
+            // A handover that found no safe point in time leaves the session running; Paws may
+            // ask again, and each request gets the whole wait anew.
+            for (let sequence = 1; ; sequence++) {
+              const { deadline } = await options.handover!(sequence, handoverWatch.signal);
+              // The interrupt comes early enough to commit and snapshot before the deadline.
+              const latest = deadline - (options.handoverReserveMs ?? HANDOVER_RESERVE_MS);
+              while (!safePoint() && Date.now() < latest)
+                await delay(50, undefined, { signal: handoverWatch.signal });
+              if (safePoint() && Date.now() < latest) {
+                // The same interrupt a follow-up uses: the agent stops, its session stays intact.
+                handoverAbort.abort(FOLLOW_UP_INTERRUPTION);
+                return deadline;
               }
-              await delay(50, undefined, { signal: handoverWatch.signal });
+              console.warn(
+                JSON.stringify({ event: "handover_timed_out", executionId: job.executionId }),
+              );
+              emit({ type: "handover", handedOver: false, reason: "timeout" });
             }
-            // The same interrupt a follow-up uses: the agent stops and its session stays intact.
-            handoverAbort.abort(FOLLOW_UP_INTERRUPTION);
-            return true;
           })().catch((error: unknown) => {
             if (!handoverWatch.signal.aborted)
               journalCaught(error, "runner-worker.executeRunnerCommand.handover", command.itemId);
-            return false;
+            return null;
           })
         : undefined;
     const run: RunAgentResult =
@@ -1092,13 +1101,14 @@ export async function executeRunnerCommand(
           ? await runWithFollowUps(agent, options.followUp, runner)
           : await runner(agent);
     handoverWatch.abort();
+    const handoverDeadline = (await handover) ?? null;
     const handedOver =
       command.type === "run" &&
-      (await handover) === true &&
+      handoverDeadline !== null &&
       run.cancelled &&
       run.agentExited &&
       !options.signal?.aborted;
-    if (handoverStarted && !handedOver)
+    if (handoverDeadline !== null && !handedOver)
       console.warn(JSON.stringify({ event: "handover_skipped", executionId: job.executionId }));
     // The agent never opened a session, so the restored one did not load either.
     if (restored) reportRestore({ restored: false, reason: "load" });
@@ -1242,8 +1252,10 @@ export async function executeRunnerCommand(
       command.profile.agent === "claude" &&
       installFailure === undefined &&
       run.agentExited &&
-      (handedOver ||
-        (!run.cancelled && run.stopReason !== "cancelled" && run.stopReason !== "error")) &&
+      // A handover past its deadline publishes the WIP commit only.
+      (handedOver
+        ? Date.now() < handoverDeadline!
+        : !run.cancelled && run.stopReason !== "cancelled" && run.stopReason !== "error") &&
       run.sessionId &&
       !options.signal?.aborted
     )
@@ -1420,9 +1432,13 @@ export async function runRunnerWorker(options: {
     },
     ...(job.command.type === "run"
       ? {
-          async handover(signal: AbortSignal) {
-            while (!readRunnerAnswer(spool, options.executionId, RUNNER_HANDOVER_REQUEST_ID))
+          async handover(sequence: number, signal: AbortSignal) {
+            const requestId = runnerHandoverRequestId(sequence);
+            for (;;) {
+              const request = readRunnerAnswer(spool, options.executionId, requestId);
+              if (request) return { deadline: Number(request.answer) };
               await delay(250, undefined, { signal });
+            }
           },
         }
       : {}),
