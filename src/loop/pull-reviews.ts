@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
   fixRounds,
   getPullReview,
+  getItemPullRequest,
   getWorkItem,
   immediate,
   recordPullReview,
@@ -49,17 +50,24 @@ export function recordReviewDelivery(
   const repository = record(payload.repository);
   const owner = record(repository.owner).login;
   const repo = repository.name;
+  const headRepository = record(head.repo);
   if (
     typeof reviewId !== "number" ||
     typeof pullNumber !== "number" ||
     typeof branch !== "string" ||
     typeof owner !== "string" ||
-    typeof repo !== "string"
+    typeof repo !== "string" ||
+    // Paws pushes its branch to the base repository. A fork's pull request can reuse the branch
+    // name, so the head must live in the same repository.
+    typeof headRepository.id !== "number" ||
+    headRepository.id !== repository.id
   )
     return false;
   return immediate(db, () => {
     const item = itemForBranch(db, owner, repo, branch);
     if (item === null) return false;
+    const opened = getItemPullRequest(db, item.id);
+    if (opened !== null && opened.pullNumber !== pullNumber) return false;
     return recordPullReview(db, {
       reviewId,
       itemId: item.id,

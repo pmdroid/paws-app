@@ -9,6 +9,7 @@ import {
   getPullReview,
   getWorkItem,
   insertQueuedItem,
+  recordItemPullRequest,
   listJobs,
   migrate,
   openDatabase,
@@ -84,6 +85,8 @@ function setup(threads = THREADS) {
     body?: string;
     action?: string;
     branch?: string;
+    headRepository?: number | null;
+    pull?: number;
   }) =>
     acceptGitHubDelivery(
       db,
@@ -100,10 +103,14 @@ function setup(threads = THREADS) {
             user: { login: "rev" },
           },
           pull_request: {
-            number: 7,
-            head: { ref: review.branch ?? worktreeBranch(getWorkItem(db, "eng-1")!), sha: "h" },
+            number: review.pull ?? 7,
+            head: {
+              ref: review.branch ?? worktreeBranch(getWorkItem(db, "eng-1")!),
+              sha: "h",
+              repo: review.headRepository === null ? null : { id: review.headRepository ?? 11 },
+            },
           },
-          repository: { name: "one", owner: { login: "acme" } },
+          repository: { id: 11, name: "one", owner: { login: "acme" } },
         }),
       },
       5,
@@ -237,5 +244,16 @@ describe("comment-only and other reviews", () => {
     deliver({ id: 2, state: "changes_requested", action: "edited" });
     deliver({ id: 3, state: "changes_requested", branch: "someone/else" });
     expect(reviewJobs(db)).toHaveLength(0);
+  });
+
+  test("a fork's pull request with the same branch name, or another pull request, is ignored", () => {
+    const { db, deliver } = setup();
+    deliver({ id: 4, state: "changes_requested", headRepository: 99 });
+    deliver({ id: 5, state: "changes_requested", headRepository: null });
+    recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+    deliver({ id: 6, state: "changes_requested", pull: 8 });
+    expect(reviewJobs(db)).toHaveLength(0);
+    deliver({ id: 7, state: "changes_requested" });
+    expect(getPullReview(db, 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
   });
 });
