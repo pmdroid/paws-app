@@ -21,6 +21,7 @@ export type {
   DecisionName,
   DecisionPolicy,
   DecisionWarning,
+  EarlierFinding,
   EvidenceApproval,
   EvidenceApprovalMode,
   EvidenceInvalid,
@@ -85,6 +86,7 @@ export {
   candidatePolicyDigest,
   policyCheckPaths,
   policyFixBudget,
+  preExistingFindings,
   retryBaseline,
   reviewRequirements,
   run,
@@ -107,7 +109,16 @@ export type {
   ValidateResult,
 } from "./facade";
 
-export { loadReviewMaterial, renderReviewPrompt } from "./review/index";
+export {
+  earlierFindings,
+  isPreExisting,
+  loadReviewMaterial,
+  parseChangedLines,
+  parseLocation,
+  renderEarlierFindings,
+  renderReviewPrompt,
+} from "./review/index";
+export type { ChangedLines, FindingLocation, ReviewMaterial } from "./review/index";
 export { createReviewer, FINDING_FORMAT, formatFixFeedback, parseFindings } from "./review/index";
 export type {
   FeedbackRecord,

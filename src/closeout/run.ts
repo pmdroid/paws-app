@@ -14,15 +14,16 @@ import {
   type CandidateIdentity,
   type CloseoutItem,
   type DecisionDocument,
-  type Finding,
   type GateOutcome,
   type GateResult,
+  type ReviewFindings,
 } from "./types";
 import { isSha, readHead } from "./worktree";
 import {
   addReview,
   credentialSecrets,
   policyFixBudget,
+  preExistingFindings,
   loadReviewMaterial,
   renderReviewPrompt,
   retryBaseline as readRetryBaseline,
@@ -69,7 +70,7 @@ export type Evaluation = {
   exitCode: number | null;
   decision: DecisionDocument | null;
   error?: string;
-  reviewFindings: Array<{ itemId: string; findings: Finding[] }>;
+  reviewFindings: ReviewFindings[];
   head: string;
   bypasses?: readonly CloseoutBypass[];
 };
@@ -197,7 +198,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   }
 
   const evidenceDir = evidencePath(input.taskId, input.pawsHome);
-  const reviewFindings: Array<{ itemId: string; findings: Finding[] }> = [];
+  const reviewFindings: ReviewFindings[] = [];
   const reviewAttempts = new Map<string, number>();
   const metrics: ReviewMetrics = new Map();
   const early = await startParallelReviews(
@@ -307,7 +308,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
         item.id,
         "blocked",
         detail,
-        found ? findingText(found.findings) : null,
+        found ? findingText(found) : null,
         item.attempt ?? reviewAttempts.get(item.id) ?? null,
         null,
         metrics.get(item.id),
@@ -594,7 +595,7 @@ type ReviewMetrics = Map<string, { durationMs: number; tokens: number | null }>;
 async function startParallelReviews(
   input: EvaluateInput,
   evidenceDir: string,
-  reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+  reviewFindings: ReviewFindings[],
   reviewAttempts: Map<string, number>,
   metrics: ReviewMetrics,
 ): Promise<{ gaps: CloseoutItem[]; done: Promise<Evaluation | null> } | undefined> {
@@ -684,7 +685,7 @@ async function reviewWithRetries<T>(input: EvaluateInput, review: () => Promise<
 async function addReviewEvidence(
   input: EvaluateInput,
   items: CloseoutItem[],
-  reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+  reviewFindings: ReviewFindings[],
   reviewAttempts: Map<string, number>,
   metrics: ReviewMetrics,
   evidenceDir: string,
@@ -725,6 +726,7 @@ async function addReviewEvidence(
                   request.base,
                   request.head,
                   request.item.scope,
+                  request.earlier,
                 ),
                 taskId: input.taskId,
                 itemId: request.item.id,
@@ -797,7 +799,13 @@ async function addReviewEvidence(
       );
       return failure("blocked", null, detail, input.head);
     }
-    reviewFindings.push({ itemId: item.id, findings: added.record.findings });
+    const findings = added.record.findings;
+    const preExisting = await preExistingFindings(input.worktree, input.base, input.head, findings);
+    reviewFindings.push({
+      itemId: item.id,
+      findings,
+      ...(preExisting.length > 0 ? { preExisting } : {}),
+    });
     reviewAttempts.set(item.id, added.record.attempt);
   }
   return null;
@@ -853,7 +861,7 @@ function noteReview(
 function publishReviews(
   input: EvaluateInput,
   decision: DecisionDocument,
-  reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+  reviewFindings: ReviewFindings[],
   reviewAttempts: Map<string, number>,
   metrics: ReviewMetrics,
 ): void {
@@ -878,7 +886,7 @@ function publishReviews(
       item.id,
       reviewStepState(item.state),
       item.message,
-      found ? findingText(found.findings) : null,
+      found ? findingText(found) : null,
       attempt ?? null,
       reviewEvidencePath,
       metrics.get(item.id),
@@ -894,11 +902,14 @@ function reviewStepState(state: string): CloseoutStepState {
   return "blocked";
 }
 
-function findingText(findings: readonly Finding[]): string | null {
-  if (findings.length === 0) return null;
+function findingText(review: ReviewFindings): string | null {
+  if (review.findings.length === 0) return null;
   return scrub(
-    findings
-      .map((finding) => `${finding.severity} ${finding.location}: ${finding.explanation}`)
+    review.findings
+      .map(
+        (finding) =>
+          `${finding.severity} ${finding.location}: ${finding.explanation}${review.preExisting?.includes(finding) ? " (pre-existing, does not block)" : ""}`,
+      )
       .join("\n"),
   );
 }

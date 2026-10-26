@@ -98,7 +98,7 @@ function fixture(cap: unknown = 12, scope = "task", extra: Record<string, unknow
     },
     next() {
       writeFileSync(join(repo, "change.txt"), `${head}\n`);
-      git("-C", repo, "add", "change.txt");
+      git("-C", repo, "add", ".");
       git("-C", repo, "commit", "-m", "Next candidate");
       head = git("-C", repo, "rev-parse", "HEAD");
     },
@@ -144,7 +144,7 @@ test("new findings exceed the ordinary budget across commits and sessions", asyn
   const fx = fixture();
   try {
     for (let round = 0; round < 5; round += 1) {
-      const result = await fx.review([finding(`src/file-${round}.ts:12:4`)]);
+      const result = await fx.review([finding(`src/file-${round}.ts`)]);
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.record.attempt).toBe(1);
       const observed = await decision(fx.input());
@@ -162,6 +162,10 @@ test("new findings exceed the ordinary budget across commits and sessions", asyn
 test("line drift, duplicate keys and nonconsecutive repeats exhaust cumulatively", async () => {
   const fx = fixture();
   try {
+    // Every line of src/a.ts is new in base..head, so no finding is pre-existing.
+    mkdirSync(join(fx.repo, "src"));
+    writeFileSync(join(fx.repo, "src/a.ts"), "line\n".repeat(100));
+    fx.next();
     for (const locations of [
       ["src/a.ts:12", "src/a.ts:40:7"],
       ["src/b.ts"],
