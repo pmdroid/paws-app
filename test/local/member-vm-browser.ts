@@ -124,7 +124,7 @@ async function pageFor(browser: Browser, manifest: Manifest, identity: "member" 
   await page.goto(`${manifest.origin}/status/runners`);
   // Observers get the list without the member controls.
   if (identity === "member")
-    await page.getByRole("button", { name: "Add a host", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Add a runner", exact: true }).waitFor();
   else await page.locator("[data-runner-row]").first().waitFor();
   return page;
 }
@@ -201,7 +201,7 @@ try {
   assert.equal(await member.locator("[data-vm-step]").count(), 4);
   assert.deepEqual(
     await member.locator("[data-vm-step] .runner-skill-name b, [data-vm-step] b").allTextContents(),
-    ["Create the VM", "Install the runner", "Pair with Paws", "First heartbeat"],
+    ["Create the VM", "Install the runner", "Enroll with Paws", "First heartbeat"],
   );
   assert.equal(await create.count(), 0);
   await member.screenshot({ path: join(output, "started-desktop.png"), fullPage: true });

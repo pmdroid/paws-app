@@ -153,7 +153,7 @@ describe("Agent Closeout", () => {
       expect(html).toContain("attempt 2 of 3 · 9m 25s");
       expect(html).not.toContain("is running");
       // The issue page holds every engine run, so it does not send the reader to another page.
-      expect(html).not.toContain("This task continues in run");
+      expect(html).not.toContain("This item continues in run");
       expect(html).not.toContain(routeHref({ view: "runs", id: CURRENT }));
     }
   });
@@ -168,7 +168,7 @@ describe("Agent Closeout", () => {
     expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   });
 
-  test("the task's current run shows its own Agent Closeout under the same run page", () => {
+  test("the item's current run shows its own Agent Closeout under the same run page", () => {
     const snapshot = endedRun();
     snapshot.runs = snapshot.runs.map((run) =>
       run.id === "r-102" ? { ...run, attempts: ["r-102", CURRENT] } : run,
@@ -179,7 +179,7 @@ describe("Agent Closeout", () => {
     const html = runPage(snapshot, {}, CURRENT);
     expect(html).toContain("test is running · attempt 2 of 3");
     expect(html).not.toContain("Stopped: the run ended before this check finished");
-    expect(html).not.toContain("This task continues in run");
+    expect(html).not.toContain("This item continues in run");
   });
 });
 

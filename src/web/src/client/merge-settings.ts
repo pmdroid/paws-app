@@ -107,7 +107,7 @@ function overrides(value: Partial<MergeChoice>): boolean {
 export function renderMergeSettings(view: View): string {
   if (view.denied)
     return '<p class="sub">Only workspace owners and admins can change merging settings.</p>';
-  const intro = '<p class="sub">A task keeps the settings it had when it started.</p>';
+  const intro = '<p class="sub">An item keeps the settings it had when it started.</p>';
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading merging settings…")}</div>${view.error ? '<button class="btn" type="button" data-merge="reload">Try again</button>' : ""}`;
   const data = view.data;
@@ -115,7 +115,7 @@ export function renderMergeSettings(view: View): string {
   const feedback = view.error
     ? `<p class="settings-message err" role="alert">${esc(view.error)}</p>`
     : view.saved
-      ? '<p class="settings-message" role="status">Merging settings saved. Tasks that start from now on use them.</p>'
+      ? '<p class="settings-message" role="status">Merging settings saved. Items that start from now on use them.</p>'
       : "";
   const choices = data.choices;
   const listed = new Set(data.projects.map((project) => project.id));
@@ -142,7 +142,7 @@ export function renderMergeSettings(view: View): string {
           : '<p class="sub">No project overrides.</p>'
       }
       <div class="settings-add"><label for="merge-new-project">Project</label>${projectPicker}<div class="row"><button class="btn" type="button" data-merge="add-project">Add project</button></div></div></div></section>
-      <section class="settings-section"><div class="settings-label"><h2>Issue rules</h2><p class="sub">A rule matches a Linear label in a project, or in any project, and wins over the project setting. The labels are read when a task starts.</p></div><div class="col">
+      <section class="settings-section"><div class="settings-label"><h2>Issue rules</h2><p class="sub">A rule matches a Linear label in a project, or in any project, and wins over the project setting. The labels are read when an item starts.</p></div><div class="col">
       ${
         data.rules.length
           ? data.rules

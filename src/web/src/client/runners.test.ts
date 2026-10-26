@@ -381,7 +381,7 @@ describe("runner details", () => {
     expect(html).toContain(
       "<span>Version not reported</span><span>OS not reported</span><span>Never seen</span>",
     );
-    expect(html).toContain("This runner has not reported host metrics yet.");
+    expect(html).toContain("This runner has not reported runner metrics yet.");
     expect(html).not.toContain('class="gauge"');
     expect(html).not.toContain("Updated");
   });
@@ -402,7 +402,7 @@ describe("runner details", () => {
   test("members who do not own the host see disabled sharing settings", () => {
     const html = runnerDetailMarkup(runner, { ...view, userId: "someone", role: "member" });
     expect(html).toMatch(/data-runner-sharing="[^"]+"[^>]* disabled/);
-    expect(html).toContain("The host owner controls its sharing settings.");
+    expect(html).toContain("The runner owner controls its sharing settings.");
     expect(html).not.toContain(">Pause<");
   });
 
@@ -435,12 +435,10 @@ describe("runner details", () => {
     test("owners and admins edit it next to the slots, up to the host limit", () => {
       for (const role of ["owner", "admin"]) {
         const html = runnerDetailMarkup(tuned, { ...view, role });
-        expect(html).toContain(
-          '<h3>Concurrency</h3><div><form class="row" data-runner-concurrency=',
-        );
+        expect(html).toContain('<h3>Slots</h3><div><form class="row" data-runner-concurrency=');
         expect(html).toContain(`data-runner-concurrency="${runner.id}"`);
-        expect(html).toContain('aria-label="Concurrency, from 1 to 4" value="2"');
-        expect(html).toContain("Host limit 4. Runner applied 2.");
+        expect(html).toContain('aria-label="Slots, from 1 to 4" value="2"');
+        expect(html).toContain("Runner limit 4. Runner applied 2.");
       }
       expect(runnerDetailMarkup(tuned, { ...view, busy: true })).toMatch(
         /name="concurrency"[^>]* disabled/,
@@ -452,7 +450,7 @@ describe("runner details", () => {
       for (const role of ["member", "observer"]) {
         const html = runnerDetailMarkup(tuned, { ...view, userId: role, role });
         expect(html).toContain(
-          '<h3>Concurrency</h3><div>2 <span class="muted">Host limit 4. Runner applied 2.</span></div>',
+          '<h3>Slots</h3><div>2 <span class="muted">Runner limit 4. Runner applied 2.</span></div>',
         );
         expect(html).not.toContain("data-runner-concurrency");
       }
@@ -466,7 +464,7 @@ describe("runner details", () => {
       expect(html).toContain("Update the runner to change it here.");
       expect(html).not.toContain("data-runner-concurrency");
       expect(runnerDetailMarkup({ ...tuned, status: "revoked" }, view)).not.toContain(
-        "<h3>Concurrency</h3>",
+        "<h3>Slots</h3>",
       );
     });
   });
@@ -531,12 +529,12 @@ describe("live host metrics", () => {
     const stale = card({ reportedAt: now - 31_000 });
     expect(statusLine(stale)).toBe('<span class="tag ok">Idle</span><span>Stale</span>');
     expect(stale).toContain('<dl class="runner-gauges stale">');
-    expect(stale).toContain('aria-label="Host metrics" data-stale=""');
+    expect(stale).toContain('aria-label="Runner metrics" data-stale=""');
   });
 
   test("a runner without metrics says so instead of drawing empty bars", () => {
     const html = runnerDetailMarkup({ ...runner, metrics: null }, view);
-    expect(html).toContain("This runner has not reported host metrics yet.");
+    expect(html).toContain("This runner has not reported runner metrics yet.");
     expect(html).not.toContain("runner-gauges");
     const partial = card({ cpuPercent: null, diskTotalBytes: null });
     expect(gauge(partial, "cpu")).toContain("Not reported");
