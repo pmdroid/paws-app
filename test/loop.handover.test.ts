@@ -38,8 +38,21 @@ test("a run handed over without a question stays running with its WIP commit as 
   expect(result.checkpoint, result.detail).toMatchObject({ wipCommit: result.wip });
 }, 90_000);
 
-/** The remote runner hands the run over: it optionally asks, then Paws holds the WIP commit. */
-async function handOver(options: { ask?: string }) {
+test("a handover that fails after the interrupt sends the item back to the agent on the same session", async () => {
+  const result = await handOver({ failure: "snapshot" });
+  expect(result.state, result.detail).toBe("running");
+  expect(result.prompts.length, result.detail).toBe(2);
+  expect(result.prompts[1], result.detail).toContain("the move failed after your turn was stopped");
+}, 90_000);
+
+/**
+ * The remote runner hands the run over: it optionally asks, then Paws holds the WIP commit. With
+ * `failure`, the first turn's handover fails after the interrupt instead.
+ */
+async function handOver(options: {
+  ask?: string;
+  failure?: "commit" | "snapshot" | "publication";
+}) {
   const layout = await repoLayout("paws-handover-loop-");
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
@@ -57,6 +70,7 @@ async function handOver(options: { ask?: string }) {
   let wip = "";
   let handed = false;
   let sequence = 0;
+  const prompts: string[] = [];
   const orchestrator = attachOrchestrator({
     db,
     admission: workspaceAdmission(db),
@@ -74,13 +88,18 @@ async function handOver(options: { ask?: string }) {
       agentForItem() {
         return async (input: RunAgentOptions): Promise<RunAgentResult> => {
           if (input.prepareOnly) return runAgent(input);
+          prompts.push(input.prompt);
+          const failing = options.failure !== undefined && prompts.length === 1;
           if (options.ask)
             await input.askTeam!.ask(
               { question: options.ask },
               { itemId: input.itemId, runId: input.runId, role: input.role, signal: input.signal! },
             );
           // What the remote backend leaves after importing the runner's WIP commit.
-          writeFileSync(path.join(input.worktreePath, "wip.txt"), "half done\n");
+          writeFileSync(
+            path.join(input.worktreePath, "wip.txt"),
+            `half done, turn ${prompts.length}\n`,
+          );
           const git = (args: string[]) =>
             execFileSync("git", ["-C", input.worktreePath, ...args], {
               encoding: "utf8",
@@ -100,12 +119,12 @@ async function handOver(options: { ask?: string }) {
             baseSha: git(["rev-parse", "HEAD~1"]),
             wipCommit: wip,
           });
-          handed = true;
+          handed = !failing;
           return {
             role: input.role,
             stopReason: "cancelled",
             cancelled: false,
-            handedOver: true,
+            ...(failing ? { handoverFailure: options.failure } : { handedOver: true }),
             timedOut: false,
             authRequired: false,
             agentExited: true,
@@ -136,6 +155,9 @@ async function handOver(options: { ask?: string }) {
     const started = () => handed;
     while (Date.now() < deadline && !started()) {
       const job = await tickWithRestarts(jobs, orchestrator, db);
+      // The follow-up after a failed handover waits for admission like any resumed turn.
+      orchestrator.reconcileExecution();
+      await jobs.tick(["run.resume"]);
       if (job === null) {
         outbox.tick();
         await Bun.sleep(20);
@@ -151,6 +173,7 @@ async function handOver(options: { ask?: string }) {
     const item = listWorkItems(db)[0]!;
     return {
       wip,
+      prompts,
       state: stateOf(db, "ENG-8"),
       checkpoint: getWorkItem(db, item.id)?.checkpoint,
       questions: tracker.questions.map((question) => question.body),

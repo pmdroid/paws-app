@@ -235,7 +235,14 @@ async function setup() {
       }),
     );
   }
-  function submit(command: RunCommand, extra: { handedOver?: true; candidateSha?: string }) {
+  function submit(
+    command: RunCommand,
+    extra: {
+      handedOver?: true;
+      candidateSha?: string;
+      handoverFailure?: "commit" | "snapshot" | "publication";
+    },
+  ) {
     results.submit({
       runnerId,
       runId: command.runId,
@@ -245,7 +252,7 @@ async function setup() {
         executionId: workspaceId(),
         commandId: command.id,
         role: "implementer",
-        stopReason: extra.handedOver ? "cancelled" : "end_turn",
+        stopReason: extra.handedOver || extra.handoverFailure ? "cancelled" : "end_turn",
         timedOut: false,
         cancelled: false,
         authRequired: false,
@@ -410,7 +417,30 @@ test("a handover the runner cannot finish within 2 minutes is reported and the s
   expect(result.handedOver).toBeUndefined();
   expect(result.stopReason).toBe("end_turn");
   expect(notices).toContain(
-    "A couldn't hand this session over within 2 minutes, so it keeps running there.\n",
+    "A found no safe point to hand this session over within 2 minutes, so it keeps running there.\n",
+  );
+});
+
+test("a handover that fails after the interrupt is reported with its reason, and the run keeps its session here", async () => {
+  const record = context.item();
+  let outcome: unknown;
+  const { result, notices } = await context.turn(record, async (command) => {
+    const handing = context.backend.handOverItem(record.id);
+    await context.next();
+    context.events(command, [
+      { type: "handover_interrupted" },
+      { type: "handover", handedOver: false, reason: "snapshot" },
+    ]);
+    outcome = await handing;
+    context.submit(command, { handoverFailure: "snapshot" });
+  });
+  expect(outcome).toEqual({ status: "failed", reason: "snapshot" });
+  expect(result.handedOver).toBeUndefined();
+  expect(result.handoverFailure).toBe("snapshot");
+  // The session id stays with this runner, so the next turn loads it here.
+  expect(result.sessionId).toBe("claude-session");
+  expect(notices).toContain(
+    "A stopped this session for a move but couldn't save its Claude session, so it stays there and goes on with its next turn.\n",
   );
 });
 

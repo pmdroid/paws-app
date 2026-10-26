@@ -1168,9 +1168,9 @@ export function createRemoteAgentRunner(options: {
                 await emit({
                   type: "progress",
                   text:
-                    event.reason === "snapshot"
-                      ? `${runner} couldn't save this session for a move, so it keeps running there.\n`
-                      : `${runner} couldn't hand this session over within 2 minutes, so it keeps running there.\n`,
+                    event.reason === "timeout"
+                      ? `${runner} found no safe point to hand this session over within 2 minutes, so it keeps running there.\n`
+                      : `${runner} stopped this session for a move but couldn't ${HANDOVER_FAILURE_STEP[event.reason ?? "publication"]}, so it stays there and goes on with its next turn.\n`,
                 });
               }
               // Runners from before the start line named the runtimes still report the install.
@@ -1560,6 +1560,12 @@ export {
   HANDOVER_RUNNER_VERSION,
   type RunnerHandoverOutcome,
 } from "./handover";
+
+const HANDOVER_FAILURE_STEP = {
+  commit: "commit its work in progress",
+  snapshot: "save its Claude session",
+  publication: "publish its work in progress and session",
+} as const;
 
 function agentName(agent: string): string {
   return agent.charAt(0).toUpperCase() + agent.slice(1);
