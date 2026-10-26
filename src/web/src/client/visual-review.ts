@@ -171,7 +171,7 @@ function askCard(
       const strokes = drawnStrokes(id, entry.id);
       const media =
         entry.kind === "image"
-          ? `<img src="${esc(evidenceFileUrl(entry.id, engineUrl))}" alt="${esc(entry.displayName)}" loading="lazy" decoding="async" />${strokesOverlay(strokes)}`
+          ? `<span class="visual-review-media"><img src="${esc(evidenceFileUrl(entry.id, engineUrl))}" alt="${esc(entry.displayName)}" loading="lazy" decoding="async" />${strokesOverlay(strokes)}</span>`
           : thumbnailMedia(entry, engineUrl);
       const draw =
         entry.kind === "image"
