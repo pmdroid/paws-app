@@ -93,10 +93,17 @@ async function fixture(agent: "claude" | "codex" = "claude") {
   async function execute(
     steps: FakeScript["steps"],
     extra: Partial<Parameters<typeof executeRunnerCommand>[0]> = {},
+    /** Steps for the agent's next spawns, after `steps`. */
+    later: FakeScript["steps"][] = [],
   ) {
     writeFileSync(
       join(root, "script.json"),
-      JSON.stringify({ model: "fixture-model", sessionId: SESSION, steps }),
+      JSON.stringify({
+        model: "fixture-model",
+        sessionId: SESSION,
+        steps,
+        ...(later.length ? { sessions: [steps, ...later] } : {}),
+      }),
     );
     return executeRunnerCommand({
       job: { executionId: EXECUTION, command },
@@ -142,6 +149,7 @@ async function fixture(agent: "claude" | "codex" = "claude") {
     return clone;
   }
   return {
+    root,
     output,
     checkout,
     baseSha,
@@ -207,7 +215,8 @@ test.skipIf(!linux)(
     expect(bundle.map((entry) => entry.path)).toEqual([
       expect.stringMatching(new RegExp(`/${SESSION}\\.jsonl$`)),
     ]);
-    expect(context.events()).not.toContain('"type":"handover"');
+    expect(context.events()).toContain('{"type":"handover","handedOver":true}');
+    expect(context.events()).not.toContain('"handedOver":false');
   },
 );
 
@@ -364,29 +373,51 @@ test.skipIf(!linux)("Paws can ask again after a handover timed out", async () =>
   expect(existsSync(join(context.output, "session.json"))).toBe(true);
 });
 
-test.skipIf(!linux)(
-  "a handover that reaches its deadline after the interrupt publishes the WIP commit only",
-  async () => {
-    const context = await fixture();
-    const result = await context.execute(
-      [
-        context.sessionFile,
-        { type: "write_file", path: join(context.checkout, "work.txt"), content: "work\n" },
-        {
-          type: "update",
-          update: {
-            sessionUpdate: "agent_thought_chunk",
-            content: { type: "text", text: "thinking" },
+for (const [cause, reason, steps, limitMs] of [
+  // The deadline passes while the agent stops and the WIP commit and snapshot are made.
+  ["reaches its deadline after the interrupt", "timeout", true, 50],
+  // Claude left no session file to save.
+  ["cannot save the Claude session", "snapshot", false, 120_000],
+] as const)
+  test.skipIf(!linux)(
+    `a handover that ${cause} is reported, and the session goes on on the runner from the WIP commit`,
+    async () => {
+      const context = await fixture();
+      const result = await context.execute(
+        [
+          ...(steps ? [context.sessionFile] : []),
+          { type: "write_file", path: join(context.checkout, "work.txt"), content: "work\n" },
+          {
+            type: "update",
+            update: {
+              sessionUpdate: "agent_thought_chunk",
+              content: { type: "text", text: "thinking" },
+            },
           },
-        },
-        { type: "hang" },
-      ],
-      { handover: context.requestWhen('"thinking"', 50), handoverReserveMs: 0 },
-    );
-    expect(result.run.handedOver).toBe(true);
-    const clone = await context.published(result.candidateSha!);
-    expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
-    expect(existsSync(join(context.output, "session.json"))).toBe(false);
-    expect(existsSync(join(context.output, "session.ndjson.gz"))).toBe(false);
-  },
-);
+          { type: "hang" },
+        ],
+        { handover: context.requestWhen('"thinking"', limitMs), handoverReserveMs: 0 },
+        [
+          [
+            { type: "write_file", path: join(context.checkout, "done.txt"), content: "done\n" },
+            { type: "end" },
+          ],
+        ],
+      );
+      expect(context.events()).toContain(
+        `{"type":"handover","handedOver":false,"reason":"${reason}"}`,
+      );
+      expect(context.events()).not.toContain('"handedOver":true');
+      // The session went on here and finished its turn; nothing was handed over.
+      expect(result.run.handedOver).toBeUndefined();
+      expect(result.run.stopReason).toBe("end_turn");
+      const clone = await context.published(result.candidateSha!);
+      expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
+      expect(readFileSync(join(clone, "done.txt"), "utf8")).toBe("done\n");
+      expect(await git(["-C", clone, "log", "--format=%s"])).toContain(HANDOVER_COMMIT_MESSAGE);
+      const trace = JSON.parse(readFileSync(join(context.root, "trace.json"), "utf8")) as {
+        prompts: unknown[];
+      };
+      expect(JSON.stringify(trace.prompts.at(-1))).toContain("could not finish in time");
+    },
+  );

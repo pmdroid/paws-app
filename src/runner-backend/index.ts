@@ -1160,11 +1160,19 @@ export function createRemoteAgentRunner(options: {
                 });
               }
               if (event.type === "hook_failed") await emit(event);
-              if (event.type === "handover")
+              if (event.type === "handover" && !event.handedOver) {
+                const runner =
+                  db
+                    .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
+                    .get(selected.id)?.name ?? selected.id;
                 await emit({
                   type: "progress",
-                  text: `${db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(selected.id)?.name ?? selected.id} couldn't stop this session at a safe point within 2 minutes, so it keeps running there.\n`,
+                  text:
+                    event.reason === "snapshot"
+                      ? `${runner} couldn't save this session for a move, so it keeps running there.\n`
+                      : `${runner} couldn't hand this session over within 2 minutes, so it keeps running there.\n`,
                 });
+              }
               // Runners from before the start line named the runtimes still report the install.
               if (
                 event.type === "progress" &&

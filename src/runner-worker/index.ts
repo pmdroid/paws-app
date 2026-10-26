@@ -6,6 +6,7 @@ import {
   closeSync,
   chmodSync,
   cpSync,
+  existsSync,
   readdirSync,
   readFileSync,
   constants,
@@ -154,6 +155,8 @@ export interface RunnerWorkerOptions {
 }
 
 export const HANDOVER_RESERVE_MS = 30_000;
+export const HANDOVER_RESUME_PROMPT =
+  "Paws asked to move this session to another runner, but the move could not finish in time, so it stays here. Your work so far is committed. Continue where you left off.";
 
 export const HANDOVER_COMMIT_MESSAGE =
   "Save work in progress to hand the session to another runner";
@@ -777,8 +780,7 @@ export async function executeRunnerCommand(
     let waitingForAnswer = 0;
     const safePoint = () =>
       [...toolCalls.values()].every((call) => call.askTeam && waitingForAnswer > 0);
-    const handoverAbort = new AbortController();
-    const handoverWatch = new AbortController();
+    let handoverSequence = 1;
     const earlierSession =
       command.type === "run"
         ? restoreRequest
@@ -851,10 +853,7 @@ export async function executeRunnerCommand(
       worktreePath: worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
       home: options.home,
-      signal:
-        command.type === "run" && options.handover
-          ? AbortSignal.any([handoverAbort.signal, ...(options.signal ? [options.signal] : [])])
-          : options.signal,
+      signal: options.signal,
       onEvent(event) {
         try {
           if (
@@ -1059,57 +1058,157 @@ export async function executeRunnerCommand(
                 ),
             })
         : runAgent;
-    const handover =
-      command.type === "run" && options.handover && installFailure === undefined
-        ? (async (): Promise<number | null> => {
-            // A handover that found no safe point in time leaves the session running; Paws may
-            // ask again, and each request gets the whole wait anew.
-            for (let sequence = 1; ; sequence++) {
-              const { deadline } = await options.handover!(sequence, handoverWatch.signal);
-              // The interrupt comes early enough to commit and snapshot before the deadline.
-              const latest = deadline - (options.handoverReserveMs ?? HANDOVER_RESERVE_MS);
-              while (!safePoint() && Date.now() < latest)
-                await delay(50, undefined, { signal: handoverWatch.signal });
-              if (safePoint() && Date.now() < latest) {
-                // The same interrupt a follow-up uses: the agent stops, its session stays intact.
-                handoverAbort.abort(FOLLOW_UP_INTERRUPTION);
-                return deadline;
-              }
-              console.warn(
-                JSON.stringify({ event: "handover_timed_out", executionId: job.executionId }),
-              );
-              emit({ type: "handover", handedOver: false, reason: "timeout" });
-            }
-          })().catch((error: unknown) => {
-            if (!handoverWatch.signal.aborted)
-              journalCaught(error, "runner-worker.executeRunnerCommand.handover", command.itemId);
-            return null;
-          })
-        : undefined;
-    const run: RunAgentResult =
-      installFailure !== undefined
-        ? {
-            role: agent.role,
-            stopReason: "error",
-            errorMessage: installFailure,
-            cancelled: false,
-            timedOut: false,
-            authRequired: false,
-            agentExited: false,
+    const runCommand = command.type === "run" ? command : undefined;
+    /**
+     * Waits for the next handover Paws asks for, then for a safe point, and interrupts the
+     * turn. Returns the handover's deadline, or null when the turn ended first. A request with no
+     * safe point in time is reported and the watch goes on with the next one.
+     */
+    const watchHandover = (interrupt: AbortController, watch: AbortSignal) =>
+      (async (): Promise<number | null> => {
+        for (;;) {
+          const sequence = handoverSequence;
+          const { deadline } = await options.handover!(sequence, watch);
+          handoverSequence = sequence + 1;
+          // The interrupt comes early enough to commit and snapshot before the deadline.
+          const latest = deadline - (options.handoverReserveMs ?? HANDOVER_RESERVE_MS);
+          while (!safePoint() && Date.now() < latest) await delay(50, undefined, { signal: watch });
+          if (safePoint() && Date.now() < latest) {
+            // The same interrupt a follow-up uses: the agent stops, its session stays intact.
+            interrupt.abort(FOLLOW_UP_INTERRUPTION);
+            return deadline;
           }
-        : command.type === "run" && options.followUp
-          ? await runWithFollowUps(agent, options.followUp, runner)
-          : await runner(agent);
-    handoverWatch.abort();
-    const handoverDeadline = (await handover) ?? null;
-    const handedOver =
-      command.type === "run" &&
-      handoverDeadline !== null &&
-      run.cancelled &&
-      run.agentExited &&
-      !options.signal?.aborted;
-    if (handoverDeadline !== null && !handedOver)
-      console.warn(JSON.stringify({ event: "handover_skipped", executionId: job.executionId }));
+          console.warn(
+            JSON.stringify({ event: "handover_timed_out", executionId: job.executionId }),
+          );
+          emit({ type: "handover", handedOver: false, reason: "timeout" });
+        }
+      })().catch((error: unknown) => {
+        if (!watch.aborted)
+          journalCaught(error, "runner-worker.executeRunnerCommand.handover", runCommand!.itemId);
+        return null;
+      });
+    /**
+     * The interrupted turn's WIP commit and, for Claude, its session snapshot. The handover
+     * happens only when both are ready before the deadline.
+     */
+    const prepareHandover = async (
+      turn: RunAgentResult,
+      deadline: number,
+    ): Promise<"ready" | "timeout" | "snapshot"> => {
+      await commitCheckpoint(
+        worktree,
+        runCommand!.commitPolicy
+          ? commitPolicyMessage(HANDOVER_COMMIT_MESSAGE, runCommand!.commitPolicy)
+          : HANDOVER_COMMIT_MESSAGE,
+        options.signal,
+        undefined,
+        env,
+        inputFiles.map((file) => file.path),
+        runCommand!.commitPolicy
+          ? appBotCommitIdentity(runCommand!.commitPolicy.bot)
+          : runCommand!.checkpointBot
+            ? appBotCommitIdentity(runCommand!.checkpointBot)
+            : undefined,
+      );
+      for (const name of [SESSION_METADATA_FILE, SESSION_BUNDLE_FILE])
+        rmSync(join(options.outputDirectory, name), { force: true });
+      if (runCommand!.profile.agent === "claude") {
+        if (!turn.sessionId) return "snapshot";
+        await snapshotClaudeSession(
+          options,
+          job.executionId,
+          {
+            sessionId: turn.sessionId,
+            workspacePath: worktree,
+            commitSha: (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim(),
+            turn: runCommand!.generation,
+          },
+          emit,
+        );
+        if (!existsSync(join(options.outputDirectory, SESSION_METADATA_FILE))) return "snapshot";
+      }
+      return Date.now() < deadline ? "ready" : "timeout";
+    };
+    let run!: RunAgentResult;
+    let handedOver = false;
+    let turnAgent = agent;
+    // A resumed turn reads the follow-ups after those the earlier turn read.
+    let followUpBase = 0;
+    let followUpLast = 0;
+    for (;;) {
+      toolCalls.clear();
+      const interrupt = new AbortController();
+      const watch = new AbortController();
+      const handover =
+        runCommand && options.handover && installFailure === undefined
+          ? watchHandover(interrupt, watch.signal)
+          : undefined;
+      const current: RunAgentOptions = handover
+        ? {
+            ...turnAgent,
+            signal: AbortSignal.any([
+              interrupt.signal,
+              ...(options.signal ? [options.signal] : []),
+            ]),
+          }
+        : turnAgent;
+      const base = followUpBase;
+      run =
+        installFailure !== undefined
+          ? {
+              role: agent.role,
+              stopReason: "error",
+              errorMessage: installFailure,
+              cancelled: false,
+              timedOut: false,
+              authRequired: false,
+              agentExited: false,
+            }
+          : runCommand && options.followUp
+            ? await runWithFollowUps(
+                current,
+                (sequence, signal) =>
+                  options.followUp!(base + sequence, signal).then((text) => {
+                    followUpLast = base + sequence;
+                    return text;
+                  }),
+                runner,
+              )
+            : await runner(current);
+      watch.abort();
+      const deadline = (await handover) ?? null;
+      if (deadline === null) break;
+      if (!run.cancelled || !run.agentExited || options.signal?.aborted) {
+        console.warn(JSON.stringify({ event: "handover_skipped", executionId: job.executionId }));
+        break;
+      }
+      const outcome = await prepareHandover(run, deadline);
+      if (outcome === "ready") {
+        handedOver = true;
+        emit({ type: "handover", handedOver: true });
+        break;
+      }
+      // Too late, or no session to carry: the session goes on here from the WIP commit.
+      console.warn(
+        JSON.stringify({ event: "handover_not_ready", executionId: job.executionId, outcome }),
+      );
+      emit({ type: "handover", handedOver: false, reason: outcome });
+      for (const name of [SESSION_METADATA_FILE, SESSION_BUNDLE_FILE])
+        rmSync(join(options.outputDirectory, name), { force: true });
+      followUpBase = followUpLast;
+      turnAgent = {
+        ...agent,
+        prompt: HANDOVER_RESUME_PROMPT,
+        resume: {
+          sessionId: run.sessionId ?? "",
+          replayPrompt: reconstructAcpPrompt(HANDOVER_RESUME_PROMPT, [
+            { kind: "request", body: prompt },
+            ...(await recoverAcpConversation(join(options.outputDirectory, "events.jsonl"))),
+          ]),
+        },
+      };
+    }
     // The agent never opened a session, so the restored one did not load either.
     if (restored) reportRestore({ restored: false, reason: "load" });
     if (eventFailure) throw eventFailure;
@@ -1223,39 +1322,24 @@ export async function executeRunnerCommand(
         delete result.candidateSha;
     } else if (command.type === "run" && handedOver) {
       // The WIP commit is published like a candidate; the next runner starts from it.
-      await commitCheckpoint(
-        worktree,
-        command.commitPolicy
-          ? commitPolicyMessage(HANDOVER_COMMIT_MESSAGE, command.commitPolicy)
-          : HANDOVER_COMMIT_MESSAGE,
-        options.signal,
-        undefined,
-        env,
-        inputFiles.map((file) => file.path),
-        command.commitPolicy
-          ? appBotCommitIdentity(command.commitPolicy.bot)
-          : command.checkpointBot
-            ? appBotCommitIdentity(command.checkpointBot)
-            : undefined,
-      );
       await recordCandidate();
       if (result.candidateSha === command.repository.baseSha) delete result.candidateSha;
       result.run = { ...result.run, cancelled: false, interrupted: false, handedOver: true };
     }
-    // A turn that ended or handed over, not a cancel or a crash, leaves a session another
-    // runner can load. An earlier attempt's bundle never stands in for this one.
-    if (command.type === "run")
+    // A turn that ended, not a cancel or a crash, leaves a session another runner can load. An
+    // earlier attempt's bundle never stands in for this one; a handover already took its own.
+    if (command.type === "run" && !handedOver)
       for (const name of [SESSION_METADATA_FILE, SESSION_BUNDLE_FILE])
         rmSync(join(options.outputDirectory, name), { force: true });
     if (
       command.type === "run" &&
+      !handedOver &&
       command.profile.agent === "claude" &&
       installFailure === undefined &&
       run.agentExited &&
-      // A handover past its deadline publishes the WIP commit only.
-      (handedOver
-        ? Date.now() < handoverDeadline!
-        : !run.cancelled && run.stopReason !== "cancelled" && run.stopReason !== "error") &&
+      !run.cancelled &&
+      run.stopReason !== "cancelled" &&
+      run.stopReason !== "error" &&
       run.sessionId &&
       !options.signal?.aborted
     )

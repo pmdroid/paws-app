@@ -588,7 +588,7 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  "a handed-over run whose deadline passed posts its result without the session",
+  "a handover the worker committed to publishes its session even after the deadline",
   async () => {
     const context = fixture({ claudeVersion: "2.1.7" });
     const runtime = await context.open();
@@ -612,9 +612,9 @@ test.skipIf(!linux)(
       await Bun.sleep(150);
       context.finishWorker(id, randomBytes(600_000), { stopReason: "cancelled", handedOver: true });
       await context.drive(runtime, () => context.posted.length > 0);
+      // The agent already stopped and the session left it; dropping it now would lose it.
       expect(context.posted[0]).toMatchObject({ handedOver: true });
-      expect(context.chunks).toEqual([]);
-      expect(context.finishes).toEqual([]);
+      expect(context.sessions.snapshot("run", 3)).toMatchObject({ status: "sealed" });
     } finally {
       await runtime.stop();
       context.cleanup();

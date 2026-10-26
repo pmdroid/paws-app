@@ -111,7 +111,7 @@ type Active = {
    * Handovers Paws asked for: the deadline of one the worker has not heard yet, and how many it
    * was sent. Each request goes to the worker on its own, so a timed-out one can be asked again.
    */
-  handover?: { pending?: number; sent: number; deadline?: number };
+  handover?: { pending?: number; sent: number };
 };
 
 /** The session description the worker writes next to its bundle. */
@@ -979,14 +979,6 @@ export async function openRunnerRuntime(options: {
     });
     journal.phase(entry.execution.id, "publishing");
     entry.execution.phase = "publishing";
-    // A handover past its deadline hands over with the WIP commit only.
-    const handoverDeadline = result.handedOver ? entry.handover?.deadline : undefined;
-    if (
-      handoverDeadline !== undefined &&
-      now() >= handoverDeadline &&
-      !journal.sessionCursor(entry.execution.id).state
-    )
-      skipSession(entry.execution, new Error("the handover passed its 2-minute deadline"));
     try {
       await uploadSession(
         entry.execution,
@@ -1138,7 +1130,7 @@ export async function openRunnerRuntime(options: {
           requestId: runnerHandoverRequestId(entry.handover.sent + 1),
           answer: String(entry.handover.pending),
         });
-        entry.handover = { sent: entry.handover.sent + 1, deadline: entry.handover.pending };
+        entry.handover = { sent: entry.handover.sent + 1 };
       }
       entry.delivering ??= advance(entry).finally(() => {
         entry.delivering = undefined;
