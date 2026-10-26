@@ -1,3 +1,4 @@
+import { createHealthReport } from "./health";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { handleSlackWebhook } from "../slack";
@@ -75,6 +76,8 @@ export type ServerOptions = {
   webhooks?: boolean;
   /** Engine database. `/api/status` reads it. Omit it and the route stays on the demo snapshot. */
   db?: Database;
+  /** Clock for local health checks. */
+  healthNow?: () => number;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
@@ -108,6 +111,12 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const linearWebhook = options.linearWebhook;
   const webhooks = options.webhooks ?? webhookChecksNeeded();
   const db = options.db;
+  const health = createHealthReport({
+    db,
+    linearWebhook: webhooks && Boolean(linearWebhookSecret),
+    githubWebhook: webhooks && Boolean(githubWebhookSecret),
+    now: options.healthNow,
+  });
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;
   const evidenceRoot = options.evidenceRoot;
@@ -133,6 +142,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
       const operation = (async () =>
         (await options.onboarding?.(request)) ??
         route(request, {
+          health,
           slackSigningSecret,
           linearWebhookSecret,
           githubWebhook,
@@ -180,6 +190,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
+  health: ReturnType<typeof createHealthReport>;
   /** The socket peer address, for the sign-in rate limits. */
   ip?: string | null;
   workspaceAccess?: WorkspaceAccess | null;
@@ -211,7 +222,11 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const path = new URL(request.url).pathname;
   if (request.method === "GET" && path === "/health") {
     const usage = secrets.linearUsage?.();
-    return Response.json({ ok: true, service: "paws", ...(usage ? { linear: usage } : {}) });
+    const report = secrets.health();
+    return Response.json(
+      { ...report, ...(usage ? { linear: usage } : {}) },
+      { status: report.ok ? 200 : 503, headers: { "cache-control": "no-store" } },
+    );
   }
   if (path === "/api/runner-pairings" && secrets.runnerEnrollment !== undefined)
     return secrets.runnerEnrollment(request);
