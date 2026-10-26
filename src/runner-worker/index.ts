@@ -364,7 +364,9 @@ async function snapshotClaudeSession(
       console.warn(JSON.stringify({ event: "agent_session_snapshot_too_large", executionId }));
       try {
         emit({ type: "progress", text: CLAUDE_SESSION_TOO_LARGE, notice: true });
-      } catch {}
+      } catch (caught) {
+        journalCaught(caught, "runner-worker.snapshotClaudeSession.notice", null);
+      }
       return;
     }
     console.warn(
