@@ -11,7 +11,7 @@ import {
   type PullReviewState,
   type WorkItemRecord,
 } from "../db";
-import type { ReviewThread } from "../github";
+import type { LeaveMergeQueueResult, ReviewThread } from "../github";
 import { ask, restart } from "./operations";
 import { worktreeBranch } from "./sources";
 
@@ -107,6 +107,11 @@ export type PullReviewCapabilities = {
   now(): number;
   /** A turn, evaluation or merge attempt of this item is running in this process. */
   busy(item: WorkItemRecord): boolean;
+  /**
+   * Take the pull request out of GitHub's merge queue, so GitHub cannot merge the reviewed head
+   * while Paws waits. Throws when GitHub cannot be read.
+   */
+  leaveMergeQueue(item: WorkItemRecord, pullNumber: number): Promise<LeaveMergeQueueResult>;
   /** Unresolved review threads on the pull request. Throws when GitHub cannot be read. */
   threads(item: WorkItemRecord, pullNumber: number): Promise<ReviewThread[]>;
   fixRoundLimit(item: WorkItemRecord): number;
@@ -147,6 +152,14 @@ export async function handlePullReview(
     });
     if (posted) await caps.flush();
     return posted ? "posted" : "done";
+  }
+  if (item.state === "merge_queue") {
+    // Before waiting on anything: GitHub's own merge queue does not wait for Paws.
+    const queue = await caps.leaveMergeQueue(item, review.pullNumber);
+    if (queue === "merged" || queue === "closed") {
+      settlePullReview(db, reviewId, "dropped", caps.now());
+      return "dropped";
+    }
   }
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
   const threads = await caps.threads(item, review.pullNumber);

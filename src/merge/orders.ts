@@ -230,7 +230,9 @@ export async function mergeThroughGitHubQueue(
     signal: published.signal,
   });
   if (caps.stopped()) return { kind: "obsolete" };
-  if (result.outcome === "blocked") {
+  // The review job may take the pull request out of GitHub's queue meanwhile; that removal is
+  // the review's, not a person's or a failed check's.
+  if (result.outcome !== "merged") {
     const held = reviewHold(db, item.id, caps.now());
     if (held) return held;
   }
