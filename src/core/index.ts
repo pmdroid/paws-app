@@ -152,3 +152,5 @@ export {
   type HookEvent,
   type WorkspaceHook,
 } from "./hooks";
+
+export { journal, journalCaught, journalItemId, journalRejection, setJournalSink } from "./journal";

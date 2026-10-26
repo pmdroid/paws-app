@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { systemClock, type Clock } from "../core";
 import type { WorkItemRecord } from "../db";
@@ -31,7 +32,10 @@ export function startHost(input: {
     input.stopAgent,
   );
   const task = supervisor.run(input.signal);
-  void task.catch(() => undefined);
+  void task.catch((caughtError1) => {
+    journalCaught(caughtError1, "host.startHost", null);
+    return undefined;
+  });
   return {
     supervisor,
     stop() {

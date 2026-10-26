@@ -1,3 +1,4 @@
+import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
 import {
@@ -106,6 +107,7 @@ export class OutboxDispatcher {
       });
       completeOutbox(this.db, message, this.clock.now());
     } catch (error) {
+      journalCaught(error, "dispatcher.deliver.isOutboxCurrent", journalItemId(message.payload));
       retryOutbox(this.db, message, error, {
         now: this.clock.now(),
         baseMs: this.options.backoffBaseMs,

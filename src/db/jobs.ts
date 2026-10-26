@@ -1,3 +1,4 @@
+import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
@@ -176,6 +177,7 @@ export function enqueueJobOnce(db: Database, job: NewJob): number {
   try {
     return enqueueJob(db, job);
   } catch (error) {
+    journalCaught(error, "jobs.enqueueJobOnce.enqueueJob", journalItemId(job.payload));
     if (job.jobKey !== undefined && isUnique(error)) {
       const existing = findByKey(db, job.jobKey);
       if (existing) return existing.id;

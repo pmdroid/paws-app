@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -46,7 +47,14 @@ test("lost repository interpreter ownership persists cleanup failure before abor
           prompts = saved.prompts;
           break;
         }
-      } catch {}
+      } catch (caughtError1) {
+        journalCaught(
+          caughtError1,
+          "repository-selection.test.recover.parse",
+          null,
+          "test fixture cleanup",
+        );
+      }
       await Bun.sleep(5);
     }
     expect(prompts).toHaveLength(1);
@@ -66,7 +74,14 @@ test("lost repository interpreter ownership persists cleanup failure before abor
     if (pid > 0) {
       try {
         process.kill(pid, "SIGKILL");
-      } catch {}
+      } catch (caughtError2) {
+        journalCaught(
+          caughtError2,
+          "repository-selection.test.recover.kill",
+          null,
+          "test fixture cleanup",
+        );
+      }
     }
     db.close();
     rmSync(home, { recursive: true, force: true });

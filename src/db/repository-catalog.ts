@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import type { RepositoryBinding } from "../core";
 import { immediate } from "./tx";
@@ -27,9 +28,8 @@ export async function refreshRepositoryCatalog(
   try {
     entries = await list();
   } catch (error) {
-    console.error(
-      `repository catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    journalCaught(error, "repository-catalog.refreshRepositoryCatalog.list", null);
+
     return false;
   }
   immediate(db, () => {

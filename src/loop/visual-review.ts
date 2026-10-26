@@ -1,4 +1,5 @@
 import { ask } from "./operations";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -134,7 +135,8 @@ async function looksTheSame(root: string, before: string, after: string): Promis
       readFile(path.join(root, after)),
     ]);
     return (await compareScreenshots(a, b))?.same === true;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "visual-review.looksTheSame.all", null);
     return false;
   }
 }
