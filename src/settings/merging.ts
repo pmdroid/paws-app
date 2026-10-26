@@ -41,8 +41,6 @@ const ORDER_NAMES: Record<MergeChoice["order"], string> = {
   "github-queue": "Add to the GitHub merge queue",
 };
 const MAIN_MOVED_NAMES: Record<MergeChoice["mainMoved"], string> = {
-  overlap: "Update and re-test only when main changed the same files or package",
-  ci: "Always update the branch and wait for CI",
   closeout: "Always update the branch and run Closeout again",
 };
 
