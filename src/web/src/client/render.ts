@@ -160,24 +160,22 @@ function viewOverview(snapshot: StatusSnapshot): string {
     if (["merged", "completed", "stopped"].includes(item.state)) return [];
     const verdict = itemVerdict(snapshot, item.id);
     const reason =
-      item.state === "signoff"
-        ? "Your sign-off is needed before this can continue."
-        : item.state === "exhausted" || verdict?.decision === "exhausted"
-          ? "Automatic retries are used up."
-          : item.state === "needs_human" || verdict?.decision === "blocked"
-            ? "Work is blocked and needs a person."
-            : item.state === "awaiting_input" || run?.state === "awaiting_input"
-              ? "Waiting for your input."
-              : run?.state === "paused"
-                ? "This issue is paused."
-                : null;
+      verdict?.decision === "exhausted"
+        ? "Automatic retries are used up."
+        : item.state === "needs_human" || verdict?.decision === "blocked"
+          ? "Work is blocked and needs a person."
+          : item.state === "awaiting_input" || run?.state === "awaiting_input"
+            ? "Waiting for your input."
+            : run?.state === "paused"
+              ? "This issue is paused."
+              : null;
     return reason
       ? [
           {
             itemId: item.id,
             title: item.title,
             reason,
-            action: item.state === "signoff" ? "Review sign-off" : "Review issue",
+            action: "Review issue",
             href: routeHref({ view: "issues", id: item.id }),
           },
         ]
@@ -311,8 +309,7 @@ function issueMeta(item: StatusItem): string {
 }
 
 function issueBucket(item: StatusItem): "needs" | "done" | "active" {
-  if (["needs_human", "exhausted", "awaiting_input", "signoff"].includes(item.state))
-    return "needs";
+  if (["needs_human", "awaiting_input"].includes(item.state)) return "needs";
   if (item.state === "merged" || item.state === "completed") return "done";
   return "active";
 }
@@ -779,8 +776,7 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   if (waitingVisualReview(item)) return statePill("awaiting_input", "Waiting for visual review");
   if (recheck) return statePill("verifying", "Closeout");
   if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");
-  if (verdict?.decision === "exhausted" || item?.state === "exhausted")
-    return statePill("exhausted", "Closeout exhausted");
+  if (verdict?.decision === "exhausted") return statePill("exhausted", "Closeout exhausted");
   if (verdict?.decision === "rejected") return statePill("stopped", "Closeout failed");
   if (item?.state === "needs_human") return statePill("needs_human", "Needs a person");
   if (verdict?.decision === "accepted") return statePill("accepted", "Closeout accepted");

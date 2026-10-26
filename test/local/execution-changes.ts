@@ -115,7 +115,7 @@ export async function probeExecutionChanges(
     );
   };
   try {
-    seed("criteria", ["merge_queue", "awaiting_signoff", "paused", "merged", "queued"]);
+    seed("criteria", ["merge_queue", "awaiting_input", "paused", "merged", "queued"]);
     saveCheckpoint(db, "criteria-2", {
       phase: "running",
       wipCommit: "paused-existing-work",

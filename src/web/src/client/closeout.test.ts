@@ -191,9 +191,6 @@ test("accepted output describes the actual delivery state instead of assuming a 
   const merged = renderCloseoutChecks(entry, emptyCloseoutView(), null, pr, "merged");
   expect(merged).toContain("This change has merged");
   expect(merged).not.toContain("is waiting to merge");
-  const signoff = renderCloseoutChecks(entry, emptyCloseoutView(), null, pr, "signoff");
-  expect(signoff).toContain("Waiting for human sign-off");
-  expect(signoff).not.toContain("is waiting to merge");
 });
 
 describe("independent review measurements", () => {

@@ -86,7 +86,7 @@ const FIXTURE: StatusSnapshot = {
     item({
       id: "ENG-100",
       title: "Retention policy enforcement job",
-      state: "exhausted",
+      state: "awaiting_input",
       agent: "Claude",
       assignee: "Jonas Berg",
       owner: "Jonas Berg",
