@@ -524,3 +524,24 @@ test("a captured plan callback preserves milestones completed by a newer reporte
     db.close();
   }
 });
+
+test("successive restart rounds preserve their newest identity across captured callbacks", () => {
+  const db = tempDb();
+  try {
+    const captured = createLinearSessionProgress(db, "session", "ENG-1");
+    captured.phase("merging");
+    markPr(db);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 2, 20);
+    captured.plan([]);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 2, 20);
+    const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
+      ?.payload as SessionUpdate;
+    expect(plan.plan?.filter((step) => step.content === "Fix CI")).toEqual([
+      { content: "Fix CI", status: "completed" },
+      { content: "Fix CI", status: "inProgress" },
+    ]);
+  } finally {
+    db.close();
+  }
+});
