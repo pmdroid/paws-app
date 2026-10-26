@@ -27,6 +27,7 @@ import {
   saveCheckpoint,
   startUsagePause,
   usagePause,
+  runnerLeaseCutoff,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -353,7 +354,7 @@ export function createRemoteAgentRunner(options: {
            SELECT 1 FROM runner_result r
            WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id))`,
       )
-      .get(runId, now());
+      .get(runId, runnerLeaseCutoff(now()));
     if (!row) return undefined;
     const command = JSON.parse(
       Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(

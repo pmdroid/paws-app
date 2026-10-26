@@ -22,6 +22,7 @@ import {
   saveQueuePositions,
   type ItemHold,
   type JobLoop,
+  runnerLeaseCutoff,
 } from "../db";
 import { readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
@@ -218,7 +219,7 @@ function allItems(db: Database, now: number): Item[] {
     LEFT JOIN work_item_repository r ON r.item_id=i.id
     WHERE ${delegationHasOpenWork("i.delegation_id")} OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
     OR EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning'))`)
-    .all(now, now, now);
+    .all(now, runnerLeaseCutoff(now), now);
 }
 
 function holdsExecution(item: Item): boolean {
@@ -237,7 +238,7 @@ function taskSlots(db: Database, now: number): { total: number; busy: number } |
        (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used
        FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
     )
-    .all(now, now, now - RUNNER_SEEN_MS);
+    .all(runnerLeaseCutoff(now), now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
   return {
     total: runners.reduce((total, runner) => total + runner.capacity, 0),

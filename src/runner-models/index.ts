@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { immediate, workspaceMember } from "../db";
+import { immediate, runnerLeaseCutoff, workspaceMember } from "../db";
 import type { RunnerWork } from "../runner-work";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 
@@ -107,7 +107,7 @@ export function createRunnerModels(options: {
           .query(
             "SELECT 1 FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>? UNION ALL SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
           )
-          .get(runnerId, now(), runnerId, now())
+          .get(runnerId, runnerLeaseCutoff(now()), runnerId, now())
       )
         continue;
       if (
