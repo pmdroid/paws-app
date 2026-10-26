@@ -57,9 +57,9 @@ const s3Schema = z
   .strict();
 const schema = z.union([z.strictObject({ kind: z.literal("local") }), s3Schema]);
 
-export function loadRunnerTranscriptObjects(home: string) {
-  const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
-  const remote = withSecrets(home, false, (directory) => {
+/** The configured transcript S3 bucket, or null when transcripts are stored locally. */
+export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket: string } | null {
+  return withSecrets(home, false, (directory) => {
     const stored = readProtected(directory, FILE, MAX_BYTES, true);
     if (stored === null) return null;
     const encrypted = stored.toString("utf8");
@@ -73,9 +73,15 @@ export function loadRunnerTranscriptObjects(home: string) {
       "X-Amz-Security-Token",
     );
     if (token !== (config.sessionToken ?? null)) throw new Error();
-    return createS3RunnerTranscriptObjects({ client, bucket: config.bucket });
+    return { client, bucket: config.bucket };
   });
-  if (remote === null) return local;
+}
+
+export function loadRunnerTranscriptObjects(home: string) {
+  const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
+  const s3 = loadRunnerTranscriptS3(home);
+  if (s3 === null) return local;
+  const remote = createS3RunnerTranscriptObjects(s3);
   return {
     ...remote,
     read(key: string) {

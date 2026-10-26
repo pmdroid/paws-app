@@ -11,6 +11,8 @@ export {
 export { AGENT_SESSION_KEY_FILE, loadAgentSessionKey } from "./key";
 export {
   createLocalAgentSessionObjects,
+  createS3AgentSessionObjects,
+  withLocalAgentSessionFallback,
   createFakeAgentSessionObjects,
   type AgentSessionObjects,
 } from "./objects";
