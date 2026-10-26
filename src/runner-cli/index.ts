@@ -6,7 +6,7 @@ import { z } from "zod";
 import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from "../runner-daemon";
 import { ExecutionIdSchema, RUNNER_SKILLS_ENV } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
-import { describeRunnerFailure, RunnerCliFailure, runnerFailureLine } from "./cause";
+import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "./cause";
 import { runPairedDaemon } from "./daemon";
 
 export {
@@ -15,6 +15,7 @@ export {
   RUNNER_FAILURE,
   RunnerCliFailure,
   runnerFailureLine,
+  journalRunnerFailure,
 } from "./cause";
 
 const configuration = z.strictObject({
@@ -147,8 +148,15 @@ export function readTokenFile(path: string): string | null {
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
-    journalCaught(error, "runner-cli.readTokenFile.openSync", null, "optional file may be absent");
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      journalCaught(
+        error,
+        "runner-cli.readTokenFile.openSync",
+        null,
+        "optional file may be absent",
+      );
+      return null;
+    }
     throw new RunnerCliFailure("token", openFailure("Enrollment token file", error));
   }
   try {
@@ -300,14 +308,17 @@ export async function runRunnerCli(
       daemon.close();
     }
   } catch (caught) {
-    journalCaught(
-      caught,
-      "runner-cli.runRunnerCli.accounts",
-      null,
-      "cancellation may interrupt work",
-    );
-    if (abort.signal.aborted) return 130;
-    error(runnerFailureLine(caught, secrets));
+    if (abort.signal.aborted) {
+      journalCaught(
+        "Runner command canceled.",
+        "runner-cli.runRunnerCli",
+        null,
+        "cancellation requested",
+        error,
+      );
+      return 130;
+    }
+    journalRunnerFailure(caught, secrets, error);
     return 1;
   } finally {
     process.removeListener("SIGINT", stop);
