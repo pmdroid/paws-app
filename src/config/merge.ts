@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
+import { HIGH_RISK_GLOBS_MAX, highRiskGlobError } from "../core";
 import { replaceConfigText } from "./agents";
 import type { PawsConfigFile } from "./file";
 
@@ -31,10 +32,12 @@ export type MergePolicy = {
 /**
  * Per repository. `ignoreCommentBots` replaces `DEFAULT_IGNORED_COMMENT_BOTS` for the repository:
  * bot logins whose pull request comments only report status and never restart the item.
+ * `highRiskPaths` are the globs that make a candidate's risk tier high; the repository's
+ * `.paws/high-risk-paths` file can add to them.
  */
 export type MergeRepositories = Record<
   string,
-  { packages: string[]; ignoreCommentBots?: string[] }
+  { packages: string[]; ignoreCommentBots?: string[]; highRiskPaths?: string[] }
 >;
 export type MergeSettings = MergePolicy & {
   ciFixAttempts: number;
@@ -74,6 +77,14 @@ const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const PACKAGE_ROOT = /^(?:[^/*\s\\]+|\*)(?:\/(?:[^/*\s\\]+|\*))*\/?$/;
 const LABEL_MAX = 200;
 const BOT_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$/;
+const highRiskGlob = z.string().superRefine((glob, context) => {
+  const error = highRiskGlobError(glob);
+  if (error) context.addIssue({ code: "custom", message: error });
+});
+const highRiskGlobs = z
+  .array(highRiskGlob)
+  .max(HIGH_RISK_GLOBS_MAX)
+  .refine((list) => new Set(list).size === list.length, { message: "lists a path twice" });
 
 /**
  * `main_moved` other than `"closeout"` merged heads Closeout never saw, so it is refused rather
@@ -145,6 +156,7 @@ const tomlSchema = z.object({
               .array(z.string().regex(BOT_LOGIN, "must be a GitHub login such as codecov[bot]"))
               .max(100)
               .optional(),
+            high_risk_paths: highRiskGlobs.optional(),
           }),
         )
         .optional(),
@@ -237,6 +249,63 @@ export function ignoredCommentBots(settings: MergeSettings, repository: string):
   return (configured ?? DEFAULT_IGNORED_COMMENT_BOTS).map((login) => login.toLowerCase());
 }
 
+/** The high-risk globs Paws settings give this repository. */
+export function highRiskPaths(settings: MergeSettings, repository: string): string[] {
+  const wanted = repository.toLowerCase();
+  return (
+    Object.entries(settings.repositories).find(([name]) => name.toLowerCase() === wanted)?.[1]
+      .highRiskPaths ?? []
+  );
+}
+
+/**
+ * The Settings › Merging › High-risk paths body: `[{ repository, paths }]`. It replaces every
+ * repository's list; a repository left out has none.
+ */
+export function parseHighRiskPathSettings(value: unknown): Record<string, string[]> {
+  const result = z
+    .array(
+      z.strictObject({
+        repository: z.string().regex(REPOSITORY, "must be owner/repo"),
+        paths: z.array(z.string().trim()).pipe(highRiskGlobs),
+      }),
+    )
+    .max(100)
+    .refine(
+      (list) => new Set(list.map((entry) => entry.repository.toLowerCase())).size === list.length,
+      { message: "lists a repository twice" },
+    )
+    .safeParse(value);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    throw new Error(
+      `highRiskPaths${issue?.path.length ? `.${issue.path.join(".")}` : ""} ${issue?.message ?? "is invalid"}`,
+    );
+  }
+  return Object.fromEntries(
+    result.data.map((entry) => [entry.repository, entry.paths.filter((path) => path !== "")]),
+  );
+}
+
+/** `repositories` with each repository's high-risk globs replaced by `paths`. */
+export function withHighRiskPaths(
+  repositories: MergeRepositories,
+  paths: Record<string, string[]>,
+): MergeRepositories {
+  const next: MergeRepositories = {};
+  for (const [name, value] of Object.entries(repositories)) {
+    const { highRiskPaths: _old, ...rest } = value;
+    next[name] = rest;
+  }
+  for (const [repository, globs] of Object.entries(paths)) {
+    if (globs.length === 0) continue;
+    const name =
+      Object.keys(next).find((key) => key.toLowerCase() === repository.toLowerCase()) ?? repository;
+    next[name] = { packages: [], ...next[name], highRiskPaths: globs };
+  }
+  return next;
+}
+
 export function repositoryPackages(settings: MergeSettings, repository: string): string[] {
   const wanted = repository.toLowerCase();
   return (
@@ -271,6 +340,9 @@ export function parseMergeTables(
                 ...(value.ignore_comment_bots === undefined
                   ? {}
                   : { ignoreCommentBots: value.ignore_comment_bots }),
+                ...(value.high_risk_paths === undefined
+                  ? {}
+                  : { highRiskPaths: value.high_risk_paths }),
               },
             ]),
           ),
@@ -372,6 +444,10 @@ export function renderMergeSettings(settings: StoredMerge): string {
           value.ignoreCommentBots === undefined
             ? ""
             : `ignore_comment_bots = [${value.ignoreCommentBots.map((login) => JSON.stringify(login)).join(", ")}]\n`
+        }${
+          value.highRiskPaths === undefined
+            ? ""
+            : `high_risk_paths = [${value.highRiskPaths.map((glob) => JSON.stringify(glob)).join(", ")}]\n`
         }`,
     ),
   ].join("");
@@ -393,9 +469,21 @@ export function setMergeSettingsText(current: string, settings: StoredMerge): st
   return retained === "" ? table.trimStart() : `${retained}\n${table}`;
 }
 
-/** Write the Merging settings, keeping `ci_fix_attempts` and every other table. */
-export function writeMergePolicy(path: string, policy: MergePolicy, current: StoredMerge): void {
+/**
+ * Write the Merging settings, keeping `ci_fix_attempts` and every other table. `highRiskPaths`,
+ * when given, replaces each repository's high-risk globs.
+ */
+export function writeMergePolicy(
+  path: string,
+  policy: MergePolicy,
+  current: StoredMerge,
+  highRiskPaths?: Record<string, string[]>,
+): void {
   const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const repositories =
+    highRiskPaths === undefined
+      ? current.repositories
+      : withHighRiskPaths(current.repositories ?? {}, highRiskPaths);
   replaceConfigText(
     path,
     setMergeSettingsText(text, {
@@ -403,7 +491,7 @@ export function writeMergePolicy(path: string, policy: MergePolicy, current: Sto
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
       projects: policy.projects,
       rules: policy.rules,
-      ...(current.repositories ? { repositories: current.repositories } : {}),
+      ...(repositories && Object.keys(repositories).length ? { repositories } : {}),
     }),
   );
 }
