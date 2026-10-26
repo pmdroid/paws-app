@@ -28,6 +28,7 @@ import { askForVisualReview } from "./visual-review";
 
 const NOW = 1_700_000_000_000;
 
+/** A Paws on localhost has no link a person can open, so Linear asks with options. */
 function reviewing() {
   const db = openDatabase(":memory:");
   migrate(db);
@@ -42,7 +43,7 @@ function reviewing() {
     evidenceIds: ["ev-1", "ev-2", "ev-3"],
     base: "base",
     head: "head",
-    publicUrl: "https://paws.example/",
+    publicUrl: "http://127.0.0.1:8787/",
     now: NOW,
     carried: [
       {
@@ -82,11 +83,11 @@ test("a visual review is asked as its own kind and shows its files in Linear", (
     body: VISUAL_REVIEW_QUESTION,
     options: [...VISUAL_REVIEW_OPTIONS],
     evidence: [
-      { id: "ev-1", link: "https://paws.example/evidence/ev-1" },
+      { id: "ev-1", link: "http://127.0.0.1:8787/evidence/ev-1" },
       {
         id: "ev-2",
-        link: "https://paws.example/evidence/ev-2",
-        approved: { id: "ev-9", link: "https://paws.example/evidence/ev-9" },
+        link: "http://127.0.0.1:8787/evidence/ev-2",
+        approved: { id: "ev-9", link: "http://127.0.0.1:8787/evidence/ev-9" },
       },
     ],
     carried: ["ev-3"],
