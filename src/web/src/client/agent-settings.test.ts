@@ -83,7 +83,7 @@ describe("agent settings", () => {
     const html = renderAgentSettings(view());
     expect(html).toContain("<h2>Queue</h2>");
     expect(html).toContain(
-      '<label for="queue-start-timeout">Fail a task that has not started after, in hours</label>',
+      '<label for="queue-start-timeout">Fail an item that has not started after, in hours</label>',
     );
     expect(html).toMatch(
       /name="queue-start-timeout" type="number"[^>]*min="1" max="720"[^>]*value="24"/,
@@ -97,10 +97,10 @@ describe("agent settings", () => {
       ]);
   });
 
-  test("desktop: the Queue section offers an optional cap on running tasks per owner, empty by default", () => {
+  test("desktop: the Queue section offers an optional cap on running items per owner, empty by default", () => {
     const html = renderAgentSettings(view());
     expect(html).toContain(
-      '<label for="queue-owner-cap">Most tasks one person or project runs at once</label>',
+      '<label for="queue-owner-cap">Most items one person or project runs at once</label>',
     );
     expect(html).toMatch(/name="queue-owner-cap" type="number"[^>]*min="1"[^>]*value=""/);
     expect(html).not.toMatch(/name="queue-owner-cap"[^>]*required/);
@@ -111,7 +111,7 @@ describe("agent settings", () => {
       expect(
         settingsProblems({ ...settings(), queue: { startTimeoutHours: 24, maxRunningPerOwner } }),
       ).toEqual([
-        "Running tasks per owner: leave empty for no cap, or enter a whole number from 1 to 1000.",
+        "Running items per owner: leave empty for no cap, or enter a whole number from 1 to 1000.",
       ]);
   });
 
