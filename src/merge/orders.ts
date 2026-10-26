@@ -9,6 +9,7 @@ import {
   markMergeQueueNotified,
   mergeQueuePosition,
   pendingChangeRequests,
+  pendingPullComments,
   wakePullReviews,
   recordCiRound,
   recordConfirmedRemoteMerge,
@@ -35,12 +36,13 @@ const CI_FIX_SOURCE = {
 };
 
 /**
- * A changes-requested review that has not reached the agent yet holds the merge. Checked before
- * the merge work and again, synchronously, right before the squash or enqueue call: webhook
- * ingestion runs on the same thread, so a review recorded before that call always wins.
+ * A changes-requested review or a pull request comment that has not reached the agent yet holds
+ * the merge. Checked before the merge work and again, synchronously, right before the squash or
+ * enqueue call: webhook ingestion runs on the same thread, so feedback recorded before that call
+ * always wins.
  */
 export function reviewHold(db: Database, itemId: string, now: number): MergeStep | null {
-  if (pendingChangeRequests(db, itemId).length === 0) return null;
+  if (!feedbackPending(db, itemId)) return null;
   wakePullReviews(db, itemId, now);
   return {
     kind: "wait",
@@ -52,11 +54,11 @@ export function reviewHold(db: Database, itemId: string, now: number): MergeStep
 
 /** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
 export function mergeHeld({ db, item, caps }: MergeContext): boolean {
-  return (
-    caps.stopped() ||
-    !artifactPublicationReady(db, item.id) ||
-    pendingChangeRequests(db, item.id).length > 0
-  );
+  return caps.stopped() || !artifactPublicationReady(db, item.id) || feedbackPending(db, item.id);
+}
+
+function feedbackPending(db: Database, itemId: string): boolean {
+  return pendingChangeRequests(db, itemId).length > 0 || pendingPullComments(db, itemId).length > 0;
 }
 
 export type MergeVoice = {

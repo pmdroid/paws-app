@@ -72,6 +72,7 @@ export {
 export { refreshLinearNotificationContext } from "./linear-notification-context";
 
 export { acceptCloseout, acceptGitHubDelivery, enqueueVerifiedMerge } from "./merge-jobs";
+export type { PullCommentFilter } from "./pull-comments";
 export { LinearAccessRemovedError } from "./linear-task-access";
 export { authorizeLinearTask } from "./linear-task-access";
 export { restart, halt, ask } from "./operations";
