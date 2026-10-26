@@ -518,6 +518,25 @@ export function createRemoteAgentRunner(options: {
           excludeRunnerIds: excluded,
           ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
           ...(session ? { session } : {}),
+          // A moved run prefers a runner that can continue its saved agent session.
+          ...(pinnedRunnerId &&
+          runId &&
+          !responseTask &&
+          input.role === "implementer" &&
+          input.checkpoint !== false
+            ? {
+                restore: (runnerId: string) => {
+                  const plan = planSessionRestore(db, {
+                    runId,
+                    agent: profile.agent,
+                    targetRunnerId: runnerId,
+                  });
+                  return plan.eligible
+                    ? { sameVersion: plan.restoreSession.agentVersion === plan.targetVersion }
+                    : null;
+                },
+              }
+            : {}),
           signal: input.signal,
         };
         const attached =
