@@ -141,6 +141,49 @@ This run proves a planning request becomes sub-issues that intake can run. Use a
 
 **Discard** instead of Create ends the session with "Discarded the proposal. Nothing was filed." Only someone who may answer Paws questions in the workspace can press the buttons.
 
+## First delegation by a new Linear user
+
+This run proves a Linear member who has never used Paws can delegate an issue, set up in one session, and get the pull request merged with their credit. What each message and page step says is in [Linear agent sessions](linear-agent-sessions.md#a-first-delegation) and [Workspace access](workspace-access.md#a-first-delegation).
+
+Run it on a disposable Paws instance, set up as at the top of this page, with its own `~/.paws`. Map the demo repository to the sandbox team. In Linear, invite a fresh user to the workspace as a member (not a guest) and add them to the sandbox team. They must never have signed in to this Paws instance, own no runner, and have no GitHub credit link. Use a separate browser profile for them, signed in to Linear only. To exercise **Create VM**, configure exe.dev as in [Create a VM](create-vm.md); otherwise use **Add a host** with a Linux host as in [Enroll a remote Linux runner](runner-enrollment.md).
+
+1. **Delegate.** As the new user, create **Add a CSV header comment**: "Add a one-line comment at the top of `src/export.ts`." Delegate it to the Paws app. The session shows "Picked up this issue.", then one sign-in action addressed to the new user that starts "Welcome to Paws." and ends with the optional GitHub line. Wait ten minutes: no second action appears.
+2. **Reply while waiting.** Reply "Keep it under 80 characters." in the session. Nothing is posted.
+3. **Wrong person.** Copy the action's link. In another browser profile, open it and sign in as the workspace admin. The page says "This link belongs to <new user>." and nothing changes in the session. The admin is not signed in to the dashboard by it.
+4. **Sign in.** Press **Sign in to Paws** and complete Linear sign-in. The browser lands on `/onboard/<link id>`: "Welcome, <name>", Linear and Membership done, Runner needed, Claude and Codex after the runner, GitHub credit optional. The session gets one thought: "You don't have a runner Paws can use yet. …"
+5. **Optional GitHub credit.** On the onboarding page, before the runner is ready, check the consent box and press **Link GitHub**. GitHub returns to the onboarding page, which reads "Commits will credit @<login>." Paws reads the link when the run starts, so a link made after the start credits only later runs.
+6. **Create VM or Add a host.** Press **Create VM** and watch its four steps finish, or press **Add a host**, run the command on the host, and wait for it to enroll. The Runner step reads "<runner> will run this task." and Claude and Codex becomes **Needed**.
+7. **Agent sign-in.** Press **Sign in on <runner>** and sign in to Claude and Codex on the Runners page. Then turn the runner on if it is paused.
+8. **Automatic start.** Without any further click, the session gets "Starting ENG-n on <runner>." and the ordinary running face. The agent's handoff includes the reply from step 2. The page lead reads "You're set up. Paws runs ENG-n on <runner>."
+9. **Merged with credit.** Closeout accepts, the pull request opens, and Paws squash-merges it. The session ends with "Merged #N into main at <sha>. ENG-n is Done." Each commit carries the new user's `Co-authored-by` trailer and the pull request body credits their GitHub login.
+
+Then check the edges on fresh issues delegated by another new user:
+
+- Do not sign in for a day. The session ends with "This sign-in link expired. Delegate the issue again to retry.", and the link answers 404.
+- Open an old `/auth/linear?assignment=…` link. It answers 410.
+- Open the `/onboard/<link id>` address eleven times in a minute. The eleventh answers 429 with `Retry-After`, and Linear shows nothing new.
+
+Keep each session, the onboarding page at each step, the pull request and the run page. Publish a screenshot of each session state (sign-in action, no runner, starting, merged) and of each onboarding page step on the PAS issue for the run, and link the merged pull request. For the whole run, `/health` should count no more than 30 Linear requests under the issue.
+
+### Recorded first delegations
+
+| Date       | Kind                   | Head       | Result           | Evidence                              |
+| ---------- | ---------------------- | ---------- | ---------------- | ------------------------------------- |
+| 2026-10-26 | Rehearsal over fakes   | `1348ecd5` | 127 pass, 0 fail | Onboarding page screenshots on the PR |
+| —          | Live (Linear + GitHub) | —          | Not run yet      | —                                     |
+
+The rehearsal runs the first-delegation flow over the module fakes: the sign-in hold and its one action, kept replies, the link rules, the onboarding page steps, the runner-setup hold and its resume, the repository denials, and the 30-request budget. It renders each onboarding page state, but not Linear's session UI, so it is not a live run. Rerun it with:
+
+```sh
+bun test test/workspace-assignments.test.ts test/workspace-access.test.ts \
+  test/browser-onboarding.test.ts test/onboarding-readiness.test.ts test/onboarding-runner-step.test.ts \
+  test/integrated-onboarding-attribution.test.ts test/runner-setup-hold.test.ts \
+  test/runner-setup-hold-queue.test.ts test/github-repository-access.test.ts \
+  test/first-delegation-budget.test.ts
+```
+
+Add a row for each live run, with links to the session, the pull request and the published screenshots.
+
 ## Runtimes
 
 This run proves a runner installs a repository's runtimes and puts them on `PATH`. How a repository declares them is in [Declare a repository's runtimes](runtimes.md).
