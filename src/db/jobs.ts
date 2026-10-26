@@ -385,8 +385,10 @@ export function cancelOpenJobs(
   return rows.length;
 }
 
+/** Item jobs journal every outcome. Any job that goes dead journals, so none dies unseen. */
 function journalOutcome(job: Job): void {
   if (
+    job.status !== "dead" &&
     !(EXCLUSIVE_QUEUES as readonly string[]).includes(job.queue) &&
     !isMergeWork(job.queue, job.lane)
   )

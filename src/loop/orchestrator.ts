@@ -1,4 +1,5 @@
 import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity-policy";
+import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
 import { saveHumanRetryWindow, fixRounds, jobVersionCurrent } from "../db";
@@ -1252,6 +1253,13 @@ export class Orchestrator {
       const questionId = readString(job.payload, "questionId");
       if (!context.isCurrent() || questionId === null) return;
       if (remindVisualReview(this.db, questionId, this.now())) await this.flush();
+    });
+    jobs.register(JOB_KIND.reaskQuestion, async (job, context) => {
+      const itemId = readString(job.payload, "itemId");
+      const questionId = readString(job.payload, "questionId");
+      if (!context.isCurrent() || itemId === null || questionId === null) return;
+      if (reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
+        await this.flush();
     });
     jobs.register(JOB_KIND.runnerSetupCheck, (job) => {
       const owner = readString(job.payload, "ownerUserId");

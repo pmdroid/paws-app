@@ -3,9 +3,11 @@ import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
   DEFAULT_LEASE_MS,
+  JOB_KIND,
   retryBackoffMs,
 } from "../core";
-import { errorText } from "./jobs";
+import { enqueueJobOnce, errorText } from "./jobs";
+import { journal } from "./journal";
 import { immediate } from "./tx";
 
 export const OUTBOX_TARGETS = ["linear", "slack", "github"] as const;
@@ -328,16 +330,18 @@ export function retryOutbox(
         [now + delay],
       );
     }
-    db.run(
-      `UPDATE outbox
+    const updated = db
+      .query<{ status: OutboxStatus }, (string | number | null)[]>(
+        `UPDATE outbox
        SET status = CASE WHEN ? THEN 'pending' WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
            max_attempts=max_attempts+?,
            not_before = CASE WHEN ? OR attempts < max_attempts THEN ? ELSE not_before END,
            locked_by = NULL,
            locked_until = NULL,
            error = ?
-       WHERE id = ? AND status = 'pending' AND locked_by = ? AND attempts = ?`,
-      [
+       WHERE id = ? AND status = 'pending' AND locked_by = ? AND attempts = ? RETURNING status`,
+      )
+      .get(
         rateLimited ? 1 : 0,
         rateLimited ? 1 : 0,
         rateLimited ? 1 : 0,
@@ -346,8 +350,8 @@ export function retryOutbox(
         row.id,
         row.lockedBy,
         row.attempts,
-      ],
-    );
+      );
+    if (updated?.status === "dead") settleDeadOutbox(db, row, errorText(error), now);
     db.run(
       `UPDATE outbox SET locked_by = NULL, locked_until = NULL,
         error = COALESCE(error, '') || ' Superseded delivery failed or aborted; external effect may have occurred.'
@@ -503,6 +507,120 @@ function followingThoughts(head: OutboxRow, others: readonly OutboxRow[]): Outbo
     merged.push(other);
   }
   return merged;
+}
+
+/** Suffix of the one fresh delivery a dead elicitation gets. */
+export const ELICITATION_REDELIVERY_SUFFIX = ":redelivery";
+/** Suffix of the delivery that replaces a twice-dead elicitation of a question with linked records. */
+export const ELICITATION_REASK_SUFFIX = ":reask";
+
+/**
+ * The work item an outbox row belongs to: the payload's item, the run that wrote it,
+ * the question it asks, or the item whose session it is ordered on.
+ */
+export const OUTBOX_ITEM_SQL = (row: string) => `COALESCE(
+  (SELECT i.id FROM work_item i WHERE i.id = json_extract(${row}.payload, '$.itemId')),
+  (SELECT r.item_id FROM run r WHERE r.id = ${row}.activity_run_id),
+  (SELECT q.item_id FROM question q WHERE q.id = json_extract(${row}.payload, '$.questionId')),
+  (SELECT i.id FROM work_item i WHERE ${row}.ordering_key IS NOT NULL
+    AND i.session_key = ${row}.ordering_key ORDER BY i.created_at DESC, i.id DESC LIMIT 1)
+)`;
+
+export function outboxItemId(db: Database, id: number): string | null {
+  return (
+    db
+      .query<{ itemId: string | null }, [number]>(
+        `SELECT ${OUTBOX_ITEM_SQL("o")} AS itemId FROM outbox o WHERE o.id = ?`,
+      )
+      .get(id)?.itemId ?? null
+  );
+}
+
+export function oneLine(text: string, max = 200): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+/**
+ * A row just went dead. Journal it, and give an elicitation whose item still waits for
+ * an answer one fresh delivery, so the person has something to answer. The dead row is
+ * dropped in its favour; otherwise it would block the session's ordering key.
+ * When the redelivery dies too, a job asks the question again, once per question lineage.
+ * Anything still dead is listed on the issue page with a retry.
+ */
+function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: number): void {
+  const itemId = outboxItemId(db, row.id);
+  journal(
+    `outbox ${row.id} ${row.target}.${row.op} dead item=${itemId ?? "-"} attempts=${row.attempts}/${row.maxAttempts} error=${oneLine(error)}`,
+  );
+  if (row.op !== "elicitation" || itemId === null) return;
+  const item = db
+    .query<{ state: string; runId: string | null }, [string]>(
+      "SELECT state, current_run_id AS runId FROM work_item WHERE id = ?",
+    )
+    .get(itemId);
+  if (item?.state !== "awaiting_input") return;
+  const stored = getOutbox(db, row.id);
+  const questionId = (stored?.payload as { questionId?: unknown } | undefined)?.questionId;
+  const open =
+    typeof questionId === "string" &&
+    db
+      .query<{ open: number }, [string]>(
+        "SELECT status = 'open' AND cancelled_at IS NULL AS open FROM question WHERE id = ?",
+      )
+      .get(questionId)?.open === 1;
+  if (typeof questionId === "string" && !open) return;
+  const lastChance =
+    row.idempotencyKey.endsWith(ELICITATION_REDELIVERY_SUFFIX) ||
+    row.idempotencyKey.endsWith(ELICITATION_REASK_SUFFIX);
+  if (lastChance) {
+    const stays = () =>
+      journal(
+        `outbox ${row.id} elicitation dead again item=${itemId}; retry it from the issue page`,
+      );
+    if (!open) return stays();
+    // One re-ask per question lineage: a question a re-ask produced counts as its origin.
+    const origin =
+      db
+        .query<{ origin: string | null }, [string, string]>(
+          `SELECT json_extract(payload, '$.questionId') AS origin FROM job
+           WHERE queue = ? AND json_extract(payload, '$.reaskedAs') = ? LIMIT 1`,
+        )
+        .get(JOB_KIND.reaskQuestion, questionId)?.origin ?? questionId;
+    const key = `${JOB_KIND.reaskQuestion}:${origin}`;
+    if (db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(key))
+      return stays();
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.reaskQuestion,
+      jobKey: key,
+      payload: { itemId, questionId },
+      now,
+    });
+    journal(
+      `outbox ${row.id} elicitation dead again item=${itemId}; re-asking question ${questionId}`,
+    );
+    return;
+  }
+  const id = insertOutbox(
+    db,
+    {
+      target: row.target,
+      op: row.op,
+      ...(row.orderingKey === null ? {} : { orderingKey: row.orderingKey }),
+      idempotencyKey: `${row.idempotencyKey}${ELICITATION_REDELIVERY_SUFFIX}`,
+      payload: stored?.payload ?? row.payload,
+      priority: row.priority,
+      ...(row.delivery === undefined ? {} : { delivery: row.delivery }),
+      ...(row.generation === undefined ? {} : { generation: row.generation }),
+      now,
+    },
+    true,
+  );
+  if (id === null || getOutbox(db, id)?.status !== "pending") return;
+  db.run(`UPDATE outbox SET status = 'dropped', error = ? WHERE id = ? AND status = 'dead'`, [
+    `Dead: ${oneLine(error)} Re-enqueued as outbox ${id}.`,
+    row.id,
+  ]);
+  journal(`outbox ${row.id} elicitation re-enqueued as outbox ${id} item=${itemId}`);
 }
 
 function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | null {
