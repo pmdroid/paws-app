@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tempDb, tempHome } from "../../test/helpers";
-import { FakeClock } from "../core";
+import { tempDb, tempHome } from "./helpers";
+import { FakeClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -11,11 +11,11 @@ import {
   listOutbox,
   getWorkItem,
   type WorkItemRecord,
-} from "../db";
-import { runDir, type RunAgentOptions, type RunAgentResult } from "../acp";
-import { writeAgentSettings } from "../config";
-import { handleAgentSettingsRequest } from "../settings";
-import { Orchestrator } from "./orchestrator";
+} from "../src/db";
+import { runDir, type RunAgentOptions, type RunAgentResult } from "../src/acp";
+import { writeAgentSettings } from "../src/config";
+import { handleAgentSettingsRequest } from "../src/settings";
+import { Orchestrator } from "../src/loop";
 
 const oldProfiles = {
   implementer: { agent: "claude", model: "old" },
