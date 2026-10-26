@@ -29,11 +29,15 @@ import {
 } from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
+import { isPreExisting, type ChangedLines } from "./review/changed";
+import { earlierFindings } from "./review/earlier";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
 import { scrubCommandEnv } from "./run/env";
 import {
+  changedLineRanges,
   changedLines,
   changedPaths as diffPaths,
+  git,
   resolveCommit,
   type PawsCommandRunner,
 } from "./run/exec";
@@ -45,6 +49,9 @@ import {
   type CandidateIdentity,
   type DecisionDocument,
   type DecisionWarning,
+  type EarlierFinding,
+  type EvidenceRecord,
+  type Finding,
   type Gate,
   type Independence,
   type EvidenceApproval,
@@ -427,6 +434,22 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
   return finish(input, loaded.policy, candidate, resolved.base, resolved.head, evidenceDir);
 }
 
+/**
+ * Findings whose `path:line` was not added or changed in `base..head`.
+ * Empty when the diff cannot be read, so every finding still counts.
+ */
+export async function preExistingFindings<T extends Finding>(
+  repo: string,
+  base: string,
+  head: string,
+  findings: readonly T[],
+  env?: NodeJS.ProcessEnv,
+): Promise<T[]> {
+  if (findings.length === 0) return [];
+  const changed = await changedLineRanges(repo, base, head, scrubCommandEnv(env));
+  return findings.filter((finding) => isPreExisting(finding, changed));
+}
+
 /** Run the reviewer and store the next review record. Does not decide acceptance. */
 export async function addReview(input: AddReviewInput): Promise<AddReviewResult> {
   const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
@@ -456,6 +479,17 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
   if (blocked?.state === "exhausted" || blocked?.state === "invalid" || preflight.message) {
     return { ok: false, message: blocked?.message ?? preflight.message ?? "review is blocked" };
   }
+  const earlier = await earlierRounds(
+    input.repo,
+    evidenceDir,
+    {
+      itemId: item.id,
+      policyDigest: policy.digest,
+      base: resolved.base,
+      ...(candidate.task !== undefined ? { task: candidate.task } : {}),
+    },
+    env,
+  );
   const reviewed = await input.reviewer.review({
     checkoutExclusions: input.checkoutExclusions,
     item,
@@ -465,6 +499,7 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
     policyDigest: policy.digest,
     skillFiles: policy.skillFiles,
     worktree: input.repo,
+    ...(earlier.length > 0 ? { earlier } : {}),
   });
   if (isInvalid(reviewed)) return { ok: false, message: reviewed.reason };
 
@@ -519,6 +554,29 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
     }
     return { ok: true, record: written };
   });
+}
+
+/** Earlier review rounds of this item, ordered by how far each head is from base. */
+async function earlierRounds(
+  repo: string,
+  evidenceDir: string,
+  scope: { itemId: string; policyDigest: string; base: string; task?: string },
+  env: Record<string, string>,
+): Promise<EarlierFinding[]> {
+  const snapshot = await createEvidenceStore({ root: evidenceDir }).load();
+  const heads = new Set(
+    snapshot.records
+      .filter((record) => record.recordType === "review" && record.itemId === scope.itemId)
+      .map((record) => record.head),
+  );
+  if (heads.size === 0) return [];
+  const distance = new Map<string, number>();
+  for (const head of heads) {
+    const counted = await git(repo, ["rev-list", "--count", `${scope.base}..${head}`], env);
+    const value = Number(counted.stdout.toString("utf8").trim());
+    distance.set(head, counted.ok && Number.isFinite(value) ? value : 0);
+  }
+  return earlierFindings(snapshot.records, scope, (head) => distance.get(head) ?? 0);
 }
 
 function presentValidate(policy: ResolvedPolicy, warnings: DecisionWarning[]): ValidateResult {
@@ -592,6 +650,7 @@ async function finish(
   const lines = policy.items.some((item) => item.gate === input.gate && "minChangedLines" in item)
     ? await changedLines(input.repo, base, head, scrubCommandEnv(input.env))
     : undefined;
+  const lineRanges = await reviewLineRanges(input, policy, snapshot.records, base, head);
   const published =
     input.published === undefined
       ? undefined
@@ -622,11 +681,44 @@ async function finish(
       head,
       ...(paths.paths !== undefined ? { changedPaths: paths.paths } : {}),
       ...(lines !== undefined ? { changedLines: lines } : {}),
+      ...(lineRanges !== undefined ? { changedLineRanges: lineRanges } : {}),
       ...(published !== undefined ? { published } : {}),
       ...(approvals !== undefined ? { approvals } : {}),
     }),
     input.trust,
   );
+}
+
+/**
+ * Changed lines for this candidate and for every earlier review record of a
+ * review at this gate, keyed by `base..head`. A range git cannot read is left
+ * out, so that record's findings all count.
+ */
+async function reviewLineRanges(
+  input: DecisionInput,
+  policy: ResolvedPolicy,
+  records: readonly EvidenceRecord[],
+  base: string,
+  head: string,
+): Promise<Map<string, ChangedLines> | undefined> {
+  const reviews = new Set(
+    policy.items
+      .filter((item) => item.gate === input.gate && item.kind === "review")
+      .map((item) => item.id),
+  );
+  if (reviews.size === 0) return undefined;
+  const ranges = new Map<string, [string, string]>([[`${base}..${head}`, [base, head]]]);
+  for (const record of records) {
+    if (record.recordType !== "review" || !reviews.has(record.itemId)) continue;
+    ranges.set(`${record.base}..${record.head}`, [record.base, record.head]);
+  }
+  const env = scrubCommandEnv(input.env);
+  const read = new Map<string, ChangedLines>();
+  for (const [key, [from, to]] of ranges) {
+    const changed = await changedLineRanges(input.repo, from, to, env);
+    if (changed !== undefined) read.set(key, changed);
+  }
+  return read;
 }
 
 function requestOf(
@@ -650,6 +742,7 @@ function requestOf(
   if (input.retryBaseline !== undefined) request.retryBaseline = input.retryBaseline;
   if (extra.changedPaths !== undefined) request.changedPaths = extra.changedPaths;
   if (extra.changedLines !== undefined) request.changedLines = extra.changedLines;
+  if (extra.changedLineRanges !== undefined) request.changedLineRanges = extra.changedLineRanges;
   if (extra.evidenceError !== undefined) request.evidenceError = extra.evidenceError;
   if (extra.policyLoadError !== undefined) request.policyLoadError = extra.policyLoadError;
   if (extra.published !== undefined) request.published = extra.published;

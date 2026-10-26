@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { changedLinesDiffArgs, parseChangedLines, type ChangedLines } from "../review/changed";
 import type { CommandRunRequest, CommandRunResult, CommandRunner } from "../types";
 import { credentialSecrets, scrubCommandEnv } from "./env";
 import type { CloseoutOutputStream } from "./progress";
@@ -207,6 +208,18 @@ export async function changedLines(
       const [added, removed] = line.split("\t");
       return total + (Number(added) || 1) + (Number(removed) || 0);
     }, 0);
+}
+
+/** Head lines added or changed in `base..head`, or undefined when the diff cannot be read. */
+export async function changedLineRanges(
+  cwd: string,
+  base: string,
+  head: string,
+  env: Record<string, string>,
+): Promise<ChangedLines | undefined> {
+  const result = await git(cwd, changedLinesDiffArgs(base, head), env);
+  if (!result.ok) return undefined;
+  return parseChangedLines(result.stdout.toString("utf8"));
 }
 
 export function pawsHome(explicit?: string): string {

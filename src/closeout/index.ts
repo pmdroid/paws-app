@@ -55,6 +55,7 @@ export type {
   Finding,
   GateOutcome,
   GateResult,
+  ReviewFindings,
 } from "./types";
 
 export { bypassable } from "./bypass";

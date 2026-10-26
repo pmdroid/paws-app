@@ -1,5 +1,5 @@
 import type { DecisionDocument as SpecDecision, DecisionItem } from "../closeout-spec";
-import type { DecisionDocument, Finding, GateResult } from "./types";
+import type { DecisionDocument, GateResult, ReviewFindings } from "./types";
 
 export function formatEvidenceSummary(
   result: Pick<
@@ -33,7 +33,7 @@ export function formatEvidenceSummary(
 
 export function formatFixFeedback(
   decision: DecisionDocument,
-  reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+  reviewFindings: ReviewFindings[],
 ): string {
   const lines = [`Closeout ${decision.decision} at ${decision.head}.`];
   if (decision.message) lines.push(decision.message);
@@ -43,8 +43,11 @@ export function formatFixFeedback(
   }
   for (const review of reviewFindings) {
     for (const finding of review.findings) {
+      const old = review.preExisting?.includes(finding)
+        ? " Pre-existing code the change did not edit: not required, does not block."
+        : "";
       lines.push(
-        `- review ${review.itemId} ${finding.severity} at ${finding.location}: ${finding.explanation} (${finding.evidence})`,
+        `- review ${review.itemId} ${finding.severity} at ${finding.location}: ${finding.explanation} (${finding.evidence})${old}`,
       );
     }
   }

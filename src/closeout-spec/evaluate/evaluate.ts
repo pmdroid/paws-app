@@ -32,6 +32,7 @@ import {
   type Severity,
 } from "../index";
 import { evidenceAttemptKey } from "../retry";
+import { isPreExisting, type ChangedLines } from "../review/changed";
 import { anyPathMatches } from "./paths";
 import { producerTrusted, type EvaluateTrust } from "./trust";
 
@@ -71,6 +72,11 @@ const BLOCKING: readonly ItemState[] = [
  * of it. An `evidence` requirement counts them. Without it, that requirement
  * fails.
  *
+ * `changedLineRanges` maps `base..head` to the head lines added or changed in
+ * that range. A review finding at a readable `path:line` outside the lines of
+ * its record's range is pre-existing: it neither fails the item nor counts
+ * toward the retry budget. A record whose range is absent keeps every finding.
+ *
  * `approvals` are the reviews of this task's files. An `approval: human`
  * requirement with enough files and no approval covering all of them is
  * `missing`, which blocks the decision without starting a fix round.
@@ -83,6 +89,7 @@ export type EvaluateRequest = {
   candidate: CandidateIdentity;
   changedPaths?: readonly string[] | null;
   changedLines?: number;
+  changedLineRanges?: ReadonlyMap<string, ChangedLines>;
   retryBaseline?: readonly string[];
   evidenceError?: string;
   policyLoadError?: string;
@@ -307,7 +314,7 @@ export function retryBlock(
       failed += 1;
       if (isReview(item) && record.recordType === "review") {
         const keys = new Set(
-          record.findings
+          blockingFindings(record, request)
             .filter((finding) => severityRank(finding.severity) <= severityRank(item.failOn))
             .map((finding) => findingKey(finding.location)),
         );
@@ -367,7 +374,7 @@ function judgeRecord(
   }
   if (isReview(item)) {
     if (record.recordType !== "review") return kindMismatch(item, record.attempt);
-    return judgeReview(item, record, request.candidate);
+    return judgeReview(item, record, request);
   }
   return row(item, "unsupported", `kind ${item.kind} is not supported`);
 }
@@ -496,21 +503,37 @@ function applyExec(
 function judgeReview(
   item: ResolvedReview,
   record: ReviewRecord,
-  candidate: CandidateIdentity,
+  request: EvaluateRequest,
 ): DecisionItem {
   const attempt = record.attempt;
-  const finding = failingFinding(record.findings, item.failOn);
+  const blocking = blockingFindings(record, request);
+  const preExisting = preExistingNote(record.findings.length - blocking.length);
+  const finding = failingFinding(blocking, item.failOn);
   if (finding) {
     return row(
       item,
       "failed",
-      `finding at ${finding.severity} meets failOn ${item.failOn}`,
+      `finding at ${finding.severity} meets failOn ${item.failOn}${preExisting}`,
       attempt,
     );
   }
-  const independence = independenceFailure(item, record, candidate);
+  const independence = independenceFailure(item, record, request.candidate);
   if (independence !== undefined) return row(item, "independence", independence, attempt);
-  return row(item, "passed", "review findings satisfy the policy", attempt);
+  return row(item, "passed", `review findings satisfy the policy${preExisting}`, attempt);
+}
+
+/** Findings that can fail the item, judged against the record's own `base..head`. */
+function blockingFindings(record: ReviewRecord, request: EvaluateRequest): readonly Finding[] {
+  const changed = request.changedLineRanges?.get(`${record.base}..${record.head}`);
+  if (changed === undefined) return record.findings;
+  return record.findings.filter((finding) => !isPreExisting(finding, changed));
+}
+
+function preExistingNote(count: number): string {
+  if (count === 0) return "";
+  return count === 1
+    ? "; 1 finding is in pre-existing code and does not block"
+    : `; ${count} findings are in pre-existing code and do not block`;
 }
 
 function failingFinding(findings: readonly Finding[], failOn: Severity): Finding | undefined {
