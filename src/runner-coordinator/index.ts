@@ -220,7 +220,9 @@ export async function openRunnerCoordinator(options: {
   const pruneAgentSessions = () =>
     void agentSessions
       ?.prune()
-      .catch(journalRejection("runner-coordinator.openRunnerCoordinator.prune", () => {}, null));
+      .catch((error: unknown) =>
+        journalCaught(error, "runner-coordinator.openRunnerCoordinator.prune", null),
+      );
   const pruneTimer = agentSessions ? setInterval(pruneAgentSessions, 60_000) : undefined;
   pruneTimer?.unref();
   pruneAgentSessions();
