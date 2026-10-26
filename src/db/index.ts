@@ -161,7 +161,6 @@ export {
   recordRunnerHostStatus,
   recordRunnerAgentUsage,
   runnerAgentUsage,
-  getRunnerCertificate,
   runnerForCertificate,
   renewRunnerCertificate,
   isCurrentRunnerCertificate,

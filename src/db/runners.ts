@@ -312,18 +312,6 @@ export function listRunnerOverview(
     }));
 }
 
-export function getRunnerCertificate(
-  db: Database,
-  fingerprint: string,
-): StoredRunnerCertificate | null {
-  return db
-    .query<StoredRunnerCertificate, [string]>(
-      `SELECT fingerprint,serial,pem,not_before AS notBefore,not_after AS notAfter
-    FROM runner_certificate WHERE fingerprint=?`,
-    )
-    .get(fingerprint);
-}
-
 export function runnerForCertificate(
   db: Database,
   fingerprint: string,
