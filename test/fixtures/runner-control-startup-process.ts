@@ -72,7 +72,15 @@ async function reserve() {
   await server.stop(true);
   return port;
 }
-const browserPort = await reserve();
+// Keep the browser listener bound while identities initialize and runner startup begins.
+// Closing a port probe here lets another parallel test or the runner claim the port.
+const browserServer = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  tls: { key: readFileSync(source.PAWS_TLS_KEY_PATH!, "utf8"), cert: ca },
+  fetch: () => new Response(null, { status: 503 }),
+});
+const browserPort = browserServer.port!;
 const runnerPort = await reserve();
 source.PAWS_PORT = String(browserPort);
 source.PAWS_PUBLIC_URL = `https://127.0.0.1:${browserPort}`;
@@ -85,7 +93,7 @@ if (mode === "transcripts-later") {
   source.GITHUB_APP_ID = "99";
   source.GITHUB_APP_INSTALLATION_ID = "1";
   source.GITHUB_APP_PRIVATE_KEY_PATH = source.PAWS_TLS_KEY_PATH;
-  const paws = startPaws(source, { noTunnel: true });
+  const paws = startPaws(source, { noTunnel: true, server: browserServer });
   try {
     const health = await runtimeNativeFetch(`https://127.0.0.1:${browserPort}/health`, {
       tls: { ca },
@@ -161,6 +169,7 @@ if (mode === "remote") {
 }
 const paws = startPaws(source, {
   noTunnel: true,
+  server: browserServer,
   ...(enabled
     ? {
         runnerRepositoryAccess: {

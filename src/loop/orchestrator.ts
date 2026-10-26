@@ -1,3 +1,4 @@
+import { hasPublishedPullRequest } from "./activity-policy";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
 import { saveHumanRetryWindow, fixRounds, jobVersionCurrent } from "../db";
@@ -1905,8 +1906,7 @@ export class Orchestrator {
           );
       },
       (steps) => {
-        if (!controller.signal.aborted && this.canReportProgress(item.id))
-          sessionProgress?.plan(steps);
+        if (!controller.signal.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
       },
     );
     const keepAlive = setInterval(() => {
@@ -2094,8 +2094,7 @@ export class Orchestrator {
         this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`, update);
       },
       (steps) => {
-        if (!controller.signal.aborted && this.canReportProgress(item.id))
-          sessionProgress?.plan(steps);
+        if (!controller.signal.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
       },
     );
     let deferred = false;
@@ -2119,7 +2118,7 @@ export class Orchestrator {
         .get(item.id);
       const fixing =
         returned !== null && ["findings", "ci", "review", "conflict"].includes(returned.reason);
-      sessionProgress?.phase(fixing ? "fixing" : "implementing");
+      if (!fixing) sessionProgress?.phase("implementing");
       if (fixing) {
         const round = fixRounds(this.db, item.id);
         const limit = this.fixRoundLimit(item);
@@ -2132,6 +2131,7 @@ export class Orchestrator {
                 ? "merge conflicts"
                 : "Closeout findings";
         const counter = returned.reason === "conflict" ? "" : ` (${round} of ${limit})`;
+        sessionProgress?.restart(returned.reason, round, item.version, limit);
         sessionProgress?.status(`${item.linearIdentifier}: fixing ${label}${counter}`);
         live.progress =
           returned.reason === "conflict"
@@ -2545,7 +2545,7 @@ export class Orchestrator {
         this.post(item, update.kind, update.body, `${key}:acp:${++this.activitySeq}`, update);
       },
       (steps) => {
-        if (!deps.signal?.aborted && this.canReportProgress(item.id)) sessionProgress?.plan(steps);
+        if (!deps.signal?.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
       },
     );
     const onCandidate = deps.onCandidate;
@@ -3168,12 +3168,6 @@ export class Orchestrator {
       itemId: item.id,
       now: this.now(),
       announce: (current) => {
-        this.post(
-          current,
-          "thought",
-          `Merged ${current.linearIdentifier}.`,
-          `${current.id}:merged`,
-        );
         this.sessionProgress(current)?.phase("completed");
         this.postStatus(current, "completed");
       },
@@ -4088,8 +4082,7 @@ export class Orchestrator {
     if (!progress) return undefined;
     return {
       update: async (steps) => {
-        if (!this.canReportProgress(item.id))
-          throw new Error("Plan updates are closed for this run");
+        if (this.stopped(item.id)) throw new Error("Plan updates are closed for this run");
         progress.plan(steps);
         await this.flush();
       },
@@ -4155,9 +4148,14 @@ export class Orchestrator {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state === "cancelled") return;
-    if ((kind === "thought" || kind === "action") && !this.canReportProgress(item.id)) return;
     const sessionId = this.activitySession(current);
     if (sessionId === null || body.trim() === "") return;
+    if (
+      !this.canReportProgress(item.id) &&
+      (kind === "thought" || kind === "action" || this.hasPublishedPullRequest(sessionId)) &&
+      !(kind === "response" && /^(merged:|closed:|command:stop:)/.test(key))
+    )
+      return;
     return enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "activity",
@@ -4182,14 +4180,10 @@ export class Orchestrator {
   }
 
   private hasPublishedPullRequest(sessionId: string): boolean {
-    return Boolean(
-      this.db
-        .query(
-          `SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=?
-           AND delivery_generation=? AND idempotency_key LIKE 'pull-request-ready:%'
-           AND status!='dropped' LIMIT 1`,
-        )
-        .get(sessionId, getLinearSessionGeneration(this.db, sessionId)),
+    return hasPublishedPullRequest(
+      this.db,
+      sessionId,
+      getLinearSessionGeneration(this.db, sessionId),
     );
   }
 

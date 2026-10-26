@@ -27,6 +27,7 @@ import {
 import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
+import { getLinearSessionGeneration } from "./linear-sessions";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
@@ -580,6 +581,24 @@ export function completeMergedItem(
       getConfirmedRemoteMerge(db, current.id) === null
     )
       return null;
+    const fact = getConfirmedRemoteMerge(db, current.id)!;
+    const sessionId = current.sessionKey ?? current.id;
+    const generation = getLinearSessionGeneration(db, sessionId);
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      delivery: "ordered",
+      generation,
+      idempotencyKey: `merged:${current.id}:${generation}`,
+      payload: {
+        sessionId,
+        itemId: current.id,
+        kind: "response",
+        body: `Merged #${fact.pullNumber} into main at ${fact.mergeSha ?? "unknown commit"}. ${current.linearIdentifier} is Done.`,
+      },
+      now: input.now,
+    });
     input.announce?.(current);
     const merged = applyWorkItemEvent(db, current.id, "merge_accepted");
     endActiveRun(db, current.currentRunId, input.now);
@@ -717,12 +736,24 @@ function commitFailure(
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
   cancelOpenJobs(db, { itemId: item.id, reason, now });
+  const sessionId = item.sessionKey ?? item.id;
+  const generation = getLinearSessionGeneration(db, sessionId);
+  const afterPr =
+    db
+      .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=?
+    AND delivery_generation=? AND idempotency_key LIKE 'pull-request-ready:%' AND status!='dropped' LIMIT 1`)
+      .get(sessionId, generation) !== null;
   enqueueOutboxOnce(db, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
-    orderingKey: item.sessionKey ?? item.id,
-    idempotencyKey: idempotencyKey(version),
-    payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
+    orderingKey: sessionId,
+    ...(afterPr ? { delivery: "ordered" as const, generation } : {}),
+    idempotencyKey: afterPr ? `closed:${item.id}:${generation}` : idempotencyKey(version),
+    payload: {
+      sessionId,
+      kind: afterPr ? "response" : "error",
+      body: afterPr ? `Closed: ${text}` : text,
+    },
     now,
   });
 }

@@ -140,7 +140,17 @@ test("a session flapping between phases sends one plan and summary every two min
   }
   await flush(dispatcher);
   expect(tracker.sessionUpdates).toHaveLength(10);
-  expect(tracker.sessionUpdates.every((update) => update.plan && update.summary)).toBe(true);
+  expect(tracker.sessionUpdates.every((update) => update.summary)).toBe(true);
+  const plans = tracker.sessionUpdates.flatMap((update) => (update.plan ? [update.plan] : []));
+  expect(
+    plans.every(
+      (plan, index) =>
+        index === 0 ||
+        plans[index - 1]!.every(
+          (step, i) => step.status !== "completed" || plan[i]?.status === "completed",
+        ),
+    ),
+  ).toBe(true);
   db.close();
 });
 
@@ -420,3 +430,129 @@ test.each(["code", "answer", "artifact"] as const)(
     }
   },
 );
+
+function markPr(db: ReturnType<typeof tempDb>) {
+  enqueueOutbox(db, {
+    target: "linear",
+    op: "activity",
+    orderingKey: "session",
+    delivery: "ordered",
+    idempotencyKey: "pull-request-ready:item:0",
+    payload: { sessionId: "session", kind: "response", body: "Opened PR #1" },
+  });
+}
+
+test("post-PR reconstruction refuses backwards phases and appends rebase verification", () => {
+  const db = tempDb();
+  try {
+    const progress = createLinearSessionProgress(db, "session", "ENG-1");
+    progress.phase("merging");
+    markPr(db);
+    const recovered = createLinearSessionProgress(db, "session", "ENG-1");
+    recovered.phase("implementing");
+    recovered.phase("fixing");
+    expect(
+      listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.payload,
+    ).toMatchObject({ summary: "ENG-1: merging" });
+    recovered.phase("verifying");
+    const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
+      ?.payload as SessionUpdate;
+    expect(plan.plan).toEqual([
+      { content: "Verify changes", status: "completed" },
+      { content: "Open pull request", status: "completed" },
+      { content: "Merge verified changes", status: "inProgress" },
+      { content: "Re-verify after rebase", status: "inProgress" },
+    ]);
+    expect(
+      listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.payload,
+    ).toMatchObject({ summary: "ENG-1: rebased onto main, re-verifying" });
+    recovered.status("ENG-1: second in queue behind ENG-2");
+    createLinearSessionProgress(db, "session", "ENG-1").phase("implementing");
+    expect(
+      listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.payload,
+    ).toMatchObject({ summary: "ENG-1: second in queue behind ENG-2" });
+  } finally {
+    db.close();
+  }
+});
+
+test.each([
+  ["findings", "Fix Closeout findings (2 of 3)", 3],
+  ["findings", "Fix Closeout findings (2 of 5)", 5],
+  ["ci", "Fix CI", 3],
+  ["review", "Fix review findings", 3],
+  ["conflict", "Resolve merge conflict", 3],
+])("%s restarts append one durable reason-named step", (reason, content, limit) => {
+  const db = tempDb();
+  try {
+    createLinearSessionProgress(db, "session", "ENG-1").phase("merging");
+    markPr(db);
+    createLinearSessionProgress(db, "session", "ENG-1").restart(
+      String(reason),
+      2,
+      10,
+      typeof limit === "number" ? limit : 3,
+    );
+    createLinearSessionProgress(db, "session", "ENG-1").restart(
+      String(reason),
+      2,
+      10,
+      typeof limit === "number" ? limit : 3,
+    );
+    const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
+      ?.payload as SessionUpdate;
+    expect(plan.plan?.filter((step) => step.content === content)).toEqual([
+      { content, status: "inProgress" },
+    ]);
+    expect(plan.plan?.[0]?.status).toBe("completed");
+    expect(plan.plan?.[1]?.status).toBe("completed");
+  } finally {
+    db.close();
+  }
+});
+
+test("a captured plan callback preserves milestones completed by a newer reporter", () => {
+  const db = tempDb();
+  try {
+    const captured = createLinearSessionProgress(db, "session", "ENG-1");
+    captured.phase("implementing");
+    createLinearSessionProgress(db, "session", "ENG-1").phase("merging");
+    markPr(db);
+    captured.plan([{ content: "Repair CI", status: "inProgress" }]);
+    const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
+      ?.payload as SessionUpdate;
+    expect(plan.plan?.find((step) => step.content === "Verify changes")?.status).toBe("completed");
+    expect(plan.plan?.find((step) => step.content === "Open pull request")?.status).toBe(
+      "completed",
+    );
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
+    captured.plan([{ content: "Repair CI", status: "completed" }]);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
+    const current = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
+      ?.payload as SessionUpdate;
+    expect(current.plan?.filter((step) => step.content === "Fix CI")).toHaveLength(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("successive restart rounds preserve their newest identity across captured callbacks", () => {
+  const db = tempDb();
+  try {
+    const captured = createLinearSessionProgress(db, "session", "ENG-1");
+    captured.phase("merging");
+    markPr(db);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 2, 20);
+    captured.plan([]);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 2, 20);
+    const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
+      ?.payload as SessionUpdate;
+    expect(plan.plan?.filter((step) => step.content === "Fix CI")).toEqual([
+      { content: "Fix CI", status: "completed" },
+      { content: "Fix CI", status: "inProgress" },
+    ]);
+  } finally {
+    db.close();
+  }
+});

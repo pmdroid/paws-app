@@ -132,20 +132,12 @@ function mergingTask(db: Database) {
   return { item: getWorkItem(db, item.id)!, run, jobId };
 }
 
-function announceMerge(db: Database) {
+function announceMerge(_db: Database) {
   const announced: string[] = [];
   return {
     announced,
     announce: (item: WorkItemRecord) => {
       announced.push(item.id);
-      enqueueOutboxOnce(db, {
-        target: "linear",
-        op: "activity",
-        orderingKey: "session",
-        idempotencyKey: `${item.id}:merged`,
-        payload: { sessionId: "session", kind: "thought", body: "Merged." },
-        now: 4,
-      });
     },
   };
 }
@@ -163,6 +155,11 @@ test("a confirmed merge commits its state, run, jobs and notice together and onl
   expect(getRun(restored, run.id)?.status).toBe("ended");
   expect(getJob(restored, jobId)?.status).toBe("cancelled");
   expect(listOutbox(restored, "session")).toHaveLength(1);
+  expect(listOutbox(restored, "session")[0]).toMatchObject({
+    delivery: "ordered",
+    idempotencyKey: `merged:${item.id}:0`,
+    payload: { kind: "response", body: "Merged #7 into main at abc. ENG-1 is Done." },
+  });
   expect(completeMergedItem(restored, { itemId: item.id, now: 5, announce })).toBeNull();
   expect(announced).toEqual([item.id]);
   expect(listOutbox(restored, "session")).toHaveLength(1);
@@ -239,4 +236,29 @@ test("a fault in the answer's session update rolls the completion back", () => {
   expect(getWorkItem(db, item.id)?.state).toBe("running");
   expect(getRun(db, run.id)?.status).toBe("active");
   expect(listOutbox(db, "session")).toEqual([]);
+});
+
+test("a terminal failure after PR publication commits one ordered closed response", () => {
+  const db = tempDb();
+  databases.push(db);
+  const { item } = runningTask(db);
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "activity",
+    orderingKey: "session",
+    delivery: "ordered",
+    idempotencyKey: `pull-request-ready:${item.id}:0`,
+    payload: { sessionId: "session", kind: "response", body: "Opened PR #7" },
+  });
+  expect(failWorkItem(db, item, "merge", "GitHub is unavailable.", 2)).toBe(true);
+  expect(failWorkItem(db, item, "merge", "GitHub is unavailable.", 3)).toBe(false);
+  expect(
+    listOutbox(db, "session").filter((row) => row.idempotencyKey.startsWith("closed:")),
+  ).toMatchObject([
+    {
+      idempotencyKey: `closed:${item.id}:0`,
+      delivery: "ordered",
+      payload: { kind: "response", body: "Closed: GitHub is unavailable." },
+    },
+  ]);
 });

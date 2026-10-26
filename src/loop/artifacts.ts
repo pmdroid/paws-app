@@ -25,6 +25,7 @@ import {
 } from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
 import type { PublishedEvidence } from "../closeout";
+import { canReportProgress } from "./activity-policy";
 import { rejectedEvidenceIds } from "../questions";
 
 export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
@@ -104,6 +105,7 @@ export function evidenceActivityBody(input: {
  * Keeps a video or screenshot published with a Closeout check id in the evidence store and
  * posts it to Linear. With `uploads`, files within `EVIDENCE_INLINE_LIMITS` go out as a
  * `linear.evidence` outbox row that uploads the file and embeds it; others get the Paws link.
+ * After the PR response, evidence uploads stay silent and attach to the issue instead.
  * Every other artifact goes to `linear`, unchanged.
  */
 export function createEvidenceArtifactPublisher(options: {
@@ -175,7 +177,8 @@ export function createEvidenceArtifactPublisher(options: {
         };
         const upload = inline && options.uploads;
         const reviewed = options.reviewed?.(evidence.checkId) ?? false;
-        if (upload || !reviewed)
+        const quiet = !canReportProgress(options.db, options.sessionId, generation);
+        if (upload || (!reviewed && !quiet))
           enqueueOutboxOnce(options.db, {
             target: "linear",
             op: upload ? "linear.evidence" : "activity",
@@ -191,7 +194,7 @@ export function createEvidenceArtifactPublisher(options: {
                   evidenceId: stored.id,
                   checkId: evidence.checkId,
                   link: url,
-                  ...(reviewed ? { uploadOnly: true } : {}),
+                  ...(reviewed || quiet ? { uploadOnly: true } : {}),
                 }
               : {
                   ...activity,
@@ -207,12 +210,64 @@ export function createEvidenceArtifactPublisher(options: {
                   }),
                 },
           });
+        if (quiet)
+          enqueueEvidenceAttachment(options.db, {
+            sessionId: options.sessionId,
+            generation,
+            itemId: options.itemId,
+            evidenceId: stored.id,
+            title: artifact.displayName,
+            url,
+            headCommit: evidence.headCommit,
+            now: now(),
+          });
         return { url, displayName: artifact.displayName };
       })().finally(() => inflight.delete(key));
       inflight.set(key, pending);
       return pending;
     },
   };
+}
+
+/** A stable outbox key lets delivery adopt evidence queued before the PR gate was installed. */
+export function enqueueEvidenceAttachment(
+  db: Database,
+  input: {
+    sessionId: string;
+    generation: number;
+    itemId: string;
+    evidenceId: string;
+    title: string;
+    url: string;
+    headCommit: string;
+    now: number;
+  },
+): void {
+  const item = db
+    .query<{ issueId: string }, [string]>(
+      "SELECT linear_issue_id AS issueId FROM work_item WHERE id=?",
+    )
+    .get(input.itemId);
+  if (!item) throw new Error("Evidence has no work item");
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "linear.attachment",
+    delivery: "ordered",
+    priority: 0,
+    orderingKey: input.sessionId,
+    generation: input.generation,
+    idempotencyKey: `evidence-card:${input.sessionId}:${input.generation}:${input.evidenceId}`,
+    payload: {
+      id: randomUUID(),
+      itemId: input.itemId,
+      issueId: item.issueId,
+      title: input.title,
+      url: input.url,
+      evidenceId: input.evidenceId,
+      headCommit: input.headCommit,
+    },
+    now: input.now,
+  });
 }
 
 function sessionGeneration(db: Database, sessionId: string): number {

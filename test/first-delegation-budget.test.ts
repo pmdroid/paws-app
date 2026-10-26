@@ -583,7 +583,7 @@ test("a first delegation from an unknown user stays within 30 Linear requests, a
     signIn: 3,
     resume: 3,
     waitingForRunner: 0,
-    run: 16,
+    run: 17,
   });
   // /health counts every app request toward ENG-1. Only the delegator's own OAuth code exchange
   // and identity read, made with their token, are outside the app's ledger.
