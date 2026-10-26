@@ -1247,7 +1247,7 @@ export function createRemoteAgentRunner(options: {
                 const currentCommand = assigned;
                 question = (async () => {
                   const answer = await input.askTeam!.ask(
-                    { question: event.text, options: event.options },
+                    { question: event.text, options: event.options, context: event.context },
                     { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
                   );
                   signal.throwIfAborted();
