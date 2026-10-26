@@ -50,6 +50,9 @@ export function recoveryOptions(
   return { retryBaseline: [...retryBaseline], bypasses };
 }
 
+/** Starts the summary of a preparation that kept failing before the agent started. */
+export const PREPARATION_FAILED = "Agent preparation failed";
+
 export function recoveryQuestion(
   recovery: Omit<CloseoutRecovery, "questionId" | "answer" | "answeredBy">,
   error?: string,
@@ -58,6 +61,14 @@ export function recoveryQuestion(
     /\.ya?ml: \S* ?must NOT have additional properties \('([^']+)' was unexpected\)/.exec(
       recovery.summary,
     )?.[1];
+  if (recovery.summary.startsWith(PREPARATION_FAILED))
+    return [
+      "Agent preparation needs your help.",
+      ...(error ? [error] : []),
+      recovery.summary,
+      "Paws could not prepare the agent before it started, so there is no candidate to verify yet.",
+      "Reply retry or with guidance to start the task again on its configured agent.",
+    ].join("\n\n");
   return [
     "Closeout needs your help.",
     ...(unsupported

@@ -52,6 +52,7 @@ import {
   awaitsVisualReview,
   createCloseoutGate,
   samePatch,
+  PolicyFetchError,
   reviewRequirements,
   trustedPolicyFiles,
   trustedRootFiles,
@@ -98,6 +99,7 @@ import {
   systemClock,
   parseLinearCommand,
   isTransient,
+  isTransientGitError,
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
@@ -332,7 +334,7 @@ import {
   KEEPALIVE_MS,
   publicToolText,
 } from "./activity";
-import { parseRecoveryAnswer, recoveryOptions } from "./closeout-recovery";
+import { PREPARATION_FAILED, parseRecoveryAnswer, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp } from "./closeout-help";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
@@ -390,6 +392,8 @@ export type OrchestratorOptions = {
   closeoutPolicyRoot?: (repository: RepositoryBinding) => string | undefined;
   /** Builds the Closeout gate for one evaluation. Tests pass the Closeout fake. */
   closeoutGate?: (options: CloseoutGateOptions) => CloseoutGate;
+  /** Reads the review requirements from the trusted Closeout policy. Tests pass a fake. */
+  reviewRequirements?: typeof reviewRequirements;
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
@@ -512,6 +516,8 @@ export class Orchestrator {
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
   private readonly askedRuns = new Set<string>();
+  /** Temporary errors thrown while the agent was being prepared, before it started. */
+  private readonly preparationFailures = new WeakSet<object>();
   private readonly pullRequestReads = new Set<string>();
   private readonly live = new Map<
     string,
@@ -1614,6 +1620,20 @@ export class Orchestrator {
       const message = error instanceof Error ? error.message : String(error);
       if (isTransient(error)) {
         const retry = retryCount(job.payload) + 1;
+        if (retry > MAX_TRANSIENT_RETRIES && this.preparationFailures.has(error as object)) {
+          await this.askPreparationHelp(
+            item,
+            `${PREPARATION_FAILED} after ${MAX_TRANSIENT_RETRIES} retries.\n${message}`,
+          );
+          journalCaught(
+            error,
+            "orchestrator.executeRetried.executeQueued",
+            readString(job.payload, "itemId"),
+            undefined,
+            this.options.journal,
+          );
+          return;
+        }
         if (retry > MAX_TRANSIENT_RETRIES) {
           this.fail(
             item,
@@ -2397,7 +2417,12 @@ export class Orchestrator {
       } catch (error) {
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
-        if (isTransient(error)) throw error;
+        if (isTransient(error)) {
+          // A temporary failure before the agent starts retries with backoff. A person is asked
+          // only once the retries are spent.
+          if (typeof error === "object" && error !== null) this.preparationFailures.add(error);
+          throw error;
+        }
         journalCaught(
           error,
           "orchestrator.runItem.preflight",
@@ -3114,6 +3139,14 @@ export class Orchestrator {
       retryBaseline,
       startedAt: this.now(),
     });
+  }
+
+  /** Ask a person about a preparation that kept failing before the agent started. */
+  private async askPreparationHelp(item: WorkItemRecord, summary: string): Promise<void> {
+    const current = getWorkItem(this.db, item.id);
+    if (!current) return;
+    this.post(current, "thought", summary, `${current.currentRunId ?? current.id}:preparation`);
+    await this.askCloseoutHelp(current, undefined, summary);
   }
 
   private async askCloseoutHelp(
@@ -5805,12 +5838,16 @@ export class Orchestrator {
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
     });
-    const required = reviewRequirements(
+    const required = (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.path,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
     );
-    if (!required.ok) throw new Error(required.message);
+    if (!required.ok)
+      throw required.message.startsWith("origin/main is unavailable") &&
+        isTransientGitError(required.message)
+        ? new PolicyFetchError(required.message)
+        : new Error(required.message);
     const requirements = required.items.filter((check) => check.gate === "beforePR");
     if (!requirements.length) return;
     const identities: AgentIdentity[] = [];
