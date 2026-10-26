@@ -17,7 +17,8 @@ import {
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import { handleAgentSettingsRequest, handleHookSettingsRequest } from "../src/settings";
-import { demoStatus, handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/web";
+import { statusFixture } from "../src/web/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a proof directory");
@@ -46,7 +47,7 @@ for (let index = 0; index < 3; index++) {
   writeFileSync(file, JSON.stringify({ profiles: original }));
   files.push(file);
 }
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
