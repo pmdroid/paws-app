@@ -806,10 +806,22 @@ a.visual-review-frame {
 a.visual-review-frame:not([data-review-draw]) {
   cursor: pointer;
 }
+a.visual-review-frame {
+  text-align: center;
+}
+.visual-review-media {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
 a.visual-review-frame :is(img, video) {
   display: block;
-  width: 100%;
+  max-width: 100%;
+  max-height: 32rem;
+  width: auto;
   height: auto;
+  margin: 0 auto;
 }
 a.visual-review-frame:focus-visible {
   outline: 2px solid var(--ring);
@@ -821,6 +833,14 @@ a.visual-review-frame:focus-visible {
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+.review-marks polyline {
+  fill: none;
+  stroke: #e5484d;
+  stroke-width: 3px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 .visual-review-earlier {
   display: flex;

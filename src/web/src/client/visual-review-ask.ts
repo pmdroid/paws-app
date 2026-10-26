@@ -26,7 +26,7 @@ export function submitVisualReviewAsk(event: SubmitEvent, reload: () => Promise<
   const decision = event.submitter instanceof HTMLButtonElement ? event.submitter.value : "";
   if (decision !== "approve" && decision !== "changes") return true;
   const note = form.querySelector("textarea")?.value ?? "";
-  const shots = cardShots(form.closest("section") ?? form);
+  const shots = cardShots(form.closest("#visual-review") ?? form);
   setLinkAskStatus(questionId, "Sending…", true);
   const status = form.querySelector("[role=status]");
   if (status) status.textContent = "Sending…";
@@ -87,7 +87,7 @@ export function clickVisualReviewAsk(
   if (!frame || !local || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey)
     return false;
   event.preventDefault();
-  const card = frame.closest("section");
+  const card = frame.closest("#visual-review");
   if (!card) return true;
   openReviewDraw(frame.dataset["reviewDraw"] ?? "", cardShots(card), reload, {
     collect: true,
@@ -98,7 +98,7 @@ export function clickVisualReviewAsk(
 
 function stopItem(button: HTMLButtonElement, reload: () => Promise<void>): void {
   const itemId = button.dataset["visualReviewStop"] ?? "";
-  const status = button.closest("section")?.querySelector("form [role=status]");
+  const status = button.closest("#visual-review")?.querySelector("form [role=status]");
   button.disabled = true;
   void (async () => {
     try {

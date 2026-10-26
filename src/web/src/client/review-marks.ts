@@ -42,5 +42,5 @@ export function strokesOverlay(strokes: readonly Stroke[]): string {
       return `<polyline points="${points}" />`;
     })
     .join("");
-  return `<svg class="review-marks" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true" fill="none" stroke="${INK}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke">${lines}</svg>`;
+  return `<svg class="review-marks" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">${lines}</svg>`;
 }
