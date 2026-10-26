@@ -26,6 +26,11 @@ import {
   createRunnerTranscriptsHttp,
   type RunnerTranscriptObjects,
 } from "../runner-transcripts";
+import {
+  createAgentSessions,
+  createAgentSessionsHttp,
+  type AgentSessionObjects,
+} from "../agent-sessions";
 
 export type RunnerRepositoryAccessOptions = {
   github: GitHubApp;
@@ -63,6 +68,8 @@ export async function openRunnerCoordinator(options: {
   onError(error: unknown): void;
   repositoryAccess?: RunnerRepositoryAccessOptions;
   transcriptObjects?: RunnerTranscriptObjects;
+  /** Encrypted agent session snapshot storage and its key from `~/.paws/secrets`. */
+  agentSessions?: { objects: AgentSessionObjects; key: Buffer };
   discoverModels?: boolean;
   /** Queue login_check commands in the background so agent sign-in status stays current. */
   checkSignIn?: boolean;
@@ -134,6 +141,10 @@ export async function openRunnerCoordinator(options: {
     ? createRunnerTranscripts({ db: options.db, work, objects: options.transcriptObjects })
     : undefined;
   const transcriptsHttp = transcripts ? createRunnerTranscriptsHttp(transcripts) : undefined;
+  const agentSessions = options.agentSessions
+    ? createAgentSessions({ db: options.db, work, now: options.now, ...options.agentSessions })
+    : undefined;
+  const agentSessionsHttp = agentSessions ? createAgentSessionsHttp(agentSessions) : undefined;
   listener = await startRunnerListener({
     tls: { ...options.tls, ca: authority.certificate },
     hostname: options.hostname,
@@ -161,6 +172,7 @@ export async function openRunnerCoordinator(options: {
         (await artifacts.fetch(request, runnerId)) ??
         (await inputs.fetch(request, runnerId)) ??
         (await transcriptsHttp?.(request, runnerId)) ??
+        (await agentSessionsHttp?.(request, runnerId)) ??
         new Response(null, { status: 404 })
       );
     },
@@ -207,6 +219,7 @@ export async function openRunnerCoordinator(options: {
     artifacts,
     inputs,
     transcripts,
+    agentSessions,
     async browser(request: Request, principal: WorkspacePrincipal) {
       return (
         (await models.browser(request, principal)) ??

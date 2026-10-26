@@ -3055,6 +3055,46 @@ BEGIN
 END;
 `,
   },
+  {
+    id: "149_agent_session_snapshot",
+    sql: `
+CREATE TABLE agent_session_snapshot (
+  run_id TEXT NOT NULL REFERENCES run(id),
+  generation INTEGER NOT NULL CHECK(generation>0),
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  owner_user_id TEXT REFERENCES workspace_user(id),
+  agent TEXT CHECK(agent IS NULL OR agent IN ('claude','codex','grok')),
+  agent_version TEXT,
+  session_id TEXT,
+  workspace_path TEXT,
+  commit_sha TEXT,
+  turn INTEGER CHECK(turn IS NULL OR turn>=0),
+  size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes BETWEEN 0 AND 1073741824),
+  sealed_size INTEGER CHECK(sealed_size IS NULL OR sealed_size=size_bytes),
+  sha256 TEXT CHECK(sha256 IS NULL OR length(sha256)=64),
+  status TEXT NOT NULL DEFAULT 'uploading' CHECK(status IN ('uploading','sealed','discarded')),
+  created_at INTEGER NOT NULL,
+  sealed_at INTEGER,
+  CHECK(status<>'sealed' OR (owner_user_id IS NOT NULL AND agent IS NOT NULL
+    AND agent_version IS NOT NULL AND session_id IS NOT NULL AND workspace_path IS NOT NULL
+    AND commit_sha IS NOT NULL AND turn IS NOT NULL AND sealed_size IS NOT NULL
+    AND sha256 IS NOT NULL AND sealed_at IS NOT NULL)),
+  PRIMARY KEY(run_id,generation)
+) STRICT;
+CREATE TABLE agent_session_snapshot_chunk (
+  run_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  offset INTEGER NOT NULL CHECK(offset>=0 AND offset%524288=0),
+  size_bytes INTEGER NOT NULL CHECK(size_bytes BETWEEN 1 AND 524288),
+  sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+  key_id TEXT NOT NULL CHECK(length(key_id)=64),
+  PRIMARY KEY(run_id,generation,offset),
+  FOREIGN KEY(run_id,generation) REFERENCES agent_session_snapshot(run_id,generation)
+) STRICT;
+`,
+  },
 ];
 
 /**
