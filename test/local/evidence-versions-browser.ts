@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";

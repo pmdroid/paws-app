@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 // Captures a runner card's coding agents before, during and after an update, at desktop and
 // 390 px, for visual proof. The Update and Update all runners buttons are clicked for real.
 // Usage: bun run build:status && bun --no-env-file test/local/runner-agents-browser.ts <evidence-directory>

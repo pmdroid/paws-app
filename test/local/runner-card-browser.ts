@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 // Captures the runner card at desktop and 390 px in light and dark, for visual proof.
 // Usage: bun run build:status && bun --no-env-file test/local/runner-card-browser.ts <evidence-directory> [prefix]
 import { chromium } from "@playwright/test";

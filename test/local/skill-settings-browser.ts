@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 // Screenshots Settings → Agents → Skills at desktop width and 390 px, after adding a skill
 // through the form. Run `bun run build:status` first. Prints the output directory.
 import { chromium } from "@playwright/test";

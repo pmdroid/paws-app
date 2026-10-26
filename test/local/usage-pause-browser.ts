@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 // Captures the run page while the agent waits for its usage limit, at desktop and 390 px in light
 // and dark, and fails on horizontal scroll or page errors.
 // Usage: bun run build:status && bun --no-env-file test/local/usage-pause-browser.ts <evidence-directory>

@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 import { chromium } from "@playwright/test";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { resolve, join } from "node:path";

@@ -1,4 +1,4 @@
-import { statusFixture } from "../../../../test/fixtures/status";
+import { statusFixture } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";

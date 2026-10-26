@@ -1,4 +1,4 @@
-import { statusFixture } from "../fixtures/status";
+import { statusFixture } from "../../src/web/test/fixtures";
 // Captures the Runners list with the coding agent version catalog at desktop and 390 px, light and dark.
 // Usage: bun run build:status && bun --no-env-file test/local/agent-catalog-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
