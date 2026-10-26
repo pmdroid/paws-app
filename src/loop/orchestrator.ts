@@ -1977,14 +1977,11 @@ export class Orchestrator {
     );
     const keepAlive = setInterval(() => {
       if (this.canReportProgress(item.id)) {
-        this.post(
-          item,
-          "thought",
-          sessionProgress?.keepalive(live.progress) ?? "Preparing the requested answer.",
-          `${run.id}:keep:${this.now()}`,
-          { ephemeral: true },
-          "critical",
-        );
+        this.postKeepalive(item, `${run.id}:keep:${this.now()}`, [
+          sessionProgress?.keepalive(live.progress),
+          sessionProgress?.keepalive(null),
+          "Preparing the requested answer.",
+        ]);
         void this.flush();
       }
     }, KEEPALIVE_MS);
@@ -2182,16 +2179,11 @@ export class Orchestrator {
     }, FIRST_ACTIVITY_MS);
     const keepAlive = setInterval(() => {
       if (this.live.get(run.id) !== live || !this.canReportProgress(item.id)) return;
-      this.post(
-        item,
-        "thought",
-        sessionProgress?.keepalive(live.progress) ??
-          live.progress ??
-          `Working on ${item.linearIdentifier}.`,
-        `${run.id}:keep:${this.now()}`,
-        { ephemeral: true },
-        "critical",
-      );
+      this.postKeepalive(item, `${run.id}:keep:${this.now()}`, [
+        sessionProgress?.keepalive(live.progress) ?? live.progress,
+        sessionProgress?.keepalive(null),
+        `Working on ${item.linearIdentifier}.`,
+      ]);
       void this.flush();
     }, KEEPALIVE_MS);
     first.unref?.();
@@ -4302,6 +4294,25 @@ export class Orchestrator {
       payload: { ...details, sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
       now: this.now(),
     });
+  }
+
+  /**
+   * The ephemeral keepalive. The outbox does not store a line that repeats the session's last
+   * thought, so the next line is tried, and the session still hears from Paws in time.
+   */
+  private postKeepalive(
+    item: WorkItemRecord,
+    key: string,
+    lines: readonly (string | null | undefined)[],
+  ): void {
+    const tried = new Set<string>();
+    for (const line of lines) {
+      if (!line?.trim() || tried.has(line)) continue;
+      const idempotencyKey = tried.size === 0 ? key : `${key}:${tried.size}`;
+      tried.add(line);
+      const id = this.post(item, "thought", line, idempotencyKey, { ephemeral: true }, "critical");
+      if (id === undefined || getOutbox(this.db, id)?.idempotencyKey === idempotencyKey) return;
+    }
   }
 
   private canReportProgress(itemId: string): boolean {
