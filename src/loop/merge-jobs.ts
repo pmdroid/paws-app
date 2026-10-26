@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND, MERGE_LANE } from "../core";
 import {
   applyWorkItemEvent,
+  jobVersionCurrent,
   enqueueJobOnce,
   getWorkItem,
   immediate,
@@ -81,6 +82,7 @@ export function acceptGitHubDelivery(
     .all(JOB_KIND.merge);
   for (const job of jobs) {
     const payload = payloadRecord(JSON.parse(job.payload));
+    if (!jobVersionCurrent(db, job)) continue;
     const item = typeof payload.itemId === "string" ? getWorkItem(db, payload.itemId) : null;
     const matches =
       delivery.event === "merge_group"
@@ -143,7 +145,7 @@ export function enqueueVerifiedMerge(
   const payload = { itemId: input.itemId, summary: input.summary, head: input.head };
   db.run(
     `UPDATE job SET status = 'pending', attempts = 0, last_error = NULL, finished_at = NULL,
-       locked_by = NULL, locked_until = NULL, run_at = ?, payload = ?
+       locked_by = NULL, locked_until = NULL, item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId')), run_at = ?, payload = ?
      WHERE job_key = ? AND status IN ('cancelled', 'dead')`,
     [input.now, JSON.stringify(payload), jobKey],
   );

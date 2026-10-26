@@ -809,6 +809,11 @@ function logStdout(log: string): string {
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // A container init may leave a killed descendant as a zombie until it reaps it.
+      if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return false;
+    }
     return true;
   } catch {
     return false;

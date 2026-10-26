@@ -380,9 +380,13 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
     }
     expect(waiting).not.toContain(itemId);
     expect(db.query("SELECT 1 FROM scheduler_admission WHERE item_id=?").all(itemId)).toEqual([]);
+    expect(fixture.itemJobs().filter((job) => job.status === "running")).toEqual([]);
     expect(
-      fixture.itemJobs().filter((job) => job.status === "pending" || job.status === "running"),
-    ).toEqual([]);
+      fixture
+        .itemJobs()
+        .filter((job) => job.status === "pending")
+        .map((job) => job.queue),
+    ).toEqual([JOB_KIND.resume]);
     expect(getWorkItem(db, itemId)!.state).toBe("queued");
     expect(listOutbox(db).length).toBe(outboxBefore);
     expect(fixture.thoughts().join("\n")).not.toMatch(/Stopped after|couldn't start|Queued:/);

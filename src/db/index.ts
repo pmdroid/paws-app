@@ -517,5 +517,8 @@ export {
   type RunnerAgentTargetRow,
   type RunnerAgentView,
 } from "./runner-agents";
-
 export { listWaitingProfileRuns } from "./runs";
+export { halt } from "./halt";
+export { restart, type RestartHandoff } from "./restart";
+
+export { jobVersionCurrent } from "./jobs";

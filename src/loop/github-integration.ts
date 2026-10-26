@@ -1,3 +1,4 @@
+import { ask } from "./operations";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, sleep } from "../core";
 import { LinearRateLimitError } from "../linear";
@@ -12,7 +13,7 @@ import {
   immediate,
   type WorkItemRecord,
 } from "../db";
-import { answer, ask, findOpenQuestion, getQuestion, type StoredQuestion } from "../questions";
+import { answer, findOpenQuestion, getQuestion, type StoredQuestion } from "../questions";
 
 export const TASK_ACCESS_TTL_MS = 5 * 60_000;
 
@@ -207,12 +208,12 @@ export class GitHubInstallationCheck {
       const body = waitingMessage(result);
       const { question } = ask(
         this.db,
-        { itemId: latest.id, runId: null, sessionId: latest.sessionKey },
+        { itemId: latest.id, runId: null, sessionId: latest.sessionKey, version: latest.version },
         "github-auth",
         body,
         { now: this.now() },
       );
-      const held = applyWorkItemEvent(this.db, latest.id, "blocking_question");
+      const held = getWorkItem(this.db, latest.id)!;
       this.db.run(
         "INSERT INTO github_integration_hold(question_id,item_id,phase,item_version,session_generation,current_run_id,checkpoint,authority) VALUES(?,?,?,?,?,?,?,?)",
         [

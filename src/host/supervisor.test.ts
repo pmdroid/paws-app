@@ -448,7 +448,8 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   clock.advance(600);
   host.tick();
   expect(stopped).toEqual(["eng-9"]);
-  expect(getWorkItem(db, "eng-9")?.state).toBe("awaiting_input");
+  expect(getWorkItem(db, "eng-9")?.state).toBe("running");
+  expect(listJobs(db).filter((job) => job.queue === "item.ask")).toHaveLength(1);
   expect(getRun(db, run.id)?.status).toBe("ended");
   host.tick();
   expect(stopped).toEqual(["eng-9"]);
@@ -482,6 +483,7 @@ test("a turn recorded past the time limit leaves the ask and the stop to the sup
 
   host.tick();
   expect(stopped).toEqual(["eng-9"]);
-  expect(getWorkItem(db, "eng-9")?.state).toBe("awaiting_input");
+  expect(getWorkItem(db, "eng-9")?.state).toBe("running");
+  expect(listJobs(db).filter((job) => job.queue === "item.ask")).toHaveLength(1);
   expect(getRun(db, run.id)?.status).toBe("ended");
 });

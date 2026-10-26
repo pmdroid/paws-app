@@ -4,11 +4,11 @@ import {
   JOB_KIND,
   OUTBOX_ACTIVITY,
   parseLinearCommand,
+  transition,
   type LinearCommand,
 } from "../core";
 import { applyWorkItemEvent, getWorkItem } from "./items";
 import {
-  cancelOpenJobs,
   claimNextJob,
   completeJob,
   enqueueJob,
@@ -18,6 +18,7 @@ import {
 } from "./jobs";
 import { enqueueOutboxOnce, stopOutboxSession } from "./outbox";
 import { markRun } from "./runs";
+import { halt } from "./halt";
 import { immediate } from "./tx";
 
 export function enqueueCommand(
@@ -45,8 +46,12 @@ export function applyLinearCommand(
   return immediate(db, () => {
     const item = getWorkItem(db, command.itemId);
     if (item === null) return { applied: false };
+    if (!transition(item.state, "cancel").ok) return { applied: false };
     try {
-      applyWorkItemEvent(db, item.id, "cancel");
+      immediate(db, () => {
+        if (!halt(db, item, now)) throw new Error("Stop owner changed");
+        applyWorkItemEvent(db, item.id, "cancel");
+      });
     } catch {
       return { applied: false };
     }
@@ -56,7 +61,6 @@ export function applyLinearCommand(
       [now, item.id],
     );
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-    cancelOpenJobs(db, { itemId: item.id, reason: command.type, now });
     if (
       item.state === "merge_queue" ||
       db

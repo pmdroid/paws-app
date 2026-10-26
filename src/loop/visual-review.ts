@@ -1,3 +1,4 @@
+import { ask } from "./operations";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -217,6 +218,7 @@ export function askForVisualReview(
       };
     });
   const { question } = openVisualReview(db, {
+    ask,
     itemId: item.id,
     runId: input.runId,
     sessionId,
@@ -230,7 +232,6 @@ export function askForVisualReview(
       ...(carried.length ? { carried: carried.map((entry) => entry.evidenceId) } : {}),
     },
   });
-  applyWorkItemEvent(db, item.id, "blocking_question");
   saveCheckpoint(db, item.id, {
     phase: "awaiting_input",
     wipCommit: input.head,
@@ -339,6 +340,7 @@ export function recordVisualReviewOutcome(
     return "answered";
   }
   openVisualReviewContinue(db, {
+    ask,
     itemId: question.itemId,
     runId: question.runId,
     sessionId: question.sessionId,

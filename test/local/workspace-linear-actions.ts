@@ -716,11 +716,13 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     observe(
       "normal catch-up permits a verified teammate without a browser identity exactly once",
       getQuestion(db, allowed.question.id)?.answeredBy === "new-member" &&
-        listJobs(db).filter((j) => j.queue === JOB_KIND.resume).length === 1 &&
+        listJobs(db).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`).length ===
+          1 &&
         workspaceMember(db, "workspace", "new-member") === null,
       {
         answeredBy: getQuestion(db, allowed.question.id)?.answeredBy,
-        resumes: listJobs(db).filter((j) => j.queue === JOB_KIND.resume).length,
+        resumes: listJobs(db).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`)
+          .length,
       },
     );
     const permittedStop = task("new-member", "stop");

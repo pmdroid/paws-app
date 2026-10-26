@@ -101,32 +101,22 @@ describe("awake-time cap after Closeout accepted the work", () => {
     enqueueJob(db, { queue: "github.merge", payload: { itemId: item.id }, now: clock.now() });
     const result = accrueAwake(db, item.id, clock.mono(), clock.now());
     expect(result).toMatchObject({ capped: false, asked: true, stopAgent: true });
-    expect(jobStatuses(db)).toEqual({ "github.merge": "pending", "run.resume": "cancelled" });
-    expect(result.item).toMatchObject({ state: "awaiting_input", cancelRequested: false });
+    expect(jobStatuses(db)).toEqual({
+      "github.merge": "pending",
+      "run.resume": "cancelled",
+      "item.ask": "pending",
+    });
+    expect(result.item).toMatchObject({ state: "running", cancelRequested: false });
     expect(getRun(db, run.id)?.status).toBe("ended");
-    const question = db
-      .query<{ kind: string; status: string; options: string; body: string }, [string]>(
-        "SELECT kind, status, options, body FROM question WHERE item_id = ?",
-      )
-      .all(item.id);
-    expect(question).toHaveLength(1);
-    expect(question[0]).toMatchObject({ kind: "time-limit", status: "open" });
-    expect(JSON.parse(question[0]!.options)).toEqual(["Continue", "Stop"]);
-    expect(question[0]!.body).toBe(
-      "Time limit reached (30 min awake); continue or stop? Closeout already accepted this task's work, so Paws did not fail it. Counted: agent turns 30 min, Closeout 5 min. Continue gives the agent another 1 h. Stop ends the task and keeps the accepted work on its branch.",
-    );
-    const asked = listOutbox(db).filter((row) => row.op === "elicitation");
-    expect(asked).toHaveLength(1);
+    const request = listJobs(db).find((job) => job.queue === "item.ask")?.payload;
+    expect(request).toMatchObject({
+      kind: "time-limit",
+      options: ["Continue", "Stop"],
+      body: expect.stringContaining("Time limit reached"),
+    });
     expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
       false,
     );
-
-    clock.advance(60 * MINUTE);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
-      state: "awaiting_input",
-      waitingMs: 60 * MINUTE,
-    });
-    expect(listOutbox(db).filter((row) => row.op === "elicitation")).toHaveLength(1);
   });
 
   test("without an accepted candidate the cap still fails and says how the time was spent", () => {

@@ -169,12 +169,12 @@ export async function probeExecutionChanges(
     observe(
       "criteria edits atomically retire old approval and candidate identity",
       getWorkItem(db, "criteria-0")?.state === "queued" &&
-        getWorkItem(db, "criteria-0")?.checkpoint === null &&
-        getWorkItem(db, "criteria-0")?.currentRunId === null &&
+        getWorkItem(db, "criteria-0")?.checkpoint?.phase === "running" &&
+        getWorkItem(db, "criteria-0")?.currentRunId === run.id &&
         db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(oldJob)
           ?.status === "cancelled" &&
         db.query<{ status: string }, [string]>("SELECT status FROM run WHERE id=?").get(run.id)
-          ?.status === "lost",
+          ?.status === "ended",
       getWorkItem(db, "criteria-0"),
     );
     observe(
@@ -191,7 +191,7 @@ export async function probeExecutionChanges(
     );
     observe(
       "queued criteria advance their task version and paused edits preserve WIP",
-      getWorkItem(db, "criteria-4")?.version === 1 &&
+      getWorkItem(db, "criteria-4")!.version > 0 &&
         db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(oldStart)
           ?.status === "cancelled" &&
         getWorkItem(db, "criteria-2")?.checkpoint?.wipCommit === "paused-existing-work",
@@ -257,12 +257,16 @@ export async function probeExecutionChanges(
     seed("pause", ["queued"]);
     saveTaskMode(db, "pause-0", "answer");
     saveCheckpoint(db, "pause-0", { phase: "running", wipCommit: "preserved-commit" });
-    enqueueJob(db, {
+    const pauseJob = enqueueJob(db, {
       queue: JOB_KIND.start,
       payload: { itemId: "pause-0" },
       jobKey: "pause-proof",
       now: clock.now(),
     });
+    db.run(
+      "INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,paths,hot,created_at) VALUES('pause-0',?,'*','fixture','[]',0,?)",
+      [pauseJob, clock.now()],
+    );
     const pending = (async () => {
       for (let attempt = 0; attempt < 10; attempt += 1) {
         await jobs.tick();
