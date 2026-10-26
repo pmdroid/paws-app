@@ -1,24 +1,15 @@
 import type { Database } from "bun:sqlite";
-import { listCloseoutRecoveries, humanRetryBaseline, type CloseoutRecovery } from "../db";
+import {
+  getLinkAsk,
+  humanRetryBaseline,
+  listCloseoutBypassChecks,
+  listCloseoutRecoveries,
+  type CloseoutRecovery,
+} from "../db";
 import type { CloseoutBypass } from "../closeout";
-import { canAnswer } from "../questions";
 
-export type RecoveryAnswer =
-  | { kind: "guidance"; body: string }
-  | { kind: "bypass"; checkIds: string[]; reason: string };
-
-export function parseRecoveryAnswer(
-  answer: string,
-  failedChecks: readonly string[],
-): RecoveryAnswer | null {
-  if (!/^\/?(?:paws\s+)?bypass\b/i.test(answer)) return { kind: "guidance", body: answer };
-  const match = /^\/paws bypass ([a-z0-9/, -]+) -- (\S[\s\S]*)$/i.exec(answer.trim());
-  if (!match) return null;
-  const checkIds = [...new Set((match[1] ?? "").split(/[\s,]+/).filter(Boolean))];
-  const reason = match[2]?.trim() ?? "";
-  if (!checkIds.length || !reason || checkIds.some((id) => !failedChecks.includes(id))) return null;
-  return { kind: "bypass", checkIds, reason };
-}
+/** A reply that tries to bypass a check, such as `/paws bypass lint -- reason`. It is guidance now. */
+export const BYPASS_REPLY = /^\s*\/?(?:paws\s+)?bypass\b/i;
 
 export function recoveryOptions(
   db: Database,
@@ -26,26 +17,32 @@ export function recoveryOptions(
 ): { retryBaseline: readonly string[]; bypasses: CloseoutBypass[] } {
   const retryBaseline = new Set<string>(humanRetryBaseline(db, itemId));
   const bypasses: CloseoutBypass[] = [];
-  // Only a human answer authorizes fresh check attempts. Rebases retain failures.
+  // Only a person authorizes fresh check attempts or a bypass. Rebases retain failures.
   for (const recovery of listCloseoutRecoveries(db, itemId)) {
-    if (recovery.answer === null || recovery.answeredBy === null) continue;
-    const answer = parseRecoveryAnswer(recovery.answer, recovery.failedChecks);
-    if (answer?.kind === "guidance")
+    const linkAsk = getLinkAsk(db, recovery.questionId);
+    if (linkAsk === null) {
+      // A reply in Linear is guidance, whatever it says. It never bypasses a check.
+      if (recovery.answer !== null && recovery.answeredBy !== null)
+        for (const key of recovery.retryBaseline) retryBaseline.add(key);
+      continue;
+    }
+    if (linkAsk.decision === "changes" || linkAsk.closedReason === "guidance")
       for (const key of recovery.retryBaseline) retryBaseline.add(key);
-    if (
-      answer?.kind === "bypass" &&
-      canAnswer({ kind: "closeout-bypass" }, { id: recovery.answeredBy })
-    )
-      bypasses.push({
-        questionId: recovery.questionId,
-        taskId: recovery.taskId,
-        base: recovery.base,
-        head: recovery.head,
-        policyDigest: recovery.policyDigest,
-        checkIds: answer.checkIds,
-        actor: recovery.answeredBy,
-        reason: answer.reason,
-      });
+    if (linkAsk.decision !== "approve") continue;
+    // Bypasses are approved on the item page, one reason per check.
+    for (const check of listCloseoutBypassChecks(db, recovery.questionId))
+      if (check.approvedBy !== null && check.reason !== null)
+        bypasses.push({
+          questionId: recovery.questionId,
+          taskId: recovery.taskId,
+          base: recovery.base,
+          head: recovery.head,
+          policyDigest: recovery.policyDigest,
+          checkIds: [check.checkId],
+          actor: check.approvedBy,
+          ...(check.approvedByName ? { actorName: check.approvedByName } : {}),
+          reason: check.reason,
+        });
   }
   return { retryBaseline: [...retryBaseline], bypasses };
 }
@@ -82,8 +79,7 @@ export function recoveryQuestion(
     "Reply with guidance to send the task back to its configured agent and authorize a new round with the same Closeout retry limit.",
     ...(recovery.failedChecks.length
       ? [
-          `Checks you can bypass for this exact candidate: ${recovery.failedChecks.join(", ")}.`,
-          "To approve selected checks, reply /paws bypass check-id,other-check-id -- your reason.",
+          `A failed check (${recovery.failedChecks.join(", ")}) is bypassed only on the item page in Paws, which needs PAWS_PUBLIC_URL. A reply here cannot bypass a check.`,
         ]
       : []),
   ].join("\n\n");

@@ -314,6 +314,7 @@ import {
   decideLinkAsk,
   guideLinkAsk,
   remindLinkAsk,
+  reverifyBypassed,
   type LinkAskEffects,
 } from "./link-ask";
 import {
@@ -344,7 +345,7 @@ import {
   KEEPALIVE_MS,
   publicToolText,
 } from "./activity";
-import { PREPARATION_FAILED, parseRecoveryAnswer, recoveryOptions } from "./closeout-recovery";
+import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp } from "./closeout-help";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
@@ -430,6 +431,8 @@ export type OrchestratorOptions = {
    * `files`, the files are also uploaded to Linear and shown inline.
    */
   evidence?: { store: EvidenceSink; publicUrl: string; root?: string } | null;
+  /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
+  publicUrl?: string | null;
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   repositories?: readonly RepositoryBinding[];
@@ -3243,6 +3246,14 @@ export class Orchestrator {
     askCloseoutHelp(this.db, sessionId, context, {
       now: this.now(),
       version: current.version,
+      publicUrl: this.options.publicUrl ?? null,
+      checks: checks.map((check) => ({
+        id: check.id,
+        kind: check.kind,
+        state: check.state,
+        ...(check.attempt === undefined ? {} : { attempt: check.attempt }),
+        message: check.message,
+      })),
       reason:
         exhausted || rounds >= limit
           ? "budget_spent"
@@ -3894,8 +3905,6 @@ export class Orchestrator {
         questionEffects(this.db, { now: this.now() }),
       );
       await this.flush();
-      if (recovery && parseRecoveryAnswer(answer, recovery.failedChecks) === null)
-        return "rejected";
       return outcome.status === "answered" ? "answered" : "rejected";
     }
     const outcome = immediate(this.db, () => {
@@ -5518,7 +5527,14 @@ export class Orchestrator {
     effects: LinkAskEffects = {},
   ): Promise<"answered" | "forbidden" | "rejected"> {
     const itemId = getQuestion(this.db, input.questionId)?.itemId;
-    const outcome = decideLinkAsk(this.db, { ...input, now: this.now() }, effects);
+    const outcome = decideLinkAsk(
+      this.db,
+      { ...input, now: this.now() },
+      {
+        bypass: (linkAsk, item, now) => reverifyBypassed(this.db, linkAsk, item, now),
+        ...effects,
+      },
+    );
     if (outcome === "answered" && itemId && getWorkItem(this.db, itemId)?.state === "queued") {
       this.abortItem(itemId);
       this.dispatch();

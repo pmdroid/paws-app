@@ -7,10 +7,14 @@ import {
   type LinkAskDecision,
 } from "../db";
 
-/** `POST /api/link-asks` with `{ questionId, decision, note }`: a decision made on the item page. */
+/**
+ * `POST /api/link-asks` with `{ questionId, decision, note }`: a decision made on the item page.
+ * A bypass approval sends `bypasses: [{ checkId, reason }]` instead of a note.
+ */
 export const LINK_ASK_ANSWER_PATH = "/api/link-asks";
 
 const MAX_NOTE = 10_000;
+const MAX_BYPASSES = 100;
 
 const DECISIONS = new Set<LinkAskDecision>(["approve", "changes", "answer"]);
 
@@ -21,6 +25,8 @@ export type LinkAskAnswer = (input: {
   questionId: string;
   decision: LinkAskDecision;
   note: string | null;
+  /** The checks a bypass approval bypasses, each with its reason. */
+  bypasses?: { checkId: string; reason: string }[];
   /** Linear user id of the signed-in person. */
   answeredBy: string;
   /** The Paws account for the Audit history row. */
@@ -54,6 +60,7 @@ export async function handleLinkAskAnswer(
     questionId?: unknown;
     decision?: unknown;
     note?: unknown;
+    bypasses?: unknown;
   } | null;
   const note = body?.note ?? "";
   if (
@@ -79,6 +86,13 @@ export async function handleLinkAskAnswer(
     );
   if ((decision === "answer") !== (ask.kind === "question"))
     return Response.json({ error: "That decision does not fit this question." }, { status: 400 });
+  const bypassing = ask.kind === "bypass" && decision === "approve";
+  const bypasses = bypassing ? readBypasses(body.bypasses) : undefined;
+  if (bypasses === null)
+    return Response.json(
+      { error: "Select a failed check and write why it may be bypassed." },
+      { status: 400 },
+    );
   if (decision !== "approve" && note.trim() === "")
     return Response.json(
       { error: decision === "answer" ? "Write your answer." : "Write what to change." },
@@ -100,6 +114,7 @@ export async function handleLinkAskAnswer(
     questionId: ask.questionId,
     decision,
     note: note.trim() || null,
+    ...(bypasses ? { bypasses } : {}),
     answeredBy: member.linearUserId,
     actor: { workspaceId: principal.workspaceId, userId: principal.userId, name: member.name },
   });
@@ -109,4 +124,25 @@ export async function handleLinkAskAnswer(
     { error: "This decision is no longer waiting. Refresh the issue." },
     { status: 409 },
   );
+}
+
+/** At least one `{ checkId, reason }`, each check once, each with a reason. Null otherwise. */
+function readBypasses(input: unknown): { checkId: string; reason: string }[] | null {
+  if (!Array.isArray(input) || input.length === 0 || input.length > MAX_BYPASSES) return null;
+  const bypasses: { checkId: string; reason: string }[] = [];
+  for (const entry of input as unknown[]) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const { checkId, reason } = entry as { checkId?: unknown; reason?: unknown };
+    if (
+      typeof checkId !== "string" ||
+      typeof reason !== "string" ||
+      checkId.trim() === "" ||
+      reason.trim() === "" ||
+      reason.length > MAX_NOTE ||
+      bypasses.some((bypass) => bypass.checkId === checkId)
+    )
+      return null;
+    bypasses.push({ checkId, reason: reason.trim() });
+  }
+  return bypasses;
 }

@@ -13,6 +13,7 @@ import {
 } from "../src/db";
 import { formatEvidenceSummary } from "../src/closeout";
 import { askCloseoutHelp, questionEffects } from "../src/loop";
+import { recoveryOptions } from "../src/loop/closeout-recovery";
 import { answer, ask, findOpenQuestion, getQuestion, handoffNote } from "../src/questions";
 import { tempDb } from "./helpers";
 
@@ -73,40 +74,27 @@ test("a Closeout guidance answer resumes the agent with the Closeout summary", (
   ]);
 });
 
-test("a Closeout bypass answer verifies the recorded candidate again", () => {
+test("a /paws bypass reply is guidance: it restarts the agent and bypasses nothing", () => {
   const { db, asker, question } = closeoutHelp();
-  answer(
-    db,
-    reply("/paws bypass test -- Known fixture failure"),
-    questionEffects(db, { now: NOW + 100 }),
-  );
-  expect(getWorkItem(db, asker.itemId)).toMatchObject({
-    state: "verifying",
-    checkpoint: { phase: "verifying", baseSha: "base", wipCommit: "head" },
-  });
+  const body = "/paws bypass test -- Known fixture failure";
+  answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db)).toEqual([
     {
-      queue: JOB_KIND.reverify,
-      jobKey: `closeout-bypass:${question.id}`,
-      payload: { itemId: asker.itemId },
+      queue: JOB_KIND.resume,
+      jobKey: `closeout-guidance:${question.id}`,
+      payload: {
+        itemId: asker.itemId,
+        runId: asker.runId,
+        handoff: handoffNote({ question: "Closeout: rejected", answer: body }),
+        reason: "answer",
+      },
     },
   ]);
-});
-
-test("an unusable bypass answer asks the Closeout question again with the error", () => {
-  const { db, asker, question } = closeoutHelp();
-  answer(db, reply("/paws bypass test"), questionEffects(db, { now: NOW + 100 }));
-  const again = findOpenQuestion(db, "ses_1")!;
-  expect(getQuestion(db, question.id)?.status).toBe("answered");
-  expect(again).toMatchObject({ kind: "closeout-help", runId: asker.runId });
-  expect(again.body).toContain("Use /paws bypass check-id -- your reason");
-  expect(listCloseoutRecoveries(db, asker.itemId).at(-1)).toMatchObject({
-    questionId: again.id,
-    failedChecks: ["test"],
+  expect(recoveryOptions(db, asker.itemId)).toEqual({
     retryBaseline: ["test:1"],
+    bypasses: [],
   });
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("awaiting_input");
-  expect(jobs(db)).toEqual([]);
 });
 
 const help = (summary: string) => ({
