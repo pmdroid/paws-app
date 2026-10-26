@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -106,6 +116,11 @@ function fixture(options: { claudeVersion?: string } = {}) {
   const posted: RunnerResult[] = [];
   let pending: RunnerCommand[] = [command];
   let execution = "";
+  /** The session bundle the job carried to the worker, read when the worker starts. */
+  let carried: Buffer | null | undefined;
+  /** What Paws streams for a session read; tests set it. */
+  const served: { bytes?: Buffer; header?: string; fail?: boolean } = {};
+  const reads: unknown[] = [];
   const errors: string[] = [];
   const agents = {
     installed: () =>
@@ -131,6 +146,8 @@ function fixture(options: { claudeVersion?: string } = {}) {
       broker: {
         async start(id) {
           execution = id;
+          const carriedPath = join(spool.root, id, "session.ndjson.gz");
+          carried = existsSync(carriedPath) ? readFileSync(carriedPath) : null;
           outputDirectory(id);
           return { alreadyAdmitted: false };
         },
@@ -193,6 +210,17 @@ function fixture(options: { claudeVersion?: string } = {}) {
         async finishSession(runId, finish, token) {
           finishes.push(finish);
           return http(() => sessions.finish({ ...access, runId, token }, finish));
+        },
+        async readSession(runId, read, _token, output, maxBytes) {
+          reads.push({ runId, ...read, maxBytes });
+          const bytes = served.bytes ?? Buffer.alloc(0);
+          writeSync(output, bytes.subarray(0, served.fail ? bytes.length >> 1 : bytes.length));
+          if (served.fail) throw new RunnerRequestError(503, "POST", "/session/read");
+          return {
+            sizeBytes: bytes.length,
+            sha256: sha(bytes),
+            sentSha256: served.header ?? sha(bytes),
+          };
         },
       },
     });
@@ -275,6 +303,11 @@ function fixture(options: { claudeVersion?: string } = {}) {
     finishWorker,
     drive,
     started: () => execution,
+    carried: () => carried,
+    served,
+    reads,
+    repositories: () =>
+      existsSync(join(root, "repositories")) ? readdirSync(join(root, "repositories")) : [],
     async read(generation: number) {
       const parts: Uint8Array[] = [];
       for await (const part of sessions.read({ ...access, generation }, generation))
@@ -424,6 +457,72 @@ test.skipIf(!linux)(
     } finally {
       await runtime.stop();
       context.cleanup();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "a moved run downloads its session snapshot and hands it to the worker through the spool",
+  async () => {
+    const context = fixture({ claudeVersion: "2.1.7" });
+    const bundle = randomBytes(700_000);
+    context.served.bytes = bundle;
+    context.command.generation = 3;
+    context.command.resumeSessionId = "claude-session";
+    context.command.restoreSession = {
+      generation: 2,
+      agent: "claude",
+      agentVersion: "2.1.7",
+      sessionId: "claude-session",
+      sha256: sha(bundle),
+      sizeBytes: bundle.length,
+    };
+    const runtime = await context.open();
+    try {
+      await context.drive(runtime, () => context.started() !== "");
+      expect(context.reads).toEqual([
+        { runId: "run", generation: 3, snapshotGeneration: 2, maxBytes: bundle.length },
+      ]);
+      expect(context.carried()?.equals(bundle)).toBe(true);
+      // The download is removed once the job holds its copy.
+      expect(context.repositories().filter((name) => name.startsWith("session-"))).toEqual([]);
+    } finally {
+      await runtime.stop();
+      context.cleanup();
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "a session download that fails or does not match the command reaches the worker as no bundle",
+  async () => {
+    for (const served of [
+      { fail: true },
+      { header: "0".repeat(64) },
+      { bytes: randomBytes(1000) },
+    ]) {
+      const context = fixture({ claudeVersion: "2.1.7" });
+      const bundle = randomBytes(700_000);
+      Object.assign(context.served, { bytes: bundle }, served);
+      context.command.resumeSessionId = "claude-session";
+      context.command.restoreSession = {
+        generation: 2,
+        agent: "claude",
+        agentVersion: "2.1.7",
+        sessionId: "claude-session",
+        sha256: sha(bundle),
+        sizeBytes: bundle.length,
+      };
+      const runtime = await context.open();
+      try {
+        await context.drive(runtime, () => context.started() !== "");
+        expect(context.reads).toHaveLength(1);
+        expect(context.carried()).toBeNull();
+        expect(context.repositories().filter((name) => name.startsWith("session-"))).toEqual([]);
+      } finally {
+        await runtime.stop();
+        context.cleanup();
+      }
     }
   },
 );
