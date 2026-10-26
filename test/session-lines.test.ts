@@ -122,15 +122,6 @@ describe("a waiting question", () => {
     errorActivity(db, "error:1");
     const elicitation = listOutbox(db, "ses-1").find((row) => row.op === "elicitation");
     expect(elicitation?.status).toBe("pending");
-    // A redelivery after the error is not refused by the session fence either.
-    const again = enqueueOutboxOnce(db, {
-      target: "linear",
-      op: "elicitation",
-      orderingKey: "ses-1",
-      idempotencyKey: `${elicitation!.idempotencyKey}:redelivery`,
-      payload: elicitation!.payload,
-    });
-    expect(listOutbox(db, "ses-1").find((row) => row.id === again)?.status).toBe("pending");
   });
 
   test("an elicitation whose item stopped waiting is still superseded", () => {

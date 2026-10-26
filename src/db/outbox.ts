@@ -646,7 +646,7 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
     const blocked =
       generation !== fence.generation ||
       (fence.stopped && delivery !== "stop") ||
-      (Boolean(terminal) && !(row.op === "elicitation" && itemWaits(db, row.payload)));
+      Boolean(terminal);
     const repeated =
       blocked || db.query("SELECT 1 FROM outbox WHERE idempotency_key = ?").get(row.idempotencyKey)
         ? null
@@ -734,27 +734,11 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
   });
 }
 
-/** The item an elicitation payload asks for is still waiting for its answer. */
-function itemWaits(db: Database, payload: unknown): boolean {
-  const { itemId, questionId } = (payload ?? {}) as { itemId?: unknown; questionId?: unknown };
-  return (
-    db
-      .query<{ state: string }, [string | null, string | null]>(
-        `SELECT state FROM work_item WHERE id = COALESCE(?,
-           (SELECT item_id FROM question WHERE id = ?))`,
-      )
-      .get(
-        typeof itemId === "string" ? itemId : null,
-        typeof questionId === "string" ? questionId : null,
-      )?.state === "awaiting_input"
-  );
-}
-
 /**
  * A Linear thought whose body equals the session's last sent or pending thought in the same
  * phase is not stored again; the id of that earlier thought is returned instead. A response,
- * an error or a question starts a new phase. An ephemeral line may repeat an ephemeral line
- * Linear already shows, because Linear replaces it rather than adding a second one.
+ * an error or a question starts a new phase. An ephemeral line may repeat an ephemeral line:
+ * Linear replaces the one it shows, and a pending one is superseded by the newer.
  */
 function repeatedThought(db: Database, row: NewOutbox, generation: number): number | null {
   const payload = row.payload as { kind?: unknown; body?: unknown; ephemeral?: unknown };
@@ -768,11 +752,11 @@ function repeatedThought(db: Database, row: NewOutbox, generation: number): numb
     return null;
   const last = db
     .query<
-      { id: number; kind: string | null; body: string | null; ephemeral: number; status: string },
+      { id: number; kind: string | null; body: string | null; ephemeral: number },
       [string, number]
     >(
       `SELECT id, json_extract(payload, '$.kind') AS kind, json_extract(payload, '$.body') AS body,
-         COALESCE(json_extract(payload, '$.ephemeral'), 0) AS ephemeral, status
+         COALESCE(json_extract(payload, '$.ephemeral'), 0) AS ephemeral
        FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
          AND status IN ('pending', 'sent')
          AND (op = 'elicitation' OR (op IN ('activity', 'linear.activity')
@@ -781,7 +765,7 @@ function repeatedThought(db: Database, row: NewOutbox, generation: number): numb
     )
     .get(row.orderingKey, generation);
   if (last?.kind !== "thought" || last.body?.trim() !== payload.body.trim()) return null;
-  if (payload.ephemeral === true && last.ephemeral === 1 && last.status === "sent") return null;
+  if (payload.ephemeral === true && last.ephemeral === 1) return null;
   return last.id;
 }
 
