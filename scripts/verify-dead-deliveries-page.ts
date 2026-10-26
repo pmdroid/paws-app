@@ -34,6 +34,16 @@ snapshot.dead = [
     lastError: "Runner agentbox did not answer within 60 s",
     at: at(12),
   },
+  {
+    itemId: item.id,
+    kind: "job",
+    target: "job:61",
+    name: "item.ask",
+    attempts: 10,
+    lastError: "Question owner is stale",
+    at: at(55),
+    retryable: false,
+  },
 ];
 
 const server = Bun.serve({
@@ -72,6 +82,8 @@ try {
     await expect(section.getByText("Linear question")).toBeVisible();
     await expect(section.getByText("Job run.resume")).toBeVisible();
     await expect(section.getByText(/Linear returned 503/)).toBeVisible();
+    await expect(section.getByText(/From an earlier state of this issue/)).toBeVisible();
+    await expect(section.getByRole("button", { name: "Retry" })).toHaveCount(2);
     await section.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: join(directory, `dead-deliveries-${width}.png`),
