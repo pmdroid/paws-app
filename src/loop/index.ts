@@ -1,5 +1,6 @@
 export { classifyTask, parseTaskClassification, type TaskClassification } from "./task-classifier";
 export { parsePlanResult, planDecision, type PlanDecision, type PlanResult } from "./plan-proposal";
+export { classifyCandidateRisk, type RiskGit } from "./candidate-risk";
 export {
   KEEPALIVE_MS,
   FIRST_ACTIVITY_MS,
