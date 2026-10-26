@@ -151,7 +151,7 @@ test("a usage limit while the implementer is prepared posts one thought naming t
     result.detail,
   ).toEqual([
     expect.stringMatching(
-      /^Paused: Claude reached its usage limit\. Paws continues at \d{2}:\d{2} UTC\.$/,
+      /^Paused: Claude reached its usage limit\. Paws continues at (?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2} UTC\.$/,
     ),
   ]);
 }, 60_000);
