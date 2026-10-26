@@ -154,3 +154,14 @@ export {
 } from "./hooks";
 
 export { journal, journalCaught, journalItemId, journalRejection, setJournalSink } from "./journal";
+export {
+  HIGH_RISK_GLOBS_MAX,
+  HIGH_RISK_PATHS_FILE,
+  HIGH_RISK_PATHS_FILE_MAX_BYTES,
+  classifyRisk,
+  highRiskGlobError,
+  parseHighRiskPathsFile,
+  riskLine,
+  type RiskClassification,
+  type RiskTier,
+} from "./risk";
