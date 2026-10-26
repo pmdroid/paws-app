@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { visualReviewBody } from "../questions";
-import { canReportProgress } from "./activity-policy";
+import { AFTER_PULL_REQUEST_RESPONSE, canReportProgress } from "./activity-policy";
 import { enqueueEvidenceAttachment, evidenceActivityBody } from "./artifacts";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
@@ -96,8 +96,7 @@ export async function deliverLinearOutbox(
   }
   if (message.op === "activity" || message.op === "linear.activity") {
     const terminal =
-      payload.kind === "response" &&
-      /^(merged:|closed:|command:stop:)/.test(message.idempotencyKey);
+      payload.kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(message.idempotencyKey);
     if (
       db &&
       !terminal &&

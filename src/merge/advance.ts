@@ -10,8 +10,10 @@ import {
   getWorkItem,
   immediate,
   leaveMergeQueue,
+  pendingChangeRequests,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
+  wakePullReviews,
   type CiRound,
   type TaskMergeSettings,
   type WorkItemRecord,
@@ -88,6 +90,16 @@ export async function advanceMerge(
   if (getConfirmedRemoteMerge(db, item.id)) {
     if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
+  }
+  if (pendingChangeRequests(db, item.id).length > 0) {
+    // A changes-requested review restarts the item before any merge of this head.
+    wakePullReviews(db, item.id, caps.now());
+    return {
+      kind: "wait",
+      message: "Requested changes go back to the agent before this pull request merges.",
+      queued: true,
+      reason: "review",
+    };
   }
   const published = await caps.publish(item);
   if ("kind" in published) return published;
