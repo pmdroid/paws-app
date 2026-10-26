@@ -186,6 +186,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "install",
     "runner-protocol",
     "runner-mise",
+    "agent-sessions",
   ],
   "runner-mise": ["journal"],
   "runner-answers": ["journal", "runner-execution"],
@@ -204,6 +205,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-identity",
     "runner-protocol",
     "runner-transcripts",
+    "agent-sessions",
   ],
   "runner-work": ["journal", "db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["journal", "db", "linear", "runner-protocol", "workspace"],
@@ -239,6 +241,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-protocol",
     "runner-journal",
     "github",
+    "agent-sessions",
   ],
   "runner-health": ["journal", "db", "workspace", "runner-work", "runner-protocol"],
   "runner-health-runtime": [

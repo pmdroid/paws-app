@@ -64,13 +64,19 @@ export function openExecutionJournal(root: string) {
   db.run(
     "CREATE TABLE IF NOT EXISTS delivery (execution_id TEXT NOT NULL REFERENCES execution(id), sequence INTEGER NOT NULL, payload TEXT NOT NULL, request_id TEXT, sent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(execution_id,sequence)) STRICT",
   );
-  if (
-    !db
+  const columns = new Set(
+    db
       .query<{ name: string }, []>("PRAGMA table_info(execution)")
       .all()
-      .some((column) => column.name === "transcript_offset")
-  )
+      .map((column) => column.name),
+  );
+  if (!columns.has("transcript_offset"))
     db.run("ALTER TABLE execution ADD COLUMN transcript_offset INTEGER NOT NULL DEFAULT 0");
+  // The agent session upload: bytes Paws holds, and '' until it is sealed or skipped.
+  if (!columns.has("session_offset"))
+    db.run("ALTER TABLE execution ADD COLUMN session_offset INTEGER NOT NULL DEFAULT 0");
+  if (!columns.has("session_state"))
+    db.run("ALTER TABLE execution ADD COLUMN session_state TEXT NOT NULL DEFAULT ''");
   function executions(active: boolean): Execution[] {
     return db
       .query<{ id: string; payload: string; phase: string }, [number]>(
@@ -307,6 +313,27 @@ export function openExecutionJournal(root: string) {
         [offset, id, previous, offset],
       );
       if (changed.changes !== 1) throw new Error("Runner transcript offset changed");
+    },
+    sessionCursor(id: string) {
+      const row = db
+        .query<{ offset: number; state: "" | "sealed" | "skipped" }, [string]>(
+          "SELECT session_offset AS offset,session_state AS state FROM execution WHERE id=?",
+        )
+        .get(id);
+      if (!row) throw new Error("Runner session execution is missing");
+      return row;
+    },
+    sessionUploaded(id: string, previous: number, offset: number) {
+      if (!Number.isSafeInteger(offset) || offset <= previous)
+        throw new Error("Runner session offset is invalid");
+      const changed = db.run(
+        "UPDATE execution SET session_offset=? WHERE id=? AND session_offset=? AND session_state=''",
+        [offset, id, previous],
+      );
+      if (changed.changes !== 1) throw new Error("Runner session offset changed");
+    },
+    sessionDone(id: string, state: "sealed" | "skipped") {
+      db.run("UPDATE execution SET session_state=? WHERE id=? AND session_state=''", [state, id]);
     },
     sent(id: string, sequence: number) {
       db.run("UPDATE delivery SET sent=1 WHERE execution_id=? AND sequence=?", [id, sequence]);

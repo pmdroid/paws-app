@@ -408,3 +408,24 @@ test("plan records replace the checklist without waiting for an answer", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the session upload cursor survives a reopen and stops once the snapshot is settled", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-execution-journal-"));
+  let journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    expect(journal.sessionCursor(execution.id)).toEqual({ offset: 0, state: "" });
+    journal.sessionUploaded(execution.id, 0, 524_288);
+    expect(() => journal.sessionUploaded(execution.id, 0, 524_288)).toThrow("offset changed");
+    journal.close();
+    journal = openExecutionJournal(root);
+    expect(journal.sessionCursor(execution.id)).toEqual({ offset: 524_288, state: "" });
+    journal.sessionDone(execution.id, "sealed");
+    journal.sessionDone(execution.id, "skipped");
+    expect(journal.sessionCursor(execution.id)).toEqual({ offset: 524_288, state: "sealed" });
+    expect(() => journal.sessionUploaded(execution.id, 524_288, 600_000)).toThrow("offset changed");
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

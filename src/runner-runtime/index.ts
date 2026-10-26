@@ -7,11 +7,17 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
 import { RUNNER_TRANSCRIPT_CHUNK_BYTES } from "../runner-transcripts";
+import {
+  AGENT_SESSION_CHUNK_BYTES,
+  AGENT_SESSION_MAX_BYTES,
+  AgentSessionFinishSchema,
+} from "../agent-sessions";
 import { RunnerRequestError, type RunnerDaemon, type RunnerGrant } from "../runner-daemon";
 import {
   createDirectWorkerSupervisor,
   publishRunnerJob,
   readRunnerResultFile,
+  readRunnerResultRange,
   type RunnerBrokerClient,
   type RunnerSkillInstaller,
   type RunnerSpool,
@@ -96,7 +102,15 @@ type Active = {
   pushAt?: number;
   /** Set once the worker's runtime install report is in the inventory. */
   runtimesRecorded?: boolean;
+  sessionTries?: number;
 };
+
+/** The session description the worker writes next to its bundle. */
+const SessionMetadataSchema = AgentSessionFinishSchema.omit({
+  generation: true,
+  agentVersion: true,
+}).extend({ agent: z.literal("claude") });
+const SESSION_UPLOAD_TRIES = 5;
 
 export async function openRunnerRuntime(options: {
   root: string;
@@ -117,7 +131,7 @@ export async function openRunnerRuntime(options: {
     | "uploadTranscript"
     | "finishTranscript"
   > &
-    Partial<Pick<RunnerDaemon, "readInputs" | "followUps">>;
+    Partial<Pick<RunnerDaemon, "readInputs" | "followUps" | "uploadSession" | "finishSession">>;
   spool: RunnerSpool;
   results: RunnerResults;
   repositoryRoot: string;
@@ -135,6 +149,8 @@ export async function openRunnerRuntime(options: {
   concurrency?: number | (() => number);
   stopWaitMs?: number;
   deliveryWaitMs?: number;
+  /** The first wait before a session upload is retried during restart recovery; it doubles. */
+  sessionRetryMs?: number;
 }) {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
@@ -321,6 +337,21 @@ export async function openRunnerRuntime(options: {
           token,
         );
       }
+      // An outage during recovery retries from the stored offset, a few times at most.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await uploadSession(execution, async () => token);
+          break;
+        } catch (error) {
+          if (!(error instanceof RemoteFailure) || attempt >= SESSION_UPLOAD_TRIES) {
+            skipSession(execution, error);
+            break;
+          }
+          await new Promise((resolve) =>
+            setTimeout(resolve, (options.sessionRetryMs ?? 1_000) * 2 ** (attempt - 1)),
+          );
+        }
+      }
       const tail = (broker.log?.(execution.id) ?? "")
         .replace(/gh[opsu]_[A-Za-z0-9]{10,}/g, "[redacted]")
         .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@");
@@ -349,6 +380,81 @@ export async function openRunnerRuntime(options: {
       journalCaught(error, "runner-runtime.fail.issueRunGrant", command.itemId);
       report(error);
     }
+  }
+  /**
+   * Uploads the agent session the worker bundled at the end of a run's turn, from the offset the
+   * journal holds, then seals it with the runner's installed agent version.
+   */
+  async function uploadSession(
+    execution: Execution,
+    token: () => Promise<string>,
+    guard: () => void = () => undefined,
+  ) {
+    const { command } = execution;
+    if (command.type !== "run" || !options.daemon.uploadSession || !options.daemon.finishSession)
+      return;
+    const cursor = journal.sessionCursor(execution.id);
+    if (cursor.state) return;
+    let raw: Buffer;
+    try {
+      raw = readRunnerResultFile(options.results, execution.id, "session.json");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journal.sessionDone(execution.id, "skipped");
+      return;
+    }
+    const session = SessionMetadataSchema.parse(JSON.parse(raw.toString("utf8")));
+    const agentVersion = options.agents
+      ?.installed()
+      ?.find((agent) => agent.agent === session.agent && agent.status === "current")?.version;
+    if (!agentVersion) throw new Error(`The runner has no current ${session.agent} version`);
+    let offset = cursor.offset;
+    while (offset < session.sizeBytes) {
+      const bytes = readRunnerResultRange(
+        options.results,
+        execution.id,
+        "session.ndjson.gz",
+        offset,
+        Math.min(AGENT_SESSION_CHUNK_BYTES, session.sizeBytes - offset),
+        AGENT_SESSION_MAX_BYTES,
+      );
+      if (!bytes.length) throw new Error("The agent session bundle is shorter than recorded");
+      const sent = await token();
+      await remote(() =>
+        options.daemon.uploadSession!(
+          command.runId,
+          {
+            generation: command.generation,
+            offset,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            data: bytes.toString("base64"),
+          },
+          sent,
+        ),
+      );
+      guard();
+      journal.sessionUploaded(execution.id, offset, offset + bytes.length);
+      offset += bytes.length;
+    }
+    const sent = await token();
+    await remote(() =>
+      options.daemon.finishSession!(
+        command.runId,
+        { ...session, generation: command.generation, agentVersion },
+        sent,
+      ),
+    );
+    guard();
+    journal.sessionDone(execution.id, "sealed");
+  }
+  /** A snapshot that cannot be saved never holds back or fails the run. */
+  function skipSession(execution: Execution, error: unknown) {
+    journal.sessionDone(execution.id, "skipped");
+    report(
+      new Error(
+        `Runner skipped the agent session snapshot of execution ${execution.id}: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
   }
   function quiesce(entry: Active) {
     entry.quiesced ??= (async () => {
@@ -787,6 +893,19 @@ export async function openRunnerRuntime(options: {
     });
     journal.phase(entry.execution.id, "publishing");
     entry.execution.phase = "publishing";
+    try {
+      await uploadSession(
+        entry.execution,
+        () => grant(entry),
+        () => check(entry),
+      );
+    } catch (error) {
+      if (entry.abort.signal.aborted) throw error;
+      // An outage retries on the next tick from the stored offset, a few times at most.
+      entry.sessionTries = (entry.sessionTries ?? 0) + 1;
+      if (error instanceof RemoteFailure && entry.sessionTries < SESSION_UPLOAD_TRIES) throw error;
+      skipSession(entry.execution, error);
+    }
     if (
       result.candidateSha &&
       entry.execution.command.type !== "task" &&
