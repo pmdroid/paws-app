@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { withCredential } from "./git";
 import { GitCommandError, type GitExec } from "./types";
 
@@ -27,8 +28,17 @@ export async function pushWithLease(input: PushInput): Promise<void> {
       );
       return;
     } catch (error) {
-      if (attempt === 1 && error instanceof GitCommandError && /\(stale info\)/.test(error.stderr))
+      if (
+        attempt === 1 &&
+        error instanceof GitCommandError &&
+        /\(stale info\)/.test(error.stderr)
+      ) {
+        const message = input.token
+          ? error.message.replaceAll(input.token, "[redacted]")
+          : error.message;
+        journalCaught(message, "push.pushWithLease", null, "remote lease changed; retrying once");
         continue;
+      }
       throw error;
     }
   }

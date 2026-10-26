@@ -203,8 +203,15 @@ export class LinearTaskAccess {
         if (
           error instanceof LinearAccessRemovedError ||
           getWorkItem(this.db, item.id)?.state === "cancelled"
-        )
+        ) {
+          journalCaught(
+            error,
+            "linear-task-access.reconcileItems.assert",
+            item.id,
+            "work-item access removed or item cancelled",
+          );
           continue;
+        }
         throw error;
       }
     }

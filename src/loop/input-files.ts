@@ -58,8 +58,10 @@ export function createLinearInputLoader(options: {
         if (
           error instanceof Error &&
           /^Linear file download HTTP (401|403|404)$/.test(error.message)
-        )
+        ) {
+          journalCaught(error, "input-files.download", null, "optional Linear file is unavailable");
           continue;
+        }
         throw error;
       }
       request.signal.throwIfAborted();

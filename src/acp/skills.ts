@@ -42,7 +42,15 @@ export async function loadImplementationSkills(input: {
     try {
       skillInfo = lstatSync(skillPath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        journalCaught(
+          error,
+          "skills.loadImplementationSkills.lstat",
+          null,
+          "optional file may be absent",
+        );
+        continue;
+      }
       throw error;
     }
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) || !skillInfo.isFile())
