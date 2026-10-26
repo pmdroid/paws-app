@@ -519,6 +519,8 @@ export {
 } from "./runner-agents";
 export { listWaitingProfileRuns } from "./runs";
 export { halt } from "./halt";
-export { restart, type RestartHandoff } from "./restart";
+export { restart, fixRounds, type RestartHandoff } from "./restart";
 
 export { jobVersionCurrent } from "./jobs";
+
+export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";

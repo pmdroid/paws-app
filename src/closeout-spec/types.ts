@@ -36,15 +36,19 @@ export type Severity = "P0" | "P1" | "P2" | "P3";
 export type RetryScope = "task" | "candidate";
 
 /**
- * Present only on the entry policy. Both fields are required together.
+ * Present only on the entry policy. Parsed `attempts_per_check` is normalized
+ * to the legacy internal name below. Attempts and fix rounds default to 3;
+ * scope defaults to task.
  * Counts attempts whose evaluated state is `failed`, including the first.
  * Passed, missing, stale, invalid, untrusted, and independence records do not
  * count. Once the limit is reached the item state is `exhausted`, acceptance
  * is `blocked`, and further attempts for that requirement are refused.
  */
 export type RetryPolicy = {
-  /** Integer from 1 to 100000. */
+  /** Normalized attempts_per_check, from 1 to 100000. */
   maxFailedAttemptsPerItem: number;
+  /** Autonomous restarts shared by findings, CI and review. Defaults to 3. */
+  fix_rounds_per_item?: number;
   maxFailedReviewAttempts?: number;
   /**
    * `candidate` shares `itemId`, `policyDigest`, `base`, and `head`.

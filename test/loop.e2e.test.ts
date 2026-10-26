@@ -218,7 +218,8 @@ test.each([false, true, "cap"] as const)(
       while (
         performance.now() < progressDeadline &&
         (!tracker.progress.some((update) => /fix attempt 1 of 3/i.test(update.body)) ||
-          metadata("linear.session.summary")?.summary !== "ENG-302: fixing Closeout findings" ||
+          metadata("linear.session.summary")?.summary !==
+            "ENG-302: fixing Closeout findings (1 of 3)" ||
           metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress")
       ) {
         while (outbox.tick().length > 0) await outbox.idle();
@@ -229,7 +230,9 @@ test.each([false, true, "cap"] as const)(
       );
       expect(tracker.progress.map((update) => update.body)).not.toContain("Write repaired output");
       expect(tracker.progress.some((update) => /fix attempt 1 of 3/i.test(update.body))).toBe(true);
-      expect(metadata("linear.session.summary")?.summary).toBe("ENG-302: fixing Closeout findings");
+      expect(metadata("linear.session.summary")?.summary).toBe(
+        "ENG-302: fixing Closeout findings (1 of 3)",
+      );
       expect(metadata("linear.session.plan")?.plan?.[0]).toEqual({
         content: "Repair missing output",
         status: "inProgress",
@@ -3049,13 +3052,19 @@ async function runCiFix(options: {
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
-  const configPath = path.join(layout.pawsRoot, "config.toml");
-  if (options.withoutReview)
-    await withGitIdentity(() =>
-      commitOnMain(layout.bare, CLOSEOUT_POLICY_WITHOUT_REVIEW, ".agents/closeout.yaml"),
-    );
-  if (options.attempts !== undefined)
-    await writeFile(configPath, `[merge]\nci_fix_attempts = ${options.attempts}\n`);
+  if (options.withoutReview || options.attempts !== undefined) {
+    const policy = options.withoutReview ? CLOSEOUT_POLICY_WITHOUT_REVIEW : CLOSEOUT_POLICY;
+    const configured =
+      options.attempts === undefined
+        ? policy
+        : policy
+            .replace(
+              'specVersion: "0.1"',
+              `specVersion: "0.1"\nretry:\n  attempts_per_check: 3\n  fix_rounds_per_item: ${options.attempts}`,
+            )
+            .replace(/\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: task/, "");
+    await withGitIdentity(() => commitOnMain(layout.bare, configured, ".agents/closeout.yaml"));
+  }
   const linearCalls: string[] = [];
   const tracker = new Proxy(
     Object.assign(

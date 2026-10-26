@@ -289,7 +289,7 @@ describe("closeout command runner", () => {
       ]);
       expect(existsSync(later)).toBe(false);
       expect(existsSync(commandMarker)).toBe(false);
-      expect(commandRecords(fx.store)).toHaveLength(1);
+      expect(commandRecords(fx.store)).toHaveLength(2);
     } finally {
       await fx.cleanup();
     }
@@ -552,6 +552,7 @@ describe("closeout command runner", () => {
     );
     const setupArgv = [process.execPath, "-e", "process.exit(1)"];
     fx.store.records.push(failedRecord(fx, "js", setupArgv, 1));
+    fx.store.records.push(failedRecord(fx, "js", setupArgv, 2));
     try {
       const result = await run(fx, {
         setup: [setupStep("js", setupArgv)],

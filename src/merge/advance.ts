@@ -170,7 +170,7 @@ export async function advanceMerge(
       return { accepted: verdict.accepted, outcome: verdict.outcome, summary: verdict.summary };
     },
   });
-  const ciFixLimit = caps.ciFixAttempts();
+  const ciFixLimit = caps.ciFixAttempts(item);
   const conflict: RebaseConflict = {
     base: merged.base ?? null,
     files: merged.conflictFiles ?? null,

@@ -46,7 +46,7 @@ export type OrderCapabilities = {
   session(item: WorkItemRecord): string | null;
   /** Fetch main into the item's worktree. Main's commit, or null without a worktree. */
   fetchMain(item: WorkItemRecord): Promise<string | null>;
-  ciFixAttempts(): number;
+  ciFixAttempts(item: WorkItemRecord): number;
   voice: MergeVoice;
 };
 
@@ -324,7 +324,7 @@ async function githubQueueCiFailed(
   pullUrl: string | null,
   source: string,
 ): Promise<MergeStep> {
-  const limit = merge.caps.ciFixAttempts();
+  const limit = merge.caps.ciFixAttempts(merge.item);
   const failed = checks.map((check) => ({
     name: check.name,
     state: "failed" as const,

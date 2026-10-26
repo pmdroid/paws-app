@@ -151,9 +151,13 @@ function decodeDocument(value: unknown): PolicyDocument {
 function decodeRetry(value: unknown): RetryPolicy {
   if (!isRecord(value)) throw new Error("document does not match the schema");
   const retry: RetryPolicy = {
-    maxFailedAttemptsPerItem: expectInt(value.maxFailedAttemptsPerItem),
-    scope: expectScope(value.scope),
+    maxFailedAttemptsPerItem: expectInt(
+      value.attempts_per_check ?? value.maxFailedAttemptsPerItem ?? 3,
+    ),
+    scope: expectScope(value.scope ?? "task"),
   };
+  if (value.fix_rounds_per_item !== undefined)
+    retry.fix_rounds_per_item = expectInt(value.fix_rounds_per_item);
   if (value.maxFailedReviewAttempts !== undefined) {
     retry.maxFailedReviewAttempts = expectInt(value.maxFailedReviewAttempts);
     if (retry.maxFailedReviewAttempts < retry.maxFailedAttemptsPerItem) {

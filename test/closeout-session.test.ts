@@ -74,7 +74,7 @@ test("get_closeout reports path matches and run_closeout runs the pending id", a
     matched_paths: ["src/main.ts"],
     status: "missing",
     failed_attempts: 0,
-    remaining_attempts: null,
+    remaining_attempts: 3,
     retry_scope: null,
     different_model: false,
   });
@@ -321,11 +321,13 @@ test("an exhausted setup step is not spawned for a later command", async () => {
   const session = createCloseoutSession(root, local(root));
   expect(await session.run("engine")).toContain("prepare failed");
   expect(readFileSync(mark, "utf8")).toBe("s");
+  expect(await session.run("engine")).toContain("prepare failed");
+  expect(readFileSync(mark, "utf8")).toBe("ss");
   const blocked = JSON.parse(await session.report()) as Report;
   expect(blocked.required.find((item) => item.id === "prepare")?.status).toBe("exhausted");
   expect(blocked.pending).not.toContain("prepare");
   expect(await session.run("engine")).toContain("Check prepare is exhausted");
-  expect(readFileSync(mark, "utf8")).toBe("s");
+  expect(readFileSync(mark, "utf8")).toBe("ss");
 });
 
 test("a broken policy blocks the report", async () => {

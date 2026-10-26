@@ -1,5 +1,6 @@
 export { FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export {
+  policyFixBudget,
   approvalsAtHead,
   reviewRequirements,
   trustedPolicyFiles,

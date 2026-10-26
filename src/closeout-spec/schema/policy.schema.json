@@ -11,8 +11,9 @@
     "retry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxFailedAttemptsPerItem", "scope"],
       "properties": {
+        "attempts_per_check": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "fix_rounds_per_item": { "type": "integer", "minimum": 0, "maximum": 100000 },
         "maxFailedAttemptsPerItem": { "type": "integer", "minimum": 1, "maximum": 100000 },
         "scope": { "enum": ["task", "candidate"] },
         "maxFailedReviewAttempts": { "type": "integer", "minimum": 1, "maximum": 100000 }

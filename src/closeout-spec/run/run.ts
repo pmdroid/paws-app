@@ -98,7 +98,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     return { blocked: "base or head does not resolve to a commit", dispositions: [] };
   }
 
-  return withRetryLock(input.evidenceDir, input.policy.retry !== undefined, async () => {
+  return withRetryLock(input.evidenceDir, true, async () => {
     const snapshot = await input.evidence.load();
     if (snapshot.invalid !== undefined) {
       return { blocked: snapshot.invalid.message, dispositions: [] };
@@ -180,7 +180,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
           );
           continue;
         }
-        const exec = await runOne(
+        let exec = await runOne(
           runner,
           input,
           action.item,
@@ -191,6 +191,30 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
           identity,
           ordinalOf(actions, action.item.id),
         );
+        if (
+          action.item.kind === "setup" &&
+          executionFailed(exec, true) &&
+          !retryBlock(
+            action.item,
+            input.policy.source === "none" ? undefined : input.policy.retry,
+            input.policy.digest ?? "",
+            records,
+            { base, head, gate, candidate: input.candidate, retryBaseline: input.retryBaseline },
+            undefined,
+          )
+        ) {
+          exec = await runOne(
+            runner,
+            input,
+            action.item,
+            tree,
+            base,
+            head,
+            records,
+            identity,
+            ordinalOf(actions, action.item.id),
+          );
+        }
         dispositions.push({
           id: action.item.id,
           kind: action.item.kind,

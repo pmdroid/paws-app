@@ -284,7 +284,8 @@ export function retryBlock(
   request: EvaluateRequest,
   trust: EvaluateTrust | undefined,
 ): DecisionItem | undefined {
-  if (retry === undefined) return undefined;
+  retry ??= { maxFailedAttemptsPerItem: 3, scope: taskOf(request) ? "task" : "candidate" };
+  if (item.kind === "setup") retry = { ...retry, maxFailedAttemptsPerItem: 2 };
   const task = taskOf(request);
   const seen = new Set<string>();
   let failed = 0;
