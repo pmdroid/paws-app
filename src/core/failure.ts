@@ -54,11 +54,12 @@ export class RunnerCapacityWait extends Error {
   constructor(
     readonly runnerIds: readonly string[],
     readonly holdMs?: number,
+    rejections: readonly string[] = [],
   ) {
     super(
       runnerIds.length
         ? `Waiting for a free slot on runner ${runnerIds.join(", ")}`
-        : "Waiting for a paired runner to come online",
+        : `Waiting for a paired runner to come online${rejections.length ? ` (${rejections.join("; ")})` : ""}`,
     );
   }
 }

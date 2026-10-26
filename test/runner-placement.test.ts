@@ -19,7 +19,7 @@ import {
   SESSION_GRACE_MS,
   type PlacementRequest,
 } from "../src/runner-placement";
-import { placementWaitMs } from "../src/core";
+import { RunnerCapacityWait, placementWaitMs } from "../src/core";
 import { saveSchedulingContext } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
@@ -478,6 +478,82 @@ test("run pins apply to every role and never expire while the host is online", a
     ]);
     expect(await placed.ids({ pinnedRunnerId })).toEqual([]);
     expect(await placed.ids({ pinnedRunnerId, excludeRunnerIds: ["second"] })).toEqual([]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+for (const revoked of [false, true]) {
+  test(`reviewer preparation ignores historical model evidence after ${revoked ? "revocation" : "a moved review and ejection"}`, async () => {
+    const placed = await placeItem();
+    try {
+      const at = placed.now();
+      const run = insertRun(placed.db, { itemId: "item", now: at, status: "active" });
+      // Implementation on own, review on second, with the run still pointing at its last host.
+      placed.db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,ended_at) VALUES(?,'second',?,2,0,'review',?,0,?)",
+        [run.id, placed.workspaceId, at, at],
+      );
+      for (const [command, runner, role, model] of [
+        ["implement", "own", "implementer", "implementation-model"],
+        ["review", "second", "reviewer", "review-model"],
+      ])
+        placed.db.run(
+          "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,role,purpose,started_at,ended_at,outcome,resolved_model) VALUES(?,?,?,'item',?,'codex',?,'work',?,?,'success',?)",
+          [command!, runner!, placed.owner, run.id, role!, at - 100, at, model!],
+        );
+      if (revoked)
+        placed.db.run("UPDATE runner SET revoked_at=?,status='revoked' WHERE id='second'", [at]);
+      // A cached default model is historical evidence, not the result of the upcoming probe.
+      placed.db.run("UPDATE runner_agent_policy SET resolved_model='implementation-model'");
+      const request = {
+        role: "reviewer" as const,
+        profile: { agent: "codex" as const },
+        pinnedRunnerId: "second",
+      };
+      expect(await placed.ids({ ...request, purpose: "work" })).toEqual([]);
+      expect(await placed.ids({ ...request, purpose: "prepare" })).toContain("own");
+      // Even an explicitly matching profile must be probed so preflight can explain the policy failure.
+      expect(
+        await placed.ids({
+          ...request,
+          purpose: "prepare",
+          profile: { agent: "codex", model: "implementation-model" },
+        }),
+      ).toContain("own");
+    } finally {
+      placed.db.close();
+      rmSync(placed.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("placement reports every rejected runner and capacity waits include their reasons", async () => {
+  const placed = await placeItem();
+  try {
+    placed.db.run("UPDATE runner SET revoked_at=? WHERE id='second'", [placed.now()]);
+    placed.db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id='own'", [
+      placed.now() + 60_000,
+    ]);
+    const rejected: string[] = [];
+    expect(
+      await placed.ids({
+        role: "reviewer",
+        purpose: "prepare",
+        onRejected: (id, reason) => rejected.push(`${id}: ${reason}`),
+      }),
+    ).toEqual([]);
+    expect(rejected.toSorted()).toEqual([
+      "api: no-project-lead",
+      "own: agent quota cooldown",
+      "second: revoked",
+      "shared: no-project-lead",
+      "unshared: not-yours",
+    ]);
+    const error = new RunnerCapacityWait([], undefined, rejected);
+    expect(error.message).toContain("own: agent quota cooldown");
+    expect(error.message).toContain("second: revoked");
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
