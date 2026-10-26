@@ -4,9 +4,12 @@ import { mountShell } from "./shell";
 import { mergeQueueCount } from "./merge-queue";
 
 import {
+  parseStatusCheckLog,
   parseStatusItemDetail,
   parseStatusSnapshot,
+  statusCheckLogPath,
   statusItemPath,
+  type StatusCheckLog,
   type StatusItemDetail,
   type StatusSnapshot,
 } from "../contract";
@@ -18,6 +21,7 @@ import {
   emptyCloseoutView,
   isOpen,
   parseCheckHash,
+  type CheckLogView,
 } from "./closeout";
 import { captureLogs, restoreLogs } from "./log-scroll";
 import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
@@ -319,6 +323,7 @@ function paint(): void {
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
   if (runnerRoot && model.route.view === "runners")
     runners.mount(runnerRoot, currentEngine(), source(), model.route.id);
+  if (loadOpenLogs()) paint();
 }
 
 function currentRoute(): Route {
@@ -559,7 +564,89 @@ function onClick(event: MouseEvent): void {
       },
     );
   }
-  if (action === "download-output") downloadOutput(itemId, attempt, checkId);
+  if (action === "check-log-full") {
+    const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
+    if (check) void loadLog(itemId, attempt, checkId, check.state, true);
+  }
+  if (action === "download-output") void downloadOutput(itemId, attempt, checkId);
+}
+
+/**
+ * Starts loading the log of every open check row on the issue page that has none for the
+ * check's current state. Polling repaints do not load a log again. True when one started.
+ */
+function loadOpenLogs(): boolean {
+  if (openIssue(currentRoute()) === null) return false;
+  let started = false;
+  const rows = document.querySelectorAll<HTMLElement>(
+    '#page-content [data-action="toggle-check"][aria-expanded="true"]',
+  );
+  for (const row of rows) {
+    const itemId = row.dataset.item ?? "";
+    const attempt = Number(row.dataset.attempt ?? "");
+    const checkId = row.dataset.check ?? "";
+    const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
+    // Evidence rows show no output, and a pending check has none yet.
+    if (!check || check.kind === "evidence" || check.state === "pending") continue;
+    if (closeout.logs?.[checkKey(itemId, attempt, checkId)]?.checkState === check.state) continue;
+    void loadLog(itemId, attempt, checkId, check.state);
+    started = true;
+  }
+  return started;
+}
+
+async function loadLog(
+  itemId: string,
+  attempt: number,
+  checkId: string,
+  checkState: string,
+  full = false,
+): Promise<void> {
+  const key = checkKey(itemId, attempt, checkId);
+  const logs = (closeout.logs ??= {});
+  const loading: CheckLogView = { status: "loading", checkState };
+  logs[key] = loading;
+  let next: CheckLogView;
+  try {
+    const log = await fetchLog(itemId, attempt, checkId, full);
+    if (log === null) return;
+    next = { status: "loaded", checkState, ...log, full };
+  } catch (caught) {
+    journalCaught(caught, "main.loadLog.fetch", itemId);
+    next = {
+      status: "error",
+      checkState,
+      error: caught instanceof Error ? caught.message : "Could not load the log",
+    };
+  }
+  // A later load of the same row replaced this one.
+  if (logs[key] !== loading) return;
+  logs[key] = next;
+  paint();
+}
+
+/** One check's log from the open issue page's item. Null when the reader is signed out. */
+async function fetchLog(
+  itemId: string,
+  attempt: number,
+  checkId: string,
+  full: boolean,
+): Promise<StatusCheckLog | null> {
+  const issue = openIssue(currentRoute());
+  if (issue === null) throw new Error("No issue page is open");
+  const path = statusCheckLogPath(issue, attempt, checkId, {
+    run: agentCloseoutRun(itemId),
+    full,
+  });
+  const response = await fetch(path, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  if (!(await signedIn(response))) return null;
+  if (!response.ok) throw new Error(await errorText(response));
+  const parsed = parseStatusCheckLog(await response.json());
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.log;
 }
 
 function closeoutVerdict(itemId: string) {
@@ -668,10 +755,20 @@ async function errorText(response: Response): Promise<string> {
   return `Engine responded ${response.status}`;
 }
 
-function downloadOutput(itemId: string, attempt: number, checkId: string): void {
+async function downloadOutput(itemId: string, attempt: number, checkId: string): Promise<void> {
   const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
   if (!check) return;
-  const body = `STDOUT\n${check.stdout ?? ""}\nSTDERR\n${check.stderr ?? ""}\n`;
+  let streams = { stdout: check.stdout ?? "", stderr: check.stderr ?? "" };
+  try {
+    const log = await fetchLog(itemId, attempt, checkId, true);
+    if (log === null) return;
+    streams = log;
+  } catch (caught) {
+    journalCaught(caught, "main.downloadOutput.fetchLog", itemId);
+    const loaded = closeout.logs?.[checkKey(itemId, attempt, checkId)];
+    if (loaded?.status === "loaded") streams = loaded;
+  }
+  const body = `STDOUT\n${streams.stdout}\nSTDERR\n${streams.stderr}\n`;
   const blob = new Blob([body], { type: "text/plain" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");

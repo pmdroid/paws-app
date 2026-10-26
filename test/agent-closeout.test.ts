@@ -116,11 +116,8 @@ if (!text.includes("fixed")) {
     1, 2, 3, 4, 5, 6, 7, 8,
   ]);
 
-  const snapshot = parseStatusSnapshot(
-    JSON.parse(
-      JSON.stringify(createLiveStatusProvider(db, { now: () => new Date(clock) }).snapshot()),
-    ),
-  );
+  const provider = createLiveStatusProvider(db, { now: () => new Date(clock) });
+  const snapshot = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
   if (!snapshot.ok) throw new Error(snapshot.error);
   const agent = snapshot.snapshot.agentCloseout?.find((entry) => entry.runId === run.id);
   expect(agent).toBeDefined();
@@ -142,9 +139,16 @@ if (!text.includes("fixed")) {
   const [first, second] = agent!.attempts;
   const failed = first!.checks.find((check) => check.id === "test")!;
   expect(failed).toMatchObject({ state: "failed", attempt: 1, exitCode: 1 });
-  expect(failed.stderr).toContain("expected fixed, received broken");
-  expect(failed.stdout).toContain("checking main.ts");
-  expect(failed.stdout).not.toContain(TOKEN);
+  expect(failed.stdout).toBeNull();
+  const log = provider.checkLog({
+    itemId: "ENG-7",
+    attempt: first!.number,
+    checkId: "test",
+    run: run.id,
+  })!;
+  expect(log.stderr).toContain("expected fixed, received broken");
+  expect(log.stdout).toContain("checking main.ts");
+  expect(log.stdout).not.toContain(TOKEN);
   expect(second!.checks.map((check) => [check.id, check.state, check.attempt])).toEqual([
     ["install", "passed", 1],
     ["test", "passed", 2],

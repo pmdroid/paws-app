@@ -94,6 +94,48 @@ describe("closeout checks", () => {
     expect(all).not.toContain('aria-expanded="false"');
   });
 
+  test("an open row without its output shows the log it loaded when it opened", () => {
+    const shown = verdict("ENG-100");
+    const bare = {
+      ...shown,
+      attempts: shown.attempts!.map((attempt) => ({
+        ...attempt,
+        checks: attempt.checks.map(({ stdout: _stdout, stderr: _stderr, ...check }) => check),
+      })),
+    };
+    const key = checkKey("ENG-100", 3, "unit");
+    const withLog = (log: NonNullable<CloseoutView["logs"]>[string]) =>
+      renderCloseoutChecks(bare, { ...emptyCloseoutView(), logs: { [key]: log } }, null);
+
+    expect(withLog({ status: "loading", checkState: "failed" })).toContain("Loading output.");
+    const tail = withLog({
+      status: "loaded",
+      checkState: "failed",
+      stdout: "",
+      stderr: "loaded tail",
+      truncated: true,
+      full: false,
+    });
+    expect(tail).toContain("loaded tail");
+    expect(tail).toContain("Showing the last 64 KB of each stream.");
+    expect(tail).toContain(
+      'data-action="check-log-full" data-item="ENG-100" data-attempt="3" data-check="unit"',
+    );
+    const full = withLog({
+      status: "loaded",
+      checkState: "failed",
+      stdout: "",
+      stderr: "whole log",
+      truncated: false,
+      full: true,
+    });
+    expect(full).toContain("whole log");
+    expect(full).not.toContain('data-action="check-log-full"');
+    expect(
+      withLog({ status: "error", checkState: "failed", error: "Engine responded 404" }),
+    ).toContain("Could not load the log: Engine responded 404");
+  });
+
   test("an open row shows stdout and stderr apart, in color, with its tools", () => {
     const html = renderCloseoutChecks(verdict("ENG-100"), emptyCloseoutView(), null);
     expect(html).toContain('data-stream="stdout"');

@@ -27,7 +27,7 @@ import { handleStatusRequest } from "../src/web";
 import { render, type RenderModel } from "../src/web/src/client/render";
 import { attemptsOf, checkKey } from "../src/web/src/client/closeout";
 import { createLiveStatusProvider } from "../src/web/src/live/provider";
-import type { StatusSnapshot, StatusVerdict } from "../src/web/src/contract";
+import type { StatusCheck, StatusSnapshot, StatusVerdict } from "../src/web/src/contract";
 
 const open: Database[] = [];
 const dirs: string[] = [];
@@ -135,8 +135,35 @@ function acceptVerdict(db: Database, id: string, head: string, body: string, now
   });
 }
 
+/**
+ * The live snapshot with every check's output read through `checkLog`, as the issue page shows
+ * a check once its row has loaded the log. `/api/status` itself carries no check output.
+ */
 function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): StatusSnapshot {
-  return createLiveStatusProvider(db, { now: () => new Date(now), env }).snapshot();
+  const provider = createLiveStatusProvider(db, { now: () => new Date(now), env });
+  const snapshot = provider.snapshot();
+  const withLog = (itemId: string, attempt: number) => (check: StatusCheck) => ({
+    ...check,
+    ...provider.checkLog({ itemId, attempt, checkId: check.id, run: null }),
+  });
+  return {
+    ...snapshot,
+    verdicts: snapshot.verdicts.map((verdict) => {
+      const attempts = attemptsOf(verdict);
+      return {
+        ...verdict,
+        checks: verdict.checks.map(withLog(verdict.itemId, attempts.at(-1)!.number)),
+        ...(verdict.attempts
+          ? {
+              attempts: verdict.attempts.map((attempt) => ({
+                ...attempt,
+                checks: attempt.checks.map(withLog(verdict.itemId, attempt.number)),
+              })),
+            }
+          : {}),
+      };
+    }),
+  };
 }
 
 function verdictOf(snapshot: StatusSnapshot, id: string): StatusVerdict {
