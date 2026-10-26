@@ -11,7 +11,7 @@ import type {
 import { SPEC_VERSION } from "../types";
 import { createCandidateCheckout } from "./checkout";
 import { parseFindings, reaskPrompt } from "./findings";
-import { loadReviewMaterial, renderReviewPrompt } from "./prompt";
+import { loadReviewMaterial, renderReviewPrompt, type ReviewMaterial } from "./prompt";
 
 const PROVIDER = "codex";
 
@@ -44,7 +44,11 @@ export type ReviewerOptions = {
   evaluator?: ProducerIdentity;
   /** Evidence attempt written on the review record. Defaults to 1. */
   attempt?: number;
+  diffBudget?: number;
+  maxPromptChars?: number;
 };
+
+export const MAX_PROMPT_CHARS = 1_000_000;
 
 export type RecordedReview = {
   status: "recorded";
@@ -86,12 +90,21 @@ export function createReviewer(agent: ReviewAgent, options: ReviewerOptions) {
           skillFiles: request.skillFiles,
           base: request.base,
           head: request.head,
+          ...(options.diffBudget !== undefined ? { diffBudget: options.diffBudget } : {}),
         });
       } catch (error) {
         journalCaught(error, "reviewer.review.loadReviewMaterial", null);
         return invalid(candidate, blankProducer(options.model), messageOf(error));
       }
       const prompt = renderReviewPrompt(material, request.base, request.head, request.item.scope);
+      const limit = options.maxPromptChars ?? MAX_PROMPT_CHARS;
+      if (prompt.length > limit) {
+        return invalid(
+          candidate,
+          blankProducer(options.model),
+          tooLong(prompt.length, limit, material),
+        );
+      }
       let checkout: Awaited<ReturnType<typeof createCandidateCheckout>>;
       try {
         checkout = await createCandidateCheckout(
@@ -229,6 +242,11 @@ function passThrough(candidate: CandidateIdentity): CandidateIdentity {
     model: candidate.model,
     provider: candidate.provider,
   };
+}
+
+function tooLong(length: number, limit: number, material: ReviewMaterial): string {
+  const references = material.references.reduce((sum, entry) => sum + entry.text.length, 0);
+  return `the review prompt is ${length} characters, over the ${limit} limit: skill ${material.skill.length}, references ${references}, diff ${material.diff.length}. Move long material out of the skill's references/ folder or lower the diff budget.`;
 }
 
 function messageOf(error: unknown): string {
