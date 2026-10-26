@@ -17,6 +17,7 @@ import {
   getRun,
   getWorkItem,
   insertQueuedItem,
+  JobLoop,
   listJobs,
   listOutbox,
   markCloseoutAccepted,
@@ -372,33 +373,42 @@ describe("laptop sleep and wake", () => {
     }
   });
 
-  test("verifying with no job working on it is not Closeout time", () => {
+  test("verifying with no job working on it is not Closeout time", async () => {
     const { clock, db, host } = boot();
+    const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * 60_000 });
+    let finish = () => {};
+    jobs.register(
+      JOB_KIND.reverify,
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const verify = () => {
+      enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "eng-9" }, now: clock.now() });
+      return jobs.tick([JOB_KIND.reverify]);
+    };
     try {
       startRun(db, clock);
       host.tick();
       clock.advance(40 * 60_000);
       host.tick();
       applyWorkItemEvent(db, "eng-9", "turn_ended");
-      const job = verifyingJob(db, clock);
+      // Two idle hours pass without a tick, then a job claims the item.
+      clock.advance(2 * 60 * 60_000);
+      const running = verify();
       clock.advance(20 * 60_000);
       host.tick();
-      // The job ends and leaves the item in verifying: two idle hours pass.
-      completeJob(db, job, clock.now());
+      // The job ends between ticks, and the item sits in verifying for two hours.
+      clock.advance(5 * 60_000);
+      finish();
+      await running;
       clock.advance(2 * 60 * 60_000);
       host.tick();
       expect(getWorkItem(db, "eng-9")).toMatchObject({
         state: "verifying",
-        awakeMs: 60 * 60_000,
-        agentMs: 40 * 60_000,
-        closeoutMs: 20 * 60_000,
-      });
-      // Closeout time counts again once a job verifies the item.
-      verifyingJob(db, clock);
-      clock.advance(5 * 60_000);
-      host.tick();
-      expect(getWorkItem(db, "eng-9")).toMatchObject({
         awakeMs: 65 * 60_000,
+        agentMs: 40 * 60_000,
         closeoutMs: 25 * 60_000,
       });
     } finally {
