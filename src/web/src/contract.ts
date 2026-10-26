@@ -476,6 +476,8 @@ export interface StatusSnapshot {
   /** Failed CI reads of the visible items' pull requests, with every check on each head. */
   ciRounds?: StatusCiRound[];
   intake?: StatusIntakeEntry[];
+  /** Dead outbox rows and dead jobs of the visible items, oldest first. Each can be retried. */
+  dead?: StatusDeadDelivery[];
   linearBudget?: StatusLinearBudget;
   linearWebhook?: StatusLinearWebhook;
 }
@@ -487,6 +489,24 @@ export interface StatusIntakeEntry {
   attempts: number;
   nextAttemptAt: string | null;
   lastError: string | null;
+}
+
+export const DEAD_DELIVERY_KINDS = ["outbox", "job"] as const;
+export type DeadDeliveryKind = (typeof DEAD_DELIVERY_KINDS)[number];
+
+/** An outbox row or job that used its attempts. `target` is what the retry action sends. */
+export interface StatusDeadDelivery {
+  itemId: string;
+  kind: DeadDeliveryKind;
+  /** `outbox:<id>` or `job:<id>`. */
+  target: string;
+  /** `linear.elicitation` for an outbox row, the queue for a job. */
+  name: string;
+  attempts: number;
+  lastError: string | null;
+  at: string;
+  /** False for a job from an earlier state of the item; retrying it would revive obsolete work. */
+  retryable?: boolean;
 }
 
 export interface StatusLinearWebhook {
@@ -662,6 +682,13 @@ function readSnapshot(input: unknown): StatusSnapshot {
             readIntake(entry, `intake[${index}]`),
           ),
         }),
+    ...(body.dead === undefined
+      ? {}
+      : {
+          dead: array(body, "dead", "status").map((entry, index) =>
+            readDeadDelivery(entry, `dead[${index}]`),
+          ),
+        }),
     ...(body.linearBudget === undefined || body.linearBudget === null
       ? {}
       : { linearBudget: readLinearBudget(body.linearBudget, "linearBudget") }),
@@ -689,6 +716,24 @@ function readIntake(input: unknown, path: string): StatusIntakeEntry {
     attempts: count(body, "attempts", path),
     nextAttemptAt: nullableDate(body, "nextAttemptAt", path),
     lastError: nullableText(body, "lastError", path),
+  };
+}
+
+function readDeadDelivery(input: unknown, path: string): StatusDeadDelivery {
+  const body = object(input, path);
+  const kind = oneOf(string(body, "kind", path), DEAD_DELIVERY_KINDS, `${path}.kind`);
+  const target = text(body, "target", path);
+  if (!new RegExp(`^${kind}:[1-9][0-9]*$`).test(target))
+    throw new StatusContractError(`${path}.target must be ${kind}:<id>`);
+  return {
+    itemId: text(body, "itemId", path),
+    kind,
+    target,
+    name: text(body, "name", path),
+    attempts: count(body, "attempts", path),
+    lastError: nullableText(body, "lastError", path),
+    at: dateString(body, "at", path),
+    ...(body.retryable === undefined ? {} : { retryable: boolean(body, "retryable", path) }),
   };
 }
 

@@ -41,6 +41,7 @@ import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
+import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
 
 export interface RenderModel {
@@ -375,6 +376,7 @@ function issuePage(
     </header>
     ${run ? phaseStrip(item, run, verdict, agent) : ""}
     ${queueNotice(item)}
+    ${deadDeliveriesSection(snapshot, item.id)}
     ${run ? (run.usagePause ? usagePauseSection(run, run.usagePause) : executionControls(run)) : ""}
     ${snapshot.questions
       .filter(

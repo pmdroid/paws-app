@@ -32,6 +32,7 @@ import { createHookSettings } from "./hooks";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createExecutionControls } from "./execution-controls";
+import { createDeadDeliveryRetry } from "./dead-delivery-retry";
 import { createReviewDraw } from "./review-draw";
 import { createEvidenceMedia } from "./evidence-media";
 import {
@@ -51,6 +52,7 @@ const hookSettings = createHookSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const executionControls = createExecutionControls(reload);
+const deadDeliveryRetry = createDeadDeliveryRetry(reload);
 const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
@@ -241,6 +243,8 @@ function paint(): void {
     );
   const executionRoot = document.querySelector<HTMLElement>("#execution-controls");
   if (executionRoot) executionControls.mount(executionRoot, currentEngine(), source());
+  const deadRoot = document.querySelector<HTMLElement>("#dead-deliveries");
+  if (deadRoot) deadDeliveryRetry.mount(deadRoot, currentEngine(), source());
   const drawRoot = document.querySelector<HTMLElement>("#review-draw");
   if (drawRoot) reviewDraw.mount(drawRoot, snapshot, currentEngine(), source());
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
