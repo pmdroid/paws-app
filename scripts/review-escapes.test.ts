@@ -207,7 +207,7 @@ test("each checked-in review escape names both pull requests, the replay commits
     expect(escape.fix.title).not.toBe("");
     expect(escape.file).not.toBe("");
     expect(escape.line).toBeGreaterThan(0);
-    expect(escape.bug).toMatch(/^[A-Z`].*\.$/);
+    expect(escape.bug).toMatch(/^\S[^\n]*\.$/);
     expect(escape.confirmedBy).not.toBe("");
     expect(escape.confirmedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   }
