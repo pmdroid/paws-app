@@ -3568,9 +3568,7 @@ test.each([
         outcome === "merges" ? "merged" : "failed",
       );
       expect(
-        tracker.progress
-          .filter((update) => update.kind === "response" && update.body.startsWith("Closed:"))
-          .map((update) => update.body),
+        tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
       ).toEqual(
         outcome === "merges"
           ? []
