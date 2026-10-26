@@ -45,6 +45,20 @@ Each sub-issue runs in its own Linear agent session and its own run. Paws opens 
 4. ENG-4's session opens after ENG-3 merges. ENG-4 parks on a question in its session. Answer `yes` or `no`, or reply in your own words. The run continues with that answer.
 5. ENG-4 merges.
 
+Each sub-issue's session is one story. Before the pull request, activities tell it and the title names the phase. After the pull request response, only the title and plan move. The face of each state is in [Linear agent sessions](linear-agent-sessions.md#the-face-table). Expect, for each sub-issue:
+
+- Exactly two responses: the pull request response, then the final response "Merged #N into main at <sha>. ENG-n is Done." Nothing appears between them, not even evidence: evidence after the pull request is attached to the issue.
+- After the merge the title reads `ENG-n: completed`, every plan step is completed, and the issue is Done. The session is complete, not stale.
+- ENG-3, while it waits for ENG-2, has the title `ENG-3: waiting for ENG-2`, an in-progress **Wait for ENG-2** step, and an ephemeral "Still waiting for ENG-2." at most every 25 minutes.
+
+## Stop
+
+This run proves a stop ends in one response that says what is left on the branch. Delegate a fresh issue in the sandbox team, such as **Add a CSV footer**: "Append a total row to `exportRows` output." Wait for the agent's first commit, then stop it before the pull request opens.
+
+1. Press stop on the Linear session. The session ends with one response, for example "Stopped. Branch paws/eng-n has 1 commit; no PR was opened. Re-delegate to continue." The title reads `ENG-n: stopped` and the remaining plan steps are canceled.
+2. Re-delegate the issue and wait for the pull request response. Reply `/paws stop` in the session. The one response names the branch and its commits, and says `PR #N will be closed`, because a stop in the merge queue closes the pull request. Nothing follows it.
+3. Delegate another issue and take it over from the dashboard. The session ends with "Taken over by <who>. Paws will not restart, verify or merge ENG-n." and the title reads `ENG-n: manual`.
+
 ## Merge lane
 
 These runs prove that every merged head is one Closeout accepted, that a review reaches the agent without a Linear paste, and that a conflict loop ends in one question. Terms are in [GLOSSARY.md](../GLOSSARY.md); the flow is in [After acceptance](closeout.md#after-acceptance). Use the demo repository with `[merge] order = "queue"`, the default. Reset the demo first, and for each run create a fresh issue in the sandbox team and delegate it to the Paws app.
