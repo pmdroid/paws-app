@@ -243,7 +243,8 @@ export function createRunnerPlacement(options: {
       const at = now();
       // A task runs on the runners of the person who delegated it, then on the shared runners
       // of its Linear project leads.
-      const pinnedRunnerId = input.pinnedRunnerId;
+      // Preparation probes identities without moving a checkout or resuming an agent session.
+      const pinnedRunnerId = input.purpose === "prepare" ? undefined : input.pinnedRunnerId;
       const pinnedOnline = pinnedRunnerId
         ? db
             .query(
@@ -256,7 +257,16 @@ export function createRunnerPlacement(options: {
         agent: input.profile.agent,
         purpose: input.purpose,
         now: at,
-      }).filter((runner) => runner.eligible && (!pinnedOnline || runner.id === pinnedRunnerId));
+        includeRevoked: true,
+      }).filter((runner) => {
+        const reason = !runner.eligible
+          ? runner.reason
+          : pinnedOnline && runner.id !== pinnedRunnerId
+            ? "run pinned to another online runner"
+            : null;
+        if (reason) input.onRejected?.(runner.id, reason);
+        return reason === null;
+      });
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(
@@ -267,7 +277,12 @@ export function createRunnerPlacement(options: {
             .get(input.itemId)
         : null;
       const ranked = rows.flatMap((runner) => {
-        if (input.purpose === "helper" && !runnerHasCapacity(db, runner.id, at)) return [];
+        const reject = (reason: string) => {
+          input.onRejected?.(runner.id, reason);
+          return [];
+        };
+        if (input.purpose === "helper" && !runnerHasCapacity(db, runner.id, at))
+          return reject("no free capacity");
         if (
           input.purpose === "helper" &&
           db
@@ -276,21 +291,24 @@ export function createRunnerPlacement(options: {
             )
             .get(runner.id, at)
         )
-          return [];
+          return reject("helper already running");
         // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
         // session on its pinned host instead of moving its checkout and held slot.
-        if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) return [];
+        if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)
+          return reject("excluded after failed attempt");
         const own = runner.reason === "own";
-        if (runner.cooldownUntil > at) return [];
-        // A fresh session may correct a reported model mismatch. The receipt still rejects
+        if (runner.cooldownUntil > at) return reject("agent quota cooldown");
+        // Preparation must probe fresh identities; preflight compares them against each other.
+        // A fresh session may correct a reported model mismatch. The work receipt still rejects
         // actual implementer-model reuse, and failover bounds the number of attempts.
         if (
           !(pinnedOnline && input.excludeRunnerIds?.includes(runner.id)) &&
+          input.purpose !== "prepare" &&
           input.role === "reviewer" &&
           lastImplementation?.model &&
           (input.profile?.model ?? runner.resolvedModel) === lastImplementation.model
         )
-          return [];
+          return reject("reviewer model matches implementation model");
         const reviewRank =
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
         return [{ runner, rank: reviewRank * 10 + (own ? 0 : 1) }];
@@ -462,6 +480,7 @@ export function createRunnerPlacement(options: {
           : null;
         const modelConflict =
           success &&
+          usage.purpose === "work" &&
           usage.role === "reviewer" &&
           model !== null &&
           model === latestImplementation?.model;

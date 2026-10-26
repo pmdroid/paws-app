@@ -241,6 +241,21 @@ export function createRemoteAgentRunner(options: {
     const offered: string[] = [];
     const selected = await place(itemId, placement, rejected, offered);
     if (selected) return { ...selected, offered };
+    const details = rejected.map((entry) => {
+      const separator = entry.indexOf(":");
+      const id = separator < 0 ? entry : entry.slice(0, separator);
+      const name =
+        db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)?.name ??
+        id;
+      return `${name}${separator < 0 ? "" : entry.slice(separator)}`;
+    });
+    if (!details.length) details.push("no paired runners in the task workspace");
+    console.warn("Runner placement failed", {
+      itemId,
+      role: placement.role,
+      purpose: placement.purpose,
+      rejected: details,
+    });
     // No runner the delegator may use, as opposed to usable runners that are busy: a first start
     // holds the task until the delegator sets a runner up. Later runs wait as before.
     if (offered.length === 0 && options.placement?.setupNeed && !startedWork(itemId)) {
@@ -267,12 +282,12 @@ export function createRemoteAgentRunner(options: {
             .query("SELECT 1 FROM runner WHERE status='active' AND revoked_at IS NULL LIMIT 1")
             .get() !== null))
     )
-      throw new RunnerCapacityWait(busy, heldForSession ? SESSION_GRACE_MS : undefined);
+      throw new RunnerCapacityWait(busy, heldForSession ? SESSION_GRACE_MS : undefined, details);
     if (agent && limit && limit.resumeAt > now())
       throw new UsageLimitPause(agent, limit.resumeAt, limit.resetsAt, limit.runnerId);
     if (!agent || resetsAt === null)
       throw new RunnerUnavailableError(
-        `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
+        `No available paired runner can access this Linear task repository (${details.join("; ")})`,
       );
     throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
   }
@@ -307,7 +322,11 @@ export function createRemoteAgentRunner(options: {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
     let candidates = options.placement
-      ? await options.placement.candidates({ ...placement, reserved: unassigned() })
+      ? await options.placement.candidates({
+          ...placement,
+          reserved: unassigned(),
+          onRejected: (id, reason) => rejected.push(`${id}: ${reason}`),
+        })
       : db
           .query<{ id: string; workspaceId: string }, []>(
             `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
@@ -318,6 +337,7 @@ export function createRemoteAgentRunner(options: {
           )
           .all();
     const pinnedOnline = Boolean(
+      placement.purpose !== "prepare" &&
       placement.pinnedRunnerId &&
       db
         .query(
@@ -331,7 +351,10 @@ export function createRemoteAgentRunner(options: {
     offered.push(...candidates.map((runner) => runner.id));
     const pending = unassigned();
     for (const runner of candidates) {
-      if (placement.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) continue;
+      if (placement.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) {
+        rejected.push(`${runner.id}: excluded after failed attempt`);
+        continue;
+      }
       const reserved = pending.get(runner.id) ?? 0;
       if (reservations.has(item.currentRunId)) {
         rejected.push(`${runner.id}: the run is already being placed`);
@@ -459,13 +482,14 @@ export function createRemoteAgentRunner(options: {
             : undefined;
         const session = holder?.agent === profile.agent ? { runnerId: holder.runnerId } : undefined;
         const runId = getWorkItem(db, itemId)?.currentRunId;
-        const pinnedRunnerId = runId
-          ? db
-              .query<{ runnerId: string }, [string]>(
-                "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
-              )
-              .get(runId)?.runnerId
-          : undefined;
+        const pinnedRunnerId =
+          !input.prepareOnly && runId
+            ? db
+                .query<{ runnerId: string }, [string]>(
+                  "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
+                )
+                .get(runId)?.runnerId
+            : undefined;
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
