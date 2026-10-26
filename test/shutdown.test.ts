@@ -120,3 +120,51 @@ test("an unclassified stop rejection logs the thrown value and exits 1", async (
     restore();
   }
 });
+
+test.each(["Error\n    at serverStop (server.ts:1:1)", undefined])(
+  "shutdown preserves the error message when its stack is %p",
+  async (stack) => {
+    const error = new Error("fake server stop rejected");
+    error.stack = stack;
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    const exits: number[] = [];
+    const calls: string[] = [];
+    try {
+      await shutdownPaws(
+        {
+          stop: () =>
+            stopPawsComponents({
+              groups: [
+                [
+                  {
+                    name: "server",
+                    stop: () => {
+                      throw error;
+                    },
+                  },
+                ],
+              ],
+              flush: () => {
+                calls.push("flush");
+              },
+              close: () => {
+                calls.push("close");
+              },
+            }),
+        },
+        75,
+        (code) => exits.push(code),
+      );
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(
+        "Paws shutdown failed at server: Error: fake server stop rejected",
+      );
+      if (stack) expect(lines[0]).toContain("at serverStop (server.ts:1:1)");
+      expect(calls).toEqual(["flush", "close"]);
+      expect(exits).toEqual([75]);
+    } finally {
+      restore();
+    }
+  },
+);
