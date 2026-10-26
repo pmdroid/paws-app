@@ -84,6 +84,7 @@ describe("riskLine", () => {
     expect(riskLine({ tier: "normal", paths: [] })).toBe(
       "Risk: normal — no high-risk path changed",
     );
+    expect(riskLine(null)).toStartWith("Risk: unknown");
   });
 
   test("lists at most twenty paths", () => {

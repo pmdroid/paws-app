@@ -3463,7 +3463,13 @@ export class Orchestrator {
         reason: "artifact_upload",
         message: "A requested artifact has not been uploaded successfully.",
       };
-    const risk = await this.classifyRisk(item, worktree, repository, run.publicationCandidate);
+    const risk = await this.classifyRisk(
+      item,
+      worktree,
+      repository,
+      run.publicationCandidate,
+      live.controller.signal,
+    );
     if (this.stopped(item.id)) return { kind: "obsolete" };
     this.sessionProgress(item)?.phase("publishing");
     const draft = getPullRequestDraft(this.db, item.id);
@@ -3546,9 +3552,28 @@ export class Orchestrator {
 
   /**
    * Classifies the head about to be published and stores its tier. The settings globs are read
-   * on every publication, so a change in Settings › Merging applies to the next head.
+   * on every publication, so a change in Settings › Merging applies to the next head. When the
+   * paths cannot be read the head gets no stored tier and the pull request says the risk is
+   * unknown; a head without a stored tier is unclassified, never normal.
    */
   private async classifyRisk(
+    item: WorkItemRecord,
+    worktree: string,
+    repository: RepositoryBinding,
+    candidate: { sha: string; baseSha: string } | undefined,
+    signal: AbortSignal,
+  ): Promise<RiskClassification | null> {
+    try {
+      return await this.classifyHeadRisk(item, worktree, repository, candidate);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (isTransient(error)) throw error;
+      journalCaught(error, "orchestrator.classifyRisk", item.id, undefined, this.options.journal);
+      return null;
+    }
+  }
+
+  private async classifyHeadRisk(
     item: WorkItemRecord,
     worktree: string,
     repository: RepositoryBinding,

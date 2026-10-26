@@ -1,7 +1,10 @@
 import type { Database } from "bun:sqlite";
 import type { RiskClassification, RiskTier } from "../core";
 
-/** The risk tier of one candidate head, from the paths it changes since its base commit. */
+/**
+ * The risk tier of one candidate head, from the paths it changes since its base commit. A head
+ * with no row was not classified and must not be read as normal.
+ */
 export type CandidateRisk = RiskClassification & {
   itemId: string;
   head: string;

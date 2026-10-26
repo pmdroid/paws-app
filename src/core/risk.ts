@@ -65,8 +65,12 @@ export function classifyRisk(
 
 const LISTED_PATHS = 20;
 
-/** `Risk: high — src/auth/session.ts` for the pull request body and the Linear session. */
-export function riskLine(risk: RiskClassification): string {
+/**
+ * `Risk: high — src/auth/session.ts` for the pull request body and the Linear session. Null is a
+ * head Paws could not classify.
+ */
+export function riskLine(risk: RiskClassification | null): string {
+  if (risk === null) return "Risk: unknown — Paws could not read the paths this change touches";
   if (risk.tier === "normal") return "Risk: normal — no high-risk path changed";
   const listed = risk.paths.slice(0, LISTED_PATHS).map(codeSpan).join(", ");
   const more = risk.paths.length - LISTED_PATHS;
