@@ -177,3 +177,83 @@ test("task worker refuses a replaced prepared workspace before ACP dispatch", as
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a 21st publish_artifact is a tool error and the run still finishes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-task-worker-limit-"));
+  try {
+    const workRoot = join(root, "work");
+    const worktree = join(workRoot, executionId);
+    const outputDirectory = join(root, "output");
+    const home = join(root, "home");
+    for (const path of [worktree, outputDirectory, home])
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    for (let index = 1; index <= 21; index++)
+      writeFileSync(join(worktree, `screen-${index}.png`), `screen ${index}`);
+    const script = join(root, "script.json");
+    const recorded = join(root, "agent.json");
+    writeFileSync(
+      script,
+      JSON.stringify({
+        model: "fixture-model",
+        steps: [
+          ...Array.from({ length: 21 }, (_, index) => ({
+            type: "publish_artifact",
+            path: `screen-${index + 1}.png`,
+          })),
+          {
+            type: "update",
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "Published what fits." },
+            },
+          },
+          { type: "end" },
+        ],
+      }),
+    );
+    const answered: string[] = [];
+    const result = await executeRunnerCommand({
+      job: { executionId, command: command("artifact") },
+      outputDirectory,
+      workRoot,
+      home,
+      resultsGid: process.getgid!(),
+      launch: {
+        command: process.execPath,
+        args: [
+          "--no-env-file",
+          fileURLToPath(new URL("../src/acp/testing/fake-agent.ts", import.meta.url)),
+          recorded,
+          script,
+        ],
+        env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
+      },
+      async answer(requestId) {
+        answered.push(requestId);
+        return { answer: JSON.stringify({ url: `https://fixture.invalid/${requestId}` }) };
+      },
+    });
+    expect(result.run.stopReason).toBe("end_turn");
+    expect(result.run.errorMessage).toBeUndefined();
+    const trace = JSON.parse(readFileSync(recorded, "utf8"));
+    expect(trace.artifact.ok).toBe(false);
+    expect(trace.artifact.error).toContain("20 artifacts per run");
+    expect(trace.artifact.error).toContain("0 slots are left");
+    expect(trace.artifact.error).toContain("screen-21.png");
+    const published = readFileSync(join(outputDirectory, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.type === "artifact");
+    expect(published).toHaveLength(20);
+    expect(published.map((event) => event.artifact.path)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `screen-${index + 1}.png`),
+    );
+    expect(answered).toHaveLength(20);
+    expect(readFileSync(join(outputDirectory, "events.jsonl"), "utf8")).toContain(
+      "Published what fits.",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

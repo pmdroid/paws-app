@@ -790,9 +790,9 @@ export async function openRunnerRuntime(options: {
   }
   async function deliver(entry: Active) {
     await drainTranscript(entry, entry.execution.phase === "publishing");
-    for (const delivery of journal.pending(entry.execution.id)) {
+    for (let delivery of journal.pending(entry.execution.id)) {
       const token = await grant(entry);
-      if (delivery.event.type === "artifact") {
+      if (delivery.event.type === "artifact" && delivery.event.dropped === undefined) {
         const artifact = delivery.event.artifact;
         const bytes = readRunnerResultFile(
           options.results,
@@ -805,22 +805,42 @@ export async function openRunnerRuntime(options: {
         )
           throw new Error("Runner artifact output changed");
         const count = Math.max(1, Math.ceil(bytes.length / RUNNER_ARTIFACT_CHUNK_BYTES));
-        for (let index = 0; index < count; index++) {
-          check(entry);
-          const chunk = {
-            generation: entry.execution.command.generation,
-            artifact,
-            index,
-            data: bytes
-              .subarray(
-                index * RUNNER_ARTIFACT_CHUNK_BYTES,
-                (index + 1) * RUNNER_ARTIFACT_CHUNK_BYTES,
-              )
-              .toString("base64"),
-          };
-          await remote(() =>
-            options.daemon.uploadArtifact(entry.execution.command.runId, chunk, token),
+        try {
+          for (let index = 0; index < count; index++) {
+            check(entry);
+            const chunk = {
+              generation: entry.execution.command.generation,
+              artifact,
+              index,
+              data: bytes
+                .subarray(
+                  index * RUNNER_ARTIFACT_CHUNK_BYTES,
+                  (index + 1) * RUNNER_ARTIFACT_CHUNK_BYTES,
+                )
+                .toString("base64"),
+            };
+            await remote(() =>
+              options.daemon.uploadArtifact(entry.execution.command.runId, chunk, token),
+            );
+          }
+        } catch (error) {
+          // 422 is Paws refusing this artifact, such as one past the count limit. The event goes
+          // out marked dropped so the agent gets a tool error; auth and fencing stay fatal.
+          if (!(error instanceof RunnerRequestError) || error.status !== 422) throw error;
+          journalCaught(
+            error,
+            "runner-runtime.deliver.uploadArtifact",
+            entry.execution.command.itemId,
+            `dropped artifact ${artifact.path}`,
           );
+          delivery = {
+            ...delivery,
+            event: journal.dropArtifact(
+              entry.execution.id,
+              delivery.sequence,
+              error.reason ?? "Paws refused the artifact",
+            ),
+          };
         }
       }
       await remote(() =>

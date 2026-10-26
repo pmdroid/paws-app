@@ -345,6 +345,24 @@ export function openExecutionJournal(root: string) {
     sessionDone(id: string, state: "sealed" | "skipped") {
       db.run("UPDATE execution SET session_state=? WHERE id=? AND session_state=''", [state, id]);
     },
+    /** Marks an unsent artifact as refused by Paws, so the event is sent without its bytes. */
+    dropArtifact(id: string, sequence: number, reason: string) {
+      const row = db
+        .query<{ payload: string }, [string, number]>(
+          "SELECT payload FROM delivery WHERE execution_id=? AND sequence=? AND sent=0",
+        )
+        .get(id, sequence);
+      const event = row && RunnerEventSchema.parse(JSON.parse(row.payload));
+      if (!event || event.type !== "artifact")
+        throw new Error("Dropped artifact does not match an unsent artifact");
+      const dropped = RunnerEventSchema.parse({ ...event, dropped: reason.slice(0, 1024) });
+      db.run("UPDATE delivery SET payload=? WHERE execution_id=? AND sequence=? AND sent=0", [
+        JSON.stringify(dropped),
+        id,
+        sequence,
+      ]);
+      return dropped;
+    },
     sent(id: string, sequence: number) {
       db.run("UPDATE delivery SET sent=1 WHERE execution_id=? AND sequence=?", [id, sequence]);
     },

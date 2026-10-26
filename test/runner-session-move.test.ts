@@ -88,6 +88,13 @@ async function setup() {
     ).runnerId;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runners[name]]);
   }
+  // Placement breaks a tie on runner id, and two ids minted in one millisecond order at random.
+  // A is the runner that wins the tie, so the first turn always lands on it.
+  if (runners.b < runners.a) {
+    [runners.a, runners.b] = [runners.b, runners.a];
+    db.run("UPDATE runner SET name='A' WHERE id=?", [runners.a]);
+    db.run("UPDATE runner SET name='B' WHERE id=?", [runners.b]);
+  }
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     db,

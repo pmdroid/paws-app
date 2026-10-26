@@ -6,6 +6,8 @@ export const RUNNER_ARTIFACT_LIMITS = {
   video: 200 * 1024 * 1024,
   image: 20 * 1024 * 1024,
 } as const;
+/** How many artifacts one runner command may publish. */
+export const RUNNER_ARTIFACT_COUNT_LIMIT = 20;
 const EVIDENCE_TYPES = new Set([
   "video/webm",
   "video/mp4",

@@ -254,6 +254,27 @@ export async function probeRunnerEvidenceRelays(
       ),
       statusError(403),
     );
+    const empty = (path: string) => ({
+      generation: 1,
+      index: 0,
+      data: "",
+      artifact: {
+        ...artifact,
+        id: randomUUID(),
+        path,
+        sizeBytes: 0,
+        sha256: hash(Buffer.alloc(0)),
+      },
+    });
+    for (let count = 1; count < 20; count++)
+      await daemon.uploadArtifact(run.id, empty(`evidence/screen-${count}.png`), grant.token);
+    await assert.rejects(
+      daemon.uploadArtifact(run.id, empty("evidence/screen-20.png"), grant.token),
+      (error: unknown) =>
+        error instanceof RunnerRequestError &&
+        error.status === 422 &&
+        error.reason === "Paws keeps at most 20 artifacts per run",
+    );
     observe(
       "mTLS artifact delivery survives a lost receipt and daemon reopen with immutable private disk bytes",
       true,
