@@ -1,7 +1,6 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import {
-  LINEAR_COMMENT_MODE_REMOVED,
   LINEAR_WORKSPACE_REQUIRED,
   loadEnv,
   pawsPaths,
@@ -48,7 +47,6 @@ const FIX = {
   mode: "Connect your Linear workspace in the Paws website.",
   team: "Choose the Linear teams in workspace settings.",
   workspace: LINEAR_WORKSPACE_REQUIRED,
-  commentMode: LINEAR_COMMENT_MODE_REMOVED,
   adapter: "Run bun install in the paws checkout.",
   claude: "Run claude auth login.",
   codex: "Run codex login.",
@@ -56,7 +54,6 @@ const FIX = {
   repo: "Connect GitHub and choose repositories in workspace settings.",
   webhook: "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret.",
   publicUrl: "Set PAWS_PUBLIC_URL to the https tunnel origin.",
-  ngrok: "Install ngrok and put it on PATH.",
   githubApp:
     "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH (mode 0600), or save them in ~/.paws/secrets/github-app.json (docs/github-app.md).",
   githubInstallation:
@@ -94,12 +91,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     ),
   ];
   {
-    checks.push(
-      linearCheck(facts),
-      modeCheck(facts),
-      workspaceCheck(probe.env, facts),
-      teamCheck(facts),
-    );
+    checks.push(linearCheck(facts), workspaceCheck(probe.env, facts), teamCheck(facts));
   }
   checks.push(...githubAppChecks(probe, facts.githubDoctor));
   checks.push(
@@ -129,12 +121,6 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
         facts.publicUrl !== null && facts.publicUrl.startsWith("https://"),
         facts.publicUrl ?? "PAWS_PUBLIC_URL must be the https tunnel origin",
         FIX.publicUrl,
-      ),
-      check(
-        "ngrok",
-        probe.which("ngrok") !== null,
-        probe.which("ngrok") ?? "ngrok is not on PATH",
-        FIX.ngrok,
       ),
     );
   }
@@ -225,15 +211,6 @@ function linearCheck(facts: ProbeFacts): DoctorCheck {
   }
   const viewer = facts.linear.viewerId ?? "viewer";
   return check("linear", true, `viewer ${viewer}`, FIX.linear);
-}
-
-function modeCheck(facts: ProbeFacts): DoctorCheck {
-  if (facts.configError !== null) {
-    return check("linear-mode", false, facts.configError, FIX.mode);
-  }
-  if (facts.linearCommentMode)
-    return check("linear-mode", false, "comment mode is configured", FIX.commentMode);
-  return check("linear-mode", true, "agent-session", FIX.mode);
 }
 
 function workspaceCheck(env: EnvSource, facts: ProbeFacts): DoctorCheck {

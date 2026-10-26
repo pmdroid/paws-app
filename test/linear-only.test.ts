@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRuntime, pawsPaths } from "../src/config";
@@ -17,51 +17,6 @@ afterEach(() => {
   for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-test.each(["github", "both"])("legacy %s tracker fails before startup writes", (kind) => {
-  const dir = home();
-  const config = `[tracker]\nkind = "${kind}"\n[github]\nauth = "app"\n`;
-  writeFileSync(join(dir, "config.toml"), config);
-  const runtime = loadRuntime({ PAWS_HOME: dir });
-  expect(runtime.configError).toContain('kind = "linear"');
-  expect(runtime.configError).toContain("archive");
-  expect(() => startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).toThrow("Linear");
-  expect(readFileSync(join(dir, "config.toml"), "utf8")).toBe(config);
-});
-
-test("tracker.github without an explicit Linear kind fails closed", () => {
-  const dir = home();
-  writeFileSync(join(dir, "config.toml"), '[tracker.github]\nrepos = ["local/fixture"]\n');
-  expect(loadRuntime({ PAWS_HOME: dir }).configError).toContain("Linear");
-});
-
-test.each([
-  '[tracker]\nkind = "linear"\n[tracker.github]\nrepos = ["local/fixture"]\n',
-  '[tracker.github]\nrepos = ["local/fixture"]\n[tracker]\nkind = "linear"\n',
-])("retired tracker configuration rejects even with an explicit Linear kind", (config) => {
-  const dir = home();
-  writeFileSync(join(dir, "config.toml"), config);
-  const runtime = loadRuntime({ PAWS_HOME: dir });
-  expect(runtime.configError).toContain("remove [tracker.github]");
-  expect(() => startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).toThrow("Linear");
-  expect(readFileSync(join(dir, "config.toml"), "utf8")).toBe(config);
-});
-
-test.each(["app"])(
-  "retired tracker rejection preserves independent %s repository authentication",
-  (auth) => {
-    const dir = home();
-    const config = `[github]\nauth = "${auth}"\nrepo = "local/fixture"\nrepos = ["local/fixture", "local/second"]\n[tracker]\nkind = "linear"\n[tracker.github]\nrepos = ["retired/issues"]\n`;
-    writeFileSync(join(dir, "config.toml"), config);
-    const runtime = loadRuntime({ PAWS_HOME: dir });
-    expect(runtime.configError).toContain("remove [tracker.github]");
-    expect(runtime.githubAuth).toBe(auth);
-    expect(runtime.repo).toBe("local/fixture");
-    expect(runtime.file.githubRepos).toEqual(["local/fixture", "local/second"]);
-    expect(() => startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).toThrow("Linear");
-    expect(readFileSync(join(dir, "config.toml"), "utf8")).toBe(config);
-  },
-);
-
 test("Linear config keeps GitHub App auth", () => {
   const dir = home();
   writeFileSync(join(dir, "config.toml"), `[tracker]\nkind = "linear"\n[github]\nauth = "app"\n`);
@@ -71,20 +26,14 @@ test("Linear config keeps GitHub App auth", () => {
   expect(runtime.githubAuth).toBe("app");
 });
 
-test.each(["oauth", "gh"])(
-  "github.auth %s fails at startup and names the GitHub App doc",
-  (auth) => {
-    const dir = home();
-    const config = `[tracker]\nkind = "linear"\n[github]\nauth = "${auth}"\n`;
-    writeFileSync(join(dir, "config.toml"), config);
-    const runtime = loadRuntime({ PAWS_HOME: dir });
-    expect(runtime.configError).toContain("docs/github-app.md");
-    expect(() => startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).toThrow("docs/github-app.md");
-    expect(loadRuntime({ PAWS_HOME: dir, GITHUB_AUTH: "gh" }).configError).toContain(
-      "docs/github-app.md",
-    );
-  },
-);
+test.each(["oauth", "gh"])("github.auth %s fails at startup", (auth) => {
+  const dir = home();
+  const config = `[tracker]\nkind = "linear"\n[github]\nauth = "${auth}"\n`;
+  writeFileSync(join(dir, "config.toml"), config);
+  const runtime = loadRuntime({ PAWS_HOME: dir });
+  expect(runtime.configError).toContain('github.auth must be "app"');
+  expect(() => startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).toThrow('github.auth must be "app"');
+});
 
 test("historical GitHub work is preserved and never recovered into Linear", () => {
   const dir = home();
