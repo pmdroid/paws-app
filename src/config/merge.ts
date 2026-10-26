@@ -470,20 +470,20 @@ export function setMergeSettingsText(current: string, settings: StoredMerge): st
 }
 
 /**
- * Write the Merging settings, keeping `ci_fix_attempts` and every other table. `highRiskPaths`,
+ * Write the Merging settings, keeping `ci_fix_attempts` and every other table. `riskPaths`,
  * when given, replaces each repository's high-risk globs.
  */
 export function writeMergePolicy(
   path: string,
   policy: MergePolicy,
   current: StoredMerge,
-  highRiskPaths?: Record<string, string[]>,
+  riskPaths?: Record<string, string[]>,
 ): void {
   const text = existsSync(path) ? readFileSync(path, "utf8") : "";
   const repositories =
-    highRiskPaths === undefined
+    riskPaths === undefined
       ? current.repositories
-      : withHighRiskPaths(current.repositories ?? {}, highRiskPaths);
+      : withHighRiskPaths(current.repositories ?? {}, riskPaths);
   replaceConfigText(
     path,
     setMergeSettingsText(text, {

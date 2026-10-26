@@ -364,7 +364,7 @@ describe("Merging settings API", () => {
       "acme/platform": { packages: ["apps/*"], ignoreCommentBots: ["codecov[bot]"] },
       "acme/web": { packages: [] },
     });
-    for (const highRiskPaths of [
+    for (const riskPaths of [
       [{ repository: "acme/web", paths: ["!src/**"] }],
       [{ repository: "acme/web", paths: ["src/../x"] }],
       [{ repository: "nope", paths: [] }],
@@ -374,8 +374,12 @@ describe("Merging settings API", () => {
       ],
     ])
       expect(
-        (await handleMergeSettingsRequest(request("PUT", { ...valid, highRiskPaths }), options))
-          ?.status,
+        (
+          await handleMergeSettingsRequest(
+            request("PUT", { ...valid, highRiskPaths: riskPaths }),
+            options,
+          )
+        )?.status,
       ).toBe(400);
   });
 

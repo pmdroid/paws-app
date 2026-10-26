@@ -40,6 +40,7 @@ import {
 import {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   checkoutExclusionsFor,
+  highRiskPaths,
   loadConfigFile,
   readMergeSettings,
   readQueueSettings,
@@ -77,6 +78,8 @@ import {
 } from "../closeout";
 import {
   CommandBus,
+  riskLine,
+  type RiskClassification,
   policyCoauthors,
   commitIdentityEnv,
   appBotCommitIdentity,
@@ -113,6 +116,7 @@ import {
   transientRetryDelayMs,
 } from "../core";
 import {
+  saveCandidateRisk,
   listWaitingProfileRuns,
   getTaskMode,
   assertLinearSessionCleanup,
@@ -378,6 +382,7 @@ import { classifyTask } from "./task-classifier";
 import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./plan-proposal";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
+import { classifyCandidateRisk } from "./candidate-risk";
 import { sweepWorktrees } from "./worktree-sweep";
 import {
   KEEP_WAITING,
@@ -3458,12 +3463,15 @@ export class Orchestrator {
         reason: "artifact_upload",
         message: "A requested artifact has not been uploaded successfully.",
       };
+    const risk = await this.classifyRisk(item, worktree, repository, run.publicationCandidate);
+    if (this.stopped(item.id)) return { kind: "obsolete" };
     this.sessionProgress(item)?.phase("publishing");
     const draft = getPullRequestDraft(this.db, item.id);
     const published = await publishAccepted({
       accepted: true,
       evidence: [
         summary,
+        riskLine(risk),
         visualReviewPullRequestNote(
           this.db,
           item,
@@ -3505,7 +3513,7 @@ export class Orchestrator {
     this.post(
       item,
       "response",
-      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.`,
+      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}`,
       `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
       {},
       "ordered",
@@ -3534,6 +3542,50 @@ export class Orchestrator {
       },
       signal: live.controller.signal,
     };
+  }
+
+  /**
+   * Classifies the head about to be published and stores its tier. The settings globs are read
+   * on every publication, so a change in Settings › Merging applies to the next head.
+   */
+  private async classifyRisk(
+    item: WorkItemRecord,
+    worktree: string,
+    repository: RepositoryBinding,
+    candidate: { sha: string; baseSha: string } | undefined,
+  ): Promise<RiskClassification> {
+    const run = (args: string[]) => git(["-C", worktree, ...args]);
+    const head = (await run(["rev-parse", "HEAD"])).trim();
+    const base =
+      candidate?.sha === head
+        ? candidate.baseSha
+        : (await run(["merge-base", "HEAD", await this.upstreamMainRef(worktree, item.id)])).trim();
+    const risk = await classifyCandidateRisk({
+      git: run,
+      base,
+      head,
+      settingsGlobs: highRiskPaths(
+        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        `${repository.owner}/${repository.repo}`,
+      ),
+    });
+    saveCandidateRisk(this.db, { itemId: item.id, head, base, ...risk, classifiedAt: this.now() });
+    return risk;
+  }
+
+  private async upstreamMainRef(worktree: string, itemId: string): Promise<string> {
+    return git(["-C", worktree, "rev-parse", "--verify", "--quiet", UPSTREAM_MAIN_REF])
+      .then(() => UPSTREAM_MAIN_REF)
+      .catch((caughtError) => {
+        journalCaught(
+          caughtError,
+          "orchestrator.upstreamMainRef",
+          itemId,
+          undefined,
+          this.options.journal,
+        );
+        return "origin/main";
+      });
   }
 
   private async settleMerge(payload: unknown, step: MergeStep): Promise<void> {
