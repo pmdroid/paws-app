@@ -83,19 +83,51 @@ export type FakeReviewThread = {
 
 /**
  * Pull request review threads as GitHub's `reviewThreads` GraphQL connection. `respond` answers
- * the `ReviewThreads` query and returns null for any other request; `reads` counts the queries.
+ * the `ReviewThreads` query, and the `ReviewThreadComments` query for the comments past each
+ * thread's first page of `commentsPerPage`; it returns null for any other request. `reads` counts
+ * the queries.
  */
-export function createFakeReviewThreads(threads: FakeReviewThread[] = []): {
+export function createFakeReviewThreads(
+  threads: FakeReviewThread[] = [],
+  options: { commentsPerPage?: number } = {},
+): {
   threads: FakeReviewThread[];
   reads: number;
   respond(request: { method: string; path: string; body?: unknown }): GitHubResponse | null;
 } {
+  const perPage = options.commentsPerPage ?? 100;
+  const comments = (thread: FakeReviewThread, offset: number) => {
+    const page = thread.comments.slice(offset, offset + perPage);
+    const next = offset + page.length;
+    return {
+      pageInfo: {
+        hasNextPage: next < thread.comments.length,
+        endCursor: next < thread.comments.length ? String(next) : null,
+      },
+      nodes: page.map((comment) => ({
+        body: comment.body,
+        author: comment.author ? { login: comment.author } : null,
+        pullRequestReview: comment.reviewId == null ? null : { databaseId: comment.reviewId },
+      })),
+    };
+  };
   const fake = {
     threads,
     reads: 0,
     respond(request: { method: string; path: string; body?: unknown }): GitHubResponse | null {
-      const body = request.body as { query?: string } | undefined;
+      const body = request.body as
+        | { query?: string; variables?: Record<string, unknown> }
+        | undefined;
       if (request.method !== "POST" || request.path !== "/graphql") return null;
+      if (body?.query?.includes("query ReviewThreadComments")) {
+        fake.reads += 1;
+        const thread = fake.threads[Number(String(body.variables?.id).replace("RT_", ""))];
+        if (!thread) return { status: 200, body: { errors: [{ message: "Could not resolve" }] } };
+        return {
+          status: 200,
+          body: { data: { node: { comments: comments(thread, Number(body.variables?.cursor)) } } },
+        };
+      }
       if (!body?.query?.includes("query ReviewThreads")) return null;
       fake.reads += 1;
       return {
@@ -106,19 +138,13 @@ export function createFakeReviewThreads(threads: FakeReviewThread[] = []): {
               pullRequest: {
                 reviewThreads: {
                   pageInfo: { hasNextPage: false, endCursor: null },
-                  nodes: fake.threads.map((thread) => ({
+                  nodes: fake.threads.map((thread, index) => ({
+                    id: `RT_${index}`,
                     isResolved: thread.resolved ?? false,
                     isOutdated: thread.outdated ?? false,
                     path: thread.path ?? null,
                     line: thread.line ?? null,
-                    comments: {
-                      nodes: thread.comments.map((comment) => ({
-                        body: comment.body,
-                        author: comment.author ? { login: comment.author } : null,
-                        pullRequestReview:
-                          comment.reviewId == null ? null : { databaseId: comment.reviewId },
-                      })),
-                    },
+                    comments: comments(thread, 0),
                   })),
                 },
               },
@@ -229,7 +255,7 @@ export type FakeMergeQueue = {
   branches: Set<string>;
   /** Every `enqueuePullRequest` call. */
   enqueued: { pullRequestId: string; head: string }[];
-  /** Each merge queue GraphQL read and write, in order. */
+  /** Each merge queue GraphQL read and write (`exists`, `entry`, `enqueue`, `dequeue`), in order. */
   calls: string[];
   /** Answer a merge queue GraphQL request, or null for any other request. */
   respond(request: {
@@ -339,6 +365,15 @@ export function createFakeMergeQueue(
             },
           },
         };
+      }
+      if (query.includes("mutation DequeuePullRequest")) {
+        calls.push("dequeue");
+        const found = byId(String(variables.id));
+        if (!found?.[1].entry)
+          return { status: 200, body: { errors: [{ message: "Not in the merge queue" }] } };
+        found[1].entry = null;
+        found[1].lastEvent = { type: "removed", reason: "", actor: "paws" };
+        return { status: 200, body: { data: { dequeuePullRequest: { clientMutationId: null } } } };
       }
       if (query.includes("mutation EnqueuePullRequest")) {
         calls.push("enqueue");

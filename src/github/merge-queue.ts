@@ -79,6 +79,10 @@ const enqueueMutation = `mutation EnqueuePullRequest($id: ID!, $head: GitObjectI
   }
 }`;
 
+const dequeueMutation = `mutation DequeuePullRequest($id: ID!) {
+  dequeuePullRequest(input: { id: $id }) { clientMutationId }
+}`;
+
 const entryStateSchema = z.enum([
   "QUEUED",
   "AWAITING_CHECKS",
@@ -273,6 +277,50 @@ export async function enqueuePullRequest(
     input.signal?.throwIfAborted();
     return { ok: false, retry: true, message: `merge queue request failed: ${safeMessage(error)}` };
   }
+}
+
+/** Where the pull request stands after {@link leaveGitHubMergeQueue}. */
+export type LeaveMergeQueueResult = "left" | "not_queued" | "merged" | "closed";
+
+/**
+ * Take the pull request out of GitHub's merge queue, so GitHub does not merge a head whose
+ * review asked for changes. Throws when GitHub cannot be read or refuses, so the caller retries.
+ */
+export async function leaveGitHubMergeQueue(input: {
+  client: GitHubClient;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  tokenProvider?: GitHubTokenProvider;
+  appId?: string;
+  installationId?: string;
+  privateKeyPem?: string;
+  signal?: AbortSignal;
+}): Promise<LeaveMergeQueueResult> {
+  const token = await acquireOperationToken(input, "merge");
+  const graph = { client: input.client, token, owner: input.owner, repo: input.repo };
+  const entry = await readMergeQueueEntry({
+    ...graph,
+    prNumber: input.prNumber,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (entry === null) throw new Error("could not read the pull request's merge queue entry");
+  if (entry.kind !== "queued") return entry.kind;
+  const response = await graphql(
+    { ...graph, ...(input.signal ? { signal: input.signal } : {}) },
+    dequeueMutation,
+    { id: entry.pullRequestId },
+  );
+  const parsed = z
+    .object({
+      errors: z.array(z.object({ message: z.string().optional() }).passthrough()).optional(),
+    })
+    .safeParse(response.body);
+  if (response.status !== 200 || !parsed.success || parsed.data.errors?.length)
+    throw new Error(
+      `GitHub did not take the pull request out of the merge queue (status ${response.status})`,
+    );
+  return "left";
 }
 
 export type GitHubQueueMergeInput = {

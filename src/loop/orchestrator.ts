@@ -219,6 +219,7 @@ import {
   publishAccepted,
   closeStoppedPull,
   fetchUpstreamMain,
+  leaveGitHubMergeQueue,
   readReviewThreads,
   mergedPullHeads,
   UPSTREAM_MAIN_REF,
@@ -1350,6 +1351,19 @@ export class Orchestrator {
             repo: repository.repo,
             prNumber: pullNumber,
             ...this.gitHubCredentials(github),
+          });
+        },
+        leaveMergeQueue: async (item, pullNumber) => {
+          const repository = this.repositoryForItem(item);
+          const github = repository ? this.githubForRepository(repository) : null;
+          if (!repository || !github) return "not_queued";
+          return leaveGitHubMergeQueue({
+            client: github.client,
+            owner: repository.owner,
+            repo: repository.repo,
+            prNumber: pullNumber,
+            ...this.gitHubCredentials(github),
+            signal: context.signal,
           });
         },
         fixRoundLimit: (item) => this.fixRoundLimit(item),

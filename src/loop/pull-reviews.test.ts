@@ -15,7 +15,9 @@ import {
   openDatabase,
 } from "../db";
 import {
+  createFakeMergeQueue,
   createFakeReviewThreads,
+  leaveGitHubMergeQueue,
   readReviewThreads,
   type FakeReviewThread,
   type GitHubClient,
@@ -44,7 +46,7 @@ const THREADS: FakeReviewThread[] = [
   { path: "README.md", line: 3, comments: [{ author: "rev", body: "Typo here.", reviewId: 777 }] },
 ];
 
-function setup(threads = THREADS) {
+function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
@@ -55,10 +57,13 @@ function setup(threads = THREADS) {
   });
   beginImplementRun(db, "eng-1", 1);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
-  const github = createFakeReviewThreads(threads);
+  const github = createFakeReviewThreads(threads, options);
+  const queue = createFakeMergeQueue();
   const client: GitHubClient = {
-    request: async (request) => github.respond(request) ?? { status: 404, body: null },
+    request: async (request) =>
+      github.respond(request) ?? (await queue.respond(request)) ?? { status: 404, body: null },
   };
+  const tokenProvider = { mode: "app" as const, tokenFor: async () => "token" };
   const posts: { body: string; key: string }[] = [];
   let busy = false;
   let limit = 3;
@@ -71,7 +76,15 @@ function setup(threads = THREADS) {
         owner: "acme",
         repo: "one",
         prNumber: pullNumber,
-        tokenProvider: { mode: "app", tokenFor: async () => "token" },
+        tokenProvider,
+      }),
+    leaveMergeQueue: (_, pullNumber) =>
+      leaveGitHubMergeQueue({
+        client,
+        owner: "acme",
+        repo: "one",
+        prNumber: pullNumber,
+        tokenProvider,
       }),
     fixRoundLimit: () => limit,
     session: (item) => item.sessionKey,
@@ -118,6 +131,7 @@ function setup(threads = THREADS) {
   return {
     db,
     github,
+    queue,
     caps,
     posts,
     deliver,
@@ -185,6 +199,36 @@ describe("changes-requested reviews", () => {
     expect(resumeJobs(db)).toHaveLength(1);
   });
 
+  test("take the pull request out of GitHub's merge queue before anything else", async () => {
+    const { db, caps, deliver, queue, setBusy } = setup();
+    // GitHub's queue holds the reviewed head, and a merge attempt is running.
+    queue.move(7, 1, "AWAITING_CHECKS");
+    queue.calls.length = 0;
+    setBusy(true);
+    deliver({ id: 501, state: "changes_requested" });
+    expect(await handlePullReview(db, 501, caps)).toBe("wait");
+    expect(queue.calls).toEqual(["entry", "dequeue"]);
+    expect(queue.isQueued(7)).toBe(false);
+
+    // The merge step that finds the pull request gone waits for the review instead.
+    const step = await advanceMerge(db, { itemId: "eng-1", payload: {}, jobId: 1 }, {
+      now: () => 10,
+    } as MergeCapabilities);
+    expect(step).toMatchObject({ kind: "wait", reason: "review" });
+
+    setBusy(false);
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    expect(queue.calls).toEqual(["entry", "dequeue", "entry"]);
+  });
+
+  test("a pull request GitHub already merged drops the review", async () => {
+    const { db, caps, deliver, queue } = setup();
+    queue.merge(7);
+    deliver({ id: 501, state: "changes_requested" });
+    expect(await handlePullReview(db, 501, caps)).toBe("dropped");
+    expect(resumeJobs(db)).toHaveLength(0);
+  });
+
   test("a spent fix budget asks the team instead of restarting", async () => {
     const { db, caps, deliver, setLimit } = setup();
     setLimit(0);
@@ -229,6 +273,23 @@ describe("comment-only and other reviews", () => {
       publish: async () => ({ kind: "obsolete" }),
     } as unknown as MergeCapabilities);
     expect(step).toEqual({ kind: "obsolete" });
+  });
+
+  test("a comment past a thread's first page keeps its thread", async () => {
+    const long: FakeReviewThread = {
+      path: "src/long.ts",
+      line: 1,
+      comments: [
+        ...Array.from({ length: 4 }, (_, index) => ({ author: "pascal", body: `Note ${index}.` })),
+        { author: "rev", body: "One more thing here.", reviewId: 900 },
+      ],
+    };
+    const { db, caps, deliver, posts, github } = setup([long], { commentsPerPage: 2 });
+    deliver({ id: 900, state: "commented" });
+    expect(await handlePullReview(db, 900, caps)).toBe("posted");
+    expect(github.reads).toBe(3);
+    expect(posts[0]?.body).toContain("@pascal: Note 0.");
+    expect(posts[0]?.body).toContain("@rev: One more thing here.");
   });
 
   test("an empty comment-only review posts nothing", async () => {

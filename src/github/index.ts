@@ -22,6 +22,7 @@ export {
   githubQueueLine,
   githubQueueMerge,
   hasMergeQueue,
+  leaveGitHubMergeQueue,
   readMergeQueueEntry,
   repositoriesWithMergeQueue,
 } from "./merge-queue";
@@ -29,6 +30,7 @@ export type {
   EnqueueResult,
   GitHubQueueMergeInput,
   GitHubQueueMergeResult,
+  LeaveMergeQueueResult,
   MergeQueueEntryRead,
   MergeQueueEntryState,
   MergeQueueRemoval,
