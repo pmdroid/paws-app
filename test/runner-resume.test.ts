@@ -69,7 +69,7 @@ test("a crashed worker resumes its session in the same workspace", async () => {
     mkdirSync(spool.root);
     chmodSync(spool.root, 0o750);
     publishRunnerJob(spool, job, { repositoryBundle });
-    const worktree = join(workRoot, job.executionId);
+    const worktree = join(workRoot, "run");
     const fake = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
     const execute = (name: string, script: FakeScript, resume: boolean) => {
       writeFileSync(
