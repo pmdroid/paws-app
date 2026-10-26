@@ -21,6 +21,7 @@ import {
   type AgentSessionFinish,
 } from "../src/agent-sessions";
 import { RunnerRequestError } from "../src/runner-daemon";
+import { readRunnerAnswer, RUNNER_HANDOVER_REQUEST_ID } from "../src/runner-answers";
 import { openExecutionJournal } from "../src/runner-journal";
 import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 import { openRunnerRuntime, type RunnerAgents } from "../src/runner-runtime";
@@ -246,7 +247,7 @@ function fixture(options: { claudeVersion?: string } = {}) {
     chmodSync(join(directory, name), 0o640);
   }
   /** What the worker leaves when a Claude turn ends: a bundle, its description and a result. */
-  function finishWorker(id: string, bundle: Buffer | null) {
+  function finishWorker(id: string, bundle: Buffer | null, run: Partial<RunnerResult> = {}) {
     const directory = outputDirectory(id);
     write(directory, "events.jsonl", "");
     if (bundle) {
@@ -279,6 +280,7 @@ function fixture(options: { claudeVersion?: string } = {}) {
           authRequired: false,
           agentExited: true,
           sessionId: "claude-session",
+          ...run,
         },
       }),
     );
@@ -302,6 +304,11 @@ function fixture(options: { claudeVersion?: string } = {}) {
     open,
     finishWorker,
     drive,
+    spool,
+    pending: () => pending,
+    queue(next: RunnerCommand) {
+      pending = [...pending, next];
+    },
     started: () => execution,
     carried: () => carried,
     served,
@@ -523,6 +530,56 @@ test.skipIf(!linux)(
         await runtime.stop();
         context.cleanup();
       }
+    }
+  },
+);
+
+test.skipIf(!linux)(
+  "a handover command reaches the running worker, and the handed-over run seals its session before the result",
+  async () => {
+    const context = fixture({ claudeVersion: "2.1.7" });
+    const runtime = await context.open();
+    try {
+      await context.drive(runtime, () => context.started() !== "");
+      const id = context.started();
+      expect(readRunnerAnswer(context.spool, id, RUNNER_HANDOVER_REQUEST_ID)).toBeNull();
+      context.queue({
+        id: "handover",
+        type: "handover",
+        runnerId: "runner",
+        workspaceId: "workspace",
+        runId: "run",
+        generation: 3,
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      });
+      await context.drive(
+        runtime,
+        () => readRunnerAnswer(context.spool, id, RUNNER_HANDOVER_REQUEST_ID) !== null,
+      );
+      expect(readRunnerAnswer(context.spool, id, RUNNER_HANDOVER_REQUEST_ID)).not.toBeNull();
+      expect(context.pending().some((command) => command.id === "handover")).toBe(false);
+      // The worker stopped at a safe point; a WIP commit equal to the base publishes nothing.
+      const bundle = randomBytes(600_000);
+      context.finishWorker(id, bundle, { stopReason: "cancelled", handedOver: true });
+      await context.drive(runtime, () => context.posted.length > 0);
+      expect(context.sessions.snapshot("run", 3)).toMatchObject({
+        status: "sealed",
+        sessionId: "claude-session",
+        commitSha: context.baseSha,
+        turn: 3,
+      });
+      expect((await context.read(3)).equals(bundle)).toBe(true);
+      expect(context.posted).toHaveLength(1);
+      expect(context.posted[0]).toMatchObject({
+        handedOver: true,
+        cancelled: false,
+        stopReason: "cancelled",
+      });
+      expect(context.errors).toEqual([]);
+    } finally {
+      await runtime.stop();
+      context.cleanup();
     }
   },
 );
