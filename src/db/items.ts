@@ -371,8 +371,7 @@ export function accrueAwake(
     // job working on it is idle and does not count toward the cap (PAS-771).
     const idle = counted === "closeout" && !hasLiveJob(db, id, now);
     const category = idle ? null : counted;
-    const awake =
-      !idle && countsAwakeTime(current.state, current.checkpoint, current.acceptedHead);
+    const awake = !idle && countsAwakeTime(current.state, current.checkpoint, current.acceptedHead);
     const awakeMs = current.awakeMs + (awake ? delta : 0);
     if (delta > 0 || (current.lastMonoMs === null && sinceMono === undefined)) {
       const breakdown =
