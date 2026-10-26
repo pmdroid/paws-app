@@ -26,7 +26,7 @@ export function canReportProgress(
     db
       .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=?
     AND delivery_generation=? AND idempotency_key LIKE 'pull-request-ready:%'
-    AND status!='dropped' AND id < ? LIMIT 1`)
+    AND status!='dropped' AND (id < ? OR status='sent') LIMIT 1`)
       .get(sessionId, generation, rowId) === null
   );
 }

@@ -4148,13 +4148,14 @@ export class Orchestrator {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state === "cancelled") return;
+    const sessionId = this.activitySession(current);
+    if (sessionId === null || body.trim() === "") return;
     if (
       !this.canReportProgress(item.id) &&
+      (kind === "thought" || kind === "action" || this.hasPublishedPullRequest(sessionId)) &&
       !(kind === "response" && /^(merged:|closed:|command:stop:)/.test(key))
     )
       return;
-    const sessionId = this.activitySession(current);
-    if (sessionId === null || body.trim() === "") return;
     return enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "activity",

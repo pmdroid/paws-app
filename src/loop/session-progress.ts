@@ -67,6 +67,7 @@ export function createLinearSessionProgress(
   function preserveHostProgress() {
     const latest = latestPlan()?.payload as typeof saved;
     if (!latest?.hostPlan) return;
+    restartVersion = latest.restartVersion ?? restartVersion;
     milestones = latest.hostPlan
       .map((step, index) => {
         const current = milestones[index];
@@ -221,7 +222,10 @@ export function createLinearSessionProgress(
       publishPlan();
       publish(
         "linear.session.summary",
-        { sessionId, summary: `${identifier}: ${content.toLowerCase()}` },
+        {
+          sessionId,
+          summary: `${identifier}: ${reason === "ci" ? "fixing CI" : reason === "review" ? "fixing review findings" : reason === "conflict" ? "resolving merge conflict" : `fixing Closeout findings (${round} of 3)`}`,
+        },
         true,
       );
     },

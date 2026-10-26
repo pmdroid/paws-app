@@ -59,6 +59,19 @@ test.each([true, false])(
         op: "activity",
         orderingKey: "session",
         delivery: "ordered",
+        priority: 10,
+        idempotencyKey: "delayed-progress",
+        payload: {
+          sessionId: "session",
+          kind: "thought",
+          body: "Queued before the PR, delivered later",
+        },
+      });
+      enqueueOutbox(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "session",
+        delivery: "ordered",
         idempotencyKey: "pull-request-ready:item:0",
         payload: { sessionId: "session", kind: "response", body: "Opened PR #1" },
       });

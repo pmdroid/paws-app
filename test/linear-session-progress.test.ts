@@ -514,6 +514,12 @@ test("a captured plan callback preserves milestones completed by a newer reporte
     expect(plan.plan?.find((step) => step.content === "Open pull request")?.status).toBe(
       "completed",
     );
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
+    captured.plan([{ content: "Repair CI", status: "completed" }]);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
+    const current = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
+      ?.payload as SessionUpdate;
+    expect(current.plan?.filter((step) => step.content === "Fix CI")).toHaveLength(1);
   } finally {
     db.close();
   }
