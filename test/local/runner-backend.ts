@@ -646,6 +646,11 @@ export async function probeRunnerBackend(
         runtimeCommands["0.1.25"] === null &&
         runtimeLines.includes("0.1.26 Paws refused the mise tool `cargo:ripgrep` in mise.toml.") &&
         runtimeLines.some(
+          (line) =>
+            line.startsWith("0.1.26 Starting on ") &&
+            line.endsWith(", node 22, aqua:cli/cli 2.40.0."),
+        ) &&
+        runtimeLines.some(
           (line) => line.startsWith("0.1.25 ") && line.includes("needs runner 0.1.26 or later"),
         ),
       { runtimeCommands, runtimeLines },
@@ -658,7 +663,8 @@ export async function probeRunnerBackend(
       input(detached, {
         signal: shutdown.signal,
         onEvent: (event) => {
-          if (event.type === "progress") beforeEvents.push(event.text);
+          if (event.type === "progress" && !event.text.startsWith("Starting on "))
+            beforeEvents.push(event.text);
         },
       }),
     );
@@ -693,7 +699,8 @@ export async function probeRunnerBackend(
     const afterRestart = backend.forItem(detached.id)(
       input(detached, {
         onEvent: (event) => {
-          if (event.type === "progress") afterEvents.push(event.text);
+          if (event.type === "progress" && !event.text.startsWith("Starting on "))
+            afterEvents.push(event.text);
         },
       }),
     );
@@ -2620,7 +2627,8 @@ export async function probeRunnerBackend(
         input(limited, {
           signal: limitAbort.signal,
           onEvent: (event) => {
-            if (event.type === "progress") lines.push(event.text);
+            if (event.type === "progress" && !event.text.startsWith("Starting on "))
+              lines.push(event.text);
           },
         }),
       );

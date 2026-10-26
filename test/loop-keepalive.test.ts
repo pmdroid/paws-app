@@ -133,7 +133,8 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     for (let i = 0; i < 1_000 && ticks.length === 0; i++) await Bun.sleep(10);
     expect(ticks).toHaveLength(1);
 
-    // Before the agent has a plan, the keepalive repeats its last post_update line.
+    // Before the agent has a plan, the keepalive would repeat its last post_update line, which
+    // the session already shows, so it names the phase instead.
     for (let i = 0; i < 1_000 && !thoughts().includes("Found the cause in the scheduler."); i++)
       await Bun.sleep(10);
     clock.advance(KEEPALIVE_MS);
@@ -141,7 +142,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     await outbox.idle();
     expect(thoughts().slice(-2)).toEqual([
       "Found the cause in the scheduler.",
-      "Found the cause in the scheduler.",
+      "Implementing ENG-25.",
     ]);
 
     writeFileSync(planned, "go");

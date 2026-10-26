@@ -102,7 +102,8 @@ test("a slot taken before assignment waits for the runner without a retry and re
   expect(result.deferredState, result.detail).toBe("recovering");
   expect(result.retries, result.detail).toEqual([0]);
   expect(result.faultedAttempts, result.detail).toBe(1);
-  expect(result.thoughts, result.detail).toEqual([]);
+  // The retry places the run again, and its start line is not posted a second time.
+  expect(result.thoughts, result.detail).toEqual(["Starting on fixture in acme/fixture."]);
   expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
 }, 60_000);
 
