@@ -43,12 +43,16 @@ export function planOptions(count: number): QuestionOption[] {
 
 export type PlanDecision = "create" | "discard" | "edit-ask" | "edit";
 
-/** Create and Discard are the buttons; a bare Edit asks what to change; other text is the edit. */
-export function planDecision(answer: string): PlanDecision {
-  const text = answer.trim();
-  if (/^create\b/i.test(text)) return "create";
-  if (/^discard\b/i.test(text)) return "discard";
-  if (/^edit[.!]?$/i.test(text)) return "edit-ask";
+/**
+ * Only an exact choice files or discards: the button label, or the bare word
+ * Create or Discard. A bare Edit asks what to change. Any other reply, even one
+ * that starts with "Create a fourth sub-issue", is an edit for the next turn.
+ */
+export function planDecision(answer: string, count: number): PlanDecision {
+  const text = answer.trim().replace(/[.!]$/, "").replace(/\s+/g, " ").toLowerCase();
+  if (text === "create" || text === PLAN_CREATE(count).toLowerCase()) return "create";
+  if (text === PLAN_DISCARD.toLowerCase()) return "discard";
+  if (text === PLAN_EDIT.toLowerCase()) return "edit-ask";
   return "edit";
 }
 
