@@ -149,10 +149,19 @@ test("remote session output survives result transport, persistence and the live 
       30,
     );
     finishCloseoutProgress(db, "item", identity, "rejected", 40);
-    const snapshot = createLiveStatusProvider(db).snapshot();
-    const check = snapshot.verdicts[0]!.checks[0]!;
-    expect(check.stdout).toContain("actual remote stdout");
-    expect(check.stderr).toContain("actual remote stderr");
+    const provider = createLiveStatusProvider(db);
+    const verdict = provider.snapshot().verdicts[0]!;
+    const check = verdict.checks[0]!;
+    // `/api/status` carries no check output; the issue page loads it per check.
+    expect(check.stdout).toBeUndefined();
+    const log = provider.checkLog({
+      itemId: verdict.itemId,
+      attempt: 1,
+      checkId: check.id,
+      run: null,
+    })!;
+    expect(log.stdout).toContain("actual remote stdout");
+    expect(log.stderr).toContain("actual remote stderr");
     expect(check.elapsedMs).toBeGreaterThanOrEqual(40);
     expect(check.exitCode).toBe(1);
     expect(saved.head).toBe(head);

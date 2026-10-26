@@ -176,15 +176,35 @@ export type LinearUsageView = {
 export function createLiveStatusProvider(
   db: Database,
   options: LiveStatusOptions = {},
-): { snapshot(): StatusSnapshot; item(id: string): StatusItemDetail | null } {
+): {
+  snapshot(): StatusSnapshot;
+  item(id: string): StatusItemDetail | null;
+  checkLog(request: CheckLogRequest): CheckOutput | null;
+} {
   return {
     snapshot() {
-      return { ...readLiveSnapshot(db, options), ...readIntake(db, options) };
+      return withoutOutputs({ ...readLiveSnapshot(db, options), ...readIntake(db, options) });
     },
     item(id) {
       return readItemDetail(db, id, options);
     },
+    checkLog(request) {
+      return readCheckLog(db, request, options);
+    },
   };
+}
+
+/** One check of one Closeout attempt of a visible issue. `run` picks that run's agent Closeout. */
+export interface CheckLogRequest {
+  itemId: string;
+  attempt: number;
+  checkId: string;
+  run: string | null;
+}
+
+export interface CheckOutput {
+  stdout: string;
+  stderr: string;
 }
 
 /**
@@ -199,10 +219,42 @@ function readItemDetail(
 ): StatusItemDetail | null {
   const { snapshot, blocks } = readScopedSnapshot(db, options, id);
   if (snapshot.items.length === 0) return null;
+  return { ...withoutOutputs(snapshot), id, blocks };
+}
+
+/**
+ * The whole output of one check, for `GET /api/status/items/:id/attempts/:n/checks/:check/log`.
+ * Null when the issue is not visible or that attempt of its Closeout has no such check.
+ */
+function readCheckLog(
+  db: Database,
+  request: CheckLogRequest,
+  options: LiveStatusOptions,
+): CheckOutput | null {
+  const { snapshot } = readScopedSnapshot(db, options, request.itemId);
+  if (snapshot.items.length === 0) return null;
+  // A verdict without recorded attempts is one attempt, as the issue page shows it.
+  let attempts: Array<Pick<StatusCloseoutAttempt, "number" | "checks">>;
+  if (request.run === null) {
+    const verdict = snapshot.verdicts.find((entry) => entry.itemId === request.itemId);
+    if (!verdict) return null;
+    attempts = verdict.attempts?.length
+      ? verdict.attempts
+      : [{ number: Math.max(verdict.attempt, 1), checks: verdict.checks }];
+  } else {
+    attempts = snapshot.agentCloseout?.find((entry) => entry.runId === request.run)?.attempts ?? [];
+  }
+  const check = attempts
+    .find((entry) => entry.number === request.attempt)
+    ?.checks.find((entry) => entry.id === request.checkId);
+  if (!check) return null;
+  return { stdout: check.stdout ?? "", stderr: check.stderr ?? "" };
+}
+
+/** The snapshot without check `stdout` and `stderr`, which the issue page loads per check. */
+function withoutOutputs<T extends StatusSnapshot>(snapshot: T): T {
   return {
     ...snapshot,
-    id,
-    blocks,
     verdicts: snapshot.verdicts.map((verdict) => ({
       ...verdict,
       checks: verdict.checks.map(withoutOutput),

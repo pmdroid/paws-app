@@ -499,11 +499,22 @@ export async function probeRunnerBackend(
     assert.equal(getWorkItem(db, first.id)?.state, "running");
     assert.throws(() => work.current(first.run.id, 1), /fenced/);
     assert.deepEqual(updates, ["Implementation progress"]);
-    const remoteCloseout = createLiveStatusProvider(db)
+    const status = createLiveStatusProvider(db);
+    const remoteCloseout = status
       .snapshot()
       .agentCloseout?.find((entry) => entry.runId === first.run.id);
+    const remoteAttempt = remoteCloseout?.attempts.at(-1);
     assert.deepEqual(
-      remoteCloseout?.attempts.at(-1)?.checks.map((check) => [check.id, check.state, check.stdout]),
+      remoteAttempt?.checks.map((check) => [
+        check.id,
+        check.state,
+        status.checkLog({
+          itemId: remoteCloseout!.itemId,
+          attempt: remoteAttempt.number,
+          checkId: check.id,
+          run: first.run.id,
+        })?.stdout,
+      ]),
       [["test", "failed", "1 fail on the runner"]],
     );
     observe(
