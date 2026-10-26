@@ -3,7 +3,7 @@ description: Lint, format, typecheck, tests, the status dashboard build, Markdow
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
-  maxFailedReviewAttempts: 12
+  maxFailedReviewAttempts: 4
 setup:
   - id: install
     exec: ["bun", "install", "--frozen-lockfile"]
