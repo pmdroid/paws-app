@@ -5,6 +5,7 @@ import {
   TIMESTAMP_WINDOW_MS,
   checkLinearSignature,
   handleLinearWebhook,
+  isPawsStop,
   sessionCreatedKey,
 } from "../src/linear";
 import { createInboxStore } from "../src/linear";
@@ -89,6 +90,45 @@ describe("linear webhooks", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(store.listUnhandled()).toHaveLength(0);
+    db.close();
+  });
+
+  test("a prompted /paws stop reply arrives as a stop signal, like the poller reads it", async () => {
+    const db = tempDb();
+    const store = createInboxStore(db);
+    const now = 1_700_000_000_000;
+    const prompted = (id: string, body: string) =>
+      JSON.stringify({
+        webhookTimestamp: now,
+        type: "AgentSessionEvent",
+        action: "prompted",
+        agentSession: { id: "ses_1", issueId: "iss_1" },
+        agentActivity: { id, content: { type: "prompt", body } },
+      });
+    const seen: { body: string | null; signal: string | null }[] = [];
+    for (const [id, body] of [
+      ["act_1", "  /paws stop please"],
+      ["act_2", "Please do not /paws stop yet"],
+    ] as const) {
+      const response = await handleLinearWebhook(
+        signedRequest(prompted(id, body), SECRET, `del-${id}`),
+        SECRET,
+        {
+          store,
+          now: () => now,
+          onEvent: (event) => {
+            seen.push({ body: event.body, signal: event.signal });
+            return Promise.resolve();
+          },
+        },
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(seen).toEqual([
+      { body: "  /paws stop please", signal: "stop" },
+      { body: "Please do not /paws stop yet", signal: null },
+    ]);
+    expect(isPawsStop(seen[0]!.body)).toBe(true);
     db.close();
   });
 
