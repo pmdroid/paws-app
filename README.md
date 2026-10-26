@@ -20,6 +20,8 @@ Paws runs work only for a configured Linear workspace. `bun run paws doctor` rep
 
 ### Upgrading
 
+Read [CHANGELOG.md](CHANGELOG.md) before upgrading; breaking changes come first in each entry. Every `config.toml` setting is in the [configuration reference](docs/configuration.md).
+
 Paws requires a configured Linear workspace. An existing install that runs from environment variables alone, without `PAWS_PUBLIC_DASHBOARD=1`, keeps serving the dashboard after the upgrade but starts no work and logs how to configure a workspace. Set up [Workspace access](docs/workspace-access.md), restart Paws, sign in as a Linear workspace admin, then run `bun run paws doctor` and check that `linear-workspace` is ok.
 
 Linear holds delegated work and questions. GitHub hosts repositories and pull requests. Paws checks the repository's Closeout policy before publication.
