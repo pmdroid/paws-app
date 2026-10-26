@@ -31,13 +31,16 @@ import {
 import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
 import {
   closeoutPolicyRoot,
+  DEFAULT_IGNORED_COMMENT_BOTS,
   ensureLayout,
+  ignoredCommentBots,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
   loadEnv,
   loadConfigFile,
   loadRunnerControl,
   pawsPaths,
+  readMergeSettings,
   readQueueSettings,
   type EnvSource,
   type PawsEnv,
@@ -135,6 +138,7 @@ import {
 } from "./linear";
 import {
   acceptGitHubDelivery,
+  type PullCommentFilter,
   attachOrchestrator,
   createLinearArtifactReader,
   itemPathId,
@@ -319,6 +323,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const appActivation = createWorkspaceGitHubActivation(db, runtime.env.home, envSource);
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
+  const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
   recoverOnStartup(db);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
@@ -834,7 +839,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       port: env.port,
       linearWebhookSecret: env.linearWebhookSecret,
       githubWebhookSecret: env.githubWebhookSecret,
-      githubWebhook: { accept: (delivery) => acceptGitHubDelivery(db, delivery, Date.now()) },
+      githubWebhook: {
+        accept: (delivery) => acceptGitHubDelivery(db, delivery, Date.now(), commentFilter),
+      },
       slackSigningSecret:
         envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
@@ -1391,6 +1398,48 @@ export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["r
     cancelItem: async () => {},
     agentForSession: () => required,
     agentForItem: () => required,
+  };
+}
+
+/**
+ * What keeps a pull request comment from the agent: the Paws App's own comments and the
+ * repository's ignored bots. The App's bot login is read once per repository in the background,
+ * so its comments are known by `performed_via_github_app` until then.
+ */
+function pullCommentFilter(
+  runtime: RuntimeConfig,
+  configFile: string,
+  resolveApp: (repository: string) => ActiveGitHubApp,
+): PullCommentFilter {
+  const logins = new Map<string, string | null>();
+  return {
+    appId(repository) {
+      try {
+        return resolveApp(repository).appId;
+      } catch {
+        return runtime.env.githubAppId;
+      }
+    },
+    appLogin(repository) {
+      const key = repository.toLowerCase();
+      if (!logins.has(key)) {
+        logins.set(key, null);
+        const binding = repositoryBinding(repository);
+        const provider = binding ? authProvider(runtime, binding, "read", resolveApp) : null;
+        provider
+          ?.botIdentity?.()
+          .then((identity) => logins.set(key, identity.login))
+          .catch(() => logins.delete(key));
+      }
+      return logins.get(key) ?? null;
+    },
+    ignoredBots(repository) {
+      try {
+        return ignoredCommentBots(readMergeSettings(loadConfigFile(configFile)), repository);
+      } catch {
+        return DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase());
+      }
+    },
   };
 }
 

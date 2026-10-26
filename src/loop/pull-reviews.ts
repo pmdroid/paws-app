@@ -26,9 +26,10 @@ export const REVIEW_FIX_INSTRUCTION =
   "Fix what you are confident about. Before changing anything you are unsure of, ask the team with ask_team in this session and wait for the answer. Commit the fixes on this branch. Leave the review threads for the reviewer to resolve.";
 
 /**
- * Record a submitted `pull_request_review` webhook for the item that owns the pull request's
- * branch. Changes-requested and comment-only reviews are kept once per review id; approvals and
- * dismissals only wake the merge job. True when this delivery recorded a new review.
+ * Record a submitted changes-requested `pull_request_review` webhook for the item that owns the
+ * pull request's branch, once per review id. Comment-only reviews are comments
+ * (`recordCommentDelivery`); approvals and dismissals only wake the merge job. True when this
+ * delivery recorded a new review.
  */
 export function recordReviewDelivery(
   db: Database,
@@ -42,8 +43,7 @@ export function recordReviewDelivery(
   const pull = record(payload.pull_request);
   const head = record(pull.head);
   const state = typeof review.state === "string" ? review.state.toLowerCase() : "";
-  if (payload.action !== "submitted" || (state !== "changes_requested" && state !== "commented"))
-    return false;
+  if (payload.action !== "submitted" || state !== "changes_requested") return false;
   const reviewId = review.id;
   const pullNumber = pull.number;
   const branch = head.ref;
@@ -82,7 +82,8 @@ export function recordReviewDelivery(
   });
 }
 
-function itemForBranch(
+/** The ongoing item whose branch in `owner/repo` is `branch`. */
+export function itemForBranch(
   db: Database,
   owner: string,
   repo: string,
@@ -116,17 +117,15 @@ export type PullReviewCapabilities = {
   threads(item: WorkItemRecord, pullNumber: number): Promise<ReviewThread[]>;
   fixRoundLimit(item: WorkItemRecord): number;
   session(item: WorkItemRecord): string | null;
-  /** Post to the item's session; after the pull request this is the ordered response path. */
-  post(item: WorkItemRecord, body: string, key: string): void;
   flush(): Promise<void>;
 };
 
-export type PullReviewStep = "wait" | "restarted" | "asked" | "posted" | "dropped" | "done";
+export type PullReviewStep = "wait" | "restarted" | "asked" | "dropped" | "done";
 
 /**
  * Act on one recorded review. A changes-requested review waits until the item rests in the merge
  * queue with nothing running, then restarts it with the review and its unresolved threads, or asks
- * the team when the fix rounds are spent. A comment-only review posts its threads once.
+ * the team when the fix rounds are spent.
  */
 export async function handlePullReview(
   db: Database,
@@ -141,17 +140,9 @@ export async function handlePullReview(
     return "dropped";
   }
   if (review.state === "commented") {
-    const threads = (await caps.threads(item, review.pullNumber)).filter((thread) =>
-      thread.comments.some((comment) => comment.reviewId === review.reviewId),
-    );
-    const posted = immediate(db, () => {
-      if (!settlePullReview(db, reviewId, "posted", caps.now())) return false;
-      const body = commentReviewLine(review, threads);
-      if (body !== null) caps.post(item, body, `pull-review:${review.reviewId}`);
-      return true;
-    });
-    if (posted) await caps.flush();
-    return posted ? "posted" : "done";
+    // Recorded before comment-only reviews became comments; `recordCommentDelivery` has them now.
+    settlePullReview(db, reviewId, "dropped", caps.now());
+    return "dropped";
   }
   if (item.state === "merge_queue") {
     // Before waiting on anything: GitHub's own merge queue does not wait for Paws.
@@ -216,18 +207,7 @@ export function reviewDigest(review: PullReviewRecord, threads: readonly ReviewT
   return clip(lines.join("\n"), DIGEST_CHARS);
 }
 
-function commentReviewLine(
-  review: PullReviewRecord,
-  threads: readonly ReviewThread[],
-): string | null {
-  if (review.body.trim() === "" && threads.length === 0) return null;
-  const lines = [`${reviewer(review)} commented on pull request #${review.pullNumber}.`];
-  if (review.body.trim() !== "") lines.push("", clip(review.body.trim()));
-  threads.forEach((thread, index) => lines.push("", threadLines(thread, index + 1)));
-  return clip(lines.join("\n"), DIGEST_CHARS);
-}
-
-function threadLines(thread: ReviewThread, index: number): string {
+export function threadLines(thread: ReviewThread, index: number): string {
   const where = thread.path
     ? `\`${thread.path}${thread.line === null ? "" : `:${thread.line}`}\``
     : "general";
@@ -243,7 +223,7 @@ function reviewer(review: PullReviewRecord): string {
   return review.reviewer ? `@${review.reviewer}` : "A reviewer";
 }
 
-function clip(text: string, chars = COMMENT_CHARS): string {
+export function clip(text: string, chars = COMMENT_CHARS): string {
   return text.length <= chars ? text : `${text.slice(0, chars - 1)}…`;
 }
 
