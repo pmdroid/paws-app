@@ -15,6 +15,8 @@ export const JOB_KIND = {
   pullComments: "github.pull_comments",
   catchup: "linear.catchup",
   visualReviewReminder: "linear.visual_review_reminder",
+  /** The one reminder of an open link ask, 24 hours after it was asked. */
+  linkAskReminder: "linear.link_ask_reminder",
   /** Written when a redelivered elicitation dies too; the loop re-asks through ask(). */
   reaskQuestion: "question.reask",
   /** Written by the SQLite triggers of migration 144, one pending job per hold owner. */

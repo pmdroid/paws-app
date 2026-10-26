@@ -12,7 +12,8 @@ export type AnswerableQuestion =
   | { kind: "ci-help" }
   | { kind: "visual-review"; delegatorId: string | null; leadId: string | null }
   | { kind: "github-auth"; actorId: string }
-  | { kind: "plan-approval" };
+  | { kind: "plan-approval" }
+  | { kind: "link"; allowedIds: readonly string[] };
 
 type Policy = {
   [K in AnswerableQuestion["kind"]]: (
@@ -31,7 +32,9 @@ export const canAnswer = (question: AnswerableQuestion, user: Answerer): boolean
       ? { allowedIds: [question.delegatorId, question.leadId] }
       : question.kind === "github-auth"
         ? { allowedIds: [question.actorId] }
-        : {}),
+        : question.kind === "link"
+          ? { allowedIds: [...question.allowedIds] }
+          : {}),
   }).allowed;
 
 /** Kept for policy consumers; every entry uses the same actor and answer checks. */
@@ -46,4 +49,5 @@ export const ANSWER_POLICY: Policy = {
   "visual-review": canAnswer,
   "github-auth": canAnswer,
   "plan-approval": canAnswer,
+  link: canAnswer,
 };

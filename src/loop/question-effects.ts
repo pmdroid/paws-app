@@ -66,7 +66,7 @@ export function questionEffects(
       >(
         `SELECT id,body,options,answer FROM question WHERE item_id=? AND session_id=?
        AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL
-       AND kind NOT IN ('visual-review','runner-wait','github-auth') ORDER BY answered_at,rowid`,
+       AND kind NOT IN ('visual-review','runner-wait','github-auth','link') ORDER BY answered_at,rowid`,
       )
       .all(item.id, question.sessionId);
     const handoffs = pending.map((entry) =>

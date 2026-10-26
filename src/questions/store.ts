@@ -12,7 +12,8 @@ export type QuestionKind =
   | "time-limit"
   | "visual-review"
   | "github-auth"
-  | "plan-approval";
+  | "plan-approval"
+  | "link";
 
 export type StoredQuestion = {
   id: string;

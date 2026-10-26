@@ -41,6 +41,7 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  getLinkAsk,
   listDeadDeliveries,
   describeLinearWebhookWarning,
   getConfirmedRemoteMerge,
@@ -879,13 +880,25 @@ function questionsFor(
     seen.add(question.id);
     coveredItems.add(record.id);
     const parsed = parseQuestion(question.body);
+    const linkAsk = getLinkAsk(db, question.id);
     questions.push({
       id: question.id,
       itemId: publicId(record),
       runId: sessionRunId(question.runId, runs) ?? linkedRunId(record, runs),
-      title: parsed.title || question.body,
-      body: parsed.body || question.body,
-      context: parsed.context,
+      title: linkAsk?.title ?? (parsed.title || question.body),
+      body: linkAsk?.detail ?? (parsed.body || question.body),
+      context: linkAsk ? "" : parsed.context,
+      ...(linkAsk && linkAsk.closedAt === null
+        ? {
+            linkAsk: {
+              kind: linkAsk.kind,
+              head: linkAsk.headCommit,
+              title: linkAsk.title,
+              detail: linkAsk.detail,
+              link: linkAsk.link,
+            },
+          }
+        : {}),
       kind: "decision",
       urgency: "blocking",
       options: question.options,
