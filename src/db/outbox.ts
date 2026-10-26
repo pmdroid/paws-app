@@ -511,6 +511,8 @@ function followingThoughts(head: OutboxRow, others: readonly OutboxRow[]): Outbo
 
 /** Suffix of the one fresh delivery a dead elicitation gets. */
 export const ELICITATION_REDELIVERY_SUFFIX = ":redelivery";
+/** Suffix of the delivery that replaces a twice-dead elicitation of a question with linked records. */
+export const ELICITATION_REASK_SUFFIX = ":reask";
 
 /**
  * The work item an outbox row belongs to: the payload's item, the run that wrote it,
@@ -542,8 +544,8 @@ export function oneLine(text: string, max = 200): string {
  * A row just went dead. Journal it, and give an elicitation whose item still waits for
  * an answer one fresh delivery, so the person has something to answer. The dead row is
  * dropped in its favour; otherwise it would block the session's ordering key.
- * When the redelivery dies too, a job re-asks the question through the loop's `ask()`,
- * once per run. Anything still dead is listed on the issue page with a retry.
+ * When the redelivery dies too, a job asks the question again, once per question lineage.
+ * Anything still dead is listed on the issue page with a retry.
  */
 function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: number): void {
   const itemId = outboxItemId(db, row.id);
@@ -567,24 +569,26 @@ function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: numb
       )
       .get(questionId)?.open === 1;
   if (typeof questionId === "string" && !open) return;
-  if (row.idempotencyKey.endsWith(ELICITATION_REDELIVERY_SUFFIX)) {
-    if (!open) {
+  const lastChance =
+    row.idempotencyKey.endsWith(ELICITATION_REDELIVERY_SUFFIX) ||
+    row.idempotencyKey.endsWith(ELICITATION_REASK_SUFFIX);
+  if (lastChance) {
+    const stays = () =>
       journal(
         `outbox ${row.id} elicitation dead again item=${itemId}; retry it from the issue page`,
       );
-      return;
-    }
-    // Once per run: a re-asked question that dies again stays dead, listed with a retry.
-    const key = `${JOB_KIND.reaskQuestion}:${itemId}:${item.runId ?? "-"}`;
-    const known = db
-      .query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?")
-      .get(key);
-    if (known !== null) {
-      journal(
-        `outbox ${row.id} elicitation dead again item=${itemId}; retry it from the issue page`,
-      );
-      return;
-    }
+    if (!open) return stays();
+    // One re-ask per question lineage: a question a re-ask produced counts as its origin.
+    const origin =
+      db
+        .query<{ origin: string | null }, [string, string]>(
+          `SELECT json_extract(payload, '$.questionId') AS origin FROM job
+           WHERE queue = ? AND json_extract(payload, '$.reaskedAs') = ? LIMIT 1`,
+        )
+        .get(JOB_KIND.reaskQuestion, questionId)?.origin ?? questionId;
+    const key = `${JOB_KIND.reaskQuestion}:${origin}`;
+    if (db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(key))
+      return stays();
     enqueueJobOnce(db, {
       queue: JOB_KIND.reaskQuestion,
       jobKey: key,

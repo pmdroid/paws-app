@@ -50,6 +50,15 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     assert.equal(getJob(db, mine)!.status, "pending");
     assert.equal(getJob(db, mine)!.attempts, 0);
     assert.equal((await retry(`job:${mine}`)).status, 403);
+
+    // A dead job from an earlier state of the item is refused, so its work is not revived.
+    const stale = dead("controlled-stale");
+    db.run("UPDATE job SET payload = json_set(payload, '$.itemId', 'controlled') WHERE id = ?", [
+      stale,
+    ]);
+    db.run("UPDATE job SET status = 'dead', item_version = -1 WHERE id = ?", [stale]);
+    assert.equal((await retry(`job:${stale}`)).status, 409);
+    assert.equal(getJob(db, stale)!.status, "dead");
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });

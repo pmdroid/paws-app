@@ -1258,7 +1258,8 @@ export class Orchestrator {
       const itemId = readString(job.payload, "itemId");
       const questionId = readString(job.payload, "questionId");
       if (!context.isCurrent() || itemId === null || questionId === null) return;
-      if (reaskDeadQuestion(this.db, itemId, questionId, this.now())) await this.flush();
+      if (reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
+        await this.flush();
     });
     jobs.register(JOB_KIND.runnerSetupCheck, (job) => {
       const owner = readString(job.payload, "ownerUserId");

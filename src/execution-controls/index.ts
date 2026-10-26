@@ -137,7 +137,10 @@ export function createExecutionControls(input: {
       if (retryRef !== null) {
         if (!retryDeadDelivery(input.db, item.id, retryRef, now()))
           return Response.json(
-            { error: "This delivery is no longer stopped. Refresh the run." },
+            {
+              error:
+                "This delivery is no longer stopped, or belongs to an earlier state of the issue. Refresh the run.",
+            },
             { status: 409 },
           );
         auditWorkspaceAccess(input.db, {

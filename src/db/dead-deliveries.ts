@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { journal } from "./journal";
-import { DEFAULT_OUTBOX_MAX_ATTEMPTS, OUTBOX_ITEM_SQL } from "./outbox";
+import {
+  DEFAULT_OUTBOX_MAX_ATTEMPTS,
+  ELICITATION_REASK_SUFFIX,
+  enqueueOutboxOnce,
+  OUTBOX_ITEM_SQL,
+} from "./outbox";
 import { immediate } from "./tx";
 
 /** A dead outbox row or a dead job of one work item. */
@@ -14,9 +19,18 @@ export type DeadDelivery = {
   createdAt: number;
   /** When the row or job last moved: a job's finish, else its creation. */
   at: number;
+  /**
+   * False for a job captured at an older item version: its payload describes work the item
+   * has moved past (a restart, an answer, a stop), so retrying it would revive that work.
+   */
+  retryable: boolean;
 };
 
 export type DeadDeliveryRef = { kind: "outbox" | "job"; id: number };
+
+/** A job is current while the item still has the version the job was captured at. */
+const JOB_CURRENT_SQL = `(job.item_version IS NULL OR job.item_version =
+  (SELECT version FROM work_item WHERE id = json_extract(job.payload, '$.itemId')))`;
 
 /** Dead outbox rows and dead jobs of one work item, oldest first. */
 export function listDeadDeliveries(db: Database, itemId: string): DeadDelivery[] {
@@ -37,6 +51,7 @@ export function listDeadDeliveries(db: Database, itemId: string): DeadDelivery[]
       attempts: row.attempts,
       createdAt: row.created_at,
       at: row.created_at,
+      retryable: true,
     }));
   const jobs = db
     .query<
@@ -47,11 +62,12 @@ export function listDeadDeliveries(db: Database, itemId: string): DeadDelivery[]
         attempts: number;
         created_at: number;
         finished_at: number | null;
+        current: number;
       },
       [string]
     >(
-      `SELECT id, queue, last_error, attempts, created_at, finished_at FROM job
-       WHERE status = 'dead' AND json_extract(payload, '$.itemId') = ? ORDER BY id`,
+      `SELECT id, queue, last_error, attempts, created_at, finished_at, ${JOB_CURRENT_SQL} AS current
+       FROM job WHERE status = 'dead' AND json_extract(payload, '$.itemId') = ? ORDER BY id`,
     )
     .all(itemId)
     .map((row): DeadDelivery => ({
@@ -62,6 +78,7 @@ export function listDeadDeliveries(db: Database, itemId: string): DeadDelivery[]
       attempts: row.attempts,
       createdAt: row.created_at,
       at: row.finished_at ?? row.created_at,
+      retryable: row.current === 1,
     }));
   return [...outbox, ...jobs].sort((left, right) => left.at - right.at || left.id - right.id);
 }
@@ -94,7 +111,8 @@ export function parseDeadDeliveryRef(value: unknown): DeadDeliveryRef | null {
 
 /**
  * Put one dead row or job of the item back to pending, due now, with a fresh attempt budget.
- * Returns false when it is not dead or belongs to another item.
+ * Returns false when it is not dead, belongs to another item, or is a job captured at an
+ * older item version: that job's work is obsolete and retrying it would revive it.
  */
 export function retryDeadDelivery(
   db: Database,
@@ -113,9 +131,9 @@ export function retryDeadDelivery(
           )
         : db.run(
             `UPDATE job SET status = 'pending', attempts = 0, run_at = ?, finished_at = NULL,
-               locked_by = NULL, locked_until = NULL,
-               item_version = (SELECT version FROM work_item WHERE id = json_extract(job.payload, '$.itemId'))
-             WHERE id = ? AND status = 'dead' AND json_extract(payload, '$.itemId') = ?`,
+               locked_by = NULL, locked_until = NULL
+             WHERE id = ? AND status = 'dead' AND json_extract(payload, '$.itemId') = ?
+               AND ${JOB_CURRENT_SQL}`,
             [now, ref.id, itemId],
           );
     if (result.changes === 0) return false;
@@ -132,4 +150,79 @@ export function dropDeadElicitations(db: Database, questionId: string, note: str
        AND json_extract(payload, '$.questionId') = ?`,
     [note, questionId],
   ).changes;
+}
+
+/**
+ * Tables that tie a record to a question id. Answering such a question reads that record by
+ * the question's id, so it cannot be replaced by a new question; it is delivered again instead.
+ * A schema test keeps this list in step with every question id column.
+ */
+export const QUESTION_LINKS = [
+  { table: "closeout_recovery", column: "question_id" },
+  { table: "work_item_repository_question", column: "question_id" },
+  { table: "github_integration_hold", column: "question_id" },
+  { table: "decision_memory", column: "question_id" },
+  { table: "decision_suggestion", column: "question_id" },
+  { table: "visual_review", column: "question_id" },
+  { table: "visual_review_mark", column: "question_id" },
+] as const;
+
+/** True when another record is tied to this question's id. */
+export function questionHasLinkedRecords(db: Database, questionId: string): boolean {
+  const sql = QUESTION_LINKS.map(
+    ({ table, column }) => `SELECT 1 FROM ${table} WHERE ${column} = ?1`,
+  ).join(" UNION ALL ");
+  return db.query<{ 1: number }, [string]>(`${sql} LIMIT 1`).get(questionId) !== null;
+}
+
+/**
+ * Deliver an open question once more under a fresh key, keeping its id, and drop its dead rows.
+ * Used for a question with linked records, which cannot be replaced by a new question.
+ * Returns the new outbox id, or null when the question has no earlier elicitation to copy.
+ */
+export function redeliverQuestion(db: Database, questionId: string, now: number): number | null {
+  return immediate(db, () => {
+    const last = db
+      .query<
+        {
+          target: string;
+          op: string;
+          ordering_key: string | null;
+          payload: string;
+          priority: number;
+          idempotency_key: string;
+        },
+        [string]
+      >(
+        `SELECT target, op, ordering_key, payload, priority, idempotency_key FROM outbox
+         WHERE target = 'linear' AND op = 'elicitation' AND json_extract(payload, '$.questionId') = ?
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(questionId);
+    if (last === null || last.ordering_key === null) return null;
+    const base = last.idempotency_key.replace(/(:redelivery|:reask)+$/, "");
+    dropDeadElicitations(db, questionId, "Delivered again after its redelivery died.");
+    const id = enqueueOutboxOnce(db, {
+      target: "linear",
+      op: last.op,
+      orderingKey: last.ordering_key,
+      idempotencyKey: `${base}${ELICITATION_REASK_SUFFIX}`,
+      payload: JSON.parse(last.payload) as unknown,
+      priority: last.priority,
+      now,
+    });
+    journal(`question ${questionId} delivered again as outbox ${id}`);
+    return id;
+  });
+}
+
+/**
+ * Remember which question a re-ask job produced, so a death of that question counts against
+ * the same lineage instead of starting a new allowance.
+ */
+export function recordQuestionReask(db: Database, jobId: number, questionId: string): void {
+  db.run(`UPDATE job SET payload = json_set(payload, '$.reaskedAs', ?) WHERE id = ?`, [
+    questionId,
+    jobId,
+  ]);
 }

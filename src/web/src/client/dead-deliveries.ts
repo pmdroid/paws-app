@@ -1,6 +1,8 @@
 import type { StatusDeadDelivery, StatusSnapshot } from "../contract";
 import { esc, utcClock } from "./format";
 
+const OBSOLETE = "From an earlier state of this issue. Paws will not retry it.";
+
 const NAMES: Record<string, string> = {
   "linear.elicitation": "Linear question",
   "linear.activity": "Linear activity",
@@ -8,7 +10,7 @@ const NAMES: Record<string, string> = {
 };
 
 /**
- * Dead outbox rows and dead jobs of one issue, each with a retry. A dead Linear delivery holds
+ * Dead outbox rows and dead jobs of one issue, each with a retry unless it is obsolete. A dead Linear delivery holds
  * every later update of its session, so the page names it instead of leaving the session quiet.
  */
 export function deadDeliveriesSection(snapshot: StatusSnapshot, itemId: string): string {
@@ -26,5 +28,5 @@ function row(entry: StatusDeadDelivery): string {
   const name =
     entry.kind === "outbox" ? (NAMES[entry.name] ?? `Delivery ${entry.name}`) : `Job ${entry.name}`;
   const facts = `${entry.attempts} attempt${entry.attempts === 1 ? "" : "s"}, ${entry.kind === "job" ? "stopped" : "queued"} at ${utcClock(entry.at)} UTC`;
-  return `<li class="overview-row"><div class="overview-copy"><div><b>${esc(name)}</b> <span class="muted">${esc(facts)}</span></div>${entry.lastError ? `<p class="muted">Last error: ${esc(entry.lastError)}</p>` : ""}</div><button class="btn sm" type="button" data-retry="${esc(entry.target)}" hidden="">Retry</button></li>`;
+  return `<li class="overview-row"><div class="overview-copy"><div><b>${esc(name)}</b> <span class="muted">${esc(facts)}</span></div>${entry.lastError ? `<p class="muted">Last error: ${esc(entry.lastError)}</p>` : ""}${entry.retryable === false ? `<p class="muted">${esc(OBSOLETE)}</p>` : ""}</div>${entry.retryable === false ? "" : `<button class="btn sm" type="button" data-retry="${esc(entry.target)}" hidden="">Retry</button>`}</li>`;
 }

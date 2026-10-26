@@ -140,6 +140,7 @@ export {
   OUTBOX_STATUSES,
   OUTBOX_TARGETS,
   DEFAULT_OUTBOX_MAX_ATTEMPTS,
+  ELICITATION_REASK_SUFFIX,
   ELICITATION_REDELIVERY_SUFFIX,
   outboxItemId,
   type NewOutbox,
@@ -151,6 +152,10 @@ export {
 export {
   deadDeliveryItemId,
   dropDeadElicitations,
+  QUESTION_LINKS,
+  questionHasLinkedRecords,
+  recordQuestionReask,
+  redeliverQuestion,
   listDeadDeliveries,
   parseDeadDeliveryRef,
   retryDeadDelivery,
