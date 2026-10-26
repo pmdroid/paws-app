@@ -109,7 +109,7 @@ describe("local agent settings API", () => {
     const { options } = fixture();
     const audits: [string, string][] = [];
     options.audit = (action, subject) => audits.push([action, subject]);
-    writeFileSync(options.configPath, "[merge]\ncloseout_after_update = true\n");
+    writeFileSync(options.configPath, '[merge]\nmain_moved = "closeout"\n');
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
         .merge;

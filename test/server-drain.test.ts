@@ -66,7 +66,7 @@ test("HTTP shutdown drains an accepted artifact read before SQLite closes", asyn
 
 test("Paws shutdown joins an accepted HTTP operation before closing SQLite", async () => {
   const home = tempHome();
-  writeFileSync(join(home, "config.toml"), '[linear]\nmode = "agent-session"\n');
+  writeFileSync(join(home, "config.toml"), "[linear]\n");
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
   const nativeFetch = globalThis.fetch;

@@ -200,7 +200,6 @@ describe("Merging settings API", () => {
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
-    expect(text).not.toContain("closeout_after_update");
     expect(text).toContain(`[merge.projects."${PAWS}"]\n`);
     expect(text).toContain('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"');
     const config = loadConfigFile(options.configPath);
