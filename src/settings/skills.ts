@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { listSkills, SKILL_AGENTS, skillRollouts, type SkillPin, type SkillSource } from "../db";
 import {
@@ -51,7 +52,7 @@ export async function handleSkillSettingsRequest(
   if (url.pathname !== SKILL_SETTINGS_PATH) return null;
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Skill settings are only available on the local Paws origin" }, 403);
-  if (options.role !== undefined && !["owner", "admin"].includes(options.role))
+  if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace owners and admins can change skills." }, 403);
   const listing = (notice?: string, found?: FoundSkill[]) => {
     const skills = listSkills(options.db);

@@ -1,3 +1,4 @@
+import { canAct } from "./eligibility";
 import { randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -103,7 +104,6 @@ const HELD: Refusal = { outcome: "refused", reason: SIGN_IN, quiet: true };
 const ENDED = "Paws stopped waiting for this sign-in. Delegate the issue again to retry.";
 const STOPPED = "This session was stopped or replaced by a newer delegation.";
 const ELSEWHERE = "This session belongs to a different Paws installation.";
-const TEAM = "You are not a member of this issue's Linear team.";
 export const ASSIGNMENT_CHANGED = "This issue changed while Paws waited for you to sign in.";
 const UNRECORDED = retry(
   "Paws has not recorded this session's Linear installation yet. It will try again automatically.",
@@ -375,9 +375,8 @@ export function createWorkspaceAssignments(options: {
     const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
     const expected = JSON.parse(hold.fingerprint) as { installation: { teamId: string } };
     if (
-      !member?.active ||
-      member.role === "observer" ||
-      !member.teamIds.includes(expected.installation.teamId)
+      !canAct({ id: hold.actorId, member, teamId: expected.installation.teamId }, "delegate")
+        .allowed
     )
       return false;
     db.run(
@@ -435,15 +434,18 @@ export function createWorkspaceAssignments(options: {
         now: before,
       });
     const member = workspaceLinearMember(db, verified.workspaceId, verified.actorId);
-    if (!identity.active) return refused("Your Linear account is not active.");
-    const ask = `Ask a member of ${verified.teamName ?? "this issue's team"} to delegate this issue.`;
-    if (identity.guest) return refused(`Linear guests cannot delegate issues to Paws. ${ask}`);
-    if (!identity.teamIds.includes(verified.teamId)) return refused(TEAM);
-    if (member === null) return null;
-    if (!member.active) return refused("Your Paws workspace membership is not active.");
-    if (member.role === "observer")
-      return refused(`Observers in the Paws workspace cannot delegate issues to Paws. ${ask}`);
-    return member.teamIds.includes(verified.teamId) ? null : refused(TEAM);
+    const eligibility = canAct(
+      {
+        id: verified.actorId,
+        identity,
+        member,
+        teamId: verified.teamId,
+        teamName: verified.teamName,
+      },
+      "delegate",
+    );
+    // A valid Linear member without a Paws sign-in enters the onboarding hold below.
+    return eligibility.allowed || eligibility.signIn ? null : refused(eligibility.reason);
   }
   /**
    * The one re-check before a held delegation resumes. It reuses the snapshot stored with the
@@ -560,8 +562,7 @@ export function createWorkspaceAssignments(options: {
       };
       const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
       if (
-        !member?.active ||
-        member.role === "observer" ||
+        !canAct({ id: hold.actorId, member, teamId: holdIssue(hold).teamId }, "delegate").allowed ||
         JSON.stringify(spec) !== JSON.stringify(expected.spec) ||
         JSON.stringify(listWorkspaceRepositories(db, hold.workspaceId)) !==
           JSON.stringify(expected.repositories)
@@ -594,10 +595,8 @@ export function createWorkspaceAssignments(options: {
         // against the stored snapshot, so this reads only the database.
         const { teamId } = holdIssue(hold);
         const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
-        if (!member?.active) return refused("Your Paws workspace membership is not active.");
-        if (member.role === "observer")
-          return refused("Observers in the Paws workspace cannot delegate issues to Paws.");
-        if (!member.teamIds.includes(teamId)) return refused(TEAM);
+        const eligibility = canAct({ id: hold.actorId, member, teamId }, "delegate");
+        if (!eligibility.allowed) return refused(eligibility.reason);
         return current(hold) && holds(hold.sessionId)?.status === "accepted"
           ? ACCEPTED
           : refused(STOPPED);
@@ -763,9 +762,8 @@ export function createWorkspaceAssignments(options: {
             }
             const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
             if (
-              !member?.active ||
-              member.role === "observer" ||
-              !member.teamIds.includes(verified.teamId)
+              member === null ||
+              !canAct({ id: hold.actorId, member, teamId: verified.teamId }, "delegate").allowed
             ) {
               invalidate(hold);
               return false;

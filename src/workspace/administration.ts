@@ -1,3 +1,4 @@
+import { isWorkspaceAdmin } from "./eligibility";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
@@ -48,8 +49,7 @@ export async function handleWorkspaceAdministration(
     );
   };
   if (path === "/api/workspaces/audit") {
-    if (!["owner", "admin"].includes(principal.role))
-      return deny("Workspace administration is required.");
+    if (!isWorkspaceAdmin(principal.role)) return deny("Workspace administration is required.");
     if (request.method !== "GET")
       return Response.json({ error: "Method not allowed" }, { status: 405 });
     const cursor = new URL(request.url).searchParams.get("before");
