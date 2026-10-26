@@ -85,9 +85,23 @@ import {
   type RunnerInstalledRuntime,
 } from "../runner-protocol";
 
+import { AGENT_SESSION_MAX_BYTES } from "../agent-sessions";
 import { compactAcpEvent } from "./compact";
+import {
+  CLAUDE_SESSION_TOO_LARGE,
+  SESSION_BUNDLE_FILE,
+  SESSION_METADATA_FILE,
+  SessionTooLargeError,
+  writeClaudeSessionBundle,
+} from "./session-snapshot";
 
-export { compactAcpEvent };
+export {
+  compactAcpEvent,
+  SESSION_BUNDLE_FILE,
+  SESSION_METADATA_FILE,
+  CLAUDE_SESSION_TOO_LARGE,
+  writeClaudeSessionBundle,
+};
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;
@@ -110,6 +124,8 @@ export interface RunnerWorkerOptions {
   mise?: { path?: string; timeoutMs?: number };
   /** Where the `claude` and `codex` CLIs are. Defaults to the runner's installed launchers. */
   providerCli?: (cli: "claude" | "codex") => string;
+  /** The largest gzipped Claude session bundle. Tests lower it. */
+  sessionSnapshotMaxBytes?: number;
 }
 
 export const RESUME_PROMPT =
@@ -281,6 +297,88 @@ function removeLeftoverCheckout(path: string): void {
     rmdirSync(entry);
   }
   remove(path);
+}
+
+/**
+ * Bundles the Claude session a run's turn used into the output directory, with a description
+ * the runner runtime uploads. A bundle over the cap is skipped with a notice. Any other failure
+ * is logged without contents and never fails the run.
+ */
+async function snapshotClaudeSession(
+  options: RunnerWorkerOptions,
+  executionId: string,
+  session: {
+    sessionId: string;
+    workspacePath: string;
+    commitSha: string;
+    turn: number;
+  },
+  emit: (event: RunnerWorkerEvent) => void,
+): Promise<void> {
+  const stagingName = `.session-${randomUUID()}.tmp`;
+  const stagingPath = join(options.outputDirectory, stagingName);
+  try {
+    const fd = outputFile(options.outputDirectory, stagingName, options.resultsGid);
+    let bundle: Awaited<ReturnType<typeof writeClaudeSessionBundle>>;
+    try {
+      bundle = await writeClaudeSessionBundle({
+        home: options.home,
+        cwd: session.workspacePath,
+        sessionId: session.sessionId,
+        output: fd,
+        maxBytes: Math.min(
+          options.sessionSnapshotMaxBytes ?? AGENT_SESSION_MAX_BYTES,
+          AGENT_SESSION_MAX_BYTES,
+        ),
+      });
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    if (!bundle) {
+      console.warn(JSON.stringify({ event: "agent_session_snapshot_missing", executionId }));
+      return;
+    }
+    renameSync(stagingPath, join(options.outputDirectory, SESSION_BUNDLE_FILE));
+    replaceOutputFile(
+      options,
+      SESSION_METADATA_FILE,
+      JSON.stringify({
+        agent: "claude",
+        ...session,
+        sizeBytes: bundle.sizeBytes,
+        sha256: bundle.sha256,
+      }),
+    );
+    console.warn(
+      JSON.stringify({
+        event: "agent_session_snapshot",
+        executionId,
+        files: bundle.files.length,
+        refused: bundle.refused,
+        sizeBytes: bundle.sizeBytes,
+      }),
+    );
+  } catch (error) {
+    if (error instanceof SessionTooLargeError) {
+      console.warn(JSON.stringify({ event: "agent_session_snapshot_too_large", executionId }));
+      try {
+        emit({ type: "progress", text: CLAUDE_SESSION_TOO_LARGE, notice: true });
+      } catch (caught) {
+        journalCaught(caught, "runner-worker.snapshotClaudeSession.notice", null);
+      }
+      return;
+    }
+    console.warn(
+      JSON.stringify({
+        event: "agent_session_snapshot_failed",
+        executionId,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  } finally {
+    rmSync(stagingPath, { force: true });
+  }
 }
 
 function resumedSession(directory: string): string | undefined {
@@ -943,6 +1041,33 @@ export async function executeRunnerCommand(
       if (command.type === "run" && result.candidateSha === command.repository.baseSha)
         delete result.candidateSha;
     }
+    // A turn that ended, not a cancel or a crash, leaves a session another runner can load.
+    // An earlier attempt's bundle never stands in for this one.
+    if (command.type === "run")
+      for (const name of [SESSION_METADATA_FILE, SESSION_BUNDLE_FILE])
+        rmSync(join(options.outputDirectory, name), { force: true });
+    if (
+      command.type === "run" &&
+      command.profile.agent === "claude" &&
+      installFailure === undefined &&
+      run.agentExited &&
+      !run.cancelled &&
+      run.stopReason !== "cancelled" &&
+      run.stopReason !== "error" &&
+      run.sessionId &&
+      !options.signal?.aborted
+    )
+      await snapshotClaudeSession(
+        options,
+        job.executionId,
+        {
+          sessionId: run.sessionId,
+          workspacePath: worktree,
+          commitSha: result.candidateSha ?? command.repository.baseSha,
+          turn: command.generation,
+        },
+        emit,
+      );
     const serialized = JSON.stringify(
       command.type === "helper"
         ? {

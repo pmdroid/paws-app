@@ -19,6 +19,8 @@ export type FakeStep =
   | { type: "permission"; toolCall: FakeToolCall; options?: FakePermissionOption[] }
   | { type: "fs_read"; path: string }
   | { type: "fs_write"; path: string; content: string }
+  /** The agent writes a file itself, like its own session files, without the client. */
+  | { type: "write_file"; path: string; content: string }
   | { type: "terminal"; command: string; args?: string[]; cwd?: string }
   /** The agent itself starts a process, like a sandbox; `detached` moves it to its own session. */
   | {

@@ -87,6 +87,8 @@ const REBASE_RUNNER_VERSION = [0, 1, 23];
 const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
 /** First runner release whose command schema accepts `runtimes`. Older runners reject the field. */
 export const RUNTIMES_RUNNER_VERSION = [0, 1, 26];
+/** First runner release that snapshots a run's Claude session when a turn ends. */
+export const CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION = [0, 1, 42];
 
 type SessionHolder = { runnerId: string; agent: string; sessionId: string };
 
