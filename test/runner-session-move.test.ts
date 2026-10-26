@@ -212,6 +212,7 @@ async function setup() {
         [runnerId, now],
       );
     }
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 1, runners.b]);
   }
   /** A finished turn: optional runner events, then the result. */
   function finish(command: RunCommand, runnerId: string, events: RunnerEvent[] = []) {
