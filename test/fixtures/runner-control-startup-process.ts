@@ -491,7 +491,7 @@ try {
           listOutbox(paws.db, controlled.sessionKey!).some(
             (row) =>
               row.delivery === "stop" &&
-              (row.payload as { body?: string }).body === "Stopped from Paws.",
+              (row.payload as { body?: string }).body?.startsWith("Stopped from Paws. ") === true,
           ),
         );
         observe(

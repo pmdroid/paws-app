@@ -99,6 +99,10 @@ async function fixture(token = true, children = false) {
       })),
     fetch: async (_url, init) => {
       const data = JSON.parse(String(init?.body));
+      if (String(data.query).includes("agentSessionUpdate"))
+        return Response.json({
+          data: { agentSessionUpdate: { success: true, agentSession: { id: data.variables.id } } },
+        });
       const body = data.variables.input.content.body;
       requests.push(body);
       if (body === "Working") {
@@ -307,7 +311,11 @@ test("team removal keeps the authorized stopped response while human unassignmen
   expect(isLinearAppRevoked(f.db, scope)).toBe(false);
   f.dispatcher.tick();
   await f.dispatcher.idle();
-  expect(f.requests).toEqual(["Cancelled from Linear."]);
+  expect(f.requests).toEqual([
+    expect.stringMatching(
+      /^Cancelled from Linear\. Branch \S+ has no commits; no PR was opened\. Re-delegate to continue\.$/,
+    ),
+  ]);
 });
 
 test("undelegation cancels every queued task of the issue and stops its session without reading Linear", async () => {

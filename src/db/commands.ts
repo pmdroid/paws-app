@@ -19,6 +19,7 @@ import {
 import { enqueueOutboxOnce, stopOutboxSession } from "./outbox";
 import { markRun } from "./runs";
 import { halt } from "./halt";
+import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
 import { immediate } from "./tx";
 
 export function enqueueCommand(
@@ -40,7 +41,7 @@ export function applyLinearCommand(
   db: Database,
   command: LinearCommand,
   now = command.requestedAt,
-  /** Replaces the default "Cancelled from Linear." response that completes the session. */
+  /** Replaces the default "Stopped." or "Cancelled from Linear." lead of the response. */
   response?: string,
 ): { applied: boolean } {
   return immediate(db, () => {
@@ -61,14 +62,14 @@ export function applyLinearCommand(
       [now, item.id],
     );
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-    if (
+    const closing =
       item.state === "merge_queue" ||
       db
         .query(
           "SELECT 1 FROM job WHERE (queue=? OR queue LIKE ?) AND json_extract(payload,'$.itemId')=? LIMIT 1",
         )
-        .get(JOB_KIND.merge, `${JOB_KIND.merge}.%`, item.id)
-    )
+        .get(JOB_KIND.merge, `${JOB_KIND.merge}.%`, item.id) !== null;
+    if (closing)
       enqueueJobOnce(db, {
         queue: JOB_KIND.closeStoppedPull,
         jobKey: `close-stopped:${item.id}:${getWorkItem(db, item.id)!.version}`,
@@ -79,9 +80,17 @@ export function applyLinearCommand(
     const sessionId = item.sessionKey ?? item.id;
     const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
     const origin = command.source === "dashboard" ? "Paws" : "Linear";
-    const text =
+    const lead =
       response ??
-      (command.type === "stop" ? `Stopped from ${origin}.` : `Cancelled from ${origin}.`);
+      (command.type === "cancel"
+        ? `Cancelled from ${origin}.`
+        : command.source === "dashboard"
+          ? "Stopped from Paws."
+          : "Stopped.");
+    const text = stoppedResponse(db, item, lead, {
+      reason: response !== undefined,
+      pullClosing: closing,
+    });
     enqueueOutboxOnce(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
@@ -92,6 +101,43 @@ export function applyLinearCommand(
       payload: { sessionId, kind: "response", body: text, id: crypto.randomUUID() },
       now,
     });
+    enqueueEndedSessionFace(db, { sessionId, generation, item, outcome: "stopped", now });
+    return { applied: true };
+  });
+}
+
+/**
+ * A person takes the item over: Paws halts it, applies `take_over` and ends the session with
+ * one response. Nothing restarts, verifies or merges the item afterwards.
+ */
+export function takeOverItem(
+  db: Database,
+  itemId: string,
+  who: string,
+  now = Date.now(),
+): { applied: boolean } {
+  return immediate(db, () => {
+    const item = getWorkItem(db, itemId);
+    if (item === null || !transition(item.state, "take_over").ok) return { applied: false };
+    applyWorkItemEvent(db, item.id, "take_over", { now, actor: who });
+    const sessionId = item.sessionKey ?? item.id;
+    const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
+    enqueueOutboxOnce(db, {
+      target: OUTBOX_ACTIVITY.target,
+      op: OUTBOX_ACTIVITY.op,
+      orderingKey: sessionId,
+      delivery: "stop",
+      generation,
+      idempotencyKey: `command:take-over:${sessionId}:${generation}`,
+      payload: {
+        sessionId,
+        kind: "response",
+        body: `Taken over by ${who}. Paws will not restart, verify or merge ${item.linearIdentifier}.`,
+        id: crypto.randomUUID(),
+      },
+      now,
+    });
+    enqueueEndedSessionFace(db, { sessionId, generation, item, outcome: "manual", now });
     return { applied: true };
   });
 }
