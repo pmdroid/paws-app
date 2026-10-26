@@ -83,6 +83,19 @@ describe("merge returns", () => {
     expect(rebaseReturns(db, "eng-1")).toBe(0);
   });
 
+  test("a guidance-answer restart resets the return budget", () => {
+    const db = queued();
+    sendBack(db, 1);
+    expect(rebaseReturns(db, "eng-1")).toBe(1);
+    enqueueJob(db, {
+      queue: JOB_KIND.resume,
+      jobKey: "resume:answer:guidance",
+      payload: { itemId: "eng-1", reason: "answer" },
+      now: 3,
+    });
+    expect(rebaseReturns(db, "eng-1")).toBe(0);
+  });
+
   test("asking for help opens a question through the lifecycle and waits for input", () => {
     const db = queued();
     expect(

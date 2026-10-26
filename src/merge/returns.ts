@@ -19,7 +19,7 @@ export function latestUserTurn(db: Database, itemId: string): number {
     .query<{ id: number | null }, [string, string]>(
       `SELECT MAX(id) AS id FROM job
        WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-         AND job_key LIKE 'linear-turn:%'`,
+         AND (job_key LIKE 'linear-turn:%' OR json_extract(payload, '$.reason') = 'answer')`,
     )
     .get(JOB_KIND.resume, itemId);
   return Number(row?.id ?? 0);
@@ -84,6 +84,7 @@ export function askMergeHelp(
     now: number;
     session: (item: WorkItemRecord) => string | null;
     ask: typeof ask;
+    reason?: string;
   },
 ): boolean {
   return immediate(db, () => {
@@ -98,7 +99,7 @@ export function askMergeHelp(
       input.body,
       {
         now: input.now,
-        reason: "merge_help",
+        reason: input.reason ?? "merge_help",
       },
     );
     return true;

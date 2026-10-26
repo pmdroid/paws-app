@@ -22,9 +22,8 @@ import {
   recoverOnStartup,
   saveCheckpoint,
 } from "../src/db";
-import { ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
+import { acceptCloseout, ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
 import { answer, findOpenQuestion } from "../src/questions";
-import { acceptCloseout } from "../src/loop/merge-jobs";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
