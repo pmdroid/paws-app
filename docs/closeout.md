@@ -25,7 +25,7 @@ flowchart TD
   G -->|exhausted, blocked or fix rounds spent| J["ask(item, question)"]
   J -->|reply with guidance| R["restart(item, answer)"]
   R --> Q
-  J -->|/paws bypass check -- reason| G
+  J -->|bypass on the item page, with reasons| G
   H -->|"mergeable(S)"| M[Squash with expected head S]
   H -->|main moved| K[Rebase to S', verifying again]
   K --> G
@@ -69,7 +69,7 @@ The agent publishes each file with `publish_artifact` and `checkId: "visual-proo
 
 After the session's pull request response, evidence is attached to the issue, not posted. A thought would reopen the completed session (see [The post-PR rule](linear-agent-sessions.md#the-post-pr-rule)), so a file published by a fix round or for the re-verification of a rebased head is uploaded with `uploadOnly` and becomes a Linear attachment on the issue (`linear.attachment`), titled with its display name and bound to its head commit. The session stays quiet, and the run page and the issue show the files.
 
-Paws Closeout counts the same files. With too few, the check fails, and a fix round asks the agent to publish the proof. That fix round does not need a new commit. Evidence checks use the same fix budget as other checks, and `/paws bypass visual-proof -- reason` accepts one without proof. The run page shows the published files in its evidence gallery.
+Paws Closeout counts the same files. With too few, the check fails, and a fix round asks the agent to publish the proof. That fix round does not need a new commit. Evidence checks use the same fix budget as other checks, and bypassing `visual-proof` with a reason on the item page accepts one without proof. The run page shows the published files in its evidence gallery.
 
 ### Human visual review
 
@@ -146,12 +146,13 @@ Paws asks through `ask(item, question)`, the one operation that asks a person. I
 
 A spent budget is always a question, never a state of its own. `failed` means execution stopped with nothing to ask: a crash budget, a run failure or a start timeout.
 
-The question lists every check with its status and attempts. There are two ways to answer:
+The question lists every check with its status and attempts. When the candidate has failed checks and Paws has a public HTTPS link (`PAWS_PUBLIC_URL`), the question is a link ask: Linear gets one Markdown message with the link and no options, and the "Closeout needs your help" card on the item page (`/status/issues/<id>#closeout`) decides. Only the person who delegated the issue or the Linear project's lead can decide there; anyone else is refused and recorded in Audit history.
 
-- **Reply with guidance.** Paws calls `restart(item, answer)` with your reply. The fix rounds and the check attempts start fresh with the same limits, and earlier evidence is kept. Only a reply in the item's session refills a budget; a redispatch or a newer main does not.
-- **Bypass.** `/paws bypass check-id -- reason`, or `/paws bypass check-a,check-b -- reason` for several checks, accepts those checks for this exact head. The bypass is recorded with the task, base, head, policy and your reason, and Paws verifies the same head again with it. It does not carry over to another commit.
+- **Bypass.** Select failed checks on the card and write a reason for each. The reasons are saved with your name, bound to the task, base, head and policy digest, and Paws verifies the same head again with them. A new commit runs every check again. The pull request body lists each bypassed check with its reason and who approved it, and Audit history records the decision.
+- **Send guidance instead.** Paws calls `restart(item, answer)` with your text. The fix rounds and the check attempts start fresh with the same limits, and earlier evidence is kept. Only a person's answer for the item refills a budget; a redispatch or a newer main does not.
+- **Stop.** Stops the item and keeps its branch, as the item's Stop control does.
 
-Only a bypass in reply to this question counts. A bypass the agent proposes in its own question has no effect.
+A reply in Linear is guidance, whatever it says. `/paws bypass check -- reason` in a reply bypasses nothing: Paws sends it to the agent as guidance and answers once with the link to the card. Without a public link the question stays a Linear question, a reply is guidance, and no check can be bypassed.
 
 ### After acceptance
 
