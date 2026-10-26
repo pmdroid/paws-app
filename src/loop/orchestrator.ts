@@ -310,6 +310,13 @@ import {
   visualReviewHandoff,
 } from "./visual-review";
 import {
+  closeLinkAsksOnHead,
+  decideLinkAsk,
+  guideLinkAsk,
+  remindLinkAsk,
+  type LinkAskEffects,
+} from "./link-ask";
+import {
   acceptCloseout,
   retryMergeLater,
   waitForMergeTurn,
@@ -1314,6 +1321,11 @@ export class Orchestrator {
       const questionId = readString(job.payload, "questionId");
       if (!context.isCurrent() || questionId === null) return;
       if (remindVisualReview(this.db, questionId, this.now())) await this.flush();
+    });
+    jobs.register(JOB_KIND.linkAskReminder, async (job, context) => {
+      const questionId = readString(job.payload, "questionId");
+      if (!context.isCurrent() || questionId === null) return;
+      if (remindLinkAsk(this.db, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.reaskQuestion, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
@@ -2624,6 +2636,7 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     options: { decide?: boolean; reverifyJobId?: number } = {},
   ): Promise<void> {
+    if (closeLinkAsksOnHead(this.db, item.id, head, this.now()) > 0) await this.flush();
     if (!options.decide && (await this.openVisualReviewCheck(item, worktree, base, head)))
       await this.flush();
     let decide = options.decide ?? false;
@@ -3848,6 +3861,22 @@ export class Orchestrator {
         return "rejected";
       }
       return this.answerVisualReview(open, review, event.dedupeKey, answer, answeredBy);
+    }
+    // A reply never decides a link ask: it goes to the agent as guidance.
+    if (open.kind === "link") {
+      const guided = guideLinkAsk(this.db, {
+        questionId: open.id,
+        eventKey: event.dedupeKey,
+        body: answer,
+        answeredBy,
+        now: this.now(),
+      });
+      if (guided) {
+        this.abortItem(open.itemId);
+        this.dispatch();
+      }
+      await this.flush();
+      return guided ? "answered" : "rejected";
     }
     // The installation check answers its own waiting question when the App returns.
     if (open.kind === "github-auth") return "rejected";
@@ -5481,6 +5510,21 @@ export class Orchestrator {
     const pending = pendingVisualReview(this.db, item);
     if (pending) cancelQuestion(this.db, pending.question.id, this.now());
     return pending !== null;
+  }
+
+  /** A decision made on the item page. `effects` are what an approval does per kind. */
+  async decideLinkAsk(
+    input: Omit<Parameters<typeof decideLinkAsk>[1], "now">,
+    effects: LinkAskEffects = {},
+  ): Promise<"answered" | "forbidden" | "rejected"> {
+    const itemId = getQuestion(this.db, input.questionId)?.itemId;
+    const outcome = decideLinkAsk(this.db, { ...input, now: this.now() }, effects);
+    if (outcome === "answered" && itemId && getWorkItem(this.db, itemId)?.state === "queued") {
+      this.abortItem(itemId);
+      this.dispatch();
+    }
+    await this.flush();
+    return outcome;
   }
 
   async requestVisualReviewChanges(input: {
