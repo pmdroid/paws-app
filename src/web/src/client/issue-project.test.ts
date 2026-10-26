@@ -1,12 +1,11 @@
+import { statusFixture } from "../../../../test/fixtures/status";
 import { expect, test } from "bun:test";
-import { demoStatus } from "../demo";
 import { issueRowMatches, NO_PROJECT_FILTER, render } from "./render";
 
-const snapshot = demoStatus();
+const snapshot = statusFixture();
 const model = {
   phase: "ready" as const,
   snapshot,
-  via: "bundled" as const,
   error: null,
   engineUrl: null,
 };

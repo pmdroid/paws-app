@@ -7,7 +7,6 @@ import {
   STATUS_PAGE_PATH,
   type StatusSnapshot,
 } from "../contract";
-import { demoStatus } from "../demo";
 import {
   createLiveStatusProvider,
   emptyLiveSnapshot,
@@ -27,7 +26,7 @@ export interface StatusServerOptions {
   sessionIds?: readonly string[];
   trustedOrigin?: string;
   /**
-   * Live reader. Used for `/api/status` unless the request asks for demo data.
+   * Live reader for `/api/status`.
    * Omit it and pass `db` to read the engine database. Omit both for an empty
    * live snapshot (`source: "live"`, no items).
    */
@@ -35,11 +34,11 @@ export interface StatusServerOptions {
   /** Opened engine database. Ignored when `provider` is set. */
   db?: Database;
   /**
-   * Directory from `bun run build:status` (`index.html`, `config.json`, `assets/`).
+   * Directory from `bun run build:status` (`index.html`, `assets/`).
    * Omit it to use `src/web/dist` when that build exists. Pass `null` to skip files.
    */
   staticDir?: string | null;
-  /** Defaults to `process.env`. `PAWS_STATUS_DEMO=1` forces the sample snapshot. */
+  /** Defaults to `process.env`. */
   env?: Record<string, string | undefined>;
   csrfToken?: string;
   closeoutHome?: string;
@@ -52,7 +51,7 @@ export interface StatusServerOptions {
 export function fakeStatusProvider(): StatusProvider {
   return {
     snapshot() {
-      return demoStatus();
+      return emptyLiveSnapshot();
     },
   };
 }
@@ -104,7 +103,7 @@ export async function handleStatusRequest(
   if (artifact !== null) return artifact;
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
-  if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(url, options));
+  if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(options));
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -151,12 +150,8 @@ export function startStatusServer(options?: {
   });
 }
 
-/**
- * Demo only when the request asks for it (`?engine=demo`) or the process is
- * started with `PAWS_STATUS_DEMO=1`. Every other status read is live.
- */
-export function providerFor(url: URL, options: StatusServerOptions): StatusProvider {
-  if (demoRequested(url, options.env)) return fakeStatusProvider();
+/** The serving process is the dashboard's only data source. */
+export function providerFor(options: StatusServerOptions): StatusProvider {
   return liveProvider(options);
 }
 
@@ -218,12 +213,6 @@ function artifactHome(options: StatusServerOptions): string | null {
       : (options.env ?? process.env).PAWS_HOME;
   if (home !== undefined && home.length > 0) return join(home, "closeout", "evidence");
   return null;
-}
-
-function demoRequested(url: URL, env: Record<string, string | undefined> | undefined): boolean {
-  if (url.searchParams.get("engine") === "demo") return true;
-  const source = env ?? process.env;
-  return source.PAWS_STATUS_DEMO === "1";
 }
 
 async function apiResponse(request: Request, provider: StatusProvider): Promise<Response> {
@@ -296,11 +285,7 @@ function relativePagePath(pathname: string): string | null {
 }
 
 function isPublicFile(relative: string): boolean {
-  return (
-    relative === "index.html" ||
-    relative === "config.json" ||
-    /^assets\/[A-Za-z0-9._-]+$/.test(relative)
-  );
+  return relative === "index.html" || /^assets\/[A-Za-z0-9._-]+$/.test(relative);
 }
 
 function safeFile(staticDir: string, relative: string): string | null {
@@ -320,7 +305,7 @@ function pageHtml(staticDir: string | null, name: string, csrfToken?: string): R
   return html(injectCsrf(withBase(body), csrfToken));
 }
 
-/** Engine pages live at `/status`, so relative asset URLs need that base. The Vercel build does not. */
+/** Engine pages live at `/status`, so relative asset URLs need that base. */
 function withBase(body: string): string {
   const tag = '<base href="/status/" />';
   if (body.includes('<base href="/" />')) return body.replace('<base href="/" />', tag);

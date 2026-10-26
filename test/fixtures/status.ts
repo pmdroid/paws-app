@@ -1,11 +1,12 @@
-import type { StatusItemEvent, StatusSnapshot } from "./contract";
+// Test data for dashboard rendering. Never imported by production code.
+import type { StatusItemEvent, StatusSnapshot } from "../../src/web/src/contract";
 
 const AT = "2026-10-09T22:15:00.000Z";
 const AUDIT = { id: "linear-audit", name: "Audit log export" };
 
-const DEMO: StatusSnapshot = {
+const FIXTURE: StatusSnapshot = {
   version: 1,
-  source: "demo",
+  source: "live",
   generatedAt: AT,
   project: {
     name: "Platform",
@@ -471,8 +472,8 @@ function agentCloseout(): NonNullable<StatusSnapshot["agentCloseout"]>[number] {
   };
 }
 
-export function demoStatus(): StatusSnapshot {
-  return structuredClone(DEMO);
+export function statusFixture(): StatusSnapshot {
+  return structuredClone(FIXTURE);
 }
 
 function item(input: {

@@ -245,7 +245,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "inline-block size-9 shrink-0 rounded-base border-2 border-border bg-main text-center text-sm font-bold leading-8 text-main-foreground",
     );
-  if (has("st", "tag", "cnt", "n", "kind", "ico", "ph", "pill", "demo-pill", "live-pill")) {
+  if (has("st", "tag", "cnt", "n", "kind", "ico", "ph", "pill")) {
     const state = has("err", "bad", "failed", "exhausted", "needs_human", "rejected", "blocked")
       ? "bg-red-200 text-black"
       : has("merged", "completed", "accepted", "passed", "done", "ok")
@@ -568,7 +568,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "ul" && has("overview-work"))
     return styled("m-0 list-none divide-y-2 divide-border p-0");
   if (name === "li" || has("it", "act", "qe")) return styled("py-3");
-  if (has("demo-bar", "live-bar", "err-bar"))
+  if (has("err-bar"))
     return styled(
       "flex flex-wrap items-center gap-2 rounded-base border-2 border-border bg-secondary-background p-3 text-sm leading-relaxed",
     );

@@ -1,3 +1,4 @@
+import { statusFixture } from "../fixtures/status";
 // Draws on the screenshots of a waiting visual review at desktop (mouse) and 390 px (touch), sends
 // Request changes, and checks the marked PNGs keep each screenshot's size, then captures the pages.
 // Fails on horizontal scroll, page errors, or a missing or misplaced mark.
@@ -5,7 +6,7 @@
 import { chromium, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { demoStatus, handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/web";
 
 const directory = resolve(process.argv[2] ?? "review-draw-evidence");
 await mkdir(directory, { recursive: true });
@@ -33,7 +34,7 @@ const files = new Map<string, Uint8Array>([
 ]);
 
 function fixture() {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   snapshot.source = "live";
   const run = snapshot.runs.find((entry) => entry.id === "r-102")!;
   const item = snapshot.items.find((entry) => entry.id === run.itemId)!;

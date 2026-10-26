@@ -1,5 +1,5 @@
 import type { EvidenceKind, StatusEvidence, StatusSnapshot } from "../contract";
-import { parseEngineUrl } from "../endpoint";
+import { parseEngineUrl } from "./format";
 import { checkHash } from "./closeout";
 import { esc } from "./format";
 import { routeHref } from "./route";

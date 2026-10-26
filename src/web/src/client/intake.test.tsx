@@ -1,7 +1,7 @@
+import { statusFixture } from "../../../../test/fixtures/status";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusSnapshot, type StatusIntakeEntry, type StatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
 import { render } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -29,7 +29,7 @@ function waiting(
 }
 
 function burst(): StatusSnapshot {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   snapshot.generatedAt = NOW;
   snapshot.intake = [
     waiting("ENG-301", "Export audit log as CSV", 240, {
@@ -58,7 +58,6 @@ function overview(snapshot: StatusSnapshot): string {
     route: { view: "overview" },
     phase: "ready",
     snapshot,
-    via: "engine",
     error: null,
     engineUrl: null,
   }).content;
@@ -104,7 +103,7 @@ describe("intake queue and Linear budget on the overview", () => {
   });
 
   test("an empty queue with a known budget still shows the budget", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.items = [];
     snapshot.questions = [];
     snapshot.intake = [];
@@ -127,7 +126,7 @@ describe("intake queue and Linear budget on the overview", () => {
   });
 
   test("a snapshot without intake data renders the overview as before", () => {
-    expect(overview(demoStatus())).not.toContain("intake-heading");
+    expect(overview(statusFixture())).not.toContain("intake-heading");
   });
 
   test("390 px: rows wrap and long errors break instead of widening the page", () => {
@@ -145,7 +144,7 @@ describe("intake queue and Linear budget on the overview", () => {
   });
 
   test("a webhook Linear may have disabled is a warning with the fix, on desktop and at 390 px", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.generatedAt = NOW;
     snapshot.linearWebhook = {
       warning:
@@ -164,7 +163,7 @@ describe("intake queue and Linear budget on the overview", () => {
     const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.snapshot.linearWebhook).toEqual(snapshot.linearWebhook);
-    expect(overview(demoStatus())).not.toContain('role="alert"');
+    expect(overview(statusFixture())).not.toContain('role="alert"');
   });
 
   test("the status contract carries the queue and budget and rejects a bad timestamp", () => {

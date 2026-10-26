@@ -129,19 +129,6 @@ const assert = require("node:assert/strict");
       name: "Mobile Resume and confirmed selected-item Stop update live authoritative controls without overflow",
       passed: true,
     });
-    const demo = await pageFor("member");
-    await demo.goto(`${manifest.origin}/status/?engine=demo#/runs`);
-    await demo.locator("#execution-controls").waitFor({ state: "attached" });
-    assert.equal(await demo.locator("#execution-controls").isVisible(), false);
-    await demo.goto(
-      `${manifest.origin}/status/?engine=${encodeURIComponent("https://outside.example")}#/runs`,
-    );
-    await demo.getByRole("status").filter({ hasText: "Offline" }).waitFor();
-    assert.equal(await demo.locator("#execution-controls").isVisible(), false);
-    observations.push({
-      name: "Observer, demo and external-engine views expose no execution mutations",
-      passed: true,
-    });
     assert.equal(errors.length, 0, errors.join("\n"));
     assert.deepEqual(
       requests.map((request) => request.action),

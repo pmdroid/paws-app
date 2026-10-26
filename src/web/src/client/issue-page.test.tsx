@@ -1,15 +1,15 @@
+import { statusFixture } from "../../../../test/fixtures/status";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusSnapshot, statusIntegrity, type StatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
 import { emptyCloseoutView } from "./closeout";
 import { plainTask, render } from "./render";
 import { themedMarkup } from "./theme";
 
 /** ENG-101 delegated twice: the current session shares a Linear session with ENG-102. */
 function redelegated(): StatusSnapshot {
-  const snapshot = demoStatus();
+  const snapshot = statusFixture();
   const item = snapshot.items.find((entry) => entry.id === "ENG-101")!;
   const run = snapshot.runs.find((entry) => entry.itemId === "ENG-101")!;
   item.session = {
@@ -45,7 +45,6 @@ function page(snapshot: StatusSnapshot, id = "ENG-101"): string {
     route: { view: "issues", id },
     phase: "ready",
     snapshot,
-    via: "bundled",
     error: null,
     engineUrl: null,
     closeout: emptyCloseoutView(),

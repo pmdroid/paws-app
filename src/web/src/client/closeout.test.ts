@@ -1,9 +1,9 @@
+import { statusFixture } from "../../../../test/fixtures/status";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusSnapshot } from "../contract";
-import { demoStatus } from "../demo";
 import {
   checkHash,
   checkKey,
@@ -18,7 +18,7 @@ import { themedMarkup } from "./theme";
 const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
 
 function verdict(id: string) {
-  const found = demoStatus().verdicts.find((entry) => entry.itemId === id);
+  const found = statusFixture().verdicts.find((entry) => entry.itemId === id);
   if (!found) throw new Error(`missing ${id}`);
   return found;
 }
@@ -27,8 +27,7 @@ function runPage(patch: Partial<RenderModel>): string {
   return render({
     route: { view: "runs", id: "r-100" },
     phase: "ready",
-    snapshot: demoStatus(),
-    via: "bundled",
+    snapshot: statusFixture(),
     error: null,
     engineUrl: null,
     ...patch,
@@ -36,8 +35,8 @@ function runPage(patch: Partial<RenderModel>): string {
 }
 
 describe("closeout checks", () => {
-  test("the demo snapshot with attempts passes the contract", () => {
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(demoStatus())));
+  test("the fixture with attempts passes the contract", () => {
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(statusFixture())));
     if (!parsed.ok) throw new Error(parsed.error);
     const attempts = parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-100")?.attempts;
     expect(attempts?.map((entry) => entry.decision)).toEqual(["rejected", "rejected", "exhausted"]);
@@ -165,7 +164,7 @@ describe("closeout checks", () => {
   });
 
   test("a run without Closeout has no Closeout section", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.verdicts = snapshot.verdicts.filter((entry) => entry.itemId !== "ENG-100");
     const html = runPage({ snapshot });
     expect(html).not.toContain('aria-label="Closeout"');
@@ -227,7 +226,7 @@ describe("independent review measurements", () => {
   });
 
   test("a measured review survives the status contract", () => {
-    const snapshot = demoStatus();
+    const snapshot = statusFixture();
     snapshot.verdicts = [measured()];
     const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
     if (!parsed.ok) throw new Error(parsed.error);

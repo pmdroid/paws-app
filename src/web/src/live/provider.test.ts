@@ -940,7 +940,7 @@ describe("live status provider", () => {
     expect(statusIntegrity(snapshot)).toEqual([]);
   });
 
-  test("demo is opt-in and does not replace a live database unless asked", async () => {
+  test("the serving database is the single source despite retired overrides", async () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-9", title: "Hang", now: 1 });
     const live = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
@@ -956,15 +956,15 @@ describe("live status provider", () => {
       { db, env: {} },
     );
     const queryBody = (await query?.json()) as { source: string; items: Array<{ id: string }> };
-    expect(queryBody.source).toBe("demo");
-    expect(queryBody.items.some((item) => item.id === "ENG-9")).toBe(false);
+    expect(queryBody.source).toBe("live");
+    expect(queryBody.items.map((item) => item.id)).toEqual(["ENG-9"]);
 
     const flagged = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
       db,
       env: { PAWS_STATUS_DEMO: "1" },
     });
     const flaggedBody = (await flagged?.json()) as { source: string };
-    expect(flaggedBody.source).toBe("demo");
+    expect(flaggedBody.source).toBe("live");
   });
   test("intake queue and Linear budget come from the inbox and the ledger, scoped to the session", async () => {
     const db = database();
