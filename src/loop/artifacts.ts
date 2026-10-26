@@ -137,6 +137,7 @@ export function createEvidenceArtifactPublisher(options: {
         context.runId,
         evidence.checkId,
         evidence.attempt,
+        evidence.headCommit,
         artifact.displayName,
         artifact.sha256,
       ]);
@@ -150,6 +151,7 @@ export function createEvidenceArtifactPublisher(options: {
               row.runId === context.runId &&
               row.checkId === evidence.checkId &&
               row.attempt === evidence.attempt &&
+              row.headCommit === evidence.headCommit &&
               row.displayName === artifact.displayName &&
               row.sha256 === artifact.sha256,
           ) ??

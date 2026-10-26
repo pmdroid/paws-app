@@ -21,7 +21,12 @@ import {
   type StoredQuestion,
 } from "./store";
 
-export type QuestionAsker = { itemId: string; runId: string | null; sessionId: string };
+export type QuestionAsker = {
+  itemId: string;
+  runId: string | null;
+  sessionId: string;
+  version?: number;
+};
 
 export type Asked = { status: "asked" | "queued"; question: StoredQuestion };
 
@@ -60,6 +65,7 @@ export function ask(
   kind: QuestionKind,
   body: string,
   input: {
+    reason?: string;
     options?: readonly QuestionOption[];
     context?: string;
     now?: number;
@@ -80,6 +86,7 @@ export function ask(
     const inserted = insertQuestion(db, {
       ...asker,
       kind,
+      reason: input.reason ?? kind,
       body,
       ...(input.options === undefined ? {} : { options: input.options }),
       ...(input.context === undefined ? {} : { context: input.context }),

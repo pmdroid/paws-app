@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
+  applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
   enterMergeQueue,
@@ -11,7 +12,7 @@ import {
   openDatabase,
   recordRebaseReturn,
 } from "../db";
-import { ask, findOpenQuestion, getQuestion } from "../questions";
+import { ask as rawAsk, findOpenQuestion, getQuestion } from "../questions";
 import { askMergeHelp, ciFixes, rebaseReturns, returnToAgent } from "./returns";
 
 function queued() {
@@ -43,13 +44,18 @@ describe("merge returns", () => {
     const db = queued();
     const { sent, announced } = sendBack(db);
     expect(sent).toBe(true);
-    expect(getWorkItem(db, "eng-1")?.state).toBe("running");
+    expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
     expect(getWorkItem(db, "eng-1")?.checkpoint?.phase).toBe("running");
     expect(listJobs(db).map((job) => [job.queue, job.jobKey, job.payload])).toEqual([
       [
         JOB_KIND.resume,
         "rebase-conflict:eng-1:0:0",
-        { itemId: "eng-1", handoff: "rebase", reason: "rebase-conflict" },
+        {
+          itemId: "eng-1",
+          runId: getWorkItem(db, "eng-1")?.currentRunId,
+          handoff: "rebase",
+          reason: "conflict",
+        },
       ],
     ]);
     expect(announced).toEqual(["1:eng-1:rebase-conflict:0:0"]);
@@ -81,6 +87,7 @@ describe("merge returns", () => {
     const db = queued();
     expect(
       askMergeHelp(db, {
+        ask,
         itemId: "eng-1",
         body: "CI failed.",
         now: 2,
@@ -96,7 +103,7 @@ describe("merge returns", () => {
     insertQueuedItem(db, { id: "eng-2", now: 1, sessionKey: "s-1" });
     const open = ask(db, { itemId: "eng-2", runId: null, sessionId: "s-1" }, "agent", "Which?");
     expect(
-      askMergeHelp(db, { itemId: "eng-1", body: "CI failed.", now: 2, session: () => "s-1" }),
+      askMergeHelp(db, { ask, itemId: "eng-1", body: "CI failed.", now: 2, session: () => "s-1" }),
     ).toBe(true);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
     expect(findOpenQuestion(db, "s-1")?.id).toBe(open.question.id);
@@ -108,14 +115,25 @@ describe("merge returns", () => {
 
   test("asking again while a question is open, or without a session, asks nothing", () => {
     const db = queued();
-    expect(askMergeHelp(db, { itemId: "eng-1", body: "x", now: 2, session: () => null })).toBe(
+    expect(askMergeHelp(db, { ask, itemId: "eng-1", body: "x", now: 2, session: () => null })).toBe(
       false,
     );
-    expect(askMergeHelp(db, { itemId: "eng-1", body: "x", now: 2, session: () => "s-1" })).toBe(
-      true,
-    );
-    expect(askMergeHelp(db, { itemId: "eng-1", body: "y", now: 3, session: () => "s-1" })).toBe(
-      false,
-    );
+    expect(
+      askMergeHelp(db, { ask, itemId: "eng-1", body: "x", now: 2, session: () => "s-1" }),
+    ).toBe(true);
+    expect(
+      askMergeHelp(db, { ask, itemId: "eng-1", body: "y", now: 3, session: () => "s-1" }),
+    ).toBe(false);
   });
 });
+
+const ask: typeof rawAsk = (db, asker, ...args) => {
+  const result = rawAsk(db, asker, ...args);
+  if (
+    ["running", "verifying", "recovering", "merge_queue"].includes(
+      getWorkItem(db, asker.itemId)?.state ?? "",
+    )
+  )
+    applyWorkItemEvent(db, asker.itemId, "blocking_question");
+  return result;
+};

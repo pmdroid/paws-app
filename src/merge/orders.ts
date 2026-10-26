@@ -1,3 +1,4 @@
+import type { ask } from "../questions";
 import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
@@ -39,6 +40,7 @@ export type MergeVoice = {
 };
 
 export type OrderCapabilities = {
+  ask: typeof ask;
   now(): number;
   stopped(): boolean;
   session(item: WorkItemRecord): string | null;
@@ -87,7 +89,13 @@ export function sendBack(
 }
 
 export function askHelp({ db, item, caps }: MergeContext, body: string): boolean {
-  return askMergeHelp(db, { itemId: item.id, body, now: caps.now(), session: caps.session });
+  return askMergeHelp(db, {
+    itemId: item.id,
+    body,
+    now: caps.now(),
+    session: caps.session,
+    ask: caps.ask,
+  });
 }
 
 export function ciRound(

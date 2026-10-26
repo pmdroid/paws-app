@@ -3,6 +3,7 @@ import { FakeClock, type Checkpoint } from "../core";
 import { RUNNER_LEASE_GRACE_MS } from "../runner-protocol";
 import {
   beginImplementRun,
+  halt,
   getRun,
   getWorkItem,
   insertQueuedItem,
@@ -89,6 +90,16 @@ describe("the runner lease grace", () => {
     clock.advance(PAST);
     expect(runnerOccupancy(db, "runner", clock.now())).toEqual({ capacity: 1, occupied: 0 });
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
+  });
+
+  test("halt keeps an unsettled runner occupied through the grace", () => {
+    const { clock, db, item, run } = leased();
+    clock.advance(RENEWAL_MS + 59_000);
+    halt(db, getWorkItem(db, item.id)!, clock.now());
+    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect(runnerHasCapacity(db, "runner", clock.now())).toBe(false);
+    clock.advance(RUNNER_LEASE_GRACE_MS);
+    expect(runnerHasCapacity(db, "runner", clock.now())).toBe(true);
   });
 
   test("the halt core may release past the grace", () => {

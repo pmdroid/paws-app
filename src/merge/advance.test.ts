@@ -1,5 +1,7 @@
+import { ask as rawAsk } from "../questions";
 import { describe, expect, test } from "bun:test";
 import {
+  applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
   getWorkItem,
@@ -25,6 +27,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     throw new Error(`${name} was not expected`);
   };
   const caps: MergeCapabilities = {
+    ask,
     now: () => 10,
     stopped: () => false,
     publish: unused("publish"),
@@ -90,3 +93,10 @@ describe("advanceMerge", () => {
     });
   });
 });
+
+const ask: typeof rawAsk = (db, asker, ...args) => {
+  const result = rawAsk(db, asker, ...args);
+  if (getWorkItem(db, asker.itemId)?.state !== "awaiting_input")
+    applyWorkItemEvent(db, asker.itemId, "blocking_question");
+  return result;
+};
