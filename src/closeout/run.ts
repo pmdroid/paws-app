@@ -658,7 +658,8 @@ function withoutReviewPlan(
   };
 }
 
-class PolicyFetchError extends Error {
+/** origin/main could not be read for the policy because of a temporary git failure. */
+export class PolicyFetchError extends Error {
   override name = "PolicyFetchError";
 }
 
