@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
 // Draws on the screenshots of a waiting visual review at desktop (mouse) and 390 px (touch), sends
 // Request changes, and checks the marked PNGs keep each screenshot's size, then captures the pages.
 // Fails on horizontal scroll, page errors, or a missing or misplaced mark.
@@ -34,7 +34,7 @@ const files = new Map<string, Uint8Array>([
 ]);
 
 function fixture() {
-  const snapshot = statusFixture();
+  const snapshot = fullStatusFixture();
   snapshot.source = "live";
   const run = snapshot.runs.find((entry) => entry.id === "r-102")!;
   const item = snapshot.items.find((entry) => entry.id === run.itemId)!;
@@ -131,7 +131,7 @@ const server = Bun.serve({
     }
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => state.snapshot },
+        provider: fixtureProvider(() => state.snapshot),
         csrfToken: "review-draw-fixture",
       })) ?? new Response(null, { status: 404 })
     );

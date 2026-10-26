@@ -635,3 +635,15 @@ export function pageData(
     detail: known ? itemDetail(full, issue) : null,
   };
 }
+
+/** A status provider over `full`: the list, and each issue's detail for its page. */
+export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
+  snapshot(): StatusSnapshot;
+  item(id: string): StatusItemDetail | null;
+} {
+  const read = typeof full === "function" ? full : () => full;
+  return {
+    snapshot: () => statusList(read()),
+    item: (id) => (read().items.some((entry) => entry.id === id) ? itemDetail(read(), id) : null),
+  };
+}

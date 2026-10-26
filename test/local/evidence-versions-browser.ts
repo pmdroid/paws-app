@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -19,7 +19,7 @@ const PUBLISHED = [
   "2026-10-23T17:56:00.000Z",
 ];
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const run = snapshot.runs.find((entry) => entry.id === "r-102")!;
 snapshot.evidence = PUBLISHED.flatMap((publishedAt, copy) =>
@@ -65,7 +65,7 @@ const server = Bun.serve({
       });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "evidence-versions-fixture",
       })) ?? new Response(null, { status: 404 })
     );
