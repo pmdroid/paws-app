@@ -2,7 +2,9 @@ import type { LinearMergeContext } from "./merge-context";
 import type { TrackerRequestOptions } from "./adapter";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearIssueContext } from "./issue-context";
+import type { FiledSubIssue } from "../core";
 import type { ProjectOverview } from "./project-scope";
+import { subIssueId, validateSubIssueRequest, type SubIssueRequest } from "./sub-issues";
 import type { LinearSessionAdapter } from "./sessions";
 import { activityInput, elicitationInput, validateSessionUpdate, validateUrls } from "./sessions";
 import {
@@ -40,6 +42,14 @@ export type FakeTracker = LinearSessionAdapter &
       options?: TrackerRequestOptions,
     ): Promise<ProjectOverview | null>;
     repositoryLabels: { issueId: string; repository: string }[];
+    /** Every createSubIssues call, including retries, in order. */
+    subIssueRequests: SubIssueRequest[];
+    /** Filed sub-issues per parent; a retried key returns the same issues. */
+    subIssues: Map<string, (FiledSubIssue & { key: string; blockedBy: readonly string[] })[]>;
+    createSubIssues(
+      request: SubIssueRequest,
+      options?: TrackerRequestOptions,
+    ): Promise<FiledSubIssue[]>;
     /** Project and labels per issue. A missing issue has neither. */
     mergeContexts: Map<string, LinearMergeContext>;
     issueMergeContext(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
@@ -71,6 +81,11 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const projectOverviews = new Map<string, ProjectOverview>();
   const repositoryLabels: { issueId: string; repository: string }[] = [];
   const mergeContexts = new Map<string, LinearMergeContext>();
+  const subIssueRequests: SubIssueRequest[] = [];
+  const subIssues = new Map<
+    string,
+    (FiledSubIssue & { key: string; blockedBy: readonly string[] })[]
+  >();
   async function createActivity(update: ProgressUpdate, options?: TrackerRequestOptions) {
     options?.signal?.throwIfAborted();
     activityInput(update);
@@ -141,6 +156,36 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     async addRepositoryLabel(input, options) {
       options?.signal?.throwIfAborted();
       repositoryLabels.push({ ...input });
+    },
+    subIssueRequests,
+    subIssues,
+    async createSubIssues(request, options) {
+      options?.signal?.throwIfAborted();
+      const drafts = validateSubIssueRequest(request);
+      subIssueRequests.push(structuredClone(request));
+      const parent = byId.get(request.parentIssueId);
+      const children = subIssues.get(request.parentIssueId) ?? [];
+      subIssues.set(request.parentIssueId, children);
+      const ids = drafts.map((_, index) => subIssueId(request.key, index));
+      return drafts.map((draft, index) => {
+        const existing = children.find((child) => child.id === ids[index]);
+        if (existing)
+          return { id: existing.id, identifier: existing.identifier, url: existing.url };
+        const identifier = `${parent?.identifier ?? "FAKE"}-${children.length + 1}`;
+        const filed = {
+          id: ids[index]!,
+          identifier,
+          url: `https://linear.app/fake/issue/${identifier}`,
+        };
+        children.push({
+          ...filed,
+          key: request.key,
+          blockedBy: draft.blockedBy.map((position) => ids[position]!),
+        });
+        if (request.repository)
+          repositoryLabels.push({ issueId: filed.id, repository: request.repository });
+        return filed;
+      });
     },
     async issueRepositoryHints(issueId, options) {
       options?.signal?.throwIfAborted();

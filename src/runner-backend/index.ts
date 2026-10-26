@@ -60,6 +60,8 @@ import {
   type UsageLimitWait,
 } from "./failover";
 import {
+  isReadOnlyTaskMode,
+  isResponseTaskMode,
   PawsShutdown,
   RunnerCapacityWait,
   RunnerSetupRequired,
@@ -367,7 +369,7 @@ export function createRemoteAgentRunner(options: {
       }
       try {
         const mode = getTaskMode(db, itemId);
-        if (mode === "answer" || mode === "artifact")
+        if (isResponseTaskMode(mode))
           work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
         else work.scope(item.currentRunId, runner.workspaceId);
         reservations.set(item.currentRunId, runner.id);
@@ -460,11 +462,11 @@ export function createRemoteAgentRunner(options: {
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
         const mode = getTaskMode(db, itemId);
-        const responseTask = mode === "answer" || mode === "artifact";
+        const responseTask = isResponseTaskMode(mode);
         if (
           responseTask &&
           (input.role !== "implementer" ||
-            (!input.prepareOnly && Boolean(input.readOnly) !== (mode === "answer")))
+            (!input.prepareOnly && Boolean(input.readOnly) !== isReadOnlyTaskMode(mode)))
         )
           throw new Error("Remote response task role or access changed");
         if (responseTask && !options.transcripts)

@@ -311,7 +311,9 @@ export function createLinearSessionProgress(
         next === "working"
           ? mode === "answer"
             ? "preparing answer"
-            : "creating files"
+            : mode === "plan"
+              ? "planning sub-issues"
+              : "creating files"
           : next === "fixing"
             ? "fixing Closeout findings"
             : next;
@@ -338,7 +340,9 @@ export function createLinearSessionProgress(
       const line =
         current === "working" && mode === "answer"
           ? "Preparing the answer for"
-          : PHASE_LINES[current];
+          : current === "working" && mode === "plan"
+            ? "Planning sub-issues for"
+            : PHASE_LINES[current];
       return `${line} ${identifier}.`;
     },
     status(text: string) {

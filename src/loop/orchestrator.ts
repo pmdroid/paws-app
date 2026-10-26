@@ -82,8 +82,12 @@ import {
   OUTBOX_ACTIVITY,
   delegationIssueIdSql,
   isTerminalWorkItemState,
+  isReadOnlyTaskMode,
+  isResponseTaskMode,
   parentTaskKeySql,
   type Clock,
+  type ResponseTaskMode,
+  type TaskMode,
   type LinearCommand,
   type RepositoryBinding,
   PawsShutdown,
@@ -116,6 +120,7 @@ import {
   acceptLinearStop,
   listPendingLinearTurns,
   saveTaskMode,
+  savePlanProposal,
   taskRequiresRepository,
   selectTaskModeForTurn,
   completeAnswerTask,
@@ -351,6 +356,7 @@ import {
 import { createLinearInputLoader, createReviewMarkLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
+import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./plan-proposal";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
 import { sweepWorktrees } from "./worktree-sweep";
@@ -786,7 +792,7 @@ export class Orchestrator {
           questionItem &&
           question &&
           !isWorkItemRepositoryQuestion(this.db, questionItem.id, question.id) &&
-          ["answer", "artifact"].includes(getTaskMode(this.db, questionItem.id) ?? ""),
+          isResponseTaskMode(getTaskMode(this.db, questionItem.id)),
         ),
       );
       if (event.sessionId) {
@@ -1750,7 +1756,7 @@ export class Orchestrator {
         item = getWorkItem(this.db, loaded.id);
         if (!item || item.state !== "running" || item.cancelRequested) return;
         const mode = getTaskMode(this.db, item.id);
-        if (mode === "answer" || mode === "artifact") {
+        if (isResponseTaskMode(mode)) {
           if (
             taskRequiresRepository(this.db, item.id) &&
             !(await this.selectRepository(item, "read"))
@@ -1810,7 +1816,8 @@ export class Orchestrator {
       this.dispatch();
       return false;
     }
-    if (saved === "code") return true;
+    // Code stays code, and a plan stays a plan through its edits and questions.
+    if (saved === "code" || saved === "plan") return true;
     if (
       saved &&
       taskRequiresRepository(this.db, item.id) &&
@@ -1937,7 +1944,7 @@ export class Orchestrator {
 
   private async runResponse(
     item: WorkItemRecord,
-    mode: "answer" | "artifact",
+    mode: ResponseTaskMode,
     handoff?: string,
   ): Promise<void> {
     const run = this.ensureRun(item);
@@ -2007,7 +2014,9 @@ export class Orchestrator {
       const prompt = [
         mode === "answer"
           ? "Answer the user's request in this Linear conversation. Provide the complete answer in your final message."
-          : "Create the requested deliverable files in this workspace, publish them using publish_artifact, and include the published file links in your complete final response.",
+          : mode === "plan"
+            ? PLAN_PROMPT
+            : "Create the requested deliverable files in this workspace, publish them using publish_artifact, and include the published file links in your complete final response.",
         "Use ask_team when a product decision is required.",
         "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled.",
         POST_UPDATE_PROMPT,
@@ -2037,7 +2046,7 @@ export class Orchestrator {
         pawsRoot: this.options.pawsRoot,
         home: this.options.home,
         prompt,
-        readOnly: mode === "answer",
+        readOnly: isReadOnlyTaskMode(mode),
         publishArtifact: mode === "artifact" ? this.artifactPublisher(item) : undefined,
         checkpoint: false,
         signal: controller.signal,
@@ -2057,6 +2066,10 @@ export class Orchestrator {
       )
         throw new Error(result.errorMessage ?? `Answer stopped (${result.stopReason})`);
       activity.flush();
+      if (mode === "plan") {
+        await this.proposePlan(item, run.id, activity.resultBody());
+        return;
+      }
       const finish = { runId: run.id, announce: () => sessionProgress?.phase("completed") };
       if (mode === "artifact") {
         const links = listArtifacts(this.db, item.id)
@@ -2096,6 +2109,41 @@ export class Orchestrator {
       live.finish();
       await this.flush();
     }
+  }
+
+  /**
+   * Ask to file the drafts a plan turn proposed. The elicitation carries the
+   * proposal and its Create, Edit and Discard options; the drafts are stored
+   * under the question id, which keys the filing.
+   */
+  private async proposePlan(item: WorkItemRecord, runId: string, body: string): Promise<void> {
+    const plan = parsePlanResult(body);
+    const sessionId = this.activitySession(item);
+    if (!sessionId) throw new Error("A plan proposal requires a Linear session");
+    const parentIssueId = this.delegationIssueId(item) ?? item.linearIssueId;
+    const repository = getWorkItemRepository(this.db, item.id);
+    immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (current?.state !== "running" || current.cancelRequested || current.currentRunId !== runId)
+        throw new Error("The task changed before its plan could be proposed");
+      const asked = ask(
+        this.db,
+        { itemId: item.id, runId, sessionId, version: current.version },
+        "plan-approval",
+        planProposalBody(item.linearIdentifier, plan),
+        { options: planOptions(plan.drafts.length), now: this.now() },
+      );
+      savePlanProposal(this.db, {
+        questionId: asked.question.id,
+        itemId: item.id,
+        parentIssueId,
+        repository: repository ? `${repository.owner}/${repository.repo}` : null,
+        drafts: plan.drafts,
+        now: this.now(),
+      });
+      closeActiveRun(this.db, runId, this.now());
+    });
+    await this.flush();
   }
 
   private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
@@ -3570,6 +3618,10 @@ export class Orchestrator {
     if (outcome === "redirect")
       for (const live of this.live.values())
         if (live.itemId === open.itemId) live.controller.abort(FOLLOW_UP_INTERRUPTION);
+    if (outcome === "answered" && open.kind === "plan-approval") {
+      const item = getWorkItem(this.db, open.itemId);
+      if (item?.state === "completed") this.sessionProgress(item, "plan")?.phase("completed");
+    }
     await this.flush();
     return outcome;
   }
@@ -4006,10 +4058,7 @@ export class Orchestrator {
       const item = getWorkItem(this.db, wait.itemId);
       if (!item || item.version !== wait.version || item.sessionKey !== wait.sessionId) continue;
       const mode = getTaskMode(this.db, item.id);
-      const progress = this.sessionProgress(
-        item,
-        mode === "answer" || mode === "artifact" ? mode : "code",
-      );
+      const progress = this.sessionProgress(item, isResponseTaskMode(mode) ? mode : "code");
       if (!progress) continue;
       const name = item.linearIdentifier;
       if (wait.kind === "blocked") {
@@ -4210,7 +4259,7 @@ export class Orchestrator {
     };
   }
 
-  private sessionProgress(item: WorkItemRecord, mode: "code" | "answer" | "artifact" = "code") {
+  private sessionProgress(item: WorkItemRecord, mode: TaskMode = "code") {
     if (!this.tracker?.updateSession) return null;
     const sessionId = this.activitySession(item);
     return sessionId === null

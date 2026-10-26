@@ -1,3 +1,4 @@
+import type { FiledSubIssue } from "../core";
 import type { LinearIssueContext } from "./issue-context";
 import type { LinearSessionSnapshot, LinearActivitySnapshot } from "./history";
 import type {
@@ -14,6 +15,7 @@ import type { LinearRepositoryAdapter } from "./repositories";
 import type { ProjectOverview } from "./project-scope";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearMergeChoices, LinearMergeContext } from "./merge-context";
+import type { SubIssueRequest } from "./sub-issues";
 
 export type TrackerRequestOptions = {
   signal?: AbortSignal;
@@ -42,6 +44,14 @@ export interface TrackerAdapter {
     options?: TrackerRequestOptions,
   ): Promise<ProjectOverview | null>;
   addRepositoryLabel?: LinearRepositoryAdapter["addRepositoryLabel"];
+  /**
+   * File approved drafts under the parent with `blocks` relations and the repository label.
+   * Idempotent per `key`; returns the filed issues in draft order. Nothing is delegated.
+   */
+  createSubIssues?(
+    request: SubIssueRequest,
+    options?: TrackerRequestOptions,
+  ): Promise<FiledSubIssue[]>;
   /** The issue's project and labels, matched by Settings → Merging when a task starts. */
   issueMergeContext?(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
   mergeChoices?(options?: TrackerRequestOptions): Promise<LinearMergeChoices>;

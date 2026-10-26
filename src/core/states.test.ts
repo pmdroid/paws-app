@@ -13,9 +13,11 @@ describe("isBlockerSatisfied", () => {
     "merged:code",
     "merged:answer",
     "merged:artifact",
+    "merged:plan",
     "merged:null",
     "completed:answer",
     "completed:artifact",
+    "completed:plan",
   ]);
   for (const state of WORK_ITEM_STATES)
     for (const mode of [...TASK_MODES, null] as (TaskMode | null)[])

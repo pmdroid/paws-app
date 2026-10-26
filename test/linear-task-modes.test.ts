@@ -22,6 +22,12 @@ test("task classification accepts supported modes and explicit clarification", (
   expect(parseTaskClassification('{"mode":"code"}')).toEqual({ mode: "code" });
   expect(parseTaskClassification('```json\n{"mode":"answer"}\n```')).toEqual({ mode: "answer" });
   expect(parseTaskClassification('{"mode":"artifact"}')).toEqual({ mode: "artifact" });
+  // A plan always reads the repository it splits the work for.
+  expect(parseTaskClassification('{"mode":"plan"}')).toEqual({ mode: "plan", repository: true });
+  expect(parseTaskClassification('{"mode":"plan","repository":false}')).toEqual({
+    mode: "plan",
+    repository: true,
+  });
   expect(parseTaskClassification('{"mode":"answer","repository":true}')).toEqual({
     mode: "answer",
     repository: true,
@@ -37,7 +43,7 @@ test("task classification accepts supported modes and explicit clarification", (
     expect(() => parseTaskClassification(text)).toThrow();
 });
 
-test.each(["code", "answer", "artifact"] as const)(
+test.each(["code", "answer", "artifact", "plan"] as const)(
   "classification runs real ACP in an empty workspace and produces %s without a checkpoint",
   async (mode) => {
     const home = tempHome();
@@ -73,6 +79,7 @@ test.each(["code", "answer", "artifact"] as const)(
         expect(input.prompt).toContain(
           "Any request combining repository changes and files is code",
         );
+        expect(input.prompt).toContain("plan: a request to plan, split, scope");
         expect(existsSync(join(root, "worktrees"))).toBe(false);
         return {
           command: process.execPath,
@@ -85,7 +92,7 @@ test.each(["code", "answer", "artifact"] as const)(
         };
       },
     });
-    expect(result).toEqual({ mode });
+    expect(result).toEqual(mode === "plan" ? { mode, repository: true } : { mode });
     const trace = JSON.parse(readFileSync(join(home, "result.json"), "utf8"));
     expect(JSON.stringify(trace.prompts)).toContain("[private input file]");
     expect(JSON.stringify(trace.prompts)).not.toContain("signature=secret");

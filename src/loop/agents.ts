@@ -23,6 +23,7 @@ export type AgentPurpose =
   | "classify"
   | "answer"
   | "artifact"
+  | "plan"
   | "select_repository";
 
 export type AgentLaunch = (input: {

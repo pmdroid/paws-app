@@ -45,6 +45,13 @@ export {
   selectTaskModeForTurn,
 } from "./tasks";
 export {
+  completePlanTask,
+  getPlanProposal,
+  recordPlanFiled,
+  savePlanProposal,
+  type PlanProposal,
+} from "./plan-proposals";
+export {
   TransitionRejectedError,
   accrueAwake,
   applyWorkItemEvent,
