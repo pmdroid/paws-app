@@ -210,5 +210,7 @@ test("each checked-in review escape names both pull requests, the replay commits
     expect(escape.bug).toMatch(/^\S[^\n]*\.$/);
     expect(escape.confirmedBy).not.toBe("");
     expect(escape.confirmedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(["confirmed", "likely"]).toContain(escape.confidence);
+    if (escape.note !== undefined) expect(escape.note).not.toBe("");
   }
 });
