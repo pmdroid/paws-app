@@ -55,9 +55,23 @@ test("a plan turn's message yields its summary and validated drafts", () => {
   expect(() => parsePlanResult(planMessage([{ ...drafts[0]!, acceptanceCriteria: [] }]))).toThrow(
     "acceptance criteria",
   );
-  expect(
-    ["Create 3 sub-issues", "Discard", "Edit", "edit.", "Split the second one"].map(planDecision),
-  ).toEqual(["create", "discard", "edit-ask", "edit-ask", "edit"]);
+  const replies = {
+    "Create 3 sub-issues": "create",
+    " create 3  sub-issues. ": "create",
+    Create: "create",
+    Discard: "discard",
+    Edit: "edit-ask",
+    "edit.": "edit-ask",
+    "Split the second one": "edit",
+    // Instructions that start with a choice word are edits, never approval to file or discard.
+    "Create a fourth sub-issue for migration": "edit",
+    "Create smaller sub-issues instead": "edit",
+    "Create 2 sub-issues": "edit",
+    "Discard the third one": "edit",
+    "Edit the first title": "edit",
+  };
+  for (const [reply, decision] of Object.entries(replies))
+    expect([reply, planDecision(reply, 3)]).toEqual([reply, decision]);
 });
 
 async function setupPlan() {
@@ -239,11 +253,13 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(edit.kind).toBe("plan-approval");
     expect(edit.body).toContain("What should change");
     expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-    await reply("change", "Drop the smoke-run sub-issue.");
+    await reply("change", "Create smaller sub-issues: drop the smoke-run one.");
     expect(getWorkItem(db, itemId)?.state).toBe("queued");
     await jobs.tick();
     expect(purposes).toEqual(["classify", "plan", "plan"]);
-    expect(prompts.at(-1)).toContain("Requested change: Drop the smoke-run sub-issue.");
+    expect(prompts.at(-1)).toContain(
+      "Requested change: Create smaller sub-issues: drop the smoke-run one.",
+    );
     const second = findOpenQuestion(db, "session")!;
     expect(second.options).toEqual(["Create 2 sub-issues", "Edit", "Discard"]);
     expect(tracker.subIssueRequests).toEqual([]);

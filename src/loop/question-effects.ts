@@ -210,7 +210,7 @@ export function questionEffects(
     if (item.state !== "awaiting_input" || item.cancelRequested) return;
     if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
     const answer = question.answer ?? "";
-    const decision = planDecision(answer);
+    const decision = planDecision(answer, proposal.drafts.length);
     db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
     if (decision === "edit-ask") {
       const asked = ask(
