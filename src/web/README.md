@@ -12,6 +12,9 @@ The Paws process serves the dashboard files and status routes. The live reader i
 - `source` is `"live"`. The serving process builds the body from its own state.
 - `questions` lists open questions only. The page does not answer them.
 - Unknown fields are ignored. The parser rejects a body that does not match.
+
+`GET /api/status/items/<id>` returns one issue for its page, `StatusItemDetail`: the snapshot fields for that issue only (every session of it, its runs, questions, Closeout attempts with checks and findings, agent Closeout, evidence, CI rounds and merge state), plus `blocks`. `events` is empty and check `stdout` and `stderr` are left out. It has the same session gate and session filter as `/api/status`; an issue outside the reader's sessions is 404 like an unknown one. The issue page fetches it when it opens and polls only it while it stays open.
+
 - Each entry in `items` carries `linearRequests`, the Linear API requests Paws made for that item since it was queued. The issue page shows it with the item's other facts.
 - Each entry in `items` may carry `timeline`, every state change of the item from `work_item_event`, oldest first: `at`, `kind` (`transition`, `restart` or `ask`), the engine states `from` and `to`, the `event`, and `reason` and `actor` or `null`. A `restart` names why the item went back to the agent and an `ask` names why Paws asked. The issue page shows it as the "Item timeline" section after the pull request.
 - A queued entry in `items` carries `held` while the scheduler holds it back: a `reason` (`blocked`, `project`, `reconciling`, `snapshot`, `cap`, `slot` or `workspace`) and, for `blocked`, the `blockers` that have not merged yet. The scheduler stores it on each pass and writes a journal line each time it changes. The issue page shows it as a "Waiting:" line, such as "Waiting: blocked by PAS-367".

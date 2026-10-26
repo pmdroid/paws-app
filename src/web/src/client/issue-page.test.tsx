@@ -2,7 +2,12 @@ import { statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusSnapshot, statusIntegrity, type StatusSnapshot } from "../contract";
+import {
+  parseStatusItemDetail,
+  parseStatusSnapshot,
+  statusIntegrity,
+  type StatusSnapshot,
+} from "../contract";
 import { emptyCloseoutView } from "./closeout";
 import { plainTask, render } from "./render";
 import { themedMarkup } from "./theme";
@@ -96,6 +101,56 @@ describe("issue page", () => {
 
   test("an item without recorded state changes has no item timeline", () => {
     expect(page(statusFixture(), "ENG-102")).not.toContain("item-timeline");
+  });
+
+  test("renders from the item detail alone, with no list snapshot", () => {
+    const full = redelegated();
+    const mine = <T extends { itemId: string }>(rows: readonly T[] | undefined) =>
+      (rows ?? []).filter((row) => row.itemId === "ENG-101");
+    const parsed = parseStatusItemDetail(
+      JSON.parse(
+        JSON.stringify({
+          ...full,
+          id: "ENG-101",
+          blocks: ["ENG-105"],
+          items: full.items.filter((item) => item.id === "ENG-101"),
+          runs: mine(full.runs),
+          questions: mine(full.questions),
+          verdicts: mine(full.verdicts),
+          mergeQueue: mine(full.mergeQueue),
+          events: [],
+          evidence: mine(full.evidence),
+          agentCloseout: mine(full.agentCloseout),
+          ciRounds: mine(full.ciRounds),
+        }),
+      ),
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    const html = render({
+      route: { view: "issues", id: "ENG-101" },
+      phase: "ready",
+      snapshot: null,
+      detail: parsed.detail,
+      error: null,
+      engineUrl: null,
+      closeout: emptyCloseoutView(),
+    }).content;
+    expect(html).toContain('<article class="run-page issue-page">');
+    expect(html).toContain('id="activity-heading">Timeline</h2>');
+    expect(html).toContain("Earlier attempt, ended ");
+    expect(html).toContain(
+      '<h2>Blocks</h2><div class="row wrap"><a href="/issues/ENG-105">ENG-105</a>',
+    );
+    expect(html).toContain('aria-label="Closeout"');
+    const other = render({
+      route: { view: "issues", id: "ENG-102" },
+      phase: "ready",
+      snapshot: null,
+      detail: parsed.detail,
+      error: null,
+      engineUrl: null,
+    }).content;
+    expect(other).not.toContain("issue-page");
   });
 
   test("an internal path id reads as the issue identifier", () => {

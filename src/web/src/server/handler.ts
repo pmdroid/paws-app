@@ -3,9 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  parseStatusItemDetail,
   parseStatusSnapshot,
   STATUS_API_PATH,
+  STATUS_ITEM_API_PATH,
   STATUS_PAGE_PATH,
+  type StatusItemDetail,
   type StatusSnapshot,
 } from "../contract";
 import {
@@ -21,6 +24,8 @@ import { handleAgentTranscriptRequest } from "./transcript";
 
 export interface StatusProvider {
   snapshot(): StatusSnapshot | Promise<StatusSnapshot>;
+  /** One issue for its page. Null, or no reader, answers 404. */
+  item?(id: string): StatusItemDetail | null | Promise<StatusItemDetail | null>;
 }
 
 export interface StatusServerOptions {
@@ -53,6 +58,9 @@ export function fakeStatusProvider(): StatusProvider {
   return {
     snapshot() {
       return emptyLiveSnapshot();
+    },
+    item() {
+      return null;
     },
   };
 }
@@ -105,6 +113,8 @@ export async function handleStatusRequest(
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
   if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(options));
+  if (pathname.startsWith(`${STATUS_ITEM_API_PATH}/`))
+    return itemResponse(request, providerFor(options), pathname);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -173,7 +183,7 @@ function liveProvider(options?: {
       ...(options.linearUsage ? { linearUsage: options.linearUsage } : {}),
     });
   }
-  return { snapshot: () => emptyLiveSnapshot() };
+  return { snapshot: () => emptyLiveSnapshot(), item: () => null };
 }
 
 function artifactResponse(request: Request, options: StatusServerOptions): Response {
@@ -231,6 +241,42 @@ async function apiResponse(request: Request, provider: StatusProvider): Promise<
   } catch (caughtError1) {
     journalCaught(caughtError1, "handler.apiResponse.snapshot", null);
     return json({ error: "status unavailable" }, 500);
+  }
+}
+
+async function itemResponse(
+  request: Request,
+  provider: StatusProvider,
+  pathname: string,
+): Promise<Response> {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: { ...CORS } });
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return json({ error: "Method not allowed" }, 405);
+  }
+  const id = itemId(pathname.slice(STATUS_ITEM_API_PATH.length + 1));
+  if (id === null || provider.item === undefined) return json({ error: "Not found" }, 404);
+  try {
+    const detail = await provider.item(id);
+    // An item outside the reader's sessions answers like one that does not exist.
+    if (detail === null) return json({ error: "Not found" }, 404);
+    const parsed = parseStatusItemDetail(detail);
+    if (!parsed.ok) return json({ error: parsed.error }, 500);
+    return json(parsed.detail, 200);
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "handler.itemResponse.item", null);
+    return json({ error: "status unavailable" }, 500);
+  }
+}
+
+function itemId(raw: string): string | null {
+  try {
+    const id = decodeURIComponent(raw);
+    return /^[^/\\\0]{1,128}$/.test(id) && id.trim() === id ? id : null;
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "handler.itemId.decodeURIComponent", null);
+    return null;
   }
 }
 
