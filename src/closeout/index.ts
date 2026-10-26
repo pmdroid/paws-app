@@ -2,6 +2,7 @@ export { FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export {
   policyFixBudget,
   approvalsAtHead,
+  samePatch,
   reviewRequirements,
   trustedPolicyFiles,
   trustedRootFiles,

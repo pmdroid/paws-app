@@ -72,6 +72,23 @@ export async function approvalsAtHead(
   return kept;
 }
 
+/**
+ * `before` and `after` carry the same patch against main's `base`: a rebase
+ * that brought in only main's changes. Compares the whole diff, without
+ * context lines, blob ids or hunk headers.
+ */
+export async function samePatch(
+  repo: string,
+  before: string,
+  after: string,
+  base: string,
+  env: Record<string, string> = scrubCommandEnv(),
+): Promise<boolean> {
+  if (before === after) return true;
+  if (!COMMIT.test(before) || !COMMIT.test(after)) return false;
+  return sameOwnChanges(repo, before, after, base, undefined, env);
+}
+
 async function sameOwnChanges(
   repo: string,
   approved: string,
