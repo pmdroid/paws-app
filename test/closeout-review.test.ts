@@ -308,6 +308,46 @@ describe("review prompt size", () => {
       await repo.cleanup();
     }
   });
+
+  test("lists generated files instead of inlining their diff", async () => {
+    const repo = await changedRepo({
+      ".gitattributes": "gen/** linguist-generated\n",
+      "gen/queries.go": "package gen\n\nconst Generated = 1\n",
+      "src/added.ts": "export const added = 1;\n",
+    });
+    const script = scripted([{ sessionId: "review-gen", model: "review-model", text: "[]" }]);
+    try {
+      await createCodexReviewer(script.runner, { model: "configured" }).review(request(repo));
+      const prompt = script.starts[0]?.prompt ?? "";
+      const [diff = "", rest = ""] = prompt.split("# Changed files not in the diff above");
+      expect(diff).toContain("export const added = 1;");
+      expect(diff).not.toContain("const Generated = 1");
+      expect(rest).toContain("- gen/queries.go (+3 -0, generated)");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("inlines the diff up to its budget and lists the remaining files with line counts", async () => {
+    const repo = await changedRepo({
+      "src/first.ts": "export const first = 1;\n",
+      "src/second.ts": "export const second = 2;\nexport const more = 3;\n",
+    });
+    const script = scripted([{ sessionId: "review-budget", model: "review-model", text: "[]" }]);
+    try {
+      await createCodexReviewer(script.runner, { model: "configured", diffBudget: 250 }).review(
+        request(repo),
+      );
+      const prompt = script.starts[0]?.prompt ?? "";
+      const [diff = "", rest = ""] = prompt.split("# Changed files not in the diff above");
+      expect(diff).toContain("export const first = 1;");
+      expect(diff).not.toContain("export const second = 2;");
+      expect(rest).toContain("- src/second.ts (+2 -0)");
+      expect(rest).toContain(`git diff ${repo.base} ${repo.head} -- <path>`);
+    } finally {
+      await repo.cleanup();
+    }
+  });
 });
 
 describe("fix feedback", () => {
@@ -526,6 +566,43 @@ async function gitRepo(): Promise<{
     `${REFERENCE_TEXT}\n`,
   );
   await writeFile(path.join(dir, "src", "reviewed.ts"), "export const reviewed = 2;\n");
+  await exec("git", ["-C", dir, "add", "."]);
+  await exec("git", ["-C", dir, "commit", "-m", "candidate"]);
+  const head = (await exec("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
+  return { dir, base, head, cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+function request(repo: { dir: string; base: string; head: string }) {
+  return {
+    item: reviewItem(),
+    candidate: { session: "implementer", model: "implementer-model", provider: "test" },
+    base: repo.base,
+    head: repo.head,
+    policyDigest: DIGEST,
+    worktree: repo.dir,
+    skillFiles: new Map([[SKILL, new TextEncoder().encode("Review skill")]]),
+  };
+}
+
+async function changedRepo(files: Record<string, string>): Promise<{
+  dir: string;
+  base: string;
+  head: string;
+  cleanup: () => Promise<void>;
+}> {
+  const dir = await mkdtemp(path.join(tmpdir(), "paws-review-size-"));
+  await exec("git", ["init", "-b", "main", dir]);
+  await exec("git", ["-C", dir, "config", "user.email", "paws-test@example.com"]);
+  await exec("git", ["-C", dir, "config", "user.name", "Paws Test"]);
+  await exec("git", ["-C", dir, "config", "commit.gpgsign", "false"]);
+  await writeFile(path.join(dir, "README.md"), "base\n");
+  await exec("git", ["-C", dir, "add", "."]);
+  await exec("git", ["-C", dir, "commit", "-m", "base"]);
+  const base = (await exec("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
+  for (const [name, text] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(dir, name)), { recursive: true });
+    await writeFile(path.join(dir, name), text);
+  }
   await exec("git", ["-C", dir, "add", "."]);
   await exec("git", ["-C", dir, "commit", "-m", "candidate"]);
   const head = (await exec("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
