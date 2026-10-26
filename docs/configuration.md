@@ -41,6 +41,7 @@ order = "ci-green"
 - **`main_moved`**: deprecated. The only accepted value is `"closeout"`, which is also what a missing key means: when `main` moves before the merge, the lane rebases and Closeout verifies the rebased head before it can merge. `"ci"` and `"overlap"` are rejected at startup, because they merged heads Closeout never saw. Set the key to `"closeout"` or delete it, in `[merge]`, in `[merge.projects.*]` and in `[[merge.rules]]`.
 - **`ci_fix_attempts`**: legacy. Still read and shown in Settings, but it no longer sets a separate CI budget. Red CI on the pull request is a fix round and counts against the policy's `retry.fix_rounds_per_item`.
 - **`[merge.repositories."owner/repo"] packages`**: package roots such as `apps/*`. Accepted and kept when Settings rewrites the file; no merge order reads them today.
+- **`[merge.repositories."owner/repo"] ignore_comment_bots`**: bot logins such as `codecov[bot]` whose pull request comments only report status, so they never restart the item. Replaces the default list (Cloudflare Pages, Linear, Codecov, Netlify, Vercel, changesets) for that repository; `[]` ignores no bot.
 
 The merge lane squashes head S only when `mergeable(S)` holds: the pull request head is S, S contains the current `main`, Closeout accepted S under the current policy digest, CI is green for S, no review thread is unresolved and branch protection is satisfied. [After acceptance](closeout.md#after-acceptance) has the details.
 

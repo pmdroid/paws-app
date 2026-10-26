@@ -3177,6 +3177,30 @@ CREATE TABLE plan_proposal (
 ) STRICT;
 CREATE INDEX plan_proposal_item ON plan_proposal (item_id);`,
   },
+  {
+    // PAS-752. One row per GitHub comment on a Paws pull request: a comment-only review, an
+    // inline review comment or a conversation comment. The key makes a redelivered webhook do
+    // nothing. `review_id` is the review an inline comment was submitted with, so one review and
+    // its comments reach the agent once. `covered` marks a row another row already carried.
+    id: "155_pull_comment",
+    sql: `
+CREATE TABLE pull_comment (
+  source TEXT NOT NULL CHECK (source IN ('review','inline','conversation')),
+  comment_id INTEGER NOT NULL,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  pull_number INTEGER NOT NULL CHECK (pull_number > 0),
+  review_id INTEGER,
+  author TEXT,
+  body TEXT NOT NULL,
+  path TEXT,
+  line INTEGER,
+  received_at INTEGER NOT NULL,
+  handled_at INTEGER,
+  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('restarted','asked','dropped','covered')),
+  PRIMARY KEY (source, comment_id)
+) STRICT;
+CREATE INDEX pull_comment_open ON pull_comment(item_id) WHERE handled_at IS NULL;`,
+  },
 ];
 
 /**

@@ -39,7 +39,9 @@ export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles }
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,
+  DEFAULT_IGNORED_COMMENT_BOTS,
   DEFAULT_MERGE_CHOICE,
+  ignoredCommentBots,
   MAIN_MOVED,
   MAX_CI_FIX_ATTEMPTS,
   MERGE_ORDERS,

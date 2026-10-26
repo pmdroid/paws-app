@@ -310,7 +310,8 @@ import {
   waitForRunnerSlot,
   type VerificationOwner,
 } from "./merge-jobs";
-import { PULL_REVIEW_POLL_MS, handlePullReview } from "./pull-reviews";
+import { handlePullComments } from "./pull-comments";
+import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
   REBASE_CONFLICT_INSTRUCTION,
   advanceMerge,
@@ -1346,45 +1347,22 @@ export class Orchestrator {
     jobs.register(JOB_KIND.pullReview, async (job, context) => {
       const reviewId = (job.payload as { reviewId?: unknown }).reviewId;
       if (typeof reviewId !== "number" || !context.isCurrent()) return;
-      const step = await handlePullReview(this.db, reviewId, {
-        now: () => this.now(),
-        busy: (item) =>
-          this.jobContexts.has(item.id) ||
-          this.db
-            .query(
-              "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
-            )
-            .get(this.now(), item.id) !== null,
-        threads: async (item, pullNumber) => {
-          const repository = this.repositoryForItem(item);
-          const github = repository ? this.githubForRepository(repository) : null;
-          if (!repository || !github) return [];
-          return readReviewThreads({
-            client: github.client,
-            owner: repository.owner,
-            repo: repository.repo,
-            prNumber: pullNumber,
-            ...this.gitHubCredentials(github),
-          });
-        },
-        leaveMergeQueue: async (item, pullNumber) => {
-          const repository = this.repositoryForItem(item);
-          const github = repository ? this.githubForRepository(repository) : null;
-          if (!repository || !github) return "not_queued";
-          return leaveGitHubMergeQueue({
-            client: github.client,
-            owner: repository.owner,
-            repo: repository.repo,
-            prNumber: pullNumber,
-            ...this.gitHubCredentials(github),
-            signal: context.signal,
-          });
-        },
-        fixRoundLimit: (item) => this.fixRoundLimit(item),
-        session: (item) => this.activitySession(item),
-        post: (item, body, key) => this.postAfterPullRequest(item, body, key),
-        flush: () => this.flush(),
-      });
+      const step = await handlePullReview(
+        this.db,
+        reviewId,
+        this.pullFeedbackCapabilities(context),
+      );
+      if (step === "wait" && context.isCurrent())
+        waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    });
+    jobs.register(JOB_KIND.pullComments, async (job, context) => {
+      const itemId = (job.payload as { pullCommentsFor?: unknown }).pullCommentsFor;
+      if (typeof itemId !== "string" || !context.isCurrent()) return;
+      const step = await handlePullComments(
+        this.db,
+        itemId,
+        this.pullFeedbackCapabilities(context),
+      );
       if (step === "wait" && context.isCurrent())
         waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
     });
@@ -1400,6 +1378,48 @@ export class Orchestrator {
           : "normal",
       ),
     );
+  }
+
+  /** GitHub and Linear for a review or comments on the item's pull request. */
+  private pullFeedbackCapabilities(context: JobContext): PullReviewCapabilities {
+    return {
+      now: () => this.now(),
+      busy: (item) =>
+        this.jobContexts.has(item.id) ||
+        this.db
+          .query(
+            "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
+          )
+          .get(this.now(), item.id) !== null,
+      threads: async (item, pullNumber) => {
+        const repository = this.repositoryForItem(item);
+        const github = repository ? this.githubForRepository(repository) : null;
+        if (!repository || !github) return [];
+        return readReviewThreads({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pullNumber,
+          ...this.gitHubCredentials(github),
+        });
+      },
+      leaveMergeQueue: async (item, pullNumber) => {
+        const repository = this.repositoryForItem(item);
+        const github = repository ? this.githubForRepository(repository) : null;
+        if (!repository || !github) return "not_queued";
+        return leaveGitHubMergeQueue({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pullNumber,
+          ...this.gitHubCredentials(github),
+          signal: context.signal,
+        });
+      },
+      fixRoundLimit: (item) => this.fixRoundLimit(item),
+      session: (item) => this.activitySession(item),
+      flush: () => this.flush(),
+    };
   }
 
   private async mergeAttempt(

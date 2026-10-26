@@ -16,6 +16,7 @@ import {
   markCloseoutAccepted,
 } from "../db";
 import { githubQueueWatch } from "../merge";
+import { recordCommentDelivery, type PullCommentFilter } from "./pull-comments";
 import { recordReviewDelivery } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 
@@ -73,10 +74,12 @@ export function acceptGitHubDelivery(
   db: Database,
   delivery: { deliveryId: string; event: string; payload: string },
   now: number,
+  comments?: PullCommentFilter,
 ): boolean {
   if (!recordGitHubDelivery(db, delivery, now)) return false;
   const body: unknown = JSON.parse(delivery.payload);
   recordReviewDelivery(db, delivery.event, body, now);
+  recordCommentDelivery(db, delivery.event, body, now, comments);
   const facts = deliveryFacts(delivery.event, body);
   const jobs = db
     .query<{ id: number; payload: string }, [string]>(
@@ -125,7 +128,11 @@ function deliveryFacts(event: string, body: unknown): { shas: Set<string>; branc
     shas.push(record.sha);
     if (Array.isArray(record.branches))
       branches.push(...record.branches.map((branch) => field(branch, "name")));
-  } else if (event === "pull_request" || event === "pull_request_review") {
+  } else if (
+    event === "pull_request" ||
+    event === "pull_request_review" ||
+    event === "pull_request_review_comment"
+  ) {
     shas.push(field(record, "pull_request", "head", "sha"));
     branches.push(field(record, "pull_request", "head", "ref"));
   }

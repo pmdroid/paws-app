@@ -66,7 +66,9 @@ const FIX = {
   tailscaleAuthKey:
     "Create a reusable, pre-authorized Tailscale auth key tagged tag:paws-runner and save it to ~/.paws/secrets/tailscale-authkey (docs/create-vm.md).",
   githubWebhook:
-    "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews and Merge groups events (docs/github-app.md).",
+    "Enable the GitHub App webhook at PAWS_PUBLIC_URL/webhooks/github with GITHUB_WEBHOOK_SECRET and the Check runs, Check suites, Statuses, Pull requests, Pull request reviews, Pull request review comments, Issue comments and Merge groups events (docs/github-app.md).",
+  githubEvents:
+    "In the GitHub App settings, under Permissions & events, subscribe to Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment, Issue comment and Merge group, then accept the change on the installation (docs/github-app.md).",
 } as const;
 
 /** Prerequisite checks for a real local run. Missing tools are reported, not thrown. */
@@ -193,6 +195,7 @@ function githubAppChecks(probe: DoctorProbe, github: GitHubDoctorFacts): DoctorC
     ),
     check("github-app-push", github.push.ok, github.push.detail, FIX.githubPush),
     check("github-rate", github.rate.ok, github.rate.detail, FIX.githubRate),
+    check("github-app-events", github.events.ok, github.events.detail, FIX.githubEvents),
   ];
 }
 

@@ -25,6 +25,17 @@ export {
   type PullReviewState,
 } from "./pull-reviews";
 export {
+  getPullComment,
+  pendingPullComments,
+  PULL_COMMENT_MAX_SETTLE_MS,
+  PULL_COMMENT_SETTLE_MS,
+  recordPullComment,
+  settlePullComments,
+  type PullCommentOutcome,
+  type PullCommentRecord,
+  type PullCommentSource,
+} from "./pull-comments";
+export {
   recordRunnerCapacity,
   runnerHasCapacity,
   runnerOccupancy,

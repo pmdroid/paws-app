@@ -28,7 +28,14 @@ export type MergePolicy = {
   projects: Record<string, MergeOverride>;
   rules: MergeRule[];
 };
-export type MergeRepositories = Record<string, { packages: string[] }>;
+/**
+ * Per repository. `ignoreCommentBots` replaces `DEFAULT_IGNORED_COMMENT_BOTS` for the repository:
+ * bot logins whose pull request comments only report status and never restart the item.
+ */
+export type MergeRepositories = Record<
+  string,
+  { packages: string[]; ignoreCommentBots?: string[] }
+>;
 export type MergeSettings = MergePolicy & {
   ciFixAttempts: number;
   repositories: MergeRepositories;
@@ -48,10 +55,25 @@ export type ResolvedMergeSettings = MergeChoice & {
 
 export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "closeout" };
 
+/**
+ * Bots that comment on pull requests with status, not findings: deploy previews, coverage
+ * summaries and tracker backlinks. Cloudflare Pages and Linear are the ones on pmdroid/paws-app.
+ */
+export const DEFAULT_IGNORED_COMMENT_BOTS = [
+  "cloudflare-workers-and-pages[bot]",
+  "linear[bot]",
+  "linear-code[bot]",
+  "codecov[bot]",
+  "netlify[bot]",
+  "vercel[bot]",
+  "changeset-bot[bot]",
+] as const;
+
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const PACKAGE_ROOT = /^(?:[^/*\s\\]+|\*)(?:\/(?:[^/*\s\\]+|\*))*\/?$/;
 const LABEL_MAX = 200;
+const BOT_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$/;
 
 /**
  * `main_moved` other than `"closeout"` merged heads Closeout never saw, so it is refused rather
@@ -117,7 +139,12 @@ const tomlSchema = z.object({
                   .regex(PACKAGE_ROOT, "must be a package root such as apps/*")
                   .refine((root) => !root.split("/").includes(".."), "must stay in the repository"),
               )
-              .max(100),
+              .max(100)
+              .default([]),
+            ignore_comment_bots: z
+              .array(z.string().regex(BOT_LOGIN, "must be a GitHub login such as codecov[bot]"))
+              .max(100)
+              .optional(),
           }),
         )
         .optional(),
@@ -201,6 +228,15 @@ export function resolveMergeSettings(
   };
 }
 
+/** Bot logins whose comments on this repository's pull requests Paws ignores, lowercased. */
+export function ignoredCommentBots(settings: MergeSettings, repository: string): string[] {
+  const wanted = repository.toLowerCase();
+  const configured = Object.entries(settings.repositories).find(
+    ([name]) => name.toLowerCase() === wanted,
+  )?.[1].ignoreCommentBots;
+  return (configured ?? DEFAULT_IGNORED_COMMENT_BOTS).map((login) => login.toLowerCase());
+}
+
 export function repositoryPackages(settings: MergeSettings, repository: string): string[] {
   const wanted = repository.toLowerCase();
   return (
@@ -225,7 +261,21 @@ export function parseMergeTables(
   const projects = Object.entries(merge?.projects ?? {});
   const repositories = Object.entries(merge?.repositories ?? {});
   return {
-    ...(repositories.length ? { mergeRepositories: Object.fromEntries(repositories) } : {}),
+    ...(repositories.length
+      ? {
+          mergeRepositories: Object.fromEntries(
+            repositories.map(([name, value]) => [
+              name,
+              {
+                packages: value.packages,
+                ...(value.ignore_comment_bots === undefined
+                  ? {}
+                  : { ignoreCommentBots: value.ignore_comment_bots }),
+              },
+            ]),
+          ),
+        }
+      : {}),
     ...(projects.length
       ? {
           mergeProjects: Object.fromEntries(projects.map(([id, value]) => [id, fromToml(value)])),
@@ -318,7 +368,11 @@ export function renderMergeSettings(settings: StoredMerge): string {
       ([repository, value]) =>
         `\n[merge.repositories.${JSON.stringify(repository)}]\npackages = [${value.packages
           .map((root) => JSON.stringify(root))
-          .join(", ")}]\n`,
+          .join(", ")}]\n${
+          value.ignoreCommentBots === undefined
+            ? ""
+            : `ignore_comment_bots = [${value.ignoreCommentBots.map((login) => JSON.stringify(login)).join(", ")}]\n`
+        }`,
     ),
   ].join("");
 }
