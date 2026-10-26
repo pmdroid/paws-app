@@ -1,4 +1,4 @@
-import type { CloseoutItem, Finding } from "./types";
+import type { CloseoutItem, ReviewFindings } from "./types";
 
 /**
  * Fix feedback hook. The ACP runner implements this: it resumes the
@@ -14,7 +14,7 @@ export type FixRequest = {
   base: string;
   head: string;
   items: CloseoutItem[];
-  reviewFindings: Array<{ itemId: string; findings: Finding[] }>;
+  reviewFindings: ReviewFindings[];
   summary: string;
 };
 
