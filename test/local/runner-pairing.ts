@@ -156,7 +156,7 @@ export async function probeRunnerPairing(
     );
     assert.equal(
       control.list(principal).find((runner) => runner.id === approved.runnerId)?.status,
-      "active",
+      "paused",
     );
     assert.throws(() => control.claimPairing(abandoned.id, abandoned.claim), /invalid or expired/);
     assert.equal(
@@ -176,7 +176,7 @@ export async function probeRunnerPairing(
     observe(
       "approval without certificate collection expires and revokes only the unclaimed runner",
       true,
-      { unclaimedStatus: "revoked", claimedStatus: "active", audited: true },
+      { unclaimedStatus: "revoked", claimedStatus: "paused", audited: true },
     );
     const renewed = await control.renew(peer, client.csr);
     const renewedCertificate = describeRunnerCertificate(renewed.certificate);
@@ -549,6 +549,7 @@ export async function probeProvisionedPairing(
     });
     assert.equal(approved.pairingId, pending.id);
     assert.equal(getRunner(db, approved.runnerId)!.ownerUserId, memberUserId);
+    assert.equal(getRunner(db, approved.runnerId)!.status, "paused");
     const received = control.claimPairing(pending.id, pending.claim);
     assert.equal(received.status, "approved");
     if (received.status !== "approved") throw new Error("Runner approval missing");
@@ -724,6 +725,7 @@ export async function probeRunnerEnrollment(
     assert.equal(control.authenticate(peer).id, identity.runnerId);
     assert.equal(getRunner(db, identity.runnerId)!.ownerUserId, member.userId);
     assert.equal(getRunner(db, identity.runnerId)!.name, "member-host");
+    assert.equal(getRunner(db, identity.runnerId)!.status, "paused");
     observe(
       "one POST with token, name and CSR returns the identity of a member-owned runner",
       true,

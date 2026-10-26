@@ -13,6 +13,7 @@ import {
   findRunnerEnrollment,
   findRunnerPairing,
   getRunnerCertificate,
+  getRunner,
   immediate,
   listRunnerOverview,
   renewRunnerCertificate,
@@ -299,7 +300,14 @@ export function createRunnerControl(options: {
     setStatus(principal: WorkspacePrincipal, runnerId: string, status: RunnerRecord["status"]) {
       const fingerprints = immediate(db, () => {
         const at = now();
-        admin(principal);
+        const runner = getRunner(db, runnerId);
+        if (
+          runner?.workspaceId === principal.workspaceId &&
+          runner.ownerUserId === principal.userId &&
+          (status === "active" || status === "paused")
+        )
+          enrollingMember(principal.workspaceId, principal.userId);
+        else admin(principal);
         return updateRunnerStatus(db, {
           runnerId,
           workspaceId: principal.workspaceId,

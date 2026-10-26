@@ -96,7 +96,8 @@ export async function probeRunnerDaemonHealth(
     const pairing = await daemon.beginPairing("Health runner");
     assert.equal(pairing.phase, "pending");
     if (pairing.phase !== "pending") throw new Error("Missing pairing challenge");
-    await coordinator.control.approvePairing(principal, pairing.code);
+    const approved = await coordinator.control.approvePairing(principal, pairing.code);
+    coordinator.control.setStatus(principal, approved.runnerId, "active");
     const paired = await daemon.pollPairing();
     assert.equal(paired.phase, "paired");
     if (paired.phase !== "paired") throw new Error("Missing runner identity");

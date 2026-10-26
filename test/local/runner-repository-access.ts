@@ -83,6 +83,7 @@ export async function probeRunnerRepositoryAccess(
   });
   const pending = await control.beginPairing({ name: "Repository VM", csr: client.csr });
   const { runnerId } = await control.approvePairing(principal, pending.code);
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   now = Date.now();
   const identity = control.claimPairing(pending.id, pending.claim);
   assert.equal(identity.status, "approved");
@@ -90,6 +91,7 @@ export async function probeRunnerRepositoryAccess(
   const certificate = identity.certificate;
   const reviewPairing = await control.beginPairing({ name: "Review VM", csr: client.csr });
   const reviewRunnerId = (await control.approvePairing(principal, reviewPairing.code)).runnerId;
+  db.run("UPDATE runner SET status='active' WHERE id=?", [reviewRunnerId]);
   now = Date.now();
   const reviewIdentity = control.claimPairing(reviewPairing.id, reviewPairing.claim);
   assert.equal(reviewIdentity.status, "approved");

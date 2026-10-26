@@ -176,7 +176,8 @@ if (mode === "prepare") {
   try {
     const pending = await daemon.beginPairing("Run and review runner");
     assert(pending.phase === "pending");
-    await coordinator.control.approvePairing(principal, pending.code);
+    const approved = await coordinator.control.approvePairing(principal, pending.code);
+    coordinator.control.setStatus(principal, approved.runnerId, "active");
     const paired = await daemon.pollPairing();
     assert(paired.phase === "paired");
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [

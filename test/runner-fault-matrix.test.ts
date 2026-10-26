@@ -151,7 +151,7 @@ test("a usage limit while the implementer is prepared posts one thought naming t
     result.detail,
   ).toEqual([
     expect.stringMatching(
-      /^Paused: Claude reached its usage limit\. Paws continues at \d{2}:\d{2} UTC\.$/,
+      /^Paused: Claude reached its usage limit\. Paws continues at (?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2} UTC\.$/,
     ),
   ]);
 }, 60_000);
@@ -235,6 +235,7 @@ async function runRemoteFault(fault: Fault) {
     teamIds: [],
   };
   const { runnerId } = await control.approvePairing(owner, pairing.code);
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   for (const agent of ["claude", "codex"])
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1)", [

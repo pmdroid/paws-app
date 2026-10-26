@@ -78,6 +78,7 @@ async function fixture() {
     { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now(), teamIds: [] },
     pending.code,
   );
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now());
   recordLinearInstallation(db, {
