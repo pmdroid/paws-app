@@ -16,24 +16,31 @@ import {
 
 export { halt, type RestartHandoff } from "../db";
 
-/** Open or queue one question and record why this item needs a person. */
+/**
+ * Open or queue one question and record why this item needs a person.
+ * `pending` asks for a pending-human check inside `verifying`: the item keeps
+ * its state while the other checks run, and enters `awaiting_input` through
+ * {@link awaitQuestion} once they are done.
+ */
 export function ask(
   db: Database,
-  asker: QuestionAsker & { version?: number },
+  asker: QuestionAsker & { pending?: boolean },
   ...args: Parameters<typeof openQuestion> extends [unknown, unknown, ...infer Rest] ? Rest : never
 ): Asked {
   return immediate(db, () => {
-    const item = getWorkItem(db, asker.itemId);
+    const { pending, ...owner } = asker;
+    const item = getWorkItem(db, owner.itemId);
     if (
       !item ||
       item.cancelRequested ||
-      asker.sessionId !== item.sessionKey ||
-      (asker.runId !== null && asker.runId !== item.currentRunId) ||
-      (asker.version !== undefined && asker.version !== item.version)
+      owner.sessionId !== item.sessionKey ||
+      (owner.runId !== null && owner.runId !== item.currentRunId) ||
+      (owner.version !== undefined && owner.version !== item.version) ||
+      (pending && item.state !== "verifying")
     )
       throw new Error("Question owner is stale");
-    const result = openQuestion(db, asker, ...args);
-    awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
+    const result = openQuestion(db, owner, ...args);
+    if (!pending) awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
     return result;
   });
 }

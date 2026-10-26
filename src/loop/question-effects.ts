@@ -150,22 +150,38 @@ export function questionEffects(
       input.now,
     );
   };
+  /**
+   * Accept passes the pending-human check. While the other checks still run
+   * on head S the item stays verifying and that evaluation picks the approval
+   * up; once they are done, the evaluation of S completes from their results.
+   * Request changes restarts the item with the feedback.
+   */
   const visualReview = (question: StoredQuestion) => {
     const review = getVisualReview(db, question.id);
     if (review === null) return;
     if (input.marks) saveVisualReviewMarks(db, input.marks);
     const outcome = recordVisualReviewOutcome(db, question, review, input.now);
     if (!input.marks) consumeTurn(question);
-    if (outcome === "asked" || (question.runId !== null && input.asking?.(question.runId))) return;
+    const item = getWorkItem(db, question.itemId);
+    if (outcome === "asked" || !item) return;
+    if (outcome === "changes") {
+      restart(db, item, {
+        reason: "review",
+        body: visualReviewHandoff(db, question.id) ?? "",
+        jobKey: `resume:answer:${question.id}`,
+        now: input.now,
+      });
+      return;
+    }
+    if (item.state !== "awaiting_input" || findOpenQuestion(db, question.sessionId) !== null)
+      return;
+    applyWorkItemEvent(db, item.id, "answer_received");
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
     enqueueJobOnce(db, {
-      queue: JOB_KIND.resume,
-      jobKey: `resume:answer:${question.id}`,
-      payload: {
-        itemId: question.itemId,
-        freshSession: true,
-        handoff: visualReviewHandoff(db, question.id),
-        reason: "visual-review",
-      },
+      queue: JOB_KIND.reverify,
+      jobKey: `visual-review-accepted:${question.id}`,
+      payload: { itemId: item.id, decide: true },
       now: input.now,
     });
   };
