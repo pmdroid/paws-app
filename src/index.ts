@@ -426,9 +426,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         appUserId: runtime.linearViewerId,
       }),
     beforeEvent: async (event, request) => {
+      members?.invalidate(event);
       const userChange = parseLinearUserChange(event);
       if (userChange) {
-        members?.forget();
         if (applyLinearUserChange(db, { ...userChange, now: Date.now() }))
           invalidateAuthorization();
         return false;
@@ -1034,8 +1034,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               : "write",
           actorForItem: (item) => delegatedLinearUserId(db, item.id),
           authorizeItem: async (item, signal, selectedRepository) => {
+            const deny = <T>(result: T): T => {
+              members?.forget();
+              return result;
+            };
             if (linearTaskAccess && !(await authorizeLinearTask(linearTaskAccess, item, signal)))
-              return false;
+              return deny(false);
             if (!workspace) return true;
             const session = item.sessionKey
               ? getLinearSessionInstallation(db, item.sessionKey)
@@ -1044,9 +1048,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               ? workspaceForOrganization(db, session.organizationId)
               : null;
             const actorId = delegatedLinearUserId(db, item.id);
-            if (!currentWorkspace || !actorId || !session?.teamId || !members) return false;
+            if (!currentWorkspace || !actorId || !session?.teamId || !members) return deny(false);
             const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
-            const identity = await members.member(currentWorkspace.organizationId, actorId, signal);
+            const identity = await members
+              .member(currentWorkspace.organizationId, actorId, signal)
+              .catch((error: unknown) => {
+                members?.forget();
+                throw error;
+              });
             const latest = workspaceLinearMember(db, currentWorkspace.id, actorId);
             const currentSession = item.sessionKey
               ? getLinearSessionInstallation(db, item.sessionKey)
@@ -1060,22 +1069,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               identity.organizationId !== currentWorkspace.organizationId ||
               identity.userId !== actorId
             )
-              return false;
+              return deny(false);
             if (
               !canAct({ id: actorId, identity, member, teamId: session.teamId }, "github")
                 .allowed ||
               !canAct({ id: actorId, identity, member: latest, teamId: session.teamId }, "github")
                 .allowed
             )
-              return teamMemberDenial(db, item);
-            return (
-              teamRepositoryDenial(
-                db,
-                item,
-                { workspaceId: currentWorkspace.id, teamId: session.teamId },
-                selectedRepository,
-              ) ?? true
+              return deny(teamMemberDenial(db, item));
+            const repositoryDenial = teamRepositoryDenial(
+              db,
+              item,
+              { workspaceId: currentWorkspace.id, teamId: session.teamId },
+              selectedRepository,
             );
+            return repositoryDenial ? deny(repositoryDenial) : true;
           },
           currentIntegrationItem: (item) => {
             if (!workspace) return true;

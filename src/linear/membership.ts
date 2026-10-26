@@ -1,3 +1,4 @@
+import type { AcceptedLinearEvent } from "./events";
 import type { LinearClient } from "./graphql";
 import { isRecord } from "./read";
 
@@ -32,8 +33,13 @@ const MEMBER_CACHE_MS = 15 * 60_000;
 export function cacheLinearMemberships(
   reads: LinearMembershipReads,
   now: () => number = Date.now,
-): LinearMembershipReads & { forget(): void } {
+): LinearMembershipReads & { forget(): void; invalidate(event: AcceptedLinearEvent): void } {
   const members = new Map<string, { at: number; identity: LinearMemberIdentity }>();
+  let generation = 0;
+  function forget(): void {
+    generation += 1;
+    members.clear();
+  }
   return {
     installation: (signal) => reads.installation(signal),
     async member(organizationId, userId, signal) {
@@ -41,12 +47,28 @@ export function cacheLinearMemberships(
       const cached = members.get(key);
       if (cached !== undefined && now() - cached.at < MEMBER_CACHE_MS) return cached.identity;
       const at = now();
+      const started = generation;
       const identity = await reads.member(organizationId, userId, signal);
-      members.set(key, { at, identity });
+      if (generation === started) members.set(key, { at, identity });
       return identity;
     },
-    forget() {
-      members.clear();
+    forget,
+    invalidate(event) {
+      if (event.source !== "webhook" || event.deliveryId === null) return;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(event.payload);
+      } catch {
+        return;
+      }
+      if (!isRecord(payload)) return;
+      if (
+        payload["type"] === "User" ||
+        payload["type"] === "Team" ||
+        payload["type"] === "TeamMembership" ||
+        (payload["type"] === "PermissionChange" && payload["action"] === "teamAccessChanged")
+      )
+        forget();
     },
   };
 }
