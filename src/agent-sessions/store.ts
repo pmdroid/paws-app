@@ -319,7 +319,11 @@ export function createAgentSessions(options: {
       } catch (error) {
         // A prune discarded the snapshot while the chunk was being written; nothing references it.
         if (snapshot(access.runId, chunk.generation)?.status === "discarded")
-          await objects.delete(objectKey(initial.row, chunk)).catch(() => {});
+          await objects
+            .delete(objectKey(initial.row, chunk))
+            .catch((caught: unknown) =>
+              journalCaught(caught, "agent-sessions.upload.delete", null),
+            );
         throw error;
       }
     },
