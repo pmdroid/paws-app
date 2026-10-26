@@ -12,21 +12,15 @@ State-changing browser requests require the configured origin and a matching CSR
 
 See [workspace access and identity links](https://github.com/pmdroid/paws-app/pull/238) and the [sign-in contract](https://github.com/pmdroid/paws-planning/issues/48).
 
-## Pair a Linux host
+## Enroll a Linux host
 
-![A Linux host requests pairing over HTTPS, an administrator checks its fingerprint, and the host claims its certificate before using mTLS.](diagrams/pairing.svg)
+1. An active workspace member creates a single-use enrollment token through Runners. Observers cannot create tokens.
+2. The host generates its private key and certificate signing request locally.
+3. It posts the token, host name and signing request to `/api/runner-enrollments` over HTTPS.
+4. Paws consumes the token, creates a runner owned by that member and returns the signed certificate, authority certificate and public command signing keys.
+5. Subsequent runner traffic uses mTLS and the registered certificate identity.
 
-[Open the pairing diagram](diagrams/pairing.svg) · [Download its Mermaid source](diagrams/pairing.mmd)
-
-1. The host generates its private key and certificate signing request locally.
-2. It sends the signing request and host name to Paws over HTTPS.
-3. Paws creates a pairing request with a code, a claim secret, a request fingerprint, and a ten-minute expiry.
-4. A workspace owner or administrator inspects the request and compares the fingerprint with the host's output.
-5. Approval binds the runner to that workspace and owner, and the authority signs the host's certificate request.
-6. The host uses its claim secret to retrieve the certificate and authority certificate over HTTPS.
-7. Subsequent runner traffic uses mTLS and the registered certificate identity.
-
-The private key stays on the host. Paws records hashes of the pairing code and claim secret. The [pairing implementation](https://github.com/pmdroid/paws-app/blob/271c77c4970aa0cde6fabf07e07666c96d57b987/src/runner-control/pairing.ts) and [public HTTPS pairing and renewal](https://github.com/pmdroid/paws-app/pull/236) define these operations.
+The private key stays on the host. Paws stores only the enrollment token's hash. Tokens expire after ten minutes and cannot be reused. See [Enroll a remote Linux runner](../runner-enrollment.md).
 
 ## Authenticate every runner request
 
@@ -34,9 +28,9 @@ The runner checks the server's TLS identity. The runner listener requires TLS 1.
 
 The run service then checks the request against the current run assignment and generation. mTLS answers which host connected. The run grant answers which run that host may act on. The signed command binds the instruction itself to its destination and repository.
 
-Renewal uses an authenticated current certificate and a new signing request. Revocation changes the recorded runner or certificate state and disconnects affected connections. The pairing and identity modules also expire connections whose certificates or owner membership are no longer accepted.
+Renewal uses an authenticated current certificate and a new signing request. Revocation changes the recorded runner or certificate state and disconnects affected connections. The enrollment and identity modules also expire connections whose certificates or owner membership are no longer accepted.
 
-See the [runner TLS listener](https://github.com/pmdroid/paws-app/blob/04105f7362c826a08df956ad484b68314885a0d4/src/runner-identity/listener.ts), [pairing control](https://github.com/pmdroid/paws-app/blob/271c77c4970aa0cde6fabf07e07666c96d57b987/src/runner-control/pairing.ts), and [runner ingress contract](https://github.com/pmdroid/paws-planning/issues/8).
+See the [runner TLS listener](https://github.com/pmdroid/paws-app/blob/04105f7362c826a08df956ad484b68314885a0d4/src/runner-identity/listener.ts), [enrollment control](../../src/runner-control/control.ts), and [runner ingress contract](https://github.com/pmdroid/paws-planning/issues/8).
 
 ## Durable state
 

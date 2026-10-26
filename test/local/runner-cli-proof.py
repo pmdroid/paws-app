@@ -42,7 +42,7 @@ def command(args, uid, expected=1):
         print(json.dumps(details), file=sys.stderr)
     assert process.returncode == expected, (args, process.returncode, output, errors)
     if expected == 1:
-        assert errors == b"Runner command failed. Check the service identity, configuration and pairing.\n", errors
+        assert errors == b"Runner command failed. Check the service identity, configuration and enrollment.\n", errors
     return output
 
 
@@ -80,15 +80,18 @@ try:
         os.chown(path, 0, 17001)
         path.chmod(0o640)
 
+    token_path = pathlib.Path("/etc/paws-runner/enrollment-token")
+    token_path.write_text(config.pop("enrollmentToken"))
+    token_path.chmod(0o600)
     install_config()
-    arguments = ["pair", "--config", str(path), "--name", "CLI fixture"]
+    arguments = ["enroll", "--config", str(path), "--name", "CLI fixture", "--token-file", str(token_path)]
     if len(sys.argv) > 1 and sys.argv[1] == "baseline":
         baseline = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
         assert line(baseline)["phase"] == "pending"
-        raise AssertionError("Baseline unexpectedly supported runner pairing")
-    command(arguments, 0)
+        raise AssertionError("Baseline unexpectedly supported runner enrollment")
+    command(arguments, 17002)
     command(["worker", "--execution-id", "01J00000000000000000000001"], 17002)
-    observe("pairing and worker reject the wrong real service UIDs")
+    observe("enrollment and worker reject the wrong real service UIDs")
     for invalid in ("mode", "oversized", "field", "symlink", "hardlink", "fifo"):
         install_config()
         if invalid == "mode":
@@ -106,7 +109,7 @@ try:
             path.unlink()
             os.mkfifo(path, 0o640)
             os.chown(path, 0, 17001)
-        command(arguments, 17001)
+        command(arguments, 0)
     observe("unsafe modes, oversized input, unknown fields, links and FIFO configuration fail closed")
     install_config()
     context = ssl.create_default_context(cadata=config["serverCa"])
@@ -118,36 +121,24 @@ try:
 
     for invalid in ({**config, "serverCa": "invalid"}, {**config, "controlPlaneUrl": config["controlPlaneUrl"].replace("localhost", "127.0.0.1")}):
         install_config(invalid)
-        command(arguments, 17001)
+        command(arguments, 0)
         shutil.rmtree("/var/lib/paws-runner")
         pathlib.Path("/var/lib/paws-runner").mkdir(mode=0o700)
         os.chown("/var/lib/paws-runner", 17001, 17001)
     assert http("/fixture/count")["enrollmentRequests"] == 0
     observe("actual HTTPS refuses untrusted and wrong-hostname servers before enrollment")
     install_config()
-    pair = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
-    pending = line(pair)
-    assert pending["phase"] == "pending" and len(pending["code"]) == 16
-    assert "claim" not in pending and "certificate" not in pending and "verifierFingerprint" not in pending
-    pair.send_signal(signal.SIGTERM)
-    output, errors = pair.communicate(timeout=15)
-    assert pair.returncode == 130, (pair.returncode, errors)
-    restarted = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
-    assert line(restarted) == pending
-    inspected = http("/api/runners/pairings/inspect", {"code": pending["code"]})
-    assert inspected["requestFingerprint"] == pending["requestFingerprint"] and "verifierFingerprint" not in inspected
-    try:
-        http("/api/runners/pairings/approve", {"code": pending["code"], "verifierFingerprint": "0" * 64})
-    except urllib.error.HTTPError as failure:
-        assert failure.code == 403
-    else:
-        raise AssertionError("Pairing approved an unexpected field")
-    http("/api/runners/pairings/approve", {"code": pending["code"]})
-    paired = line(restarted)
-    assert paired["paired"] is True and "verifierFingerprint" not in paired
+    enrolled = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 0)
+    paired = line(enrolled)
+    assert paired["paired"] is True
+    output, errors = enrolled.communicate(timeout=15)
+    assert enrolled.returncode == 0, errors
+    restarted = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 0)
+    assert line(restarted) == paired
     output, errors = restarted.communicate(timeout=15)
     assert restarted.returncode == 0, errors
-    observe("real CLI pairing survives process interruption and claims only after administrator approval")
+    assert http("/fixture/count")["enrollmentRequests"] == 1
+    observe("real CLI enrolls once and preserves its identity on retry")
     private_key = pathlib.Path("/var/lib/paws-runner/identity/runner-key.pem")
     assert private_key.is_file() and private_key.stat().st_size > 0
     denied = actor(["/bin/cat", str(private_key)], 17002)

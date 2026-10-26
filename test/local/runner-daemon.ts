@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { join } from "node:path";
@@ -49,11 +49,6 @@ export async function probeRunnerDaemon(
   let resultFenced = false;
   const results = new Set<string>();
   let deliveredEvents = 0;
-  let approved = false;
-  let challengeTtl = 60_000;
-  let enrollmentNow = Date.now;
-  let heldClaim: { entered: () => void; wait: Promise<void> } | undefined;
-  let heldEnrollment: { entered: () => void; wait: Promise<void> } | undefined;
   let csr = "";
   let certificate = "";
   let wrongRenewalIdentity = false;
@@ -68,40 +63,21 @@ export async function probeRunnerDaemon(
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
       enrollmentBodies.push(body);
-      let result: unknown;
-      if (typeof body.csr === "string") {
-        assert.equal(request.url, "/api/runner-pairings");
-        assert.deepEqual(Object.keys(body).sort(), ["csr", "name"]);
-        csr = body.csr;
-        const issued = await authority.issue(csr);
-        certificate = issued.pem;
-        active.add(issued.fingerprint);
-        result = {
-          id: "pairing-local",
-          claim: "local-claim-with-at-least-sixteen-characters",
-          code: "A1234567890ABCDE",
-          requestFingerprint: createHash("sha256").update(csr).digest("hex"),
-          expiresAt: enrollmentNow() + challengeTtl,
-        };
-      } else {
-        assert.deepEqual(body, {
-          id: "pairing-local",
-          claim: "local-claim-with-at-least-sixteen-characters",
-        });
-        result = approved
-          ? {
-              status: "approved",
-              runnerId,
-              workspaceId,
-              certificate,
-              authority: authority.certificate,
-              signingKeys,
-            }
-          : { status: "pending" };
-      }
-      const claimGate = "csr" in body ? heldEnrollment : heldClaim;
-      claimGate?.entered();
-      await claimGate?.wait;
+      assert.equal(request.url, "/api/runner-enrollments");
+      assert.deepEqual(Object.keys(body).sort(), ["csr", "name", "token"]);
+      assert.equal(body.token, "t".repeat(43));
+      csr = String(body.csr);
+      const issued = await authority.issue(csr);
+      certificate = issued.pem;
+      active.add(issued.fingerprint);
+      const result = {
+        status: "approved",
+        runnerId,
+        workspaceId,
+        certificate,
+        authority: authority.certificate,
+        signingKeys,
+      };
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(result));
     } catch {
@@ -278,13 +254,7 @@ export async function probeRunnerDaemon(
     }
   }
   try {
-    const paired = await child("pair");
-    assert.equal(paired.result.phase, "pending");
-    assert(!JSON.stringify(paired).includes("local-claim"));
-    assert.equal((await child("claim")).result.phase, "pending");
-    approved = true;
     const statePath = join(daemonRoot, "identity", "state.json");
-    const pendingState = readFileSync(statePath);
     const validSigningKeys = signingKeys;
     const malformedSigningKeys = [
       undefined,
@@ -315,11 +285,10 @@ export async function probeRunnerDaemon(
     ];
     for (const malformed of malformedSigningKeys) {
       signingKeys = malformed;
-      await child("claim", [], configPath, false);
-      assert(pendingState.equals(readFileSync(statePath)));
+      await child("enroll", [], configPath, false);
     }
     signingKeys = validSigningKeys;
-    const identity = (await child("claim")).result;
+    const identity = (await child("enroll")).result;
     assert.equal(identity.runnerId, runnerId);
     assert.equal(identity.workspaceId, workspaceId);
     const keyPath = join(daemonRoot, "identity", "runner-key.pem");
@@ -762,7 +731,7 @@ export async function probeRunnerDaemon(
       }),
     );
     const enrollmentCount = enrollmentBodies.length;
-    await child("pair", [], hostileConfig, false);
+    await child("enroll", [], hostileConfig, false);
     assert.equal(enrollmentBodies.length, enrollmentCount);
     const untrustedConfig = join(root, "wrong-trust.json");
     writeFileSync(
@@ -773,7 +742,7 @@ export async function probeRunnerDaemon(
         serverCa: authority.certificate,
       }),
     );
-    await child("pair", [], untrustedConfig, false);
+    await child("enroll", [], untrustedConfig, false);
     assert.equal(enrollmentBodies.length, enrollmentCount);
     assert(enrollmentBodies.every((body) => !JSON.stringify(body).includes("PRIVATE KEY")));
     assert.equal(new Set(pids).size, pids.length);
@@ -809,23 +778,18 @@ export async function probeRunnerDaemon(
     ])
       await assert.rejects(action);
     assert.equal(peers.length, count);
-    approved = false;
-    runnerId = "runner-repaired";
-    assert.equal((await daemon.beginPairing("Repaired Linux runner")).phase, "pending");
-    daemon.close();
-    assert.equal((await child("claim")).result.phase, "pending");
-    assert(previousState.equals(readFileSync(statePath)));
-    approved = true;
-    daemon = open();
     runnerId = state.runnerId;
-    await assert.rejects(() => daemon.pollPairing(), /new runner identity/);
+    await assert.rejects(
+      () => daemon.enroll("Replacement runner", "t".repeat(43)),
+      /new runner identity/,
+    );
     assert(previousState.equals(readFileSync(statePath)));
     runnerId = "runner-repaired";
     db = openDatabase(dbPath);
     db.run(
       "CREATE TRIGGER reject_clear BEFORE DELETE ON command_receipt BEGIN SELECT RAISE(ABORT,'fixture clear rejection'); END",
     );
-    await assert.rejects(() => daemon.pollPairing());
+    await assert.rejects(() => daemon.enroll("Replacement runner", "t".repeat(43)));
     assert.equal(
       db.query<{ count: number }, []>("SELECT count(*) AS count FROM pending_command").get()!.count,
       5,
@@ -835,7 +799,7 @@ export async function probeRunnerDaemon(
     renameSync(statePath, `${statePath}.saved`);
     mkdirSync(statePath);
     try {
-      await assert.rejects(() => daemon.pollPairing());
+      await assert.rejects(() => daemon.enroll("Replacement runner", "t".repeat(43)));
       assert.equal(
         db.query<{ count: number }, []>("SELECT count(*) AS count FROM command_receipt").get()!
           .count,
@@ -847,13 +811,13 @@ export async function probeRunnerDaemon(
       daemon.close();
       db.close();
     }
-    assert.equal((await child("claim")).result.runnerId, runnerId);
+    assert.equal((await child("enroll")).result.runnerId, runnerId);
     assert(previousKey.equals(readFileSync(keyPath)));
     commands = [signed(unacknowledged)];
     const afterRepair = (await child("commands")).result;
     assert.deepEqual(afterRepair, { ids: [], rejected: ["identity_mismatch"] });
     observe(
-      "expired runner explicitly re-pairs after interrupted replacement without reviving old work",
+      "expired runner explicitly re-enrolls after interrupted replacement without reviving old work",
       true,
       {
         expiredStatus,
@@ -909,9 +873,8 @@ export async function probeRunnerDaemon(
     const settled = Promise.allSettled(outstanding);
     await Promise.all(entered);
     clock += 20_000;
-    await daemon.beginPairing("Concurrent repair");
     runnerId = "runner-race-repaired";
-    await daemon.pollPairing();
+    await daemon.enroll("Replacement runner", "t".repeat(43));
     const replacement = readFileSync(statePath);
     releases.forEach((release) => release());
     const responses = await settled;
@@ -927,115 +890,9 @@ export async function probeRunnerDaemon(
     assert.deepEqual(daemon.pendingCommands(), []);
     daemon.close();
     held.clear();
-    const expiredAgain = await authority.issue(csr, 60_000, Date.now() - 120_000);
-    const latest = JSON.parse(readSecretFile(statePath)!);
-    writeSecretFile(statePath, JSON.stringify({ ...latest, certificate: expiredAgain.pem }));
-    daemon = open();
-    assert.equal(daemon.status().phase, "expired");
-    clock = Date.now();
-    enrollmentNow = () => clock;
-    const beforeFreshPair = enrollmentBodies.length;
-    const freshPairing = await daemon.beginPairing("Fresh recovery after restart");
-    assert(freshPairing.phase === "pending");
-    assert.equal(freshPairing.expiresAt, clock + challengeTtl);
-    assert.equal(enrollmentBodies.length, beforeFreshPair + 1);
-    daemon.close();
-    observe(
-      "re-pair fences older HTTPS responses and ignores consumed recovery after restart",
-      true,
-      {
-        rejectedResponses: responses.map((response) =>
-          response.status === "rejected" ? response.reason.message : response.status,
-        ),
-        runnerId,
-        freshPairingRequests: enrollmentBodies.length - beforeFreshPair,
-        fencedReplacement: responses.every((response) => response.status === "rejected"),
-      },
-    );
-    daemon = openRunnerDaemon({
-      ...config,
-      now: () => clock,
-      trustedKeys: new Map([["coordinator", signingKey.publicKey]]),
-      allowedRepositories: ["local/fixture"],
-    });
-    let enteredClaim!: () => void;
-    let releaseClaim!: () => void;
-    const claimEntered = new Promise<void>((resolve) => {
-      enteredClaim = resolve;
-    });
-    heldClaim = {
-      entered: enteredClaim,
-      wait: new Promise<void>((resolve) => {
-        releaseClaim = resolve;
-      }),
-    };
-    runnerId = "runner-stale-approval";
-    const lateClaim = daemon.pollPairing();
-    const lateResult = lateClaim.then(
-      () => "approved",
-      (error: Error) => error.message,
-    );
-    await claimEntered;
-    clock += 65_000;
-    challengeTtl = 180_000;
-    await daemon.beginPairing("Replace expired challenge");
-    const freshRecovery = readFileSync(join(daemonRoot, "identity", "recovery.json"));
-    const unchangedState = readFileSync(statePath);
-    releaseClaim();
-    assert.match(await lateResult, /pairing changed/);
-    assert(freshRecovery.equals(readFileSync(join(daemonRoot, "identity", "recovery.json"))));
-    assert(unchangedState.equals(readFileSync(statePath)));
-    heldClaim = undefined;
-    runnerId = "runner-current-approval";
-    assert.equal((await daemon.pollPairing()).phase, "paired");
-    daemon.close();
-    observe("expired pairing response cannot overwrite a newer challenge", true, {
-      lateResponse: await lateResult,
+    observe("re-enrollment fences outstanding responses from the expired identity", true, {
       runnerId,
-    });
-    enrollmentNow = Date.now;
-    const enrollmentRaces: string[] = [];
-    for (const approve of [false, true]) {
-      const expiredIdentity = await authority.issue(csr, 60_000, Date.now() - 120_000);
-      const previousIdentity = JSON.parse(readSecretFile(statePath)!);
-      writeSecretFile(
-        statePath,
-        JSON.stringify({ ...previousIdentity, certificate: expiredIdentity.pem }),
-      );
-      daemon = open();
-      let enteredEnrollment!: () => void;
-      let releaseEnrollment!: () => void;
-      const enrollmentEntered = new Promise<void>((resolve) => {
-        enteredEnrollment = resolve;
-      });
-      heldEnrollment = {
-        entered: enteredEnrollment,
-        wait: new Promise<void>((resolve) => {
-          releaseEnrollment = resolve;
-        }),
-      };
-      const lateEnrollment = daemon.beginPairing("Delayed enrollment").then(
-        () => "pending",
-        (error: Error) => error.message,
-      );
-      await enrollmentEntered;
-      heldEnrollment = undefined;
-      await daemon.beginPairing("Current enrollment");
-      runnerId = approve ? "runner-new-enrollment" : "runner-pending-enrollment";
-      if (approve) await daemon.pollPairing();
-      const currentState = readFileSync(statePath);
-      const currentRecovery = readFileSync(join(daemonRoot, "identity", "recovery.json"));
-      releaseEnrollment();
-      const result = await lateEnrollment;
-      assert.match(result, /pairing changed/);
-      assert(currentState.equals(readFileSync(statePath)));
-      assert(currentRecovery.equals(readFileSync(join(daemonRoot, "identity", "recovery.json"))));
-      if (!approve) await daemon.pollPairing();
-      enrollmentRaces.push(result);
-      daemon.close();
-    }
-    observe("late enrollment cannot replace a newer challenge or approved identity", true, {
-      rejectedResponses: enrollmentRaces,
+      rejectedResponses: responses.length,
     });
   } finally {
     await listener.stop();

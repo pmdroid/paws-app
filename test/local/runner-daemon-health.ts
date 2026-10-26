@@ -82,7 +82,7 @@ export async function probeRunnerDaemonHealth(
     hostname: "127.0.0.1",
     port: 0,
     tls,
-    fetch: (input) => coordinator.enrollment(input),
+    fetch: (input) => coordinator.hostEnrollment(input),
   });
   const daemonOptions = {
     root: join(root, "daemon"),
@@ -93,12 +93,11 @@ export async function probeRunnerDaemonHealth(
   };
   let daemon = openRunnerDaemon(daemonOptions);
   try {
-    const pairing = await daemon.beginPairing("Health runner");
-    assert.equal(pairing.phase, "pending");
-    if (pairing.phase !== "pending") throw new Error("Missing pairing challenge");
-    const approved = await coordinator.control.approvePairing(principal, pairing.code);
-    coordinator.control.setStatus(principal, approved.runnerId, "active");
-    const paired = await daemon.pollPairing();
+    const enrollment = coordinator.control.createEnrollment(principal, { name: "Health runner" });
+
+    const paired = await daemon.enroll("Health runner", enrollment.token);
+    if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
+    coordinator.control.setStatus(principal, paired.runnerId, "active");
     assert.equal(paired.phase, "paired");
     if (paired.phase !== "paired") throw new Error("Missing runner identity");
     const command = coordinator.health.request(principal, paired.runnerId, {

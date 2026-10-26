@@ -14,7 +14,7 @@ bun run build:status
 bun run paws --no-tunnel
 ```
 
-Open the configured HTTPS address. A Linear workspace admin signs in and authorizes Paws in the same workspace. Paws saves the app authorization, creates the owner's workspace, and opens Integrations. Connect GitHub, choose repositories and their Linear teams, then [pair a runner](docs/runner-pairing.md) and sign in to its agents through Runners.
+Open the configured HTTPS address. A Linear workspace admin signs in and authorizes Paws in the same workspace. Paws saves the app authorization, creates the owner's workspace, and opens Integrations. Connect GitHub, choose repositories and their Linear teams, then [enroll a runner](docs/runner-enrollment.md) and sign in to its agents through Runners.
 
 Paws runs work only for a configured Linear workspace. `bun run paws doctor` reports `linear-workspace` as missing until `PAWS_PUBLIC_DASHBOARD=1` is set and a workspace admin has signed in.
 
@@ -43,7 +43,7 @@ Paws can leave selected folders out of its worktrees. Add literal repository-rel
 exclude = ["large-assets", "packages/archived"]
 ```
 
-Paws applies these exclusions before checking out files, including in detached Closeout verification worktrees. The same per-repository settings travel in signed commands to paired runners and apply to their agent worktrees, trusted verification workspaces, and task source snapshots. Excluded files remain tracked in Git. The developer's checkout stays unchanged. Updated settings take effect when Paws next prepares an item worktree; an empty list restores a full checkout. Git preserves edited files when their folder becomes excluded.
+Paws applies these exclusions before checking out files, including in detached Closeout verification worktrees. The same per-repository settings travel in signed commands to enrolled runners and apply to their agent worktrees, trusted verification workspaces, and task source snapshots. Excluded files remain tracked in Git. The developer's checkout stays unchanged. Updated settings take effect when Paws next prepares an item worktree; an empty list restores a full checkout. Git preserves edited files when their folder becomes excluded.
 
 `GET /health` returns JSON with `ok`, `checks`, and `failedChecks`, using HTTP 200 when healthy and 503 when a check fails. Checks read the database, expired or missing running-job leases, dead jobs and outbox rows, and active runner heartbeats. A runner is stale after the one-minute offline window plus the five-minute lease grace; paused and revoked runners are excluded, and no active runners is reported as skipped. When webhook routes and a provider's signing secret are configured, its last verified Linear or accepted GitHub delivery must be no more than one hour old; no delivery yet fails that check. Disabled providers are reported as skipped. Health failures and recovery are written to the journal. The response is not cached. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 
@@ -63,7 +63,7 @@ systemctl --user restart paws.service
 
 Shared workspaces use [Linear sign-in and workspace access](docs/workspace-access.md) over HTTPS. Owners manage Paws roles and repository mappings in the dashboard.
 
-To connect a Linux VM, follow [Pair a remote Linux runner](docs/runner-pairing.md) for package installation, configuration, agent login and dashboard approval.
+To connect a Linux VM, follow [Enroll a remote Linux runner](docs/runner-enrollment.md) for package installation, configuration, agent login and enrollment.
 
 The QM-11 status page lives in [`src/web`](src/web/README.md). It is read-only: epics, items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
 

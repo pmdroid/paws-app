@@ -3,7 +3,12 @@ import { startServer } from "../src/server";
 
 describe("server", () => {
   test("health, status, webhooks, and unknown paths", async () => {
-    const server = startServer({ port: 0, hostname: "127.0.0.1", webhooks: false });
+    const server = startServer({
+      port: 0,
+      hostname: "127.0.0.1",
+      webhooks: false,
+      runnerHostEnrollment: async () => Response.json({ enrollment: true }),
+    });
     const base = `http://${server.hostname}:${server.port}`;
     try {
       const health = await fetch(`${base}/health`);
@@ -36,12 +41,18 @@ describe("server", () => {
         setupRequired: true,
         workspaceReady: false,
       });
-      const pairing = await fetch(`${base}/api/runners/pairings/approve`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code: "0123456789abcdef" }),
-      });
-      expect(pairing.status).toBe(404);
+      for (const path of [
+        "/api/runner-pairings",
+        "/api/runners/pairings/inspect",
+        "/api/runners/pairings/approve",
+      ]) {
+        const removed = await fetch(`${base}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code: "0123456789abcdef" }),
+        });
+        expect(removed.status).toBe(404);
+      }
 
       const github = await fetch(`${base}/webhooks/github`, {
         method: "POST",

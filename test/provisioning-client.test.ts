@@ -327,15 +327,19 @@ describe("execVm", () => {
   test("quotes the command once and decodes the NDJSON stream", async () => {
     const { exe, sent } = client(() =>
       ndjson([
-        { stdout: b64("pairing code ") },
+        { stdout: b64("fixture output ") },
         { stderr: b64("warn\n") },
         { stdout: b64("ABCD-1234\n") },
         { exit_code: 3 },
       ]),
     );
-    const result = await exe.execVm("ada-paws", "echo 'hi' && paws-runner runner pair");
-    expect(result).toEqual({ exitCode: 3, stdout: "pairing code ABCD-1234\n", stderr: "warn\n" });
-    expect(sent[0]?.body).toBe(`ssh ada-paws 'echo '\\''hi'\\'' && paws-runner runner pair'`);
+    const result = await exe.execVm("ada-paws", "echo 'hi' && paws-runner runner daemon");
+    expect(result).toEqual({
+      exitCode: 3,
+      stdout: "fixture output ABCD-1234\n",
+      stderr: "warn\n",
+    });
+    expect(sent[0]?.body).toBe(`ssh ada-paws 'echo '\\''hi'\\'' && paws-runner runner daemon'`);
     expect(sent[0]?.headers.get("accept")).toBe("application/x-ndjson");
   });
 

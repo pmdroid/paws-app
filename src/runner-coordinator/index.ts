@@ -215,9 +215,6 @@ export async function openRunnerCoordinator(options: {
         login.browser(request, principal)
       );
     },
-    async enrollment(request: Request) {
-      return withSigningKeys(await http.enrollment(request), signing.signingKeys);
-    },
     /** `POST /api/runner-enrollments`: a host enrolls itself with a member's token. */
     async hostEnrollment(request: Request) {
       return withSigningKeys(await http.hostEnrollment(request), signing.signingKeys);

@@ -79,7 +79,7 @@ export async function probeRunnerInputs(
     now: () => now,
   });
   const client = await createRunnerKey(join(root, "client"));
-  const pending = await control.beginPairing({ name: "VM", csr: client.csr });
+  const pending = { name: "VM", csr: client.csr };
   const principal = {
     workspaceId: workspace.id,
     userId,
@@ -87,11 +87,15 @@ export async function probeRunnerInputs(
     authenticatedAt: now,
     teamIds: [],
   };
-  const { runnerId } = await control.approvePairing(principal, pending.code);
+  const identity = await control.enroll({
+    ...pending,
+    token: control.createEnrollment(principal, pending).token,
+  });
+  const { runnerId } = identity;
+
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  const identity = control.claimPairing(pending.id, pending.claim);
   assert.equal(identity.status, "approved");
-  if (identity.status !== "approved") throw new Error("Pairing must be approved");
+  if (identity.status !== "approved") throw new Error("Enrollment must be approved");
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     db,

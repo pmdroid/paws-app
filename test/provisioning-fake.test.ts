@@ -73,11 +73,11 @@ test("the fake returns scripted exec results per VM and command", async () => {
   const exe = createFakeExeDev();
   exe.addVm("ada-paws");
   exe.addVm("bob-paws");
-  exe.scriptExec("ada-paws", "paws-runner runner pair", { stdout: "code ABCD-1234\n" });
+  exe.scriptExec("ada-paws", "paws-runner runner daemon", { stdout: "code ABCD-1234\n" });
   exe.scriptExec("ada-paws", /^curl /, [{ exitCode: 7, stderr: "down" }, { exitCode: 0 }]);
   exe.scriptExec("bob-paws", "uname", (command, vm) => ({ stdout: `${vm}:${command}` }));
 
-  expect(await exe.execVm("ada-paws", "paws-runner runner pair")).toEqual({
+  expect(await exe.execVm("ada-paws", "paws-runner runner daemon")).toEqual({
     exitCode: 0,
     stdout: "code ABCD-1234\n",
     stderr: "",
@@ -86,7 +86,7 @@ test("the fake returns scripted exec results per VM and command", async () => {
   expect((await exe.execVm("ada-paws", "curl -fsS install")).exitCode).toBe(0);
   expect((await exe.execVm("ada-paws", "curl -fsS install")).exitCode).toBe(0);
   expect((await exe.execVm("bob-paws", "uname", { timeoutMs: 5 })).stdout).toBe("bob-paws:uname");
-  const unscripted = await exe.execVm("bob-paws", "paws-runner runner pair");
+  const unscripted = await exe.execVm("bob-paws", "paws-runner runner daemon");
   expect(unscripted.exitCode).toBe(FAKE_UNSCRIPTED_EXIT);
   expect(await code(exe.execVm("carol-paws", "true"))).toBe("missing");
   expect(await code(exe.execVm("ada-paws", ""))).toBe("invalid_command");

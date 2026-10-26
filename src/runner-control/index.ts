@@ -1,4 +1,4 @@
-export { createRunnerControl, RunnerEnrollmentDenied } from "./pairing";
-export type { RunnerControl } from "./pairing";
+export { createRunnerControl, RunnerEnrollmentDenied } from "./control";
+export type { RunnerControl } from "./control";
 export { createRunnerHttp } from "./http";
 export type { RunnerHostConfig } from "./http";

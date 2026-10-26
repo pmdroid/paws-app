@@ -88,7 +88,7 @@ const POLL_MS = 15_000;
 const VM_STEPS: Record<OnboardingVmStep["step"], string> = {
   create: "Create the VM",
   install: "Install the runner",
-  enroll: "Pair with Paws",
+  enroll: "Enroll with Paws",
   health: "First heartbeat",
 };
 const VM_STATES: Record<OnboardingVmStep["state"], string> = {
@@ -277,7 +277,7 @@ const SCRIPT = String.raw`(() => {
       } else {
         const intro = document.createElement("p");
         intro.className = "detail";
-        intro.textContent = "Run this on the Linux host. It installs the runner, writes its config for this Paws and enrolls with a single-use token. This step completes when the runner pairs.";
+        intro.textContent = "Run this on the Linux host. It installs the runner, writes its config for this Paws and enrolls with a single-use token. This step completes when the runner enrolls.";
         const pre = document.createElement("pre");
         pre.id = "host-command-text";
         pre.textContent = command(enrollment);

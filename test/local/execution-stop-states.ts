@@ -81,7 +81,7 @@ async function remoteFixture(
     hostname: "127.0.0.1",
     port: 0,
     tls,
-    fetch: (request) => coordinator.enrollment(request),
+    fetch: (request) => coordinator.hostEnrollment(request),
   });
   const daemon = openRunnerDaemon({
     root: join(root, "daemon"),
@@ -99,9 +99,7 @@ async function remoteFixture(
   const polling = new AbortController();
   let loop: Promise<void> | undefined;
   try {
-    const pairing = await daemon.beginPairing(`Stop ${state}`);
-    assert(pairing.phase === "pending");
-    const { runnerId } = await coordinator.control.approvePairing(
+    const enrollmentGrant = coordinator.control.createEnrollment(
       {
         workspaceId: "workspace",
         userId: "owner",
@@ -109,10 +107,12 @@ async function remoteFixture(
         teamIds: [],
         authenticatedAt: Date.now(),
       },
-      pairing.code,
+      { name: `Stop ${state}` },
     );
+    const enrolled = await daemon.enroll(`Stop ${state}`, enrollmentGrant.token);
+    if (enrolled.phase !== "paired") throw new Error("Runner enrollment failed");
+    const { runnerId } = enrolled;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    assert.equal((await daemon.pollPairing()).phase, "paired");
     await daemon.heartbeat();
     const repository = {
       owner: "fixture",

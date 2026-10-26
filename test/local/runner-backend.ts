@@ -101,8 +101,10 @@ export async function probeRunnerBackend(
     now: () => now,
   });
   const key = await createRunnerKey(join(root, "client"));
-  const pending = await control.beginPairing({ name: "VM", csr: key.csr });
-  const runnerId = (await control.approvePairing(principal, pending.code)).runnerId;
+  const pending = { name: "VM", csr: key.csr };
+  const runnerId = (
+    await control.enroll({ ...pending, token: control.createEnrollment(principal, pending).token })
+  ).runnerId;
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
@@ -1784,8 +1786,11 @@ export async function probeRunnerBackend(
     const hostIds = [runnerId];
     for (const name of ["second", "third"]) {
       const hostKey = await createRunnerKey(join(root, `client-${name}`));
-      const pairing = await control.beginPairing({ name, csr: hostKey.csr });
-      const enrolled = await control.approvePairing(principal, pairing.code);
+      const enrollment = { name, csr: hostKey.csr };
+      const enrolled = await control.enroll({
+        ...enrollment,
+        token: control.createEnrollment(principal, enrollment).token,
+      });
       control.setStatus(principal, enrolled.runnerId, "active");
       hostIds.push(enrolled.runnerId);
     }

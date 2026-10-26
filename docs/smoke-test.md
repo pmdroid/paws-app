@@ -1,6 +1,6 @@
 # Smoke test
 
-Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop. Install Bun 1.4.2 or newer and Git. Pair a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Pairing is in [Pair a remote Linux runner](runner-pairing.md). GitHub App setup is in [GitHub App](github-app.md).
+Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop. Install Bun 1.4.2 or newer and Git. Enroll a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Enrollment is in [Enroll a remote Linux runner](runner-enrollment.md). GitHub App setup is in [GitHub App](github-app.md).
 
 ```sh
 bun install
@@ -55,7 +55,7 @@ Sign in on the website and authorize the app as a workspace admin. Delegate the 
 
 This run proves a runner installs a repository's runtimes and puts them on `PATH`. How a repository declares them is in [Declare a repository's runtimes](runtimes.md).
 
-1. Install the runner from the newest GitHub release, as in [Pair a remote Linux runner](runner-pairing.md), or upgrade an existing one to it. Pair it and start the daemon.
+1. Install the runner from the newest GitHub release, as in [Enroll a remote Linux runner](runner-enrollment.md), or upgrade an existing one to it. Enroll it and start the daemon.
 2. Push `examples/runtimes-demo` from this repository to an empty GitHub repository as its `main`:
 
    ```sh

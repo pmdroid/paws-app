@@ -111,9 +111,9 @@ export async function probePublicTlsErrorPages(
     import { startServer } from ${JSON.stringify(new URL("../../src/server/index.ts", import.meta.url).href)};
     const tls = loadPublicTls(${JSON.stringify(files)});
     const server = startServer({hostname:"127.0.0.1",port:0,tls,webhooks:false,
-      runnerEnrollment:async()=>{throw new Error("PAWS_ERROR_PAGE_SENTINEL")}});
+      runnerHostEnrollment:async()=>{throw new Error("PAWS_ERROR_PAGE_SENTINEL")}});
     try {
-      const response = await fetch("https://127.0.0.1:"+server.port+"/api/runner-pairings",{
+      const response = await fetch("https://127.0.0.1:"+server.port+"/api/runner-enrollments",{
         headers:{accept:"text/html"},tls:{ca:tls.cert,rejectUnauthorized:true},signal:AbortSignal.timeout(5000)});
       console.log(JSON.stringify({status:response.status,body:await response.text()}));
     } finally { await server.stop(true); }
