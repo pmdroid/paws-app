@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  DEFAULT_IGNORED_COMMENT_BOTS,
+  ignoredCommentBots,
   loadConfigFile,
   parseConfigToml,
   readMergeSettings,
@@ -112,6 +114,22 @@ packages = ["apps/*", "packages/*"]
       "packages/*",
     ]);
     expect(repositoryPackages(readMergeSettings(config), "acme/web")).toEqual([]);
+  });
+
+  test("a repository's ignored comment bots replace the default status bots", () => {
+    const config = parseConfigToml(
+      `[merge.repositories."acme/platform"]\nignore_comment_bots = ["Codecov[bot]", "deploy-bot"]\n`,
+    );
+    const settings = readMergeSettings(config);
+    expect(settings.repositories).toEqual({
+      "acme/platform": { packages: [], ignoreCommentBots: ["Codecov[bot]", "deploy-bot"] },
+    });
+    expect(ignoredCommentBots(settings, "ACME/platform")).toEqual(["codecov[bot]", "deploy-bot"]);
+    expect(ignoredCommentBots(settings, "acme/web")).toContain("cloudflare-workers-and-pages[bot]");
+    expect(DEFAULT_IGNORED_COMMENT_BOTS).toContain("linear-code[bot]");
+    expect(() =>
+      parseConfigToml(`[merge.repositories."acme/platform"]\nignore_comment_bots = ["a b"]\n`),
+    ).toThrow("must be a GitHub login");
   });
 
   test("package roots must be relative paths in the repository", () => {

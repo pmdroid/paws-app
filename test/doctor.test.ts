@@ -8,8 +8,10 @@ import type { FakeResult } from "../src/acp/testing/script";
 import type { AgentsConfig } from "../src/config";
 import { emptyConfigFile } from "../src/config";
 import {
+  appEventsFact,
   doctorChecks,
   formatDoctor,
+  GITHUB_APP_EVENTS,
   realProbe,
   type DoctorProbe,
   type GitHubDoctorFacts,
@@ -30,6 +32,7 @@ const NAMES = [
   "github-app-installation",
   "github-app-push",
   "github-rate",
+  "github-app-events",
   "claude-acp",
   "codex-acp",
   "claude",
@@ -440,6 +443,24 @@ test("a missing installation or push access fails with the App fix", () => {
   expect(push?.fix).toContain("Contents, Pull requests and Issues write");
 });
 
+test("a GitHub App without the comment and review events is reported", () => {
+  const facts = appEventsFact(200, {
+    events: ["check_run", "check_suite", "status", "pull_request", "merge_group"],
+  });
+  expect(facts).toEqual({
+    ok: false,
+    detail: "not subscribed to pull_request_review, pull_request_review_comment, issue_comment",
+  });
+  expect(appEventsFact(200, { events: [...GITHUB_APP_EVENTS] }).ok).toBe(true);
+  expect(appEventsFact(401, {}).ok).toBe(false);
+
+  const missing = probe(true);
+  missing.facts = { ...missing.facts, githubDoctor: { ...githubReady(), events: facts } };
+  const events = doctorChecks(missing).find((item) => item.name === "github-app-events");
+  expect(events?.ok).toBe(false);
+  expect(events?.fix).toContain("Pull request review comment, Issue comment");
+});
+
 test("doctor fails with one actionable line when grok has no auth method", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-doctor-nologin-"));
   const scriptPath = join(root, "script.json");
@@ -505,6 +526,7 @@ function githubReady(): GitHubDoctorFacts {
     installation: { ok: true, detail: "installation 22 on pmdroid/paws-demo" },
     push: { ok: true, detail: "push access to pmdroid/paws-demo" },
     rate: { ok: true, detail: "4800 remaining" },
+    events: { ok: true, detail: "subscribed to 8 events Paws uses" },
   };
 }
 
@@ -548,6 +570,7 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
       installation: { ok: false, detail: "GitHub App credentials are missing" },
       push: { ok: false, detail: "GitHub App installation was not checked" },
       rate: { ok: false, detail: "rate limit was not read" },
+      events: { ok: false, detail: "GitHub App events were not read" },
     },
     webhooks: false,
     publicUrl: null,
