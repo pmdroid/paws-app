@@ -348,6 +348,30 @@ describe("review prompt size", () => {
       await repo.cleanup();
     }
   });
+
+  test("records an oversize prompt as invalid with its parts and never starts the agent", async () => {
+    const repo = await gitRepo();
+    const script = scripted([]);
+    try {
+      const result = await createCodexReviewer(script.runner, {
+        model: "configured",
+        maxPromptChars: 200,
+      }).review({
+        ...request(repo),
+        skillFiles: new Map([
+          [SKILL, encode("Review skill")],
+          [".agents/skills/adversarial-review/references/long.md", encode("x".repeat(5000))],
+        ]),
+      });
+      expect(result.status).toBe("invalid");
+      expect(result.status === "invalid" ? result.reason : "").toMatch(
+        /^the review prompt is \d+ characters, over the 200 limit: skill 12, references 5000, diff \d+\./,
+      );
+      expect(script.starts).toHaveLength(0);
+    } finally {
+      await repo.cleanup();
+    }
+  });
 });
 
 describe("fix feedback", () => {
