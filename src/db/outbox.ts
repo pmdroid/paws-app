@@ -457,6 +457,7 @@ const SESSION_FIELDS = new Set([
   "hostPlan",
   "phase",
   "restartVersion",
+  "waits",
   "sessionId",
   "plan",
   "summary",
