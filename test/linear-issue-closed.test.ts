@@ -127,6 +127,10 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
     },
     fetch: async (_url, init) => {
       const data = JSON.parse(String(init?.body));
+      if (String(data.query).includes("agentSessionUpdate"))
+        return Response.json({
+          data: { agentSessionUpdate: { success: true, agentSession: { id: data.variables.id } } },
+        });
       requests.push({ query: data.query, body: data.variables?.input?.content?.body });
       return Response.json({
         data: { agentActivityCreate: { success: true, agentActivity: { id: "sent" } } },

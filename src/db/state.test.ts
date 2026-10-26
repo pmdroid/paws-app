@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CommandBus, FakeClock, JOB_KIND, type Checkpoint } from "../core";
 import {
   accrueAwake,
+  applyLinearCommand,
   applyWorkItemEvent,
   beginImplementRun,
   cancelOpenJobs,
@@ -24,6 +25,8 @@ import {
   migrate,
   openDatabase,
   prepareShutdown,
+  recordItemBranchState,
+  recordItemPullRequest,
   recordTurn,
   recoverOnStartup,
   saveCheckpoint,
@@ -31,6 +34,7 @@ import {
   saveTaskMode,
   submitCommand,
   syncClock,
+  takeOverItem,
   TransitionRejectedError,
 } from "./index";
 
@@ -499,6 +503,15 @@ describe("linear commands", () => {
     });
     insertQueuedItem(db, { id: "eng-2", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-2", clock.now());
+    recordItemBranchState(db, {
+      itemId: "eng-2",
+      runId: run.id,
+      head: "b".repeat(40),
+      base: "a".repeat(40),
+      commits: 3,
+      recordedAt: clock.now(),
+    });
+    recordItemPullRequest(db, { itemId: "eng-2", pullNumber: 7, pullUrl: null, openedAt: 1 });
     enqueueJob(db, {
       queue: "github.merge",
       lane: "merge",
@@ -522,10 +535,10 @@ describe("linear commands", () => {
     expect(seen).toEqual(["stop"]);
     expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "cancelled", cancelRequested: true });
     expect(getRun(db, run.id)?.status).toBe("lost");
-    expect(listOutbox(db)[0]?.payload).toEqual({
+    expect(listOutbox(db).find((row) => row.op === "activity")?.payload).toEqual({
       sessionId: "ses",
       kind: "response",
-      body: "Stopped from Linear.",
+      body: "Stopped. Branch paws/eng-2 has 3 commits; PR #7 will be closed. Re-delegate to continue.",
       id: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
       ),
@@ -540,7 +553,135 @@ describe("linear commands", () => {
       requestedAt: clock.now() + 1,
     });
     expect(seen).toEqual(["stop"]);
-    expect(listOutbox(db)).toHaveLength(1);
+    expect(listOutbox(db)).toHaveLength(2);
+  });
+
+  test("a stop names the commits left on the branch and the open pull request", () => {
+    const { db, clock } = harness();
+    insertQueuedItem(db, { id: "eng-5", sessionKey: "ses", now: clock.now() });
+    const { run } = beginImplementRun(db, "eng-5", clock.now());
+    recordItemBranchState(db, {
+      itemId: "eng-5",
+      runId: run.id,
+      head: "b".repeat(40),
+      base: "a".repeat(40),
+      commits: 1,
+      recordedAt: clock.now(),
+    });
+    recordItemPullRequest(db, { itemId: "eng-5", pullNumber: 12, pullUrl: null, openedAt: 1 });
+    submitCommand(db, new CommandBus(), {
+      type: "stop",
+      source: "linear",
+      itemId: "eng-5",
+      requestedAt: clock.now(),
+    });
+    const rows = listOutbox(db);
+    expect(rows.map((row) => row.delivery)).toEqual(["stop", "stop"]);
+    expect(rows.find((row) => row.op === "activity")?.payload).toMatchObject({
+      kind: "response",
+      body: "Stopped. Branch paws/eng-5 has 1 commit; PR #12 is open. Re-delegate to continue.",
+    });
+    expect(rows.find((row) => row.op === "linear.session.plan")?.payload).toMatchObject({
+      sessionId: "ses",
+      summary: `${getWorkItem(db, "eng-5")!.linearIdentifier}: stopped`,
+    });
+    db.close();
+  });
+
+  test("a stop without a pull request says none was opened and cancels the remaining plan", () => {
+    const { db, clock } = harness();
+    insertQueuedItem(db, { id: "eng-6", sessionKey: "ses", now: clock.now() });
+    const identifier = getWorkItem(db, "eng-6")!.linearIdentifier;
+    beginImplementRun(db, "eng-6", clock.now());
+    db.run(
+      `INSERT INTO outbox (target, op, ordering_key, idempotency_key, payload, priority, not_before,
+         created_at, max_attempts, delivery_kind, delivery_generation, status)
+       VALUES ('linear', 'linear.session.plan', 'ses', 'plan-1', ?, 6, 0, 0, 5, 'ordered', 0, 'sent')`,
+      [
+        JSON.stringify({
+          sessionId: "ses",
+          identifier,
+          plan: [
+            { content: "Read the code", status: "completed" },
+            { content: "Change it", status: "inProgress" },
+            { content: "Verify changes", status: "pending" },
+          ],
+        }),
+      ],
+    );
+    submitCommand(db, new CommandBus(), {
+      type: "stop",
+      source: "linear",
+      itemId: "eng-6",
+      requestedAt: clock.now(),
+    });
+    const stop = listOutbox(db).filter((row) => row.delivery === "stop");
+    expect(stop.find((row) => row.op === "activity")?.payload).toMatchObject({
+      kind: "response",
+      body: "Stopped. Branch paws/eng-6 has no commits; no PR was opened. Re-delegate to continue.",
+    });
+    expect(stop.find((row) => row.op === "linear.session.plan")?.payload).toMatchObject({
+      summary: `${identifier}: stopped`,
+      plan: [
+        { content: "Read the code", status: "completed" },
+        { content: "Change it", status: "canceled" },
+        { content: "Verify changes", status: "canceled" },
+      ],
+    });
+    db.close();
+  });
+
+  test("a cancel with an outside reason names the branch only when work is left on it", () => {
+    const { db, clock } = harness();
+    insertQueuedItem(db, { id: "eng-7", sessionKey: "ses-7", now: clock.now() });
+    insertQueuedItem(db, { id: "eng-8", sessionKey: "ses-8", now: clock.now() });
+    const { run } = beginImplementRun(db, "eng-8", clock.now());
+    recordItemBranchState(db, {
+      itemId: "eng-8",
+      runId: run.id,
+      head: "b".repeat(40),
+      base: "a".repeat(40),
+      commits: 2,
+      recordedAt: clock.now(),
+    });
+    for (const itemId of ["eng-7", "eng-8"])
+      applyLinearCommand(
+        db,
+        { type: "cancel", source: "linear", itemId, requestedAt: clock.now() },
+        clock.now(),
+        "Closed: the issue was canceled in Linear.",
+      );
+    expect(
+      listOutbox(db)
+        .filter((row) => row.op === "activity")
+        .map((row) => (row.payload as { body: string }).body),
+    ).toEqual([
+      "Closed: the issue was canceled in Linear.",
+      "Closed: the issue was canceled in Linear. Branch paws/eng-8 has 2 commits; no PR was opened.",
+    ]);
+    db.close();
+  });
+
+  test("a take over ends the session with who took it and the manual title", () => {
+    const { db, clock } = harness();
+    insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: clock.now() });
+    const identifier = getWorkItem(db, "eng-9")!.linearIdentifier;
+    beginImplementRun(db, "eng-9", clock.now());
+    expect(takeOverItem(db, "eng-9", "Ada", clock.now()).applied).toBe(false);
+    applyWorkItemEvent(db, "eng-9", "run_failed");
+    const version = getWorkItem(db, "eng-9")!.version;
+    expect(takeOverItem(db, "eng-9", "Ada", clock.now()).applied).toBe(true);
+    expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "manual" });
+    expect(getWorkItem(db, "eng-9")!.version).toBeGreaterThan(version + 1);
+    const stop = listOutbox(db).filter((row) => row.delivery === "stop");
+    expect(stop.find((row) => row.op === "activity")?.payload).toMatchObject({
+      kind: "response",
+      body: `Taken over by Ada. Paws will not restart, verify or merge ${identifier}.`,
+    });
+    expect(stop.find((row) => row.op === "linear.session.plan")?.payload).toMatchObject({
+      summary: `${identifier}: manual`,
+    });
+    db.close();
   });
 
   test("a shared session receives one final stop acknowledgement", () => {
@@ -555,8 +696,9 @@ describe("linear commands", () => {
         requestedAt: clock.now(),
       });
     }
-    expect(listOutbox(db)).toHaveLength(1);
-    expect(listOutbox(db)[0]?.payload).toMatchObject({ kind: "response", sessionId: "ses" });
+    const activities = listOutbox(db).filter((row) => row.op === "activity");
+    expect(activities).toHaveLength(1);
+    expect(activities[0]?.payload).toMatchObject({ kind: "response", sessionId: "ses" });
     db.close();
   });
 

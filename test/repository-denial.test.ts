@@ -81,7 +81,7 @@ async function seed() {
 
 function stopResponses(db: ReturnType<typeof tempDb>): string[] {
   return listOutbox(db)
-    .filter((entry) => entry.delivery === "stop")
+    .filter((entry) => entry.delivery === "stop" && entry.op === "activity")
     .map((entry) => (entry.payload as { body: string }).body);
 }
 
@@ -194,7 +194,9 @@ test("a denial without a reason still ends with the default response", async () 
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
     expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
-    expect(stopResponses(db)).toEqual(["Cancelled from Linear."]);
+    expect(stopResponses(db)).toEqual([
+      "Cancelled from Linear. Branch paws/PAS-677 has no commits; no PR was opened. Re-delegate to continue.",
+    ]);
   } finally {
     check.close();
     db.close();

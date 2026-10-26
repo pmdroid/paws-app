@@ -3103,6 +3103,24 @@ CREATE TABLE agent_session_snapshot_chunk (
       retry_baseline TEXT NOT NULL CHECK(json_valid(retry_baseline))
     );`,
   },
+  {
+    id: "151_item_branch_and_pull_request",
+    sql: `
+CREATE TABLE item_branch_state (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  run_id TEXT NOT NULL,
+  head TEXT NOT NULL,
+  base TEXT NOT NULL,
+  commits INTEGER NOT NULL CHECK (commits >= 0),
+  recorded_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE item_pull_request (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  pull_number INTEGER NOT NULL CHECK (pull_number > 0),
+  pull_url TEXT,
+  opened_at INTEGER NOT NULL
+) STRICT;`,
+  },
 ];
 
 /**
