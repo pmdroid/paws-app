@@ -2919,6 +2919,33 @@ ${runnerSetupCheckSql("NEW.runner_id", "NEW.user_id")}
 END;
 `,
   },
+  {
+    // PAS-706. One row per committed `work_item` transition, written by `applyWorkItemEvent` in
+    // the same immediate transaction as the state change. `version` is the item version the
+    // transition produced. A transition that sends the item back to the agent is a `restart` row
+    // with its reason, and one that asks a person is an `ask` row (PAS-627), so the history and
+    // the measurement queries read this table alone. Items that existed before start with no rows.
+    id: "145_work_item_event",
+    sql: `
+CREATE TABLE work_item_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  version INTEGER NOT NULL,
+  at INTEGER NOT NULL,
+  from_state TEXT NOT NULL,
+  to_state TEXT NOT NULL,
+  event TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'transition' CHECK (kind IN ('transition','restart','ask')),
+  reason TEXT,
+  payload_digest TEXT,
+  actor TEXT,
+  CHECK (kind<>'restart'
+    OR reason IN ('findings','ci','review','conflict','follow_up','answer')),
+  CHECK (kind<>'ask' OR reason IS NOT NULL),
+  UNIQUE (item_id, version)
+) STRICT;
+`,
+  },
 ];
 
 /**

@@ -2,6 +2,7 @@ import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
   StatusAgentCloseout,
   StatusItem,
+  StatusItemEvent,
   StatusLink,
   StatusQuestion,
   StatusRun,
@@ -399,6 +400,7 @@ function issuePage(
     ${run ? evidenceSlot(snapshot, run.id) : ""}
     ${fixRounds(snapshot, item, run)}
     ${pullRequestSection(snapshot, item)}
+    ${itemTimeline(item)}
     ${run?.setup ? runSetupSection(run.setup) : ""}
     ${
       run
@@ -439,6 +441,40 @@ function issueFacts(
     ]);
   }
   return `<dl class="issue-facts-grid">${facts.map(([term, value]) => `<div><dt>${term}</dt><dd>${value}</dd></div>`).join("")}</dl>`;
+}
+
+const RESTART_REASON_LABELS: Record<string, string> = {
+  findings: "Closeout findings",
+  ci: "failing CI",
+  review: "review feedback",
+  conflict: "a merge conflict",
+  follow_up: "a follow-up in Linear",
+  answer: "an answer",
+};
+
+/** Every committed state change of the item, oldest first, from `work_item_event`. */
+function itemTimeline(item: StatusItem): string {
+  if (!item.timeline?.length) return "";
+  return `<section class="item-timeline" aria-labelledby="item-timeline-heading"><h2 id="item-timeline-heading">Item timeline</h2>
+    <ol role="list">${item.timeline.map(itemTimelineEntry).join("")}</ol></section>`;
+}
+
+function itemTimelineEntry(entry: StatusItemEvent): string {
+  const state = (value: string) => esc(value.replaceAll("_", " "));
+  const why =
+    entry.kind === "restart"
+      ? `Back to the agent for ${esc(RESTART_REASON_LABELS[entry.reason ?? ""] ?? (entry.reason ?? "a restart").replaceAll("_", " "))}`
+      : entry.kind === "ask"
+        ? `Asked a person: ${esc((entry.reason ?? "a question").replaceAll("_", " "))}`
+        : "";
+  const detail = [
+    `from ${state(entry.from)}`,
+    esc(entry.event),
+    entry.actor ? `by ${esc(entry.actor)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return `<li data-kind="${entry.kind}"><time datetime="${esc(entry.at)}" title="${esc(entry.at)}">${esc(clock24(entry.at))}</time> <strong>${state(entry.to)}</strong>${why ? ` ${why}.` : ""} <span class="muted">${detail}</span></li>`;
 }
 
 /** The pull request and where its merge stands. */
