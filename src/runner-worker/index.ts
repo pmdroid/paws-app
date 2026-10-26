@@ -31,6 +31,9 @@ import {
   validateCandidateAttribution,
   assertDescendsFromAny,
   ArtifactRejectedError,
+  commitCheckpoint,
+  commitPolicyMessage,
+  FOLLOW_UP_INTERRUPTION,
   createAcpPromptLifecycle,
   git,
   runAgent,
@@ -60,7 +63,11 @@ import {
   type RunnerResults,
   type RunnerSpool,
 } from "../runner-execution";
-import { readRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
+import {
+  readRunnerAnswer,
+  runnerFollowUpRequestId,
+  RUNNER_HANDOVER_REQUEST_ID,
+} from "../runner-answers";
 import {
   installRuntimes,
   prependRuntimePath,
@@ -137,7 +144,16 @@ export interface RunnerWorkerOptions {
   providerCli?: (cli: "claude" | "codex") => string;
   /** The largest gzipped Claude session bundle. Tests lower it. */
   sessionSnapshotMaxBytes?: number;
+  /** Resolves once Paws asks the runner to hand this run over to another runner. */
+  handover?: (signal: AbortSignal) => Promise<void>;
+  /** How long a handover waits for the current tool call. Tests lower it. */
+  handoverLimitMs?: number;
 }
+
+/** A handover waits this long for a safe point; after that the session keeps running here. */
+export const HANDOVER_LIMIT_MS = 120_000;
+export const HANDOVER_COMMIT_MESSAGE =
+  "Save work in progress to hand the session to another runner";
 
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
@@ -206,7 +222,14 @@ export type RunnerWorkerEvent =
   | Extract<
       RunnerEvent,
       {
-        type: "plan" | "pull_request" | "progress" | "closeout" | "hook_failed" | "session_restore";
+        type:
+          | "plan"
+          | "pull_request"
+          | "progress"
+          | "closeout"
+          | "hook_failed"
+          | "session_restore"
+          | "handover";
       }
     >;
 
@@ -745,6 +768,12 @@ export async function executeRunnerCommand(
           });
         }
     }
+    // A handover stops the agent only between tool calls, or while ask_team waits for a person.
+    const toolCalls = new Set<string>();
+    let waitingForAnswer = 0;
+    const handoverAbort = new AbortController();
+    const handoverWatch = new AbortController();
+    let handoverStarted = false;
     const earlierSession =
       command.type === "run"
         ? restoreRequest
@@ -817,9 +846,23 @@ export async function executeRunnerCommand(
       worktreePath: worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
       home: options.home,
-      signal: options.signal,
+      signal:
+        command.type === "run" && options.handover
+          ? AbortSignal.any([handoverAbort.signal, ...(options.signal ? [options.signal] : [])])
+          : options.signal,
       onEvent(event) {
         try {
+          if (
+            event.type === "session_update" &&
+            (event.update.sessionUpdate === "tool_call" ||
+              event.update.sessionUpdate === "tool_call_update")
+          ) {
+            const status = event.update.status;
+            if (status === "completed" || status === "failed")
+              toolCalls.delete(event.update.toolCallId);
+            else if (event.update.sessionUpdate === "tool_call" || status)
+              toolCalls.add(event.update.toolCallId);
+          }
           if (restored && restoreRequest && event.type === "session_started")
             reportRestore(
               event.sessionId === restoreRequest.sessionId
@@ -984,7 +1027,12 @@ export async function executeRunnerCommand(
                   ...(request.context ? { context: request.context } : {}),
                   options: request.options ?? [],
                 });
-                return options.answer(requestId, context.signal);
+                waitingForAnswer++;
+                try {
+                  return await options.answer(requestId, context.signal);
+                } finally {
+                  waitingForAnswer--;
+                }
               },
             },
     };
@@ -1003,6 +1051,31 @@ export async function executeRunnerCommand(
                 ),
             })
         : runAgent;
+    const handover =
+      command.type === "run" && options.handover && installFailure === undefined
+        ? (async () => {
+            await options.handover!(handoverWatch.signal);
+            handoverStarted = true;
+            const deadline = performance.now() + (options.handoverLimitMs ?? HANDOVER_LIMIT_MS);
+            while (toolCalls.size > 0 && waitingForAnswer === 0) {
+              if (performance.now() >= deadline) {
+                console.warn(
+                  JSON.stringify({ event: "handover_timed_out", executionId: job.executionId }),
+                );
+                emit({ type: "handover", handedOver: false, reason: "timeout" });
+                return false;
+              }
+              await delay(50, undefined, { signal: handoverWatch.signal });
+            }
+            // The same interrupt a follow-up uses: the agent stops and its session stays intact.
+            handoverAbort.abort(FOLLOW_UP_INTERRUPTION);
+            return true;
+          })().catch((error: unknown) => {
+            if (!handoverWatch.signal.aborted)
+              journalCaught(error, "runner-worker.executeRunnerCommand.handover", command.itemId);
+            return false;
+          })
+        : undefined;
     const run: RunAgentResult =
       installFailure !== undefined
         ? {
@@ -1017,6 +1090,15 @@ export async function executeRunnerCommand(
         : command.type === "run" && options.followUp
           ? await runWithFollowUps(agent, options.followUp, runner)
           : await runner(agent);
+    handoverWatch.abort();
+    const handedOver =
+      command.type === "run" &&
+      (await handover) === true &&
+      run.cancelled &&
+      run.agentExited &&
+      !options.signal?.aborted;
+    if (handoverStarted && !handedOver)
+      console.warn(JSON.stringify({ event: "handover_skipped", executionId: job.executionId }));
     // The agent never opened a session, so the restored one did not load either.
     if (restored) reportRestore({ restored: false, reason: "load" });
     if (eventFailure) throw eventFailure;
@@ -1128,9 +1210,29 @@ export async function executeRunnerCommand(
       });
       if (command.type === "run" && result.candidateSha === command.repository.baseSha)
         delete result.candidateSha;
+    } else if (command.type === "run" && handedOver) {
+      // The WIP commit is published like a candidate; the next runner starts from it.
+      await commitCheckpoint(
+        worktree,
+        command.commitPolicy
+          ? commitPolicyMessage(HANDOVER_COMMIT_MESSAGE, command.commitPolicy)
+          : HANDOVER_COMMIT_MESSAGE,
+        options.signal,
+        undefined,
+        env,
+        inputFiles.map((file) => file.path),
+        command.commitPolicy
+          ? appBotCommitIdentity(command.commitPolicy.bot)
+          : command.checkpointBot
+            ? appBotCommitIdentity(command.checkpointBot)
+            : undefined,
+      );
+      await recordCandidate();
+      if (result.candidateSha === command.repository.baseSha) delete result.candidateSha;
+      result.run = { ...result.run, cancelled: false, interrupted: false, handedOver: true };
     }
-    // A turn that ended, not a cancel or a crash, leaves a session another runner can load.
-    // An earlier attempt's bundle never stands in for this one.
+    // A turn that ended or handed over, not a cancel or a crash, leaves a session another
+    // runner can load. An earlier attempt's bundle never stands in for this one.
     if (command.type === "run")
       for (const name of [SESSION_METADATA_FILE, SESSION_BUNDLE_FILE])
         rmSync(join(options.outputDirectory, name), { force: true });
@@ -1139,9 +1241,8 @@ export async function executeRunnerCommand(
       command.profile.agent === "claude" &&
       installFailure === undefined &&
       run.agentExited &&
-      !run.cancelled &&
-      run.stopReason !== "cancelled" &&
-      run.stopReason !== "error" &&
+      (handedOver ||
+        (!run.cancelled && run.stopReason !== "cancelled" && run.stopReason !== "error")) &&
       run.sessionId &&
       !options.signal?.aborted
     )
@@ -1316,6 +1417,14 @@ export async function runRunnerWorker(options: {
         await delay(250, undefined, { signal });
       }
     },
+    ...(job.command.type === "run"
+      ? {
+          async handover(signal: AbortSignal) {
+            while (!readRunnerAnswer(spool, options.executionId, RUNNER_HANDOVER_REQUEST_ID))
+              await delay(250, undefined, { signal });
+          },
+        }
+      : {}),
     async followUp(sequence, signal) {
       while (true) {
         signal.throwIfAborted();
