@@ -44,7 +44,12 @@ export async function loadReviewMaterial(input: {
     ? [...trusted.keys()]
         .filter((path) => path.startsWith(prefix) && path !== input.skill)
         .sort()
-        .map((path) => ({ path, text: referenceText(trusted.get(path)!) }))
+        .map((path) => ({
+          path,
+          text: path.startsWith(`${prefix}references/`)
+            ? referenceText(trusted.get(path)!)
+            : listedOnly(trusted.get(path)!),
+        }))
     : await loadReferences(input.repo, input.head, input.skill);
   const filesText = await gitOutput(input.repo, [
     "-c",
@@ -152,6 +157,12 @@ function skillText(files: ReadonlyMap<string, Uint8Array>, path: string): string
   const bytes = files.get(path);
   if (bytes === undefined) throw new Error(`trusted skill file is missing: ${path}`);
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
+function listedOnly(bytes: Uint8Array): string {
+  const text = referenceText(bytes);
+  if (text.startsWith("Binary resource, SHA-256 ")) return text;
+  return `Not inlined: ${bytes.length} bytes outside references/, SHA-256 ${sha256Hex(bytes)}`;
 }
 
 function referenceText(bytes: Uint8Array): string {

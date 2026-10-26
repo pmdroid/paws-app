@@ -270,6 +270,46 @@ describe("closeout reviewer", () => {
   });
 });
 
+describe("review prompt size", () => {
+  const encode = (text: string) => new TextEncoder().encode(text);
+
+  test("inlines the skill's references/ files and lists its other files by size and hash", async () => {
+    const repo = await gitRepo();
+    const script = scripted([{ sessionId: "review-refs", model: "review-model", text: "[]" }]);
+    const dir = ".agents/skills/adversarial-review";
+    try {
+      await createCodexReviewer(script.runner, { model: "configured" }).review({
+        item: reviewItem(),
+        candidate: { session: "implementer", model: "implementer-model", provider: "test" },
+        base: repo.base,
+        head: repo.head,
+        policyDigest: DIGEST,
+        worktree: repo.dir,
+        skillFiles: new Map([
+          [SKILL, encode("Review skill")],
+          [`${dir}/references/severity.md`, encode(REFERENCE_TEXT)],
+          [`${dir}/scripts/helper.py`, encode("SCRIPT BODY ".repeat(1000))],
+          [`${dir}/tests/helper_test.py`, encode("TEST BODY")],
+          [`${dir}/CLAUDE.md`, encode("Notes for the skill's maintainers")],
+        ]),
+      });
+      const prompt = script.starts[0]?.prompt ?? "";
+      expect(prompt).toContain(REFERENCE_TEXT);
+      expect(prompt).toMatch(
+        new RegExp(
+          `## ${dir}/scripts/helper\\.py\\nNot inlined: 12000 bytes outside references/, SHA-256 [0-9a-f]{64}`,
+        ),
+      );
+      expect(prompt).toContain(`## ${dir}/tests/helper_test.py\nNot inlined: 9 bytes`);
+      expect(prompt).not.toContain("SCRIPT BODY");
+      expect(prompt).not.toContain("TEST BODY");
+      expect(prompt).not.toContain("maintainers");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+});
+
 describe("fix feedback", () => {
   test("includes a failed command argv, exit, and the last 80 log lines", () => {
     const log = Array.from({ length: 100 }, (_, index) => `log-line-${index + 1}`).join("\n");
