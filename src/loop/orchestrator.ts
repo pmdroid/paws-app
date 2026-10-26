@@ -835,18 +835,19 @@ export class Orchestrator {
         acknowledged: session !== null,
       });
     } catch (error) {
-      journalCaught(
-        error,
-        "orchestrator.handleLinearEvent.intakeLinearTask",
-        this.itemsForSession(event.sessionId ?? "")
-          .map((item) => item.id)
-          .join(",") || null,
-        undefined,
-        this.options.journal,
-      );
       const current = session ? getLinearSession(this.db, session.sessionId) : null;
-      if (session && (current?.stoppedAt !== null || current.generation !== session.generation))
+      if (session && (current?.stoppedAt !== null || current.generation !== session.generation)) {
+        journalCaught(
+          error,
+          "orchestrator.handleLinearEvent.intakeLinearTask",
+          this.itemsForSession(event.sessionId ?? "")
+            .map((item) => item.id)
+            .join(",") || null,
+          undefined,
+          this.options.journal,
+        );
         return;
+      }
       throw error;
     }
     if (result.ok) {
@@ -1028,14 +1029,16 @@ export class Orchestrator {
               request: (signal) => this.classificationRequest(sessionId, snapshot, signal, options),
             })
             .catch((error: unknown) => {
-              journalCaught(
-                error,
-                "orchestrator.intakeLinearTask.plan",
-                redirect?.itemId,
-                undefined,
-                this.options.journal,
-              );
-              if (error instanceof RunnerSlotsBusyError && !savedRequest) return null;
+              if (error instanceof RunnerSlotsBusyError && !savedRequest) {
+                journalCaught(
+                  error,
+                  "orchestrator.intakeLinearTask.plan",
+                  redirect?.itemId,
+                  undefined,
+                  this.options.journal,
+                );
+                return null;
+              }
               throw error;
             })
         : null;
@@ -1326,6 +1329,8 @@ export class Orchestrator {
             this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
           );
         } catch (error) {
+          const wait = this.nextRunnerWait(job, error);
+          if (!wait || !context.isCurrent()) throw error;
           journalCaught(
             error,
             "orchestrator.register.runLeasedJob",
@@ -1333,8 +1338,6 @@ export class Orchestrator {
             undefined,
             this.options.journal,
           );
-          const wait = this.nextRunnerWait(job, error);
-          if (!wait || !context.isCurrent()) throw error;
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
@@ -1353,6 +1356,10 @@ export class Orchestrator {
       } catch (error) {
         if (this.shuttingDown || job.attempts >= job.maxAttempts || !context.isCurrent())
           throw error;
+
+        const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
+
+        if (!retryMergeLater(this.db, job, this.now(), delayMs, error)) throw error;
         journalCaught(
           error,
           "orchestrator.register.mergeAttempt",
@@ -1360,9 +1367,6 @@ export class Orchestrator {
           undefined,
           this.options.journal,
         );
-        const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
-
-        if (!retryMergeLater(this.db, job, this.now(), delayMs, error)) throw error;
         return;
       }
       if (waiting === undefined) return;
@@ -1567,13 +1571,6 @@ export class Orchestrator {
     try {
       await this.executeQueued(job.payload);
     } catch (error) {
-      journalCaught(
-        error,
-        "orchestrator.executeRetried.executeQueued",
-        readString(job.payload, "itemId"),
-        undefined,
-        this.options.journal,
-      );
       const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
       if (
@@ -1584,7 +1581,16 @@ export class Orchestrator {
         (item.state !== "running" && item.state !== "verifying" && item.state !== "recovering")
       )
         throw error;
-      if (error instanceof RunnerSetupRequired && this.holdForRunnerSetup(item, error.need)) return;
+      if (error instanceof RunnerSetupRequired && this.holdForRunnerSetup(item, error.need)) {
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.executeQueued",
+          readString(job.payload, "itemId"),
+          undefined,
+          this.options.journal,
+        );
+        return;
+      }
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
         deferWorkItem(this.db, item, {
@@ -1595,6 +1601,14 @@ export class Orchestrator {
           capacityWait: wait,
           now: this.now(),
         });
+
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.executeQueued",
+          readString(job.payload, "itemId"),
+          undefined,
+          this.options.journal,
+        );
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -1607,6 +1621,14 @@ export class Orchestrator {
             `Stopped after ${MAX_TRANSIENT_RETRIES} retries. ${message}`,
             error,
           );
+
+          journalCaught(
+            error,
+            "orchestrator.executeRetried.executeQueued",
+            readString(job.payload, "itemId"),
+            undefined,
+            this.options.journal,
+          );
           return;
         }
         const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
@@ -1618,6 +1640,14 @@ export class Orchestrator {
           message: retryNote(message, delayMs),
           now: this.now(),
         });
+
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.executeQueued",
+          readString(job.payload, "itemId"),
+          undefined,
+          this.options.journal,
+        );
         return;
       }
       if (job.attempts >= job.maxAttempts)
@@ -2175,13 +2205,6 @@ export class Orchestrator {
       } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now(), finish);
       this.dispatch();
     } catch (error) {
-      journalCaught(
-        error,
-        "orchestrator.runResponse.assert",
-        live.itemId,
-        undefined,
-        this.options.journal,
-      );
       if (
         !this.askedRuns.has(run.id) &&
         !this.stopped(item.id) &&
@@ -2196,6 +2219,14 @@ export class Orchestrator {
           error,
         );
       }
+
+      journalCaught(
+        error,
+        "orchestrator.runResponse.assert",
+        live.itemId,
+        undefined,
+        this.options.journal,
+      );
     } finally {
       clearInterval(keepAlive);
       this.releaseAskedRun(run.id);
@@ -2360,6 +2391,9 @@ export class Orchestrator {
         if (!this.readProfileSnapshot(run.id)?.candidate)
           await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
       } catch (error) {
+        if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
+          return;
+        if (isTransient(error)) throw error;
         journalCaught(
           error,
           "orchestrator.runItem.preflight",
@@ -2367,9 +2401,6 @@ export class Orchestrator {
           undefined,
           this.options.journal,
         );
-        if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
-          return;
-        if (isTransient(error)) throw error;
         closeActiveRun(this.db, run.id, this.now());
         const summary = `Closeout: blocked\n${error instanceof Error ? error.message : String(error)}`;
         this.post(item, "thought", summary, `${run.id}:profile-preflight`);
@@ -2466,13 +2497,6 @@ export class Orchestrator {
       else closeActiveRun(this.db, run.id, this.now());
       await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
     } catch (error) {
-      journalCaught(
-        error,
-        "orchestrator.runItem.assert",
-        live.itemId,
-        undefined,
-        this.options.journal,
-      );
       const current = getWorkItem(this.db, item.id);
       if (
         !this.askedRuns.has(run.id) &&
@@ -2496,6 +2520,14 @@ export class Orchestrator {
           throw error;
         } else this.fail(current, "run_error", message, error);
       }
+
+      journalCaught(
+        error,
+        "orchestrator.runItem.assert",
+        live.itemId,
+        undefined,
+        this.options.journal,
+      );
     } finally {
       activity.flush();
       clearTimeout(first);
@@ -5069,18 +5101,20 @@ export class Orchestrator {
       );
     } catch (error) {
       signal.throwIfAborted();
-      journalCaught(
-        error,
-        "orchestrator.hydrateLinearContext.linearCaller",
-        null,
-        undefined,
-        this.options.journal,
-      );
+
       if (
         error instanceof LinearRateLimitError &&
         listLinearActivitySnapshots(this.db, sessionId).length > 0
-      )
+      ) {
+        journalCaught(
+          error,
+          "orchestrator.hydrateLinearContext.linearCaller",
+          null,
+          undefined,
+          this.options.journal,
+        );
         return;
+      }
       throw error;
     }
     signal.throwIfAborted();
@@ -5654,14 +5688,16 @@ export class Orchestrator {
         readFileSync(join(runDir(this.options.pawsRoot, runId), "agent-profile.json"), "utf8"),
       );
     } catch (error) {
-      journalCaught(
-        error,
-        "orchestrator.readProfileSnapshot.parse",
-        null,
-        "optional file may be absent",
-        this.options.journal,
-      );
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        journalCaught(
+          error,
+          "orchestrator.readProfileSnapshot.parse",
+          null,
+          "optional file may be absent",
+          this.options.journal,
+        );
+        return null;
+      }
       throw error;
     }
   }

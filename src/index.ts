@@ -1719,7 +1719,7 @@ if (import.meta.main) {
       console.log(`Runner authority initialized. Command key: ${keys[0].keyId}`);
       process.exit(0);
     } catch (caughtError2) {
-      journalCaught(caughtError2, "index.recover.pawsPaths", null);
+      journalCaught(caughtError2, "Runner authority initialization failed.", null);
 
       process.exit(1);
     }
@@ -1731,7 +1731,7 @@ if (import.meta.main) {
       console.log("Public HTTPS certificate is valid.");
       process.exit(0);
     } catch (caughtError3) {
-      journalCaught(caughtError3, "index.recover.validatePublicTls", null);
+      journalCaught(caughtError3, "Public HTTPS certificate validation failed.", null);
 
       process.exit(1);
     }
@@ -1757,7 +1757,7 @@ if (import.meta.main) {
       console.log("Slack connected.");
       process.exit(0);
     } catch (error) {
-      journalCaught(error, "index.recover.loadRuntime", null);
+      journalCaught(error, "Slack authorization failed.", null);
 
       process.exit(1);
     }

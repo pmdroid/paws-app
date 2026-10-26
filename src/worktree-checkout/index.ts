@@ -97,8 +97,10 @@ async function readSparsePatterns(tree: string, env?: NodeJS.ProcessEnv): Promis
   try {
     enabled = await gitAsync(tree, ["config", "--bool", "--get", "core.sparseCheckout"], env);
   } catch (error) {
-    journalCaught(error, "worktree-checkout.readSparsePatterns.gitAsync", null);
-    if ((error as { code?: number }).code === 1) return [];
+    if ((error as { code?: number }).code === 1) {
+      journalCaught(error, "worktree-checkout.readSparsePatterns.gitAsync", null);
+      return [];
+    }
     throw error;
   }
   if (enabled.trim() !== "true") return [];

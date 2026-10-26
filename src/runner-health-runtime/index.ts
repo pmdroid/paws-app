@@ -167,13 +167,15 @@ export async function openRunnerHealthRuntime(options: {
     try {
       journal = readRunnerResultFile(options.results, id, "events.jsonl").toString("utf8");
     } catch (error) {
-      journalCaught(
-        error,
-        "runner-health-runtime.readLogin.toString",
-        null,
-        "optional file may be absent",
-      );
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        journalCaught(
+          error,
+          "runner-health-runtime.readLogin.toString",
+          null,
+          "optional file may be absent",
+        );
+        return null;
+      }
       throw error;
     }
     const lines = journal.slice(0, journal.lastIndexOf("\n")).split("\n").filter(Boolean);
@@ -302,13 +304,15 @@ export async function openRunnerHealthRuntime(options: {
           try {
             raw = readRunnerResultFile(options.results, entry.id, "result.json");
           } catch (error) {
-            journalCaught(
-              error,
-              "runner-health-runtime.step.readRunnerResultFile",
-              null,
-              "optional file may be absent",
-            );
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+              journalCaught(
+                error,
+                "runner-health-runtime.step.readRunnerResultFile",
+                null,
+                "optional file may be absent",
+              );
+              return;
+            }
             throw error;
           }
           try {

@@ -156,13 +156,15 @@ async function filenameAttempts(root: string, key: AttemptKey): Promise<number[]
   try {
     names = await readdir(directory);
   } catch (error) {
-    journalCaught(
-      error,
-      "store.filenameAttempts.readdir",
-      key.itemId,
-      "optional file may be absent",
-    );
-    if (isEnoent(error)) return [];
+    if (isEnoent(error)) {
+      journalCaught(
+        error,
+        "store.filenameAttempts.readdir",
+        key.itemId,
+        "optional file may be absent",
+      );
+      return [];
+    }
     throw error;
   }
   const numbers: number[] = [];
@@ -254,8 +256,10 @@ async function fileExists(file: string): Promise<boolean> {
     await stat(file);
     return true;
   } catch (error) {
-    journalCaught(error, "store.fileExists.stat", null, "optional file may be absent");
-    if (isEnoent(error)) return false;
+    if (isEnoent(error)) {
+      journalCaught(error, "store.fileExists.stat", null, "optional file may be absent");
+      return false;
+    }
     throw error;
   }
 }

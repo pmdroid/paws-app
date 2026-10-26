@@ -21,7 +21,6 @@ import {
 import { createFakeTracker } from "../src/linear";
 import { attachOrchestrator, itemPathId } from "../src/loop";
 
-// Exercise the recovered-error branches without launching an agent or external adapters.
 type Operations = {
   startCloseoutRound(item: WorkItemRecord, head: string): Promise<void>;
   mergeSettingsFor(item: WorkItemRecord): Promise<unknown>;
@@ -111,7 +110,7 @@ test("removeWorktree failure is journaled once after the confirmed merge", async
       mergeSha: "merged-head",
       confirmedAt: 1_000,
     });
-    // Both paths exist, but the mirror is invalid. Cleanup fails locally in Git.
+
     await mkdir(mirrorPath(f.root, repository.owner, repository.repo), { recursive: true });
     await mkdir(worktreePath(f.root, itemPathId(f.item)), { recursive: true });
     await f.operations.completeMerge(getWorkItem(f.db, f.item.id)!, repository);

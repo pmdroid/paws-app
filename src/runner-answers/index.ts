@@ -121,13 +121,15 @@ export function readRunnerAnswer(
     if (answer.requestId !== requestId) throw new Error("Runner answer identity mismatch");
     return answer;
   } catch (error) {
-    journalCaught(
-      error,
-      "runner-answers.readRunnerAnswer.openAnswers",
-      null,
-      "optional file may be absent",
-    );
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      journalCaught(
+        error,
+        "runner-answers.readRunnerAnswer.openAnswers",
+        null,
+        "optional file may be absent",
+      );
+      return null;
+    }
     throw error;
   } finally {
     if (file !== undefined) closeSync(file);

@@ -177,10 +177,17 @@ export function enqueueJobOnce(db: Database, job: NewJob): number {
   try {
     return enqueueJob(db, job);
   } catch (error) {
-    journalCaught(error, "jobs.enqueueJobOnce.enqueueJob", journalItemId(job.payload));
     if (job.jobKey !== undefined && isUnique(error)) {
       const existing = findByKey(db, job.jobKey);
-      if (existing) return existing.id;
+      if (existing) {
+        journalCaught(
+          error,
+          "jobs.enqueueJobOnce.enqueueJob",
+          journalItemId(job.payload),
+          "idempotent job already enqueued",
+        );
+        return existing.id;
+      }
     }
     throw error;
   }

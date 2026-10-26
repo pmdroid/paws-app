@@ -351,13 +351,15 @@ async function linkCodexHome(
   try {
     entries = await readdir(source, { withFileTypes: true });
   } catch (error) {
-    journalCaught(
-      error,
-      "closeout-hook.linkCodexHome.readdir",
-      null,
-      "optional file may be absent",
-    );
-    if (errorCode(error) === "ENOENT") return undefined;
+    if (errorCode(error) === "ENOENT") {
+      journalCaught(
+        error,
+        "closeout-hook.linkCodexHome.readdir",
+        null,
+        "optional file may be absent",
+      );
+      return undefined;
+    }
     throw error;
   }
   for (const entry of entries) {
@@ -368,8 +370,15 @@ async function linkCodexHome(
   try {
     await lstat(configPath);
   } catch (error) {
-    journalCaught(error, "closeout-hook.linkCodexHome.lstat", null, "optional file may be absent");
-    if (errorCode(error) === "ENOENT") return undefined;
+    if (errorCode(error) === "ENOENT") {
+      journalCaught(
+        error,
+        "closeout-hook.linkCodexHome.lstat",
+        null,
+        "optional file may be absent",
+      );
+      return undefined;
+    }
     throw error;
   }
   return readFile(configPath, "utf8");
@@ -394,8 +403,10 @@ async function names(directory: string): Promise<string[]> {
   try {
     return await readdir(directory);
   } catch (error) {
-    journalCaught(error, "closeout-hook.names.readdir", null, "optional file may be absent");
-    if (errorCode(error) === "ENOENT") return [];
+    if (errorCode(error) === "ENOENT") {
+      journalCaught(error, "closeout-hook.names.readdir", null, "optional file may be absent");
+      return [];
+    }
     throw error;
   }
 }

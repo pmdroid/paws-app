@@ -89,3 +89,18 @@ test("job payload context uses only a string work-item id", () => {
   for (const payload of [null, undefined, "item-715", 715, {}, { itemId: 715 }])
     expect(journalItemId(payload)).toBeNull();
 });
+
+test("process races are labeled only for expected operating-system errors", () => {
+  const lines: string[] = [];
+  for (const code of ["ENOENT", "ESRCH", "EACCES", "EIO"])
+    journalCaught(
+      Object.assign(new Error("process read failed"), { code }),
+      "process.stat",
+      null,
+      "process may be absent or inaccessible",
+      (line) => lines.push(line),
+    );
+  for (const line of lines.slice(0, 3))
+    expect(line).toContain("expected=process may be absent or inaccessible");
+  expect(lines[3]).not.toContain("expected=");
+});

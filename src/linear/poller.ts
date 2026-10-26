@@ -301,7 +301,7 @@ export function startCatchUpPoller(options: {
         submit({ type: "stop", itemId, source: "linear", requestedAt });
       } catch (error) {
         if (!isUnique(error)) throw error;
-        journalCaught(error, "poller.submitStops.submit", null);
+        journalCaught(error, "poller.submitStops.submit", itemId, "duplicate stop command");
       }
     }
   }
@@ -432,7 +432,7 @@ export function persistStopCommand(db: Database, command: LinearCommand): void {
     );
   } catch (error) {
     if (!isUnique(error)) throw error;
-    journalCaught(error, "poller.persistStopCommand.run", command.itemId);
+    journalCaught(error, "poller.persistStopCommand.run", command.itemId, "duplicate stop command");
   }
 }
 

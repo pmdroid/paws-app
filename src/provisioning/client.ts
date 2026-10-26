@@ -148,14 +148,18 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
         );
         return parseDeleted(vm, status, text);
       } catch (error) {
-        journalCaught(error, "client.deleteVm.call", null);
-        if (error instanceof ProvisioningError && error.code === "missing") return "missing";
+        if (error instanceof ProvisioningError && error.code === "missing") {
+          journalCaught(error, "client.deleteVm.call", null);
+          return "missing";
+        }
         if (
           error instanceof ProvisioningError &&
           error.code === "invalid_response" &&
           (await unlisted(vm))
-        )
+        ) {
+          journalCaught(error, "client.deleteVm.call", null);
           return "missing";
+        }
         throw error;
       }
     },

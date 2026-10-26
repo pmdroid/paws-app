@@ -229,12 +229,12 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
     });
   } catch (error) {
-    journalCaught(error, "run.evaluateUnsealed.run", input.taskId);
     await early?.done.catch((caughtError1) => {
       journalCaught(caughtError1, "run.evaluateUnsealed", input.taskId);
       return null;
     });
     if (isTransient(error)) throw error;
+    journalCaught(error, "run.evaluateUnsealed.run", input.taskId);
     const message = error instanceof Error ? error.message : String(error);
     return failure("blocked", null, message, input.head);
   }
@@ -672,9 +672,9 @@ async function reviewWithRetries<T>(input: EvaluateInput, review: () => Promise<
     try {
       return await review();
     } catch (error) {
-      journalCaught(error, "run.reviewWithRetries.review", input.taskId);
       const message = error instanceof Error ? error.message : String(error);
       if (attempt >= delays.length || !TRANSIENT_REVIEW_ERROR.test(message)) throw error;
+      journalCaught(error, "run.reviewWithRetries.review", input.taskId);
       await new Promise((resume) => setTimeout(resume, delays[attempt]));
     }
   }

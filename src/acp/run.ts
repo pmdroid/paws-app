@@ -521,9 +521,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           );
           observedModel = model.model;
         } catch (error) {
-          journalCaught(error, "run.runAgent.assertRunning", options.itemId);
           if (isAuthRequired(error)) {
             await emit({ type: "error", message: AUTH_REQUIRED_MESSAGE });
+
+            journalCaught(error, "run.runAgent.assertRunning", options.itemId);
             return baseResult(options.role, child, {
               stopReason: "error",
               auth,

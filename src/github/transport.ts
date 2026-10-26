@@ -29,9 +29,10 @@ export function retryGitTransport(
         return await gitExec(args, options);
       } catch (error) {
         if (!(error instanceof GitCommandError) || !isTransientGitError(error.stderr)) throw error;
-        journalCaught(error, "transport.retryGitTransport.gitExec", null);
+
         const delay = GIT_TRANSPORT_RETRY_MS[attempt];
         if (delay === undefined) throw new GitTransportError(error.args, error.stderr);
+        journalCaught(error, "transport.retryGitTransport.gitExec", null);
         options.signal?.throwIfAborted();
         await sleep(delay);
         options.signal?.throwIfAborted();

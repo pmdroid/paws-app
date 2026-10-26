@@ -9,7 +9,6 @@ function emptyCatches(file: string, source: string): number[] {
   const offsets: number[] = [];
   new Visitor({
     VariableDeclarator(node) {
-      // Standalone onboarding pages carry JavaScript in an inline SCRIPT template.
       if (node.id.type !== "Identifier" || !/SCRIPT$/.test(node.id.name)) return;
       const init = node.init;
       const template = init?.type === "TaggedTemplateExpression" ? init.quasi : init;
@@ -18,7 +17,6 @@ function emptyCatches(file: string, source: string): number[] {
       if (!raw) return;
       const baseLine = source.slice(0, template.start).split("\n").length - 1;
       for (const line of emptyCatches(`${file}.inline.js`, raw)) {
-        // Reuse the source offset representation for the final line-number conversion.
         const targetLine = baseLine + line;
         let offset = 0;
         for (let index = 1; index < targetLine; index++) offset = source.indexOf("\n", offset) + 1;
@@ -64,7 +62,7 @@ test("src contains no empty catches", () => {
   const violations: string[] = [];
   for (const file of readdirSync(root, { recursive: true })) {
     if (typeof file !== "string" || !/\.[cm]?[jt]sx?$/.test(file)) continue;
-    // Build output includes bundled third-party code; enforce the maintained source instead.
+
     if (file.startsWith("web/dist/")) continue;
     for (const line of emptyCatches(file, readFileSync(join(root, file), "utf8")))
       violations.push(`${file}:${line}`);
