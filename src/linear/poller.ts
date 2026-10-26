@@ -322,13 +322,19 @@ export function startCatchUpPoller(options: {
           budgetHoldMs(latestBudget, now()),
         );
       } catch (error) {
-        journalCaught(error, "poller.startCatchUpPoller.pollOnce", null);
-        if (control.stopped) return;
         if (error instanceof LinearRateLimitError) {
           latestBudget = error.budget;
           delay = Math.max(POLL_INTERVAL_FAILING_MS, error.retryAfterMs);
-        } else {
         }
+        journalCaught(
+          error,
+          "poller.startCatchUpPoller.pollOnce",
+          null,
+          error instanceof LinearRateLimitError
+            ? `rate limited; retrying in ${Math.ceil(delay / 1000)}s`
+            : undefined,
+        );
+        if (control.stopped) return;
       }
       if (control.stopped) return;
       if (wakeRequested) {

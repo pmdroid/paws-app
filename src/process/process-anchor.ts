@@ -43,7 +43,12 @@ const table = (): Entry[] =>
         },
       ];
     } catch (caughtError3) {
-      journalCaught(caughtError3, "process-anchor.table.readFileSync", null);
+      journalCaught(
+        caughtError3,
+        "process-anchor.table.readFileSync",
+        null,
+        "optional file may be absent",
+      );
       return [];
     }
   });
@@ -76,7 +81,12 @@ const signalFamily = (signal: NodeJS.Signals): boolean => {
     try {
       process.kill(member.pid, signal);
     } catch (caughtError5) {
-      journalCaught(caughtError5, "process-anchor.signalFamily.kill", null);
+      journalCaught(
+        caughtError5,
+        "process-anchor.signalFamily.kill",
+        null,
+        "process may have exited",
+      );
     }
   }
   return members.length > 0;

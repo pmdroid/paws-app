@@ -206,7 +206,12 @@ export function createRunnerLogin(options: {
         try {
           access(row.workspaceId, row.userId, runnerId);
         } catch (caughtError1) {
-          journalCaught(caughtError1, "runner-login.exchange.access", null);
+          journalCaught(
+            caughtError1,
+            "runner-login.exchange.access",
+            null,
+            "optional file may be absent",
+          );
           inputs.delete(id);
           db.run(
             "UPDATE runner_login SET state='cancelled',terminal='',authorization=NULL,input_id=NULL WHERE id=? AND state IN ('starting','waiting')",

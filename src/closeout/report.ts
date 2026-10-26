@@ -104,7 +104,7 @@ async function verifyArtifact(root: string, artifact: Artifact): Promise<Artifac
     if (!info.isFile()) return { path: artifact.path, status: "unreadable" };
     bytes = await readFile(resolved);
   } catch (caughtError1) {
-    journalCaught(caughtError1, "report.verifyArtifact.lstat", null);
+    journalCaught(caughtError1, "report.verifyArtifact.lstat", null, "optional file may be absent");
     return { path: artifact.path, status: "unreadable" };
   }
   const actual = createHash("sha256").update(bytes).digest("hex");

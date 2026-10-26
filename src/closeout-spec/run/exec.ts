@@ -353,11 +353,11 @@ function killGroup(pid: number | undefined): void {
   try {
     process.kill(-pid, "SIGKILL");
   } catch (caughtError1) {
-    journalCaught(caughtError1, "exec.killGroup.kill", null);
+    journalCaught(caughtError1, "exec.killGroup.kill", null, "process may have exited");
     try {
       process.kill(pid, "SIGKILL");
     } catch (caughtError2) {
-      journalCaught(caughtError2, "exec.killGroup.kill", null);
+      journalCaught(caughtError2, "exec.killGroup.kill", null, "process may have exited");
       // The process already exited.
     }
   }

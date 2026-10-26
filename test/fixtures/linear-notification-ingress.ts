@@ -9,6 +9,7 @@ import {
   openDatabase,
   recordLinearInstallation,
   requireLinearTaskDelegation,
+  setJournalSink,
 } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { intakeDelegatedIssue } from "../../src/intake";
@@ -18,6 +19,15 @@ import {
   linearTokenPath,
   writeStoredToken,
 } from "../../src/linear";
+
+// This ingress proof records poller failures while keeping other fixture diagnostics quiet.
+setJournalSink((line) => {
+  if (
+    line.startsWith("catch ") &&
+    (line.includes("operation=poller.") || line.includes("operation=webhook."))
+  )
+    console.error(line);
+});
 
 const home = process.argv[2]!;
 const mode = process.argv[3] ?? "notification";

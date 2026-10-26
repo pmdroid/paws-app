@@ -638,7 +638,7 @@ function fileMark(workspace: string, path: string): Buffer | string {
     if (!info.isFile()) return "other";
     return readFileSync(absolute);
   } catch (caughtError2) {
-    journalCaught(caughtError2, "session.fileMark.lstatSync", null);
+    journalCaught(caughtError2, "session.fileMark.lstatSync", null, "optional file may be absent");
     return "missing";
   }
 }
@@ -661,11 +661,11 @@ function killCommand(pid: number | undefined): void {
   try {
     process.kill(-pid, "SIGKILL");
   } catch (caughtError4) {
-    journalCaught(caughtError4, "session.killCommand.kill", null);
+    journalCaught(caughtError4, "session.killCommand.kill", null, "process may have exited");
     try {
       process.kill(pid, "SIGKILL");
     } catch (caughtError5) {
-      journalCaught(caughtError5, "session.killCommand.kill", null);
+      journalCaught(caughtError5, "session.killCommand.kill", null, "process may have exited");
       return;
     }
   }

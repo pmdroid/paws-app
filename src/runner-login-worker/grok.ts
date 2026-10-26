@@ -31,7 +31,7 @@ export async function runGrokLogin(options: {
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch (caughtError1) {
-        journalCaught(caughtError1, "grok.runGrokLogin.kill", null);
+        journalCaught(caughtError1, "grok.runGrokLogin.kill", null, "process may have exited");
       }
     }
   };

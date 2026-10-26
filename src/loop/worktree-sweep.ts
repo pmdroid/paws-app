@@ -91,6 +91,7 @@ function lastTouched(db: Database, items: WorkItemRecord[], path: string): numbe
       caughtError2,
       "worktree-sweep.lastTouched.statSync",
       items.map((item) => item.id).join(","),
+      "optional file may be absent",
     );
     return null;
   }

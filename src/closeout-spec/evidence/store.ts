@@ -156,7 +156,12 @@ async function filenameAttempts(root: string, key: AttemptKey): Promise<number[]
   try {
     names = await readdir(directory);
   } catch (error) {
-    journalCaught(error, "store.filenameAttempts.readdir", key.itemId);
+    journalCaught(
+      error,
+      "store.filenameAttempts.readdir",
+      key.itemId,
+      "optional file may be absent",
+    );
     if (isEnoent(error)) return [];
     throw error;
   }
@@ -180,7 +185,7 @@ async function readRecord(
   try {
     text = await readFile(file, "utf8");
   } catch (caughtError2) {
-    journalCaught(caughtError2, "store.readRecord.readFile", null);
+    journalCaught(caughtError2, "store.readRecord.readFile", null, "optional file may be absent");
     return { ok: false, path, message: `evidence file ${path} is invalid` };
   }
   let parsed: unknown;
@@ -207,7 +212,7 @@ async function walkJson(dir: string): Promise<{ files: string[]; unreadable: boo
     try {
       entries = await readdir(current, { withFileTypes: true });
     } catch (error) {
-      journalCaught(error, "store.walkJson.readdir", null);
+      journalCaught(error, "store.walkJson.readdir", null, "optional file may be absent");
       if (!started && isEnoent(error)) return { files, unreadable: false };
       return { files, unreadable: true };
     }
@@ -249,7 +254,7 @@ async function fileExists(file: string): Promise<boolean> {
     await stat(file);
     return true;
   } catch (error) {
-    journalCaught(error, "store.fileExists.stat", null);
+    journalCaught(error, "store.fileExists.stat", null, "optional file may be absent");
     if (isEnoent(error)) return false;
     throw error;
   }

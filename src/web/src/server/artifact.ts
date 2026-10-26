@@ -73,7 +73,12 @@ export function readCloseoutArtifact(input: {
   try {
     bytes = readFileSync(file);
   } catch (caughtError1) {
-    journalCaught(caughtError1, "artifact.readCloseoutArtifact.readFileSync", input.itemId);
+    journalCaught(
+      caughtError1,
+      "artifact.readCloseoutArtifact.readFileSync",
+      input.itemId,
+      "optional file may be absent",
+    );
     return { status: 404, body: "Not found" };
   }
   const clipped = bytes.subarray(0, CAP_BYTES);
