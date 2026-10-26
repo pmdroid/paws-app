@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  closeSync,
+  openSync,
   chmodSync,
   existsSync,
   linkSync,
@@ -17,7 +19,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { git } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
-import { CLAUDE_SESSION_TOO_LARGE, executeRunnerCommand } from "../src/runner-worker";
+import {
+  CLAUDE_SESSION_TOO_LARGE,
+  executeRunnerCommand,
+  writeClaudeSessionBundle,
+} from "../src/runner-worker";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -232,3 +238,32 @@ test.skipIf(!linux)("a turn that ends in a cancelled stop reason doesn't snapsho
   expect(result.run.stopReason).not.toBe("end_turn");
   expect(existsSync(join(output, "session.json"))).toBe(false);
 });
+
+test.skipIf(!linux)(
+  "a bundle write that fails rejects instead of crashing the worker",
+  async () => {
+    const { root, home, project, checkout } = await fixture();
+    mkdirSync(join(project, SESSION), { recursive: true });
+    writeFileSync(join(project, `${SESSION}.jsonl`), randomBytes(256 * 1024).toString("base64"));
+    writeFileSync(
+      join(project, SESSION, "agent.jsonl"),
+      randomBytes(256 * 1024).toString("base64"),
+    );
+    writeFileSync(join(root, "bundle.gz"), "");
+    // A descriptor that refuses writes stands in for a full disk.
+    const output = openSync(join(root, "bundle.gz"), "r");
+    try {
+      await expect(
+        writeClaudeSessionBundle({
+          home,
+          cwd: checkout,
+          sessionId: SESSION,
+          output,
+          maxBytes: 1_073_741_824,
+        }),
+      ).rejects.toThrow();
+    } finally {
+      closeSync(output);
+    }
+  },
+);
