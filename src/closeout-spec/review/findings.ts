@@ -14,8 +14,8 @@ export const FINDING_FORMAT = [
   "Reply with a JSON array of findings and no other text.",
   "Each finding has these fields and no others:",
   "- severity: P0, P1, P2, or P3. P0 is the most severe.",
-  "- location: where you looked. 1 to 512 characters.",
-  "- explanation: what is wrong, or what you checked. 1 to 8000 characters.",
+  "- location: path:line in the head commit, such as src/app.ts:42. 1 to 512 characters. Use the line the change added or edited that causes the problem. When the change breaks code it did not edit, use the changed line that breaks it.",
+  '- explanation: start with the class of bug, such as "unchecked null" or "missing await", then what is wrong. Name every place in the change where the same class occurs so the fixer fixes all of them, not one line. 1 to 8000 characters.',
   "- evidence: the observation that supports the finding. 1 to 8000 characters.",
   "At most 200 findings. An empty array means you found nothing.",
 ].join("\n");

@@ -641,7 +641,7 @@ describe("closeout gate", () => {
               findings: [
                 {
                   severity: "P1" as const,
-                  location: `src/file-${reviews}.ts:12:4`,
+                  location: `src/file-${reviews}.ts`,
                   explanation: "New failing finding",
                   evidence: "Reproduced",
                 },
@@ -794,7 +794,7 @@ describe("closeout gate", () => {
                           findings: [
                             {
                               severity: "P1",
-                              location: `src/a.ts:${round + 1}`,
+                              location: "src/a.ts",
                               explanation: "Repeated",
                               evidence: "Reproduced",
                             },

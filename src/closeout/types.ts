@@ -34,6 +34,16 @@ export type Finding = {
   evidence: string;
 };
 
+/**
+ * Findings of one review item. `preExisting` holds the findings whose
+ * `path:line` the change did not add or edit. They are shown but do not block.
+ */
+export type ReviewFindings = {
+  itemId: string;
+  findings: Finding[];
+  preExisting?: readonly Finding[];
+};
+
 export type CandidateIdentity = {
   session: string;
   model: string;

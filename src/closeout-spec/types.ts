@@ -633,6 +633,21 @@ export type ReviewRequest = {
   policyDigest: string;
   /** Candidate checkout the reviewer reads. */
   worktree: string;
+  /** Findings from this item's earlier review rounds, newest first. Empty in the first round. */
+  earlier?: readonly EarlierFinding[];
+};
+
+/**
+ * A finding from an earlier review round, shown to the next reviewer so it
+ * does not repeat a fixed problem. `open` was reported in the latest earlier
+ * round. `fixed` was not reported again by a later round.
+ */
+export type EarlierFinding = {
+  severity: Severity;
+  location: string;
+  explanation: string;
+  head: string;
+  status: "fixed" | "open";
 };
 
 /** Findings and reviewer identity. The outcome is computed later. */

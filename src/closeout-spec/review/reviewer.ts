@@ -96,7 +96,13 @@ export function createReviewer(agent: ReviewAgent, options: ReviewerOptions) {
         journalCaught(error, "reviewer.review.loadReviewMaterial", null);
         return invalid(candidate, blankProducer(options.model), messageOf(error));
       }
-      const prompt = renderReviewPrompt(material, request.base, request.head, request.item.scope);
+      const prompt = renderReviewPrompt(
+        material,
+        request.base,
+        request.head,
+        request.item.scope,
+        request.earlier,
+      );
       const limit = options.maxPromptChars ?? MAX_PROMPT_CHARS;
       if (prompt.length > limit) {
         return invalid(
