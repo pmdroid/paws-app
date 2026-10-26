@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, tests, the status dashboard build, Markdown links, screenshots of changed screens, and an independent review of the diff must pass before a pull request.
+description: Lint, format, typecheck, tests, the status dashboard build, Markdown links, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -56,3 +56,44 @@ items:
     failOn: P1
     scope: diff
     parallel: true
+  - id: security-review
+    kind: review
+    gate: beforePR
+    skill: .agents/skills/security-paws/SKILL.md
+    independence:
+      differentSession: true
+      differentModel: true
+    failOn: P1
+    scope: diff
+    parallel: true
+    paths:
+      - ".agents/**"
+      - ".github/workflows/**"
+      - "deploy/**"
+      - "src/acp/env.ts"
+      - "src/acp/paths.ts"
+      - "src/acp/permissions.ts"
+      - "src/acp/worktree.ts"
+      - "src/auth/**"
+      - "src/closeout-spec/run/**"
+      - "src/credentials/**"
+      - "src/deployment/**"
+      - "src/evidence/route.ts"
+      - "src/github/jwt.ts"
+      - "src/github/token.ts"
+      - "src/github/webhook.ts"
+      - "src/linear/authorize.ts"
+      - "src/linear/oauth.ts"
+      - "src/linear/webhook.ts"
+      - "src/onboarding/**"
+      - "src/process/**"
+      - "src/questions/**"
+      - "src/runner-control/**"
+      - "src/runner-execution/**"
+      - "src/runner-identity/**"
+      - "src/runner-repository-access/**"
+      - "src/server/**"
+      - "src/slack/**"
+      - "src/web/src/server/**"
+      - "src/workspace/**"
+      - "src/worktree-checkout/**"
