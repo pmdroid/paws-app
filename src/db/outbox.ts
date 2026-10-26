@@ -3,9 +3,10 @@ import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
   DEFAULT_LEASE_MS,
+  JOB_KIND,
   retryBackoffMs,
 } from "../core";
-import { errorText } from "./jobs";
+import { enqueueJobOnce, errorText } from "./jobs";
 import { journal } from "./journal";
 import { immediate } from "./tx";
 
@@ -541,7 +542,8 @@ export function oneLine(text: string, max = 200): string {
  * A row just went dead. Journal it, and give an elicitation whose item still waits for
  * an answer one fresh delivery, so the person has something to answer. The dead row is
  * dropped in its favour; otherwise it would block the session's ordering key.
- * A redelivery that dies again stays dead and is listed on the issue page with a retry.
+ * When the redelivery dies too, a job re-asks the question through the loop's `ask()`,
+ * once per run. Anything still dead is listed on the issue page with a retry.
  */
 function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: number): void {
   const itemId = outboxItemId(db, row.id);
@@ -549,26 +551,51 @@ function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: numb
     `outbox ${row.id} ${row.target}.${row.op} dead item=${itemId ?? "-"} attempts=${row.attempts}/${row.maxAttempts} error=${oneLine(error)}`,
   );
   if (row.op !== "elicitation" || itemId === null) return;
-  const state = db
-    .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?")
-    .get(itemId)?.state;
-  if (state !== "awaiting_input") return;
-  if (row.idempotencyKey.endsWith(ELICITATION_REDELIVERY_SUFFIX)) {
-    // PAS-627: re-ask the item's question through ask() here once that operation exists.
-    journal(`outbox ${row.id} elicitation dead again item=${itemId}; retry it from the issue page`);
-    return;
-  }
+  const item = db
+    .query<{ state: string; runId: string | null }, [string]>(
+      "SELECT state, current_run_id AS runId FROM work_item WHERE id = ?",
+    )
+    .get(itemId);
+  if (item?.state !== "awaiting_input") return;
   const stored = getOutbox(db, row.id);
   const questionId = (stored?.payload as { questionId?: unknown } | undefined)?.questionId;
-  if (
+  const open =
     typeof questionId === "string" &&
     db
       .query<{ open: number }, [string]>(
         "SELECT status = 'open' AND cancelled_at IS NULL AS open FROM question WHERE id = ?",
       )
-      .get(questionId)?.open === 0
-  )
+      .get(questionId)?.open === 1;
+  if (typeof questionId === "string" && !open) return;
+  if (row.idempotencyKey.endsWith(ELICITATION_REDELIVERY_SUFFIX)) {
+    if (!open) {
+      journal(
+        `outbox ${row.id} elicitation dead again item=${itemId}; retry it from the issue page`,
+      );
+      return;
+    }
+    // Once per run: a re-asked question that dies again stays dead, listed with a retry.
+    const key = `${JOB_KIND.reaskQuestion}:${itemId}:${item.runId ?? "-"}`;
+    const known = db
+      .query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?")
+      .get(key);
+    if (known !== null) {
+      journal(
+        `outbox ${row.id} elicitation dead again item=${itemId}; retry it from the issue page`,
+      );
+      return;
+    }
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.reaskQuestion,
+      jobKey: key,
+      payload: { itemId, questionId },
+      now,
+    });
+    journal(
+      `outbox ${row.id} elicitation dead again item=${itemId}; re-asking question ${questionId}`,
+    );
     return;
+  }
   const id = insertOutbox(
     db,
     {
