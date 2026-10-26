@@ -211,6 +211,8 @@ export const RunnerCommandSchema = z
     z.strictObject({ ...common, type: z.literal("login_check"), agent }),
     z.strictObject({ ...common, type: z.literal("login"), agent }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
+    /** Stop the run's agent at a safe point and publish what another runner needs to continue. */
+    z.strictObject({ ...common, type: z.literal("handover"), runId: id, generation }),
     z.strictObject({
       ...common,
       type: z.literal("upgrade"),

@@ -164,6 +164,8 @@ export interface RunAgentResult {
   timedOut: boolean;
   cancelled: boolean;
   interrupted?: boolean;
+  /** A remote run stopped at a safe point so another runner can continue it. */
+  handedOver?: boolean;
   transcriptPath?: string;
   authRequired: boolean;
   errorMessage?: string;

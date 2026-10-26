@@ -234,6 +234,11 @@ export function openExecutionJournal(root: string) {
               if (!parsed.success || parsed.data.type !== "session_restore")
                 throw new Error("Invalid runner session restore");
               event = parsed.data;
+            } else if (raw && typeof raw === "object" && "type" in raw && raw.type === "handover") {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (!parsed.success || parsed.data.type !== "handover")
+                throw new Error("Invalid runner handover");
+              event = parsed.data;
             } else if (
               raw &&
               typeof raw === "object" &&

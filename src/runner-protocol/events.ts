@@ -81,6 +81,12 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     restored: z.boolean(),
     reason: z.enum(["download", "integrity", "unpack", "load"]).optional(),
   }),
+  /** A handover Paws asked for that the runner gave up on; the session keeps running there. */
+  z.strictObject({
+    type: z.literal("handover"),
+    handedOver: z.literal(false),
+    reason: z.literal("timeout"),
+  }),
   z.strictObject({
     type: z.literal("hook_failed"),
     hookId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/),
