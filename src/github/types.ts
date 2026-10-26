@@ -83,9 +83,11 @@ export class GitHubHttpError extends Error {
   readonly status: number;
   readonly body: unknown;
   readonly retryAfterMs?: number;
-  constructor(response: GitHubResponse) {
-    const message = (response.body as { message?: unknown } | null)?.message;
-    super(`GitHub HTTP ${response.status}${typeof message === "string" ? `: ${message}` : ""}`);
+  constructor(response: GitHubResponse, message?: string) {
+    const detail = (response.body as { message?: unknown } | null)?.message;
+    super(
+      message ?? `GitHub HTTP ${response.status}${typeof detail === "string" ? `: ${detail}` : ""}`,
+    );
     this.status = response.status;
     this.body = response.body;
     this.retryAfterMs = response.retryAfterMs;
