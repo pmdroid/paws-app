@@ -128,18 +128,29 @@ export async function writeClaudeSessionBundle(options: {
     const digest = createHash("sha256");
     let size = 0;
     let tooLarge = false;
+    // Gzip emits data outside any await, so a write failure ends the stream with that error
+    // and the next push, drain or finish rejects with it instead of escaping the worker.
+    let failure: Error | undefined;
+    gzip.on("error", (error: Error) => {
+      failure ??= error;
+    });
     gzip.on("data", (chunk: Buffer) => {
-      if (tooLarge) return;
+      if (tooLarge || failure) return;
       size += chunk.length;
       if (size > options.maxBytes) {
         tooLarge = true;
         return;
       }
       digest.update(chunk);
-      for (let written = 0; written < chunk.length;)
-        written += writeSync(options.output, chunk, written);
+      try {
+        for (let written = 0; written < chunk.length;)
+          written += writeSync(options.output, chunk, written);
+      } catch (error) {
+        gzip.destroy(error instanceof Error ? error : new Error(String(error)));
+      }
     });
     const push = async (data: string | Buffer) => {
+      if (failure) throw failure;
       if (tooLarge) throw new SessionTooLargeError();
       if (!gzip.write(data)) await once(gzip, "drain");
     };
@@ -198,8 +209,10 @@ export async function writeClaudeSessionBundle(options: {
       else if (code !== "ENOENT") throw error;
     }
     if (sidecar !== undefined) await walk(sidecar, `${base}/${options.sessionId}`);
+    if (failure) throw failure;
     gzip.end();
     await finished(gzip);
+    if (failure) throw failure;
     if (tooLarge) throw new SessionTooLargeError();
     return { files, refused, sizeBytes: size, sha256: digest.digest("hex") };
   } finally {

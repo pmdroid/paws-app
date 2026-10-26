@@ -95,7 +95,13 @@ import {
   writeClaudeSessionBundle,
 } from "./session-snapshot";
 
-export { compactAcpEvent, SESSION_BUNDLE_FILE, SESSION_METADATA_FILE, CLAUDE_SESSION_TOO_LARGE };
+export {
+  compactAcpEvent,
+  SESSION_BUNDLE_FILE,
+  SESSION_METADATA_FILE,
+  CLAUDE_SESSION_TOO_LARGE,
+  writeClaudeSessionBundle,
+};
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;
