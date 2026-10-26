@@ -52,6 +52,12 @@ import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
 import {
+  planSessionRestore,
+  runnerGoneReason,
+  sessionMoveNotice,
+  type SessionRestorePlan,
+} from "./session-restore";
+import {
   RetryableRunnerError,
   runWithFailover,
   USAGE_LIMIT_RESUME_SLACK_MS,
@@ -661,11 +667,45 @@ export function createRemoteAgentRunner(options: {
                 prepared.prompt.length > 65_536
                   ? options.inputs!.stagePrompt(commandId, prepared.prompt)
                   : undefined;
+              // A run that leaves its pinned runner may continue its saved agent session there.
+              const restorePlan: SessionRestorePlan | undefined =
+                !taskScope &&
+                input.role === "implementer" &&
+                input.checkpoint !== false &&
+                pinnedRunnerId &&
+                pinnedRunnerId !== selected.id
+                  ? planSessionRestore(db, {
+                      runId: selected.runId,
+                      agent: profile.agent,
+                      targetRunnerId: selected.id,
+                    })
+                  : undefined;
+              const head = taskScope
+                ? undefined
+                : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+              // The checkout holds the snapshot's commit, or the latest pushed commit when newer.
               const baseSha = taskScope
                 ? taskScope.repository
                   ? snapshotCommit(input.worktreePath, taskScope.repository)
                   : undefined
-                : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+                : restorePlan?.eligible &&
+                    restorePlan.commitSha !== head &&
+                    (await git([
+                      "-C",
+                      input.worktreePath,
+                      "merge-base",
+                      "--is-ancestor",
+                      head!,
+                      restorePlan.commitSha,
+                    ]).then(
+                      () => true,
+                      (caughtError) => {
+                        journalCaught(caughtError, "runner-backend.forItem.restoreCommit", itemId);
+                        return false;
+                      },
+                    ))
+                  ? restorePlan.commitSha
+                  : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
                 saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
               const acceptsMainCommit = versionAtLeast(
@@ -800,7 +840,9 @@ export function createRemoteAgentRunner(options: {
                   SESSION_RESUME_RUNNER_VERSION,
                 )
                   ? earlierSession(db, itemId, selected.id, profile.agent)
-                  : undefined;
+                  : restorePlan?.eligible
+                    ? restorePlan.restoreSession.sessionId
+                    : undefined;
               const runtimeList =
                 input.runtimes && (!taskScope || taskScope.repository)
                   ? await input.runtimes().catch((error: unknown) => {
@@ -881,6 +923,9 @@ export function createRemoteAgentRunner(options: {
                         ? { checkpoint: false as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
+                      ...(restorePlan?.eligible
+                        ? { restoreSession: restorePlan.restoreSession }
+                        : {}),
                       ...(checkpointBot ? { checkpointBot } : {}),
                       ...(input.commitPolicy
                         ? {
@@ -921,7 +966,28 @@ export function createRemoteAgentRunner(options: {
               const where = `${name(selected.id)}${
                 boundRepository ? ` in ${boundRepository.owner}/${boundRepository.repo}` : ""
               }${runtimes ? `, ${runtimes.map((runtime) => `${runtime.tool} ${runtime.version}`).join(", ")}` : ""}`;
-              if (pinnedRunnerId && pinnedRunnerId !== selected.id)
+              // One notice per move. A restore waits for the runner to say whether it loaded.
+              const restoreNotice =
+                restorePlan && pinnedRunnerId
+                  ? {
+                      from: pinnedRunnerId,
+                      to: selected.id,
+                      gone: runnerGoneReason(db, pinnedRunnerId, now() - RUNNER_ONLINE_MS),
+                      agent: profile.agent,
+                    }
+                  : undefined;
+              if (restoreNotice) {
+                // An eligible restore waits for the runner's session_restore event.
+                if (restorePlan && !restorePlan.eligible)
+                  await emit({
+                    type: "progress",
+                    text: sessionMoveNotice({
+                      db,
+                      ...restoreNotice,
+                      outcome: { restored: false, failure: restorePlan.failure },
+                    }),
+                  });
+              } else if (pinnedRunnerId && pinnedRunnerId !== selected.id)
                 await emit({
                   type: "progress",
                   text: `Starting a new session on ${where}; ${name(pinnedRunnerId)} is unavailable.\n`,
@@ -937,9 +1003,19 @@ export function createRemoteAgentRunner(options: {
                 });
               else if (input.role === "implementer")
                 await emit({ type: "progress", text: `Starting on ${where}.\n` });
-              return { assigned, baseSha, mainSha, deadline };
+              return {
+                assigned,
+                baseSha,
+                mainSha,
+                deadline,
+                restore:
+                  restoreNotice && restorePlan?.eligible
+                    ? { notice: restoreNotice, plan: restorePlan }
+                    : undefined,
+              };
             })());
           const { assigned, baseSha, mainSha, deadline } = placed;
+          let restore = "restore" in placed ? placed.restore : undefined;
           const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
           command = assigned;
           let cursor = attached?.cursor ?? 0;
@@ -1022,6 +1098,28 @@ export function createRemoteAgentRunner(options: {
               }
               if (event.type === "permission")
                 await emit({ type: "permission", ...event.permission });
+              if (event.type === "session_restore" && restore) {
+                const { notice, plan } = restore;
+                restore = undefined;
+                await emit({
+                  type: "progress",
+                  text: sessionMoveNotice({
+                    db,
+                    ...notice,
+                    outcome: event.restored
+                      ? { restored: true, turn: plan.turn }
+                      : {
+                          restored: false,
+                          failure: event.reason ?? "load",
+                          versions: {
+                            saved: plan.restoreSession.agentVersion,
+                            savedOn: plan.sourceRunnerId,
+                            target: plan.targetVersion,
+                          },
+                        },
+                  }),
+                });
+              }
               if (event.type === "hook_failed") await emit(event);
               // Runners from before the start line named the runtimes still report the install.
               if (
