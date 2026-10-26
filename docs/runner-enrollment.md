@@ -1,12 +1,12 @@
-# Pair a remote Linux runner
+# Enroll a remote Linux runner
 
-Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-runner` user. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Paws gives you one command with a single-use token to run on the VM.
+Enrollment connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-runner` user. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Paws gives you one command with a single-use token to run on the VM.
 
-To have Paws make and pair an exe.dev VM for you, including on a Paws reachable only on Tailscale, see [Create a runner VM on exe.dev](create-vm.md).
+To have Paws make and enroll an exe.dev VM for you, including on a Paws reachable only on Tailscale, see [Create a runner VM on exe.dev](create-vm.md).
 
 ## Prepare Paws and the host
 
-Set up [HTTPS workspace access](workspace-access.md) on the Paws machine and sign in as a workspace owner or administrator. For the first workspace, use the setup-code form described in that guide.
+Set up [HTTPS workspace access](workspace-access.md) on the Paws machine and sign in as a workspace owner or administrator. The first workspace is created when a Linear workspace administrator authorizes Paws.
 
 Initialize the runner authority once on the Paws machine, using the same Paws home as its service:
 
@@ -16,11 +16,11 @@ bun run paws runner-authority init
 
 Add `PAWS_RUNNER_HOST` with the interface address Paws should listen on and `PAWS_RUNNER_PORT=8788` to the HTTPS service's environment, then restart Paws. On Tailscale, use the Paws machine's Tailscale IP as the listener address and its Tailscale DNS hostname in the HTTPS URLs below.
 
-Paws stores transcripts locally by default in `~/.paws/runner-transcripts` with owner-only directory and file permissions. With a custom `PAWS_HOME`, it uses that home's `runner-transcripts` directory. With runner HTTPS and GitHub App access configured, Paws sends agent work to paired hosts and keeps their transcripts on the Paws machine.
+Paws stores transcripts locally by default in `~/.paws/runner-transcripts` with owner-only directory and file permissions. With a custom `PAWS_HOME`, it uses that home's `runner-transcripts` directory. With runner HTTPS and GitHub App access configured, Paws sends agent work to enrolled hosts and keeps their transcripts on the Paws machine.
 
 To use S3, pipe a JSON object containing `bucket`, `endpoint` (HTTPS), `region`, `accessKeyId`, `secretAccessKey`, and optionally `sessionToken` into `bun run paws runner-storage configure` using the same Paws home as its service, then restart Paws. Settings are encrypted in the protected secrets directory. New transcripts go to S3; existing local transcripts remain readable. To select local storage again, configure `{"kind":"local"}` and restart Paws.
 
-The VM needs outbound access to both endpoints. The default ports are TCP 8787 for dashboard access and HTTPS pairing, and TCP 8788 for the daemon's mTLS connection. Use the ports configured by your Paws operator. Both URLs must have a valid server certificate for their hostname.
+The VM needs outbound access to both endpoints. The default ports are TCP 8787 for dashboard access and HTTPS enrollment, and TCP 8788 for the daemon's mTLS connection. Use the ports configured by your Paws operator. Both URLs must have a valid server certificate for their hostname.
 
 Install the runner on the VM:
 
