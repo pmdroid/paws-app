@@ -1781,8 +1781,12 @@ export class Orchestrator {
 
   private nextRunnerWait(job: Job, error: unknown): RunnerCapacityWaitState | null {
     if (!(error instanceof RunnerCapacityWait)) return null;
-    const waited = runnerCapacityWait(job.payload);
-    if (waited && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) return null;
+    const busy = error.runnerIds.length > 0;
+    const previous = runnerCapacityWait(job.payload);
+    // A busy runner is waited for without limit. Only a wait with no runner offered runs out, and
+    // its clock starts when the runners stop being offered.
+    const waited = previous && previous.runnerIds.length > 0 === busy ? previous : null;
+    if (!busy && waited && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) return null;
     return {
       since: waited?.since ?? this.now(),
       attempt: waited ? waited.attempt + 1 : 0,
@@ -1805,7 +1809,7 @@ export class Orchestrator {
       item.cancelRequested ||
       !["recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
-      this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS ||
+      (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
       runnerSlotFree(this.db, waited.runnerIds, this.now())
     )
