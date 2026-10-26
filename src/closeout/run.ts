@@ -387,12 +387,13 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
 
     maxFixAttempts ??=
       policyFixBudget(input.worktree, input.home, input.policyRoot) ?? MAX_FIX_ATTEMPTS;
-    attemptsPerCheck ??=
-      policyFixLimits(input.worktree, input.home, input.policyRoot)?.attemptsPerCheck ??
-      maxFixAttempts;
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
+    // Read only when a fix will run: with no fix budget the gate never names a limit.
+    attemptsPerCheck ??=
+      policyFixLimits(input.worktree, input.home, input.policyRoot)?.attemptsPerCheck ??
+      maxFixAttempts;
 
     const feedback = await repairFeedback(input, evaluation);
     const failures: string[] = [];
