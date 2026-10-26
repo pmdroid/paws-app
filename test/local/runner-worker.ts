@@ -91,6 +91,11 @@ export async function probeRunnerWorker(
       },
     };
   }
+  /** A run checks out at work/<run id>; the other commands keep work/<execution id>. */
+  function runCheckout(run: RunnerJob, ...path: string[]): string {
+    if (run.command.type !== "run") throw new Error("Expected run");
+    return join(root, "work", run.command.runId, ...path);
+  }
   const spool: RunnerSpool = {
     root: join(root, "spool"),
     runnerUid: process.getuid!(),
@@ -242,16 +247,11 @@ export async function probeRunnerWorker(
             )
           )
             return {
-              answer: encodePolicyFiles(
-                workspacePolicyFiles(join(root, "work", first.executionId)),
-              ),
+              answer: encodePolicyFiles(workspacePolicyFiles(runCheckout(first))),
             };
           const publication = artifactAnswer(firstOutput, requestId);
           if (publication) {
-            writeFileSync(
-              join(root, "work", first.executionId, "report.txt"),
-              "changed after snapshot\n",
-            );
+            writeFileSync(runCheckout(first, "report.txt"), "changed after snapshot\n");
             publishRunnerAnswer(spool, first.executionId, { requestId, answer: publication });
             return readRunnerAnswer(spool, first.executionId, requestId)!;
           }
@@ -309,7 +309,7 @@ export async function probeRunnerWorker(
     true,
     { baseSha, candidateSha: candidate.candidateSha },
   );
-  assert.equal(existsSync(join(root, "work", first.executionId, "large")), false);
+  assert.equal(existsSync(runCheckout(first, "large")), false);
   assert.equal(
     await invoke(["-C", acquired, "show", `${candidate.candidateSha}:large/nested/file`]),
     "excluded but tracked\n",
@@ -321,10 +321,7 @@ export async function probeRunnerWorker(
       (block: { type: string }) => block.type === "resource",
     ).resource;
     assert.deepEqual(Buffer.from(resource.blob, "base64"), privateBytes);
-    assert.deepEqual(
-      readFileSync(join(root, "work", first.executionId, privatePath)),
-      privateBytes,
-    );
+    assert.deepEqual(readFileSync(runCheckout(first, privatePath)), privateBytes);
     await assert.rejects(
       invoke(["-C", acquired, "cat-file", "-e", `${candidate.candidateSha}:${privatePath}`]),
     );
@@ -355,10 +352,7 @@ export async function probeRunnerWorker(
       }),
       /EEXIST/,
     );
-    assert.equal(
-      readFileSync(join(root, "work", collision.executionId, "base.txt"), "utf8"),
-      "exact assigned base\n",
-    );
+    assert.equal(readFileSync(runCheckout(collision, "base.txt"), "utf8"), "exact assigned base\n");
     assert.throws(() => readFileSync(collisionAgent.result), { code: "ENOENT" });
     observe(
       "worker restores exact prompt and binary inputs while protected checkpoint exclusions prevent candidate staging",
