@@ -542,6 +542,8 @@ export class Orchestrator {
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
   private readonly jobContexts = new Map<string, JobContext>();
+  /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
+  private readonly verifyingStops = new Map<string, string>();
   private readonly runtimeLists = new Map<string, { runId: string; list: RuntimeList }>();
   private shuttingDown = false;
   private activitySeq = 0;
@@ -1320,12 +1322,14 @@ export class Orchestrator {
       const owner = readString(job.payload, "ownerUserId");
       if (owner !== null) this.checkRunnerSetup(owner);
     });
-    jobs.register(JOB_KIND.start, (job, context) =>
-      this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
-    );
+    jobs.register(JOB_KIND.start, async (job, context) => {
+      await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+      await this.settleVerifying(job, context);
+    });
     jobs.register(JOB_KIND.resume, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+      await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
@@ -1334,6 +1338,7 @@ export class Orchestrator {
           await this.runLeasedJob(job.payload, context, () =>
             this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
           );
+          await this.settleVerifying(job, context);
         } catch (error) {
           const wait = this.nextRunnerWait(job, error);
           if (!wait || !context.isCurrent()) throw error;
@@ -2614,7 +2619,7 @@ export class Orchestrator {
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
       const verdict = await this.runVerification(item, worktree, base, head, candidate, decide);
-      if (this.stopped(item.id)) return;
+      if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
       if (after === null) return;
       if (verdict.decision === "accepted" && !verdict.exhausted) {
@@ -2725,8 +2730,7 @@ export class Orchestrator {
         );
       }
       const runId = item.currentRunId!;
-      const assertCurrent = () => {
-        this.signalForItem(item.id)?.throwIfAborted();
+      const assertOwned = () => {
         const current = getWorkItem(this.db, item.id);
         const identity = this.readProfileSnapshot(runId)?.candidate;
         if (
@@ -2744,6 +2748,10 @@ export class Orchestrator {
         )
           throw new Error("Verification belongs to an obsolete candidate or run");
       };
+      const assertCurrent = () => {
+        this.signalForItem(item.id)?.throwIfAborted();
+        assertOwned();
+      };
       assertCurrent();
       const verdict = await this.verifyCandidate(
         item,
@@ -2754,7 +2762,8 @@ export class Orchestrator {
         assertCurrent,
         decide,
       );
-      assertCurrent();
+      // A finished verdict still decides an item this run owns, even after an abort (PAS-771).
+      assertOwned();
       return { ...verdict, owner: { version: getWorkItem(this.db, item.id)!.version, runId } };
     } finally {
       if (ownedRunId) closeActiveRun(this.db, ownedRunId, this.now());
@@ -3154,7 +3163,7 @@ export class Orchestrator {
     result: GateResult | undefined,
     summary: string,
   ): Promise<void> {
-    if (this.stopped(item.id)) return;
+    if (this.closeoutStopped(item.id) !== null) return;
     this.assertJobCurrent(item.id);
     const current = getWorkItem(this.db, item.id);
     if (!current) return;
@@ -4709,6 +4718,7 @@ export class Orchestrator {
     if (this.jobContexts.has(itemId)) throw new Error("Task already has an owned job operation");
     if (!context.isCurrent()) throw context.signal.reason;
     this.jobContexts.set(itemId, context);
+    this.verifyingStops.delete(itemId);
     try {
       await this.loadProjectOverview(itemId, context.signal);
       await operation();
@@ -5098,6 +5108,65 @@ export class Orchestrator {
       current === null ||
       current.state === "cancelled" ||
       current.cancelRequested
+    );
+  }
+
+  /**
+   * Why a finished Closeout result must not move the item, or null when it must. Unlike
+   * {@link stopped}, an aborted live operation alone does not drop the result: an abort that
+   * leaves the item in `verifying` would otherwise leave nobody to accept, restart or ask
+   * (PAS-771). A drop that keeps the item in `verifying` is noted for {@link settleVerifying}.
+   */
+  private closeoutStopped(itemId: string): string | null {
+    const current = getWorkItem(this.db, itemId);
+    if (current === null || current.state === "cancelled") return "the task was cancelled";
+    if (!["running", "verifying", "merge_queue"].includes(current.state))
+      return `the task is already ${current.state}`;
+    const reason = this.shuttingDown
+      ? "Paws is shutting down"
+      : current.cancelRequested
+        ? "the task is stopping"
+        : this.signalForItem(itemId)?.reason === FOLLOW_UP_INTERRUPTION
+          ? "a follow-up from Linear restarts it"
+          : null;
+    if (reason !== null && current.state === "verifying")
+      this.verifyingStops.set(itemId, `Closeout result dropped: ${reason}`);
+    return reason;
+  }
+
+  /**
+   * An execution job that ends with its item still in `verifying` leaves nothing running for
+   * it. Journal why, and ask for Closeout help unless other work still moves the item: a
+   * re-verification, a Linear follow-up, an open question, a stop or a shutdown (PAS-771).
+   */
+  private async settleVerifying(job: Job, context: JobContext): Promise<void> {
+    const itemId = readString(job.payload, "itemId");
+    if (itemId === null) return;
+    const note = this.verifyingStops.get(itemId);
+    this.verifyingStops.delete(itemId);
+    const item = getWorkItem(this.db, itemId);
+    if (item?.state !== "verifying" || !context.isCurrent()) return;
+    const reason = note ?? "the job ended without a Closeout result";
+    this.options.journal?.(
+      `job ${job.id} ${job.queue} left item ${item.id} (${item.linearIdentifier ?? "-"}) in verifying: ${reason}`,
+    );
+    const sessionId = this.activitySession(item);
+    const moving =
+      this.shuttingDown ||
+      item.cancelRequested ||
+      sessionId === null ||
+      findOpenQuestion(this.db, sessionId) !== null ||
+      listPendingLinearTurns(this.db, sessionId).length > 0 ||
+      this.db
+        .query(
+          "SELECT 1 FROM job WHERE id!=? AND queue=? AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?",
+        )
+        .get(job.id, JOB_KIND.reverify, item.id) !== null;
+    if (moving) return;
+    await this.askCloseoutHelp(
+      item,
+      undefined,
+      `Closeout: blocked\nVerification stopped without moving the task on: ${reason}.`,
     );
   }
 
