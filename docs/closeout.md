@@ -17,15 +17,20 @@ flowchart TD
   C -->|failed, no attempts left| E[Check is exhausted]
   B -->|nothing pending| F[Agent opens the pull request and finishes]
   E --> F
-  F --> G[Paws Closeout: command checks and independent review]
-  G -->|all passed| H[Merge queue]
-  G -->|a check failed, budget left| I[Fix round: the agent gets the findings]
-  I --> G
-  G -->|exhausted, blocked or fix budget spent| J[Paws asks the team in Linear]
-  J -->|reply with guidance| I
-  J -->|/paws bypass check -- reason| H
-  H -->|main moved| K[Rebase and run Paws Closeout again]
+  F --> G[verifying: Paws Closeout on head S]
+  G -->|all passed| H[Accept row for S, merge queue]
+  G -->|a check failed, fix rounds left| I["restart(item, findings)"]
+  I --> Q[queued, then the agent's next turn]
+  Q --> G
+  G -->|exhausted, blocked or fix rounds spent| J["ask(item, question)"]
+  J -->|reply with guidance| R["restart(item, answer)"]
+  R --> Q
+  J -->|/paws bypass check -- reason| G
+  H -->|"mergeable(S)"| M[Squash with expected head S]
+  H -->|main moved| K[Rebase to S', verifying again]
   K --> G
+  H -->|"red CI or changes requested, fix rounds left"| P["restart(item, ci or review)"]
+  P --> Q
 ```
 
 ## Agent Closeout
@@ -108,34 +113,66 @@ The reviewer's model and effort are set in Settings, under Agents.
 
 ### Fix rounds
 
-When a check fails, Paws sends the findings and the failing output back to the implementing agent as a fix round. The agent fixes the cause and commits, and Paws runs Closeout again on the new commit.
+A fix round is one `restart(item, reason)`: the one operation that sends an item back to the agent. Restart cancels the item's pending jobs, releases its runner slot and merge lane, records the handoff and its reason, and moves the item to `queued`. It keeps the run and the Linear session, so the round reads as part of the same story. The agent's next turn starts from the handoff and ends in `verifying` on its new commit.
 
-A fix round that ends without a usable commit still uses one attempt. The next round gets the same findings plus the reason the last round failed. A cancelled fix stops at once.
+Three causes are fix rounds:
 
-The number of fix rounds is limited. Paws allows `retry.fix_rounds_per_item` rounds, defaulting to 3. Closeout findings, red CI and changes-requested reviews share this counter. Adding checks does not increase it. Each check still stops at its own limit, so a check that keeps failing is exhausted before the overall budget runs out.
+| Reason     | Cause                                          | Handoff                                                        |
+| ---------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| `findings` | Paws Closeout rejects the candidate            | The findings and the failing output                            |
+| `ci`       | CI fails on the pull request head              | The failing CI checks                                          |
+| `review`   | A changes-requested review on the pull request | The review body and its unresolved threads, once per review id |
+
+They share one counter, `retry.fix_rounds_per_item`, which defaults to 3 and only counts rounds since the latest reply from a person in the item's session. Adding checks does not raise it. The session title counts the round, for example "fixing Closeout findings (2 of 3)". Each check still stops at its own limit, `retry.attempts_per_check`, so a check that keeps failing is exhausted before the fix rounds run out.
+
+A fix round that ends without a usable commit still counts. The next round gets the same findings plus the reason the last one failed. A cancelled fix stops at once.
+
+For a review, the handoff tells the agent to fix what it is confident about and to ask the team in the session before changing anything unclear. A comment-only review restarts nothing: Paws posts its threads to the session once, and the unresolved threads keep the merge waiting.
+
+Two other reasons send an item back without spending a fix round: `conflict`, a rebase return from the merge lane (see [After acceptance](#after-acceptance)), and `follow_up` or `answer`, a person's message in the session. Setup faults retry once and then ask, without spending a fix round. Infrastructure faults spend nothing.
 
 ### When Paws asks the team
 
-Paws asks in the issue's Linear session when Closeout cannot pass on its own:
+Paws asks through `ask(item, question)`, the one operation that asks a person. It opens one Linear elicitation in the item's session and moves the item to `awaiting_input`. It is also the only activity that reopens a session after its pull request response, because a person must see it. Paws asks when:
 
-- a check is exhausted,
-- the fix budget is spent,
-- the policy blocks the candidate, or a fix round cannot continue.
+- a check is exhausted (`attempts_per_check` spent),
+- the fix rounds are spent, whether by findings, red CI or a changes-requested review,
+- the rebase returns are spent (see [After acceptance](#after-acceptance)),
+- the policy blocks the candidate or cannot be read, or
+- a setup fault fails again after one retry.
 
-Asking enters `awaiting_input`. Spent budgets always leave an outstanding question. `failed` means execution stopped without an outstanding question, such as a crash budget, run failure or start timeout.
+A spent budget is always a question, never a state of its own. `failed` means execution stopped with nothing to ask: a crash budget, a run failure or a start timeout.
 
 The question lists every check with its status and attempts. There are two ways to answer:
 
-- **Reply with guidance.** The agent gets a new fix round with your guidance, and the checks get a fresh round of attempts with the same limits. Earlier evidence is kept.
-- **Bypass.** `/paws bypass check-id -- reason`, or `/paws bypass check-a,check-b -- reason` for several checks, accepts those checks for this exact candidate. The bypass is recorded with the task, base, head, policy and your reason. It does not carry over to another commit.
+- **Reply with guidance.** Paws calls `restart(item, answer)` with your reply. The fix rounds and the check attempts start fresh with the same limits, and earlier evidence is kept. Only a reply in the item's session refills a budget; a redispatch or a newer main does not.
+- **Bypass.** `/paws bypass check-id -- reason`, or `/paws bypass check-a,check-b -- reason` for several checks, accepts those checks for this exact head. The bypass is recorded with the task, base, head, policy and your reason, and Paws verifies the same head again with it. It does not carry over to another commit.
 
 Only a bypass in reply to this question counts. A bypass the agent proposes in its own question has no effect.
 
 ### After acceptance
 
-An accepted candidate enters the merge queue. If `main` moves before the merge, Paws rebases the branch and runs Paws Closeout again on the rebased commit. Closeout must accept the commit that is actually merged. On a remote runner, Paws runs the command checks for the rebased commit on the item's runner. A failing check starts a normal fix round with its output. The review check keeps its usual rules.
+When Closeout accepts head S, it writes an accept row: S, the policy digest it ran under, and any bypass rows for S. The item enters `merge_queue`. The merge lane takes the repository lock, reads the pull request and checks one predicate, `mergeable(S)`:
 
-The entry policy accepts two budget integers, both defaulting to 3:
+1. The pull request head is still S.
+2. S contains the current `main`.
+3. An accept row exists for S under the current policy digest.
+4. CI is green for S.
+5. No review thread is unresolved.
+6. Branch protection is satisfied.
+
+Only when all six hold does the lane squash, with GitHub's expected-head guard set to S. A head that changes, or a main that moves between the read and the squash, releases the lane, and the next turn reads again. Paws never merges a head Closeout did not accept.
+
+When `mergeable(S)` is false, the first failing condition decides:
+
+- **S is behind main.** The lane rebases to a new head S', releases the lock and sends the item back to `verifying`. Closeout runs on S' like any candidate. On a remote runner, Paws runs the command checks for S' on the item's runner. A human visual approval carries over when the patch is unchanged. After the pull request, only the title ("rebased onto main, re-verifying") and the plan move.
+- **No accept row for S, or the policy changed.** S goes back to `verifying`.
+- **CI failed.** `restart(item, ci)` while fix rounds are left, then a question.
+- **CI pending, threads open or protection unsatisfied.** The item waits in `merge_queue`.
+
+A rebase that conflicts is a rebase return: `restart(item, conflict)` with the conflicting files, after the lane is released. Returns are limited to three in a row on a known main commit and six in any rolling hour. A conflict on an unknown main counts only toward the hour. A newer main does not refill the budget; only a person's reply does. When either limit is reached, Paws asks with the main commits and files involved.
+
+The entry policy sets the two budget integers, both defaulting to 3:
 
 ```yaml
 retry:
@@ -143,13 +180,4 @@ retry:
   fix_rounds_per_item: 3
 ```
 
-`maxFailedAttemptsPerItem` remains a legacy alias for `attempts_per_check`.
-Setup faults retry once and then ask for help without spending a fix round.
-Infrastructure faults do not spend fix rounds. A person's reply in the item's
-session authorizes a fresh budget; a redispatch or newer main commit does not.
-Rebase conflicts allow three known-main returns and six returns in a rolling
-hour. Unknown-main returns count only toward the hour, regardless of files.
-Spent budgets ask the person for guidance.
-
-The legacy `[merge] ci_fix_attempts` setting no longer sets a separate CI budget.
-CI uses `retry.fix_rounds_per_item` along with findings and review repairs.
+`maxFailedAttemptsPerItem` remains a legacy alias for `attempts_per_check`. The legacy `[merge] ci_fix_attempts` setting in `config.toml` no longer sets a separate CI budget; CI fixes count against `fix_rounds_per_item`. `[merge] main_moved = "ci"` is rejected; see the [configuration reference](configuration.md#merge).

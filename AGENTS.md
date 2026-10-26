@@ -44,9 +44,9 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
 | `src/linear`                                             | Tracker adapter, webhooks, polling, sessions and workspace access     |
-| `src/loop`                                               | Orchestration of agent turns, Closeout, publication and recovery      |
+| `src/loop`                                               | Agent turns, `restart()` and `ask()`, Closeout, publication, recovery |
 | `src/member-vm`                                          | Member VM provisioning, persistence and HTTP routes                   |
-| `src/merge`                                              | Merge queue orders, CI fixes, rebase returns and merge advancement    |
+| `src/merge`                                              | Merge lane: `mergeable(S)`, squash at head S, rebase returns, CI      |
 | `src/onboarding`                                         | Onboarding routes and reconnection                                    |
 | `src/process`                                            | Owned child processes and process anchors                             |
 | `src/provisioning`                                       | Remote VM bootstrap, releases, mise and Tailscale setup               |
@@ -127,3 +127,7 @@ Stay inside the directory your issue owns. Shared files are `src/index.ts` (wire
 QM-09 is the owner of the edge table and the job claim. Other issues call `transition()`, `enqueueJob()`, and `enqueueOutbox()` without editing those files. `claimNextJob` and `dispatchOutbox` throw on purpose.
 
 Domain rows are `work_item`, `run`, and `inbox_event`. Sibling items share `work_item.delegation_id`. `work_item.state` uses the unions in `src/core/states.ts`, and `transition()` is the work-item edge table.
+
+Work-item states are `planning`, `queued`, `running`, `paused`, `awaiting_input`, `recovering`, `verifying`, `failed`, `merge_queue`, `manual`, `completed`, `merged` and `cancelled`. There is no `exhausted` or `awaiting_signoff`: a spent budget is a question in `awaiting_input`, and `failed` means execution stopped with nothing to ask. Session title and plan derive from the state, the restart reason and whether the pull request exists; do not add a second state machine for them.
+
+Send an item back to the agent only with `restart()` and ask a person only with `ask()`, both from `src/loop`. Do not apply `ejected` or `closeout_rejected`, or open a question, from anywhere else. The merge lane squashes only when `mergeable(S)` holds, with expected head S; every rebased head goes back through Closeout. `[merge] main_moved` accepts only `"closeout"`, and `"ci"` is rejected at config load. Terms are in `GLOSSARY.md`.
