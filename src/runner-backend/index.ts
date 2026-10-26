@@ -1352,8 +1352,9 @@ export function createRemoteAgentRunner(options: {
             await delay(interval, undefined, { signal });
           }
           if (!complete) throw new Error("Remote run timed out");
-          // A handover can stop the agent while Paws still posts its question; the question stays.
-          if (question && complete.handedOver) await question;
+          // A handover can stop the agent while Paws still posts its question, whether the
+          // handover then succeeds or fails after the interrupt; the question stays either way.
+          if (question && (complete.handedOver || complete.handoverFailure)) await question;
           if (questionError) throw questionError;
           if (question) throw new Error("Remote run completed with an unanswered question");
           if (assigned.type === "task" && (complete.candidateSha || complete.reviewText))

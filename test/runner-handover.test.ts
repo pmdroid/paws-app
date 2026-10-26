@@ -398,6 +398,45 @@ test("a session waiting on ask_team hands over without losing its question", asy
   ]);
 });
 
+test("a handover that fails after the interrupt while Paws posts a question keeps the question", async () => {
+  const record = context.item();
+  const asked: { question: string; abortedWhilePosting?: boolean }[] = [];
+  let posted!: () => void;
+  const posting = new Promise<void>((resolve) => (posted = resolve));
+  const { result } = await context.turn(
+    record,
+    async (command) => {
+      context.events(command, [
+        { type: "question", text: "Which color should the button be?", options: ["Red", "Blue"] },
+      ]);
+      while (!asked.length) await delay(1);
+      const handing = context.backend.handOverItem(record.id);
+      await context.next();
+      // The snapshot fails after the interrupt while Paws is still posting the question.
+      context.events(command, [
+        { type: "handover_interrupted" },
+        { type: "handover", handedOver: false, reason: "snapshot" },
+      ]);
+      context.submit(command, { handoverFailure: "snapshot" });
+      await delay(20);
+      posted();
+      expect(await handing).toEqual({ status: "failed", reason: "snapshot" });
+    },
+    async (question, ask) => {
+      const entry: (typeof asked)[number] = { question };
+      asked.push(entry);
+      await posting;
+      entry.abortedWhilePosting = ask.signal.aborted;
+      return { answer: "Question posted to the team." };
+    },
+  );
+  // The run ends as a failed handover, not as an error, and the question was posted in full.
+  expect(result.handoverFailure).toBe("snapshot");
+  expect(asked).toEqual([
+    { question: "Which color should the button be?", abortedWhilePosting: false },
+  ]);
+});
+
 test("a handover the runner cannot finish within 2 minutes is reported and the session stays on the runner", async () => {
   const record = context.item();
   let outcome: unknown;
