@@ -212,7 +212,8 @@ One JSON object per line:
   "line": 42,
   "bug": "The heartbeat dropped the disk size when the runner reported it in bytes.",
   "confirmedBy": "pmdroid",
-  "confirmedAt": "2026-10-26"
+  "confirmedAt": "2026-10-26",
+  "confidence": "confirmed"
 }
 ```
 
@@ -226,6 +227,8 @@ One JSON object per line:
 | `file`, `line`         | Where the bug is, as of `original.mergeCommit`.                                                                                   |
 | `bug`                  | One sentence on the defect, as a reviewer of the original diff should have stated it.                                             |
 | `confirmedBy`, `At`    | The person who confirmed the case, and the date.                                                                                  |
+| `confidence`           | `confirmed`, or `likely` when the person confirming is less sure. The reviewer score reports `likely` cases separately.           |
+| `note`                 | Optional. Anything a replay or a score should know, such as why the script cannot find the case.                                  |
 
 The head of a squashed pull request is not on `main`. Fetch it with `git fetch origin pull/<pr>/head` before a replay.
 
@@ -239,7 +242,7 @@ bun scripts/review-escapes.ts --days 60 --kinds fix,revert --jsonl
 
 The script lists the pull requests merged in the window and keeps those authored by the Paws GitHub App (`--app`, default `paws-helper`) as originals. For every later pull request, it runs `git blame` on the parent of its merge commit over each line it removes or changes. A blamed line from a Paws squash makes a candidate: the original, the fix, the file and line, and a draft bug sentence from the fix's title. Lockfiles, snapshots, blank lines and brace-only lines are skipped, and pairs already in the file are left out.
 
-Each candidate is `revert`, `fix` (a title with words such as fix, bug, race, flaky or broken) or `change`. Most `change` candidates are refactors or new requirements; read them when a fix title doesn't say it is one. Blame needs the full history of `main` in the clone. `--source git` reads squash subjects (`Title (#12)`) and merge commits, so it misses pull requests merged another way.
+Each candidate is `revert`, `fix` (a title with words such as fix, bug, race, flaky or broken) or `change`. Most `change` candidates are refactors or new requirements; read them when a fix title doesn't say it is one. Blame needs the full history of `main` in the clone. `--source git` reads squash subjects (`Title (#12)`) and merge commits, so it misses pull requests merged another way. A fix that only adds lines, such as a missing check or a test fixture's missing tie-break, leaves blame nothing to point at, so add those cases by hand (`1006-1015` is one).
 
 ### Adding a case
 
@@ -247,5 +250,5 @@ After an incident, or when a candidate holds up:
 
 1. Find the pull request that introduced the bug, and the one that fixed it. Run the script with `--jsonl` and copy the line for that pair, or write it by hand from the fields above.
 2. Check that the bug was in the original diff as merged, and that a reviewer reading that diff could have seen it. A requirement that changed later, a refactor, or a bug in code the original only moved is not an escape.
-3. Point `file` and `line` at the defect, rewrite `bug` as one sentence about the defect rather than the fix, and set `confirmedBy` and `confirmedAt`.
+3. Point `file` and `line` at the defect, rewrite `bug` as one sentence about the defect rather than the fix, and set `confirmedBy`, `confirmedAt` and `confidence`.
 4. Append the line to `evals/review-escapes.jsonl`. `scripts/review-escapes.test.ts` checks every line's shape.

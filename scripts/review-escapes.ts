@@ -72,6 +72,10 @@ export type ReviewEscape = {
   bug: string;
   confirmedBy: string;
   confirmedAt: string;
+  /** `likely` when the person confirming is less sure, so a score can report it apart. */
+  confidence: "confirmed" | "likely";
+  /** Anything a replay or a scorer should know, such as why the script cannot find the case. */
+  note?: string;
 };
 
 export type Git = (args: readonly string[]) => string;
@@ -361,7 +365,7 @@ export function findCandidates(
 export function draftEscape(
   candidate: Candidate,
   line = candidate.lines[0],
-): Omit<ReviewEscape, "confirmedBy" | "confirmedAt"> {
+): Omit<ReviewEscape, "confirmedBy" | "confirmedAt" | "confidence" | "note"> {
   if (!line)
     throw new Error(`candidate ${caseKey(candidate.original.pr, candidate.fix.pr)} has no lines`);
   return {
