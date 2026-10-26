@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { existsSync } from "node:fs";
 import { readSecretFile } from "../credentials";
 import { isAbsolute, join } from "node:path";
@@ -65,6 +66,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     try {
       file = loadConfigFile(configPath);
     } catch (error) {
+      journalCaught(error, "runtime.loadRuntime.loadConfigFile", null);
       configError = error instanceof Error ? error.message : "config.toml could not be parsed";
     }
   }
@@ -139,7 +141,8 @@ function readJson(home: string, relative: string | null): Record<string, unknown
     const parsed: unknown = JSON.parse(text);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     return parsed as Record<string, unknown>;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "runtime.readJson.parse", null);
     return null;
   }
 }

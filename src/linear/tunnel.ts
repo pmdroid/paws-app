@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 const LOCAL_API = "http://127.0.0.1:4040/api/tunnels";
 
 export type SpawnFn = (
@@ -58,8 +59,8 @@ export function startNgrokTunnel(options: {
       up = false;
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "ngrok failed to launch";
-    console.error(`tunnel not started: ${message}`);
+    journalCaught(error, "tunnel.startNgrokTunnel.spawn", null);
+
     child = null;
   }
   const tunnel: Tunnel = {
@@ -73,7 +74,8 @@ export function startNgrokTunnel(options: {
       }
       try {
         up = await probe(options.url);
-      } catch {
+      } catch (caughtError1) {
+        journalCaught(caughtError1, "tunnel.refresh.probe", null);
         up = false;
       }
     },

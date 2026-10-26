@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { Database } from "bun:sqlite";
 import { readSecretFile } from "../credentials";
 import { existsSync } from "node:fs";
@@ -153,7 +154,8 @@ function readPawsDb<T>(home: string, read: (db: Database) => T): T | null {
     } finally {
       db.close();
     }
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "probe.readPawsDb.read", null);
     return null;
   }
 }
@@ -170,6 +172,7 @@ async function loginFact(
     });
     return { ok: check.loggedIn, detail: check.summary };
   } catch (error) {
+    journalCaught(error, "probe.loginFact.checkDeveloperLogin", null);
     const message = error instanceof Error ? error.message : `${cli} login check failed`;
     return { ok: false, detail: message };
   }
@@ -184,6 +187,7 @@ function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: s
     }
     return { ok: true, detail: `${bin} at ${command}` };
   } catch (error) {
+    journalCaught(error, "probe.adapterFact.resolveAdapter", null);
     const message = error instanceof Error ? error.message : `${bin} is not installed`;
     return { ok: false, detail: message };
   }
@@ -272,6 +276,7 @@ async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<Prob
       error: viewer === null ? "Linear viewer id was missing" : null,
     };
   } catch (error) {
+    journalCaught(error, "probe.linearFact.createLinearClient", null);
     const message = error instanceof Error ? error.message : "Linear could not be reached";
     return { ...empty, attempted: true, error: message };
   }
@@ -320,7 +325,8 @@ async function githubDoctorFact(
   let privateKeyPem: string | null = null;
   try {
     privateKeyPem = readSecretFile(env.githubAppPrivateKeyPath, false);
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "probe.githubDoctorFact.readSecretFile", null);
     privateKeyPem = null;
   }
   if (!privateKeyPem) {
@@ -378,6 +384,7 @@ async function githubDoctorFact(
       facts.rate = { ok: true, detail: `${remaining} remaining` };
     }
   } catch (error) {
+    journalCaught(error, "probe.githubDoctorFact.createFetchGitHubClient", null);
     const message = error instanceof Error ? error.message : "GitHub could not be reached";
     if (!facts.installation.ok) facts.installation = { ok: false, detail: message };
     else if (!facts.push.ok) facts.push = { ok: false, detail: `${facts.push.detail}: ${message}` };
@@ -418,7 +425,8 @@ async function githubGet(token: string, path: string): Promise<GitHubGet> {
   if (text.length > 0) {
     try {
       parsed = JSON.parse(text);
-    } catch {
+    } catch (caughtError3) {
+      journalCaught(caughtError3, "probe.githubGet.parse", null);
       parsed = {};
     }
   }

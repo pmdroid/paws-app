@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import type {
   Artifact,
   CandidateIdentity,
@@ -87,6 +88,7 @@ export function createReviewer(agent: ReviewAgent, options: ReviewerOptions) {
           head: request.head,
         });
       } catch (error) {
+        journalCaught(error, "reviewer.review.loadReviewMaterial", null);
         return invalid(candidate, blankProducer(options.model), messageOf(error));
       }
       const prompt = renderReviewPrompt(material, request.base, request.head, request.item.scope);
@@ -98,6 +100,7 @@ export function createReviewer(agent: ReviewAgent, options: ReviewerOptions) {
           request.checkoutExclusions,
         );
       } catch (error) {
+        journalCaught(error, "reviewer.review.createCandidateCheckout", null);
         return invalid(candidate, blankProducer(options.model), messageOf(error));
       }
       try {
@@ -137,6 +140,7 @@ async function runSession(input: {
       readOnly: true,
     });
   } catch (error) {
+    journalCaught(error, "reviewer.runSession.run", null);
     return invalid(input.candidate, blankProducer(input.model), messageOf(error));
   }
   const firstParsed = parseFindings(first.text);
@@ -153,6 +157,7 @@ async function runSession(input: {
       ...(first.sessionId ? { sessionId: first.sessionId } : {}),
     });
   } catch (error) {
+    journalCaught(error, "reviewer.runSession.run", null);
     return invalid(input.candidate, producerOf(first, input.model), messageOf(error));
   }
   const secondParsed = parseFindings(second.text);

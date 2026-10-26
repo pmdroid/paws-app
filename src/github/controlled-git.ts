@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { OwnedProcess } from "../process";
 import { GitCommandError } from "./types";
 
@@ -65,6 +66,7 @@ export async function controlledGit(
     });
     await Promise.race([completed, cancelled]);
   } catch (error) {
+    journalCaught(error, "controlled-git.controlledGit.byteLength", null);
     failed = true;
     failure = error;
   } finally {

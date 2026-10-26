@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readSecretFile } from "../credentials";
@@ -23,7 +24,8 @@ export function tailscaleAuthKeyStatus(home: string): TailscaleAuthKeyStatus {
   if (!existsSync(tailscaleAuthKeyPath(home))) return "absent";
   try {
     return readTailscaleAuthKey(home, false) === null ? "empty" : "readable";
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "tailscale.tailscaleAuthKeyStatus.readTailscaleAuthKey", null);
     return "unreadable";
   }
 }
@@ -34,7 +36,8 @@ export function isTailnetUrl(url: string | null): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
     return host.endsWith(".ts.net");
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "tailscale.isTailnetUrl.toLowerCase", null);
     return false;
   }
 }

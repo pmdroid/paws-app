@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { sha256Hex } from "../policy/canonical";
 import type { ReviewScope } from "../types";
 import { FINDING_FORMAT } from "./findings";
@@ -157,6 +158,8 @@ function referenceText(bytes: Uint8Array): string {
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     if (!text.includes("\0")) return text;
-  } catch {}
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "prompt.referenceText.decode", null);
+  }
   return `Binary resource, SHA-256 ${sha256Hex(bytes)}`;
 }

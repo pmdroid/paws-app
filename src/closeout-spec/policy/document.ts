@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
 import { parse, YAMLParseError } from "yaml";
@@ -36,6 +37,7 @@ export function parsePolicy(text: string): ParsedPolicy {
   try {
     value = parse(text, YAML_OPTIONS);
   } catch (error) {
+    journalCaught(error, "document.parsePolicy.parse", null);
     if (error instanceof YAMLParseError && error.code === "DUPLICATE_KEY") {
       return { ok: false, message: "duplicated mapping key" };
     }
@@ -46,6 +48,7 @@ export function parsePolicy(text: string): ParsedPolicy {
   try {
     return { ok: true, document: decodeDocument(value) };
   } catch (error) {
+    journalCaught(error, "document.parsePolicy.decodeDocument", null);
     const message = error instanceof Error ? error.message : "document does not match the schema";
     return { ok: false, message };
   }
@@ -55,7 +58,8 @@ export function parsePolicy(text: string): ParsedPolicy {
 export function tryParseYamlValue(text: string): unknown | undefined {
   try {
     return parse(text, YAML_OPTIONS);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "document.tryParseYamlValue.parse", null);
     return undefined;
   }
 }
@@ -63,7 +67,8 @@ export function tryParseYamlValue(text: string): unknown | undefined {
 export function decodeUtf8(bytes: Uint8Array): string | undefined {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "document.decodeUtf8.decode", null);
     return undefined;
   }
 }

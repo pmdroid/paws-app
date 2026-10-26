@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { z } from "zod";
 import { repoApiPath } from "./client";
 import { git, gitEnv } from "./git";
@@ -118,7 +119,10 @@ export async function repositoriesRequiringUpToDate<
 }): Promise<string[]> {
   const required = await Promise.all(
     input.repositories.map(async (repository) => {
-      const token = await input.token(repository).catch(() => null);
+      const token = await input.token(repository).catch((caughtError1) => {
+        journalCaught(caughtError1, "overlap.repositoriesRequiringUpToDate.token", null);
+        return null;
+      });
       if (token === null) return false;
       return readUpToDateRule({
         client: input.client,
@@ -127,7 +131,10 @@ export async function repositoriesRequiringUpToDate<
         repo: repository.repo,
         branch: "main",
         ...(input.signal ? { signal: input.signal } : {}),
-      }).catch(() => false);
+      }).catch((caughtError2) => {
+        journalCaught(caughtError2, "overlap.repositoriesRequiringUpToDate.readUpToDateRule", null);
+        return false;
+      });
     }),
   );
   return input.repositories

@@ -1,3 +1,4 @@
+import { journalCaught } from "../../journal";
 import { checkoutPatterns, exclusionPatterns } from "../../worktree-checkout";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,7 +27,10 @@ export async function createCandidateCheckout(
     path,
     async remove() {
       await gitRun(repo, ["worktree", "remove", "--force", path]);
-      await rm(path, { recursive: true, force: true }).catch(() => undefined);
+      await rm(path, { recursive: true, force: true }).catch((caughtError1) => {
+        journalCaught(caughtError1, "checkout.remove.rm", null, "optional file may be absent");
+        return undefined;
+      });
     },
   };
 }

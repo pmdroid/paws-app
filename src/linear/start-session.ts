@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { LinearClient } from "./graphql";
 import type { AcceptedLinearEvent } from "./events";
 import { sessionCreatedKey } from "./events";
@@ -77,7 +78,10 @@ export function createSessionStarter(options: {
         },
         signal === undefined ? undefined : { signal },
       )
-      .catch(() => undefined);
+      .catch((caughtError1) => {
+        journalCaught(caughtError1, "start-session.createSessionStarter.query", null);
+        return undefined;
+      });
     const organization = app !== null && isRecord(app["organization"]) ? app["organization"] : null;
     const sourceComment = isRecord(session?.["sourceComment"]) ? session["sourceComment"] : null;
     const comment = isRecord(session?.["comment"]) ? session["comment"] : null;
@@ -124,7 +128,10 @@ export function createSessionStarter(options: {
       void options
         .onEvent(options.store.get(event.dedupeKey) ?? event)
         .then(() => options.store.markHandled(event.dedupeKey))
-        .catch(() => undefined);
+        .catch((caughtError2) => {
+          journalCaught(caughtError2, "start-session.createSessionStarter.then", null);
+          return undefined;
+        });
     }
     return { id, url: readString(session!, "url") ?? readString(issue!, "url") };
   };

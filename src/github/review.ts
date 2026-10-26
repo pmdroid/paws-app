@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { z } from "zod";
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
@@ -62,15 +63,8 @@ export async function readPullReview(input: {
         return "none";
     }
   } catch (error) {
-    console.error(
-      `GitHub review read failed: ${
-        error instanceof Error
-          ? error.message
-              .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[redacted]")
-              .slice(0, 300)
-          : "unknown error"
-      }`,
-    );
+    journalCaught(error, "review.readPullReview.acquireOperationToken", null);
+
     return "unreadable";
   }
 }

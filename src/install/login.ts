@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 export type DeveloperCli = "claude" | "codex";
 
 export type LoginCommandResult = {
@@ -60,6 +61,7 @@ export async function checkDeveloperLogin(options: {
   try {
     outcome = await run(spec.command, spec.args, env);
   } catch (error) {
+    journalCaught(error, "login.checkDeveloperLogin.run", null, "prerequisite may be absent");
     if (isMissingExecutable(error)) {
       return {
         cli: options.cli,
@@ -145,7 +147,8 @@ function authMethodFrom(stdout: string): string | undefined {
     const method = parsed.authMethod;
     if (typeof method !== "string" || !CLAUDE_AUTH_METHODS.has(method)) return undefined;
     return method;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "login.authMethodFrom.parse", null);
     return undefined;
   }
 }

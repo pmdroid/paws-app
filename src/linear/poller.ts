@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, parentIssueIdSql, type LinearCommand } from "../core";
 import { CLOSED_ISSUE_EVENT } from "./administration";
@@ -268,8 +269,7 @@ export function startCatchUpPoller(options: {
       await deliver(event);
     } catch (error) {
       if (error instanceof LinearRateLimitError || control.stopped) throw error;
-      const message = error instanceof Error ? error.message : "delivery failed";
-      console.error(`linear event ${event.dedupeKey} stays pending: ${message}`);
+      journalCaught(error, "poller.deliverOrSkip.deliver", null);
     } finally {
       inFlight.delete(event.dedupeKey);
     }
@@ -282,7 +282,8 @@ export function startCatchUpPoller(options: {
     } catch (error) {
       if (!(error instanceof LinearEntityNotFoundError) || error.entity !== "AgentSession")
         throw error;
-      console.error(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
+      journalCaught(error, "poller.deliver.onEvent", null);
+
       options.store.markHandled(event.dedupeKey);
       return;
     }
@@ -300,6 +301,7 @@ export function startCatchUpPoller(options: {
         submit({ type: "stop", itemId, source: "linear", requestedAt });
       } catch (error) {
         if (!isUnique(error)) throw error;
+        journalCaught(error, "poller.submitStops.submit", null);
       }
     }
   }
@@ -320,16 +322,12 @@ export function startCatchUpPoller(options: {
           budgetHoldMs(latestBudget, now()),
         );
       } catch (error) {
+        journalCaught(error, "poller.startCatchUpPoller.pollOnce", null);
         if (control.stopped) return;
         if (error instanceof LinearRateLimitError) {
           latestBudget = error.budget;
           delay = Math.max(POLL_INTERVAL_FAILING_MS, error.retryAfterMs);
-          console.error(
-            `linear intake poll rate-limited; retrying in ${Math.ceil(delay / 1000)}s: ${error.message}`,
-          );
         } else {
-          const message = error instanceof Error ? error.message : "intake poll failed";
-          console.error(`linear intake poll failed: ${message}`);
         }
       }
       if (control.stopped) return;
@@ -428,6 +426,7 @@ export function persistStopCommand(db: Database, command: LinearCommand): void {
     );
   } catch (error) {
     if (!isUnique(error)) throw error;
+    journalCaught(error, "poller.persistStopCommand.run", command.itemId);
   }
 }
 
@@ -590,7 +589,8 @@ function intakeMode(payload: string): "label" | "delegate" | "both" | null {
     if (!isRecord(parsed)) return null;
     const mode = parsed["mode"];
     return mode === "label" || mode === "delegate" || mode === "both" ? mode : null;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "poller.intakeMode.parse", null);
     return null;
   }
 }
@@ -632,7 +632,8 @@ function stopTargets(
         .all(sessionId);
       for (const row of rows) push(row.id);
     }
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "poller.stopTargets.all", null);
     return linearIssueId === null || sessionId !== null ? [] : [linearIssueId];
   }
   if (ids.length === 0 && linearIssueId !== null && sessionId === null) ids.push(linearIssueId);

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,6 +54,7 @@ export async function probeAgentProfile(input: {
         : (result.errorMessage ?? "Agent did not confirm its model"),
     };
   } catch (error) {
+    journalCaught(error, "probe.probeAgentProfile.runAgent", null);
     return {
       ok: false,
       agent: input.profile.agent,

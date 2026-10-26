@@ -1,3 +1,4 @@
+import { journalCaught } from "./journal";
 import { existsSync } from "node:fs";
 import { initializeRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
@@ -48,9 +49,9 @@ export function startBrowserOnboarding(
           closeDatabase();
           active = start(server);
           await active.ready;
-        })().catch(() => {
+        })().catch((caughtError1) => {
+          journalCaught(caughtError1, "onboarding-start.installed.allSettled", null);
           failed = true;
-          console.error("Paws could not start after Linear authorization.");
         });
       }, 0);
     },

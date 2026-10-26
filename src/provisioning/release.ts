@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { ExeDevFetch } from "./client";
 
 export const LATEST_RUNNER_RELEASE_URL =
@@ -17,7 +18,8 @@ export async function latestRunnerRelease(
       typeof body === "object" && body !== null && "tag_name" in body ? body.tag_name : null;
     const match = typeof tag === "string" ? /^v(\d+\.\d+\.\d+)$/.exec(tag) : null;
     return match?.[1] ?? null;
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "release.latestRunnerRelease.fetcher", null);
     return null;
   }
 }

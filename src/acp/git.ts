@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { spawn } from "node:child_process";
 import { spawnAgent, stopChild } from "./process";
 
@@ -80,6 +81,7 @@ export async function git(
       }
     });
   } catch (error) {
+    journalCaught(error, "git.git.setEncoding", null);
     failed = true;
     failure = error;
   } finally {

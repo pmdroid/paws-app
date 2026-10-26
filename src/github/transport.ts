@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { isTransientGitError } from "../core";
 import { GitCommandError, type GitExec } from "./types";
 
@@ -28,6 +29,7 @@ export function retryGitTransport(
         return await gitExec(args, options);
       } catch (error) {
         if (!(error instanceof GitCommandError) || !isTransientGitError(error.stderr)) throw error;
+        journalCaught(error, "transport.retryGitTransport.gitExec", null);
         const delay = GIT_TRANSPORT_RETRY_MS[attempt];
         if (delay === undefined) throw new GitTransportError(error.args, error.stderr);
         options.signal?.throwIfAborted();

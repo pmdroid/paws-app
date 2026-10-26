@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { readFile, stat } from "node:fs/promises";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { runAgent } from "./run";
@@ -53,6 +54,7 @@ export function createAcpPromptLifecycle(
           const offset = await stat(path).then(
             (info) => info.size,
             (error: NodeJS.ErrnoException) => {
+              journalCaught(error, "lifecycle.prompt.stat", null, "optional file may be absent");
               if (error.code === "ENOENT") return 0;
               throw error;
             },
@@ -144,7 +146,8 @@ export function requestText(prompt: string): string {
   let entries: unknown;
   try {
     entries = JSON.parse(context);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "lifecycle.requestText.parse", null);
     return prompt;
   }
   if (!Array.isArray(entries)) return prompt;

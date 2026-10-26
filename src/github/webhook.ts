@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type SignatureCheck =
@@ -48,13 +49,15 @@ export async function handleGitHubWebhook(
   const payload = Buffer.from(body).toString("utf8");
   try {
     JSON.parse(payload);
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "webhook.handleGitHubWebhook.parse", null);
     return Response.json({ ok: false, reason: "invalid_payload" }, { status: 400 });
   }
   if (!inbox) return Response.json({ ok: false, reason: "inbox_unavailable" }, { status: 503 });
   try {
     inbox.accept({ deliveryId, event, payload });
-  } catch {
+  } catch (caughtError2) {
+    journalCaught(caughtError2, "webhook.handleGitHubWebhook.accept", null);
     return Response.json({ ok: false, reason: "inbox_unavailable" }, { status: 503 });
   }
   return Response.json({ ok: true });

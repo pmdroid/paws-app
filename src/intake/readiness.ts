@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   canAdvanceItem,
@@ -38,7 +39,8 @@ export function itemReadiness(
         ? readyItems(db, target).readyItemIds.includes(itemId)
         : canAdvanceItem(db, target);
     return ready ? null : "blocked";
-  } catch {
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "readiness.itemReadiness.includes", itemId);
     return "blocked";
   }
 }

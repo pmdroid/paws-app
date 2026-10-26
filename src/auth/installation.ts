@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { loadGitHubAppCredentials } from "../config";
 import { readSecretFile } from "../credentials";
 import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../github";
@@ -66,8 +67,9 @@ export function createGitHubInstallationCheck(options: {
       )
         return false;
       return true;
-    } catch {
+    } catch (caughtError1) {
       signal.throwIfAborted();
+      journalCaught(caughtError1, "installation.createGitHubInstallationCheck.resolve", null);
       return false;
     }
   };
