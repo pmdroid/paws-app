@@ -306,11 +306,11 @@ export async function probeExecutionControls(root: string) {
     assert.equal((await stopping).status, 200);
     assert.equal((await call("stop")).status, 409);
     const messages = db
-      .query<{ body: string }, []>(
+      .query<{ body: string | null }, []>(
         "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE delivery_kind='stop'",
       )
       .all();
-    assert(messages.some((row) => row.body === "Stopped from Paws."));
+    assert(messages.some((row) => row.body?.startsWith("Stopped from Paws. ")));
     observe(
       "Selected-item Stop commits and awaits interruption, preserves unrelated work and branch, and attributes the Linear response to Paws",
       {

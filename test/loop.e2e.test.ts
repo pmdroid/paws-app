@@ -944,8 +944,11 @@ test.each(["claude", "codex", "grok"])(
     expect(tracker.statuses.some((update) => update.stateType === "canceled")).toBe(false);
     expect(tracker.progress.at(-1)).toMatchObject({
       kind: "response",
-      body: "Stopped from Linear.",
+      body: expect.stringMatching(
+        /^Stopped\. Branch paws\/eng-9\S* has no commits; no PR was opened\. Re-delegate to continue\.$/,
+      ),
     });
+    expect(tracker.sessionUpdates.at(-1)).toMatchObject({ summary: "ENG-9: stopped" });
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const agents = listRuns(db).map((run) => run.agent);
     db.close();
