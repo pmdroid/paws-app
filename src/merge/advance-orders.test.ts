@@ -287,6 +287,21 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     expect(h.github.merged).toEqual([]);
   });
 
+  test("a GitHub queue conflict asks once the rebase budget is spent", async () => {
+    const { h, queue } = await githubQueue();
+    for (let round = 0; round < 3; round++) {
+      await h.pass("ENG-1");
+      queue.remove(1, "MERGE_CONFLICT");
+      expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+      await h.requeue("ENG-1", `resolve ${round}\n`);
+    }
+    await h.pass("ENG-1");
+    queue.remove(1, "MERGE_CONFLICT");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+    expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({ reason: "rebase_budget_spent" });
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
+  });
+
   test("a person removing the pull request from the queue makes Paws ask in Linear", async () => {
     const { h, queue } = await githubQueue();
     await h.pass("ENG-1");

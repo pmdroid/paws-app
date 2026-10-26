@@ -1,3 +1,4 @@
+import { findOpenQuestion } from "../questions";
 import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
@@ -227,16 +228,19 @@ describe("advanceMerge on a rebase conflict", () => {
     expect(await onMovedMain(h, h.github.merged[0]!.expectedHeadSha, main)).toBe(true);
   });
 
-  test("after three returns for the same main the task fails and names the commit and files", async () => {
+  test("after three returns for the same main the task asks and names the commit and files", async () => {
     const { h, main } = await conflicting();
     for (let attempt = 0; attempt < 3; attempt++) {
       expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
       backInQueue(h, "ENG-1");
     }
-    expect(await h.pass("ENG-1")).toEqual({
-      kind: "failed",
-      reason: "merge",
-      message: `The branch still conflicts with main after 3 attempts to resolve the conflict. Main commits: ${main.slice(0, 7)}. Conflicting files: ok.txt.`,
+    expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
+    expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({
+      reason: "rebase_budget_spent",
+      body: expect.stringContaining(
+        `Main commits: ${main.slice(0, 7)}. Conflicting files: ok.txt.`,
+      ),
     });
     expect(resumes(h).map((payload) => payload.handoff)).toEqual([
       REBASE_CONFLICT_INSTRUCTION,

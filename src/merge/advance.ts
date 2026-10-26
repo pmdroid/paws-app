@@ -208,6 +208,19 @@ export async function advanceMerge(
   await caps.assertReady(item);
   if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
+  if (step.kind === "ask_conflict") {
+    if (
+      askHelp(
+        merge,
+        `${step.message} Reply with guidance to continue, or stop the task.`,
+        "rebase_budget_spent",
+      )
+    ) {
+      await voice.flush();
+      return { kind: "asked" };
+    }
+    return { kind: "failed", reason: "merge", message: step.message };
+  }
   if (step.kind === "ask_closeout") {
     await caps.askCloseoutHelp(item);
     return { kind: "asked" };
@@ -247,7 +260,7 @@ export async function advanceMerge(
       })
     )
       return { kind: "returned" };
-    if (askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url))) {
+    if (askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url), "budget_spent")) {
       round("asked");
       await voice.flush();
       return { kind: "asked" };

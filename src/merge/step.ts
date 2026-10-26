@@ -27,6 +27,7 @@ export type SerialMergeStep =
   | { kind: "ask_closeout" }
   | { kind: "return"; reason: "rebase-conflict" | "ci-failed" }
   | { kind: "ask_ci" }
+  | { kind: "ask_conflict"; message: string }
   | { kind: "reverify" }
   | { kind: "failed"; message: string };
 
@@ -65,7 +66,7 @@ function step(facts: SerialMergeFacts, unreadable: boolean, mainMoved: boolean):
   if (result.outcome === "conflict")
     return facts.rebaseBudget.allowed
       ? { kind: "return", reason: "rebase-conflict" }
-      : { kind: "failed", message: facts.rebaseBudget.message };
+      : { kind: "ask_conflict", message: facts.rebaseBudget.message };
   if (result.outcome === "ci_failed")
     return facts.ciFixes < facts.ciFixLimit
       ? { kind: "return", reason: "ci-failed" }

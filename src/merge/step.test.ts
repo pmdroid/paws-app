@@ -63,7 +63,7 @@ describe("serial merge step", () => {
         { outcome: "conflict" },
         { rebaseBudget: { allowed: false, message: "The branch still conflicts." } },
       ).step,
-    ).toEqual({ kind: "failed", message: "The branch still conflicts." });
+    ).toEqual({ kind: "ask_conflict", message: "The branch still conflicts." });
   });
 
   test("failed CI returns to the agent, then asks once the fixes are spent", () => {
