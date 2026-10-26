@@ -9,9 +9,71 @@ import {
   listJobs,
   migrate,
   openDatabase,
+  setJournalSink,
 } from "./index";
 
 describe("job loop", () => {
+  test("a claimed unknown queue is cancelled once, including recurring jobs", async () => {
+    const clock = new FakeClock(1000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    try {
+      const loop = new JobLoop(db, clock);
+      for (const recurringEveryMs of [undefined, 100]) {
+        const id = enqueueJob(db, { queue: "removed", recurringEveryMs, now: clock.now() });
+        await loop.tick(["removed"]);
+        expect(getJob(db, id)).toMatchObject({
+          status: "cancelled",
+          lastError: "No handler for removed",
+          finishedAt: clock.now(),
+          lockedBy: null,
+          lockedUntil: null,
+          attempts: 1,
+        });
+      }
+      clock.advance(100_000);
+      expect(await loop.tick(["removed"])).toBeNull();
+      expect(lines).toHaveLength(2);
+      expect(lines.every((line) => line.includes("removed cancelled: No handler"))).toBe(true);
+    } finally {
+      restore();
+      db.close();
+    }
+  });
+
+  test("startup removes unknown recurring definitions after handlers are registered", async () => {
+    for (const registered of [false, true]) {
+      const db = openDatabase(":memory:");
+      migrate(db);
+      const clock = new FakeClock(1000);
+      const removed = enqueueJob(db, { queue: "removed", recurringEveryMs: 100, now: 2000 });
+      const oneShot = enqueueJob(db, { queue: "other", now: 2000 });
+      const known = registered
+        ? enqueueJob(db, { queue: "work", recurringEveryMs: 100, now: 2000 })
+        : null;
+      const lines: string[] = [];
+      const restore = setJournalSink((line) => lines.push(line));
+      try {
+        const loop = new JobLoop(db, clock);
+        if (registered) loop.register("work", () => {});
+        const controller = new AbortController();
+        controller.abort();
+        await loop.run(controller.signal);
+        expect(getJob(db, removed)).toBeNull();
+        expect(getJob(db, oneShot)?.status).toBe("pending");
+        if (known !== null) expect(getJob(db, known)?.status).toBe("pending");
+        expect(lines).toEqual([
+          `job ${removed} removed recurring definition removed: No handler for removed`,
+        ]);
+      } finally {
+        restore();
+        db.close();
+      }
+    }
+  });
+
   test("polls until a timer row is due", async () => {
     const clock = new FakeClock(0);
     const db = openDatabase(":memory:");
