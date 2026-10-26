@@ -108,6 +108,7 @@ When the turn ends, the item moves to `verifying` and Paws runs the policy again
   - `scope: diff` asks the reviewer to read only the diff and the files it changes, without searching the repository or running commands. The default, `candidate`, lets it read the whole checkout.
   - `parallel: true` starts the review alongside the command checks instead of after them.
   - `minChangedLines: N` skips the review when the change adds and removes fewer than N lines.
+- **Security review.** In this repository, a candidate that changes a high-risk path also gets `security-review`: a second reviewer, in its own session and on a different model, runs `.agents/skills/security-paws/SKILL.md` on the diff. It checks the rules Paws sets for itself: secrets stay in `~/.paws/secrets` and out of logs and the agent environment, webhooks fail closed, routes and answers check authorization, SQL is not built from input, paths stay inside the worktree, and child processes are not started from input. A P1 or P0 finding fails it. Its `paths` list the high-risk globs, among them `src/auth/**`, `src/credentials/**`, the webhook handlers, route modules, and `.agents/**`. A candidate that touches none of them, such as a docs-only change, skips it.
 
 The run page shows these steps and their output while they run. A review row shows how long the reviewer took and how many tokens it reported.
 
