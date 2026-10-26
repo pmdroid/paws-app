@@ -138,7 +138,7 @@ process.exit(await child.exited);
     });
     expect(result.run.stopReason).toBe("end_turn");
     expect(result.candidateSha).not.toBe(baseSha);
-    const checkout = join(workRoot, job.executionId);
+    const checkout = join(workRoot, "run");
     expect((await git(["-C", checkout, "diff", "HEAD~1", "HEAD", "--name-only"])).trim()).toBe(
       "result.txt",
     );

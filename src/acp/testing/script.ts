@@ -78,6 +78,8 @@ export interface FakeResult {
   effortSelection?: unknown;
   argv?: string[];
   cwd?: string;
+  /** The cwd the client sent with session/new or session/load. */
+  sessionCwd?: string;
   authenticate?: unknown;
   env?: {
     xaiApiKey: boolean;

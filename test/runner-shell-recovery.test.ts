@@ -75,7 +75,7 @@ async function runWithSessions(sessions: FakeStep[][]) {
   mkdirSync(spool.root);
   chmodSync(spool.root, 0o750);
   publishRunnerJob(spool, job, { repositoryBundle });
-  const worktree = join(workRoot, job.executionId);
+  const worktree = join(workRoot, "run");
   const script = join(root, "script.json");
   writeFileSync(
     script,
