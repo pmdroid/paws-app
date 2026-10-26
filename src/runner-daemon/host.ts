@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { readdirSync, readFileSync, realpathSync, statfsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -102,7 +103,8 @@ export function createMiseVersionProbe(spawn: typeof Bun.spawn = Bun.spawn) {
       if (probed !== binary) return;
       if (parsed) version = parsed;
       else probed = undefined;
-    })().catch(() => {
+    })().catch((caughtError1) => {
+      journalCaught(caughtError1, "host.createMiseVersionProbe.spawn", null);
       if (probed === binary) probed = undefined;
     });
     return undefined;
@@ -150,7 +152,9 @@ export function createStraySampler(proc: string, rootPid: number, uid: number) {
         if (!stat) continue;
         table.set(stat.pid, stat);
         if (statSync(join(proc, entry)).uid === uid) owned.add(stat.pid);
-      } catch {}
+      } catch (caughtError2) {
+        journalCaught(caughtError2, "host.createStraySampler.processStat", null);
+      }
     }
     const insideRunner = (pid: number) => {
       for (let current: number | undefined = pid, hops = 0; current && hops < 4096; hops += 1) {
@@ -189,7 +193,8 @@ export function createStraySampler(proc: string, rootPid: number, uid: number) {
 function attempt<T>(read: () => T): T | undefined {
   try {
     return read();
-  } catch {
+  } catch (caughtError3) {
+    journalCaught(caughtError3, "host.attempt.read", null);
     return undefined;
   }
 }

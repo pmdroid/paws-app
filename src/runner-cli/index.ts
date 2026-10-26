@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -146,6 +147,7 @@ export function readTokenFile(path: string): string | null {
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
+    journalCaught(error, "runner-cli.readTokenFile.openSync", null, "optional file may be absent");
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new RunnerCliFailure("token", openFailure("Enrollment token file", error));
   }
@@ -298,6 +300,12 @@ export async function runRunnerCli(
       daemon.close();
     }
   } catch (caught) {
+    journalCaught(
+      caught,
+      "runner-cli.runRunnerCli.accounts",
+      null,
+      "cancellation may interrupt work",
+    );
     if (abort.signal.aborted) return 130;
     error(runnerFailureLine(caught, secrets));
     return 1;

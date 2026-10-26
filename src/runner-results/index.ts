@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { immediate, recordRunnerAgentUsage, runnerLeaseCutoff } from "../db";
@@ -188,7 +189,8 @@ export function createRunnerResults(options: {
         if (!row || !followUpsSupported(row.version)) return false;
         try {
           if (current(row.runId, row.generation).type !== "run") return false;
-        } catch {
+        } catch (caughtError1) {
+          journalCaught(caughtError1, "runner-results.deliverFollowUp.current", itemId);
           return false;
         }
         const next = db
@@ -244,6 +246,7 @@ export function createRunnerResults(options: {
           return json({ followUps: api.followUps({ ...input, ...answerInput.parse(body) }) });
         return json({ answers: api.answers({ ...input, ...answerInput.parse(body) }) });
       } catch (error) {
+        journalCaught(error, "runner-results.fetch.get", null);
         if (error instanceof RunnerWorkFencedError)
           return json({ error: "Runner work is fenced.", code: "fenced" }, 409);
         return json({ error: "Runner result request is denied or invalid." }, 403);
@@ -261,7 +264,11 @@ async function readBody(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("JSON is required");
   const timeout = AbortSignal.timeout(10_000);
-  const cancel = () => void reader.cancel().catch(() => undefined);
+  const cancel = () =>
+    void reader.cancel().catch((caughtError2) => {
+      journalCaught(caughtError2, "runner-results.readBody.cancel", null);
+      return undefined;
+    });
   timeout.addEventListener("abort", cancel, { once: true });
   request.signal.addEventListener("abort", cancel, { once: true });
   const chunks: Uint8Array[] = [];
@@ -282,7 +289,10 @@ async function readBody(request: Request) {
   } finally {
     timeout.removeEventListener("abort", cancel);
     request.signal.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch((caughtError3) => {
+      journalCaught(caughtError3, "runner-results.readBody.cancel", null);
+      return undefined;
+    });
     reader.releaseLock();
   }
 }

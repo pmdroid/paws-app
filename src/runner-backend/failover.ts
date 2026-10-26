@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import {
   DEFAULT_RUN_TIMEOUT_MS,
   recoverAcpConversation,
@@ -87,6 +88,12 @@ export async function runWithFailover(
       if (remaining <= 0) throw new Error("Remote runner request timed out during failover");
       return await attempt({ ...input, prompt, timeoutMs: remaining }, excluded, limit);
     } catch (error) {
+      journalCaught(
+        error,
+        "failover.runWithFailover.floor",
+        input.itemId,
+        "optional file may be absent",
+      );
       if (error instanceof UsageLimitPause && usageLimits) {
         if (++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
           throw new UsageLimitExhaustedError(error.runnerId, error);
@@ -154,6 +161,12 @@ export async function runWithFailover(
       const history = error.transcriptPath
         ? await recoverAcpConversation(error.transcriptPath).catch(
             (failure: NodeJS.ErrnoException) => {
+              journalCaught(
+                failure,
+                "failover.runWithFailover.recoverAcpConversation",
+                input.itemId,
+                "optional file may be absent",
+              );
               if (failure.code === "ENOENT") return [];
               throw failure;
             },

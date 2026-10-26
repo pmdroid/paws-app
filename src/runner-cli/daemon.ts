@@ -1,3 +1,4 @@
+import { journalCaught, journalRejection } from "../journal";
 import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -61,7 +62,7 @@ export async function runPairedDaemon(
         throw new Error("Runner shutdown failed");
     })());
   const interrupt = () => {
-    void stop().catch(report);
+    void stop().catch(journalRejection("runner-cli/daemon.runPairedDaemon.stop", report, null));
   };
   try {
     signal.throwIfAborted();
@@ -73,6 +74,7 @@ export async function runPairedDaemon(
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
       } catch (error) {
+        journalCaught(error, "daemon.runPairedDaemon.tick", null);
         if (!signal.aborted)
           report(error instanceof Error ? error : new Error("Runner operation failed"));
       }

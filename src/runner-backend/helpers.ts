@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
@@ -82,7 +83,9 @@ export function createRemoteSessionAgentRunner(options: {
                 return dispatched;
               });
               break;
-            } catch {}
+            } catch (caughtError1) {
+              journalCaught(caughtError1, "helpers.forSession.immediate", null);
+            }
           }
           if (command) break;
           const helperBusy = options.db

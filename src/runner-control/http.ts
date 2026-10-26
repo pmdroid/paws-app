@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { z } from "zod";
 import { RunnerAgentUpdateError, RunnerConcurrencyError } from "../db";
 import { RUNNER_CODING_AGENTS, RunnerAgentVersionSchema } from "../runner-protocol";
@@ -56,10 +57,16 @@ export function createRunnerHttp(
       if (enrolling >= 4) return json({ error: "Enrollment is busy. Try again shortly." }, 429);
       enrolling += 1;
       try {
-        const parsed = hostEnrollment.safeParse(await readJson(request).catch(() => undefined));
+        const parsed = hostEnrollment.safeParse(
+          await readJson(request).catch((caughtError2) => {
+            journalCaught(caughtError2, "http.hostEnrollment.readJson", null);
+            return undefined;
+          }),
+        );
         if (!parsed.success) return json({ error: "Runner enrollment request is invalid." }, 400);
         return json(await control.enroll(parsed.data));
       } catch (error) {
+        journalCaught(error, "http.hostEnrollment.safeParse", null);
         if (error instanceof RunnerEnrollmentDenied)
           return json({ error: "Runner enrollment token is invalid or expired." }, 401);
         return json({ error: "Runner enrollment request is invalid or unavailable." }, 400);
@@ -119,6 +126,7 @@ export function createRunnerHttp(
         }
         return null;
       } catch (error) {
+        journalCaught(error, "http.browser.json", null);
         if (error instanceof RunnerConcurrencyError || error instanceof RunnerAgentUpdateError)
           return json({ error: error.message }, 400);
         return json({ error: "Runner access denied or request is invalid." }, 403);
@@ -130,7 +138,8 @@ export function createRunnerHttp(
       try {
         const input = certificate.parse(await readJson(request));
         return json(await control.renew(peer, input.csr));
-      } catch {
+      } catch (caughtError3) {
+        journalCaught(caughtError3, "http.runner.parse", null);
         return json({ error: "Runner certificate renewal denied." }, 403);
       }
     },
@@ -146,7 +155,10 @@ async function readJson(request: Request): Promise<unknown> {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("JSON is required.");
   const timeout = AbortSignal.timeout(10_000);
-  const cancel = () => void reader.cancel().catch(() => {});
+  const cancel = () =>
+    void reader.cancel().catch((caughtError4) => {
+      journalCaught(caughtError4, "http.readJson.cancel", null);
+    });
   timeout.addEventListener("abort", cancel, { once: true });
   request.signal.addEventListener("abort", cancel, { once: true });
   try {
@@ -167,7 +179,9 @@ async function readJson(request: Request): Promise<unknown> {
   } finally {
     timeout.removeEventListener("abort", cancel);
     request.signal.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => {});
+    await reader.cancel().catch((caughtError5) => {
+      journalCaught(caughtError5, "http.readJson.cancel", null);
+    });
     reader.releaseLock();
   }
 }

@@ -1,3 +1,4 @@
+import { journalCaught } from "../journal";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -81,6 +82,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       }
       return null;
     } catch (error) {
+      journalCaught(error, "http.createRunnerWorkHttp.json", null);
       if (error instanceof RunnerWorkFencedError)
         return json({ error: "Runner work is fenced.", code: "fenced" }, 409);
       return json({ error: "Runner work request is denied or invalid." }, 403);
@@ -94,7 +96,11 @@ async function body(request: Request, limit = 73_728) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("JSON is required");
   const timeout = AbortSignal.timeout(10_000);
-  const cancel = () => void reader.cancel().catch(() => undefined);
+  const cancel = () =>
+    void reader.cancel().catch((caughtError1) => {
+      journalCaught(caughtError1, "http.body.cancel", null);
+      return undefined;
+    });
   timeout.addEventListener("abort", cancel, { once: true });
   request.signal.addEventListener("abort", cancel, { once: true });
   const chunks: Uint8Array[] = [];
@@ -115,7 +121,10 @@ async function body(request: Request, limit = 73_728) {
   } finally {
     timeout.removeEventListener("abort", cancel);
     request.signal.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => undefined);
+    await reader.cancel().catch((caughtError2) => {
+      journalCaught(caughtError2, "http.body.cancel", null);
+      return undefined;
+    });
     reader.releaseLock();
   }
 }

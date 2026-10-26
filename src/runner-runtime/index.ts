@@ -1,3 +1,4 @@
+import { journalCaught, journalRejection } from "../journal";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
@@ -160,6 +161,12 @@ export async function openRunnerRuntime(options: {
     try {
       raw = readRunnerResultFile(options.results, entry.execution.id, "runtimes.json");
     } catch (error) {
+      journalCaught(
+        error,
+        "runner-runtime.collectRuntimes.readRunnerResultFile",
+        entry.execution.command.itemId,
+        "optional file may be absent",
+      );
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         entry.runtimesRecorded = true;
         report(error);
@@ -169,7 +176,12 @@ export async function openRunnerRuntime(options: {
     entry.runtimesRecorded = true;
     try {
       runtimes.record(JSON.parse(raw.toString("utf8")));
-    } catch {
+    } catch (caughtError1) {
+      journalCaught(
+        caughtError1,
+        "runner-runtime.collectRuntimes.record",
+        entry.execution.command.itemId,
+      );
       report(new Error("Runner worker reported an invalid runtime list."));
     }
   }
@@ -273,7 +285,9 @@ export async function openRunnerRuntime(options: {
         let raw: Buffer = Buffer.alloc(0);
         try {
           raw = readRunnerResultFile(options.results, execution.id, "events.jsonl");
-        } catch {}
+        } catch (caughtError2) {
+          journalCaught(caughtError2, "runner-runtime.fail.readRunnerResultFile", command.itemId);
+        }
         journal.ingest(execution.id, raw);
         let { offset, consumed } = journal.transcriptCursor(execution.id);
         while (offset < consumed) {
@@ -332,6 +346,7 @@ export async function openRunnerRuntime(options: {
         token,
       );
     } catch (error) {
+      journalCaught(error, "runner-runtime.fail.issueRunGrant", command.itemId);
       report(error);
     }
   }
@@ -344,7 +359,7 @@ export async function openRunnerRuntime(options: {
   function check(entry: Active) {
     if (closed || monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS) {
       void interrupt(entry, closed ? "runner stopping" : "lease deadline passed", !closed).catch(
-        report,
+        journalRejection("runner-runtime.check.interrupt", report, entry.execution.command.itemId),
       );
       throw new Error("Runner lease expired");
     }
@@ -380,6 +395,7 @@ export async function openRunnerRuntime(options: {
       try {
         agents = options.agents?.installed();
       } catch (error) {
+        journalCaught(error, "runner-runtime.pulse.installed", null);
         report(error);
       }
       const response = await options.daemon.heartbeat(
@@ -392,11 +408,14 @@ export async function openRunnerRuntime(options: {
         try {
           options.agents.apply(response.agents);
         } catch (error) {
+          journalCaught(error, "runner-runtime.pulse.apply", null);
           report(error);
         }
       // Downloads can take longer than a heartbeat, so they run beside the lease renewal.
       if (response.skills && options.skills)
-        void options.skills.sync(response.skills).catch(report);
+        void options.skills
+          .sync(response.skills)
+          .catch(journalRejection("runner-runtime.pulse.sync", report, null));
       const observed = monotonic();
       leases.clear();
       for (const lease of response.leases)
@@ -418,7 +437,13 @@ export async function openRunnerRuntime(options: {
           void interrupt(
             entry,
             fenced ? "fenced by Paws" : "heartbeat did not renew the lease",
-          ).catch(report);
+          ).catch(
+            journalRejection(
+              "runner-runtime.pulse.interrupt",
+              report,
+              entry.execution.command.itemId,
+            ),
+          );
         else if (!entry.abort.signal.aborted) entry.deadline = deadline;
       }
       const identity = options.daemon.status();
@@ -515,6 +540,7 @@ export async function openRunnerRuntime(options: {
       journal.phase(entry.execution.id, "running");
       entry.execution.phase = "running";
     } catch (error) {
+      journalCaught(error, "runner-runtime.launch.grant", entry.execution.command.itemId);
       if (!(error instanceof RemoteFailure))
         await interrupt(entry, error instanceof Error ? error.message : "preparation failed", true);
       report(error);
@@ -528,7 +554,9 @@ export async function openRunnerRuntime(options: {
   }
   function prepare(entry: Active) {
     entry.task = launch(entry)
-      .catch(report)
+      .catch(
+        journalRejection("runner-runtime.prepare.launch", report, entry.execution.command.itemId),
+      )
       .finally(() => {
         entry.task = undefined;
       });
@@ -539,6 +567,12 @@ export async function openRunnerRuntime(options: {
     try {
       raw = readRunnerResultFile(options.results, entry.execution.id, "events.jsonl");
     } catch (error) {
+      journalCaught(
+        error,
+        "runner-runtime.drainTranscript.readRunnerResultFile",
+        null,
+        "optional file may be absent",
+      );
       if (!final && (error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
@@ -687,6 +721,12 @@ export async function openRunnerRuntime(options: {
       return false;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalCaught(
+        error,
+        "runner-runtime.resumeIfCrashed.readRunnerResultFile",
+        entry.execution.command.itemId,
+        "optional file may be absent",
+      );
     }
     check(entry);
     entry.restarts = (entry.restarts ?? 0) + 1;
@@ -699,6 +739,12 @@ export async function openRunnerRuntime(options: {
       raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalCaught(
+        error,
+        "runner-runtime.complete.readRunnerResultFile",
+        entry.execution.command.itemId,
+        "optional file may be absent",
+      );
       if (broker.alive?.(entry.execution.id) !== false) return;
       try {
         raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
@@ -708,7 +754,8 @@ export async function openRunnerRuntime(options: {
     }
     try {
       JSON.parse(raw.toString("utf8"));
-    } catch {
+    } catch (caughtError3) {
+      journalCaught(caughtError3, "runner-runtime.complete.parse", entry.execution.command.itemId);
       return;
     }
     await quiesce(entry);
@@ -770,6 +817,7 @@ export async function openRunnerRuntime(options: {
         );
       } catch (error) {
         if (!(error instanceof GitHubFailure)) throw error;
+        journalCaught(error, "runner-runtime.complete.publish", entry.execution.command.itemId);
         const tries = (entry.pushTries ?? 0) + 1;
         entry.pushTries = tries;
         const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
@@ -805,7 +853,7 @@ export async function openRunnerRuntime(options: {
     active.delete(key(entry.execution.command));
   }
   async function step() {
-    await pulse().catch(report);
+    await pulse().catch(journalRejection("runner-runtime.step.pulse", report, null));
     if (closed) return;
     const polled = await options.daemon.pollCommands();
     for (const repository of polled.deniedRepositories) {
@@ -853,7 +901,11 @@ export async function openRunnerRuntime(options: {
         const entry: Active = { execution, abort: new AbortController(), deadline };
         active.set(key(command), entry);
         prepare(entry);
-        await options.daemon.acknowledgeCommand(command.id).catch(report);
+        await options.daemon
+          .acknowledgeCommand(command.id)
+          .catch(
+            journalRejection("runner-runtime.step.acknowledgeCommand", report, command.itemId),
+          );
         if (active.size >= concurrency()) break;
       }
     }
@@ -873,21 +925,38 @@ export async function openRunnerRuntime(options: {
       await deliver(entry);
       if (!(await resumeIfCrashed(entry))) await complete(entry);
     } catch (error) {
+      journalCaught(error, "runner-runtime.advance.deliver", entry.execution.command.itemId);
       if (error instanceof RemoteFailure) return report(error);
       await interrupt(entry, error instanceof Error ? error.message : "runner error", true).catch(
-        report,
+        journalRejection(
+          "runner-runtime.advance.interrupt",
+          report,
+          entry.execution.command.itemId,
+        ),
       );
     }
   }
   const heartbeat = setInterval(() => {
-    void pulse().catch(report);
+    void pulse().catch(journalRejection("runner-runtime.openRunnerRuntime.pulse", report, null));
   }, 15_000);
   const watchdog = setInterval(() => {
     for (const entry of active.values())
       if (monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS)
-        void interrupt(entry, "lease deadline passed", true).catch(report);
+        void interrupt(entry, "lease deadline passed", true).catch(
+          journalRejection(
+            "runner-runtime.openRunnerRuntime.interrupt",
+            report,
+            entry.execution.command.itemId,
+          ),
+        );
       else if (entry.execution.phase === "preparing" && entry.execution.command.expiresAt <= now())
-        void interrupt(entry, "command expired before the worker started", true).catch(report);
+        void interrupt(entry, "command expired before the worker started", true).catch(
+          journalRejection(
+            "runner-runtime.openRunnerRuntime.interrupt",
+            report,
+            entry.execution.command.itemId,
+          ),
+        );
   }, 250);
   return {
     status: () => {
