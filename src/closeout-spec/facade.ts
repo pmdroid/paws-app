@@ -295,6 +295,20 @@ export function digest(repo: string): DigestResult {
   return { ok: true, digest: loaded.policy.digest };
 }
 
+/**
+ * The digest Closeout records for a candidate, resolved the way a Closeout run resolves its
+ * policy. `""` when there is no policy; null when the policy cannot be read.
+ */
+export function candidatePolicyDigest(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+  checkoutExclusions: readonly string[] = [],
+): string | null {
+  const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
+  return loaded.ok ? (loaded.policy.digest ?? "") : null;
+}
+
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {
   const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);

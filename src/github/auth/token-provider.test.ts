@@ -14,7 +14,8 @@ import {
   openPullRequest,
   parseGitHubRemote,
   pushBranch,
-  serialMerge,
+  readPullFacts,
+  squashPull,
   type GitExec,
   type GitHubClient,
   type GitHubTokenProvider,
@@ -125,22 +126,31 @@ describe("GitHub operation tokens", () => {
     expect(body.startsWith("Fixes ENG-17")).toBe(true);
   });
 
-  test("merge asks for separate push, readiness, and merge tokens", async () => {
+  test("the merge lane asks for separate read, review and merge tokens", async () => {
     const fake = await scratch();
     const provider = countingProvider();
     const head = "a".repeat(40);
     const base = "b".repeat(40);
     const tokens: string[] = [];
-    const readinessTokens: string[] = [];
+    const readTokens: string[] = [];
     const client: GitHubClient = {
       async request(req) {
         if (req.path.endsWith("/access_tokens")) throw new Error("app path");
         if (req.path.endsWith("/merge")) {
           expect(req.token).toBe("ghs_fake_3");
+          expect((req.body as { sha: string }).sha).toBe(head);
           return { status: 200, body: { merged: true, sha: "c".repeat(40) } };
         }
-        readinessTokens.push(req.token);
-        if (req.path === "/graphql") return { status: 200, body: fakeMergeReadiness(head) };
+        readTokens.push(req.token);
+        if (req.path === "/graphql") {
+          const variables = (req.body as { variables: { head?: string } }).variables;
+          if (variables.head === undefined)
+            return {
+              status: 200,
+              body: { data: { repository: { pullRequest: { reviewDecision: "APPROVED" } } } },
+            };
+          return { status: 200, body: fakeMergeReadiness(head) };
+        }
         return fakeRequiredChecks(req) ?? { status: 404, body: {} };
       },
     };
@@ -153,7 +163,7 @@ describe("GitHub operation tokens", () => {
       if (joined.includes("rev-parse")) return { stdout: `${head}\n`, stderr: "" };
       return { stdout: "", stderr: "" };
     };
-    const result = await serialMerge({
+    const lane = {
       tokenProvider: provider,
       worktree: fake.root,
       issue: "ENG-17",
@@ -166,14 +176,24 @@ describe("GitHub operation tokens", () => {
       client,
       remoteUrl: "https://github.com/pmdroid/paws-demo.git",
       gitExec,
-      onCredential: (_purpose, token) => tokens.push(token),
-      reverify: async () => ({ accepted: true, outcome: "merged", summary: "Closeout: accepted" }),
+      onCredential: (_purpose: "push" | "merge", token: string) => tokens.push(token),
+    };
+    const read = await readPullFacts(lane);
+    expect(read).toMatchObject({
+      kind: "facts",
+      head,
+      base,
+      containsMain: true,
+      review: "approved",
     });
+    const result = await squashPull(lane, { head, base }, "Closeout: accepted");
     expect(result.merged).toBe(true);
     expect(tokens).toEqual(["ghs_fake_1", "ghs_fake_3"]);
-    // Readiness reads use their own token; the re-read just before the merge uses the merge token.
-    expect(readinessTokens).toEqual([
-      ...Array(3).fill("ghs_fake_2"),
+    // The fetch and readiness read share a token and the review read mints its own. The squash
+    // mints the merge token and uses it for its own fetch and the readiness read before the merge.
+    expect(readTokens).toEqual([
+      ...Array(3).fill("ghs_fake_1"),
+      "ghs_fake_2",
       ...Array(3).fill("ghs_fake_3"),
     ]);
     expect(provider.issued).toHaveLength(3);
@@ -181,24 +201,16 @@ describe("GitHub operation tokens", () => {
 
     const dirty = await scratch();
     const dirtyProvider = countingProvider();
-    const dirtyResult = await serialMerge({
+    const dirtyResult = await readPullFacts({
+      ...lane,
       tokenProvider: dirtyProvider,
       worktree: dirty.root,
-      issue: "ENG-17",
-      owner: "pmdroid",
-      repo: "paws-demo",
-      prNumber: 4,
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: "unused",
-      client,
       gitExec: async (args) => {
         if (args.includes("status")) return { stdout: " M dirty.txt\n", stderr: "" };
         throw new Error(`unexpected git ${args.join(" ")}`);
       },
-      reverify: async () => ({ accepted: true, outcome: "merged", summary: "no" }),
     });
-    expect(dirtyResult.outcome).toBe("dirty");
+    expect(dirtyResult).toMatchObject({ kind: "stopped", result: { outcome: "dirty" } });
     expect(dirtyProvider.issued).toHaveLength(0);
     await dirty.cleanup();
   });

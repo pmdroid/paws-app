@@ -1,9 +1,11 @@
+export { advanceMerge, type MergeCapabilities, type MergePublication } from "./advance";
 export {
-  advanceMerge,
-  type MergeCapabilities,
-  type MergePublication,
-  type MergeVerdict,
-} from "./advance";
+  mergeable,
+  type AcceptRow,
+  type MergeBlock,
+  type MergeFacts,
+  type Mergeable,
+} from "./mergeable";
 export {
   REBASE_CONFLICT_INSTRUCTION,
   REBASE_CONFLICT_THOUGHT,
@@ -34,7 +36,11 @@ export {
   type SpentRebaseReturn,
 } from "./budget";
 export {
+  laneTurn,
   serialMergeStep,
+  type LaneActions,
+  type LaneBlock,
+  type LaneTurn,
   type MergeStep,
   type SerialMergeFacts,
   type SerialMergeStep,

@@ -10,8 +10,10 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
+  finishCloseoutProgress,
   getWorkItem,
   insertQueuedItem,
+  markCloseoutAccepted,
   migrate,
   openDatabase,
   saveCheckpoint,
@@ -25,12 +27,14 @@ import {
   type FakeMergeQueue,
   type GitHubClient,
   type GitHubResponse,
-  type ReverifyInput,
 } from "../github";
-import { advanceMerge, type MergeCapabilities, type MergeVerdict } from "./advance";
+import { advanceMerge, type MergeCapabilities } from "./advance";
 import type { MergeStep } from "./step";
 
 const exec = promisify(execFile);
+
+/** The policy digest the harness's Closeout runs record. */
+export const CLOSEOUT_DIGEST = "sha256:harness-policy";
 
 type CheckNodes = ReturnType<
   typeof fakeMergeReadiness
@@ -78,7 +82,7 @@ export function pendingCi(): CheckNodes {
 
 export async function mergeHarness(
   options: {
-    settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
+    settings?: Partial<Pick<TaskMergeSettings, "order">>;
     queue?: FakeMergeQueue;
   } = {},
 ) {
@@ -102,22 +106,19 @@ export async function mergeHarness(
   const payloads = new Map<string, Record<string, unknown>>();
   const lines: Line[] = [];
   const keys = new Set<string>();
-  const verified: ReverifyInput[] = [];
-  const accepted: { sha: string; baseSha: string }[] = [];
-  const closeoutHelp: string[] = [];
+  /** Heads Closeout ran on after the lane sent the item back to verifying. */
+  const verified: string[] = [];
   const completed: string[] = [];
   const settings: Pick<TaskMergeSettings, "order" | "mainMoved"> = {
     order: options.settings?.order ?? "ci-green",
-    mainMoved: options.settings?.mainMoved ?? "closeout",
+    mainMoved: "closeout",
   };
   const state = {
     ci: (_head: string): CheckNodes | undefined => undefined,
     pullHead: (head: string): string => head,
     reviews: new Map<number, "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED">(),
-    upToDateRule: false,
-    verdict: { accepted: true, outcome: "merged", summary: "Re-verified.", rejected: false } as
-      | MergeVerdict
-      | (() => MergeVerdict),
+    /** The digest the lane reads now; acceptances record {@link CLOSEOUT_DIGEST}. */
+    policyDigest: CLOSEOUT_DIGEST as string | null,
     ciFixAttempts: 3,
     stopped: false,
     orders: new Map<string, TaskMergeSettings["order"]>(),
@@ -148,16 +149,6 @@ export async function mergeHarness(
         body.data.repository.pullRequest.headRefOid = state.pullHead(variables.head);
         return { status: 200, body };
       }
-      if (state.upToDateRule && req.method === "GET" && req.path.includes("/rules/branches/"))
-        return {
-          status: 200,
-          body: [
-            {
-              type: "required_status_checks",
-              parameters: { strict_required_status_checks_policy: true },
-            },
-          ],
-        };
       const required = fakeRequiredChecks(req);
       if (required) return required;
       if (req.method === "PUT" && req.path.endsWith("/merge")) {
@@ -191,10 +182,23 @@ export async function mergeHarness(
     insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
     beginImplementRun(db, id, clock.now());
     enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
+    acceptHead(id, base, head);
     const item = { id, worktree, pull: items.size + 1, accepted: head, base };
     items.set(id, item);
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return item;
+  }
+
+  /** Closeout's accept row: the accepted head and a finished run on it under the policy digest. */
+  function acceptHead(id: string, base: string, head: string): void {
+    finishCloseoutProgress(
+      db,
+      id,
+      { taskId: id, base, head, policyDigest: CLOSEOUT_DIGEST, policyPath: null },
+      "accepted",
+      clock.now(),
+    );
+    markCloseoutAccepted(db, id, head);
   }
 
   async function requeue(id: string, fix?: string): Promise<string> {
@@ -210,6 +214,20 @@ export async function mergeHarness(
     applyWorkItemEvent(db, id, "turn_ended");
     applyWorkItemEvent(db, id, "closeout_accepted");
     saveCheckpoint(db, id, { ...current.checkpoint!, phase: "merge_queue", wipCommit: head });
+    acceptHead(id, current.checkpoint?.baseSha ?? "", head);
+    payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
+    return head;
+  }
+
+  /** What the reverify job does for an item the lane sent back: Closeout accepts its head. */
+  async function closeout(id: string): Promise<string> {
+    const item = items.get(id)!;
+    const head = await git(item.worktree, "rev-parse", "HEAD");
+    const base = await git(item.worktree, "rev-parse", "refs/paws/upstream-main");
+    verified.push(head);
+    if (getWorkItem(db, id)?.state === "verifying") applyWorkItemEvent(db, id, "closeout_accepted");
+    saveCheckpoint(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
+    acceptHead(id, base, head);
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return head;
   }
@@ -268,16 +286,8 @@ export async function mergeHarness(
         order: state.orders.get(id) ?? settings.order,
         resolved: {},
       }),
-      accept: (candidate) => accepted.push(candidate),
-      verify: async (input) => {
-        verified.push(input);
-        return typeof state.verdict === "function" ? state.verdict() : state.verdict;
-      },
+      policyDigest: () => state.policyDigest,
       assertReady: async () => {},
-      askCloseoutHelp: async (current) => {
-        closeoutHelp.push(current.id);
-      },
-      packages: () => [],
       completed: () => completed.push(id),
     };
   }
@@ -313,11 +323,10 @@ export async function mergeHarness(
     settings,
     lines,
     verified,
-    accepted,
-    closeoutHelp,
     completed,
     addItem,
     requeue,
+    closeout,
     remoteHead,
     moveMain,
     pass,

@@ -44,7 +44,6 @@ import {
   createFakeMergeQueue,
   fakeMergeReadiness,
   type FakeMergeQueue,
-  type GitHubClient,
   type GitHubTokenProvider,
 } from "../src/github";
 import {
@@ -2104,17 +2103,9 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
   }, 30_000);
 }
 
-for (const [movedHead, closeoutAfterUpdate] of [
-  [false, true],
-  [true, true],
-  [true, false],
-] as const) {
-  test(`a restarted merge re-verifies the same head after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once${movedHead ? ` (Closeout after update ${closeoutAfterUpdate ? "on" : "off"})` : ""}`, async () => {
+for (const movedHead of [false, true]) {
+  test(`a restarted merge re-verifies the same head after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once`, async () => {
     const layout = await repoLayout("paws-e2e-");
-    await writeFile(
-      path.join(layout.pawsRoot, "config.toml"),
-      `[merge]\nmain_moved = "${closeoutAfterUpdate ? "closeout" : "ci"}"\n`,
-    );
     const tracker = createFakeTracker([
       {
         linearIssueId: "recover-merge",
@@ -2196,7 +2187,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
       expect(retry!.payload).toMatchObject({ head: item.checkpoint!.wipCommit });
       expect(listJobs(db).find((job) => job.id === original.id)?.status).toBe("cancelled");
       for (let tick = 0; tick < 5; tick++) {
-        // Off: the merge goes back to its CI wait. Skip the poll delay.
+        // A moved pull request head releases the lane to read it again. Skip the poll delay.
         db.run(`UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'`, [
           JOB_KIND.merge,
         ]);
@@ -2205,13 +2196,15 @@ for (const [movedHead, closeoutAfterUpdate] of [
       expect(getWorkItem(db, item.id)?.state, debug(layout, db)).toBe("merged");
       expect(github.merged).toHaveLength(1);
       expect(rejectedHeads).toBe(movedHead ? 2 : 0);
+      // A moved head never sends the accepted head back to Closeout or merges another head.
       expect(
         listJobs(db).filter((job) => job.queue === JOB_KIND.merge && job.status === "done"),
-      ).toHaveLength(movedHead && closeoutAfterUpdate ? 3 : 1);
+      ).toHaveLength(1);
       expect(
         listJobs(db).filter((job) => job.queue === JOB_KIND.reverify),
         debug(layout, db),
-      ).toHaveLength(movedHead && closeoutAfterUpdate ? 3 : 1);
+      ).toHaveLength(1);
+      expect(github.merged[0]!.expectedHeadSha).toBe(item.checkpoint!.wipCommit!);
       expect((await exec("git", ["--git-dir", layout.bare, "show", "main:ok.txt"])).stdout).toBe(
         "ok\n",
       );
@@ -2242,19 +2235,6 @@ test("Linear's Fix merge conflicts request on a conflicting pull request is a re
   expect(result.requeuedBases, result.detail).toEqual([result.movedMain]);
 }, 90_000);
 
-test("an issue rule for the task's Linear label runs Closeout again after a branch update", async () => {
-  const result = await withGitIdentity(() =>
-    runRebaseConflict("clean", undefined, undefined, {
-      toml: '[merge]\nmain_moved = "ci"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"\n',
-      labels: ["Feature", "bug"],
-    }),
-  );
-  expect(result.state, result.detail).toBe("merged");
-  expect(result.rounds, result.detail).toHaveLength(1);
-  expect(result.summaries, result.detail).toContain("Branch updated, running Closeout again.");
-  expect(result.thoughts, result.detail).not.toContain("Branch updated, running Closeout again.");
-}, 120_000);
-
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
   let checks = 0;
   const host = new FakeGitHubIntegration({
@@ -2263,13 +2243,15 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
       return true;
     },
   });
-  const result = await withGitIdentity(() => runRebaseConflict("clean", host, true));
+  const result = await withGitIdentity(() => runRebaseConflict("clean", host));
   expect(result.state, result.detail).toBe("merged");
   expect(result.merged, result.detail).toBe(1);
+  expect(result.mergedOnMovedMain, result.detail).toBe(true);
   expect(result.rounds, result.detail).toHaveLength(1);
   expect(result.reviews, result.detail).toBeGreaterThan(result.reviewsBeforeUpdate);
-  expect(result.summaries, result.detail).toContain("Branch updated, running Closeout again.");
-  expect(result.thoughts, result.detail).not.toContain("Branch updated, running Closeout again.");
+  const rebased = `Rebased onto main ${result.movedMain.slice(0, 7)}, re-verifying.`;
+  expect(result.summaries, result.detail).toContain(rebased);
+  expect(result.thoughts, result.detail).not.toContain(rebased);
   expect(checks).toBeGreaterThan(0);
 }, 120_000);
 
@@ -3598,12 +3580,6 @@ test.each([
 async function runRebaseConflict(
   mode: "clean" | "linear",
   githubInstallation?: FakeGitHubIntegration,
-  closeoutAfterUpdate?: boolean,
-  merging?: {
-    toml: string;
-    labels: string[];
-    client?: (inner: GitHubClient) => GitHubClient;
-  },
 ): Promise<{
   state: string | null;
   reviews: number;
@@ -3630,15 +3606,6 @@ async function runRebaseConflict(
       subIssues: [],
     },
   ]);
-  if (closeoutAfterUpdate !== undefined)
-    await writeFile(
-      path.join(layout.pawsRoot, "config.toml"),
-      `[merge]\nmain_moved = "${closeoutAfterUpdate ? "closeout" : "ci"}"\n`,
-    );
-  if (merging !== undefined) {
-    await writeFile(path.join(layout.pawsRoot, "config.toml"), merging.toml);
-    tracker.mergeContexts.set(`rebase-${mode}`, { projectId: null, labels: merging.labels });
-  }
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const queuedSummary = queuedSummaries(db);
@@ -3662,7 +3629,7 @@ async function runRebaseConflict(
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
-      client: (merging?.client ?? ((inner) => inner))(githubClient(layout.bare, github)),
+      client: githubClient(layout.bare, github),
     },
     ...(githubInstallation ? { githubInstallation } : {}),
     launch(input) {

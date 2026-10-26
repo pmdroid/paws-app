@@ -10,10 +10,10 @@ import {
   INSTALLATION_PERMISSIONS,
   fakeMergeReadiness,
   fakeRequiredChecks,
-  serialMerge,
+  rebaseOntoMain,
+  squashPull,
   type GitHubClient,
   type GitHubResponse,
-  type SerialMergeResult,
 } from "../src/github";
 
 const exec = promisify(execFile);
@@ -25,52 +25,53 @@ const { privateKey } = generateKeyPairSync("rsa", {
 const PRIVATE_KEY = privateKey;
 
 /**
- * Host-level composition. `src/github` does not import `src/closeout`;
- * the reverify callback is the seam between them.
+ * Host-level composition. `src/github` does not import `src/closeout`; the lane rebases, Closeout
+ * evaluates the rebased head, and only then is that exact head squashed.
  */
-describe("serial merge re-runs closeout", () => {
-  test("re-runs native closeout on the rebased head", async () => {
+describe("the merge lane runs Closeout on a rebased head before it merges", () => {
+  test("native Closeout accepts the rebased head and the squash carries it", async () => {
     const repo = await oneClone();
     await commitFile(repo.work, "file.txt", "checked\n");
+    const other = path.join(repo.root, "other");
+    await exec("git", ["clone", repo.bare, other]);
+    await gitIdentity(other);
+    await commitFile(other, "other.txt", "main moved\n");
+    await exec("git", ["-C", other, "push", "origin", "HEAD:main"]);
     const client = mergingClient(repo.bare);
-    let reviewed = 0;
-    const reportDir = path.join(repo.root, "report");
-    const result = await serialMerge({
+    const lane = {
       ...creds(client),
       worktree: repo.work,
       issue: "ENG-5",
       prNumber: 5,
       remoteUrl: repo.bare,
-      reverify: async ({ worktree, base, head }) => {
-        const evaluation = await evaluateCandidate({
-          worktree,
-          taskId: "ENG-5",
-          base,
-          head,
-          candidate: { session: "impl", model: "claude", provider: "anthropic" },
-          reviewer: {
-            async review() {
-              reviewed += 1;
-              return { session: "codex", model: "codex", provider: "openai", findings: [] };
-            },
-          },
-          home: repo.home,
-          pawsHome: repo.pawsHome,
-        });
-        await mkdir(reportDir, { recursive: true });
-        await writeFile(
-          path.join(reportDir, "closeout-reverify.json"),
-          `${JSON.stringify({ recordedAt: new Date().toISOString(), base, head, evaluation }, null, 2)}\n`,
-        );
-        const summary = evaluation.error ?? evaluation.decision?.message ?? evaluation.outcome;
-        return {
-          accepted: evaluation.outcome === "accepted",
-          outcome: reverifyOutcome(evaluation.outcome),
-          summary,
-        };
+    };
+    let reviewed = 0;
+    const reportDir = path.join(repo.root, "report");
+    const rebased = await rebaseOntoMain(lane);
+    if (!rebased.rebased) throw new Error(`rebase failed: ${rebased.result.message}`);
+    const evaluation = await evaluateCandidate({
+      worktree: repo.work,
+      taskId: "ENG-5",
+      base: rebased.base,
+      head: rebased.head,
+      candidate: { session: "impl", model: "claude", provider: "anthropic" },
+      reviewer: {
+        async review() {
+          reviewed += 1;
+          return { session: "codex", model: "codex", provider: "openai", findings: [] };
+        },
       },
+      home: repo.home,
+      pawsHome: repo.pawsHome,
     });
-    expect(result.merged).toBe(true);
+    await mkdir(reportDir, { recursive: true });
+    await writeFile(
+      path.join(reportDir, "closeout-reverify.json"),
+      `${JSON.stringify({ recordedAt: new Date().toISOString(), base: rebased.base, head: rebased.head, evaluation }, null, 2)}\n`,
+    );
+    expect(evaluation.outcome).toBe("accepted");
+    const result = await squashPull(lane, rebased, evaluation.decision?.message ?? "accepted");
+    expect(result).toMatchObject({ merged: true, head: rebased.head });
     expect(reviewed).toBe(0);
     const report = JSON.parse(
       await readFile(path.join(reportDir, "closeout-reverify.json"), "utf8"),
@@ -83,21 +84,6 @@ describe("serial merge re-runs closeout", () => {
     await repo.cleanup();
   });
 });
-
-function reverifyOutcome(outcome: Evaluation["outcome"]): SerialMergeResult["outcome"] {
-  switch (outcome) {
-    case "accepted":
-      return "merged";
-    case "rejected":
-      return "rejected";
-    case "exhausted":
-      return "exhausted";
-    case "blocked":
-      return "blocked";
-    case "invalid":
-      return "invalid";
-  }
-}
 
 function creds(client: GitHubClient) {
   return {
