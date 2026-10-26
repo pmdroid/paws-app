@@ -1,3 +1,4 @@
+import { ask } from "./operations";
 import { expect, test } from "bun:test";
 import { FakeClock } from "../core";
 import {
@@ -37,6 +38,17 @@ function askedAtTimeLimit() {
   accrueAwake(db, item.id, clock.mono(), clock.now());
   clock.advance(31 * MINUTE);
   expect(accrueAwake(db, item.id, clock.mono(), clock.now()).asked).toBe(true);
+  const request = listJobs(db).find((job) => job.queue === "item.ask")!.payload as {
+    body: string;
+    options: string[];
+  };
+  ask(
+    db,
+    { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
+    "time-limit",
+    request.body,
+    { options: request.options, now: clock.now() },
+  );
   return { clock, db, item };
 }
 
@@ -57,7 +69,7 @@ test("Continue at the time limit gives the agent another hour and resumes it", (
   const { clock, db, item } = askedAtTimeLimit();
   expect(reply(db, "Continue", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
-    state: "running",
+    state: "queued",
     maxAwakeMs: 31 * MINUTE + 60 * MINUTE,
   });
   expect(listJobs(db).find((job) => job.queue === "run.resume")?.payload).toMatchObject({
@@ -68,7 +80,7 @@ test("Continue at the time limit gives the agent another hour and resumes it", (
   clock.advance(30 * MINUTE);
   expect(accrueAwake(db, item.id, clock.mono(), clock.now())).toMatchObject({
     capped: false,
-    item: { state: "running" },
+    item: { state: "queued" },
   });
 });
 
@@ -85,13 +97,13 @@ test("Stop at the time limit ends the task and names the accepted branch", () =>
   });
 });
 
-test("Continue while the stopped run is still finishing leaves the resume to that run", () => {
+test("Continue while the stopped run is still finishing queues one fenced restart", () => {
   const { clock, db, item } = askedAtTimeLimit();
   const runId = getWorkItem(db, item.id)!.currentRunId!;
   expect(reply(db, "Continue", clock.now(), (id) => id === runId).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
-    state: "running",
+    state: "queued",
     maxAwakeMs: 31 * MINUTE + 60 * MINUTE,
   });
-  expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(false);
+  expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(true);
 });

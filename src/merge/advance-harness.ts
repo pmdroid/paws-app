@@ -1,3 +1,4 @@
+import { ask as rawAsk } from "../questions";
 import type { Database } from "bun:sqlite";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -205,6 +206,7 @@ export async function mergeHarness(
     }
     const head = await git(item.worktree, "rev-parse", "HEAD");
     const current = getWorkItem(db, id)!;
+    if (current.state === "queued") applyWorkItemEvent(db, id, "dispatched");
     applyWorkItemEvent(db, id, "turn_ended");
     applyWorkItemEvent(db, id, "closeout_accepted");
     saveCheckpoint(db, id, { ...current.checkpoint!, phase: "merge_queue", wipCommit: head });
@@ -228,6 +230,7 @@ export async function mergeHarness(
   function capabilities(id: string): MergeCapabilities {
     const item = items.get(id)!;
     return {
+      ask,
       now: () => clock.now(),
       stopped: () => state.stopped,
       session: (current) => current.sessionKey,
@@ -329,3 +332,10 @@ export async function mergeHarness(
 }
 
 export type MergeHarness = Awaited<ReturnType<typeof mergeHarness>>;
+
+const ask: typeof rawAsk = (db, asker, ...args) => {
+  const result = rawAsk(db, asker, ...args);
+  if (getWorkItem(db, asker.itemId)?.state !== "awaiting_input")
+    applyWorkItemEvent(db, asker.itemId, "blocking_question");
+  return result;
+};

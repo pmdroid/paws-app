@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { halt } from "./halt";
 import { readCheckpoint } from "./checkpoint";
 import {
   awakeCategory,
@@ -26,7 +27,7 @@ import {
 import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
-import { getRun, markRun } from "./runs";
+import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
 
@@ -167,6 +168,7 @@ export function applyWorkItemEvent(
     if (!result.ok) {
       throw new TransitionRejectedError(result.reason);
     }
+    if (event === "take_over") halt(db, current, record.now ?? Date.now());
     const updated = db.run(
       "UPDATE work_item SET state = ?, version = version + 1 WHERE id = ? AND state = ?",
       [result.to, id, current.state],
@@ -409,6 +411,14 @@ function enforceCaps(
     // Asking or pausing ends the run, so only a caller that stops the live agent
     // (the host supervisor, through accrueAwake) may do it. It asks on its next tick.
     if (!options.stopsAgent) return { capped: false, item: updated };
+    if (
+      db
+        .query(
+          "SELECT 1 FROM job WHERE queue='item.ask' AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?",
+        )
+        .get(id)
+    )
+      return { capped: false, item: updated };
     if (askTimeLimit(db, updated, now))
       return { capped: false, asked: true, stopAgent: true, item: refetch() };
     pauseAtTimeLimit(db, updated, now);
@@ -507,46 +517,20 @@ function timeLimitPausedNote(item: WorkItemRecord): string {
 function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean {
   const sessionId = item.sessionKey;
   if (sessionId === null) return false;
-  const waits =
-    db
-      .query(
-        "SELECT 1 FROM question WHERE session_id = ? AND status = 'open' AND cancelled_at IS NULL",
-      )
-      .get(sessionId) !== null;
   cancelAgentJobs(db, item.id, now);
-  applyWorkItemEvent(db, item.id, "blocking_question");
-  if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "awaiting_input" });
-  if (item.currentRunId !== null) {
-    const run = getRun(db, item.currentRunId);
-    if (run?.status === "active") markRun(db, run.id, "ended", now);
-  }
-  const questionId = crypto.randomUUID();
-  const body = timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item));
-  const options = [...TIME_LIMIT_OPTIONS];
-  db.run(
-    `INSERT INTO question (id, item_id, run_id, session_id, kind, body, options, status, created_at)
-     VALUES (?, ?, ?, ?, 'time-limit', ?, ?, ?, ?)`,
-    [
-      questionId,
-      item.id,
-      item.currentRunId,
-      sessionId,
-      body,
-      JSON.stringify(options),
-      waits ? "queued" : "open",
-      now,
-    ],
-  );
-  journal(`item ${item.linearIdentifier} reached its time cap after acceptance; asked in Linear`);
-  if (!waits)
-    enqueueOutboxOnce(db, {
-      target: "linear",
-      op: "elicitation",
-      orderingKey: sessionId,
-      idempotencyKey: `question:${questionId}`,
-      payload: { id: questionId, sessionId, questionId, body, options },
-      now,
-    });
+  if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
+  enqueueJobOnce(db, {
+    queue: "item.ask",
+    jobKey: `time-limit:${item.id}:${item.version}`,
+    payload: {
+      itemId: item.id,
+      kind: "time-limit",
+      reason: "time_limit",
+      body: timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item)),
+      options: [...TIME_LIMIT_OPTIONS],
+    },
+    now,
+  });
   return true;
 }
 

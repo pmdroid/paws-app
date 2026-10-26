@@ -91,6 +91,7 @@ type VisualReviewRow = {
 export function openVisualReview(
   db: Database,
   input: {
+    ask?: typeof ask;
     itemId: string;
     runId: string | null;
     sessionId: string;
@@ -103,7 +104,7 @@ export function openVisualReview(
     shown?: VisualReviewShown;
   },
 ): { question: StoredQuestion; review: StoredVisualReview } {
-  const { question } = ask(
+  const { question } = (input.ask ?? ask)(
     db,
     { itemId: input.itemId, runId: input.runId, sessionId: input.sessionId },
     "visual-review",
@@ -228,9 +229,16 @@ export function getVisualReview(db: Database, questionId: string): StoredVisualR
 
 export function openVisualReviewContinue(
   db: Database,
-  input: { itemId: string; runId: string | null; sessionId: string; checkId: string; now: number },
+  input: {
+    ask?: typeof ask;
+    itemId: string;
+    runId: string | null;
+    sessionId: string;
+    checkId: string;
+    now: number;
+  },
 ): StoredQuestion {
-  const { question } = ask(
+  const { question } = (input.ask ?? ask)(
     db,
     { itemId: input.itemId, runId: input.runId, sessionId: input.sessionId },
     "visual-review",

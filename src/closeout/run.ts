@@ -966,7 +966,12 @@ async function finalResult(
   if (evaluation?.bypasses?.length) summaryParts.push(bypassSummary(evaluation.bypasses));
   if (error) summaryParts.push(error);
   if (evaluation?.error && evaluation.error !== error) summaryParts.push(evaluation.error);
+  const handoff =
+    input.maxFixAttempts === 0 && evaluation?.decision?.decision === "rejected"
+      ? await repairFeedback(input, evaluation)
+      : undefined;
   const result: GateResult = {
+    ...(handoff ? { handoff } : {}),
     outcome,
     taskId: input.taskId,
     base: input.base,

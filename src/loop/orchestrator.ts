@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { ask, restart, awaitQuestion } from "./operations";
+import { jobVersionCurrent } from "../db";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -254,7 +256,6 @@ import {
 import {
   answer as answerAsked,
   answerer,
-  ask,
   canAnswer,
   cancelItemQuestions,
   cancelQuestion,
@@ -319,7 +320,6 @@ import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
-  createAcpFixRunner,
   closeoutChecksPrompt,
   implementPrompt,
   POST_UPDATE_PROMPT,
@@ -1182,9 +1182,43 @@ export class Orchestrator {
     const jobs: Pick<typeof loop, "register"> = {
       register: (queue, handler) =>
         loop.register(queue, (job, context) =>
-          this.forItem(job.payload, () => handler(job, context)),
+          this.forItem(job.payload, () =>
+            queue === JOB_KIND.command || jobVersionCurrent(this.db, job)
+              ? handler(job, context)
+              : Promise.resolve(),
+          ),
         ),
     };
+    jobs.register("item.ask", async (job, context) => {
+      if (!context.isCurrent()) return;
+      const id = readString(job.payload, "itemId");
+      const item = id ? getWorkItem(this.db, id) : null;
+      if (!item?.sessionKey || item.cancelRequested) return;
+      const payload = job.payload as {
+        kind: "agent" | "time-limit";
+        reason?: string;
+        body: string;
+        options: string[];
+      };
+      ask(
+        this.db,
+        {
+          itemId: item.id,
+          runId: item.currentRunId,
+          sessionId: item.sessionKey,
+          version: item.version,
+        },
+        payload.kind,
+        payload.body,
+        {
+          options: payload.options,
+          ...(payload.reason ? { reason: payload.reason } : {}),
+          now: this.now(),
+        },
+      );
+      if (item.currentRunId) releaseRunCapacity(this.db, item.currentRunId, this.now());
+      await this.flush();
+    });
     jobs.register(JOB_KIND.command, async (job, context) => {
       if (!context.isCurrent()) return;
       const command = parseLinearCommand(job.payload);
@@ -1462,7 +1496,7 @@ export class Orchestrator {
         if (run && (run.status === "active" || run.status === "provisioning"))
           markRun(this.db, run.id, "lost", now);
       }
-      applyWorkItemEvent(this.db, current.id, "restart");
+      restart(this.db, current, { reason: "follow_up", body: "Retry runner setup.", now });
       this.recordRunnerSetupHold(current, need, now, current.currentRunId);
       return true;
     });
@@ -1637,7 +1671,6 @@ export class Orchestrator {
     const loaded = getWorkItem(this.db, itemId);
     if (loaded === null) return;
     if (loaded.cancelRequested || loaded.state === "cancelled") return;
-    if (loaded.state === "queued" && !this.admission.canStart(loaded.id).ok) return;
     if (loaded.state === "awaiting_input" || loaded.state === "paused") return;
     const sessionId = loaded.sessionKey;
     if (sessionId && getLinearSession(this.db, sessionId))
@@ -1824,10 +1857,15 @@ export class Orchestrator {
       const current = getWorkItem(this.db, item.id);
       if (current?.state !== "running" || current.cancelRequested)
         throw new Error("The task changed before clarification");
-      ask(this.db, { itemId: item.id, runId, sessionId }, "clarification", body, {
-        now: this.now(),
-      });
-      applyWorkItemEvent(this.db, item.id, "blocking_question");
+      ask(
+        this.db,
+        { itemId: item.id, runId, sessionId, version: item.version },
+        "clarification",
+        body,
+        {
+          now: this.now(),
+        },
+      );
       closeActiveRun(this.db, runId, this.now());
     });
     await this.flush();
@@ -2025,7 +2063,7 @@ export class Orchestrator {
       void this.flush();
     }, FIRST_ACTIVITY_MS);
     const keepAlive = setInterval(() => {
-      if (!this.canReportProgress(item.id)) return;
+      if (this.live.get(run.id) !== live || !this.canReportProgress(item.id)) return;
       this.post(
         item,
         "thought",
@@ -2071,7 +2109,24 @@ export class Orchestrator {
         `${run.id}:working`,
         { ephemeral: true },
       );
-      sessionProgress?.phase("implementing");
+      const returned = this.db
+        .query<{ reason: string }, [string]>(
+          "SELECT reason FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
+        )
+        .get(item.id);
+      const fixing =
+        returned !== null && ["findings", "ci", "review", "conflict"].includes(returned.reason);
+      sessionProgress?.phase(fixing ? "fixing" : "implementing");
+      if (fixing) {
+        const round =
+          this.db
+            .query<{ count: number }, [string]>(
+              "SELECT COUNT(*) AS count FROM work_item_event WHERE item_id=? AND kind='restart' AND reason IN ('findings','ci','review')",
+            )
+            .get(item.id)?.count ?? 1;
+        live.progress = `Fixing Closeout findings for ${item.linearIdentifier}, fix attempt ${round} of 3.`;
+        this.post(item, "thought", live.progress, `${item.id}:fix:${item.version}`);
+      }
       if (working !== undefined) this.startPost(working);
       if (!this.taskAccess()) this.postStatus(item, "started");
       const promptRunner = await this.prepareConversation(item);
@@ -2085,7 +2140,8 @@ export class Orchestrator {
       await this.flush();
       if (this.stopped(item.id)) return;
       try {
-        await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
+        if (!this.readProfileSnapshot(run.id)?.candidate)
+          await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
       } catch (error) {
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
@@ -2099,7 +2155,7 @@ export class Orchestrator {
       const launched = this.launchAgent({
         role: "implementer",
         profile: profiles.implementer,
-        purpose: "implement",
+        purpose: returned?.reason === "findings" ? "fix" : "implement",
         itemId: pathId,
         worktree: worktreePath(this.options.pawsRoot, pathId),
         prompt,
@@ -2339,7 +2395,12 @@ export class Orchestrator {
           !current ||
           current.currentRunId !== runId ||
           current.cancelRequested ||
-          !["verifying", "running"].includes(current.state) ||
+          !(
+            ["verifying", "running"].includes(current.state) ||
+            (current.state === "awaiting_input" &&
+              current.sessionKey !== null &&
+              findOpenQuestion(this.db, current.sessionKey)?.kind === "runner-wait")
+          ) ||
           getRun(this.db, runId)?.status !== "active" ||
           JSON.stringify(identity) !== JSON.stringify(candidate)
         )
@@ -2355,7 +2416,7 @@ export class Orchestrator {
         assertCurrent,
       );
       assertCurrent();
-      return { ...verdict, owner: { version: item.version, runId } };
+      return { ...verdict, owner: { version: getWorkItem(this.db, item.id)!.version, runId } };
     } finally {
       if (ownedRunId) closeActiveRun(this.db, ownedRunId, this.now());
     }
@@ -2468,13 +2529,6 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    const fixer = createAcpFixRunner({
-      ...deps,
-      onEvent: activity.onEvent,
-      updatePlan: this.planHook(item, sessionProgress),
-      pullRequest: this.pullRequestHook(item),
-      postUpdate: this.updateHook(item),
-    });
     const reviewer = createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) });
     const gate = createCloseoutGate({
       checkoutExclusions,
@@ -2488,40 +2542,10 @@ export class Orchestrator {
           return reviewer.review(request);
         },
       },
+      maxFixAttempts: 0,
       fixer: {
-        applyFix: async (request) => {
-          if (this.stopped(item.id)) return { ok: false, reason: "fix cancelled" };
-          sessionProgress?.phase("fixing");
-          const failed = request.items.filter((check) => check.state === "failed");
-          report(
-            `Fixing Closeout findings for ${item.linearIdentifier}, fix attempt ${request.fixAttempt} of ${request.maxFixAttempts}. Failed checks: ${failed.map((check) => check.id).join(", ")}.`,
-          );
-          await this.flush();
-          let result;
-          try {
-            result = await fixer.applyFix(request);
-          } finally {
-            activity.flush();
-          }
-          if (result.ok && policy)
-            await validateCandidateAttribution(
-              worktree,
-              base,
-              result.head,
-              policy,
-              undefined,
-              deps.signal,
-            );
-          if (result.ok && this.options.remoteExecution)
-            writeSessionCloseout(sessionPath, result.head, result.closeoutReport);
-          if (result.ok && !this.stopped(item.id)) {
-            sessionProgress?.phase("verifying");
-            report(
-              `Rechecking ${item.linearIdentifier} with Closeout after fix attempt ${request.fixAttempt}.`,
-            );
-            await this.flush();
-          }
-          return result;
+        applyFix: async () => {
+          throw new Error("Closeout fixes must restart the item");
         },
       },
       recorder: {
@@ -2705,11 +2729,18 @@ export class Orchestrator {
     if (sessionId === null) return { answer: () => null, cancel() {} };
     const minutes = Math.round((this.options.runnerWait?.askAfterMs ?? 30 * 60_000) / 60_000);
     const body = `Runner ${runnerName} has been unavailable for ${minutes} minutes, so Closeout for ${item.linearIdentifier} has not started. Move the task to another runner, or keep waiting?`;
-    const { question } = ask(this.db, { itemId: item.id, runId, sessionId }, "runner-wait", body, {
-      options: [MOVE_TO_ANOTHER_RUNNER, KEEP_WAITING],
-      context: reason,
-      now: this.now(),
-    });
+    this.assertJobCurrent(item.id);
+    const { question } = ask(
+      this.db,
+      { itemId: item.id, runId, sessionId, version: getWorkItem(this.db, item.id)?.version },
+      "runner-wait",
+      body,
+      {
+        options: [MOVE_TO_ANOTHER_RUNNER, KEEP_WAITING],
+        context: reason,
+        now: this.now(),
+      },
+    );
     void this.flush().catch(() => {});
     return this.runnerWaitQuestion(question.id);
   }
@@ -2751,6 +2782,28 @@ export class Orchestrator {
     summary: string,
   ): Promise<void> {
     if (this.stopped(item.id)) return;
+    this.assertJobCurrent(item.id);
+    const current = getWorkItem(this.db, item.id);
+    if (!current) return;
+    const checks = result?.decision?.items ?? [];
+    const failed = checks.some((check) => check.state === "failed");
+    const exhausted = checks.some((check) => check.state === "exhausted");
+    const rounds =
+      this.db
+        .query<{ count: number }, [string]>(
+          `SELECT COUNT(*) AS count FROM work_item_event e WHERE item_id=? AND kind='restart'
+        AND reason IN ('findings','ci','review') AND id > COALESCE((SELECT MAX(id) FROM work_item_event
+          WHERE item_id=e.item_id AND kind='restart' AND reason='answer'),0)`,
+        )
+        .get(item.id)?.count ?? 0;
+    if (failed && !exhausted && rounds < 3) {
+      restart(this.db, current, {
+        reason: "findings",
+        body: result?.handoff ?? summary,
+        now: this.now(),
+      });
+      return;
+    }
     const sessionId = this.activitySession(item);
     if (sessionId === null) throw new Error("Closeout recovery has no tracker session");
     let retryBaseline: string[] = [];
@@ -2774,7 +2827,17 @@ export class Orchestrator {
       retryBaseline,
       summary,
     };
-    askCloseoutHelp(this.db, sessionId, context, { now: this.now() });
+    this.assertJobCurrent(item.id);
+    askCloseoutHelp(this.db, sessionId, context, {
+      now: this.now(),
+      version: current.version,
+      reason:
+        exhausted || rounds >= 3
+          ? "budget_spent"
+          : result?.outcome === "blocked"
+            ? "blocked_check"
+            : "setup_fault",
+    });
     await this.flush();
   }
 
@@ -3100,6 +3163,7 @@ export class Orchestrator {
 
   private orderCapabilities(itemId: string): OrderCapabilities {
     return {
+      ask,
       now: () => this.now(),
       stopped: () => this.stopped(itemId),
       session: (item) => this.activitySession(item),
@@ -3212,10 +3276,11 @@ export class Orchestrator {
           throw new Error("ask_team has no Linear session");
         }
         if (context.signal.aborted) throw new Error("cancelled");
+        this.assertJobCurrent(item.id);
         immediate(this.db, () => {
           ask(
             this.db,
-            { itemId: item.id, runId, sessionId },
+            { itemId: item.id, runId, sessionId, version: item.version },
             "agent",
             [request.question.trim(), request.context?.trim()].filter(Boolean).join("\n\n"),
             {
@@ -3244,7 +3309,6 @@ export class Orchestrator {
           );
           const current = getWorkItem(this.db, item.id);
           if (current?.state === "running") {
-            applyWorkItemEvent(this.db, item.id, "blocking_question");
             saveCheckpoint(this.db, item.id, {
               phase: "awaiting_input",
               ...(current.checkpoint?.wipCommit ? { wipCommit: current.checkpoint.wipCommit } : {}),
@@ -3309,7 +3373,7 @@ export class Orchestrator {
       sessionId !== null &&
       findOpenQuestion(this.db, sessionId)?.runId === runId
     ) {
-      applyWorkItemEvent(this.db, itemId, "blocking_question");
+      awaitQuestion(this.db, current, findOpenQuestion(this.db, sessionId)!, this.now());
       current = getWorkItem(this.db, itemId);
       if (!current) return;
     }
@@ -3583,44 +3647,24 @@ export class Orchestrator {
             });
           continue;
         }
-        cancelOpenJobs(this.db, { itemId, reason: "Linear criteria changed", now: this.now() });
-        this.db.run(
-          "UPDATE run SET status='lost',updated_at=? WHERE item_id=? AND status IN ('active','provisioning')",
-          [this.now(), itemId],
-        );
         cancelItemQuestions(this.db, itemId, this.now());
-
-        saveCheckpoint(
-          this.db,
-          itemId,
-          item.state === "paused" && item.checkpoint
-            ? {
-                phase: "running",
-                ...(item.checkpoint.wipCommit ? { wipCommit: item.checkpoint.wipCommit } : {}),
-                ...(item.checkpoint.baseSha ? { baseSha: item.checkpoint.baseSha } : {}),
-              }
-            : null,
-        );
-        setCurrentRun(this.db, itemId, null);
         if (item.state === "failed" || item.state === "exhausted") {
           this.db.run(
             "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
             [itemId],
           );
           resetAwakeTime(this.db, itemId);
-          applyWorkItemEvent(this.db, itemId, "requeue");
-        } else if (
-          [
-            "running",
-            "verifying",
-            "recovering",
-            "awaiting_input",
-            "awaiting_signoff",
-            "merge_queue",
-          ].includes(item.state)
-        )
-          applyWorkItemEvent(this.db, itemId, "restart");
-        else this.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [itemId]);
+        }
+        if (item.state === "paused") {
+          cancelOpenJobs(this.db, { itemId, reason: "Linear criteria changed", now: this.now() });
+          this.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [itemId]);
+          continue;
+        }
+        restart(this.db, item, {
+          reason: "follow_up",
+          body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
+          now: this.now(),
+        });
         enqueueOutboxOnce(this.db, {
           target: "linear",
           op: "activity",
@@ -3682,7 +3726,11 @@ export class Orchestrator {
     const resumed = immediate(this.db, () => {
       const item = getWorkItem(this.db, itemId);
       if (!canAct() || item?.state !== "paused" || item.cancelRequested) return false;
-      applyWorkItemEvent(this.db, itemId, "restart");
+      restart(this.db, item, {
+        reason: "follow_up",
+        body: "Continue the task from its branch.",
+        now: this.now(),
+      });
       onCommitted?.();
       return true;
     });
@@ -3934,7 +3982,10 @@ export class Orchestrator {
   private ensureRun(item: WorkItemRecord): { id: string } {
     if (item.currentRunId !== null) {
       const existing = getRun(this.db, item.currentRunId);
-      if (existing && existing.status === "active") return existing;
+      if (existing && (existing.status === "active" || existing.status === "ended")) {
+        markRun(this.db, existing.id, "active", this.now());
+        return existing;
+      }
       // A runner-setup hold stopped this run before any work. The resume continues it, so the
       // task keeps one run.
       if (existing?.status === "lost" && takeRunnerSetupResume(this.db, item.id, existing.id)) {
@@ -4404,27 +4455,13 @@ export class Orchestrator {
         resetAwakeTime(this.db, item!.id);
         if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
       }
-      if (item!.currentRunId) markRun(this.db, item!.currentRunId!, "ended", this.now());
-      if (item!.state === "failed" || item!.state === "exhausted")
-        applyWorkItemEvent(this.db, item!.id, "requeue");
-      else if (item!.state !== "queued") applyWorkItemEvent(this.db, item!.id, "restart");
-      this.db.run(
-        "UPDATE job SET status = 'cancelled', finished_at = ?, last_error = 'Superseded by Linear user update' WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ? AND (job_key IS NULL OR job_key != ?)",
-        [this.now(), item!.id, jobKey],
-      );
-      const jobId = enqueueJobOnce(this.db, {
-        queue: JOB_KIND.resume,
+      const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
+        reason: rebase ? "conflict" : "follow_up",
+        body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
-        payload: rebase
-          ? {
-              itemId: item!.id,
-              handoff: `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}`,
-              reason: "rebase-conflict",
-            }
-          : { itemId: item!.id, handoff },
         now: this.now(),
       });
-      if (rebase)
+      if (rebase && jobId !== null)
         recordRebaseReturn(this.db, {
           itemId: item!.id,
           jobId,
@@ -5640,7 +5677,7 @@ export class Orchestrator {
       immediate(this.db, () => {
         const { question } = ask(
           this.db,
-          { itemId: item.id, runId: null, sessionId },
+          { itemId: item.id, runId: null, sessionId, version: item.version },
           "repository",
           "Which repository should I use? Choose one of the configured repositories or describe your choice.",
           {
@@ -5651,13 +5688,16 @@ export class Orchestrator {
           },
         );
         saveWorkItemRepositoryQuestion(this.db, item.id, question.id, ranked);
-        applyWorkItemEvent(this.db, item.id, "blocking_question");
       });
       await this.flush();
       return false;
     } catch (error) {
       if (!controller.signal.aborted && getWorkItem(this.db, item.id)?.state === "running")
-        applyWorkItemEvent(this.db, item.id, "restart");
+        restart(this.db, getWorkItem(this.db, item.id)!, {
+          reason: "follow_up",
+          body: "Retry repository selection.",
+          now: this.now(),
+        });
       throw error;
     } finally {
       this.live.delete(liveKey);

@@ -39,6 +39,7 @@ async function onMovedMain(h: MergeHarness, head: string, main: string): Promise
 
 function backInQueue(h: MergeHarness, id: string): void {
   const item = getWorkItem(h.db, id)!;
+  if (item.state === "queued") applyWorkItemEvent(h.db, id, "dispatched");
   applyWorkItemEvent(h.db, id, "turn_ended");
   applyWorkItemEvent(h.db, id, "closeout_accepted");
   saveCheckpoint(h.db, id, { ...item.checkpoint!, phase: "merge_queue" });
@@ -203,10 +204,15 @@ describe("advanceMerge on a rebase conflict", () => {
     const { h, main, item: added } = await conflicting();
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     const item = getWorkItem(h.db, "ENG-1")!;
-    expect(item.state).toBe("running");
+    expect(item.state).toBe("queued");
     expect(item.checkpoint?.phase).toBe("running");
     expect(resumes(h)).toEqual([
-      { itemId: "ENG-1", handoff: REBASE_CONFLICT_INSTRUCTION, reason: "rebase-conflict" },
+      {
+        itemId: "ENG-1",
+        runId: item.currentRunId,
+        handoff: REBASE_CONFLICT_INSTRUCTION,
+        reason: "conflict",
+      },
     ] as never);
     expect(
       listRebaseReturns(h.db, "ENG-1", 0).map((row) => ({ base: row.base, files: row.files })),

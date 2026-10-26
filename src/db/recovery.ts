@@ -20,6 +20,7 @@ import { immediate } from "./tx";
 export type ShutdownWipCommit = (item: WorkItemRecord) => void;
 
 const STARTUP_STATES = [
+  "awaiting_input",
   "running",
   "verifying",
   "recovering",
@@ -58,6 +59,13 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
       if (item.currentRunId !== null) releaseRunCapacity(db, item.currentRunId, now);
     }
+    if (items.some((item) => item.state === "awaiting_input"))
+      enqueueJobOnce(db, {
+        queue: JOB_KIND.catchup,
+        jobKey: `startup-questions:${now}`,
+        payload: { reason: "open_questions" },
+        now,
+      });
     return decisions;
   });
 }

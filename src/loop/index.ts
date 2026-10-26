@@ -73,3 +73,4 @@ export { refreshLinearNotificationContext } from "./linear-notification-context"
 export { acceptCloseout, acceptGitHubDelivery, enqueueVerifiedMerge } from "./merge-jobs";
 export { LinearAccessRemovedError } from "./linear-task-access";
 export { authorizeLinearTask } from "./linear-task-access";
+export { restart, halt, ask } from "./operations";
