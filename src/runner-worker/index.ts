@@ -966,7 +966,7 @@ export async function executeRunnerCommand(
  * Install the command's runtimes with mise before the agent starts. Returns the one line
  * that fails the task when an install fails or runs past its cap, and otherwise each
  * runtime's pinned bin dir for the agent's and Closeout's `PATH`.
- * The install time goes to the runner's log and, as a notice, to the issue page.
+ * The install time goes to the runner's log; the start line in Linear names the runtimes.
  */
 async function installCommandRuntimes(
   command: RunnerJob["command"],
@@ -1034,12 +1034,7 @@ async function installCommandRuntimes(
     );
   }
   if (!result.ok) return { failure: result.message.slice(0, 500), binPaths: [] };
-  const text = `Installed runtimes ${labels.join(", ")} in ${(result.durationMs / 1000).toFixed(1)} s.`;
-  emit({
-    type: "progress",
-    text: text.length > 500 ? `${text.slice(0, 499)}…` : text,
-    notice: true,
-  });
+  // Paws names the runtimes in its start line, so a successful install posts nothing more.
   return { binPaths: result.binPaths };
 }
 
