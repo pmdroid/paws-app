@@ -72,6 +72,7 @@ export function readRunnerResultFile(
     | "events.jsonl"
     | "result.json"
     | "runtimes.json"
+    | "session.json"
     | `artifact-${string}.bytes`,
 ): Buffer {
   const limits = {
@@ -79,6 +80,7 @@ export function readRunnerResultFile(
     "events.jsonl": 16_777_216,
     "result.json": 1_048_576,
     "runtimes.json": 65_536,
+    "session.json": 65_536,
   };
   const limit = Object.hasOwn(limits, name)
     ? limits[name as keyof typeof limits]
@@ -91,20 +93,7 @@ export function readRunnerResultFile(
   const directory = openResults(options, executionId);
   let fd: number | undefined;
   try {
-    fd = openSync(
-      `/proc/self/fd/${directory}/${name}`,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-    const info = fstatSync(fd);
-    if (
-      !info.isFile() ||
-      info.nlink !== 1 ||
-      info.uid !== options.agentUid ||
-      info.gid !== options.resultsGid ||
-      (info.mode & 0o7777) !== 0o640 ||
-      info.size > limit
-    )
-      throw new Error("Unsafe runner result file");
+    fd = openResultFile(options, directory, name, limit);
     const chunks: Buffer[] = [];
     let total = 0;
     while (true) {
@@ -124,6 +113,68 @@ export function readRunnerResultFile(
     }
   } finally {
     if (fd !== undefined) closeSync(fd);
+    closeSync(directory);
+  }
+}
+
+function openResultFile(
+  options: RunnerResults,
+  directory: number,
+  name: string,
+  limit: number,
+): number {
+  const fd = openSync(
+    `/proc/self/fd/${directory}/${name}`,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  const info = fstatSync(fd);
+  if (
+    !info.isFile() ||
+    info.nlink !== 1 ||
+    info.uid !== options.agentUid ||
+    info.gid !== options.resultsGid ||
+    (info.mode & 0o7777) !== 0o640 ||
+    info.size > limit
+  ) {
+    closeSync(fd);
+    throw new Error("Unsafe runner result file");
+  }
+  return fd;
+}
+
+/** Up to `length` bytes of a large result file from `offset`, without reading the rest. */
+export function readRunnerResultRange(
+  options: RunnerResults,
+  executionId: string,
+  name: "session.ndjson.gz",
+  offset: number,
+  length: number,
+  limit: number,
+): Buffer {
+  if (
+    name !== "session.ndjson.gz" ||
+    ![offset, length, limit].every(Number.isSafeInteger) ||
+    offset < 0 ||
+    length <= 0 ||
+    offset > limit
+  )
+    throw new Error("Invalid runner result range");
+  const directory = openResults(options, executionId);
+  try {
+    const fd = openResultFile(options, directory, name, limit);
+    try {
+      const bytes = Buffer.alloc(Math.min(length, limit - offset));
+      let filled = 0;
+      while (filled < bytes.length) {
+        const count = readSync(fd, bytes, filled, bytes.length - filled, offset + filled);
+        if (count === 0) break;
+        filled += count;
+      }
+      return bytes.subarray(0, filled);
+    } finally {
+      closeSync(fd);
+    }
+  } finally {
     closeSync(directory);
   }
 }
