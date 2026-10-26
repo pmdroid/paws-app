@@ -27,6 +27,7 @@ import {
 import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
+import { getLinearSessionGeneration } from "./linear-sessions";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
@@ -580,6 +581,24 @@ export function completeMergedItem(
       getConfirmedRemoteMerge(db, current.id) === null
     )
       return null;
+    const fact = getConfirmedRemoteMerge(db, current.id)!;
+    const sessionId = current.sessionKey ?? current.id;
+    const generation = getLinearSessionGeneration(db, sessionId);
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      delivery: "ordered",
+      generation,
+      idempotencyKey: `merged:${current.id}:${generation}`,
+      payload: {
+        sessionId,
+        itemId: current.id,
+        kind: "response",
+        body: `Merged #${fact.pullNumber} into main at ${fact.mergeSha ?? "unknown commit"}. ${current.linearIdentifier} is Done.`,
+      },
+      now: input.now,
+    });
     input.announce?.(current);
     const merged = applyWorkItemEvent(db, current.id, "merge_accepted");
     endActiveRun(db, current.currentRunId, input.now);

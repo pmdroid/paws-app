@@ -92,6 +92,7 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   issueMergeContext: "merge-context",
   mergeChoices: "merge-choices",
   createIssueAttachment: "issue-attachment",
+  deleteIssueAttachment: "issue-attachment",
   listIssuePullRequests: "issue-pull-requests",
   loadEpic: "issue-snapshot",
   listDeps: "issue-relations",

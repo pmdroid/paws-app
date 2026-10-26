@@ -106,4 +106,10 @@ export type SessionOnComment = {
 
 export type SessionReceipt = { id: string };
 
-export type IssueAttachment = { id: string; issueId: string; title: string; url: string };
+export type IssueAttachment = {
+  id: string;
+  issueId: string;
+  title: string;
+  url: string;
+  evidence?: boolean;
+};

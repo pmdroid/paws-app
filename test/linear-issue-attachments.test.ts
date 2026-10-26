@@ -86,3 +86,28 @@ test("an aborted attachment never starts remote lookup", async () => {
   ).rejects.toThrow();
   expect(f.calls).toHaveLength(0);
 });
+
+test("evidence links can use the Paws URL without leaking the evidence flag to GraphQL", async () => {
+  const f = fixture();
+  const input = { ...f.input, url: "https://paws.example/evidence/shot", evidence: true };
+  await f.tracker().createIssueAttachment!(input);
+  expect(f.calls[1]?.variables).toEqual({ input: { ...f.input, url: input.url } });
+});
+
+test("deleting a previous head's attachment reconciles a lost delete response", async () => {
+  const id = randomUUID();
+  let exists = true;
+  let mutations = 0;
+  const tracker = createLinearTracker({
+    async query(query) {
+      if (query.startsWith("query")) return { attachments: { nodes: exists ? [{ id }] : [] } };
+      expect(query).toContain("attachmentDelete");
+      mutations++;
+      exists = false;
+      throw new Error("lost delete response");
+    },
+  });
+  await expect(tracker.deleteIssueAttachment!(id)).rejects.toThrow("lost delete response");
+  await tracker.deleteIssueAttachment!(id);
+  expect(mutations).toBe(1);
+});

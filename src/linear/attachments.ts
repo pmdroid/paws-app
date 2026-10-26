@@ -14,6 +14,23 @@ const CREATE = `mutation ArtifactAttachmentCreate($input: AttachmentCreateInput!
 
 export function createLinearAttachmentMethods(client: LinearClient) {
   return {
+    async deleteIssueAttachment(id: string, options?: TrackerRequestOptions): Promise<void> {
+      const data = await client.query(LOOKUP, { id }, options);
+      const connection = isRecord(data) ? data["attachments"] : null;
+      const nodes = isRecord(connection) ? connection["nodes"] : null;
+      if (!Array.isArray(nodes)) throw new Error("Linear attachment lookup returned invalid data");
+      if (!nodes.length) return;
+      const result = await client.query(
+        `mutation EvidenceAttachmentDelete($id: String!) {
+        attachmentDelete(id: $id) { success }
+      }`,
+        { id },
+        options,
+      );
+      const receipt = isRecord(result) ? result["attachmentDelete"] : null;
+      if (!isRecord(receipt) || receipt["success"] !== true)
+        throw new Error("Linear attachment deletion was not confirmed");
+    },
     async createIssueAttachment(
       input: IssueAttachment,
       options?: TrackerRequestOptions,
@@ -31,7 +48,8 @@ export function createLinearAttachmentMethods(client: LinearClient) {
           throw new Error("Linear attachment identity does not match the deliverable");
         return;
       }
-      const result = await client.query(CREATE, { input }, options);
+      const { evidence: _evidence, ...fields } = input;
+      const result = await client.query(CREATE, { input: fields }, options);
       options?.signal?.throwIfAborted();
       const receipt = isRecord(result) ? result["attachmentCreate"] : null;
       if (
@@ -72,7 +90,7 @@ function validateAttachment(input: IssueAttachment): void {
   }
   const url = new URL(input.url);
   if (
-    url.origin !== "https://uploads.linear.app" ||
+    (input.evidence ? url.protocol !== "https:" : url.origin !== "https://uploads.linear.app") ||
     url.username ||
     url.password ||
     url.search ||
