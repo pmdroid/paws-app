@@ -159,7 +159,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-repository-access": ["journal", "github", "runner-work"],
   "runner-transcript-config": ["journal", "credentials", "runner-transcripts"],
   "runner-transcripts": ["journal", "db", "runner-work"],
-  "agent-sessions": ["credentials", "db", "runner-work"],
+  "agent-sessions": ["journal", "credentials", "db", "runner-work"],
   "runner-inputs": ["journal", "runner-protocol", "runner-work"],
   "runner-artifacts": ["journal", "acp", "runner-protocol", "runner-work"],
   "runner-protocol": ["journal"],

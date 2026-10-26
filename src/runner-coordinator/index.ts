@@ -216,6 +216,14 @@ export async function openRunnerCoordinator(options: {
   const signInTimer = options.checkSignIn ? setInterval(checkSignIn, 15_000) : undefined;
   signInTimer?.unref();
   if (options.checkSignIn) checkSignIn();
+  // The first pass also deletes objects a crash left behind between discarding rows and deleting.
+  const pruneAgentSessions = () =>
+    void agentSessions
+      ?.prune()
+      .catch(journalRejection("runner-coordinator.openRunnerCoordinator.prune", () => {}, null));
+  const pruneTimer = agentSessions ? setInterval(pruneAgentSessions, 60_000) : undefined;
+  pruneTimer?.unref();
+  pruneAgentSessions();
   return {
     port: listener.port,
     signingKeys: signing.signingKeys,
@@ -247,6 +255,7 @@ export async function openRunnerCoordinator(options: {
       clearInterval(timer);
       clearInterval(modelTimer);
       clearInterval(signInTimer);
+      clearInterval(pruneTimer);
       await listener?.stop();
     },
   };
