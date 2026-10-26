@@ -2950,6 +2950,13 @@ CREATE TABLE work_item_event (
     id: "146_remove_runner_pairing",
     sql: `DROP TABLE runner_pairing;`,
   },
+  {
+    id: "147_hold_responses",
+    sql: `
+ALTER TABLE item_hold ADD COLUMN response_session_id TEXT;
+ALTER TABLE item_dependency_snapshot ADD COLUMN identifiers TEXT NOT NULL DEFAULT '[]';
+`,
+  },
 ];
 
 /**

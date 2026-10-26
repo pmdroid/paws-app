@@ -1,7 +1,15 @@
 import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { listItemHolds, migrate, migrations, openDatabase, saveItemHolds } from "../src/db";
+import {
+  enqueueOutbox,
+  listOutbox,
+  listItemHolds,
+  migrate,
+  migrations,
+  openDatabase,
+  saveItemHolds,
+} from "../src/db";
 import { createAdmission, dispatch } from "../src/scheduler";
 import { createLiveStatusProvider } from "../src/web";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
@@ -176,6 +184,103 @@ test("migration 124 keeps the stored holds and accepts the workspace reason", ()
       { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
       { itemId: "PAS-9", reason: "workspace", blockers: [] },
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+function responses(db: Database) {
+  return listOutbox(db).filter((row) => (row.payload as { kind?: string }).kind === "response");
+}
+
+test("hold responses survive scheduler restarts and follow blocker changes and slot waits", () => {
+  const db = tempDb();
+  try {
+    item(db, "PAS-1", "running");
+    item(db, "PAS-2", "running", 1);
+    item(db, "PAS-3", "queued", 2);
+    db.run(
+      "INSERT INTO task_block VALUES('issue-PAS-1','issue-PAS-3'),('issue-PAS-2','issue-PAS-3')",
+    );
+    const sessionFor = () => "session-delegation";
+    const tick = (now: number) => workspaceDispatch(db, { now, sessionFor });
+    tick(1);
+    expect(responses(db)).toHaveLength(1);
+    expect(responses(db)[0]!.payload).toMatchObject({
+      kind: "response",
+      body: expect.stringContaining("PAS-1, PAS-2"),
+    });
+    tick(2);
+    tick(60 * 60_000);
+    expect(responses(db)).toHaveLength(1);
+    confirmFakeMerge(db, "PAS-1");
+    db.run("UPDATE work_item SET state='merged' WHERE id='PAS-1'");
+    tick(3);
+    expect(responses(db)).toHaveLength(2);
+    expect(responses(db)[1]!.payload).toMatchObject({
+      body: expect.stringContaining("blocked by PAS-2."),
+    });
+    fullRunner(db);
+    confirmFakeMerge(db, "PAS-2");
+    db.run("UPDATE work_item SET state='merged' WHERE id='PAS-2'");
+    tick(Date.now());
+    expect(responses(db)).toHaveLength(3);
+    expect(responses(db)[2]!.payload).toMatchObject({
+      body: "Queued: every runner slot you can use is busy. I'll start when one frees up.",
+    });
+    tick(Date.now() + 1);
+    expect(responses(db)).toHaveLength(3);
+    db.run("DELETE FROM runner_work");
+    expect(tick(Date.now() + 2)).toEqual(["PAS-3"]);
+    // The ordinary first activity must still be deliverable after a response in the same session.
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionFor(),
+      idempotencyKey: "started",
+      payload: { kind: "thought", body: "Starting work." },
+    });
+    expect(listOutbox(db).at(-1)?.status).toBe("pending");
+    expect(db.query("SELECT session_id FROM linear_session").all()).toEqual([
+      { session_id: sessionFor() },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("already held issues each receive one response on the first pass only", () => {
+  const db = tempDb();
+  try {
+    item(db, "PAS-1", "running");
+    for (const id of ["PAS-2", "PAS-3"]) {
+      item(db, id);
+      db.run("INSERT INTO task_block VALUES('issue-PAS-1',?)", [`issue-${id}`]);
+    }
+    saveItemHolds(
+      db,
+      ["PAS-2", "PAS-3"].map((itemId) => ({ itemId, reason: "blocked", blockers: ["PAS-1"] })),
+    );
+    workspaceDispatch(db, { now: 1, sessionFor: (id: string) => `session-${id}` });
+    expect(responses(db)).toHaveLength(2);
+    workspaceDispatch(db, { now: 2, sessionFor: (id: string) => `session-${id}` });
+    expect(responses(db)).toHaveLength(2);
+  } finally {
+    db.close();
+  }
+});
+
+test("owners without an eligible runner receive no busy-slot response", () => {
+  const db = tempDb();
+  try {
+    item(db, "PAS-1");
+    fullRunner(db);
+    workspaceDispatch(db, {
+      now: Date.now(),
+      sessionFor: () => "session",
+      ownerHasRunner: () => false,
+    });
+    expect(responses(db)).toEqual([]);
   } finally {
     db.close();
   }

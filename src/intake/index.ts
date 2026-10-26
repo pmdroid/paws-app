@@ -10,6 +10,7 @@ export type { SummaryIssue, SummarySubIssue } from "./parent-summary";
 export type { StoredDelegation, StoredWorkItem } from "./store";
 export {
   canAdvanceItem,
+  openDependencyBlockers,
   hasPendingDelegationChanges,
   itemDependenciesCurrent,
   recordItemDependencies,

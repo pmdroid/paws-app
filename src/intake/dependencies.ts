@@ -7,7 +7,7 @@ import {
   type WorkItemState,
   type TaskMode,
 } from "../core";
-import { enqueueOutboxOnce, getConfirmedRemoteMerge, saveTaskBlocks } from "../db";
+import { getConfirmedRemoteMerge, saveTaskBlocks } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
 import { managedBlockerSatisfied } from "./blocker-policy";
@@ -39,6 +39,7 @@ type Snapshot = {
   generation: number;
   scope: string;
   linearStates: string;
+  identifiers: string;
   workspaceId: string;
 };
 type Scope = {
@@ -163,7 +164,7 @@ function scope(db: Database, target: Target): Scope | null {
 function snapshot(db: Database, target: Target): Snapshot | null {
   const saved = db
     .query<Snapshot, [string]>(
-      `SELECT generation,scope,linear_states AS linearStates,workspace_id AS workspaceId
+      `SELECT generation,scope,linear_states AS linearStates,identifiers,workspace_id AS workspaceId
        FROM item_dependency_snapshot WHERE item_id=?`,
     )
     .get(target.itemId);
@@ -246,9 +247,25 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
   const cycleHeld = new Set(
     ordered.ok ? [] : ordered.remaining.map((entry) => entry.linearIssueId),
   );
+  const satisfied = blockerSatisfied(db, target, current, saved);
+  const blocking = blocks.filter((edge) => edge.blockedLinearIssueId === item.linearIssueId);
+  const ready =
+    candidate &&
+    !cycleHeld.has(item.linearIssueId) &&
+    blocking.every((edge) => satisfied(edge.blockerLinearIssueId));
+  return {
+    generation: saved.generation,
+    readyItemIds: ready ? [item.id] : [],
+    heldItemIds: candidate && !ready ? [item.id] : [],
+    cycleHeldItemIds: cycleHeld.has(item.linearIssueId) ? [item.id] : [],
+  };
+}
+
+function blockerSatisfied(db: Database, target: Target, current: Scope, saved: Snapshot) {
+  const item = current.item;
   const states = new Map<string, string>(JSON.parse(saved.linearStates));
   const byId = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
-  const satisfied = (id: string): boolean => {
+  return (id: string): boolean => {
     if (states.get(id) === "canceled") return false;
     const blocker = byId.get(id);
     // A blocker outside the delegation follows its Paws work, or its Linear state without any.
@@ -264,17 +281,28 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
       mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
     });
   };
-  const blocking = blocks.filter((edge) => edge.blockedLinearIssueId === item.linearIssueId);
-  const ready =
-    candidate &&
-    !cycleHeld.has(item.linearIssueId) &&
-    blocking.every((edge) => satisfied(edge.blockerLinearIssueId));
-  return {
-    generation: saved.generation,
-    readyItemIds: ready ? [item.id] : [],
-    heldItemIds: candidate && !ready ? [item.id] : [],
-    cycleHeldItemIds: cycleHeld.has(item.linearIssueId) ? [item.id] : [],
-  };
+}
+
+/** Current unsatisfied blockers, using the same policy as admission and saved Linear reads. */
+export function openDependencyBlockers(db: Database, target: Target): string[] {
+  const current = scope(db, target);
+  const saved = snapshot(db, target);
+  if (!current || !saved) return [];
+  const names = new Map<string, string>(JSON.parse(saved.identifiers));
+  const satisfied = blockerSatisfied(db, target, current, saved);
+  return blocksFor(db, [current.item.linearIssueId])
+    .filter((edge) => !satisfied(edge.blockerLinearIssueId))
+    .map(
+      (edge) =>
+        names.get(edge.blockerLinearIssueId) ??
+        db
+          .query<{ identifier: string | null }, [string]>(
+            "SELECT linear_identifier AS identifier FROM work_item WHERE linear_issue_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+          )
+          .get(edge.blockerLinearIssueId)?.identifier ??
+        edge.blockerLinearIssueId,
+    )
+    .sort();
 }
 
 export async function syncItemDependencies(
@@ -373,10 +401,10 @@ function writeItemDependencies(
         throw new Error("Dependency snapshot changed");
       saveTaskBlocks(db, [current.item.linearIssueId], edges);
       db.run(
-        `INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,external_evidence)
-         VALUES(?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+        `INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,external_evidence,identifiers)
+         VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
          generation=excluded.generation,scope=excluded.scope,linear_states=excluded.linear_states,
-         external_evidence=excluded.external_evidence
+         external_evidence=excluded.external_evidence,identifiers=excluded.identifiers
          WHERE item_dependency_snapshot.workspace_id=excluded.workspace_id`,
         [
           itemId,
@@ -385,25 +413,9 @@ function writeItemDependencies(
           current.token,
           JSON.stringify([...states]),
           "{}",
+          JSON.stringify([...identifiers]),
         ],
       );
-      const waiting = [...states]
-        .filter(([, state]) => state !== "completed")
-        .map(([id]) => identifiers.get(id) ?? id)
-        .sort();
-      if (waiting.length && current.item.state === "queued")
-        enqueueOutboxOnce(db, {
-          target: "linear",
-          op: "activity",
-          orderingKey: current.identity.sessionId,
-          idempotencyKey: `waiting:${itemId}:${waiting.join(",")}`,
-          payload: {
-            sessionId: current.identity.sessionId,
-            kind: "thought",
-            body: `Waiting for ${waiting.join(", ")} before starting.`,
-          },
-          now: Date.now(),
-        });
       return readyItems(db, target);
     })
     .immediate();

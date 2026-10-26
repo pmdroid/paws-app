@@ -80,7 +80,6 @@ import {
   type RepositoryBinding,
   PawsShutdown,
   RunnerSlotsBusyError,
-  queueLine,
   systemClock,
   parseLinearCommand,
   isTransient,
@@ -124,7 +123,6 @@ import {
   attachSessionUpdates,
   getOutbox,
   failWorkItem,
-  getQueuePosition,
   clearQueueWait,
   queueWaitSince,
   getRun,
@@ -3913,21 +3911,6 @@ export class Orchestrator {
         );
         continue;
       }
-      const sessionId = this.activitySession(item);
-      if (sessionId === null) continue;
-      const position = getQueuePosition(this.db, item.id);
-      enqueueOutboxOnce(this.db, {
-        target: OUTBOX_ACTIVITY.target,
-        op: OUTBOX_ACTIVITY.op,
-        orderingKey: sessionId,
-        idempotencyKey: `queued:${item.id}:${item.version}`,
-        payload: {
-          sessionId,
-          kind: "thought",
-          body: `${position ? queueLine(position) : "Queued: every runner slot is busy."} Paws starts ${name} when a slot frees.`,
-        },
-        now,
-      });
     }
   }
 
