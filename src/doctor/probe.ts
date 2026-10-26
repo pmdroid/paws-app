@@ -25,6 +25,18 @@ import { doctorAgentProfiles } from "./agents";
 /** Core REST calls left for the App installation. Below this, doctor reports no headroom. */
 export const GITHUB_RATE_HEADROOM = 100;
 
+/** Webhook events Paws acts on. A missing one silently drops reviews, comments or CI results. */
+export const GITHUB_APP_EVENTS = [
+  "check_run",
+  "check_suite",
+  "status",
+  "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "issue_comment",
+  "merge_group",
+] as const;
+
 /** GitHub App checks against the configured repository. */
 export type GitHubDoctorFacts = {
   /** GitHub App id from the environment or `secrets/github-app.json`. */
@@ -35,6 +47,8 @@ export type GitHubDoctorFacts = {
   installation: { ok: boolean; detail: string };
   push: { ok: boolean; detail: string };
   rate: { ok: boolean; detail: string };
+  /** The App's webhook event subscriptions against `GITHUB_APP_EVENTS`. */
+  events: { ok: boolean; detail: string };
 };
 
 export type ProbeFacts = {
@@ -295,6 +309,7 @@ async function githubDoctorFact(
     installation: { ok: false, detail: "GitHub App credentials are missing" },
     push: { ok: false, detail: "GitHub App installation was not checked" },
     rate: { ok: false, detail: "rate limit was not read" },
+    events: { ok: false, detail: "GitHub App events were not read" },
   };
   const appId = env.githubAppId;
   if (appId === null || env.githubAppPrivateKeyPath === null) return facts;
@@ -316,10 +331,13 @@ async function githubDoctorFact(
     const client = createFetchGitHubClient((input, init) =>
       fetch(input, { ...init, signal: AbortSignal.timeout(8_000) }),
     );
+    const jwt = signAppJwt(appId, privateKeyPem);
+    const app = await client.request({ method: "GET", path: "/app", token: jwt });
+    facts.events = appEventsFact(app.status, app.body);
     const installed = await client.request({
       method: "GET",
       path: `/repos/${repo.owner}/${repo.repo}/installation`,
-      token: signAppJwt(appId, privateKeyPem),
+      token: jwt,
     });
     const body = isRecord(installed.body) ? installed.body : {};
     if (installed.status !== 200 || typeof body["id"] !== "number") {
@@ -365,6 +383,17 @@ async function githubDoctorFact(
     else if (!facts.push.ok) facts.push = { ok: false, detail: `${facts.push.detail}: ${message}` };
   }
   return facts;
+}
+
+/** Which of `GITHUB_APP_EVENTS` the App's `GET /app` body does not subscribe to. */
+export function appEventsFact(status: number, body: unknown): { ok: boolean; detail: string } {
+  const events = isRecord(body) && Array.isArray(body["events"]) ? body["events"] : null;
+  if (status !== 200 || events === null)
+    return { ok: false, detail: "GitHub App events could not be read" };
+  const missing = GITHUB_APP_EVENTS.filter((event) => !events.includes(event));
+  return missing.length === 0
+    ? { ok: true, detail: `subscribed to ${GITHUB_APP_EVENTS.length} events Paws uses` }
+    : { ok: false, detail: `not subscribed to ${missing.join(", ")}` };
 }
 
 type GitHubGet = {
