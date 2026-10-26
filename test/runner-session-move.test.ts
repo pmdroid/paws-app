@@ -297,6 +297,9 @@ async function setup() {
     dispatched?: (command: RunCommand, runnerId: string) => Promise<void>;
   }) {
     reset();
+    // A and B tie on rank and load, and ULIDs minted in one millisecond order at random, so B
+    // stays offline until A has run the first turn.
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.b]);
     const record = item();
     const notices: string[] = [];
     const turn = () =>
@@ -320,6 +323,7 @@ async function setup() {
     await first;
     expect(onA.restoreSession).toBeUndefined();
     notices.length = 0;
+    work.heartbeat(runners.b);
     if (!options.stay)
       db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.a]);
     options.change?.();
