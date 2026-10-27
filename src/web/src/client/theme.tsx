@@ -345,7 +345,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (has("slot-row"))
     return styled(
-      "col-span-full grid min-w-0 grid-cols-subgrid items-start gap-y-1 sm:items-center [&>.slot-facts]:col-start-3 sm:[&>.slot-facts]:col-start-auto [&>.lin-id]:justify-self-start [&>a.work-title]:col-span-2 [&>a.work-title]:min-w-0 [&>a.work-title]:break-words [&>span.muted]:col-span-2 sm:[&>span.muted]:col-span-3 [&>.slot-move]:col-span-2 [&>.slot-move]:col-start-2 sm:[&>.slot-move]:col-span-3",
+      "col-span-full grid min-w-0 grid-cols-subgrid items-start gap-y-1 sm:items-center [&>.slot-facts]:col-start-3 sm:[&>.slot-facts]:col-start-auto [&>.lin-id]:justify-self-start [&>a.work-title]:col-span-2 [&>a.work-title]:min-w-0 [&>a.work-title]:break-words [&>span.muted]:col-span-2 sm:[&>span.muted]:col-span-3 [&>.slot-move]:col-span-2 [&>.slot-move]:col-start-2 sm:[&>.slot-move]:col-span-3 sm:[&>.slot-move]:col-start-2",
     );
   if (has("slot-mark"))
     return styled(
