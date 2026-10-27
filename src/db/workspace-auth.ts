@@ -145,6 +145,43 @@ export function replaceWorkspaceRepositories(
   });
 }
 
+/**
+ * Every repository a workspace can use, `owner/repo`: the ones mapped to its Linear teams and the
+ * ones its stored GitHub App connection approved. Without `workspaceId`, every workspace's.
+ */
+export function listWorkspaceRepositoryNames(db: Database, workspaceId?: string): string[] {
+  const scope = workspaceId === undefined ? "" : " WHERE workspace_id=?1";
+  const args = workspaceId === undefined ? [] : [workspaceId];
+  const mapped = db
+    .query<{ repository: string }, string[]>(
+      `SELECT repository FROM workspace_repository${scope} ORDER BY repository`,
+    )
+    .all(...args)
+    .map((row) => row.repository);
+  const connected = db
+    .query<{ repositories: string }, string[]>(
+      `SELECT repositories FROM workspace_github_connection${scope}`,
+    )
+    .all(...args)
+    .flatMap((row) => {
+      try {
+        const names: unknown = JSON.parse(row.repositories);
+        return Array.isArray(names)
+          ? names.filter((name): name is string => typeof name === "string")
+          : [];
+      } catch {
+        return [];
+      }
+    });
+  const seen = new Set<string>();
+  return [...mapped, ...connected].filter((name) => {
+    const key = name.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function listWorkspaceRepositories(db: Database, workspaceId: string) {
   return db
     .query<{ repository: string; teamId: string }, [string]>(
