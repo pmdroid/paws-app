@@ -27,6 +27,8 @@ import {
   publishRunnerAnswer,
   runnerFollowUpRequestId,
   runnerHandoverRequestId,
+  runnerCheckpointRequestId,
+  runnerCheckpointPublishedId,
 } from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
@@ -112,6 +114,15 @@ type Active = {
    * was sent. Each request goes to the worker on its own, so a timed-out one can be asked again.
    */
   handover?: { pending?: number; sent: number };
+  /** Checkpoints Paws asked for before a stop, and how many the worker was sent. */
+  checkpoints?: { asked: number; sent: number };
+  /**
+   * The last WIP commit this execution published to the item's branch. Later pushes replace it,
+   * since a checkpoint with uncommitted changes is not an ancestor of the agent's next commits.
+   */
+  checkpointSha?: string;
+  /** How many checkpoints this execution pushed, each acknowledged to the worker. */
+  checkpointsPublished?: number;
 };
 
 /** The session description the worker writes next to its bundle. */
@@ -866,6 +877,35 @@ export async function openRunnerRuntime(options: {
           };
         }
       }
+      if (
+        delivery.event.type === "checkpoint" &&
+        delivery.event.sha &&
+        delivery.event.dropped === undefined
+      ) {
+        try {
+          await publishCheckpoint(entry, delivery.event.sha);
+        } catch (error) {
+          // A control-plane outage retries the delivery; a refused push only goes unrecorded.
+          if (
+            entry.abort.signal.aborted ||
+            (error instanceof RemoteFailure && !(error instanceof GitHubFailure))
+          )
+            throw error;
+          journalCaught(
+            error,
+            "runner-runtime.deliver.publishCheckpoint",
+            entry.execution.command.itemId,
+          );
+          delivery = {
+            ...delivery,
+            event: journal.dropCheckpoint(
+              entry.execution.id,
+              delivery.sequence,
+              error instanceof Error ? error.message : String(error),
+            ),
+          };
+        }
+      }
       await remote(() =>
         options.daemon.sendEvent(
           {
@@ -912,6 +952,40 @@ export async function openRunnerRuntime(options: {
       });
       entry.followUps = followUp.sequence;
     }
+  }
+  /** Pushes a WIP commit the worker bundled to the item's branch, replacing the one before. */
+  async function publishCheckpoint(entry: Active, sha: string) {
+    const command = entry.execution.command;
+    if (command.type !== "run") throw new Error("Only a run can publish a checkpoint");
+    const token = await grant(entry);
+    const credential = await remote(() =>
+      options.daemon.repositoryCredential(command.runId, command.generation, "write", token),
+    );
+    check(entry);
+    if (!credential.branch) throw new Error("Runner publication branch is missing");
+    entry.publicationBranch = credential.branch;
+    await repositories.publish(
+      command,
+      {
+        bundle: readRunnerResultFile(
+          options.results,
+          entry.execution.id,
+          `checkpoint-${sha}.bundle`,
+        ),
+        sha,
+        branch: credential.branch,
+      },
+      entry.abort.signal,
+      entry.checkpointSha,
+    );
+    check(entry);
+    entry.checkpointSha = sha;
+    // The worker skips an unchanged worktree only once its checkpoint reached the branch.
+    entry.checkpointsPublished = (entry.checkpointsPublished ?? 0) + 1;
+    publishRunnerAnswer(options.spool, entry.execution.id, {
+      requestId: runnerCheckpointPublishedId(entry.checkpointsPublished),
+      answer: sha,
+    });
   }
   async function resumeIfCrashed(entry: Active): Promise<boolean> {
     const id = entry.execution.id;
@@ -1045,6 +1119,7 @@ export async function openRunnerRuntime(options: {
             branch: credential.branch,
           },
           entry.abort.signal,
+          entry.checkpointSha,
         );
       } catch (error) {
         if (!(error instanceof GitHubFailure)) throw error;
@@ -1099,7 +1174,8 @@ export async function openRunnerRuntime(options: {
     if (closed) return;
     const commands = options.daemon.pendingCommands();
     for (const command of commands) {
-      if (command.type !== "cancel" && command.type !== "handover") continue;
+      if (command.type !== "cancel" && command.type !== "handover" && command.type !== "checkpoint")
+        continue;
       const entry = active.get(`${command.runId}:${command.generation}`);
       if (command.type === "cancel" && entry) await interrupt(entry, "cancelled by Paws");
       if (command.type === "handover") {
@@ -1108,6 +1184,15 @@ export async function openRunnerRuntime(options: {
           entry.handover.pending = command.expiresAt;
         } else
           report(new Error(`Runner has no running session of run ${command.runId} to hand over`));
+      }
+      // A run that already ended has its work in its candidate; nothing is left to checkpoint.
+      if (
+        command.type === "checkpoint" &&
+        entry?.execution.command.type === "run" &&
+        !entry.abort.signal.aborted
+      ) {
+        entry.checkpoints ??= { asked: 0, sent: 0 };
+        entry.checkpoints.asked++;
       }
       await options.daemon.acknowledgeCommand(command.id);
     }
@@ -1155,6 +1240,17 @@ export async function openRunnerRuntime(options: {
           answer: String(entry.handover.pending),
         });
         entry.handover = { sent: entry.handover.sent + 1 };
+      }
+      while (
+        entry.checkpoints &&
+        entry.checkpoints.sent < entry.checkpoints.asked &&
+        entry.execution.phase === "running"
+      ) {
+        publishRunnerAnswer(options.spool, entry.execution.id, {
+          requestId: runnerCheckpointRequestId(entry.checkpoints.sent + 1),
+          answer: "stop",
+        });
+        entry.checkpoints.sent++;
       }
       entry.delivering ??= advance(entry).finally(() => {
         entry.delivering = undefined;

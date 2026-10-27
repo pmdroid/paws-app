@@ -221,6 +221,8 @@ export function createRunnerRepositories(options: {
       input: WorkCommand,
       candidate: { bundle: Buffer; sha: string; branch: string },
       signal?: AbortSignal,
+      /** The WIP commit this run last published there, which the push may replace. */
+      lease?: string,
     ): Promise<void> {
       const command = parse(input);
       if (
@@ -230,6 +232,8 @@ export function createRunnerRepositories(options: {
         !/^paws\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(candidate.branch)
       )
         throw new Error("Invalid runner candidate");
+      if (lease !== undefined && !/^[a-f0-9]{40}$/.test(lease))
+        throw new Error("Invalid runner candidate lease");
       if (command.type !== "run") throw new Error("Only a run can publish a candidate");
       await invoke(["check-ref-format", `refs/heads/${candidate.branch}`], signal);
       return serialize(command, async (mirror) => {
@@ -238,7 +242,15 @@ export function createRunnerRepositories(options: {
         writeFileSync(path, candidate.bundle, { mode: 0o600, flag: "wx" });
         try {
           await invoke(["--git-dir", mirror, "bundle", "verify", path], signal);
-          await invoke(["--git-dir", mirror, "fetch", "--no-tags", path, "HEAD"], signal);
+          // A candidate bundle holds HEAD; a checkpoint bundle holds the one ref it was made from.
+          const heads = (await invoke(["--git-dir", mirror, "bundle", "list-heads", path], signal))
+            .trim()
+            .split("\n")
+            .filter(Boolean);
+          const head = heads.length === 1 ? heads[0]!.split(" ")[1] : undefined;
+          if (!head || !/^(HEAD|refs\/paws\/checkpoint-[a-f0-9-]{36})$/.test(head))
+            throw new Error("Runner candidate bundle must hold one head");
+          await invoke(["--git-dir", mirror, "fetch", "--no-tags", path, head], signal);
           const sha = (
             await invoke(["--git-dir", mirror, "rev-parse", "FETCH_HEAD"], signal)
           ).trim();
@@ -337,18 +349,19 @@ export function createRunnerRepositories(options: {
             signal?.throwIfAborted();
             const token = await options.credential(command, "write");
             signal?.throwIfAborted();
-            const push = (lease?: string) =>
+            const push = (expected?: string) =>
               network({
                 operation: "push",
                 remoteUrl: command.repository.remoteUrl,
                 token,
                 cwd: mirror,
                 refspec: `${sha}:refs/heads/${candidate.branch}`,
-                ...(lease ? { lease } : {}),
+                ...(expected ? { lease: expected } : {}),
                 env,
                 signal,
               });
-            if (!rebased) await push();
+            if (lease && lease !== sha) await push(lease);
+            else if (!rebased) await push();
             else
               await push().catch((caughtError4) => {
                 journalCaught(caughtError4, "runner-repositories.publish.push", null);
