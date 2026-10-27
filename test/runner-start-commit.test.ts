@@ -16,7 +16,11 @@ import {
   saveCheckpoint,
 } from "../src/db";
 import { isTransient } from "../src/core";
-import { createRemoteAgentRunner, RemoteStartUnverified } from "../src/runner-backend";
+import {
+  createRemoteAgentRunner,
+  ensureStartOnRemote,
+  RemoteStartUnverified,
+} from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -114,6 +118,80 @@ test("a fallback whose dispatch fails still hands the lost commits to the next a
   expect(result.thoughts, result.detail).toHaveLength(1);
 });
 
+test("a fallback saved before a stop is repeated once, with its handoff and no second thought", async () => {
+  const result = await startScenario({
+    local: ["Lost one", "Lost two"],
+    push: "fails",
+    stoppedBeforeReset: true,
+  });
+  const note = `Your commits after ${result.prHead.slice(0, 8)} didn't reach GitHub: Lost two; Lost one. Redo them.`;
+  expect(result.baseSha, result.detail).toBe(result.prHead);
+  expect(result.prompt, result.detail).toBe(`${note}\n\nWrite output`);
+  expect(result.thoughts, result.detail).toEqual([]);
+  expect(result.pendingAfter, result.detail).toBeUndefined();
+});
+
+test("the fallback and its handoff are saved before the worktree moves", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-start-order-"));
+  const env = {
+    PATH: "/usr/bin:/bin",
+    HOME: root,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_AUTHOR_NAME: "Fixture",
+    GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+    GIT_COMMITTER_NAME: "Fixture",
+    GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+  };
+  const git = async (args: string[]) => {
+    const child = Bun.spawn(["/usr/bin/git", ...args], { env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    if (code !== 0) throw new Error(err);
+    return out.trim();
+  };
+  const origin = join(root, "origin.git");
+  const worktree = join(root, "worktree");
+  try {
+    await git(["init", "--bare", "-b", "main", origin]);
+    await git(["init", "-b", "main", worktree]);
+    writeFileSync(join(worktree, "a.txt"), "a\n");
+    await git(["-C", worktree, "add", "."]);
+    await git(["-C", worktree, "commit", "-m", "Base"]);
+    await git(["-C", worktree, "push", origin, "HEAD:refs/heads/main"]);
+    const base = await git(["-C", worktree, "rev-parse", "HEAD"]);
+    writeFileSync(join(worktree, "b.txt"), "b\n");
+    await git(["-C", worktree, "add", "."]);
+    await git(["-C", worktree, "commit", "-m", "Lost one"]);
+    const head = await git(["-C", worktree, "rev-parse", "HEAD"]);
+    const saved: unknown[] = [];
+    const pending = ensureStartOnRemote({
+      worktree,
+      branch: BRANCH,
+      remoteUrl: GITHUB_URL,
+      async networkGit(args) {
+        if (args.includes("push")) throw new Error("remote: Permission denied (403)");
+        return git(args.map((arg) => (arg === GITHUB_URL ? origin : arg)));
+      },
+      baseSha: base,
+      persistFallback(fallback) {
+        saved.push(fallback);
+        // Paws stops here, after the save and before the reset.
+        throw new Error("Paws stopped");
+      },
+      signal: new AbortController().signal,
+    });
+    await expect(pending).rejects.toThrow("Paws stopped");
+    expect(saved).toEqual([{ head, start: base, lost: ["Lost one"] }]);
+    expect(await git(["-C", worktree, "rev-parse", "HEAD"])).toBe(head);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 async function startScenario(input: {
   local: string[];
   push: "works" | "fails";
@@ -122,6 +200,8 @@ async function startScenario(input: {
   prBranch?: false;
   /** The first attempt fails after the fallback, before any runner gets the command. */
   failFirstDispatch?: true;
+  /** Paws saved the fallback and stopped before it reset the worktree. */
+  stoppedBeforeReset?: true;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
   const source = join(root, "source");
@@ -227,7 +307,16 @@ async function startScenario(input: {
   bindWorkItemRepository(db, item.id, { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
   // Paws recorded the last fetched commit as the item's head.
-  saveCheckpoint(db, item.id, { phase: "running", baseSha: base, wipCommit: localHead });
+  saveCheckpoint(db, item.id, {
+    phase: "running",
+    baseSha: base,
+    wipCommit: input.stoppedBeforeReset ? prHead : localHead,
+    ...(input.stoppedBeforeReset
+      ? {
+          lostCommits: `Your commits after ${prHead.slice(0, 8)} didn't reach GitHub: ${[...input.local].reverse().join("; ")}. Redo them.`,
+        }
+      : {}),
+  });
   mkdirSync(join(root, "runs"), { recursive: true });
 
   const keys = generateKeyPairSync("ed25519");

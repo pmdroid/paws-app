@@ -820,6 +820,8 @@ export function createRemoteAgentRunner(options: {
                 checkpoint.baseSha
             )
               return pending;
+            let lostCommits: string | undefined;
+            let repeated = false;
             const start = await ensureStartOnRemote({
               worktree: input.worktreePath,
               branch: scoped.item.branchName,
@@ -827,6 +829,17 @@ export function createRemoteAgentRunner(options: {
               networkGit,
               ...(checkpoint?.wipCommit ? { wipCommit: checkpoint.wipCommit } : {}),
               ...(checkpoint?.baseSha ? { baseSha: checkpoint.baseSha } : {}),
+              persistFallback: (fallback) => {
+                const note = lostCommitsNote(fallback.start, fallback.lost);
+                // A stop after this save but before the reset repeats the same fallback.
+                repeated = pending?.includes(note) === true;
+                lostCommits = repeated ? pending : pending ? `${pending}\n${note}` : note;
+                saveCheckpoint(db, itemId, {
+                  ...checkpoint,
+                  ...(checkpoint.wipCommit === fallback.head ? { wipCommit: fallback.start } : {}),
+                  lostCommits,
+                });
+              },
               signal,
             }).catch((error: unknown) => {
               // No runner gets a commit GitHub may lack; the item retries later.
@@ -842,17 +855,11 @@ export function createRemoteAgentRunner(options: {
             journal(
               `item ${itemId} starts from ${start.start} because ${start.head} is not on GitHub and its push failed: ${start.error}`,
             );
-            const note = lostCommitsNote(start.start, start.lost);
-            const lostCommits = pending ? `${pending}\n${note}` : note;
-            saveCheckpoint(db, itemId, {
-              ...checkpoint,
-              ...(checkpoint.wipCommit === start.head ? { wipCommit: start.start } : {}),
-              lostCommits,
-            });
-            await emit({
-              type: "progress",
-              text: `Commit ${start.head.slice(0, 8)} never reached GitHub, so this run continues from ${start.start.slice(0, 8)} and the agent redoes the rest.\n`,
-            });
+            if (!repeated)
+              await emit({
+                type: "progress",
+                text: `Commit ${start.head.slice(0, 8)} never reached GitHub, so this run continues from ${start.start.slice(0, 8)} and the agent redoes the rest.\n`,
+              });
             return lostCommits;
           };
           const placed =
@@ -1912,7 +1919,7 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
-export { RemoteStartUnverified } from "./start-commit";
+export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
 
 export { CHECKPOINT_RUNNER_VERSION, createRemoteCheckpoint } from "./checkpoint";
 

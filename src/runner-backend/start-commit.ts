@@ -33,6 +33,11 @@ export async function ensureStartOnRemote(input: {
   networkGit: (args: string[]) => Promise<string>;
   wipCommit?: string;
   baseSha?: string;
+  /**
+   * Saves the fallback before the worktree moves, so a stop between the reset and the dispatch
+   * still finds the handoff for the lost commits.
+   */
+  persistFallback: (fallback: { head: string; start: string; lost: string[] }) => void;
   signal: AbortSignal;
 }): Promise<StartCommit> {
   const run = (args: string[]) =>
@@ -111,6 +116,7 @@ export async function ensureStartOnRemote(input: {
     const lost = (await run(["log", "--format=%s", `${start}..${head}`]))
       .split("\n")
       .filter(Boolean);
+    input.persistFallback({ head, start, lost });
     await run(["reset", "--hard", start]);
     return { status: "fallback", head, start, lost, error: pushError };
   } finally {
