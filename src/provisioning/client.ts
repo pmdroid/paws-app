@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { assertCommand, assertVmName, shellQuote } from "./names";
 import {
   ProvisioningError,
@@ -13,6 +13,9 @@ import {
 } from "./types";
 
 export const EXE_DEV_ENDPOINT = "https://exe.dev/exec";
+
+/** exe.dev ends an exec that runs longer than this with HTTP 504. */
+export const EXE_DEV_EXEC_LIMIT_MS = 30_000;
 
 export type ExeDevFetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -29,7 +32,8 @@ export const DEFAULT_TIMEOUT_MS: Readonly<Record<ProvisioningOperation, number>>
   createVm: 120_000,
   deleteVm: 120_000,
   getVm: 15_000,
-  execVm: 600_000,
+  // A little past exe.dev's own limit, so its 504 arrives before Paws gives up.
+  execVm: EXE_DEV_EXEC_LIMIT_MS + 5_000,
 };
 
 export const DEFAULT_MAX_RESPONSE_BYTES: Readonly<Record<ProvisioningOperation, number>> = {
@@ -54,7 +58,7 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
     body: string,
     accept: string,
     timeoutMs: number,
-  ): Promise<{ status: number; text: string }> {
+  ): Promise<{ status: number; contentType: string | null; text: string }> {
     const token = await bearer(operation, options.readToken);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -85,8 +89,10 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
           response.status,
         );
       }
-      if (!response.ok) throw httpError(operation, vm, response.status, text);
-      return { status: response.status, text };
+      // For an exec, 422 means the command ran and exited non-zero; the stream still carries it.
+      const ran = operation === "execVm" && response.status === 422;
+      if (!response.ok && !ran) throw httpError(operation, vm, response.status, text);
+      return { status: response.status, contentType: response.headers.get("content-type"), text };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       if (controller.signal.aborted) {
@@ -184,14 +190,14 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
         requested !== undefined && Number.isFinite(requested) && requested > 0
           ? Math.min(requested, timeout.execVm)
           : timeout.execVm;
-      const { status, text } = await call(
+      const { status, contentType, text } = await call(
         "execVm",
         vm,
         `ssh ${vm} ${shellQuote(line)}`,
         "application/x-ndjson",
         ms,
       );
-      return parseExec(vm, status, text);
+      return parseExec(vm, status, contentType, text);
     },
   };
 }
@@ -280,6 +286,18 @@ function httpError(
   status: number,
   text: string | null,
 ): ProvisioningError {
+  if (status === 504) {
+    const detail =
+      operation === "execVm"
+        ? `the command is still running on the VM or timed out there; exe.dev stops waiting after ${EXE_DEV_EXEC_LIMIT_MS / 1000} s`
+        : "exe.dev stopped waiting for the request";
+    return new ProvisioningError(
+      operation,
+      "timeout",
+      `exe.dev ${operation} for ${vm} got HTTP 504: ${detail}.`,
+      status,
+    );
+  }
   const code = codeFor(status, text === null ? null : errorText(text));
   return new ProvisioningError(
     operation,
@@ -355,30 +373,49 @@ function parseListed(vm: string, status: number, text: string): ExeDevVm {
   return { name: vm, status: state, sshDest, httpsUrl, region };
 }
 
-function parseExec(vm: string, status: number, text: string): ExeDevExecResult {
+function parseExec(
+  vm: string,
+  status: number,
+  contentType: string | null,
+  text: string,
+): ExeDevExecResult {
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   let exitCode: number | null = null;
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
+  const unexpected = (reason: string): ProvisioningError => {
+    journal(execShape(vm, status, contentType, lines));
+    return new ProvisioningError(
+      "execVm",
+      "invalid_response",
+      `exe.dev execVm for ${vm}: ${reason}`,
+      status,
+    );
+  };
   for (const [index, raw] of lines.entries()) {
+    const at = `line ${index + 1} of ${lines.length}`;
     const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    if (exitCode !== null) throw invalid("execVm", vm, status);
+    if (exitCode !== null) throw unexpected(`${at} follows the exit status.`);
     const record = parseJson(line);
-    if (!isRecord(record)) throw invalid("execVm", vm, status);
+    if (record === undefined) throw unexpected(`${at} is not JSON.`);
+    if (!isRecord(record)) throw unexpected(`${at} is not a JSON object.`);
     const keys = Object.keys(record);
-    if (keys.length !== 1) throw invalid("execVm", vm, status);
+    if (keys.length !== 1)
+      throw unexpected(`${at} has ${keys.length} keys (${keyList(keys)}) instead of one.`);
     const [key] = keys;
     const value = record[key ?? ""];
     if (key === "stdout" || key === "stderr") {
-      if (typeof value !== "string" || !BASE64.test(value)) throw invalid("execVm", vm, status);
+      if (typeof value !== "string" || !BASE64.test(value))
+        throw unexpected(`${at} has ${key} that is not base64.`);
       (key === "stdout" ? stdout : stderr).push(Buffer.from(value, "base64"));
     } else if (key === "exit_code") {
-      if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255) {
-        throw invalid("execVm", vm, status);
-      }
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 255)
+        throw unexpected(`${at} has an exit_code that is not 0 to 255.`);
       exitCode = value;
-    } else if (key === "error" && typeof value === "string" && index === lines.length - 1) {
+    } else if (key === "error") {
+      if (typeof value !== "string" || index !== lines.length - 1)
+        throw unexpected(`${at} is an error before the end of the stream.`);
       throw new ProvisioningError(
         "execVm",
         codeFor(status, value),
@@ -386,15 +423,14 @@ function parseExec(vm: string, status: number, text: string): ExeDevExecResult {
         status,
       );
     } else {
-      throw invalid("execVm", vm, status);
+      throw unexpected(`${at} has the unknown key ${keyList(keys)}.`);
     }
   }
   if (exitCode === null) {
-    throw new ProvisioningError(
-      "execVm",
-      "invalid_response",
-      `exe.dev execVm on ${vm}: the response was cut off before the exit status.`,
-      status,
+    throw unexpected(
+      lines.length === 0
+        ? "the response was empty, with no exit status."
+        : `the response was cut off before the exit status, after ${lines.length} lines.`,
     );
   }
   return {
@@ -402,6 +438,47 @@ function parseExec(vm: string, status: number, text: string): ExeDevExecResult {
     stdout: Buffer.concat(stdout).toString("utf8"),
     stderr: Buffer.concat(stderr).toString("utf8"),
   };
+}
+
+const KEY = /^[A-Za-z0-9_]{1,32}$/;
+/** Runs long enough to be a token, key or base64 output, in a line that is not JSON. */
+const TOKEN_LIKE = /[A-Za-z0-9+/=_.~-]{16,}/g;
+const SHAPE_LINES = 20;
+
+function keyList(keys: readonly string[]): string {
+  return keys.map((key) => (KEY.test(key) ? key : "?")).join(", ");
+}
+
+/**
+ * One journal line on what an unexpected exec response looked like: its status, content type,
+ * line count and each line's keys. A line that is not JSON shows its length and its first 80
+ * characters without anything token-like. No stdout, stderr or error text is ever included.
+ */
+function execShape(
+  vm: string,
+  status: number,
+  contentType: string | null,
+  lines: readonly string[],
+): string {
+  const shapes = lines.slice(0, SHAPE_LINES).map((raw) => {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      const head = line
+        .slice(0, 80)
+        .replace(TOKEN_LIKE, "[redacted]")
+        .replace(/[^\x20-\x7e]/g, "?")
+        .replaceAll('"', "'");
+      return `[text length=${line.length} head="${head}"]`;
+    }
+    if (isRecord(parsed)) return `[${keyList(Object.keys(parsed))}]`;
+    return `[${Array.isArray(parsed) ? "array" : parsed === null ? "null" : typeof parsed}]`;
+  });
+  if (lines.length > SHAPE_LINES) shapes.push(`[${lines.length - SHAPE_LINES} more]`);
+  const type = (contentType ?? "none").slice(0, 80).replace(/[^\w.+/=;-]/g, "?");
+  return `exe.dev execVm unexpected response vm=${vm} status=${status} content_type=${type} lines=${lines.length} shape=${shapes.join(" ") || "[]"}`;
 }
 
 function commandFailure(
