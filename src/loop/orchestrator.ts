@@ -74,11 +74,9 @@ import {
   snapshotRetryBaseline,
   storedReviewFindings,
   loggedSessionCloseout,
-  loggedSessionProbe,
   readSessionCloseout,
   sessionCloseoutPath,
   sessionCloseoutResult,
-  sessionProbeResult,
   writeSessionCloseout,
   type GateResult,
   type ReviewRounds,
@@ -2967,18 +2965,8 @@ export class Orchestrator {
             assertCurrent();
             return result;
           },
-          // A rule counts only from the runner's own probe run with the policy's hash, argv,
-          // head and timeout. No such result leaves the rule missing, which holds the PR.
-          runProbe: async (request: Parameters<typeof loggedSessionProbe>[1]) => {
-            assertCurrent();
-            const commit = request.head;
-            if (!sessionProbeResult(savedReport(commit), request))
-              await runnerResults(commit, request.rule.id);
-            assertCurrent();
-            const result = loggedSessionProbe(savedReport(commit), request);
-            assertCurrent();
-            return result;
-          },
+          // No runProbe: Closeout runs each rule's policy probe here, against its own worktree
+          // of the candidate, so a rule never waits on a result the runner may not report.
         }
       : undefined;
     const live = [...this.live.values()].find((entry) => entry.itemId === item.id);

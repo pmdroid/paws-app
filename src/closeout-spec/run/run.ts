@@ -46,7 +46,10 @@ export const PAWS_CLOSEOUT_PRODUCER = {
   version: "0.1.0",
 } as const;
 
-/** Runs setup steps and commands, and rule probes when it has `runProbe`. */
+/**
+ * Runs setup steps and commands. Rule probes run through its `runProbe` when it has one, and
+ * otherwise on this machine against the trusted worktree of the candidate.
+ */
 export type CloseoutCommandPort = Pick<PawsCommandRunner, "runLogged"> & Partial<ProbeRunner>;
 
 export type CommandDisposition = {
@@ -83,8 +86,8 @@ export type CloseoutRunInput = {
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
   /**
-   * Runs setup steps and commands. A runner without `runProbe` has no rule results, so every
-   * in-scope rule stays missing. Without `commandRunner`, probes run on this machine.
+   * Runs setup steps and commands. Probes run on this machine unless it has `runProbe`, so a
+   * remote runner that only runs commands still gets every in-scope rule judged.
    */
   commandRunner?: CloseoutCommandPort;
   retryBaseline?: readonly string[];
@@ -172,9 +175,11 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
       return { blocked: "could not create a worktree at the candidate commit", dispositions: [] };
     }
     const runner = input.commandRunner ?? createCommandRunner({ env: input.env });
-    const probes: Partial<ProbeRunner> =
-      input.commandRunner ?? createProbeRunner({ env: input.env });
+    const probes: ProbeRunner = input.commandRunner?.runProbe
+      ? { runProbe: input.commandRunner.runProbe.bind(input.commandRunner) }
+      : createProbeRunner({ env: input.env });
     const dispositions: CommandDisposition[] = [];
+    const unjudged: string[] = [];
     let stop = false;
     try {
       try {
@@ -202,11 +207,12 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
             identity,
             ordinalOf(actions, action.item.id),
           );
+          if (typeof ran === "string") unjudged.push(`rule ${action.rule.id}: ${ran}`);
           dispositions.push({
             id: action.rule.id,
             kind: "rule",
             state: "ran",
-            message: ran === undefined ? "no probe result" : execMessage(ran, false),
+            message: typeof ran === "string" ? ran : execMessage(ran, false),
           });
           continue;
         }
@@ -271,6 +277,8 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
       await git(input.repo, ["worktree", "remove", "--force", tree], env);
       rmSync(tree, { recursive: true, force: true });
     }
+    // A rule without a result would only read as missing, so the reason blocks instead.
+    if (unjudged.length > 0) return { blocked: unjudged.join("; "), dispositions };
     return { dispositions };
   });
 }
@@ -483,10 +491,10 @@ async function runOne(
 /**
  * Run one rule's probe and store its result as a command record. The record's argv is
  * {@link probeArgv}, and its artifacts are the log and the probe that ran, named by that probe's
- * hash. No result stores nothing, so the rule stays missing.
+ * hash. When the probe has no result, nothing is stored and the reason is returned.
  */
 async function runRule(
-  probes: Partial<ProbeRunner>,
+  probes: ProbeRunner,
   input: CloseoutRunInput,
   rule: ResolvedRule,
   checkout: string,
@@ -495,7 +503,7 @@ async function runRule(
   records: EvidenceRecord[],
   identity: CloseoutProgressIdentity,
   ordinal: number,
-): Promise<CommandExec | undefined> {
+): Promise<CommandExec | string> {
   const digest = input.policy.digest ?? "";
   const step = ruleStep(rule, base, head);
   const attempt = nextAttempt(records, rule.id, head, digest);
@@ -511,28 +519,41 @@ async function runRule(
   });
   const bytes =
     input.policy.source === "none" ? undefined : input.policy.probeFiles?.get(rule.probe);
-  const ran = await probes.runProbe?.({
-    rule,
-    bytes,
-    base,
-    head,
-    checkout,
-    argv: step.exec,
-    timeoutSeconds: PROBE_TIMEOUT_SECONDS,
-    logFile: join(input.evidenceDir, ...relative.split("/")),
-    artifactPath: relative,
-    onOutput: (stream, text, truncated) => {
-      input.progress?.output(identity, rule.id, stream, text, truncated);
-    },
-  });
+  let ran: Awaited<ReturnType<ProbeRunner["runProbe"]>>;
+  let reason =
+    bytes === undefined ? "the policy carries no bytes for it" : "the probe runner returned nothing";
+  try {
+    ran = await probes.runProbe({
+      rule,
+      bytes,
+      base,
+      head,
+      checkout,
+      argv: step.exec,
+      timeoutSeconds: PROBE_TIMEOUT_SECONDS,
+      logFile: join(input.evidenceDir, ...relative.split("/")),
+      artifactPath: relative,
+      onOutput: (stream, text, truncated) => {
+        input.progress?.output(identity, rule.id, stream, text, truncated);
+      },
+    });
+  } catch (caughtError) {
+    journalCaught(caughtError, "run.runRule.runProbe", rule.id);
+    ran = undefined;
+    reason = caughtError instanceof Error ? caughtError.message : String(caughtError);
+  }
   if (ran === undefined) {
+    const detail = scrubText(
+      `probe ${rule.probe} could not run: ${reason}`,
+      credentialSecrets(input.env),
+    );
     input.progress?.step(identity, {
       ...blankStep(step, ordinal),
       state: "blocked",
-      detail: "no probe result",
+      detail,
       finishedAt: Date.now(),
     });
-    return undefined;
+    return detail;
   }
   const probe = probeArtifactPath(ran.probeSha256, rule.probe);
   if (bytes !== undefined && probeSha256(bytes) === ran.probeSha256) {
