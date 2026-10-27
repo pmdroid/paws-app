@@ -27,7 +27,7 @@ import {
   type SerialMergeInput,
 } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
-import type { MergeFacts } from "./mergeable";
+import type { MergeFacts, RiskApproval } from "./mergeable";
 import {
   REBASE_CONFLICT_INSTRUCTION,
   REBASE_CONFLICT_THOUGHT,
@@ -69,6 +69,13 @@ export type MergeCapabilities = OrderCapabilities & {
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
   assertReady(item: WorkItemRecord): Promise<void>;
+  /** Whether head S needs, and has, a person's risk approval in Paws. */
+  riskApproval(item: WorkItemRecord, published: MergePublication): Promise<RiskApproval>;
+  /**
+   * Asks for the risk approval of S on the item page. The item leaves the merge queue and waits
+   * in `awaiting_input`. `asked`, or `failed` when Paws could not ask.
+   */
+  askRiskApproval(item: WorkItemRecord, published: MergePublication): Promise<MergeStep>;
   completed(): void;
 };
 
@@ -101,6 +108,10 @@ export async function advanceMerge(
   const published = await caps.publish(item);
   if ("kind" in published) return published;
   const merge: MergeContext = { db, item, caps };
+  // A high-risk head waits for a person in Paws before it joins any merge queue.
+  const riskApproval = await caps.riskApproval(item, published);
+  if (caps.stopped()) return { kind: "obsolete" };
+  if (riskApproval === "missing") return holdForRisk(db, item, caps, published);
   const { repository, github, pull } = published;
   const { voice } = caps;
   const mergeSettings = await caps.settings(item, published.signal);
@@ -148,6 +159,7 @@ export async function advanceMerge(
         facts,
         caps.policyDigest(item, published.worktree),
         mergeSettings.mainMoved,
+        { head: published.head, approval: riskApproval },
       ),
     rebase: () => rebaseOntoMain(lane),
     squash: (head, facts) => squashPull(lane, { head, base: facts.base }, published.summary),
@@ -206,6 +218,7 @@ export async function advanceMerge(
   await caps.assertReady(item);
   if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
+  if (step.kind === "ask_risk") return holdForRisk(db, item, caps, published);
   if (step.kind === "reverify") {
     reverify(merge, step, input.jobId);
     if (step.rebased) await voice.flush();
@@ -291,6 +304,7 @@ function mergeFacts(
   pull: PullFacts,
   policyDigest: string | null,
   mainMoved: TaskMergeSettings["mainMoved"],
+  risk: { head: string; approval: RiskApproval },
 ): MergeFacts {
   const acceptedHead = getWorkItem(db, itemId)?.acceptedHead ?? null;
   const { readiness } = pull;
@@ -325,7 +339,25 @@ function mergeFacts(
         : pull.review === "changes_requested"
           ? "changes_requested"
           : "satisfied",
+    // The approval was read for the published head. A head the lane rebased from it onto main
+    // is the same patch on a newer main, so it keeps the approval; any other head has none yet.
+    riskApproval:
+      pull.head === risk.head || (carried && risk.head === acceptedHead)
+        ? risk.approval
+        : "missing",
   };
+}
+
+/** Takes the item out of the merge queue and asks for the risk approval of S. */
+async function holdForRisk(
+  db: Database,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  published: MergePublication,
+): Promise<MergeStep> {
+  leaveMergeQueue(db, item.id);
+  wakeMergesBehind(db, caps.now());
+  return caps.askRiskApproval(item, published);
 }
 
 /**

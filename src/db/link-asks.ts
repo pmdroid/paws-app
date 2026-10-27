@@ -14,8 +14,9 @@ export const LINK_ASK_KINDS: readonly LinkAskKind[] = [
 /**
  * `approve` bypasses, accepts or approves; `changes` sends the item back with a note;
  * `answer` answers a question kind. `rethink`, `continue` and `stop` answer the
- * `rounds` kind once review attempts ran out. A Linear reply is none of the first
- * three; on a `rounds` ask it is `rethink` with the reply as the note.
+ * `rounds` kind once review attempts ran out; `stop` also stops a `risk` ask with its pull
+ * request left open. A Linear reply is none of the first three; on a `rounds` ask it is
+ * `rethink` with the reply as the note.
  */
 export type LinkAskDecision = "approve" | "changes" | "answer" | "rethink" | "continue" | "stop";
 
@@ -23,7 +24,7 @@ export type LinkAskDecision = "approve" | "changes" | "answer" | "rethink" | "co
 export const LINK_ASK_DECISIONS: Record<LinkAskKind, readonly LinkAskDecision[]> = {
   bypass: ["approve", "changes"],
   screenshots: ["approve", "changes"],
-  risk: ["approve", "changes"],
+  risk: ["approve", "changes", "stop"],
   question: ["answer"],
   rounds: ["rethink", "continue", "stop"],
 };

@@ -35,6 +35,8 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     policyDigest: unused("policyDigest"),
     packages: unused("packages"),
     assertReady: unused("assertReady"),
+    riskApproval: async () => "not_required",
+    askRiskApproval: unused("askRiskApproval"),
     session: () => "s-1",
     fetchMain: unused("fetchMain"),
     ciFixAttempts: () => 3,

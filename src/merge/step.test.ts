@@ -17,6 +17,7 @@ function facts(overrides: Partial<MergeFacts> = {}): MergeFacts {
     ci: "green",
     unresolvedThreads: 0,
     protection: "satisfied",
+    riskApproval: "not_required",
     ...overrides,
   };
 }
