@@ -4856,27 +4856,30 @@ export class Orchestrator {
       }
     }
     const repository = this.repositoryForItem(item);
+    // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
+    const profiles = resolveAgentProfiles(
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+      repository ? `${repository.owner}/${repository.repo}` : undefined,
+    );
     const run = insertRun(this.db, {
       itemId: item.id,
       now: this.now(),
       status: "active",
       kind: "implement",
-      agent: resolveAgentProfiles(
-        loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-        repository ? `${repository.owner}/${repository.repo}` : undefined,
-      ).implementer.agent,
+      agent: profiles.implementer.agent,
       freshSession: true,
     });
     if (item.currentRunId) {
-      const saved = this.readProfileSnapshot(item.currentRunId);
-      if (saved) {
-        mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
-        writeFileSync(
-          join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
-          JSON.stringify(saved),
-          { mode: 0o600 },
-        );
-      }
+      // Only an unannounced Settings switch carries over, while it still changes the agent.
+      const pending = this.readProfileSnapshot(item.currentRunId)?.settingsSwitch;
+      const settingsSwitch =
+        pending && pending.previousAgent !== profiles.implementer.agent ? pending : undefined;
+      mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
+      writeFileSync(
+        join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
+        JSON.stringify({ profiles, settingsSwitch }),
+        { mode: 0o600 },
+      );
     }
     setCurrentRun(this.db, item.id, run.id);
     return run;

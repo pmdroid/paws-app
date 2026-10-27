@@ -181,6 +181,46 @@ test("agent change announces once at session start, including after a new run", 
   ]);
 });
 
+test("a retry resolves profiles from Settings, not the previous run's snapshot", () => {
+  const f = fixture();
+  const failed = f.seed("running");
+  writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
+  const internals = f.orchestrator as unknown as {
+    ensureRun(item: WorkItemRecord): { id: string };
+    readProfileSnapshot(id: string): unknown;
+  };
+  const next = internals.ensureRun(getWorkItem(f.db, failed.item.id)!);
+  expect(next.id).not.toBe(failed.run.id);
+  expect(getWorkItem(f.db, failed.item.id)!.currentRunId).toBe(next.id);
+  expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles });
+  expect(JSON.parse(readFileSync(failed.file, "utf8"))).toEqual({
+    profiles: oldProfiles,
+    candidate: failed.candidate,
+  });
+});
+
+test("a pending agent switch announcement carries to a retry's new run", async () => {
+  const f = fixture();
+  const waiting = f.seed("awaiting_input");
+  await f.save(true);
+  const internals = f.orchestrator as unknown as {
+    ensureRun(item: WorkItemRecord): { id: string };
+    readProfileSnapshot(id: string): { settingsSwitch?: unknown } | null;
+  };
+  const pending = internals.readProfileSnapshot(waiting.run.id)!.settingsSwitch;
+  expect(pending).toMatchObject({ previousAgent: "claude" });
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [waiting.run.id]);
+  f.db.run("UPDATE work_item SET state='running' WHERE id=?", [waiting.item.id]);
+  const next = internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles, settingsSwitch: pending });
+  // Settings moved back to the original agent: there is no switch left to announce.
+  writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [next.id]);
+  const back = internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  expect(internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
+});
+
 test("model-only changes preserve candidate and do not announce an agent switch", () => {
   const f = fixture();
   const waiting = f.seed("paused");
