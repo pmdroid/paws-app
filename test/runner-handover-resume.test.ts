@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -239,6 +239,8 @@ async function setup() {
     submit(command, runners.a, { handedOver: true, candidateSha: wip });
     return wip;
   }
+  // A handed-over run waits for a runner until it stops, so every test stops its runs.
+  const stops = new Set<AbortController>();
   let sequence = 0;
   /** Both runners active, online and signed in to Claude; only A is free until `start` places. */
   function item() {
@@ -295,6 +297,7 @@ async function setup() {
     const prompts: string[] = [];
     db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
     const stop = new AbortController();
+    stops.add(stop);
     const running = backend
       .forItem(record.id)({
         profile: { agent: "claude", model: "model" },
@@ -338,6 +341,10 @@ async function setup() {
     events,
     submit,
     handOverTurn,
+    stopAll() {
+      for (const stop of stops) stop.abort();
+      stops.clear();
+    },
     cleanup() {
       db.close();
       rmSync(root, { recursive: true, force: true });
@@ -349,7 +356,11 @@ let context: Setup;
 beforeAll(async () => {
   context = await setup();
 });
-afterAll(() => context.cleanup());
+afterEach(() => context.stopAll());
+afterAll(() => {
+  context.stopAll();
+  context.cleanup();
+});
 
 test("a handed-over session continues on the second runner from its WIP commit, with its conversation", async () => {
   const { runners } = context;
@@ -404,7 +415,12 @@ test("a run that stops while it waits for a runner ends with the stop, not a fai
   const { running, stop, notices } = await context.handOverTurn(() =>
     db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]),
   );
-  while (!notices.some((notice) => notice.startsWith("Waiting"))) await delay(1);
+  for (
+    let index = 0;
+    index < 5000 && !notices.some((notice) => notice.startsWith("Waiting"));
+    index++
+  )
+    await delay(1);
   expect(notices.filter((notice) => notice.startsWith("Waiting"))).toEqual([
     "Waiting to move this session from A: No other runner is online. Paws moves it as soon as a runner fits.\n",
   ]);
