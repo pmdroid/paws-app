@@ -3,6 +3,14 @@ import type { RunnerCommand } from "../runner-protocol";
 
 /** First runner release that restores a Claude session snapshot before the agent starts. */
 export const CLAUDE_SESSION_RESTORE_RUNNER_VERSION = [0, 1, 43];
+/** First runner release that snapshots a Codex rollout at turn end and restores it. */
+export const CODEX_SESSION_RUNNER_VERSION = [0, 1, 45];
+
+/** The runner release each agent's restore needs. */
+const RESTORE_RUNNER_VERSION = new Map<string, number[]>([
+  ["claude", CLAUDE_SESSION_RESTORE_RUNNER_VERSION],
+  ["codex", CODEX_SESSION_RUNNER_VERSION],
+]);
 
 type RestoreSession = NonNullable<Extract<RunnerCommand, { type: "run" }>["restoreSession"]>;
 
@@ -75,11 +83,12 @@ export function planSessionRestore(
        WHERE run_id=? AND status='sealed' ORDER BY generation DESC LIMIT 1`,
     )
     .get(input.runId);
-  // Only Claude restores so far; a later agent's snapshot is not this run's session.
+  // Only Claude and Codex restore so far; another agent's snapshot is not this run's session.
+  const minimum = snapshot && RESTORE_RUNNER_VERSION.get(snapshot.agent);
   if (
     !snapshot ||
+    !minimum ||
     snapshot.agent !== input.agent ||
-    snapshot.agent !== "claude" ||
     !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(snapshot.sessionId)
   )
     return { eligible: false, failure: "no_snapshot" };
@@ -89,7 +98,7 @@ export function planSessionRestore(
        LEFT JOIN runner_host_status h ON h.runner_id=r.id WHERE r.id=?`,
     )
     .get(input.targetRunnerId);
-  if (!target || !versionAtLeast(target.version, CLAUDE_SESSION_RESTORE_RUNNER_VERSION))
+  if (!target || !versionAtLeast(target.version, minimum))
     return { eligible: false, failure: "old_runner" };
   if (target.ownerUserId !== snapshot.ownerUserId)
     return { eligible: false, failure: "other_account" };
@@ -111,7 +120,7 @@ export function planSessionRestore(
     eligible: true,
     restoreSession: {
       generation: snapshot.generation,
-      agent: "claude",
+      agent: snapshot.agent as RestoreSession["agent"],
       agentVersion: snapshot.agentVersion,
       sessionId: snapshot.sessionId,
       sha256: snapshot.sha256,
