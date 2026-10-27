@@ -251,6 +251,16 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
+              raw.type === "checkpoint"
+            ) {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (!parsed.success || parsed.data.type !== "checkpoint" || parsed.data.dropped)
+                throw new Error("Invalid runner checkpoint");
+              event = parsed.data;
+            } else if (
+              raw &&
+              typeof raw === "object" &&
+              "type" in raw &&
               ["question", "artifact", "closeout_policy"].includes(String(raw.type))
             )
               throw new Error("Invalid runner question");
@@ -374,6 +384,24 @@ export function openExecutionJournal(root: string) {
       const event = row && RunnerEventSchema.parse(JSON.parse(row.payload));
       if (!event || event.type !== "artifact")
         throw new Error("Dropped artifact does not match an unsent artifact");
+      const dropped = RunnerEventSchema.parse({ ...event, dropped: reason.slice(0, 1024) });
+      db.run("UPDATE delivery SET payload=? WHERE execution_id=? AND sequence=? AND sent=0", [
+        JSON.stringify(dropped),
+        id,
+        sequence,
+      ]);
+      return dropped;
+    },
+    /** Marks an unsent checkpoint as not published, so Paws never records its commit. */
+    dropCheckpoint(id: string, sequence: number, reason: string) {
+      const row = db
+        .query<{ payload: string }, [string, number]>(
+          "SELECT payload FROM delivery WHERE execution_id=? AND sequence=? AND sent=0",
+        )
+        .get(id, sequence);
+      const event = row && RunnerEventSchema.parse(JSON.parse(row.payload));
+      if (!event || event.type !== "checkpoint")
+        throw new Error("Dropped checkpoint does not match an unsent checkpoint");
       const dropped = RunnerEventSchema.parse({ ...event, dropped: reason.slice(0, 1024) });
       db.run("UPDATE delivery SET payload=? WHERE execution_id=? AND sequence=? AND sent=0", [
         JSON.stringify(dropped),

@@ -73,7 +73,8 @@ export function readRunnerResultFile(
     | "result.json"
     | "runtimes.json"
     | "session.json"
-    | `artifact-${string}.bytes`,
+    | `artifact-${string}.bytes`
+    | `checkpoint-${string}.bundle`,
 ): Buffer {
   const limits = {
     "candidate.bundle": 536_870_912,
@@ -88,7 +89,9 @@ export function readRunnerResultFile(
         name.endsWith(".bytes") &&
         RunnerArtifactSchema.shape.id.safeParse(name.slice(9, -6)).success
       ? RUNNER_ARTIFACT_LIMITS.video
-      : null;
+      : /^checkpoint-[a-f0-9]{40}\.bundle$/.test(name)
+        ? limits["candidate.bundle"]
+        : null;
   if (limit === null) throw new Error("Invalid runner result filename");
   const directory = openResults(options, executionId);
   let fd: number | undefined;

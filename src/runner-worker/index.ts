@@ -34,6 +34,7 @@ import {
   ArtifactRejectedError,
   commitCheckpoint,
   commitPolicyMessage,
+  snapshotWorktree,
   FOLLOW_UP_INTERRUPTION,
   createAcpPromptLifecycle,
   git,
@@ -68,6 +69,7 @@ import {
   readRunnerAnswer,
   runnerFollowUpRequestId,
   runnerHandoverRequestId,
+  runnerCheckpointRequestId,
 } from "../runner-answers";
 import {
   installRuntimes,
@@ -165,7 +167,16 @@ export interface RunnerWorkerOptions {
   handover?: (sequence: number, signal: AbortSignal) => Promise<{ deadline: number }>;
   /** How long each step after a handover's interrupt may take. Tests lower it. */
   handoverStepTimeoutMs?: number;
+  /** Resolves once Paws asks for the `sequence`th checkpoint of this run, before it stops it. */
+  checkpoint?: (sequence: number, signal: AbortSignal) => Promise<void>;
+  /** How often a running turn publishes a WIP commit when its worktree changed. Tests lower it. */
+  checkpointIntervalMs?: number;
 }
+
+/** A turn that runs this long loses at most this much work to a runner crash or upgrade. */
+export const CHECKPOINT_INTERVAL_MS = 20 * 60_000;
+
+export const CHECKPOINT_COMMIT_MESSAGE = "Save work in progress so far";
 
 /**
  * Each step after a handover stopped the agent, the WIP commit, the session snapshot and the
@@ -251,7 +262,8 @@ export type RunnerWorkerEvent =
           | "hook_failed"
           | "session_restore"
           | "handover"
-          | "handover_interrupted";
+          | "handover_interrupted"
+          | "checkpoint";
       }
     >;
 
@@ -1208,11 +1220,106 @@ export async function executeRunnerCommand(
         return "snapshot";
       }
     };
+    let checkpointed: string | undefined;
+    let checkpointing = Promise.resolve();
+    /**
+     * Publishes the worktree as a WIP commit on top of the branch, uncommitted changes included,
+     * without touching the agent's branch, index or files. The runtime pushes the bundle to the
+     * item's branch. An unchanged worktree publishes nothing; a stop Paws asked for still hears.
+     */
+    const checkpointWorktree = async (reason: "stop" | "interval") => {
+      const run = runCommand!;
+      try {
+        const snapshot = await snapshotWorktree(
+          worktree,
+          run.commitPolicy
+            ? commitPolicyMessage(CHECKPOINT_COMMIT_MESSAGE, run.commitPolicy)
+            : CHECKPOINT_COMMIT_MESSAGE,
+          env,
+          inputFiles.map((file) => file.path),
+          run.commitPolicy
+            ? appBotCommitIdentity(run.commitPolicy.bot)
+            : run.checkpointBot
+              ? appBotCommitIdentity(run.checkpointBot)
+              : undefined,
+        );
+        const key = `${snapshot.head}:${snapshot.tree}`;
+        if (snapshot.sha === run.repository.baseSha || key === checkpointed) {
+          if (reason === "stop") emit({ type: "checkpoint", reason });
+          return;
+        }
+        const name = `checkpoint-${snapshot.sha}.bundle`;
+        const path = join(options.outputDirectory, name);
+        const ref = `refs/paws/checkpoint-${randomUUID()}`;
+        await invokeGit(["-C", worktree, "update-ref", ref, snapshot.sha]);
+        try {
+          closeSync(outputFile(options.outputDirectory, name, options.resultsGid));
+          const bases = [
+            run.repository.baseSha,
+            ...(run.repository.mainSha ? [run.repository.mainSha] : []),
+          ];
+          await invokeGit([
+            "-C",
+            worktree,
+            "bundle",
+            "create",
+            path,
+            ref,
+            ...bases.map((base) => `^${base}`),
+          ]);
+          const bundle = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+          try {
+            const info = fstatSync(bundle);
+            if (!info.isFile() || info.size > 536_870_912)
+              throw new Error("Runner checkpoint exceeds size limit");
+            fchownSync(bundle, process.getuid!(), options.resultsGid);
+            fchmodSync(bundle, 0o640);
+            fsyncSync(bundle);
+          } finally {
+            closeSync(bundle);
+          }
+        } catch (error) {
+          rmSync(path, { force: true });
+          throw error;
+        } finally {
+          await invokeGit(["-C", worktree, "update-ref", "-d", ref]);
+        }
+        checkpointed = key;
+        emit({ type: "checkpoint", reason, sha: snapshot.sha });
+      } catch (error) {
+        journalCaught(error, "runner-worker.executeRunnerCommand.checkpoint", run.itemId);
+        if (reason === "stop") emit({ type: "checkpoint", reason });
+      }
+    };
+    const checkpoint = (reason: "stop" | "interval") =>
+      (checkpointing = checkpointing.then(() => checkpointWorktree(reason)));
+    /** The interval checkpoints, and the ones Paws asks for before it stops the run. */
+    const watchCheckpoints = (watch: AbortSignal) =>
+      Promise.allSettled([
+        (async () => {
+          for (;;) {
+            await delay(options.checkpointIntervalMs ?? CHECKPOINT_INTERVAL_MS, undefined, {
+              signal: watch,
+            });
+            await checkpoint("interval");
+          }
+        })(),
+        (async () => {
+          for (let sequence = 1; options.checkpoint; sequence++) {
+            await options.checkpoint(sequence, watch);
+            await checkpoint("stop");
+          }
+        })(),
+      ]);
     const interrupt = new AbortController();
     const watch = new AbortController();
     const handover =
       runCommand && options.handover && installFailure === undefined
         ? watchHandover(interrupt, watch.signal)
+        : undefined;
+    const checkpoints =
+      runCommand && runCommand.checkpoint !== false && installFailure === undefined
+        ? watchCheckpoints(watch.signal)
         : undefined;
     const current: RunAgentOptions = handover
       ? {
@@ -1236,6 +1343,9 @@ export async function executeRunnerCommand(
           : await runner(current);
     watch.abort();
     const interrupted = (await handover) === true;
+    // A checkpoint in progress finishes before the turn's own commit and result.
+    await checkpoints;
+    await checkpointing;
     let handoverReady = false;
     let handoverFailure: RunnerHandoverFailure | null = null;
     if (interrupted && (!run.cancelled || !run.agentExited || options.signal?.aborted))
@@ -1589,6 +1699,11 @@ export async function runRunnerWorker(options: {
               if (request) return { deadline: Number(request.answer) };
               await delay(250, undefined, { signal });
             }
+          },
+          async checkpoint(sequence: number, signal: AbortSignal) {
+            const requestId = runnerCheckpointRequestId(sequence);
+            while (!readRunnerAnswer(spool, options.executionId, requestId))
+              await delay(250, undefined, { signal });
           },
         }
       : {}),
