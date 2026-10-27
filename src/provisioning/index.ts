@@ -35,6 +35,7 @@ export {
   DEFAULT_MAX_RESPONSE_BYTES,
   DEFAULT_TIMEOUT_MS,
   EXE_DEV_ENDPOINT,
+  EXE_DEV_EXEC_LIMIT_MS,
 } from "./client";
 export type { ExeDevFetch, ExeDevOptions, ExeDevTokenReader } from "./client";
 export { createFakeExeDev, FAKE_UNSCRIPTED_EXIT } from "./fake";
