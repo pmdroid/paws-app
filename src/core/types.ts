@@ -9,8 +9,6 @@ export type RunKind = "plan" | "implement" | "fix" | "rebase" | "review" | "rech
 
 export type RunStatus = "provisioning" | "active" | "ended" | "lost";
 
-export type RiskTier = "low" | "medium" | "high";
-
 /** Execution record for one delegated issue. Linear remains the source of the brief. */
 export type WorkItem = {
   id: ItemId;

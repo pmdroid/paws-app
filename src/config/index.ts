@@ -45,6 +45,8 @@ export {
   MAIN_MOVED,
   MAX_CI_FIX_ATTEMPTS,
   MERGE_ORDERS,
+  highRiskPaths,
+  parseHighRiskPathSettings,
   parseMergePolicy,
   parseMergeSettings,
   readMergeSettings,
