@@ -340,11 +340,14 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
   const turn = context.turn(
     record,
     async (command) => {
-      const handing = context.backend.handOverItem(record.id);
-      wip = await context.handOver(command);
-      outcome = await handing;
-      // A is the only runner, so the session waits for another one until the run stops.
-      stop.abort();
+      try {
+        const handing = context.backend.handOverItem(record.id);
+        wip = await context.handOver(command);
+        outcome = await handing;
+      } finally {
+        // A is the only runner, so the session waits for another one until the run stops.
+        stop.abort();
+      }
     },
     undefined,
     stop.signal,
