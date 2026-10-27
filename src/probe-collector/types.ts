@@ -85,7 +85,8 @@ export type BreakCheck = {
  * `checked`: passes on origin/main and fails on every commit its sources name.
  * `misses_bug`: passes on a commit its sources say broke the rule.
  * `fails_on_main`: the rule may already be broken on origin/main.
- * `unverified`: passes on origin/main, and no source names a commit to check.
+ * `unverified`: passes on origin/main, and no source names a commit to check, or a named commit
+ *   could not be checked.
  */
 export type CheckStatus = "checked" | "misses_bug" | "fails_on_main" | "unverified";
 

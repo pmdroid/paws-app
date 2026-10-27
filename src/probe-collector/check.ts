@@ -71,10 +71,12 @@ export async function checkProbe(input: {
 }
 
 export function checkStatus(main: ProbeRun, breaks: readonly BreakCheck[]): CheckStatus {
-  const ran = breaks.filter((entry) => entry.run !== null);
-  if (ran.some((entry) => entry.run!.passed)) return "misses_bug";
+  if (breaks.some((entry) => entry.run?.passed)) return "misses_bug";
   if (!main.passed) return "fails_on_main";
-  return ran.length > 0 ? "checked" : "unverified";
+  // Checked only when every commit the sources name was run and the probe failed on it.
+  return breaks.length > 0 && breaks.every((entry) => entry.run !== null)
+    ? "checked"
+    : "unverified";
 }
 
 export function refLabel(ref: BreakRef): string {

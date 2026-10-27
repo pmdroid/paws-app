@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,13 +15,7 @@ import { journalCaught } from "../journal";
 import { replyOf } from "./agent";
 import { checkProbe } from "./check";
 import { distillPrompt, parseCandidates } from "./distill";
-import {
-  formatCandidate,
-  probesDir,
-  renderProposal,
-  statusLabel,
-  validateProposal,
-} from "./output";
+import { formatCandidate, renderProposal, statusLabel, validateProposal } from "./output";
 import { collectDocSources, collectPullSources, findingSources, numberSources } from "./sources";
 import type { AgentTurn, Candidate, ProposedRule, SkippedCandidate, StoredFinding } from "./types";
 import { probePath, resetWorktree, writeProbe } from "./write";
@@ -32,7 +26,7 @@ export type CollectOptions = {
   since: Date;
   /** Stop after the candidates are printed: no probe session, no files. */
   dryRun: boolean;
-  /** The YAML file to write. Probe scripts go in the directory next to it, see `probesDir`. */
+  /** The one file written: the proposed rules, each with its probe script as a comment. */
   out: string;
   github: { client: GitHubClient; tokenProvider: GitHubTokenProvider };
   turn: AgentTurn;
@@ -181,16 +175,13 @@ export async function collectProbes(options: CollectOptions): Promise<CollectRes
     return { main, candidates, rules, skipped, out: null };
   }
 
-  const scripts = probesDir(options.out);
-  const yaml = renderProposal({ repository, main, scriptsDir: scripts, rules, skipped });
+  const yaml = renderProposal({ repository, main, rules, skipped });
   const invalid = validateProposal(yaml, rules);
   if (invalid)
     throw new Error(`The proposed rules do not validate as a Closeout policy: ${invalid}`);
-  await mkdir(scripts, { recursive: true });
-  for (const rule of rules) await writeFile(join(scripts, `${rule.candidate.id}.ts`), rule.bytes);
   await writeFile(options.out, yaml);
   options.print(
-    `Wrote ${rules.length} proposed rules to ${options.out} and their probes to ${scripts}/.`,
+    `Wrote ${rules.length} proposed rules, with their probe scripts, to ${options.out}.`,
   );
   return { main, candidates, rules, skipped, out: options.out };
 }
