@@ -9,6 +9,7 @@ import type { PolicyFilesLoad } from "./policy/load";
 import { credentialSecrets, scrubCommandEnv } from "./run/env";
 import { scrubText } from "./run/scrub";
 import { git } from "./run/exec";
+import { executeProbe, PROBE_TIMEOUT_SECONDS } from "./run/probe";
 import { countEvidence, evidenceRequest, VISUAL_REVIEW_HINT } from "./evaluate/evaluate";
 import { publishedAtHead } from "./published";
 import type {
@@ -32,8 +33,34 @@ export type SessionCommandResult = {
   truncated: boolean;
 };
 
+/**
+ * A rule's probe result in the report that closes a turn. The host counts it only when the probe
+ * hash, argv, head and timeout match its own policy and candidate.
+ */
+export type SessionRuleResult = {
+  /** `probeArgv` of the rule at the base and head it ran against. */
+  argv: string[];
+  head: string;
+  /** SHA-256 of the probe bytes that ran, from the policy, never from the checkout. */
+  probeSha256: string;
+  /** Null when the probe could not start or timed out. */
+  exitCode: number | null;
+  timedOut: boolean;
+  dirty: boolean;
+  headMoved: boolean;
+  durationMs: number;
+  timeoutSeconds: number;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+};
+
 export type CloseoutSession = {
-  report(options?: { progress?: boolean }): Promise<string>;
+  /**
+   * `probes` runs each listed rule's probe and adds its result. Only the runner asks for it, when
+   * the turn ends; the agent's `get_closeout` and `run_closeout` never run a probe.
+   */
+  report(options?: { progress?: boolean; probes?: boolean }): Promise<string>;
   run(id: string, model?: string): Promise<string>;
 };
 
@@ -132,7 +159,12 @@ type Prepared =
     };
 
 /** A rule the change must keep. Listing it does not run its probe. */
-type ListedRule = { id: string; summary: string; matched_paths: string[] };
+type ListedRule = {
+  id: string;
+  summary: string;
+  matched_paths: string[];
+  result?: SessionRuleResult;
+};
 
 export function createCloseoutSession(
   workspace: string,
@@ -206,6 +238,8 @@ export function createCloseoutSession(
     report: (request) =>
       exclusive(async () => {
         const prepared = await prepare();
+        if (request?.probes && prepared.kind === "ready")
+          await runProbes(workspace, prepared, options);
         const report = reportOf(prepared, memory);
         if (request?.progress && checkedHead !== undefined)
           notifyReport(options, checkedHead, prepared, report);
@@ -344,9 +378,57 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   };
 }
 
+/**
+ * Run each listed rule's policy probe against the workspace and keep its result on the listing.
+ * The probe is written outside the workspace; see `executeProbe`.
+ */
+async function runProbes(
+  workspace: string,
+  prepared: Extract<Prepared, { kind: "ready" }>,
+  options: CloseoutSessionOptions,
+): Promise<void> {
+  if (prepared.rules.length === 0) return;
+  const base = await comparisonBase(workspace);
+  const current = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+  if (base === undefined || !current.ok) return;
+  const head = current.stdout.toString("utf8").trim();
+  const env = commandEnv({ runtimeBinPaths: options.runtimeBinPaths, basePath: options.basePath });
+  for (const listed of prepared.rules) {
+    const rule = prepared.policy.rules.find((entry) => entry.id === listed.id);
+    const bytes = rule && prepared.policy.probeFiles.get(rule.probe);
+    if (rule === undefined || bytes === undefined || options.signal?.aborted) continue;
+    const ran = await executeProbe({
+      rule,
+      bytes,
+      base,
+      head,
+      checkout: workspace,
+      timeoutSeconds: PROBE_TIMEOUT_SECONDS,
+      env,
+    });
+    listed.result = {
+      argv: ran.argv,
+      head,
+      probeSha256: ran.probeSha256,
+      exitCode: ran.exitCode,
+      timedOut: ran.timedOut,
+      dirty: ran.dirty,
+      headMoved: ran.headMoved,
+      durationMs: ran.durationMs,
+      timeoutSeconds: PROBE_TIMEOUT_SECONDS,
+      stdout: ran.stdout.slice(-24_000),
+      stderr: ran.stderr.slice(-24_000),
+      truncated: ran.truncated || ran.stdout.length > 24_000 || ran.stderr.length > 24_000,
+    };
+  }
+}
+
 function boundedReport(report: Record<string, unknown>): string {
   let text = JSON.stringify(report);
-  const entries = (report.required ?? []) as { result?: SessionCommandResult }[];
+  const entries = [
+    ...((report.required ?? []) as { result?: SessionCommandResult }[]),
+    ...((report.rules ?? []) as { result?: SessionRuleResult }[]),
+  ];
   while (Buffer.byteLength(text) > 60_000) {
     const streams = entries.flatMap(({ result }) =>
       result ? (["stdout", "stderr"] as const).map((key) => ({ result, key })) : [],
@@ -395,6 +477,9 @@ async function runId(
   options: CloseoutSessionOptions,
 ): Promise<string> {
   const { policy, required } = prepared;
+  if (policy.rules.some((rule) => rule.id === id)) {
+    return `Rule ${id} is not a check this session runs. Paws runs its probe from the Closeout policy after this turn.`;
+  }
   const known = [...policy.setup, ...policy.items].find((item) => item.id === id);
   if (known === undefined) return `No closeout check ${id}. Call get_closeout.`;
   const item = required.find((entry) => entry.id === id);

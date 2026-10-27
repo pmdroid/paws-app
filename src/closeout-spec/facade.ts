@@ -39,11 +39,10 @@ import {
   changedPaths as diffPaths,
   git,
   resolveCommit,
-  type PawsCommandRunner,
 } from "./run/exec";
 import { withRetryLock } from "./run/lock";
 import type { CloseoutProgress } from "./run/progress";
-import { runCloseoutCommands } from "./run/run";
+import { runCloseoutCommands, type CloseoutCommandPort } from "./run/run";
 import {
   SPEC_VERSION,
   type CandidateIdentity,
@@ -132,7 +131,7 @@ export type RunRequest = {
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
-  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
+  commandRunner?: CloseoutCommandPort;
   published?: readonly PublishedEvidence[];
   approvals?: readonly EvidenceApproval[];
 };
@@ -841,7 +840,10 @@ function needsPaths(policy: ResolvedPolicy, gate: Gate): boolean {
   const has = (paths: string[] | undefined) => paths !== undefined && paths.length > 0;
   return (
     policy.setup.some((step) => step.gate === gate && has(step.paths)) ||
-    policy.items.some((item) => item.gate === gate && has(item.paths))
+    policy.items.some((item) => item.gate === gate && has(item.paths)) ||
+    (gate === "beforePR" &&
+      policy.source !== "none" &&
+      (policy.rules ?? []).some((rule) => has(rule.paths)))
   );
 }
 
@@ -913,6 +915,10 @@ function treePresent(policy: TreePolicy): ResolvedPolicy {
     items: policy.items,
     files: policy.files,
   };
+  if (policy.rules.length > 0) {
+    resolved.rules = policy.rules;
+    resolved.probeFiles = policy.probeFiles;
+  }
   if (policy.retry !== undefined) resolved.retry = policy.retry;
   return resolved;
 }
