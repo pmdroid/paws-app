@@ -148,6 +148,11 @@ export interface RunAgentOptions {
   checkpoint?: boolean;
   mainSha?: string;
   resume?: { sessionId: string; replayPrompt: string };
+  /**
+   * A remote reviewer runs the agent's own review command of `base..HEAD` on its runner
+   * instead of an ACP turn. Its review text is the findings array.
+   */
+  reviewCommand?: { base: string };
 }
 
 export interface RunAgentResult {

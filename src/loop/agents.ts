@@ -237,6 +237,76 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
   };
 }
 
+/**
+ * The live gate's reviewer: the agent's own review command of `base..head` on the item's runner,
+ * in the run's checkout at `head`, with the runner's login. Codex runs `codex exec review --base`
+ * and Claude runs `/code-review`. Paws sends no brief, skill, diff or finding format with it, and
+ * the command's read-only review is the sandbox. The runner re-asks once, in the same review,
+ * when the final message is not a findings array.
+ */
+export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
+  let seq = 0;
+  return {
+    async review(request): Promise<ReviewResult> {
+      const prompt = `Review ${request.base}..${request.head} with the agent's review command.`;
+      const launch = deps.launch({
+        role: "reviewer",
+        profile: deps.profiles?.reviewer,
+        purpose: "review",
+        itemId: request.taskId,
+        worktree: request.worktree,
+        prompt,
+      });
+      seq += 1;
+      let text = "";
+      const result = await (deps.agentRunner ?? runAgent)({
+        repository: deps.repository,
+        role: "reviewer",
+        profile: deps.profiles?.reviewer,
+        itemId: request.taskId,
+        runId: `rev-${request.taskId}-${seq}`,
+        prompt,
+        worktreePath: request.worktree,
+        pawsRoot: deps.pawsRoot,
+        checkpoint: false,
+        readOnly: true,
+        // The diff base goes in the runner's bundle next to the head.
+        mainSha: request.base,
+        reviewCommand: { base: request.base },
+        ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
+        ...(deps.home ? { home: deps.home } : {}),
+        ...(deps.signal ? { signal: deps.signal } : {}),
+        ...spawnOf(launch),
+        onEvent(event) {
+          if (event.type === "progress" && !event.messageChunk)
+            void deps.postUpdate?.post(event.text).catch((caughtError) => {
+              journalCaught(caughtError, "agents.reviewCommand.post", request.itemId);
+              return undefined;
+            });
+          if (event.type !== "session_update") return;
+          if (event.update.sessionUpdate !== "agent_message_chunk") return;
+          if (event.update.content.type === "text") text += event.update.content.text ?? "";
+        },
+      });
+      if (!result.agentExited) deps.onCleanupFailure?.();
+      if (result.authRequired) throw new Error(result.errorMessage ?? "Reviewer login is missing");
+      if (
+        result.cancelled ||
+        result.timedOut ||
+        result.errorMessage !== undefined ||
+        result.stopReason !== "end_turn"
+      )
+        throw new Error(result.errorMessage ?? `Review did not complete: ${result.stopReason}`);
+      if (!result.identity) throw new Error("Reviewer did not report a concrete session model");
+      return {
+        ...result.identity,
+        findings: parseFindings(text),
+        ...(result.tokens === undefined ? {} : { tokens: result.tokens }),
+      };
+    },
+  };
+}
+
 export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
   return {
     async applyFix(request): Promise<FixResult> {

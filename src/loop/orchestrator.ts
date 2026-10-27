@@ -374,8 +374,8 @@ import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
-  createAcpCodexReviewer,
   closeoutChecksPrompt,
+  createReviewCommandReviewer,
   hiddenPathsPrompt,
   implementPrompt,
   POST_UPDATE_PROMPT,
@@ -2991,7 +2991,7 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    const reviewer = createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) });
+    const reviewer = createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,

@@ -136,6 +136,7 @@ export {
   parseFindings,
   parseReviewEvents,
   reviewArgv,
+  runReviewCommand,
 } from "./review/index";
 export type {
   FeedbackRecord,
@@ -143,6 +144,8 @@ export type {
   RecordedReview,
   FakeReviewCommandRunner,
   ReviewCommandAgent,
+  ReviewCommandOptions,
+  ReviewCommandOutcome,
   ReviewCommandReply,
   ReviewCommandRequest,
   ReviewCommandResult,

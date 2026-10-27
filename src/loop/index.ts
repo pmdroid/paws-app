@@ -32,6 +32,7 @@ export {
 export {
   createAcpCodexReviewer,
   createAcpFixRunner,
+  createReviewCommandReviewer,
   hiddenPathsPrompt,
   implementPrompt,
   parseFindings,
