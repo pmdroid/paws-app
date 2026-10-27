@@ -31,6 +31,10 @@ export type CloseoutStepWrite = {
   ordinal: number;
   durationMs?: number | null;
   tokens?: number | null;
+  /** A review's `failOn`. */
+  failOn?: "P0" | "P1" | "P2" | "P3" | null;
+  /** Indexes of the review record's findings that are in pre-existing code. */
+  preExisting?: readonly number[] | null;
 };
 
 export type CloseoutStepRecord = CloseoutStepWrite & {
@@ -85,6 +89,8 @@ type StepSql = {
   ordinal: number;
   duration_ms: number | null;
   tokens: number | null;
+  review_fail_on: "P0" | "P1" | "P2" | "P3" | null;
+  review_pre_existing: string | null;
 };
 
 export function ensureCloseoutProgress(
@@ -145,10 +151,13 @@ export function upsertCloseoutStep(
         | "truncated"
         | "duration_ms"
         | "tokens"
+        | "review_fail_on"
+        | "review_pre_existing"
       >,
       [string, string]
     >(
-      `SELECT command, ordinal, attempt, state, started_at, findings, truncated, duration_ms, tokens
+      `SELECT command, ordinal, attempt, state, started_at, findings, truncated, duration_ms, tokens,
+              review_fail_on, review_pre_existing
        FROM closeout_step WHERE progress_id = ? AND step_id = ?`,
     )
     .get(progressId, step.id);
@@ -164,13 +173,22 @@ export function upsertCloseoutStep(
   const durationMs = step.durationMs ?? (rerun ? null : (existing?.duration_ms ?? null));
   const tokens = step.tokens ?? (rerun ? null : (existing?.tokens ?? null));
   const truncated = clearOutput ? step.truncated : step.truncated || existing?.truncated === 1;
+  // A review keeps its marks until a new review of the step reports them again.
+  const failOn = step.failOn ?? (rerun ? null : (existing?.review_fail_on ?? null));
+  const preExisting =
+    step.preExisting != null
+      ? JSON.stringify(step.preExisting)
+      : rerun
+        ? null
+        : (existing?.review_pre_existing ?? null);
   immediate(db, () => {
     db.run(
       `INSERT INTO closeout_step (
          progress_id, step_id, kind, state, command, detail, attempt, timeout_seconds,
          started_at, finished_at, exit_code, timed_out, timeout_reason, stdout, stderr,
-         truncated, log_path, evidence_path, findings, ordinal, duration_ms, tokens
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)
+         truncated, log_path, evidence_path, findings, ordinal, duration_ms, tokens,
+         review_fail_on, review_pre_existing
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(progress_id, step_id) DO UPDATE SET
          kind = excluded.kind,
          state = excluded.state,
@@ -189,7 +207,9 @@ export function upsertCloseoutStep(
          findings = excluded.findings,
          ordinal = excluded.ordinal,
          duration_ms = excluded.duration_ms,
-         tokens = excluded.tokens`,
+         tokens = excluded.tokens,
+         review_fail_on = excluded.review_fail_on,
+         review_pre_existing = excluded.review_pre_existing`,
       [
         progressId,
         step.id,
@@ -211,6 +231,8 @@ export function upsertCloseoutStep(
         ordinal,
         durationMs,
         tokens,
+        failOn,
+        preExisting,
       ],
     );
     if (clearOutput) {
@@ -365,9 +387,22 @@ function mapStep(row: StepSql): CloseoutStepRecord {
     ordinal: row.ordinal,
     durationMs: row.duration_ms,
     tokens: row.tokens,
+    failOn: row.review_fail_on,
+    preExisting: indexes(row.review_pre_existing),
     stdout: row.stdout,
     stderr: row.stderr,
   };
+}
+
+function indexes(value: string | null): number[] | null {
+  if (value === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((entry): entry is number => Number.isInteger(entry) && entry >= 0);
+  } catch {
+    return null;
+  }
 }
 
 function progressKey(itemId: string, identity: CloseoutProgressIdentity): string {

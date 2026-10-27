@@ -63,6 +63,7 @@ import {
   type ReviewRequest,
   type ReviewResult,
   type Reviewer,
+  type Severity,
 } from "./types";
 
 const FETCH_TIMEOUT_MS = 120_000;
@@ -246,7 +247,13 @@ export function reviewRequirements(
 ):
   | {
       ok: true;
-      items: Array<{ id: string; gate: Gate; independence: Independence; parallel: boolean }>;
+      items: Array<{
+        id: string;
+        gate: Gate;
+        independence: Independence;
+        parallel: boolean;
+        failOn: Severity;
+      }>;
     }
   | { ok: false; message: string } {
   const loaded = loadOrigin(repo, home, policyRoot);
@@ -255,11 +262,12 @@ export function reviewRequirements(
     ok: true,
     items: loaded.policy.items
       .filter((item): item is ResolvedReview => item.kind === "review")
-      .map(({ id, gate, independence, parallel }) => ({
+      .map(({ id, gate, independence, parallel, failOn }) => ({
         id,
         gate,
         independence,
         parallel: parallel === true,
+        failOn,
       })),
   };
 }

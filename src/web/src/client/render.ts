@@ -39,6 +39,7 @@ import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "./format";
 import { emptyCloseoutView, renderCloseoutChecks, type CloseoutView } from "./closeout";
 import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-closeout";
+import { reviewFindingsSection } from "./review-findings";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
@@ -415,6 +416,7 @@ function issuePage(
       .join("")}
     ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
     ${verdict ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>` : ""}
+    ${verdict ? reviewFindingsSection(verdict, closeout) : ""}
     ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item.state)) : ""}
     ${run ? evidenceSlot(snapshot, run.id) : ""}
     ${fixRounds(snapshot, item, run)}

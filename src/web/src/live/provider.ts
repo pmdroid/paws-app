@@ -87,6 +87,7 @@ import {
 import { isTerminalWorkItemState } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
+import { reviewsOf } from "./reviews";
 import {
   STATUS_API_VERSION,
   agentCloseoutSummary,
@@ -277,9 +278,28 @@ function readItemDetail(
   id: string,
   options: LiveStatusOptions,
 ): StatusItemDetail | null {
-  const { snapshot, blocks } = readScopedSnapshot(db, options, id);
+  const { snapshot, blocks, records } = readScopedSnapshot(db, options, id);
   if (snapshot.items.length === 0) return null;
-  return { ...withoutOutputs(snapshot), id, blocks };
+  const detail = withoutOutputs(snapshot);
+  const env = options.env ?? process.env;
+  const pawsHome = options.pawsHome ?? env.PAWS_HOME;
+  if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks };
+  const progress = listCloseoutProgress(db);
+  return {
+    ...detail,
+    verdicts: detail.verdicts.map((verdict) => {
+      const record = records.find((entry) => publicId(entry) === verdict.itemId);
+      if (!record) return verdict;
+      const reviews = reviewsOf(
+        progress.filter((row) => row.itemId === record.id),
+        pawsHome,
+        env,
+      );
+      return reviews.length === 0 ? verdict : { ...verdict, reviews };
+    }),
+    id,
+    blocks,
+  };
 }
 
 /**
@@ -417,7 +437,7 @@ function readScopedSnapshot(
   db: Database,
   options: LiveStatusOptions,
   only?: string,
-): { snapshot: FullSnapshot; blocks: string[] } {
+): { snapshot: FullSnapshot; blocks: string[]; records: WorkItemRecord[] } {
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
   const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
@@ -433,7 +453,11 @@ function readScopedSnapshot(
       ? listedRecords(db, visible, facts, now.getTime())
       : visible.filter((record) => publicId(record) === only);
   if (records.length === 0)
-    return { snapshot: { ...emptyBase(now, options.project), verdicts: [] }, blocks: [] };
+    return {
+      snapshot: { ...emptyBase(now, options.project), verdicts: [] },
+      blocks: [],
+      records: [],
+    };
   const rows = listOutbox(db).filter(
     (row) =>
       options.sessionIds === undefined ||
@@ -535,7 +559,7 @@ function readScopedSnapshot(
               .map(publicId),
           ),
         ];
-  return { snapshot, blocks };
+  return { snapshot, blocks, records };
 }
 
 /** Dead outbox rows and dead jobs of the visible items, so none blocks a session unseen. */

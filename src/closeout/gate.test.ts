@@ -206,6 +206,7 @@ describe("closeout gate", () => {
             gate: "beforePR",
             independence: { differentSession: true, differentModel: true },
             parallel: false,
+            failOn: "P1",
           },
         ],
       });
@@ -571,6 +572,53 @@ describe("closeout gate", () => {
       expect(passed.tokens).toBe(48_000);
       expect(passed.durationMs).toBeGreaterThanOrEqual(35);
       expect(steps[0]!.durationMs ?? null).toBeNull();
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("the review step records failOn and which findings are in pre-existing code", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("adversarial-review")]),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    const steps: CloseoutProgressStep[] = [];
+    try {
+      await evaluateCandidate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        progress: {
+          begin() {},
+          step(_identity, step) {
+            if (step.kind === "review") steps.push(step);
+          },
+          output() {},
+          finish() {},
+        },
+        reviewer: {
+          async review() {
+            return {
+              session: "codex-session",
+              model: "codex",
+              provider: "openai",
+              findings: [
+                // base..head changes nothing, so a readable `path:line` is pre-existing.
+                { severity: "P1", location: "src/a.ts:3", explanation: "old", evidence: "seen" },
+                { severity: "P1", location: "src/b", explanation: "new", evidence: "seen" },
+              ],
+            };
+          },
+        },
+      });
+      const judged = steps.at(-1)!;
+      expect(judged.state).toBe("failed");
+      expect(judged.failOn).toBe("P1");
+      expect(judged.preExisting).toEqual([0]);
     } finally {
       await repo.cleanup();
     }
