@@ -69,10 +69,21 @@ export async function shutdownPaws(
   } catch (error) {
     const failures = error instanceof PawsStopError ? error.failures : [{ stage: "stop", error }];
     for (const failure of failures) {
-      const detail = failure.error instanceof Error ? failure.error.stack : String(failure.error);
-      journal(`Paws shutdown failed at ${failure.stage}: ${detail}`);
+      journal(`Paws shutdown failed at ${failure.stage}: ${errorDetail(failure.error)}`);
     }
     if (!(error instanceof PawsStopError && error.stateFlushed)) code = 1;
   }
   exit(code);
+}
+
+/**
+ * The error with its stack frames. Bun does not always put `Name: message` at the top of
+ * `stack`, so the cause leads the line whatever the stack holds.
+ */
+function errorDetail(error: unknown): string {
+  const head = String(error);
+  if (!(error instanceof Error) || !error.stack) return head;
+  if (error.stack.startsWith(head)) return error.stack;
+  const frames = error.stack.split("\n").filter((line) => line.trimStart().startsWith("at "));
+  return [head, ...frames].join("\n");
 }
