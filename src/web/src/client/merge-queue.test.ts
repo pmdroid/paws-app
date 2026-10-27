@@ -37,7 +37,7 @@ function item(id: string, title: string, repository: string, pr: number): Status
 
 function entry(
   itemId: string,
-  repository: string,
+  repository: string | null,
   position: number | null,
   waitingFor: StatusMergeEntry["waitingFor"],
   minutesAgo: number,
@@ -215,6 +215,24 @@ describe("merge queue page", () => {
     );
     expect(platform).toContain("No pull requests waiting.");
     expect(platform).not.toContain("<table");
+  });
+
+  test("a task with no known repository is under its own last section, not a repository name", () => {
+    const snapshot = twoRepositories();
+    snapshot.mergeQueue.push(entry("ENG-131", null, null, "ci", 1));
+    snapshot.items.push(item("ENG-131", "Lost repository", "acme/platform", 421));
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.snapshot.mergeQueue.at(-1)?.repository).toBeNull();
+    const html = page(parsed.snapshot);
+    const lost = html.slice(html.indexOf(">Repository not known</h2>"));
+    expect(html.indexOf(">Repository not known</h2>")).toBeGreaterThan(
+      html.indexOf(">acme/web</h2>"),
+    );
+    expect(lost).toContain("Paws has no repository for these tasks.");
+    expect(lost).not.toContain("Merge queue on");
+    expect(rowText(html, "ENG-131")).toStartWith("– ENG-131 Lost repository");
+    expect(html).not.toContain(">unknown<");
   });
 
   test("the empty state", () => {
