@@ -145,6 +145,25 @@ test("waiting eight hours for a slot on a busy runner keeps the task deferred wi
   expect(result.implementations, result.detail).toBe(0);
 }, 90_000);
 
+test("a busy runner wait wrapped by agent preparation keeps the task deferred without asking", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: () =>
+      new Error(`implementer preparation failed: ${busyRunner().message}`, {
+        cause: busyRunner(),
+      }),
+    times: Infinity,
+    clock,
+    untilMs: 3 * HOUR_MS,
+  });
+  expect(["running", "recovering"], result.detail).toContain(result.state!);
+  expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
+  expect(result.states, result.detail).not.toContain("failed");
+  expect(result.states, result.detail).not.toContain("awaiting_input");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.capacityWait, result.detail).toMatchObject({ runnerIds: ["runner-1"] });
+}, 90_000);
+
 test("a wait with no runner offered still stops the task after the hour and its retries", async () => {
   const clock = new FakeClock(Date.now());
   const result = await runWithFault({
