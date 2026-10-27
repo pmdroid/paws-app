@@ -1,4 +1,4 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, itemDetail } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -11,9 +11,8 @@ const HEAD = "7f65200aa1b2c3d4e5f60718293a4b5c6d7e8f90";
 
 /** The ENG-101 issue page from its item detail, with `risk` as the endpoint sends it. */
 function page(risk: StatusItemRisk | null): string {
-  const snapshot = statusFixture();
   const parsed = parseStatusItemDetail(
-    JSON.parse(JSON.stringify({ ...snapshot, id: "ENG-101", blocks: [], risk })),
+    JSON.parse(JSON.stringify({ ...itemDetail(fullStatusFixture(), "ENG-101"), risk })),
   );
   if (!parsed.ok) throw new Error(parsed.error);
   return render({
