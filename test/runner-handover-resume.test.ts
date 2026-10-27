@@ -12,12 +12,14 @@ import {
   consumeWorkspaceBootstrap,
   getWorkItem,
   insertQueuedItem,
+  listRunnerOverview,
   migrate,
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  syncWorkspaceMember,
 } from "../src/db";
-import { createRunnerControl } from "../src/runner-control";
+import { createRunnerControl, createRunnerSessionMoves } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
@@ -375,9 +377,15 @@ async function setup() {
   }
   return {
     db,
+    now,
     paws,
     git,
     runners,
+    backend,
+    principal,
+    workspaceId: workspace.id,
+    item,
+    handOver,
     next,
     events,
     submit,
@@ -517,4 +525,157 @@ test("after a restart the handed-over run still avoids the runner it left and wa
   expect(onB.repository.baseSha).toBe(wip);
   context.submit(onB, runners.b, { candidateSha: wip });
   expect(await resumed.running).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
+});
+
+/** Move to another runner on `runnerId`'s card, as the dashboard posts it. */
+function moveRequest(runnerId: string, runId: string) {
+  return new Request(`https://paws.test/api/runners/${runnerId}/sessions/${runId}/move`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+}
+
+/** The sessions `runnerId`'s card lists. */
+function card(runnerId: string) {
+  return (
+    listRunnerOverview(context.db, context.workspaceId, context.now).find(
+      (runner) => runner.id === runnerId,
+    )?.running ?? []
+  );
+}
+
+/** A turn running on A, with B paused until it lands there. */
+async function runningOnA(notices: string[] = []) {
+  const { db, runners } = context;
+  const record = context.item();
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  const { running } = context.turn(record, notices);
+  const onA = (await context.next(runners.a)) as RunCommand;
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  return { record, running, onA };
+}
+
+/** A ends the turn at the base commit, so the next test starts with A free. */
+async function finish(onA: RunCommand, running: Promise<unknown>) {
+  const base = context.git(["-C", context.paws, "rev-parse", "HEAD"]);
+  context.submit(onA, context.runners.a, { candidateSha: base });
+  expect(await running).toMatchObject({ stopReason: "end_turn", candidateSha: base });
+}
+
+/** The move route over the fixture's backend; every request here is its route. */
+function sessionMoves() {
+  const moves = createRunnerSessionMoves({
+    db: context.db,
+    handOver: (itemId, signal) => context.backend.handOverItem(itemId, signal),
+    now: () => context.now,
+  });
+  return {
+    settled: moves.settled,
+    async fetch(...args: Parameters<typeof moves.fetch>) {
+      const response = await moves.fetch(...args);
+      if (!response) throw new Error("The move route did not answer.");
+      return response;
+    },
+  };
+}
+
+test("an owner moves a session from its runner card, and it continues on the second runner", async () => {
+  const { runners } = context;
+  const moves = sessionMoves();
+  const { record, running, onA } = await runningOnA();
+  expect(card(runners.a)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
+
+  const response = await moves.fetch(moveRequest(runners.a, record.runId), context.principal);
+  expect(response.status).toBe(202);
+  expect(card(runners.a)[0]?.move).toEqual({ status: "moving", reason: null });
+  // Asking twice while it moves does not ask the runner again.
+  expect((await moves.fetch(moveRequest(runners.a, record.runId), context.principal)).status).toBe(
+    202,
+  );
+
+  const wip = await context.handOver(onA);
+  const onB = (await context.next(runners.b)) as RunCommand;
+  await moves.settled();
+  expect(onB.runId).toBe(onA.runId);
+  expect(onB.repository.baseSha).toBe(wip);
+  expect(onB.prompt).toContain("Paws moved this session to another runner");
+  // It left A's card and shows on B's, with no move pending.
+  expect(card(runners.a)).toEqual([]);
+  expect(card(runners.b)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
+  expect(await context.next(runners.a, 10)).toBeNull();
+
+  context.submit(onB, runners.b, { candidateSha: wip });
+  expect(await running).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
+});
+
+test("with no eligible runner the card row says why, as Linear hears it", async () => {
+  const { db, runners } = context;
+  const moves = sessionMoves();
+  const notices: string[] = [];
+  const { record, onA } = await runningOnA(notices);
+  db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id=?", [runners.b]);
+  expect((await moves.fetch(moveRequest(runners.a, record.runId), context.principal)).status).toBe(
+    202,
+  );
+  await context.handOver(onA);
+  await moves.settled();
+  for (let index = 0; index < 5000 && !notices.some((n) => n.startsWith("Waiting")); index++)
+    await delay(1);
+  expect(notices).toContain(
+    "Waiting to move this session from A: Sign in to Claude on another runner. Paws moves it as soon as a runner fits.\n",
+  );
+  expect(card(runners.a)).toMatchObject([
+    {
+      runId: record.runId,
+      movable: false,
+      move: { status: "waiting", reason: "Sign in to Claude on another runner." },
+    },
+  ]);
+});
+
+test("a member's or observer's move request is refused and the runner is not asked", async () => {
+  const { db, runners } = context;
+  const moves = sessionMoves();
+  const { record, running, onA } = await runningOnA();
+  for (const role of ["member", "observer"] as const) {
+    const userId = putWorkspaceUser(db, {
+      id: workspaceId(),
+      linearUserId: `${role}-${record.id}`,
+      name: role,
+      email: `${role}-${record.id}@example.invalid`,
+    });
+    syncWorkspaceMember(db, {
+      workspaceId: context.workspaceId,
+      userId,
+      role,
+      active: true,
+      teamIds: [],
+      now: context.now,
+    });
+    const response = await moves.fetch(moveRequest(runners.a, record.runId), {
+      ...context.principal,
+      userId,
+      role,
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "Only workspace owners and admins can move running work.",
+    });
+  }
+  await moves.settled();
+  expect(card(runners.a)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  await finish(onA, running);
+});
+
+test("a session that is not running on that runner is not moved", async () => {
+  const { runners } = context;
+  const moves = sessionMoves();
+  const { record, running, onA } = await runningOnA();
+  const response = await moves.fetch(moveRequest(runners.b, record.runId), context.principal);
+  expect(response.status).toBe(409);
+  expect(card(runners.a)[0]?.move).toBeNull();
+  expect(await context.next(runners.a, 50)).toBeNull();
+  await finish(onA, running);
 });
