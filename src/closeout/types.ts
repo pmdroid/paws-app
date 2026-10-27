@@ -44,6 +44,19 @@ export type ReviewFindings = {
   preExisting?: readonly Finding[];
 };
 
+/**
+ * A finding of a stored independent review round. `fixed` was not reported again by a later
+ * round; `open` was reported by the latest round. `path` is null when `location` is unreadable.
+ */
+export type StoredReviewFinding = {
+  reviewId: string;
+  severity: Finding["severity"];
+  location: string;
+  path: string | null;
+  explanation: string;
+  status: "fixed" | "open";
+};
+
 export type CandidateIdentity = {
   session: string;
   model: string;

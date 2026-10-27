@@ -18,6 +18,7 @@ import {
   type GateOutcome,
   type GateResult,
   type ReviewFindings,
+  type StoredReviewFinding,
 } from "./types";
 import { isSha, readHead } from "./worktree";
 import {
@@ -31,6 +32,8 @@ import {
   renderReviewPrompt,
   retryBaseline as readRetryBaseline,
   reviewRecordsSince,
+  parseLocation,
+  reviewRoundFindings,
   reviewRequirements,
   decision as decide,
   run,
@@ -568,6 +571,29 @@ export async function readReviewRounds(
   pawsHome?: string,
 ): Promise<ReviewRounds> {
   return summarizeReviewRounds(await reviewRecordsSince(evidencePath(taskId, pawsHome), baseline));
+}
+
+/**
+ * The independent review findings stored for a task, each marked `fixed` or `open` as the next
+ * review round would read them. `order` places a head in history; a larger number is later.
+ */
+export async function storedReviewFindings(
+  taskId: string,
+  order: (head: string) => number,
+  pawsHome?: string,
+): Promise<StoredReviewFinding[]> {
+  const findings = await reviewRoundFindings(evidencePath(taskId, pawsHome), order);
+  return findings.map((finding) => {
+    const location = parseLocation(finding.location);
+    return {
+      reviewId: finding.itemId,
+      severity: finding.severity,
+      location: finding.location,
+      path: location?.path ?? null,
+      explanation: finding.explanation,
+      status: finding.status,
+    };
+  });
 }
 
 async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise<string> {

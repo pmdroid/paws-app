@@ -282,6 +282,7 @@ export {
   ensureCloseoutProgress,
   finishCloseoutProgress,
   latestCloseoutIdentity,
+  closeoutHeadsStarted,
   closeoutPolicyDigest,
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
