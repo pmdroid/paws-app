@@ -78,8 +78,9 @@ export function isOpen(
   return view.open[checkKey(itemId, attempt, check.id)] ?? startsOpen(check);
 }
 
-/** Failed and running checks start open so their output is in view. */
+/** Failed and running checks start open so their output is in view, unless a person let them pass. */
 function startsOpen(check: StatusCheck): boolean {
+  if (check.approval?.state === "approved" || check.approval?.state === "bypassed") return false;
   return (
     check.state === "failed" ||
     check.state === "blocked" ||
@@ -145,16 +146,16 @@ export function renderCloseoutChecks(
     .join("");
   const shown = roundAttempt(attempts, attempt);
   const inRound = rounds.length > 1 ? ` in round ${attempt.round ?? 1}` : "";
+  // Repository rules have their own section; see `renderRuleResults`.
+  const checks = attempt.checks.filter((check) => check.kind !== "rule");
   const allOpen =
-    attempt.checks.length > 0 &&
-    attempt.checks.every((check) => isOpen(view, verdict.itemId, attempt.number, check));
-  const toggleAll = attempt.checks.length
+    checks.length > 0 &&
+    checks.every((check) => isOpen(view, verdict.itemId, attempt.number, check));
+  const toggleAll = checks.length
     ? `<button type="button" class="btn sm ghost" data-action="closeout-expand-all" data-item="${item}" data-attempt="${attempt.number}" aria-pressed="${allOpen}">${allOpen ? "Collapse all" : "Expand all"}</button>`
     : "";
-  const rows = attempt.checks.length
-    ? attempt.checks
-        .map((check) => checkRow(verdict, attempt, check, view, engineUrl, options))
-        .join("")
+  const rows = checks.length
+    ? checks.map((check) => checkRow(verdict, attempt, check, view, engineUrl, options)).join("")
     : '<div class="dim">No checks recorded for this attempt yet.</div>';
   const decision = attempt.decision;
   const accepted = decision === "accepted";
@@ -165,10 +166,15 @@ export function renderCloseoutChecks(
       : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on attempt ${shown} of ${verdict.maxAttempts}${inRound}`;
   const head = attempt.headSha ? ` on head ${esc(attempt.headSha.slice(0, 7))}` : "";
   const description = accepted
-    ? `All ${attempt.checks.length} checks passed${head}.${pr && itemState === "merge_queue" ? ` Pull request <a href="${esc(pr.url)}">#${pr.number}</a> is waiting to merge.` : itemState === "merged" ? " This change has merged." : ""}`
+    ? `All ${checks.length} checks passed${head}.${pr && itemState === "merge_queue" ? ` Pull request <a href="${esc(pr.url)}">#${pr.number}</a> is waiting to merge.` : itemState === "merged" ? " This change has merged." : ""}`
     : `${esc(
         attempt.checks
-          .filter((check) => ["failed", "blocked", "exhausted"].includes(check.state))
+          .filter(
+            (check) =>
+              ["failed", "blocked", "exhausted"].includes(check.state) &&
+              check.approval?.state !== "approved" &&
+              check.approval?.state !== "bypassed",
+          )
           .map((check) => check.id)
           .join(", ") || "Checks",
       )} ${decision === "running" ? "are running" : "did not pass"}${head}.`;
@@ -228,7 +234,7 @@ function checkRow(
   return `<div class="check-row" id="${anchor}">${head}${body}</div>`;
 }
 
-function checkBody(
+export function checkBody(
   verdict: StatusVerdict,
   attempt: StatusCloseoutAttempt,
   check: StatusCheck,
@@ -365,7 +371,7 @@ function tokenLabel(tokens: number): string {
   return `${Number((tokens / 1000).toFixed(1))}k tokens`;
 }
 
-function checkMark(state: string): string {
+export function checkMark(state: string): string {
   if (state === "passed") return "✓";
   if (state === "failed" || state === "blocked" || state === "exhausted") return "✕";
   if (state === "skipped") return "–";

@@ -542,7 +542,7 @@ function onClick(event: MouseEvent): void {
     paint();
   }
   if (action === "closeout-expand-all") {
-    const checks = closeoutChecks(itemId, attempt);
+    const checks = closeoutChecks(itemId, attempt).filter((check) => check.kind !== "rule");
     const open = !checks.every((check) => isOpen(closeout, itemId, attempt, check));
     for (const check of checks) closeout.open[checkKey(itemId, attempt, check.id)] = open;
     paint();

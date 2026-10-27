@@ -613,6 +613,84 @@ function check(
   return { id, kind, state, command, detail };
 }
 
+/** The probe hash every fixture rule ran with. */
+export const FIXTURE_PROBE_SHA = `sha256:${"3f9a1c27e4b0".repeat(5)}d2c4`;
+
+/**
+ * ENG-100's last Closeout attempt with repository rules: a pass, a probe failure, a rule waiting
+ * for approval, an approval, a bypass, and a rule whose paths matched none of the change.
+ */
+export function withRuleResults(full: FullStatus): FullStatus {
+  const head = "91fd0c4";
+  const rule = (id: string, state: StatusCheck["state"], exitCode: number, elapsedMs: number) =>
+    ran(
+      check(
+        id,
+        "rule",
+        state,
+        `bun .agents/probes/${id}.ts --base a1c9e07 --head ${head} --repo .`,
+        null,
+      ),
+      {
+        attempt: 3,
+        elapsedMs,
+        exitCode,
+        probeSha256: FIXTURE_PROBE_SHA,
+      },
+    );
+  const rules: StatusCheck[] = [
+    rule("migrations-append-only", "passed", 0, 640),
+    {
+      ...rule("restart-and-ask-from-loop", "failed", 1, 1_310),
+      stdout:
+        "src/merge/lane.ts:212 applies closeout_rejected outside src/loop\nsrc/merge/lane.ts:240 calls ask() outside src/loop\n",
+      findings:
+        "P1 finding: Only src/loop applies ejected or closeout_rejected, or opens a question.",
+    },
+    {
+      ...rule("api-contract", "failed", 1, 2_080),
+      stdout: 'src/web/src/contract.ts: StatusCheck.kind narrowed: removed "evidence"\n',
+      approval: {
+        state: "waiting",
+        questionId: "q-rule-100",
+        head,
+        by: null,
+        reason: null,
+        at: null,
+      },
+    },
+    {
+      ...rule("runner-protocol-strict", "failed", 1, 920),
+      approval: {
+        state: "approved",
+        questionId: null,
+        head,
+        by: "Ada Lovelace",
+        reason: "Runners on the last release ignore this event; the field is optional.",
+        at: "2026-10-09T21:02:00.000Z",
+      },
+    },
+    {
+      ...rule("closeout-policy-digest", "failed", 1, 450),
+      approval: {
+        state: "bypassed",
+        questionId: null,
+        head,
+        by: "Grace Hopper",
+        reason: "The policy digest changes on purpose in this commit.",
+        at: "2026-10-09T21:05:00.000Z",
+      },
+    },
+  ];
+  const verdict = full.verdicts.find((entry) => entry.itemId === "ENG-100")!;
+  const last = verdict.attempts!.at(-1)!;
+  last.checks = [...rules, ...last.checks];
+  last.skippedRules = ["runner-protocol-docs", "settings-copy"];
+  verdict.checks = [...rules, ...verdict.checks];
+  verdict.skippedRules = last.skippedRules;
+  return full;
+}
+
 /**
  * The data the dashboard has on `route`: the list of `full`, and on an issue page that issue's
  * detail. A run link opens its issue's page, as the dashboard redirects it.
