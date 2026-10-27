@@ -48,7 +48,7 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
-import { mainMoved } from "./queue-conflicts";
+import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { ciFixes, rebaseBudgetFor } from "./returns";
 import {
   laneTurn,
@@ -141,7 +141,7 @@ export async function advanceMerge(
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
-        mainMoved(db, { repository: queueName(repository), main: null, now: caps.now() });
+        checkQueueBehind(db, { repository: queueName(repository), main: null, now: caps.now() });
       return handed;
     }
   }
@@ -233,7 +233,7 @@ export async function advanceMerge(
   if (step.kind === "wait" && step.reason === "ci")
     return caps.stopped() ? { kind: "obsolete" } : step;
   if (turn.kind === "merged") {
-    mainMoved(db, {
+    checkQueueBehind(db, {
       repository: queueName(repository),
       main: turn.result.sha ?? null,
       now: caps.now(),
