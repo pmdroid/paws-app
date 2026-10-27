@@ -3,6 +3,7 @@ import {
   SPEC_VERSION,
   type PolicyFile,
   type ResolvedRequirement,
+  type ResolvedRule,
   type ResolvedSetup,
   type RetryPolicy,
 } from "../types";
@@ -30,6 +31,7 @@ export function policyCanonicalJson(policy: {
   files: readonly PolicyFile[];
   items: readonly ResolvedRequirement[];
   setup: readonly ResolvedSetup[];
+  rules?: readonly ResolvedRule[];
   retry?: RetryPolicy;
 }): string {
   const body: Record<string, unknown> = {
@@ -50,7 +52,24 @@ export function policyCanonicalJson(policy: {
     };
   }
   if (policy.setup.length > 0) body.setup = policy.setup.map(setupJson);
+  if (policy.rules !== undefined && policy.rules.length > 0)
+    body.rules = policy.rules.map(ruleJson);
   return canonicalJson(body);
+}
+
+function ruleJson(rule: ResolvedRule): Record<string, unknown> {
+  return withPaths(
+    {
+      id: rule.id,
+      probe: rule.probe,
+      probeSha256: rule.probeSha256,
+      exec: rule.exec,
+      summary: rule.summary,
+      failOn: rule.failOn,
+      onFail: rule.onFail,
+    },
+    rule.paths,
+  );
 }
 
 export function sortPolicyFiles(files: readonly PolicyFile[]): PolicyFile[] {

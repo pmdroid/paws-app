@@ -6,15 +6,23 @@ import { decodeUtf8, isRecord, parsePolicy } from "./document";
 import { checkPathPatterns, isSlug, repoPath } from "./paths";
 import type {
   PolicyFile,
+  PolicyRule,
   ResolvedCommand,
   ResolvedEvidence,
   ResolvedRequirement,
   ResolvedReview,
+  ResolvedRule,
   ResolvedSetup,
   RetryPolicy,
 } from "../types";
 
 export const PUBLIC_POLICY_PATH = ".agents/closeout.yaml";
+
+/**
+ * Most bytes of policy files Paws sends to the runner. A skill or a probe larger than this can
+ * never reach it, so a probe past it fails the load.
+ */
+export const POLICY_MAX_BYTES = 45_000;
 
 type TreeRead =
   | { status: "file"; bytes: Uint8Array }
@@ -26,6 +34,8 @@ type TreeList = { ok: true; paths: string[] } | { ok: false; message: string };
 type PolicyTree = {
   read(relativePath: string): TreeRead;
   listSkill(skillFile: string): TreeList;
+  /** True when the path, or a directory on the way to it, is a symlink. */
+  symlink(relativePath: string): boolean;
 };
 
 export type TreePolicy = {
@@ -34,6 +44,7 @@ export type TreePolicy = {
   digest: string;
   setup: ResolvedSetup[];
   items: ResolvedRequirement[];
+  rules: ResolvedRule[];
   files: PolicyFile[];
   retry?: RetryPolicy;
 };
@@ -61,6 +72,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     retry: undefined,
     setup: [],
     items: [],
+    rules: [],
     files: [],
     seenFiles: new Set<string>(),
     skillFiles: new Map(),
@@ -75,6 +87,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     files,
     items: state.items,
     setup: state.setup,
+    rules: state.rules,
     ...(state.retry !== undefined ? { retry: state.retry } : {}),
   });
   const policy: TreePolicy = {
@@ -83,6 +96,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     digest: `sha256:${sha256Text(canonical)}`,
     setup: state.setup,
     items: state.items,
+    rules: state.rules,
     files,
   };
   if (state.retry !== undefined) policy.retry = state.retry;
@@ -95,6 +109,7 @@ type WalkState = {
   retry: RetryPolicy | undefined;
   setup: ResolvedSetup[];
   items: ResolvedRequirement[];
+  rules: ResolvedRule[];
   files: PolicyFile[];
   seenFiles: Set<string>;
   ids: Set<string>;
@@ -123,6 +138,9 @@ function walk(
   if (prefix.length === 0) state.retry = document.retry;
   if (prefix.length > 0 && document.setup !== undefined && document.setup.length > 0) {
     return "setup is only allowed on the entry policy";
+  }
+  if (prefix.length > 0 && document.rules !== undefined && document.rules.length > 0) {
+    return "rules is only allowed on the entry policy";
   }
   if (!state.seenFiles.has(safe)) {
     state.seenFiles.add(safe);
@@ -215,7 +233,48 @@ function walk(
     if (paths.paths.length > 0) item.paths = paths.paths;
     state.items.push(item);
   }
+  for (const raw of document.rules ?? []) {
+    const rule = resolveRule(state, raw);
+    if (typeof rule === "string") return rule;
+    state.rules.push(rule);
+  }
   return undefined;
+}
+
+/**
+ * The probe is read from the policy tree: the `origin/main` commit of the entry, or the local
+ * or home policy root. Its hash joins `files`, so changing its bytes changes the digest.
+ */
+function resolveRule(state: WalkState, raw: PolicyRule): ResolvedRule | string {
+  if (!isSlug(raw.id)) return `invalid id ${raw.id}`;
+  if (state.ids.has(raw.id)) return `duplicate requirement id ${raw.id}`;
+  state.ids.add(raw.id);
+  const probe = repoPath(raw.probe);
+  if (probe === undefined) return `probe path is not repository-relative: ${raw.probe}`;
+  if (state.tree.symlink(probe)) return `probe is a symlink: ${probe}`;
+  const read = state.tree.read(probe);
+  if (read.status === "missing") return `probe is missing: ${probe}`;
+  if (read.status === "error") return `${probe}: ${read.message}`;
+  if (read.bytes.byteLength > POLICY_MAX_BYTES)
+    return `probe is larger than ${POLICY_MAX_BYTES} bytes: ${probe}`;
+  const paths = checkPathPatterns(raw.paths ?? []);
+  if (!paths.ok) return paths.message;
+  const sha256 = sha256Hex(read.bytes);
+  if (!state.seenFiles.has(probe)) {
+    state.seenFiles.add(probe);
+    state.files.push({ path: probe, sha256 });
+  }
+  const rule: ResolvedRule = {
+    id: raw.id,
+    probe,
+    probeSha256: sha256,
+    exec: raw.exec ?? ["bun"],
+    summary: raw.summary,
+    failOn: raw.failOn,
+    onFail: raw.onFail ?? "fix",
+  };
+  if (paths.paths.length > 0) rule.paths = paths.paths;
+  return rule;
 }
 
 function hashSkills(state: WalkState): string | undefined {
@@ -254,6 +313,9 @@ function memoryTree(files: ReadonlyMap<string, Uint8Array>): PolicyTree {
       }
       return { ok: true, paths };
     },
+    symlink() {
+      return false;
+    },
   };
 }
 
@@ -283,6 +345,25 @@ function fsTree(root: string): PolicyTree {
     },
     listSkill(skillFile) {
       return listSkillFiles(rootAbs, skillFile);
+    },
+    symlink(relativePath) {
+      if (repoPath(relativePath) === undefined) return false;
+      let current = rootAbs;
+      for (const segment of relativePath.split("/")) {
+        current = join(current, segment);
+        try {
+          if (lstatSync(current).isSymbolicLink()) return true;
+        } catch (caughtError5) {
+          journalCaught(
+            caughtError5,
+            "resolve.symlink.lstatSync",
+            null,
+            "optional file may be absent",
+          );
+          return false;
+        }
+      }
+      return false;
     },
   };
 }
@@ -348,7 +429,8 @@ function listSkillFiles(root: string, skillFile: string): TreeList {
   return { ok: true, paths: found };
 }
 
-export function enqueuePolicyPaths(value: unknown, pending: string[]): void {
+/** Queues imports, skills and probes. Probes are also added to `probes`, which are not YAML. */
+export function enqueuePolicyPaths(value: unknown, pending: string[], probes?: Set<string>): void {
   if (!isRecord(value)) return;
   if (Array.isArray(value.imports)) {
     for (const entry of value.imports) {
@@ -358,6 +440,13 @@ export function enqueuePolicyPaths(value: unknown, pending: string[]): void {
   if (Array.isArray(value.items)) {
     for (const item of value.items) {
       if (isRecord(item) && typeof item.skill === "string") pending.push(item.skill);
+    }
+  }
+  if (Array.isArray(value.rules)) {
+    for (const rule of value.rules) {
+      if (!isRecord(rule) || typeof rule.probe !== "string") continue;
+      pending.push(rule.probe);
+      probes?.add(rule.probe);
     }
   }
 }

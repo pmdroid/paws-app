@@ -257,6 +257,7 @@ function present(
     entryPath,
     setup: policy.setup,
     items: policy.items,
+    rules: policy.rules,
     files: policy.files,
   };
   if (policy.retry !== undefined) resolved.retry = policy.retry;
@@ -318,6 +319,7 @@ function materialize(
   const files = new Map<string, Uint8Array>();
   const pending = [PUBLIC_POLICY_PATH];
   const seen = new Set<string>();
+  const probes = new Set<string>();
   while (pending.length > 0) {
     const relative = pending.pop();
     if (relative === undefined) break;
@@ -328,6 +330,8 @@ function materialize(
     if (!listed.ok) return { ok: false, message: "could not read the policy file" };
     const blob = listed.blobs.find((entry) => entry.path === relative);
     if (blob === undefined) continue;
+    if (blob.mode === "120000" && probes.has(relative))
+      return { ok: false, message: `probe is a symlink: ${relative}` };
     if (!regularMode(blob.mode))
       return { ok: false, message: `policy path is not a file: ${relative}` };
     const read = git.readBlob(repo, blob.object);
@@ -337,11 +341,11 @@ function materialize(
       const slash = relative.lastIndexOf("/");
       const copied = copyTree(git, repo, commit, files, relative.slice(0, slash));
       if (!copied.ok) return copied;
-    } else {
+    } else if (!probes.has(relative)) {
       const text = decodeUtf8(read.bytes);
       if (text !== undefined) {
         const parsed = tryParseYamlValue(text);
-        if (parsed !== undefined) enqueuePolicyPaths(parsed, pending);
+        if (parsed !== undefined) enqueuePolicyPaths(parsed, pending, probes);
       }
     }
   }

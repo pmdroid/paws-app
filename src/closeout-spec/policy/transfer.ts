@@ -1,10 +1,10 @@
 import { journalCaught } from "../../journal";
 import { z } from "zod";
 import type { PolicyFilesLoad } from "./load";
+import { POLICY_MAX_BYTES } from "./resolve";
 import type { PublishedEvidence } from "../types";
 
 const MAX_FILES = 128;
-const MAX_BYTES = 45_000;
 const MAX_PUBLISHED = 200;
 
 const Transfer = z.union([
@@ -34,7 +34,7 @@ export function encodePolicyFiles(load: PolicyFilesLoad): string {
     return JSON.stringify({ error: load.message.slice(0, 4096) || "policy unavailable" });
   if (load.absent) return JSON.stringify({ absent: true });
   const size = [...load.files.values()].reduce((total, bytes) => total + bytes.byteLength, 0);
-  if (load.files.size > MAX_FILES || size > MAX_BYTES)
+  if (load.files.size > MAX_FILES || size > POLICY_MAX_BYTES)
     return JSON.stringify({ error: "The Closeout policy is too large to send to the runner" });
   return JSON.stringify({
     digest: load.digest,
