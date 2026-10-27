@@ -26,12 +26,14 @@ import {
   type ResolvedItem,
   type ResolvedPolicy,
   type ResolvedReview,
+  type ResolvedRule,
   type ResolvedSetup,
   type RetryPolicy,
   type ReviewRecord,
   type Severity,
 } from "../index";
 import { evidenceAttemptKey } from "../retry";
+import { probeArgv, probeArtifactPath } from "../rule-result";
 import { isPreExisting, type ChangedLines } from "../review/changed";
 import { anyPathMatches } from "./paths";
 import { producerTrusted, type EvaluateTrust } from "./trust";
@@ -96,6 +98,18 @@ export type EvaluateRequest = {
   published?: readonly PublishedEvidence[];
   approvals?: readonly EvidenceApproval[];
 };
+
+/**
+ * A rule judged like a command at `beforePR`. Its record's argv is {@link probeArgv} at that
+ * record's own base and head, and the record lists the probe it ran with the policy's hash.
+ */
+export type RuleRequirement = ResolvedRule & { kind: "rule" };
+
+export function ruleRequirement(rule: ResolvedRule): RuleRequirement {
+  return { ...rule, kind: "rule" };
+}
+
+type Judged = ResolvedItem | RuleRequirement;
 
 export function decisionExit(decision: DecisionName): 0 | 1 | 3 {
   if (decision === "accepted") return 0;
@@ -188,6 +202,13 @@ export function evaluate(
     }
     items.push(result);
   }
+  if (request.gate === "beforePR") {
+    for (const rule of policy.rules ?? []) {
+      const result = judgeItem(ruleRequirement(rule), policy, records, request, trust);
+      if (result.message === "changed paths are unavailable") pathsUnreadable = true;
+      items.push(result);
+    }
+  }
 
   const decision = decide(items);
   const document: DecisionDocument = {
@@ -212,7 +233,7 @@ function decide(items: readonly DecisionItem[]): DecisionName {
 }
 
 function judgeItem(
-  item: ResolvedItem,
+  item: Judged,
   policy: ResolvedPolicy,
   records: readonly EvidenceRecord[],
   request: EvaluateRequest,
@@ -294,7 +315,7 @@ type RetryTally = {
 
 /** Failed attempts for `item` under its retry policy, counted as {@link retryBlock} counts them. */
 function retryTally(
-  item: ResolvedItem,
+  item: Judged,
   retry: RetryPolicy | undefined,
   digest: string,
   records: readonly EvidenceRecord[],
@@ -336,7 +357,7 @@ function retryTally(
 }
 
 export function retryBlock(
-  item: ResolvedItem,
+  item: Judged,
   retry: RetryPolicy | undefined,
   digest: string,
   records: readonly EvidenceRecord[],
@@ -403,7 +424,7 @@ function findingKey(location: string): string {
 }
 
 function recordFailed(
-  item: ResolvedItem,
+  item: Judged,
   record: EvidenceRecord,
   request: EvaluateRequest,
   trust: EvaluateTrust | undefined,
@@ -412,11 +433,15 @@ function recordFailed(
 }
 
 function judgeRecord(
-  item: ResolvedItem,
+  item: Judged,
   record: EvidenceRecord,
   request: EvaluateRequest,
   trust: EvaluateTrust | undefined,
 ): DecisionItem {
+  if (isRule(item)) {
+    if (record.recordType !== "command") return kindMismatch(item, record.attempt);
+    return judgeRule(item, record, trust);
+  }
   if (isCommandLike(item)) {
     if (record.recordType !== "command") return kindMismatch(item, record.attempt);
     return judgeCommand(item, item.exec, record, item.kind === "setup", trust);
@@ -532,8 +557,38 @@ function judgeCommand(
   return applyExec(item, record.exec, allowDirty, attempt);
 }
 
+/**
+ * A rule result passes when the policy's probe exited 0 against a clean checkout at its head. A
+ * non-zero exit is a finding at the rule's `failOn`.
+ */
+function judgeRule(
+  item: RuleRequirement,
+  record: CommandRecord,
+  trust: EvaluateTrust | undefined,
+): DecisionItem {
+  const attempt = record.attempt;
+  if (!producerTrusted(record.producer.name, record.producer.version, trust)) {
+    return row(item, "untrusted", "rule result producer is not trusted", attempt);
+  }
+  if (!argvEquals(record.exec.argv, probeArgv(item, record.base, record.head))) {
+    return row(item, "invalid", "rule result does not match the probe argv", attempt);
+  }
+  const probe = probeArtifactPath(item.probeSha256, item.probe);
+  if (
+    !record.artifacts.some(
+      (artifact) => artifact.path === probe && artifact.sha256 === item.probeSha256,
+    )
+  ) {
+    return row(item, "invalid", "rule result does not match the policy probe hash", attempt);
+  }
+  const judged = applyExec(item, record.exec, false, attempt);
+  if (judged.state !== "failed") return judged;
+  const message = judged.message.replace(/^command /, "probe ");
+  return row(item, "failed", `${message}; ${item.failOn} finding: ${item.summary}`, attempt);
+}
+
 function applyExec(
-  item: ResolvedItem,
+  item: Judged,
   exec: CommandExec,
   allowDirty: boolean,
   attempt: number,
@@ -627,7 +682,7 @@ function severityRank(severity: Severity): number {
   }
 }
 
-function kindMismatch(item: ResolvedItem, attempt: number): DecisionItem {
+function kindMismatch(item: Judged, attempt: number): DecisionItem {
   return row(item, "invalid", "evidence kind does not match the requirement", attempt);
 }
 
@@ -680,26 +735,25 @@ function warningsFor(policy: ResolvedPolicy): DecisionWarning[] {
   ];
 }
 
-function row(
-  item: ResolvedItem,
-  state: ItemState,
-  message: string,
-  attempt?: number,
-): DecisionItem {
+function row(item: Judged, state: ItemState, message: string, attempt?: number): DecisionItem {
   const result: DecisionItem = { id: item.id, kind: item.kind, state, message };
   if (attempt !== undefined) result.attempt = attempt;
   return result;
 }
 
-function isUnsupported(item: ResolvedItem): item is ResolvedItem & { supported: false } {
+function isUnsupported(item: Judged): item is ResolvedItem & { supported: false } {
   return "supported" in item;
 }
 
-function isCommandLike(item: ResolvedItem): item is ResolvedCommand | ResolvedSetup {
+function isCommandLike(item: Judged): item is ResolvedCommand | ResolvedSetup {
   return !isUnsupported(item) && (item.kind === "command" || item.kind === "setup");
 }
 
-function isReview(item: ResolvedItem): item is ResolvedReview {
+function isRule(item: Judged): item is RuleRequirement {
+  return item.kind === "rule" && "probeSha256" in item;
+}
+
+function isReview(item: Judged): item is ResolvedReview {
   return !isUnsupported(item) && item.kind === "review";
 }
 

@@ -34,10 +34,12 @@ export type { OpenFinding, ReviewRoundSummary, ReviewRounds } from "./rounds";
 export {
   CloseoutResultMissingError,
   loggedSessionCloseout,
+  loggedSessionProbe,
   readSessionCloseout,
   sessionCloseoutAccepted,
   sessionCloseoutPath,
   sessionCloseoutResult,
+  sessionProbeResult,
   writeSessionCloseout,
 } from "./session-report";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";

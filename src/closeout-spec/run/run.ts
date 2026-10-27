@@ -1,7 +1,7 @@
 import { journalCaught } from "../../journal";
 import { checkoutPatterns, exclusionPatterns } from "../../worktree-checkout";
-import { mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type {
   CandidateIdentity,
   CommandExec,
@@ -12,9 +12,10 @@ import type {
   ResolvedCommand,
   ResolvedPolicy,
   ResolvedReview,
+  ResolvedRule,
   ResolvedSetup,
 } from "../types";
-import { evaluate, retryBlock } from "../evaluate/evaluate";
+import { evaluate, retryBlock, ruleRequirement, type RuleRequirement } from "../evaluate/evaluate";
 import { SPEC_VERSION } from "../types";
 import {
   changedPaths,
@@ -28,6 +29,14 @@ import {
 import { credentialSecrets, scrubCommandEnv } from "./env";
 import { withRetryLock } from "./lock";
 import { matchPaths } from "./paths";
+import {
+  createProbeRunner,
+  PROBE_TIMEOUT_SECONDS,
+  probeArgv,
+  probeArtifactPath,
+  probeSha256,
+  type ProbeRunner,
+} from "./probe";
 import type { CloseoutProgress, CloseoutProgressIdentity, CloseoutProgressStep } from "./progress";
 import { scrubText } from "./scrub";
 
@@ -36,6 +45,9 @@ export const PAWS_CLOSEOUT_PRODUCER = {
   name: "paws-closeout",
   version: "0.1.0",
 } as const;
+
+/** Runs setup steps and commands, and rule probes when it has `runProbe`. */
+export type CloseoutCommandPort = Pick<PawsCommandRunner, "runLogged"> & Partial<ProbeRunner>;
 
 export type CommandDisposition = {
   id: string;
@@ -70,7 +82,11 @@ export type CloseoutRunInput = {
   /** Parent environment for setup steps and commands. Credentials are removed. */
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
-  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
+  /**
+   * Runs setup steps and commands. A runner without `runProbe` has no rule results, so every
+   * in-scope rule stays missing. Without `commandRunner`, probes run on this machine.
+   */
+  commandRunner?: CloseoutCommandPort;
   retryBaseline?: readonly string[];
 };
 
@@ -128,10 +144,14 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     const steps = input.policy.setup.filter((step) => step.gate === gate);
     const commands = input.policy.items.filter(isCommand).filter((item) => item.gate === gate);
     const reviews = input.policy.items.filter(isReview).filter((item) => item.gate === gate);
-    const actions = classifyAll(steps, commands, changed, input, base, head, records);
+    const actions = [
+      // Rules first, so the probes see the pristine checkout and not files a setup step left.
+      ...classifyRules(gate, changed, input, base, head, records),
+      ...classifyAll(steps, commands, changed, input, base, head, records),
+    ];
     const identity = progressIdentity(input, base, head);
     publishPlan(input.progress, identity, actions, reviews);
-    if (!actions.some((action) => action.kind === "run")) {
+    if (actions.every((action) => action.kind === "skip")) {
       return { dispositions: skips(actions) };
     }
 
@@ -152,6 +172,8 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
       return { blocked: "could not create a worktree at the candidate commit", dispositions: [] };
     }
     const runner = input.commandRunner ?? createCommandRunner({ env: input.env });
+    const probes: Partial<ProbeRunner> =
+      input.commandRunner ?? createProbeRunner({ env: input.env });
     const dispositions: CommandDisposition[] = [];
     let stop = false;
     try {
@@ -166,6 +188,26 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
       for (const action of actions) {
         if (action.kind === "skip") {
           dispositions.push(action.disposition);
+          continue;
+        }
+        if (action.kind === "rule") {
+          const ran = await runRule(
+            probes,
+            input,
+            action.rule,
+            tree,
+            base,
+            head,
+            records,
+            identity,
+            ordinalOf(actions, action.item.id),
+          );
+          dispositions.push({
+            id: action.rule.id,
+            kind: "rule",
+            state: "ran",
+            message: ran === undefined ? "no probe result" : execMessage(ran, false),
+          });
           continue;
         }
         if (stop) {
@@ -235,7 +277,41 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
 
 type Action =
   | { kind: "run"; item: Runnable }
+  | { kind: "rule"; item: Runnable; rule: ResolvedRule }
   | { kind: "skip"; item: Runnable; disposition: CommandDisposition };
+
+/**
+ * Rules in scope at the `beforePR` gate. A rule runs whether or not setup passed: its probe does
+ * not use the candidate's dependencies.
+ */
+function classifyRules(
+  gate: Gate,
+  changed: readonly string[] | null,
+  input: CloseoutRunInput,
+  base: string,
+  head: string,
+  records: EvidenceRecord[],
+): Action[] {
+  if (gate !== "beforePR" || input.policy.source === "none") return [];
+  return (input.policy.rules ?? []).map((rule) => {
+    const item = ruleStep(rule, base, head);
+    const decision = classify(ruleRequirement(rule), changed, false, input, base, head, records);
+    if (decision.kind === "skip")
+      return { kind: "skip", item, disposition: { ...decision.disposition, kind: "rule" } };
+    return { kind: "rule", item, rule };
+  });
+}
+
+/** A rule as a progress step. Rules have no step kind of their own yet. */
+function ruleStep(rule: ResolvedRule, base: string, head: string): ResolvedCommand {
+  return {
+    id: rule.id,
+    kind: "command",
+    gate: "beforePR",
+    exec: probeArgv(rule, base, head),
+    timeoutSeconds: PROBE_TIMEOUT_SECONDS,
+  };
+}
 
 function classifyAll(
   steps: readonly ResolvedSetup[],
@@ -270,7 +346,7 @@ type Classified =
   | { kind: "skip"; stop: boolean; disposition: CommandDisposition };
 
 function classify(
-  item: Runnable,
+  item: Runnable | RuleRequirement,
   changed: readonly string[] | null,
   setupStopped: boolean,
   input: CloseoutRunInput,
@@ -404,10 +480,114 @@ async function runOne(
   return record.exec;
 }
 
+/**
+ * Run one rule's probe and store its result as a command record. The record's argv is
+ * {@link probeArgv}, and its artifacts are the log and the probe that ran, named by that probe's
+ * hash. No result stores nothing, so the rule stays missing.
+ */
+async function runRule(
+  probes: Partial<ProbeRunner>,
+  input: CloseoutRunInput,
+  rule: ResolvedRule,
+  checkout: string,
+  base: string,
+  head: string,
+  records: EvidenceRecord[],
+  identity: CloseoutProgressIdentity,
+  ordinal: number,
+): Promise<CommandExec | undefined> {
+  const digest = input.policy.digest ?? "";
+  const step = ruleStep(rule, base, head);
+  const attempt = nextAttempt(records, rule.id, head, digest);
+  const relative = artifactRelative(digest, head, rule.id, attempt);
+  const startedAt = Date.now();
+  input.progress?.step(identity, {
+    ...blankStep(step, ordinal),
+    state: "running",
+    attempt,
+    startedAt,
+    logPath: relative,
+    evidencePath: evidenceRelative(digest, head, rule.id, attempt),
+  });
+  const bytes =
+    input.policy.source === "none" ? undefined : input.policy.probeFiles?.get(rule.probe);
+  const ran = await probes.runProbe?.({
+    rule,
+    bytes,
+    base,
+    head,
+    checkout,
+    argv: step.exec,
+    timeoutSeconds: PROBE_TIMEOUT_SECONDS,
+    logFile: join(input.evidenceDir, ...relative.split("/")),
+    artifactPath: relative,
+    onOutput: (stream, text, truncated) => {
+      input.progress?.output(identity, rule.id, stream, text, truncated);
+    },
+  });
+  if (ran === undefined) {
+    input.progress?.step(identity, {
+      ...blankStep(step, ordinal),
+      state: "blocked",
+      detail: "no probe result",
+      finishedAt: Date.now(),
+    });
+    return undefined;
+  }
+  const probe = probeArtifactPath(ran.probeSha256, rule.probe);
+  if (bytes !== undefined && probeSha256(bytes) === ran.probeSha256) {
+    const file = join(input.evidenceDir, ...probe.split("/"));
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    writeFileSync(file, bytes, { mode: 0o600 });
+  }
+  const task = input.candidate.task;
+  const record: CommandRecord = {
+    specVersion: SPEC_VERSION,
+    recordType: "command",
+    ...(task !== undefined && task.length > 0 ? { task } : {}),
+    itemId: rule.id,
+    base,
+    head,
+    policyDigest: digest,
+    attempt,
+    evaluator: { name: PAWS_CLOSEOUT_PRODUCER.name, version: PAWS_CLOSEOUT_PRODUCER.version },
+    producer: { name: PAWS_CLOSEOUT_PRODUCER.name, version: PAWS_CLOSEOUT_PRODUCER.version },
+    exec: {
+      argv: ran.argv,
+      exitCode: ran.exitCode,
+      timedOut: ran.timedOut,
+      dirty: ran.dirty,
+      headMoved: ran.headMoved,
+      durationMs: ran.durationMs,
+      truncated: ran.truncated,
+    },
+    artifacts: [...ran.artifacts.slice(0, 15), { path: probe, sha256: ran.probeSha256 }],
+  };
+  await input.evidence.add(record);
+  records.push(record);
+  input.progress?.step(identity, {
+    ...blankStep(step, ordinal),
+    state: executionFailed(record.exec, false) ? "failed" : "passed",
+    detail: execMessage(record.exec, false),
+    attempt,
+    startedAt,
+    finishedAt: startedAt + ran.durationMs,
+    exitCode: record.exec.exitCode,
+    timedOut: record.exec.timedOut,
+    timeoutReason: record.exec.timedOut ? "command timed out" : null,
+    truncated: record.exec.truncated,
+    logPath: relative,
+    evidencePath: evidenceRelative(digest, head, rule.id, attempt),
+  });
+  return record.exec;
+}
+
 function needsChangedPaths(policy: ResolvedPolicy, gate: Gate): boolean {
   const setup = policy.setup.some((step) => step.gate === gate && hasPaths(step));
   const items = policy.items.some((item) => item.gate === gate && hasPaths(item));
-  return setup || items;
+  const rules =
+    gate === "beforePR" && policy.source !== "none" && (policy.rules ?? []).some(hasPaths);
+  return setup || items || rules;
 }
 
 function inScope(item: { paths?: string[] }, changed: readonly string[] | null): boolean {
@@ -514,7 +694,7 @@ function blockPending(
 ): void {
   if (progress === undefined) return;
   for (const action of actions) {
-    if (action.kind !== "run") continue;
+    if (action.kind === "skip") continue;
     progress.step(identity, {
       ...blankStep(action.item, ordinalOf(actions, action.item.id)),
       state: "blocked",

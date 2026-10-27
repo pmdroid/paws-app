@@ -18,6 +18,20 @@ export type {
   CloseoutStepKind,
   CloseoutStepState,
 } from "./progress";
+export {
+  createProbeRunner,
+  executeProbe,
+  PROBE_TIMEOUT_SECONDS,
+  probeArgv,
+  probeArtifactPath,
+  writeProbeLog,
+} from "./probe";
+export type { ProbeExecution, ProbeRunner, ProbeRunRequest, ProbeRunResult } from "./probe";
 export { PAWS_CLOSEOUT_PRODUCER, runCloseoutCommands } from "./run";
-export type { CloseoutRunInput, CloseoutRunResult, CommandDisposition } from "./run";
+export type {
+  CloseoutCommandPort,
+  CloseoutRunInput,
+  CloseoutRunResult,
+  CommandDisposition,
+} from "./run";
 export { createStreamScrubber, scrubText } from "./scrub";

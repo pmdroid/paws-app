@@ -233,7 +233,7 @@ export function isSha(value: string): boolean {
   return (value.length === 40 || value.length === 64) && /^[0-9a-f]+$/.test(value);
 }
 
-async function porcelain(cwd: string, env: Record<string, string>): Promise<Buffer | null> {
+export async function porcelain(cwd: string, env: Record<string, string>): Promise<Buffer | null> {
   const result = await git(cwd, ["status", "--porcelain=v1", "-z"], env);
   if (!result.ok) return null;
   return result.stdout;
@@ -254,7 +254,7 @@ function decodeUtf8(bytes: Buffer): string | null {
   return text;
 }
 
-type Spawned = {
+export type Spawned = {
   started: boolean;
   exitCode: number | null;
   timedOut: boolean;
@@ -268,12 +268,12 @@ type Spawned = {
  * Argv execution with no shell. `timeoutSeconds` kills the child's process
  * group, so grandchildren started by the command die with it.
  */
-type StreamTap = {
+export type StreamTap = {
   secrets: readonly string[];
   onText?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
 };
 
-function spawnArgv(
+export function spawnArgv(
   argv: string[],
   cwd: string,
   env: Record<string, string>,

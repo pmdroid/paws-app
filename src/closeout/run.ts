@@ -36,7 +36,7 @@ import {
   run,
   scrubText,
   type CloseoutProgress,
-  type PawsCommandRunner,
+  type CloseoutCommandPort,
   type CloseoutProgressIdentity,
   type CloseoutProgressStep,
   type CloseoutStepState,
@@ -59,7 +59,7 @@ export type EvaluateInput = {
   /** `~/.paws` for the detached command worktree. */
   pawsHome?: string;
   progress?: CloseoutProgress;
-  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
+  commandRunner?: CloseoutCommandPort;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
@@ -98,7 +98,7 @@ export type GateInput = {
   pawsHome?: string;
   maxFixAttempts?: number;
   progress?: CloseoutProgress;
-  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
+  commandRunner?: CloseoutCommandPort;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
@@ -583,7 +583,7 @@ async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise
   for (const item of decision.items) {
     if (
       waived.has(item.id) ||
-      item.kind !== "command" ||
+      (item.kind !== "command" && item.kind !== "rule") ||
       item.state !== "failed" ||
       item.attempt === undefined
     )
