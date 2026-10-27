@@ -106,6 +106,9 @@ describe("repository rules on the run page", () => {
     expect(bypassed).toContain("Bypassed by <b>Grace Hopper</b> for commit");
     expect(bypassed).toContain("The policy digest changes on purpose in this commit.");
     expect(bypassed).not.toContain("<form");
+    // A decided rule starts closed; its decision stays in view.
+    expect(approved).toContain('aria-expanded="false"');
+    expect(bypassed).toContain('aria-expanded="false"');
   });
 
   test("rules whose paths matched nothing are listed by name", () => {
