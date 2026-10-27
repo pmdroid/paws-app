@@ -95,6 +95,11 @@ export type GateResult = {
   summary: string;
   /** Detailed failed checks and output for a host-owned restart. */
   handoff?: string;
+  /**
+   * With {@link handoff}: fix attempts the failed checks allow before the first is exhausted, if
+   * each keeps failing. Absent when no failed check has a limit.
+   */
+  fixesLeft?: number;
   reportPath?: string;
   bypasses?: readonly import("./bypass").CloseoutBypass[];
 };

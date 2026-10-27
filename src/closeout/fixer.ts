@@ -8,8 +8,12 @@ import type { CloseoutItem, ReviewFindings } from "./types";
 export type FixRequest = {
   worktree: string;
   taskId: string;
-  /** 1-based. The gate stops after {@link maxFixAttempts} calls. */
+  /** 1-based. */
   fixAttempt: number;
+  /**
+   * The limit that stops the loop first: the gate's fix budget, or the last fix a failed check
+   * allows before it spends the policy's attempts per check, if it keeps failing.
+   */
   maxFixAttempts: number;
   base: string;
   head: string;

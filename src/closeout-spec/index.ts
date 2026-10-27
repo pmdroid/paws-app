@@ -87,6 +87,8 @@ export {
   policyCheckPaths,
   policyFixBudget,
   preExistingFindings,
+  fixAttemptLimit,
+  fixesLeft,
   retryBaseline,
   reviewRequirements,
   run,

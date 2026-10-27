@@ -283,20 +283,29 @@ function judgeItem(
   return judgeRecord(item, latest, request, trust);
 }
 
-export function retryBlock(
+type RetryTally = {
+  retry: RetryPolicy;
+  failed: number;
+  /** Failed review attempts per finding location. */
+  repeats: Map<string, number>;
+  /** The finding locations of the latest failed review attempt. */
+  latest: Set<string>;
+};
+
+/** Failed attempts for `item` under its retry policy, counted as {@link retryBlock} counts them. */
+function retryTally(
   item: ResolvedItem,
   retry: RetryPolicy | undefined,
   digest: string,
   records: readonly EvidenceRecord[],
   request: EvaluateRequest,
   trust: EvaluateTrust | undefined,
-): DecisionItem | undefined {
+): RetryTally | "duplicate" {
   retry ??= { maxFailedAttemptsPerItem: 3, scope: taskOf(request) ? "task" : "candidate" };
   if (item.kind === "setup") retry = { ...retry, maxFailedAttemptsPerItem: 2 };
   const task = taskOf(request);
   const seen = new Set<string>();
-  let failed = 0;
-  const repeats = new Map<string, number>();
+  const tally: RetryTally = { retry, failed: 0, repeats: new Map(), latest: new Set() };
   for (const record of records) {
     if (record.itemId !== item.id || record.policyDigest !== digest) continue;
     if (retry.scope === "task") {
@@ -305,23 +314,39 @@ export function retryBlock(
       continue;
     }
     const attemptKey = `${record.base}\0${record.head}\0${record.attempt}`;
-    if (seen.has(attemptKey)) return row(item, "invalid", "duplicate evidence attempt");
+    if (seen.has(attemptKey)) return "duplicate";
     seen.add(attemptKey);
     if (
       !request.retryBaseline?.includes(evidenceAttemptKey(record)) &&
       recordFailed(item, record, request, trust)
     ) {
-      failed += 1;
+      tally.failed += 1;
       if (isReview(item) && record.recordType === "review") {
         const keys = new Set(
           blockingFindings(record, request)
             .filter((finding) => severityRank(finding.severity) <= severityRank(item.failOn))
             .map((finding) => findingKey(finding.location)),
         );
-        for (const key of keys) repeats.set(key, (repeats.get(key) ?? 0) + 1);
+        for (const key of keys) tally.repeats.set(key, (tally.repeats.get(key) ?? 0) + 1);
+        tally.latest = keys;
       }
     }
   }
+  return tally;
+}
+
+export function retryBlock(
+  item: ResolvedItem,
+  retry: RetryPolicy | undefined,
+  digest: string,
+  records: readonly EvidenceRecord[],
+  request: EvaluateRequest,
+  trust: EvaluateTrust | undefined,
+): DecisionItem | undefined {
+  const tally = retryTally(item, retry, digest, records, request, trust);
+  if (tally === "duplicate") return row(item, "invalid", "duplicate evidence attempt");
+  const { failed, repeats } = tally;
+  retry = tally.retry;
   if (isReview(item) && retry.maxFailedReviewAttempts !== undefined) {
     let message: string;
     if (failed >= retry.maxFailedReviewAttempts) {
@@ -341,6 +366,30 @@ export function retryBlock(
     "exhausted",
     `${failed} of ${retry.maxFailedAttemptsPerItem} allowed failed attempts used. Stop retrying and ask for help.`,
   );
+}
+
+/**
+ * Failed attempts `item` may still record before it is exhausted, if it keeps failing the way it
+ * last failed. A review keeps failing on the locations of its latest failed attempt. `null` when
+ * the evidence cannot be counted.
+ */
+export function attemptsLeft(
+  item: ResolvedItem,
+  retry: RetryPolicy | undefined,
+  digest: string,
+  records: readonly EvidenceRecord[],
+  request: EvaluateRequest,
+  trust: EvaluateTrust | undefined,
+): number | null {
+  const tally = retryTally(item, retry, digest, records, request, trust);
+  if (tally === "duplicate") return null;
+  const { failed, repeats, latest } = tally;
+  const max = tally.retry.maxFailedAttemptsPerItem;
+  if (!isReview(item) || tally.retry.maxFailedReviewAttempts === undefined)
+    return Math.max(0, max - failed);
+  let left = tally.retry.maxFailedReviewAttempts - failed;
+  for (const key of latest) left = Math.min(left, max - (repeats.get(key) ?? 0));
+  return Math.max(0, left);
 }
 
 function findingKey(location: string): string {

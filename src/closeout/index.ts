@@ -1,5 +1,7 @@
 export { candidatePolicyDigest, FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export {
+  fixAttemptLimit,
+  fixesLeft,
   policyFixBudget,
   policyCheckPaths,
   approvalsAtHead,
