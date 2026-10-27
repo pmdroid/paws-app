@@ -10,6 +10,7 @@ import {
   type ExeDevBootstrapOptions,
   type FakeExeDev,
 } from "../src/provisioning";
+import { detaching, fakeClock } from "./provisioning-detached";
 
 const VM = "ada-paws";
 const AUTHKEY = "tskey-auth-kAbCdEf1CNTRL-0123456789abcdefGHIJKLmnopqrstuv";
@@ -123,7 +124,8 @@ function options(
   authKey: () => string | null = () => AUTHKEY,
 ): ExeDevBootstrapOptions {
   return {
-    exeDev,
+    exeDev: detaching(exeDev),
+    clock: fakeClock(),
     runnerVersion: "1.4.0",
     installer: "#!/bin/sh\n",
     mise: { version: "2026.10.18", sha256: "0".repeat(64) },

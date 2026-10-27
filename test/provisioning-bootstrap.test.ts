@@ -11,15 +11,24 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  BOOTSTRAP_EXEC_TIMEOUT_MS,
   BootstrapError,
   createExeDev,
   createExeDevBootstrap,
   createFakeExeDev,
+  EXE_DEV_EXEC_LIMIT_MS,
   type ExeDevBootstrapOptions,
   type FakeExeDev,
 } from "../src/provisioning";
 import { runnerFailureLine } from "../src/runner-cli";
 import { transportFailure } from "../src/runner-daemon";
+import {
+  detachCommand,
+  detaching,
+  fakeClock,
+  pollCommand,
+  stopCommand,
+} from "./provisioning-detached";
 
 const VM = "ada-paws";
 const TOKEN = "tok_0123456789abcdefABCDEF-_xyz";
@@ -149,9 +158,11 @@ function probe(state: {
 
 const INSTALLED = { version: `installed ${RUNNER_VERSION}`, config: CONFIG_SHA, mise: MISE_SHA };
 
-function options(exeDev: ExeDevBootstrapOptions["exeDev"]): ExeDevBootstrapOptions {
+/** Bootstrap options over `exeDev`; a fake exe.dev also runs detached steps, as a VM would. */
+function options(exeDev: ExeDevBootstrapOptions["exeDev"] | FakeExeDev): ExeDevBootstrapOptions {
   return {
-    exeDev,
+    exeDev: "scriptExec" in exeDev ? detaching(exeDev) : exeDev,
+    clock: fakeClock(),
     runnerVersion: RUNNER_VERSION,
     installer: INSTALLER,
     mise: { version: MISE_VERSION, sha256: MISE_SHA },
@@ -195,11 +206,11 @@ test("startInstall stages the installer, run script, config and token, then star
   expect(sent).toHaveLength(5);
   expect(sent[3]).toMatch(TOKEN_COMMAND);
   expect(exe.calls).toEqual([
-    { operation: "execVm", vm: VM, command: PROBE, timeoutMs: 30_000 },
-    { operation: "execVm", vm: VM, command: STAGE, timeoutMs: 60_000 },
-    { operation: "execVm", vm: VM, command: TOKEN_KEY, timeoutMs: 60_000 },
-    { operation: "execVm", vm: VM, command: sent[3]!, timeoutMs: 60_000 },
-    { operation: "execVm", vm: VM, command: START_INSTALL, timeoutMs: 60_000 },
+    { operation: "execVm", vm: VM, command: PROBE, timeoutMs: 25_000 },
+    { operation: "execVm", vm: VM, command: STAGE, timeoutMs: 25_000 },
+    { operation: "execVm", vm: VM, command: TOKEN_KEY, timeoutMs: 25_000 },
+    { operation: "execVm", vm: VM, command: sent[3]!, timeoutMs: 25_000 },
+    { operation: "execVm", vm: VM, command: START_INSTALL, timeoutMs: 25_000 },
   ]);
   // No command line carries the token: only its ciphertext for the VM's own key.
   expectTokenOnlyEncrypted(sent);
@@ -307,8 +318,8 @@ test("stageToken stages a fresh token without touching the install", async () =>
   await bootstrap.stageToken(VM, TOKEN);
   const sent = commands(exe);
   expect(exe.calls).toEqual([
-    { operation: "execVm", vm: VM, command: TOKEN_KEY, timeoutMs: 60_000 },
-    { operation: "execVm", vm: VM, command: sent[1]!, timeoutMs: 60_000 },
+    { operation: "execVm", vm: VM, command: TOKEN_KEY, timeoutMs: 25_000 },
+    { operation: "execVm", vm: VM, command: sent[1]!, timeoutMs: 25_000 },
   ]);
   expectTokenOnlyEncrypted(sent);
 
@@ -344,7 +355,7 @@ test("installStatus reports running, succeeded or failed from the unit and the i
     const exe = setup();
     exe.scriptExec(VM, PROBE, { stdout: probe(state) });
     expect(await createExeDevBootstrap(options(exe)).installStatus(VM)).toBe(expected as never);
-    expect(exe.calls).toEqual([{ operation: "execVm", vm: VM, command: PROBE, timeoutMs: 30_000 }]);
+    expect(exe.calls).toEqual([{ operation: "execVm", vm: VM, command: PROBE, timeoutMs: 25_000 }]);
   }
 
   const broken = setup();
@@ -364,8 +375,8 @@ test("enroll runs the enroll command with the token file and returns the runner"
   // A retry after the token file is gone: the daemon is already paired and prints the same JSON.
   expect(await bootstrap.enroll(VM)).toEqual({ runnerId: "run_01", workspaceId: "ws_01" });
   expect(exe.calls).toEqual([
-    { operation: "execVm", vm: VM, command: ENROLL, timeoutMs: 120_000 },
-    { operation: "execVm", vm: VM, command: ENROLL, timeoutMs: 120_000 },
+    { operation: "execVm", vm: VM, command: ENROLL, timeoutMs: null },
+    { operation: "execVm", vm: VM, command: ENROLL, timeoutMs: null },
   ]);
   expect(ENROLL).not.toContain(TOKEN);
 });
@@ -418,7 +429,7 @@ test("startRunner enables and starts the runner service", async () => {
   exe.scriptExec(VM, START_RUNNER, {});
   await createExeDevBootstrap(options(exe)).startRunner(VM);
   expect(exe.calls).toEqual([
-    { operation: "execVm", vm: VM, command: START_RUNNER, timeoutMs: 60_000 },
+    { operation: "execVm", vm: VM, command: START_RUNNER, timeoutMs: null },
   ]);
 
   const failing = setup();
@@ -432,7 +443,7 @@ test("resetIdentity stops the runner and removes its identity and command store"
   exe.scriptExec(VM, RESET_IDENTITY, {});
   await createExeDevBootstrap(options(exe)).resetIdentity(VM);
   expect(exe.calls).toEqual([
-    { operation: "execVm", vm: VM, command: RESET_IDENTITY, timeoutMs: 60_000 },
+    { operation: "execVm", vm: VM, command: RESET_IDENTITY, timeoutMs: null },
   ]);
 
   const failing = setup();
@@ -623,4 +634,108 @@ test("the VM's own openssl key receives the token, and a failed enroll still rem
   expect(error.step).toBe("enroll");
   expect(error.message).toBe("ada-paws: enrollment failed (exit 1): Runner command failed.");
   expect(existsSync(join(vm.stage, "enrollment-token"))).toBe(false);
+});
+
+test("a slow step starts detached, is polled in calls under 30 s, and reports its status and log", async () => {
+  const exe = setup();
+  exe.scriptExec(VM, detachCommand("enroll", ENROLL), { stdout: "4242\n" });
+  const log = "enrolling ada-paws\nRunner command failed. Cause: the token expired.\n";
+  exe.scriptExec(VM, pollCommand("enroll"), [
+    { stdout: "running\n" },
+    { stdout: "running\n" },
+    { stdout: "running\n" },
+    { stdout: `exited 1\n${log}` },
+  ]);
+  const clock = fakeClock();
+  const bootstrap = createExeDevBootstrap({ ...options(exe), exeDev: exe, clock });
+
+  const error = await bootstrapError(bootstrap.enroll(VM));
+  expect(error.step).toBe("enroll");
+  expect(error.message).toBe(
+    "ada-paws: enrollment failed (exit 1): enrolling ada-paws\nRunner command failed. Cause: the token expired.",
+  );
+  expect(commands(exe)).toEqual([
+    detachCommand("enroll", ENROLL),
+    ...Array<string>(4).fill(pollCommand("enroll")),
+  ]);
+  for (const call of exe.calls) {
+    expect(call.operation === "execVm" && call.timeoutMs).toBe(BOOTSTRAP_EXEC_TIMEOUT_MS);
+  }
+  expect(BOOTSTRAP_EXEC_TIMEOUT_MS).toBeLessThan(EXE_DEV_EXEC_LIMIT_MS);
+  expect(clock.sleeps).toEqual([2_000, 2_000, 2_000, 2_000]);
+
+  // A step that finishes well hands its log back as its output.
+  const paired = JSON.stringify({ paired: true, runnerId: "run_01", workspaceId: "ws_01" });
+  exe.scriptExec(VM, pollCommand("enroll"), {
+    stdout: `exited 0\nenrolling ada-paws\n${paired}\n`,
+  });
+  expect(await bootstrap.enroll(VM)).toEqual({ runnerId: "run_01", workspaceId: "ws_01" });
+});
+
+test("a detached step past its budget is stopped, and one that vanished says so", async () => {
+  const exe = setup();
+  exe.scriptExec(VM, detachCommand("runner-start", START_RUNNER), { stdout: "4242\n" });
+  exe.scriptExec(VM, pollCommand("runner-start"), { stdout: "running\n" });
+  exe.scriptExec(VM, stopCommand("runner-start"), {
+    stdout: "Job for paws-runner.service is waiting\n",
+  });
+  const clock = fakeClock();
+  const bootstrap = createExeDevBootstrap({ ...options(exe), exeDev: exe, clock });
+  const late = await bootstrapError(bootstrap.startRunner(VM));
+  expect(late.step).toBe("start");
+  expect(late.message).toBe(
+    "ada-paws: runner-start did not finish within 60 s and was stopped: Job for paws-runner.service is waiting",
+  );
+  expect(commands(exe).at(-1)).toBe(stopCommand("runner-start"));
+  expect(clock.sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(60_000);
+
+  exe.scriptExec(VM, pollCommand("runner-start"), { stdout: "lost\nKilled\n" });
+  const lost = await bootstrapError(bootstrap.startRunner(VM));
+  expect(lost.message).toBe("ada-paws: runner-start stopped without an exit status: Killed");
+
+  exe.scriptExec(VM, detachCommand("runner-start", START_RUNNER), {
+    exitCode: 1,
+    stderr: "install: cannot create directory\n",
+  });
+  const unstarted = await bootstrapError(bootstrap.startRunner(VM));
+  expect(unstarted.message).toBe(
+    "ada-paws: could not start runner-start (exit 1): install: cannot create directory",
+  );
+});
+
+test("a detached step runs in the background on a real shell and its poll reads the status", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-detached-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n');
+  chmodSync(join(bin, "sudo"), 0o755);
+  writeFileSync(join(bin, "install"), '#!/bin/sh\nfor a; do last=$a; done\nmkdir -p "$last"\n');
+  chmodSync(join(bin, "install"), 0o755);
+  const logs = join(root, "log");
+  const run = (command: string) => {
+    const result = Bun.spawnSync(
+      ["/bin/sh", "-c", command.replaceAll("/var/log/paws-bootstrap", logs)],
+      { env: { PATH: `${bin}:/usr/bin:/bin` } },
+    );
+    return { exitCode: result.exitCode, stdout: result.stdout.toString() };
+  };
+
+  const started = Date.now();
+  const start = run(detachCommand("enroll", "echo out; sleep 0.3; echo err >&2; exit 3"));
+  expect(Date.now() - started).toBeLessThan(250);
+  expect(start).toEqual({ exitCode: 0, stdout: expect.stringMatching(/^[1-9][0-9]*\n$/) });
+  expect(run(pollCommand("enroll")).stdout).toBe("running\n");
+  let polled = "";
+  for (let i = 0; i < 100 && !polled.startsWith("exited"); i++) {
+    await Bun.sleep(50);
+    polled = run(pollCommand("enroll")).stdout;
+  }
+  expect(polled).toBe("exited 3\nout\nerr\n");
+
+  for (const command of [
+    detachCommand("enroll", ENROLL),
+    pollCommand("enroll"),
+    stopCommand("enroll"),
+  ])
+    expect(Bun.spawnSync(["/bin/sh", "-n", "-c", command]).exitCode).toBe(0);
 });
