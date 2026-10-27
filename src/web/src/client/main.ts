@@ -35,6 +35,7 @@ import {
   needsSnapshot,
   parseRoute,
   routerBase,
+  routeCovered,
   routeSlices,
   type Route,
 } from "./route";
@@ -161,11 +162,8 @@ async function boot(): Promise<void> {
 function routeChanged(): void {
   const route = currentRoute();
   const issue = openIssue(route);
-  // A newly opened issue page waits for its own detail instead of showing list data, and a page
-  // waits for the slices the last page did not load.
   if (issue !== null && detail?.id !== issue) phase = "loading";
-  else if (issue === null && !routeSlices(route).every((slice) => hasStatusSlice(snapshot, slice)))
-    phase = "loading";
+  else if (issue === null && !routeCovered(route, snapshot)) phase = "loading";
   paint();
   if (!booted) return;
   void reload();
@@ -186,6 +184,7 @@ async function reload(): Promise<void> {
         if (!(await signedIn(read.response))) return;
         throw new Error(await errorText(read.response));
       }
+      if (!routeCovered(currentRoute(), read.snapshot)) return;
       snapshot = read.snapshot;
     }
     phase = "ready";
@@ -251,7 +250,6 @@ function followIssueRedirect(): boolean {
   return true;
 }
 
-/** Polls the open page's data while the tab is visible, and loads it once when it is shown again. */
 function schedule(): void {
   stopPolling?.();
   stopPolling = null;

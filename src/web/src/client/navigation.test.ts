@@ -8,6 +8,7 @@ import {
   needsSnapshot,
   parseRoute,
   ROUTE_SLICES,
+  routeCovered,
   routeHref,
   routerBase,
   type Route,
@@ -126,8 +127,21 @@ test("every route names the status slices it renders", () => {
     runs: ["items"],
     mergeQueue: ["items", "mergeQueue", "mergeHistory"],
     questions: ["items", "questions"],
-    evidence: ["evidence"],
+    evidence: ["items", "evidence"],
     runners: [],
     settings: [],
   });
+});
+
+test("a list loaded for one page does not stand in for another page's slices", () => {
+  const overview = { ...statusFixture(), slices: ["items", "questions", "mergeQueue", "intake"] };
+  const evidenceOnly = { ...statusFixture(), slices: ["evidence"] } as typeof overview;
+  expect(routeCovered({ view: "overview" }, overview as never)).toBe(true);
+  expect(routeCovered({ view: "issues", id: null }, overview as never)).toBe(true);
+  expect(routeCovered({ view: "mergeQueue" }, overview as never)).toBe(false);
+  expect(routeCovered({ view: "evidence", id: null }, overview as never)).toBe(false);
+  expect(routeCovered({ view: "issues", id: null }, evidenceOnly as never)).toBe(false);
+  expect(routeCovered({ view: "runners", id: null }, null)).toBe(true);
+  expect(routeCovered({ view: "mergeQueue" }, statusFixture())).toBe(true);
+  expect(routeCovered({ view: "overview" }, null)).toBe(false);
 });
