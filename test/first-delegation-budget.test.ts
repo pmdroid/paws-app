@@ -303,7 +303,6 @@ async function firstDelegation(
     db,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
-    publicUrl: null,
     fetch: server.fetch.bind(server),
     beforeEvent: (event, request) => gate!.accept(event, request),
     followUp: (event) => orchestrator!.onLinearEvent(event),

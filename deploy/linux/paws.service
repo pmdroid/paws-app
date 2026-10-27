@@ -18,7 +18,7 @@ Environment=HOME=/var/lib/paws
 Environment=PAWS_HOME=/var/lib/paws
 Environment=NODE_ENV=production
 EnvironmentFile=/etc/paws/control-plane.env
-ExecStart=/opt/paws/bin/bun --no-env-file /opt/paws/current/src/index.ts --no-tunnel
+ExecStart=/opt/paws/bin/bun --no-env-file /opt/paws/current/src/index.ts
 ExecReload=/opt/paws/bin/bun --no-env-file /opt/paws/current/src/index.ts public-tls validate
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

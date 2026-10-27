@@ -11,7 +11,7 @@ Configure the server's HTTPS origin, certificate, Linear OAuth app credentials, 
 ```sh
 bun install
 bun run build:status
-bun run paws --no-tunnel
+bun run paws
 ```
 
 Open the configured HTTPS address. A Linear workspace admin signs in and authorizes Paws in the same workspace. Paws saves the app authorization, creates the owner's workspace, and opens Integrations. Connect GitHub, choose repositories and their Linear teams, then [enroll a runner](docs/runner-enrollment.md) and sign in to its agents through Runners.

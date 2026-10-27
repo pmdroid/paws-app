@@ -16,7 +16,7 @@ PAWS_HOST=0.0.0.0 \
 PAWS_PORT=8787 \
 PAWS_TLS_KEY_PATH=/etc/paws/tls.key \
 PAWS_TLS_CERT_PATH=/etc/paws/tls.crt \
-bun run paws --no-tunnel
+bun run paws
 ```
 
 Open the dashboard and select **Sign in with Linear**. A Linear workspace admin completes the personal sign-in and approves installing Paws into that same workspace. Paws rechecks their admin membership through the new app authorization, stores encrypted credentials, creates the owner's workspace, and starts the connected service automatically. The owner continues to **Integrations** to connect GitHub and map repositories to Linear teams.

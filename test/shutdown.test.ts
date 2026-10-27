@@ -6,7 +6,7 @@ import { tempHome } from "./helpers";
 
 for (const requestedCode of [0, 75]) {
   test(`composition logs a rejected server stop and exits ${requestedCode} after database close`, async () => {
-    const paws = startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0", PAWS_NO_TUNNEL: "1" });
+    const paws = startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0" });
     const stopServer = paws.server.stop.bind(paws.server);
     paws.server.stop = async (force) => {
       await stopServer(force);

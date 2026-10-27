@@ -111,8 +111,6 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
     db: f.db,
     secretsDir: join(f.home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-    publicUrl: null,
-    noTunnel: true,
     beforeEvent: async (event) => {
       const closed = parseLinearIssueClosed(event);
       if (closed)

@@ -71,7 +71,6 @@ for (const [body, existing] of [
       db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-      publicUrl: null,
       fetch: async () => {
         throw new Error("unexpected direct Linear request");
       },
@@ -185,7 +184,6 @@ test("an old prompted intake failure cannot terminate a newer session generation
     db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-    publicUrl: null,
     progressReporter: (event) => orchestrator.sessionProgressReporter(event),
     followUp: async () => {
       ready.resolve();
@@ -258,7 +256,6 @@ test.each([false, true])(
       db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-      publicUrl: null,
       progressReporter: (event) => orchestrator.sessionProgressReporter(event),
       followUp: (event) => orchestrator.onLinearEvent(event),
     });

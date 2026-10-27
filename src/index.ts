@@ -236,16 +236,12 @@ export type PawsProcess = {
   db: Database;
   server: Bun.Server<undefined>;
   catchUp: () => Promise<void>;
-  tunnelUp: () => boolean;
-  tunnelRequested: boolean;
-  tunnelUrl: string | null;
   ready: Promise<void>;
   stop: () => Promise<void>;
 };
 
 export type StartOptions = {
   server?: Bun.Server<undefined>;
-  noTunnel?: boolean;
   hostClock?: Clock;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy>;
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
@@ -562,9 +558,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return linearTaskAccess.accept(event, request);
     },
     env: linearEnv(runtime, envSource),
-    publicUrl: runtime.publicUrl,
-    noTunnel: !webhooks || options?.noTunnel === true,
-    webhooks,
     followUp,
     progressReporter: (event) => {
       if (orchestrator === null) throw new Error("loop is not attached");
@@ -976,7 +969,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     throw error;
   }
 
-  let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();
+  let running: LinearRunning = linear ? linear.start() : down();
 
   const tracker = linear?.tracker ?? null;
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
@@ -1435,13 +1428,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     catchUp: async () => {
       await running.catchUp();
     },
-    tunnelUp: () => running.tunnelUp(),
-    get tunnelRequested() {
-      return running.tunnelRequested;
-    },
-    get tunnelUrl() {
-      return running.tunnelUrl;
-    },
     stop() {
       stopping ??= stopPawsComponents({
         groups: [
@@ -1546,9 +1532,6 @@ function ownerCap(configFile: string): number | null {
 function down(): LinearRunning {
   return {
     catchUp: async () => undefined,
-    tunnelUp: () => false,
-    tunnelRequested: false,
-    tunnelUrl: null,
     stop: async () => undefined,
   };
 }
@@ -1748,7 +1731,7 @@ function linearEnv(runtime: RuntimeConfig, source: EnvSource): EnvSource {
   return next;
 }
 
-const CLI_HELP = `usage: paws [--no-tunnel]
+const CLI_HELP = `usage: paws
 
 Commands:
   paws                          start Paws on 127.0.0.1:8787
@@ -1857,7 +1840,7 @@ if (import.meta.main) {
     console.error("usage: paws login slack");
     process.exit(1);
   }
-  const unknown = argv.find((arg) => arg !== "--no-tunnel");
+  const unknown = argv[0];
   if (unknown) {
     console.error(`Unknown option ${unknown}.`);
     process.exit(1);
@@ -1865,7 +1848,6 @@ if (import.meta.main) {
   const paws = startPaws(process.env, {
     refreshRepositories: true,
     refreshAgentCatalog: true,
-    noTunnel: argv.includes("--no-tunnel"),
   });
   let exiting = false;
   const shutdown = (exitCode = 0) => {
@@ -1895,10 +1877,8 @@ if (import.meta.main) {
     process.exit(1);
   }
   const origin = `${paws.server.protocol}://${paws.server.hostname}:${paws.server.port}`;
-  const tunnel =
-    paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
   // One write so a piped reader cannot observe the ready line before the dashboard line exists.
-  console.log(`paws ready · ${origin}${tunnel}\ndashboard ${origin}/status`);
+  console.log(`paws ready · ${origin}\ndashboard ${origin}/status`);
 }
 
 /** One signed-in provider, shared by issues, comments, and git. */
