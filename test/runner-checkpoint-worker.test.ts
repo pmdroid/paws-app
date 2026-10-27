@@ -245,3 +245,59 @@ test.skipIf(!linux)(
     expect(readFileSync(join(clone, "contract.ts"), "utf8")).toBe("export type Finding = {};\n");
   },
 );
+
+test.skipIf(!linux)(
+  "a stop publishes the worktree again even when an interval already emitted it, in case that push failed",
+  async () => {
+    const context = await fixture();
+    let ask!: () => void;
+    const asked = new Promise<void>((resolve) => (ask = resolve));
+    const running = context.execute({
+      checkpointIntervalMs: 100,
+      async checkpoint(_sequence, signal) {
+        await Promise.race([
+          asked,
+          new Promise((_, reject) => signal.addEventListener("abort", reject)),
+        ]);
+      },
+    });
+    await context.until(() => context.events().includes(WORKING));
+    const commit = await context.commit("contract.ts", "export type Finding = {};\n");
+    await context.until(() => context.checkpoints().length === 1);
+    ask();
+    await running;
+    expect(context.checkpoints()).toEqual([
+      { type: "checkpoint", reason: "interval", sha: commit },
+      { type: "checkpoint", reason: "stop", sha: commit },
+    ]);
+  },
+);
+
+test.skipIf(!linux)(
+  "a worktree back at the base after a checkpoint replaces it, so a restart does not bring back discarded edits",
+  async () => {
+    const context = await fixture();
+    const stop = new AbortController();
+    const running = context.execute({ signal: stop.signal, checkpointIntervalMs: 100 });
+    await context.until(() => context.events().includes(WORKING));
+    writeFileSync(join(context.checkout, "draft.ts"), "throwaway\n");
+    await context.until(() => context.checkpoints().length === 1);
+    rmSync(join(context.checkout, "draft.ts"));
+    await context.until(() => context.checkpoints().length === 2);
+    // Unchanged since: nothing more.
+    await delay(350);
+    stop.abort();
+    await running;
+    const [dirty, restored] = context.checkpoints();
+    expect(dirty).toMatchObject({ reason: "interval" });
+    expect(restored).toMatchObject({ reason: "interval" });
+    expect(context.checkpoints()).toHaveLength(2);
+    expect(restored!.sha).not.toBe(context.baseSha);
+    const clone = await context.published(restored!.sha!);
+    expect((await git(["-C", clone, "rev-parse", "HEAD^"])).trim()).toBe(context.baseSha);
+    expect((await git(["-C", clone, "rev-parse", "HEAD^{tree}"])).trim()).toBe(
+      (await git(["-C", clone, "rev-parse", `${context.baseSha}^{tree}`])).trim(),
+    );
+    expect(existsSync(join(clone, "draft.ts"))).toBe(false);
+  },
+);
