@@ -127,7 +127,7 @@ export async function executeCommand(input: {
  * status that differs from the status before the process. An unreadable
  * status after the process counts as dirt.
  */
-export function newDirt(before: Buffer | null, after: Buffer | null): boolean {
+function newDirt(before: Buffer | null, after: Buffer | null): boolean {
   if (after === null) return true;
   if (after.length === 0) return false;
   if (before === null) return true;

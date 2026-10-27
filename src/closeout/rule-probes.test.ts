@@ -128,6 +128,32 @@ describe("rule probes", () => {
     );
   });
 
+  test("uncommitted changes already in the checkout fail the rule", async () => {
+    const repo = await candidateRepo(probe("process.exit(0);"));
+    await writeFile(path.join(repo.dir, "src/a.ts"), "uncommitted\n");
+    const session = createCloseoutSession(repo.dir, {
+      policy: async () => trustedPolicyFiles(repo.dir, repo.home),
+    });
+    const report = JSON.parse(await session.report({ probes: true })) as {
+      rules: { id: string; result?: { exitCode: number; dirty: boolean } }[];
+    };
+
+    expect(report.rules[0]?.result).toMatchObject({ exitCode: 0, dirty: true });
+    const rule = policyRule(sha256(probe("process.exit(0);")));
+    const stored = loggedSessionProbe(JSON.stringify(report), {
+      rule,
+      bytes: undefined,
+      base: repo.base,
+      head: repo.head,
+      checkout: repo.dir,
+      argv: probeArgv(rule, repo.base, repo.head),
+      timeoutSeconds: PROBE_TIMEOUT_SECONDS,
+      logFile: path.join(repo.root, "probe.log"),
+      artifactPath: "logs/probe.log",
+    });
+    expect(stored).toMatchObject({ exitCode: 0, dirty: true });
+  });
+
   test("a probe that moves HEAD fails the rule", async () => {
     const repo = await candidateRepo(
       probe(
