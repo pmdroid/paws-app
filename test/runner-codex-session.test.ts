@@ -282,28 +282,32 @@ test.skipIf(!linux)(
   },
 );
 
-test.skipIf(!linux)(
-  "a Codex bundle with anything but the session's rollout is refused",
-  async () => {
-    const rolloutEntry = { path: ROLLOUT_PATH, data: '{"type":"session_meta"}\n' };
-    for (const extra of [
-      { path: ".codex/auth.json", data: '{"tokens":"stolen"}' },
-      { path: ".codex/config.toml", data: 'model = "other"' },
-      {
-        path: `.codex/${DAY}/rollout-2026-10-27T00-10-00-01a17acb-0000-7000-8000-000000000000.jsonl`,
-        data: "other",
-      },
-      { path: `.codex/sessions/2026/10/${ROLLOUT}`, data: "shallow" },
-      { path: `.codex/${DAY}/../../../../auth.json`, data: "escaped" },
-      rolloutEntry,
-    ]) {
-      const { codex, execute, rollouts } = await fixture();
-      const { trace, restores } = await execute({ restore: bundleOf([rolloutEntry, extra]) });
-      expect(trace.methods).not.toContain("session/load");
-      expect(restores).toEqual([{ type: "session_restore", restored: false, reason: "unpack" }]);
-      expect(rollouts()).toEqual([]);
-      expect(existsSync(join(codex, "auth.json"))).toBe(false);
-      expect(existsSync(join(codex, "config.toml"))).toBe(false);
-    }
-  },
-);
+const ROLLOUT_ENTRY = { path: ROLLOUT_PATH, data: '{"type":"session_meta"}\n' };
+
+// One test per entry, so each restore gets its own time budget.
+for (const [name, extra] of [
+  ["auth.json", { path: ".codex/auth.json", data: '{"tokens":"stolen"}' }],
+  ["config.toml", { path: ".codex/config.toml", data: 'model = "other"' }],
+  [
+    "another rollout",
+    {
+      path: `.codex/${DAY}/rollout-2026-10-27T00-10-00-01a17acb-0000-7000-8000-000000000000.jsonl`,
+      data: "other",
+    },
+  ],
+  [
+    "a rollout outside a date folder",
+    { path: `.codex/sessions/2026/10/${ROLLOUT}`, data: "shallow" },
+  ],
+  ["a path that escapes", { path: `.codex/${DAY}/../../../../auth.json`, data: "escaped" }],
+  ["a second copy of the rollout", ROLLOUT_ENTRY],
+] as const)
+  test.skipIf(!linux)(`a Codex bundle that also holds ${name} is refused`, async () => {
+    const { codex, execute, rollouts } = await fixture();
+    const { trace, restores } = await execute({ restore: bundleOf([ROLLOUT_ENTRY, extra]) });
+    expect(trace.methods).not.toContain("session/load");
+    expect(restores).toEqual([{ type: "session_restore", restored: false, reason: "unpack" }]);
+    expect(rollouts()).toEqual([]);
+    expect(existsSync(join(codex, "auth.json"))).toBe(false);
+    expect(existsSync(join(codex, "config.toml"))).toBe(false);
+  });
