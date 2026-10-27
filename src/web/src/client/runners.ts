@@ -567,7 +567,7 @@ export function runnerRowMarkup(
   const tags = [
     `<span class="tag ${tone}">${state}</span>`,
     runner.status === "paused" || runner.status === "draining"
-      ? `<span class="tag ${runner.status === "paused" ? "paused" : "warn"}">${runner.status === "paused" ? "Paused" : "Draining"}</span>`
+      ? `<span class="tag ${runner.status === "paused" ? "paused" : runnerDrained(runner) ? "ok" : "warn"}">${runner.status === "paused" ? "Paused" : runnerDrained(runner) ? "Drained" : "Draining"}</span>`
       : "",
     ...agents
       .filter((entry) => entry.status === "signed_out" || entry.status === "usage_limit")
@@ -755,6 +755,60 @@ export function runnerRunningMarkup(
       ? `<li class="slot-row"><span class="slot-mark" aria-hidden="true"></span><span class="muted">${free === total ? "Nothing running · " : ""}${free} ${free === 1 ? "slot" : "slots"} free</span></li>`
       : "";
   return `<ul class="slot-list" role="list" aria-label="Running issues">${rows}${busy}${idle}</ul>`;
+}
+
+/** A draining runner nothing runs on any more, not even a check or helper: safe to remove. */
+export function runnerDrained(
+  runner: Pick<Runner, "status" | "running" | "slots" | "idle">,
+): boolean {
+  return (
+    runner.status === "draining" &&
+    runner.idle !== false &&
+    !runner.running?.length &&
+    (runner.slots?.used ?? 0) === 0
+  );
+}
+
+function sessionCount(count: number): string {
+  return `${count} ${count === 1 ? "session" : "sessions"}`;
+}
+
+/**
+ * How a draining runner's work is moving off it: Drained once nothing runs there, otherwise
+ * how many sessions move and wait, with Move running work for owners and admins.
+ */
+export function runnerDrainMarkup(
+  runner: Pick<Runner, "id" | "status" | "running" | "slots" | "idle">,
+  state: { manages: boolean; busy: boolean },
+): string {
+  if (runner.status !== "draining") return "";
+  if (runnerDrained(runner))
+    return '<div class="runner-drain"><div class="runner-drain-state" role="status"><span class="tag ok">Drained</span><p>Nothing runs here any more. It is safe to remove this runner.</p></div></div>';
+  const sessions = runner.running ?? [];
+  const moving = sessions.filter((session) => session.move?.status === "moving").length;
+  const waiting = sessions.filter((session) => session.move?.status === "waiting").length;
+  const running = Math.max(sessions.length, runner.slots?.used ?? 0);
+  const notes = [
+    moving ? `<p><b>Moving ${sessionCount(moving)}</b></p>` : "",
+    waiting
+      ? `<p><b>${sessionCount(waiting)} waiting for another runner</b>. Each row says why.</p>`
+      : "",
+    moving || waiting
+      ? ""
+      : running
+        ? `<p>${sessionCount(running)} still ${running === 1 ? "runs" : "run"} here. Move them, or wait for them to finish.</p>`
+        : "<p>Finishing its last commands. It shows Drained once they end.</p>",
+  ].join("");
+  const movable = sessions.some(
+    (session) =>
+      session.movable && session.move?.status !== "moving" && session.move?.status !== "waiting",
+  );
+  const id = esc(runner.id);
+  const button =
+    state.manages && movable
+      ? `<button class="btn" data-runner-move-all="${id}" data-focus="move-all:${id}"${state.busy ? " disabled" : ""}>Move running work</button>`
+      : "";
+  return `<div class="runner-drain"><div class="runner-drain-state" role="status">${notes}</div>${button}</div>`;
 }
 
 /** Processes that outlived their run, busiest first, so someone can stop them. */
@@ -950,7 +1004,13 @@ function statusLine(runner: Runner, view: { now: number; serverVersion: string |
     runnerOnline(runner, view.now) &&
     view.now - runner.metrics.reportedAt > RUNNER_STALE_MS;
   const notes = [
-    runner.status === "paused" ? "Paused" : runner.status === "draining" ? "Draining" : "",
+    runner.status === "paused"
+      ? "Paused"
+      : runnerDrained(runner)
+        ? "Drained"
+        : runner.status === "draining"
+          ? "Draining"
+          : "",
     stale ? "Stale" : "",
     updateAvailable(runner, view.serverVersion) ? "Update available" : "",
   ].filter(Boolean);
@@ -1017,12 +1077,13 @@ export function runnerDetailMarkup(
           "slots",
           "Running issues",
           capacity,
-          runnerRunningMarkup(
-            runner.running ?? [],
-            view.now,
-            slots,
-            manages ? { runnerId: runner.id, busy: view.busy } : undefined,
-          ),
+          runnerDrainMarkup(runner, { manages, busy: view.busy }) +
+            runnerRunningMarkup(
+              runner.running ?? [],
+              view.now,
+              slots,
+              manages ? { runnerId: runner.id, busy: view.busy } : undefined,
+            ),
         )
   }${
     revoked
@@ -1632,6 +1693,20 @@ export function createRunners() {
             );
             feedback =
               "Asked the runner to hand the session over. It moves at the agent's next safe point.";
+          }),
+      );
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-move-all]"))
+      button.addEventListener(
+        "click",
+        () =>
+          void change(async () => {
+            const result = await api<{ moving: number }>(
+              `/api/runners/${encodeURIComponent(button.dataset.runnerMoveAll!)}/sessions/move`,
+              {},
+            );
+            feedback = result.moving
+              ? `Asked the runner to hand over ${sessionCount(result.moving)}. Each moves at the agent's next safe point.`
+              : "Every session on this runner is already moving.";
           }),
       );
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-status]"))

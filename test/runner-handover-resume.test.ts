@@ -722,7 +722,7 @@ async function handOverBoth(turns: { onA: RunCommand }[]) {
     wips.push(
       await context.handOver(
         onA,
-        handovers.find((command) => command?.runId === onA.runId),
+        handovers.find((command) => command && "runId" in command && command.runId === onA.runId),
       ),
     );
   return wips;
