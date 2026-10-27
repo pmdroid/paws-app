@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, MERGE_LANE } from "../core";
+import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   jobVersionCurrent,
@@ -186,7 +186,6 @@ export function enqueueVerifiedMerge(
   );
   return enqueueJobOnce(db, {
     queue: JOB_KIND.merge,
-    lane: MERGE_LANE,
     jobKey,
     payload,
     now: input.now,

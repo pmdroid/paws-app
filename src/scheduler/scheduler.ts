@@ -210,7 +210,7 @@ function allItems(db: Database, now: number): Item[] {
     EXISTS(SELECT 1 FROM job held WHERE json_extract(held.payload,'$.itemId')=i.id
       AND held.status='running' AND (held.locked_until IS NULL OR held.locked_until>?)
       AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
-        OR held.queue LIKE 'github.merge.%' OR held.lane='merge')) AS liveJob,
+        OR held.queue LIKE 'github.merge.%')) AS liveJob,
     EXISTS(SELECT 1 FROM run p JOIN runner_work w ON w.run_id=p.id WHERE p.item_id=i.id
       AND ((w.ended_at IS NULL AND w.lease_until>?) OR p.status IN ('active','provisioning'))) AS placed,
     EXISTS(SELECT 1 FROM job start WHERE json_extract(start.payload,'$.itemId')=i.id

@@ -17,44 +17,40 @@ import {
 } from "../src/db";
 import { tempDb } from "./helpers";
 
-const samples: [string, string][] = [
-  ["github.merge", ""],
-  ["github.merge.close", ""],
-  ["github.mergeable", ""],
-  ["run.resume", "merge"],
-  ["run.resume", "merge:acme/app"],
-  ["run.resume", "merged"],
-  ["run.resume", ""],
-  ["item.start", "default"],
+const samples = [
+  "github.merge",
+  "github.merge.close",
+  "github.mergeable",
+  "run.resume",
+  "item.start",
 ];
-
-test("isMergeWork counts a per-repository merge lane", () => {
-  expect(isMergeWork("run.resume", "merge:acme/app")).toBe(true);
-  expect(isMergeWork("run.resume", "merged")).toBe(false);
-});
 
 test("the merge-work SQL classifies every job as isMergeWork does", () => {
   const db = openDatabase(":memory:");
   try {
-    db.run("CREATE TABLE sample (queue TEXT NOT NULL, lane TEXT NOT NULL)");
-    for (const [queue, lane] of samples) db.run("INSERT INTO sample VALUES (?, ?)", [queue, lane]);
+    db.run("CREATE TABLE sample (queue TEXT NOT NULL)");
+    for (const queue of samples) db.run("INSERT INTO sample VALUES (?)", [queue]);
     const rows = db
-      .query<{ queue: string; lane: string; merge: number }, []>(
-        `SELECT queue, lane, ${mergeLaneSql("s")} AS merge FROM sample s`,
+      .query<{ queue: string; merge: number }, []>(
+        `SELECT queue, ${mergeLaneSql("s")} AS merge FROM sample s`,
       )
       .all();
-    expect(rows.map((row) => [row.queue, row.lane, row.merge === 1])).toEqual(
-      samples.map(([queue, lane]) => [queue, lane, isMergeWork(queue, lane)]),
+    expect(rows.map((row) => [row.queue, row.merge === 1])).toEqual(
+      samples.map((queue) => [queue, isMergeWork(queue)]),
     );
+    expect(samples.filter((queue) => isMergeWork(queue))).toEqual([
+      "github.merge",
+      "github.merge.close",
+    ]);
   } finally {
     db.close();
   }
 });
 
-test("cancelling the merge lane cancels a per-repository merge lane job", () => {
+test("cancelling the merge lane cancels a merge job", () => {
   const db = tempDb();
   try {
-    enqueueJob(db, { queue: "run.resume", lane: "merge:acme/app", payload: {}, now: 1 });
+    enqueueJob(db, { queue: JOB_KIND.merge, payload: {}, now: 1 });
     expect(cancelOpenJobs(db, { reason: "stop", mergeLane: true, now: 2 })).toBe(1);
   } finally {
     db.close();

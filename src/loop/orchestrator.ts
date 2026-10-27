@@ -1669,7 +1669,6 @@ export class Orchestrator {
                 getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
                   ? JOB_KIND.reverify
                   : job.queue,
-              lane: job.lane,
               priority: job.priority,
               payload: job.payload,
               jobKey: `merge-reconciliation:${job.id}`,

@@ -292,7 +292,6 @@ describe("restart recovery", () => {
     markRun(db, run.id, "ended", clock.now());
     const merge = enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       payload: { itemId: item.id },
       now: clock.now(),
     });
@@ -566,7 +565,6 @@ describe("linear commands", () => {
     recordItemPullRequest(db, { itemId: "eng-2", pullNumber: 7, pullUrl: null, openedAt: 1 });
     enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       payload: { itemId: "eng-2" },
       now: clock.now(),
     });

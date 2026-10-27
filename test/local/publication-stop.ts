@@ -308,7 +308,6 @@ export async function probePublicationStop(
     pendingEpics.add("pending");
     const pendingJob = enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: "merge",
       payload: { itemId: "pending-item" },
       jobKey: "pending-refresh-merge",
       now: clock.now(),
@@ -632,7 +631,6 @@ export async function probePublicationStop(
     };
     enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: "merge",
       priority: 0,
       payload: { itemId: "owned-refresh-item" },
       jobKey: "owned-refresh-merge",

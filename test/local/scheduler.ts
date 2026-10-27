@@ -241,7 +241,6 @@ export async function probeScheduler(
     assert(completeJob(db, start, 1001));
     const mergeId = enqueueJob(db, {
       queue: `${JOB_KIND.merge}.deferred`,
-      lane: "merge",
       payload: { itemId: ids[0]! },
       now: 1001,
     });
