@@ -238,6 +238,19 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
+              (raw.type === "handover" || raw.type === "handover_interrupted")
+            ) {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (
+                !parsed.success ||
+                (parsed.data.type !== "handover" && parsed.data.type !== "handover_interrupted")
+              )
+                throw new Error("Invalid runner handover");
+              event = parsed.data;
+            } else if (
+              raw &&
+              typeof raw === "object" &&
+              "type" in raw &&
               ["question", "artifact", "closeout_policy"].includes(String(raw.type))
             )
               throw new Error("Invalid runner question");

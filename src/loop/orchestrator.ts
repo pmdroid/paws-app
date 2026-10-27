@@ -2511,6 +2511,21 @@ export class Orchestrator {
         this.fail(finished, "auth", executed.run.errorMessage ?? "Claude login is missing.");
         return;
       }
+      // A run handed over to another runner keeps its question; the item waits for the answer.
+      if (executed.run.handedOver && this.askedRuns.has(run.id)) {
+        await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
+        return;
+      }
+      if (executed.run.handoverFailure && !this.askedRuns.has(run.id)) {
+        // The handover stopped the agent, then failed: the session stays on its runner, and the
+        // next turn loads it there and goes on from the WIP commit.
+        restart(this.db, finished, {
+          reason: "follow_up",
+          body: HANDOVER_FAILED_PROMPT,
+          now: this.now(),
+        });
+        return;
+      }
       if (executed.run.cancelled || executed.run.stopReason === "cancelled") return;
       if (this.askedRuns.has(run.id)) {
         await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
@@ -6497,6 +6512,10 @@ export class Orchestrator {
     return (this.options.clock ?? systemClock).now();
   }
 }
+
+/** The next turn after a handover that failed once the agent stopped. */
+const HANDOVER_FAILED_PROMPT =
+  "Paws asked to move this session to another runner, but the move failed after your turn was stopped, so it stays here. Your work so far is committed. Continue where you left off.";
 
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;

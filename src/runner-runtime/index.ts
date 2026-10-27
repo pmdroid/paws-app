@@ -23,7 +23,11 @@ import {
   type RunnerSpool,
   type RunnerResults,
 } from "../runner-execution";
-import { publishRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
+import {
+  publishRunnerAnswer,
+  runnerFollowUpRequestId,
+  runnerHandoverRequestId,
+} from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
@@ -103,6 +107,11 @@ type Active = {
   /** Set once the worker's runtime install report is in the inventory. */
   runtimesRecorded?: boolean;
   sessionTries?: number;
+  /**
+   * Handovers Paws asked for: the deadline of one the worker has not heard yet, and how many it
+   * was sent. Each request goes to the worker on its own, so a timed-out one can be asked again.
+   */
+  handover?: { pending?: number; sent: number };
 };
 
 /** The session description the worker writes next to its bundle. */
@@ -451,6 +460,15 @@ export async function openRunnerRuntime(options: {
     );
     guard();
     journal.sessionDone(execution.id, "sealed");
+  }
+  function hasSessionSnapshot(executionId: string) {
+    try {
+      readRunnerResultFile(options.results, executionId, "session.json");
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return false;
+    }
   }
   /** A snapshot that cannot be saved never holds back or fails the run. */
   function skipSession(execution: Execution, error: unknown) {
@@ -983,6 +1001,16 @@ export async function openRunnerRuntime(options: {
       if (error instanceof RemoteFailure && entry.sessionTries < SESSION_UPLOAD_TRIES) throw error;
       skipSession(entry.execution, error);
     }
+    // A handover whose session could not be published is no handover: the run stays here, and
+    // its next turn loads the session on this runner. Checked on every pass, as delivery repeats.
+    if (
+      result.handedOver &&
+      journal.sessionCursor(entry.execution.id).state !== "sealed" &&
+      hasSessionSnapshot(entry.execution.id)
+    ) {
+      delete result.handedOver;
+      result.handoverFailure = "publication";
+    }
     if (
       result.candidateSha &&
       entry.execution.command.type !== "task" &&
@@ -1066,9 +1094,16 @@ export async function openRunnerRuntime(options: {
     if (closed) return;
     const commands = options.daemon.pendingCommands();
     for (const command of commands) {
-      if (command.type !== "cancel") continue;
+      if (command.type !== "cancel" && command.type !== "handover") continue;
       const entry = active.get(`${command.runId}:${command.generation}`);
-      if (entry) await interrupt(entry, "cancelled by Paws");
+      if (command.type === "cancel" && entry) await interrupt(entry, "cancelled by Paws");
+      if (command.type === "handover") {
+        if (entry?.execution.command.type === "run" && !entry.abort.signal.aborted) {
+          entry.handover ??= { sent: 0 };
+          entry.handover.pending = command.expiresAt;
+        } else
+          report(new Error(`Runner has no running session of run ${command.runId} to hand over`));
+      }
       await options.daemon.acknowledgeCommand(command.id);
     }
     for (const entry of active.values()) {
@@ -1109,6 +1144,13 @@ export async function openRunnerRuntime(options: {
     }
     for (const entry of active.values()) {
       if (entry.execution.phase !== "running" && entry.execution.phase !== "publishing") continue;
+      if (entry.handover?.pending !== undefined && entry.execution.phase === "running") {
+        publishRunnerAnswer(options.spool, entry.execution.id, {
+          requestId: runnerHandoverRequestId(entry.handover.sent + 1),
+          answer: String(entry.handover.pending),
+        });
+        entry.handover = { sent: entry.handover.sent + 1 };
+      }
       entry.delivering ??= advance(entry).finally(() => {
         entry.delivering = undefined;
       });

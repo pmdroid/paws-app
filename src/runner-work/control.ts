@@ -430,6 +430,18 @@ export function createRunnerWork(options: {
           ]);
           db.run("DELETE FROM runner_work_grant WHERE run_id=?", [work.runId]);
         }
+        // A handover keeps the work live: the runner still publishes its WIP commit and result.
+        if (command.type === "handover") {
+          const work = assignment(command.runId);
+          if (
+            !work ||
+            work.runnerId !== command.runnerId ||
+            work.generation !== command.generation ||
+            work.endedAt !== null ||
+            workCommand(work).type !== "run"
+          )
+            throw new Error("Handover assignment changed.");
+        }
         return queue(command);
       });
     },
