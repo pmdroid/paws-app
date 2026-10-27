@@ -97,3 +97,15 @@ items:
       - "src/web/src/server/**"
       - "src/workspace/**"
       - "src/worktree-checkout/**"
+rules:
+  - id: migrations-append-only
+    summary: The frozen migration list and shipped migration files never change; a new file is named for a UTC time.
+    probe: .agents/probes/migrations-append-only.ts
+    paths: ["src/db/**"]
+    failOn: P0
+    onFail: fix
+  - id: restart-and-ask-from-loop
+    summary: Only src/loop applies ejected or closeout_rejected, or opens a question.
+    probe: .agents/probes/restart-and-ask-from-loop.ts
+    failOn: P1
+    onFail: fix
