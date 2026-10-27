@@ -14,7 +14,6 @@ import {
   getWorkItem,
   listCloseoutRecoveries,
   savePlanProposal,
-  saveCheckpoint,
   saveVisualReviewMarks,
   type VisualReviewMark,
 } from "../db";
