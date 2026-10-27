@@ -30,6 +30,18 @@ type NetworkOperation = {
 
 const queues = new Map<string, Promise<unknown>>();
 
+/** The branch on GitHub holds commits the candidate lacks, and they cannot be combined cleanly. */
+export class RunnerCandidateConflict extends Error {
+  constructor(
+    readonly branch: string,
+    readonly remote: string,
+    detail: string,
+  ) {
+    super(`Paws could not rebase the candidate onto ${branch}: ${detail}`);
+    this.name = "RunnerCandidateConflict";
+  }
+}
+
 export function createRunnerRepositories(options: {
   root: string;
   home: string;
@@ -96,6 +108,96 @@ export function createRunnerRepositories(options: {
         },
       )
     ).stdout;
+  /**
+   * Replays the candidate's own commits onto the branch tip on GitHub, keeping each commit's
+   * author, committer and message. A commit that is already there replays to nothing and is
+   * dropped. Throws {@link RunnerCandidateConflict} when a commit does not apply cleanly.
+   */
+  async function replay(
+    mirror: string,
+    sha: string,
+    onto: string,
+    branch: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const git = (args: string[]) => invoke(["--git-dir", mirror, "--no-replace-objects", ...args], signal);
+    if ((await git(["rev-list", "--min-parents=2", sha, `^${onto}`])).trim())
+      throw new RunnerCandidateConflict(
+        branch,
+        onto,
+        "the candidate holds a merge commit, which Paws does not replay",
+      );
+    const commits = (await git(["rev-list", "--reverse", "--topo-order", sha, `^${onto}`]))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    let head = onto;
+    for (const commit of commits) {
+      const tree = await git([
+        "merge-tree",
+        "--write-tree",
+        "--no-messages",
+        `--merge-base=${commit}^`,
+        head,
+        commit,
+      ]).then(
+        (output) => output.split("\n")[0]!.trim(),
+        (error) => {
+          journalCaught(error, "runner-repositories.replay.merge-tree", null);
+          throw new RunnerCandidateConflict(
+            branch,
+            onto,
+            `commit ${commit.slice(0, 7)} conflicts with the branch on GitHub at ${onto.slice(0, 7)}`,
+          );
+        },
+      );
+      if (tree === (await git(["rev-parse", `${head}^{tree}`])).trim()) continue;
+      const [authorName, authorEmail, authorDate, committerName, committerEmail, committerDate] = (
+        await git(["show", "-s", "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI", commit])
+      )
+        .replace(/\n$/, "")
+        .split("\0");
+      const message = join(options.root, `replay-${randomUUID()}.txt`);
+      writeFileSync(message, await git(["show", "-s", "--format=%B", commit]), {
+        mode: 0o600,
+        flag: "wx",
+      });
+      try {
+        head = (
+          await execute(
+            [
+              "-c",
+              "core.hooksPath=/dev/null",
+              "--git-dir",
+              mirror,
+              "commit-tree",
+              tree,
+              "-p",
+              head,
+              "-F",
+              message,
+            ],
+            {
+              cwd: options.root,
+              env: {
+                ...env,
+                GIT_AUTHOR_NAME: authorName,
+                GIT_AUTHOR_EMAIL: authorEmail,
+                GIT_AUTHOR_DATE: authorDate,
+                GIT_COMMITTER_NAME: committerName,
+                GIT_COMMITTER_EMAIL: committerEmail,
+                GIT_COMMITTER_DATE: committerDate,
+              },
+              signal,
+            },
+          )
+        ).stdout.trim();
+      } finally {
+        rmSync(message, { force: true });
+      }
+    }
+    return head;
+  }
   return {
     async prepare(
       input: WorkCommand,
@@ -223,7 +325,7 @@ export function createRunnerRepositories(options: {
       signal?: AbortSignal,
       /** The WIP commit this run last published there, which the push may replace. */
       lease?: string,
-    ): Promise<void> {
+    ): Promise<{ sha: string }> {
       const command = parse(input);
       if (
         !/^[a-f0-9]{40}$/.test(candidate.sha) ||
@@ -343,33 +445,73 @@ export function createRunnerRepositories(options: {
             )
               throw new Error("Private runner input cannot enter candidate history");
           }
+          // An earlier turn of this item may have pushed work the candidate does not hold.
+          const branchRef = `refs/heads/${candidate.branch}`;
+          await invoke(["--git-dir", mirror, "update-ref", "-d", branchRef], signal);
+          await network({
+            operation: "fetch",
+            remoteUrl: command.repository.remoteUrl,
+            token: await options.credential(command, "read"),
+            cwd: options.root,
+            dest: mirror,
+            env,
+            signal,
+          });
+          signal?.throwIfAborted();
+          const remote = await invoke(
+            ["--git-dir", mirror, "rev-parse", "--verify", "--quiet", `${branchRef}^{commit}`],
+            signal,
+          ).then(
+            (value) => value.trim() || undefined,
+            () => undefined,
+          );
+          const contains = (ancestor: string, descendant: string) =>
+            invoke(
+              ["--git-dir", mirror, "merge-base", "--is-ancestor", ancestor, descendant],
+              signal,
+            ).then(
+              () => true,
+              () => false,
+            );
+          let pushed = sha;
+          // Every push leases the tip it saw, so it never replaces commits it did not account for.
+          // Only this run's WIP commit, or the head a rebase onto main replaced, may be dropped.
+          if (
+            remote !== undefined &&
+            remote !== sha &&
+            !(await contains(remote, sha)) &&
+            remote !== lease &&
+            !(rebased && remote === command.repository.baseSha)
+          ) {
+            if (rebased || !(await contains(command.repository.baseSha, remote)))
+              throw new RunnerCandidateConflict(
+                candidate.branch,
+                remote,
+                `the branch on GitHub moved to ${remote.slice(0, 7)}, which does not descend from the run's start ${command.repository.baseSha.slice(0, 7)}`,
+              );
+            pushed = await replay(mirror, sha, remote, candidate.branch, signal);
+          }
+          if (pushed === remote) return { sha: pushed };
           const ref = `refs/heads/paws-candidate-${randomUUID()}`;
           try {
-            await invoke(["--git-dir", mirror, "update-ref", ref, sha]);
+            await invoke(["--git-dir", mirror, "update-ref", ref, pushed]);
             signal?.throwIfAborted();
             const token = await options.credential(command, "write");
             signal?.throwIfAborted();
-            const push = (expected?: string) =>
-              network({
-                operation: "push",
-                remoteUrl: command.repository.remoteUrl,
-                token,
-                cwd: mirror,
-                refspec: `${sha}:refs/heads/${candidate.branch}`,
-                ...(expected ? { lease: expected } : {}),
-                env,
-                signal,
-              });
-            if (lease && lease !== sha) await push(lease);
-            else if (!rebased) await push();
-            else
-              await push().catch((caughtError4) => {
-                journalCaught(caughtError4, "runner-repositories.publish.push", null);
-                return push(command.repository.baseSha);
-              });
+            await network({
+              operation: "push",
+              remoteUrl: command.repository.remoteUrl,
+              token,
+              cwd: mirror,
+              refspec: `${pushed}:${branchRef}`,
+              ...(remote ? { lease: remote } : {}),
+              env,
+              signal,
+            });
           } finally {
             await invoke(["--git-dir", mirror, "update-ref", "-d", ref]);
           }
+          return { sha: pushed };
         } finally {
           rmSync(path, { force: true });
         }

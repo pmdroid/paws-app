@@ -64,6 +64,8 @@ export const RunnerResultSchema = z.strictObject({
     .strictObject({
       branch: z.string().min(1).max(256),
       error: z.string().min(1).max(4096),
+      /** The branch holds commits the candidate lacks, and they did not rebase cleanly. */
+      conflict: z.literal(true).optional(),
     })
     .optional(),
 });

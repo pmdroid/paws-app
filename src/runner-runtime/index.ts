@@ -30,7 +30,7 @@ import {
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
 } from "../runner-answers";
-import { createRunnerRepositories } from "../runner-repositories";
+import { createRunnerRepositories, RunnerCandidateConflict } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
 import { openRunnerRuntimeInventory } from "./runtimes";
@@ -1111,17 +1111,29 @@ export async function openRunnerRuntime(options: {
       if (!credential.branch) throw new Error("Runner publication branch is missing");
       entry.publicationBranch = credential.branch;
       try {
-        await repositories.publish(
-          entry.execution.command,
-          {
-            bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
-            sha: result.candidateSha,
-            branch: credential.branch,
-          },
-          entry.abort.signal,
-          entry.checkpointSha,
-        );
+        // A candidate replayed onto newer commits on the branch goes back as the pushed commit.
+        result.candidateSha = (
+          await repositories.publish(
+            entry.execution.command,
+            {
+              bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
+              sha: result.candidateSha,
+              branch: credential.branch,
+            },
+            entry.abort.signal,
+            entry.checkpointSha,
+          )
+        ).sha;
       } catch (error) {
+        if (error instanceof RunnerCandidateConflict) {
+          journalCaught(error, "runner-runtime.complete.conflict", entry.execution.command.itemId);
+          await interrupt(entry, error.message, true, {
+            branch: error.branch,
+            error: error.message.slice(0, 4096),
+            conflict: true,
+          });
+          return;
+        }
         if (!(error instanceof GitHubFailure)) throw error;
         journalCaught(error, "runner-runtime.complete.publish", entry.execution.command.itemId);
         const tries = (entry.pushTries ?? 0) + 1;

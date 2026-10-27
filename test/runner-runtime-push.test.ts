@@ -23,7 +23,8 @@ function git(args: string[], cwd: string) {
   return child.stdout.toString().trim();
 }
 
-async function fixture(rejection: string) {
+/** `branch` puts an earlier head of the item on GitHub that changes `earlier.txt` or `file.txt`. */
+async function fixture(rejection?: string, branch?: "clean" | "conflicting") {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-push-"));
   const now = Date.now();
   let clock = 0;
@@ -34,7 +35,19 @@ async function fixture(rejection: string) {
   git(["add", "."], source);
   git(["commit", "-q", "-m", "base"], source);
   const baseSha = git(["rev-parse", "HEAD"], source);
-  git(["clone", "-q", "--bare", source, join(root, "origin.git")], root);
+  const origin = join(root, "origin.git");
+  git(["clone", "-q", "--bare", source, origin], root);
+  let remoteSha: string | undefined;
+  if (branch) {
+    git(["checkout", "-q", "-b", "earlier"], source);
+    const path = branch === "clean" ? "earlier.txt" : "file.txt";
+    writeFileSync(join(source, path), "earlier head\n");
+    git(["add", "."], source);
+    git(["commit", "-q", "-m", "earlier head"], source);
+    remoteSha = git(["rev-parse", "HEAD"], source);
+    git(["push", "-q", origin, "HEAD:refs/heads/paws/fixture"], source);
+    git(["checkout", "-q", "main"], source);
+  }
   writeFileSync(join(source, "file.txt"), "candidate\n");
   git(["commit", "-q", "-am", "candidate"], source);
   const candidateSha = git(["rev-parse", "HEAD"], source);
@@ -94,10 +107,25 @@ async function fixture(rejection: string) {
     onError: () => {},
     async networkGit(input) {
       if (input.operation === "clone")
-        git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
-      else if (input.operation === "push") {
+        git(["clone", "-q", "--bare", origin, input.dest!], input.cwd);
+      else if (input.operation === "fetch")
+        git(["--git-dir", input.dest!, "fetch", "-q", origin, "+refs/heads/*:refs/heads/*"], root);
+      else {
         pushes.push(clock);
-        throw new Error(rejection);
+        if (rejection) throw new Error(rejection);
+        const [, target] = input.refspec!.split(":");
+        git(
+          [
+            "--git-dir",
+            input.cwd,
+            "push",
+            "-q",
+            ...(input.lease ? [`--force-with-lease=${target}:${input.lease}`] : []),
+            origin,
+            input.refspec!,
+          ],
+          root,
+        );
       }
     },
     broker: {
@@ -189,6 +217,13 @@ async function fixture(rejection: string) {
   return {
     posted,
     pushes,
+    baseSha,
+    remoteSha,
+    branchTip: () => git(["--git-dir", origin, "rev-parse", "refs/heads/paws/fixture"], root),
+    revParse: (ref: string) => git(["--git-dir", origin, "rev-parse", ref], root),
+    format: (ref: string, format: string) =>
+      git(["--git-dir", origin, "show", "-s", `--format=${format}`, ref], root),
+    read: (ref: string) => git(["--git-dir", origin, "show", ref], root),
     async run(minutes: number) {
       for (let step = 0; step <= minutes * 2; step++) {
         for (let index = 0; index < 5; index++) {
@@ -241,6 +276,53 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       expect(f.posted[0]!.pushFailure).toEqual({
         branch: "paws/fixture",
         error: expect.stringContaining("Permission to fixture/repository.git denied"),
+      });
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a candidate missing the branch tip on GitHub is rebased onto it and pushed without a failure",
+  async () => {
+    const f = await fixture(undefined, "clean");
+    try {
+      await f.run(2);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.pushFailure).toBeUndefined();
+      expect(f.posted[0]!.stopReason).toBe("end_turn");
+      const tip = f.branchTip();
+      expect(f.posted[0]!.candidateSha).toBe(tip);
+      // The earlier head stays in the branch: the candidate's commit is replayed on top of it.
+      expect(f.revParse(`${tip}^`)).toBe(f.remoteSha!);
+      expect(f.read(`${tip}:earlier.txt`)).toBe("earlier head");
+      expect(f.read(`${tip}:file.txt`)).toBe("candidate");
+      expect(f.format(tip, "%an <%ae> %cn <%ce> %s")).toBe(
+        "Fixture <fixture@example.invalid> Fixture <fixture@example.invalid> candidate",
+      );
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a candidate that conflicts with the branch on GitHub reports a conflict and leaves the branch as it was",
+  async () => {
+    const f = await fixture(undefined, "conflicting");
+    try {
+      await f.run(2);
+      expect(f.pushes).toEqual([]);
+      expect(f.branchTip()).toBe(f.remoteSha!);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.candidateSha).toBeUndefined();
+      expect(f.posted[0]!.pushFailure).toEqual({
+        branch: "paws/fixture",
+        error: expect.stringContaining("conflicts with the branch on GitHub"),
+        conflict: true,
       });
     } finally {
       await f.cleanup();
