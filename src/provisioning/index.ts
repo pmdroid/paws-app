@@ -57,6 +57,7 @@ export type {
   ExeDevExecOptions,
   ExeDevExecResult,
   ExeDevVm,
+  ExeDevVmSize,
   ProvisioningErrorCode,
   ProvisioningOperation,
 } from "./types";

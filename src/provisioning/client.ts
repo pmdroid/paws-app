@@ -352,6 +352,7 @@ function sizeRefused(
   const flags = command.split(" ").filter((flag) => SIZE_FLAGS.test(flag));
   const trimmed = token?.trim();
   const said = (trimmed ? error.detail.replaceAll(trimmed, "[redacted]") : error.detail)
+    // oxlint-disable-next-line no-control-regex -- exe.dev's text goes on one line of the page
     .replace(/[\u0000-\u001f\u007f]+/g, " ")
     .trim();
   const shown = said.length > MAX_DETAIL ? `${said.slice(0, MAX_DETAIL - 1)}…` : said;

@@ -26,6 +26,7 @@ import {
 } from "../src/member-vm";
 import {
   BootstrapError,
+  createExeDev,
   createFakeBootstrap,
   createFakeExeDev,
   type ExeDev,
@@ -193,7 +194,9 @@ describe("member VM", () => {
       "enroll",
       "startRunner",
     ]);
-    expect(f.exeDev.calls.filter((call) => call.operation === "createVm")).toHaveLength(1);
+    expect(f.exeDev.calls.filter((call) => call.operation === "createVm")).toEqual([
+      { operation: "createVm", vm: "ada-lovelace-paws", command: "new --name=ada-lovelace-paws" },
+    ]);
 
     f.clock.advance(MEMBER_VM_POLL_MS);
     await loop.tick();
@@ -470,6 +473,41 @@ describe("member VM", () => {
     expect(failed.step).toBe("enroll");
     expect(failed.failure).toMatch(/kept the identity of a removed runner/);
     expect(failed.runnerId).toBeNull();
+  });
+
+  test("Create VM sends the [member_vm] size, and exe.dev's refusal reaches the Runners page", async () => {
+    const f = await fixture();
+    let exeDev: ExeDev = createExeDev({
+      readToken: () => EXE_DEV_TOKEN,
+      fetch: async () =>
+        Response.json({ error: "cpu 64 exceeds your plan limit of 16" }, { status: 422 }),
+    });
+    const loop = new JobLoop(f.db, f.clock, { leaseMs: LEASE_MS });
+    registerMemberVmJob(loop, {
+      provision: () => ({
+        exeDev,
+        bootstrap: f.bootstrap,
+        mintEnrollment: (ref, request) =>
+          f.control.createEnrollment({ ...f.member, userId: ref.userId }, request),
+        size: { cpu: 64, memoryGb: 16 },
+      }),
+      secrets: () => [EXE_DEV_TOKEN],
+      now: () => f.clock.now(),
+    });
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const failed = await drive(f, loop, settled);
+    expect(failed.step).toBe("create");
+    expect(failed.failure).toBe(
+      "exe.dev refused Create VM for ada-lovelace-paws with --cpu=64 --memory=16GB: cpu 64 exceeds your plan limit of 16. Change [member_vm] in config.toml.",
+    );
+    exeDev = f.exeDev;
+    retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    expect((await drive(f, loop, (row) => row.step !== "create")).step).toBe("install");
+    expect(f.exeDev.calls).toContainEqual({
+      operation: "createVm",
+      vm: "ada-lovelace-paws",
+      command: "new --name=ada-lovelace-paws --cpu=64 --memory=16GB",
+    });
   });
 
   test("a failure that a fake exe.dev raises is stored without the exe.dev token", async () => {
