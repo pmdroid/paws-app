@@ -12,8 +12,10 @@ import {
   renderCheckoutProjects,
 } from "../src/config";
 import { hiddenPathsPrompt, implementPrompt } from "../src/loop";
+import { startServer } from "../src/server";
 import { handleCheckoutSettingsRequest } from "../src/settings";
 import { checkoutPatterns, exclusionMatcher, exclusionPatterns } from "../src/worktree-checkout";
+import { tempDb } from "./helpers";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -195,4 +197,65 @@ test("settings save round-trips through config.toml and warns about check paths"
   expect(view.repositories).toContainEqual(
     expect.objectContaining({ repo: "acme/demo", files: { total: 3, agent: 2 } }),
   );
+});
+
+test("settings list the workspace's GitHub-connected and team-mapped repositories once", async () => {
+  const root = await tempRoot();
+  const configPath = join(root, "config.toml");
+  const db = tempDb();
+  db.run(
+    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
+  );
+  for (const repository of ["pmdroid/barkvisor", "pmdroid/kyotoagent", "pmdroid/paws-app"])
+    db.run(
+      "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws',?,'team')",
+      [repository],
+    );
+  db.run(
+    `INSERT INTO workspace_github_connection(workspace_id,generation,secret_id,installation_id,repositories)
+     VALUES('ws',1,'secret-1','42','["pmdroid/barkvisor","PMDroid/Kyotoagent","pmdroid/paws-app"]')`,
+  );
+  const server = startServer({
+    hostname: "127.0.0.1",
+    port: 0,
+    webhooks: false,
+    db,
+    agentSettings: { configPath, repos: ["PMDroid/Paws-App"] },
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const repos = async () =>
+      (
+        (await (await fetch(`${base}/api/settings/checkout`)).json()) as {
+          repositories: Array<{ repo: string; paths: unknown[] }>;
+        }
+      ).repositories;
+    expect((await repos()).map((repository) => repository.repo).sort()).toEqual([
+      "pmdroid/barkvisor",
+      "pmdroid/kyotoagent",
+      "pmdroid/paws-app",
+    ]);
+
+    const page = await (await fetch(`${base}/status`)).text();
+    const token = /name="paws-csrf" content="([^"]+)"/.exec(page)?.[1];
+    const saved = await fetch(`${base}/api/settings/checkout`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-paws-csrf": token!, origin: base },
+      body: JSON.stringify({
+        repositories: [{ repo: "pmdroid/kyotoagent", paths: [{ path: "docs/archive/" }] }],
+      }),
+    });
+    expect(saved.status).toBe(200);
+    expect(parseCheckoutProjects(await readFile(configPath, "utf8"))).toEqual({
+      "pmdroid/kyotoagent": { exclude: ["docs/archive/"] },
+    });
+    const listed = await repos();
+    expect(listed).toHaveLength(3);
+    expect(listed.find((repository) => repository.repo === "pmdroid/kyotoagent")?.paths).toEqual([
+      { path: "docs/archive/", hideFrom: "agent", usedBy: [] },
+    ]);
+  } finally {
+    server.stop(true);
+    db.close();
+  }
 });

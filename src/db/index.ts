@@ -457,6 +457,7 @@ export {
   listUserWorkspaces,
   listWorkspaceMembers,
   listWorkspaceRepositories,
+  listWorkspaceRepositoryNames,
   replaceWorkspaceRepositories,
   saveWorkspaceOAuthRequest,
 } from "./workspace-auth";
