@@ -196,8 +196,8 @@ async function setup() {
     return { id, runId: started.id };
   }
   /**
-   * Both runners online, restore-capable for Claude and Codex, signed in to Claude 2.1.7 and
-   * Codex 2.1.1, owned by the delegator.
+   * Both runners online, restore-capable for Claude, Codex and Grok, signed in to Claude 2.1.7,
+   * Codex 2.1.1 and Grok 1.0.50, owned by the delegator.
    */
   function reset() {
     for (const runnerId of Object.values(runners)) {
@@ -207,7 +207,7 @@ async function setup() {
       ]);
       work.heartbeat(runnerId);
       db.run(
-        `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.45',?)
+        `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.46',?)
          ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
         [runnerId, now],
       );
@@ -216,6 +216,7 @@ async function setup() {
       for (const [agent, version] of [
         ["claude", "2.1.7"],
         ["codex", "2.1.1"],
+        ["grok", "1.0.50"],
       ]) {
         db.run(
           "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,?,1,0)",
@@ -267,8 +268,10 @@ async function setup() {
       },
     });
   }
+  /** The agent version each runner reports, and so the one a snapshot records. */
+  const VERSIONS = { claude: "2.1.7", codex: "2.1.1", grok: "1.0.50" };
   /** Runner A seals a snapshot of its turn through the store, as the runner uploads it. */
-  async function seal(command: RunCommand, agent: "claude" | "codex") {
+  async function seal(command: RunCommand, agent: "claude" | "codex" | "grok") {
     const grant = work.issueGrant({
       runnerId: runners.a,
       runId: command.runId,
@@ -291,7 +294,7 @@ async function setup() {
       sizeBytes: bundle.length,
       sha256: createHash("sha256").update(bundle).digest("hex"),
       agent,
-      agentVersion: agent === "codex" ? "2.1.1" : "2.1.7",
+      agentVersion: VERSIONS[agent],
       sessionId: "claude-session",
       workspacePath: `/var/lib/paws-agent/work/${command.runId}`,
       commitSha: head,
@@ -305,7 +308,7 @@ async function setup() {
    */
   async function move(options: {
     /** The run's agent; Claude when unset. */
-    agent?: "claude" | "codex";
+    agent?: "claude" | "codex" | "grok";
     snapshot?: boolean;
     change?: () => void;
     events?: RunnerEvent[];
@@ -562,5 +565,68 @@ test("another Codex version still restores, and a failed load names both version
   expect(onB.restoreSession?.agentVersion).toBe("2.1.1");
   expect(notices).toEqual([
     `${FALLBACK} (the saved session didn't load: Codex 2.1.1 on A, 2.2.2 on B).\n`,
+  ]);
+});
+
+test("a moved Grok run restores its session folder on a runner from 0.1.46", async () => {
+  const { onB, sealed, notices } = await context.move({
+    agent: "grok",
+    events: [{ type: "session_restore", restored: true }],
+  });
+  expect(onB.profile.agent).toBe("grok");
+  expect(onB.restoreSession).toEqual({
+    generation: sealed!.generation,
+    agent: "grok",
+    agentVersion: "1.0.50",
+    sessionId: "claude-session",
+    sha256: createHash("sha256").update(sealed!.bundle).digest("hex"),
+    sizeBytes: sealed!.bundle.length,
+  });
+  expect(onB.resumeSessionId).toBe("claude-session");
+  expect(notices).toEqual([
+    `Moved this run to B because A is offline. Continuing the agent's session from turn ${sealed!.generation}.\n`,
+  ]);
+});
+
+test("a Grok run never restores on a runner that only restores Claude and Codex", async () => {
+  const { db, runners } = context;
+  const { onB, notices } = await context.move({
+    agent: "grok",
+    change: () =>
+      db.run("UPDATE runner_host_status SET runner_version='0.1.45' WHERE runner_id=?", [
+        runners.b,
+      ]),
+  });
+  expect(onB.restoreSession).toBeUndefined();
+  expect(onB.resumeSessionId).toBeUndefined();
+  expect(notices).toEqual([`${FALLBACK} (B's runner is too old).\n`]);
+});
+
+test("a Grok run never restores onto another member's runner", async () => {
+  const { db, otherUserId } = context;
+  const { onB, notices } = await context.move({
+    agent: "grok",
+    change: () =>
+      db.run("UPDATE agent_session_snapshot SET owner_user_id=? WHERE status='sealed'", [
+        otherUserId,
+      ]),
+  });
+  expect(onB.restoreSession).toBeUndefined();
+  expect(notices).toEqual([`${FALLBACK} (B is signed in to a different Grok account).\n`]);
+});
+
+test("another Grok version still restores, and a failed load names both versions", async () => {
+  const { db, runners } = context;
+  const { onB, notices } = await context.move({
+    agent: "grok",
+    change: () =>
+      db.run("UPDATE runner_agent SET version='1.0.51' WHERE runner_id=? AND agent='grok'", [
+        runners.b,
+      ]),
+    events: [{ type: "session_restore", restored: false, reason: "load" }],
+  });
+  expect(onB.restoreSession?.agentVersion).toBe("1.0.50");
+  expect(notices).toEqual([
+    `${FALLBACK} (the saved session didn't load: Grok 1.0.50 on A, 1.0.51 on B).\n`,
   ]);
 });

@@ -5,11 +5,14 @@ import type { RunnerCommand } from "../runner-protocol";
 export const CLAUDE_SESSION_RESTORE_RUNNER_VERSION = [0, 1, 43];
 /** First runner release that snapshots a Codex rollout at turn end and restores it. */
 export const CODEX_SESSION_RUNNER_VERSION = [0, 1, 45];
+/** First runner release that snapshots a Grok session folder at turn end and restores it. */
+export const GROK_SESSION_RUNNER_VERSION = [0, 1, 46];
 
 /** The runner release each agent's restore needs. */
 const RESTORE_RUNNER_VERSION = new Map<string, number[]>([
   ["claude", CLAUDE_SESSION_RESTORE_RUNNER_VERSION],
   ["codex", CODEX_SESSION_RUNNER_VERSION],
+  ["grok", GROK_SESSION_RUNNER_VERSION],
 ]);
 
 type RestoreSession = NonNullable<Extract<RunnerCommand, { type: "run" }>["restoreSession"]>;
@@ -83,7 +86,7 @@ export function planSessionRestore(
        WHERE run_id=? AND status='sealed' ORDER BY generation DESC LIMIT 1`,
     )
     .get(input.runId);
-  // Only Claude and Codex restore so far; another agent's snapshot is not this run's session.
+  // Another agent's snapshot is not this run's session.
   const minimum = snapshot && RESTORE_RUNNER_VERSION.get(snapshot.agent);
   if (
     !snapshot ||
