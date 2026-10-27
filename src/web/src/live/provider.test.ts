@@ -7,6 +7,7 @@ import {
   appendCloseoutOutput,
   applyWorkItemEvent,
   beginImplementRun,
+  bindWorkItemRepository,
   enqueueJob,
   enqueueOutbox,
   enterMergeQueue,
@@ -35,6 +36,7 @@ import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../
 import { handleStatusRequest, startStatusServer } from "../engine";
 import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from "./provider";
 import { waitReason } from "../client/format";
+import { renderMergeQueue } from "../client/merge-queue";
 
 const open: Database[] = [];
 const homes: string[] = [];
@@ -732,6 +734,48 @@ describe("live status provider", () => {
       ["ENG-14", "merged", null],
       ["ENG-15", "back_with_agent", "ci_failed"],
     ]);
+  });
+
+  test("the merge queue names each task's bound repository without a configured repo", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const head = "c".repeat(40);
+    const bound = (id: string, at: number) => {
+      const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_b", now: at });
+      bindWorkItemRepository(db, item.id, {
+        owner: "pmdroid",
+        repo: "paws-app",
+        remoteUrl: "https://github.com/pmdroid/paws-app.git",
+      });
+      beginImplementRun(db, item.id, at);
+      enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
+      return item;
+    };
+    bound("ENG-21", 1);
+    const back = bound("ENG-22", 2);
+    applyWorkItemEvent(db, back.id, "ejected");
+    enqueueJob(db, {
+      queue: "run.resume",
+      jobKey: `ci-failed:${back.id}:0`,
+      payload: { itemId: back.id, reason: "ci-failed" },
+      now: now - 120_000,
+    });
+
+    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now) }).snapshot();
+    const parsed = parseStatusSnapshot(snapshot);
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.snapshot.mergeQueue.map((entry) => [entry.itemId, entry.repository])).toEqual([
+      ["ENG-21", "pmdroid/paws-app"],
+    ]);
+    expect(
+      parsed.snapshot.mergeHistory?.map((entry) => [entry.itemId, entry.repository, entry.outcome]),
+    ).toEqual([["ENG-22", "pmdroid/paws-app", "back_with_agent"]]);
+    const html = renderMergeQueue(parsed.snapshot);
+    expect(html.match(/<h2 [^>]*>[^<]*<\/h2>/g)).toEqual([
+      `<h2 id="merge-repo-pmdroid-paws-app">pmdroid/paws-app</h2>`,
+    ]);
+    expect(html).not.toContain("unknown");
+    expect(html).not.toContain("Repository not known");
   });
 
   test("Closeout checks leave out policy items that did not apply to the change", () => {

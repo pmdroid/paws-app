@@ -24,15 +24,16 @@ export function mergeQueueCount(snapshot: StatusSnapshot | null): number {
 }
 
 type Group = {
-  repository: string;
+  /** Null gathers the tasks Paws knows no repository for. */
+  repository: string | null;
   settings: StatusMergeSettings;
   waiting: StatusMergeEntry[];
   history: StatusMergeOutcome[];
 };
 
 function groups(snapshot: StatusSnapshot): Group[] {
-  const byRepository = new Map<string, Group>();
-  const group = (repository: string, settings: StatusMergeSettings): Group => {
+  const byRepository = new Map<string | null, Group>();
+  const group = (repository: string | null, settings: StatusMergeSettings): Group => {
     let found = byRepository.get(repository);
     if (!found) {
       found = { repository, settings, waiting: [], history: [] };
@@ -59,20 +60,28 @@ function groups(snapshot: StatusSnapshot): Group[] {
     found.history.sort((left, right) => right.at.localeCompare(left.at));
   }
   return [...byRepository.values()].sort((left, right) =>
-    left.repository.localeCompare(right.repository),
+    left.repository === null
+      ? 1
+      : right.repository === null
+        ? -1
+        : left.repository.localeCompare(right.repository),
   );
 }
 
 function section(snapshot: StatusSnapshot, group: Group): string {
+  const { repository } = group;
   const queued = group.settings.order === "queue";
-  const id = `merge-repo-${group.repository.replace(/[^A-Za-z0-9-]/g, "-")}`;
+  const id =
+    repository === null
+      ? "merge-repo-not-known"
+      : `merge-repo-${repository.replace(/[^A-Za-z0-9-]/g, "-")}`;
   const table = group.waiting.length
     ? `<table class="run-table merge-table"><thead><tr>${queued ? `<th class="run-cell">#</th>` : ""}<th class="run-cell">Issue</th><th class="run-cell hide-phone">Project</th><th class="run-cell hide-phone">Delegated by</th><th class="run-cell">PR</th><th class="run-cell hide-phone">Waiting</th><th class="run-cell">Step</th><th class="run-cell hide-phone">Detail</th></tr></thead><tbody>${group.waiting.map((entry) => row(snapshot, group, entry)).join("")}</tbody></table>`
     : `<p class="muted">No pull requests waiting.</p>`;
   const done = group.history.length
     ? `<h3>Done and stopped</h3><ul class="overview-work" role="list">${group.history.map((entry) => outcome(snapshot, entry)).join("")}</ul>`
     : "";
-  return `<section class="col merge-repo" aria-labelledby="${esc(id)}"><div class="between"><h2 id="${esc(id)}">${esc(group.repository)}</h2><div class="row">${settingsTags(group.settings)}</div></div>${queued ? "" : `<p class="muted">No queue here: each pull request merges when green.</p>`}${table}${done}</section>`;
+  return `<section class="col merge-repo" aria-labelledby="${esc(id)}"><div class="between"><h2 id="${esc(id)}">${repository === null ? "Repository not known" : esc(repository)}</h2>${repository === null ? "" : `<div class="row">${settingsTags(group.settings)}</div>`}</div>${repository === null ? `<p class="muted">Paws has no repository for these tasks.</p>` : queued ? "" : `<p class="muted">No queue here: each pull request merges when green.</p>`}${table}${done}</section>`;
 }
 
 function settingsTags(settings: StatusMergeSettings): string {

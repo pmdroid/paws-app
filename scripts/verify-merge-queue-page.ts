@@ -1,5 +1,6 @@
 import { statusFixture } from "../src/web/test/fixtures";
-// The Merge queue page with two repositories, against the real status handler.
+// The Merge queue page with two repositories and a task whose repository is not known, against
+// the real status handler.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-merge-queue-page.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
@@ -30,11 +31,12 @@ add("ENG-107", "Fix export timezone for every report that crosses midnight", "ac
 add("ENG-120", "Landing copy", "acme/web", 31);
 add("ENG-121", "Footer links", "acme/web", 32);
 add("ENG-130", "Retention job", "acme/platform", 420, "running");
+add("ENG-131", "Export audit trail", "acme/platform", 421);
 const queue = { order: "queue", mainMoved: "ci", rule: null } as const;
 const green = { order: "ci-green", mainMoved: "ci", rule: null } as const;
 const entry = (
   itemId: string,
-  repository: string,
+  repository: string | null,
   position: number | null,
   waitingFor: "ahead" | "ci" | "review",
   minutes: number,
@@ -68,6 +70,7 @@ snapshot.mergeQueue = [
   }),
   entry("ENG-120", "acme/web", null, "ci", 5, null, green),
   entry("ENG-121", "acme/web", null, "review", 125, null, green),
+  entry("ENG-131", null, null, "ci", 3, null),
 ];
 snapshot.mergeHistory = [
   ...(snapshot.mergeHistory ?? []),
@@ -112,12 +115,14 @@ try {
     await page.goto(`http://127.0.0.1:${server.port}/status/merge-queue`);
     await expect(page.getByRole("heading", { name: "acme/platform" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "acme/web" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Repository not known" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "unknown", exact: true })).toHaveCount(0);
     await expect(page.getByText("Back with the agent")).toBeVisible();
     await expect(page.getByText("Waiting for review")).toBeVisible();
     if (width > 768) {
       const navigation = page.getByRole("link", { name: /Merge queue/ });
       await expect(navigation).toHaveAttribute("aria-current", "page");
-      await expect(navigation.getByLabel("5 waiting")).toHaveText("5");
+      await expect(navigation.getByLabel("6 waiting")).toHaveText("6");
       await expect(page.getByRole("columnheader", { name: "Detail" }).first()).toBeVisible();
     } else {
       await expect(page.getByRole("columnheader", { name: "Detail" }).first()).toBeHidden();
