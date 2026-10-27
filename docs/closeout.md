@@ -260,3 +260,50 @@ After an incident, or when a candidate holds up:
 2. Check that the bug was in the original diff as merged, and that a reviewer reading that diff could have seen it. A requirement that changed later, a refactor, or a bug in code the original only moved is not an escape.
 3. Point `file` and `line` at the defect, rewrite `bug` as one sentence about the defect rather than the fix, and set `confirmedBy`, `confirmedAt` and `confidence`.
 4. Append the line to `evals/review-escapes.jsonl`. `scripts/review-escapes.test.ts` checks every line's shape.
+5. Rescore the reviewer (see [Reviewer score](#reviewer-score)) and commit the report with the case, so the next change is measured against a baseline that includes it.
+
+## Reviewer score
+
+`scripts/review-score.ts` replays a review item from `.agents/closeout.yaml` on known cases and writes a report to `reports/`:
+
+- **Recall.** Each case in `evals/review-escapes.jsonl` counts as caught when the review has a finding at or above `failOn`, on a line the change touched, within five lines (`--tolerance`) of the case's `file` and `line`. A blocking finding somewhere else is listed as "rejected elsewhere", not as caught. `likely` cases are scored apart from `confirmed` ones. The most severe finding near the bug at any severity is recorded too, so the effect of a lower `failOn` can be read off a report.
+- **False positives.** Each pull request in `evals/review-clean.jsonl` counts as a false positive when the review would have rejected it. The report gives the rate for Paws squashes and for pull requests merged by hand apart, and both together.
+- **Time and cost per review.** Wall time and the tokens Codex reports, including the re-ask. Cost needs a price: `--price input,cached,output` in USD per million tokens. Without one the report says "not priced". The baseline is not priced, because Codex runs on a ChatGPT sign-in here and has no per-token bill.
+
+The replay uses Paws's own reviewer, so the prompt, the finding format, the re-ask and the pre-existing filter are the gate's. It takes the item's `skill` (read from the working tree, so an uncommitted edit is scored), `scope` and `failOn`, and runs the model through `codex exec` in a read-only checkout of the case's head. The model is Codex's default unless `--model` names one; set `--model` and `--effort` to what Settings › Agents uses for the reviewer. A case replays `original.base..original.head` when both commits are in the clone. Otherwise it replays the squash commit on `main`, which is the patch as merged, and the report's Diff column says `squash`.
+
+```sh
+bun scripts/review-score.ts --baseline        # writes reports/review-score-baseline.{md,json}
+bun scripts/review-score.ts                   # writes reports/review-score-<time>.{md,json} and compares
+bun scripts/review-score.ts --model gpt-6.1-sol --effort high --only 707-791,clean-544
+bun scripts/review-score.ts --item security-review
+```
+
+A run without `--baseline` adds a "Compared with the baseline" section: the settings that changed, recall, false positives, time and tokens side by side, and every case whose outcome flipped. The model's answers vary from run to run, so read a single flipped case as a hint and a change in the rates as the result.
+
+**Rescore before merging a change to the review skill, the reviewer's model or effort, `scope` or `failOn`.** Put the report in the pull request and say how recall and false positives moved. When the change is merged, run with `--baseline` and commit the new baseline, so the next change is compared against it. The script calls real models, so it is not part of `bun run test`; `scripts/review-score.test.ts` covers the scoring without them.
+
+### Clean pull requests
+
+A clean pull request is one that no later fix or revert touched for `quietDays` after its merge, found the same way as escape candidates: `git blame` from every later pull request. `author` is `paws` for a Paws squash, which replays the candidate its Closeout trailer names, or `human` for a pull request merged by hand, which replays its merge commit against the first parent. Each line of `evals/review-clean.jsonl` pins one, so every rescore uses the same set as the baseline:
+
+```json
+{
+  "id": "clean-544",
+  "author": "paws",
+  "original": { "pr": 544, "title": "…", "base": "f624…", "head": "a378…", "mergeCommit": "550a…" },
+  "mergedAt": "2026-10-18T02:02:53+00:00",
+  "changedLines": 212,
+  "quietDays": 7,
+  "pickedAt": "2026-10-27"
+}
+```
+
+`--pick-clean` prints candidates and runs no model. It keeps pull requests by `--author` (`paws`, the default, needs a Closeout trailer), merged between `--from` and `--to` when given and at least `--quiet-days` ago (default 7), with at least `--min-lines` changed lines (default 20, without lockfiles and snapshots), and not the original of an escape. It then spreads `--count` of them (default 16) over the range:
+
+```sh
+bun scripts/review-score.ts --pick-clean --quiet-days 7 > /tmp/clean.jsonl
+bun scripts/review-score.ts --pick-clean --author human --from 2026-10-09 --to 2026-10-12 --quiet-days 14 --count 12
+```
+
+Until the re-pin, the set is 4 Paws squashes with 7 quiet days and 12 pull requests merged by hand with 14. The first Paws squash on `main` is from 2026-10-17. On 2026-10-27 only #522 to #582 had 7 days behind them, and a fix touched all but four of those. The 12 hand-merged pull requests are from 2026-10-09 to 2026-10-12 and never went through Closeout, but the reviewer reads only the diff, so they still measure noise. Re-pin to 16 Paws squashes with 14 quiet days once enough qualify, and write a new baseline when the set changes.

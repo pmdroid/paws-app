@@ -1,0 +1,565 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-27T04:19:45.271Z",
+  "config": {
+    "id": "independent-review",
+    "skill": ".agents/skills/review-paws/SKILL.md",
+    "failOn": "P1",
+    "scope": "diff",
+    "skillDigest": "3fb91d9be4d28967778a3780b26b37bbae100b0e939be9f41538f6b11d6406b2",
+    "model": "gpt-6.1-sol",
+    "effort": "medium",
+    "tolerance": 5
+  },
+  "results": [
+    {
+      "id": "579-655",
+      "kind": "escape",
+      "pr": 579,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 44722,
+      "usage": {
+        "input": 28988,
+        "cached": 12288,
+        "output": 2134
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "673-678",
+      "kind": "escape",
+      "pr": 673,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 42117,
+      "usage": {
+        "input": 63322,
+        "cached": 43648,
+        "output": 1708
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "707-791",
+      "kind": "escape",
+      "pr": 707,
+      "confidence": "confirmed",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 21084,
+      "usage": {
+        "input": 23175,
+        "cached": 12288,
+        "output": 839
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "709-779",
+      "kind": "escape",
+      "pr": 709,
+      "confidence": "confirmed",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 67172,
+      "usage": {
+        "input": 43497,
+        "cached": 12288,
+        "output": 3314
+      },
+      "blocking": [],
+      "findings": 2
+    },
+    {
+      "id": "724-781",
+      "kind": "escape",
+      "pr": 724,
+      "confidence": "confirmed",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 22372,
+      "usage": {
+        "input": 30303,
+        "cached": 12288,
+        "output": 1035
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "735-877",
+      "kind": "escape",
+      "pr": 735,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "elsewhere",
+      "durationMs": 61090,
+      "usage": {
+        "input": 32288,
+        "cached": 12288,
+        "output": 3350
+      },
+      "blocking": [
+        {
+          "severity": "P1",
+          "location": "src/runner-execution/skills.ts:175",
+          "explanation": "Unchecked parent symlink permits privileged directory deletion. removeFolder constructs its target through agent-writable parent directories without verifying those parents. Both skill removal and removal of an agent from a skill call this function without installFolder's directory checks. An agent can replace .claude/skills or another agent's skills directory with a symlink, causing the privileged daemon to move and recursively delete a directory outside the agent home.",
+          "evidence": "ownedDirectory makes the skills directories agent-owned. For an installed skill named runtime, the agent can replace .claude/skills with a symlink to /var/lib/paws-runner. When that skill is removed, removeFolder resolves its target to /var/lib/paws-runner/runtime, renames it into .paws-skills, and recursively deletes it. The removal paths in applyHome do not validate the target's parent directories."
+        }
+      ],
+      "findings": 2
+    },
+    {
+      "id": "927-929",
+      "kind": "escape",
+      "pr": 927,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 46156,
+      "usage": {
+        "input": 58041,
+        "cached": 12288,
+        "output": 2329
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "941-955",
+      "kind": "escape",
+      "pr": 941,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 21457,
+      "usage": {
+        "input": 33187,
+        "cached": 12288,
+        "output": 1007
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "973-983",
+      "kind": "escape",
+      "pr": 973,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 16660,
+      "usage": {
+        "input": 24948,
+        "cached": 12288,
+        "output": 619
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "978-982",
+      "kind": "escape",
+      "pr": 978,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 12635,
+      "usage": {
+        "input": 29063,
+        "cached": 12288,
+        "output": 355
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "985-989",
+      "kind": "escape",
+      "pr": 985,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 81457,
+      "usage": {
+        "input": 140338,
+        "cached": 82304,
+        "output": 3976
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "990-994",
+      "kind": "escape",
+      "pr": 990,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 37327,
+      "usage": {
+        "input": 34208,
+        "cached": 12288,
+        "output": 1869
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "732-834",
+      "kind": "escape",
+      "pr": 732,
+      "confidence": "confirmed",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 51184,
+      "usage": {
+        "input": 55144,
+        "cached": 39424,
+        "output": 2579
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "1006-1015",
+      "kind": "escape",
+      "pr": 1006,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 49463,
+      "usage": {
+        "input": 81979,
+        "cached": 52864,
+        "output": 2242
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "783-974",
+      "kind": "escape",
+      "pr": 783,
+      "confidence": "likely",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 32837,
+      "usage": {
+        "input": 27536,
+        "cached": 12288,
+        "output": 1439
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "715-851",
+      "kind": "escape",
+      "pr": 715,
+      "confidence": "likely",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 34673,
+      "usage": {
+        "input": 25322,
+        "cached": 12288,
+        "output": 1638
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "clean-544",
+      "kind": "clean",
+      "pr": 544,
+      "quietDays": 7,
+      "author": "paws",
+      "diff": "squash",
+      "outcome": "passed",
+      "durationMs": 13018,
+      "usage": {
+        "input": 20053,
+        "cached": 12288,
+        "output": 527
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-549",
+      "kind": "clean",
+      "pr": 549,
+      "quietDays": 7,
+      "author": "paws",
+      "diff": "squash",
+      "outcome": "passed",
+      "durationMs": 41242,
+      "usage": {
+        "input": 26196,
+        "cached": 12288,
+        "output": 1649
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "clean-552",
+      "kind": "clean",
+      "pr": 552,
+      "quietDays": 7,
+      "author": "paws",
+      "diff": "squash",
+      "outcome": "passed",
+      "durationMs": 16550,
+      "usage": {
+        "input": 20164,
+        "cached": 12288,
+        "output": 617
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "clean-560",
+      "kind": "clean",
+      "pr": 560,
+      "quietDays": 7,
+      "author": "paws",
+      "diff": "squash",
+      "outcome": "passed",
+      "durationMs": 33328,
+      "usage": {
+        "input": 34823,
+        "cached": 12288,
+        "output": 1611
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "clean-8",
+      "kind": "clean",
+      "pr": 8,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "rejected",
+      "durationMs": 24086,
+      "usage": {
+        "input": 48948,
+        "cached": 12288,
+        "output": 881
+      },
+      "blocking": [
+        {
+          "severity": "P1",
+          "location": "install/closeout-manifest.json:13",
+          "explanation": "Unusable release pins: all four platform assets use hashes of placeholder strings rather than Closeout binaries. With the default manifest, installCloseout cannot install Closeout: the documented absent release assets fail downloading, and a real binary supplied through offlineFile fails checksum verification. Replace every placeholder asset digest with the digest of an available binary before exposing this as a working installer.",
+          "evidence": "The manifest states that v0.1.0 has no release assets and defines digestKind as unreleased-placeholder for darwin-arm64, darwin-x64, linux-x64, and linux-arm64. parseAsset verifies each hash against digestPreimage. installCloseout then compares both downloaded and offline binary bytes against that same hash. The successful installation tests substitute fixtureManifest(bodies), so they do not demonstrate that the checked-in manifest can install a binary."
+        }
+      ],
+      "findings": 1
+    },
+    {
+      "id": "clean-85",
+      "kind": "clean",
+      "pr": 85,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 7715,
+      "usage": {
+        "input": 22591,
+        "cached": 12288,
+        "output": 245
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-128",
+      "kind": "clean",
+      "pr": 128,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 31527,
+      "usage": {
+        "input": 27015,
+        "cached": 12288,
+        "output": 1469
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-165",
+      "kind": "clean",
+      "pr": 165,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 17731,
+      "usage": {
+        "input": 44501,
+        "cached": 34048,
+        "output": 597
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-130",
+      "kind": "clean",
+      "pr": 130,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 11830,
+      "usage": {
+        "input": 21485,
+        "cached": 12288,
+        "output": 409
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-178",
+      "kind": "clean",
+      "pr": 178,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 9883,
+      "usage": {
+        "input": 21129,
+        "cached": 12288,
+        "output": 329
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-190",
+      "kind": "clean",
+      "pr": 190,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 8863,
+      "usage": {
+        "input": 18723,
+        "cached": 12288,
+        "output": 291
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-218",
+      "kind": "clean",
+      "pr": 218,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 8630,
+      "usage": {
+        "input": 25397,
+        "cached": 12288,
+        "output": 213
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-238",
+      "kind": "clean",
+      "pr": 238,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "rejected",
+      "durationMs": 34278,
+      "usage": {
+        "input": 29101,
+        "cached": 12288,
+        "output": 1281
+      },
+      "blocking": [
+        {
+          "severity": "P1",
+          "location": "src/workspace/runtime.ts:12",
+          "explanation": "Missing production wiring: slackIdentities is optional, but the candidate never constructs createSlackIdentityReads or passes it into production workspace access. Only the test fixtures supply it. Consequently, production Slack synchronization always returns without looking up users, and the account-links UI reports Slack as disconnected even when Slack credentials are installed. Wire the credential-backed adapter into production workspace initialization.",
+          "evidence": "The complete supplied diff introduces createSlackIdentityReads, but its only invocation is in test/local/workspace-identity-links.ts. The only supplied slackIdentities values are in that probe and test/local/workspace-ui.ts. In src/workspace/identity-links.ts, syncUser exits when options.slack is absent, GET returns slackTeamId: null, and manual non-null Slack mappings are rejected."
+        }
+      ],
+      "findings": 2
+    },
+    {
+      "id": "clean-247",
+      "kind": "clean",
+      "pr": 247,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 13615,
+      "usage": {
+        "input": 24709,
+        "cached": 12288,
+        "output": 437
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-267",
+      "kind": "clean",
+      "pr": 267,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 8943,
+      "usage": {
+        "input": 22832,
+        "cached": 12288,
+        "output": 269
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-285",
+      "kind": "clean",
+      "pr": 285,
+      "quietDays": 14,
+      "author": "human",
+      "diff": "candidate",
+      "outcome": "passed",
+      "durationMs": 7580,
+      "usage": {
+        "input": 19720,
+        "cached": 12288,
+        "output": 161
+      },
+      "blocking": [],
+      "findings": 0
+    }
+  ]
+}
