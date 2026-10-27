@@ -42,8 +42,12 @@ import {
   type ReviewEscape,
 } from "./review-escapes";
 
+export type CleanAuthor = "paws" | "human";
+
 export type CleanCase = {
   id: string;
+  /** `paws` for a Paws squash Closeout reviewed, `human` for a pull request merged by hand. */
+  author: CleanAuthor;
   original: { pr: number; title: string; base: string; head: string; mergeCommit: string };
   mergedAt: string;
   /** Added plus removed lines in the squash, lockfiles and snapshots left out. */
@@ -88,6 +92,7 @@ export type CaseResult = {
   pr: number;
   confidence?: "confirmed" | "likely";
   quietDays?: number;
+  author?: CleanAuthor;
   /** `candidate` replays base..head as Closeout saw it; `squash` replays the merge commit. */
   diff: "candidate" | "squash";
   outcome: Outcome;
@@ -228,10 +233,13 @@ export function changedLines(git: Git, from: string, to: string): number {
 }
 
 /**
- * Paws squashes that make a clean set: merged at least `quietDays` ago, with a
- * Closeout trailer, at least `minLines` changed lines, not the original of an
- * escape, and no later fix or revert changing or removing their lines within
- * `quietDays` of the merge. `count` of them, spread evenly over the range.
+ * Pull requests that make a clean set: merged at least `quietDays` ago, at
+ * least `minLines` changed lines, not the original of an escape, and no later
+ * fix or revert changing or removing their lines within `quietDays` of the
+ * merge. `paws` keeps Paws squashes with a Closeout trailer and replays the
+ * candidate it names; `human` keeps the others and replays the merge commit
+ * against its first parent. `from` and `to` bound the merge date, inclusive.
+ * `count` of them, spread evenly over the range.
  */
 export function pickClean(
   git: Git,
@@ -239,6 +247,9 @@ export function pickClean(
   candidates: readonly Candidate[],
   options: {
     app: string;
+    author: CleanAuthor;
+    from?: string;
+    to?: string;
     now: Date;
     quietDays: number;
     minLines: number;
@@ -259,15 +270,21 @@ export function pickClean(
   const cutoff = options.now.getTime() - options.quietDays * DAY;
   const eligible: CleanCase[] = [];
   for (const pull of [...pulls].sort((a, b) => a.mergedAt.localeCompare(b.mergedAt))) {
-    if (!isAppAuthor(pull.author, options.app)) continue;
+    if (isAppAuthor(pull.author, options.app) !== (options.author === "paws")) continue;
     if (Date.parse(pull.mergedAt) > cutoff) continue;
+    const day = new Date(pull.mergedAt).toISOString().slice(0, 10);
+    if ((options.from && day < options.from) || (options.to && day > options.to)) continue;
     if (touched.has(pull.number) || options.exclude.has(pull.number)) continue;
-    const trailer = closeoutTrailer(pull.body);
+    const trailer =
+      options.author === "paws"
+        ? closeoutTrailer(pull.body)
+        : { base: git(["rev-parse", `${pull.mergeCommit}^1`]).trim(), head: pull.mergeCommit };
     if (!trailer.base || !trailer.head) continue;
     const lines = changedLines(git, `${pull.mergeCommit}^1`, pull.mergeCommit);
     if (lines < options.minLines) continue;
     eligible.push({
       id: `clean-${pull.number}`,
+      author: options.author,
       original: {
         pr: pull.number,
         title: pull.title,
@@ -303,6 +320,9 @@ export type Summary = {
   elsewhere: number;
   belowFailOn: number;
   falsePositives: Rate;
+  /** Paws squashes, which are what the reviewer sees in Closeout. */
+  falsePositivesPaws: Rate;
+  falsePositivesHuman: Rate;
   errors: number;
   reviews: number;
   medianMs: number;
@@ -332,10 +352,9 @@ export function summarize(results: readonly CaseResult[]): Summary {
     recallLikely: { hits: likely.filter(caught).length, total: likely.length },
     elsewhere: escapes.filter((result) => result.outcome === "elsewhere").length,
     belowFailOn: escapes.filter((result) => !caught(result) && result.nearSeverity).length,
-    falsePositives: {
-      hits: clean.filter((result) => result.outcome === "rejected").length,
-      total: clean.length,
-    },
+    falsePositives: rejectedOf(clean),
+    falsePositivesPaws: rejectedOf(clean.filter((result) => result.author !== "human")),
+    falsePositivesHuman: rejectedOf(clean.filter((result) => result.author === "human")),
     errors: results.length - scored.length,
     reviews: results.length,
     medianMs: median(durations),
@@ -344,6 +363,13 @@ export function summarize(results: readonly CaseResult[]): Summary {
     ...(priced && results.length > 0
       ? { costUsd: results.reduce((sum, result) => sum + (result.costUsd ?? 0), 0) }
       : {}),
+  };
+}
+
+function rejectedOf(clean: readonly CaseResult[]): Rate {
+  return {
+    hits: clean.filter((result) => result.outcome === "rejected").length,
+    total: clean.length,
   };
 }
 
@@ -391,9 +417,15 @@ export function renderReport(report: ScoreReport, baseline?: ScoreReport): strin
   const { config } = report;
   const summary = summarize(report.results);
   const perReview = summary.reviews > 0 ? summary.totalMs / summary.reviews : 0;
-  const quiet = [
-    ...new Set(report.results.flatMap((result) => (result.quietDays ? [result.quietDays] : []))),
-  ];
+  const quiet = (author: CleanAuthor) => {
+    const clean = report.results.filter(
+      (result) => result.kind === "clean" && (result.author ?? "paws") === author,
+    );
+    const days = [
+      ...new Set(clean.flatMap((result) => (result.quietDays ? [result.quietDays] : []))),
+    ];
+    return `${clean.length} ${author === "paws" ? "Paws squashes" : "merged by hand"}${days.length ? `, quiet for ${days.join(", ")} days` : ""}`;
+  };
   const lines = [
     `# Reviewer score: ${config.id}`,
     "",
@@ -406,7 +438,7 @@ export function renderReport(report: ScoreReport, baseline?: ScoreReport): strin
     `| Scope | \`${config.scope}\` |`,
     `| failOn | \`${config.failOn}\` |`,
     `| Caught when | a finding at or above \`${config.failOn}\` is within ${config.tolerance} lines of the bug |`,
-    `| Clean pull requests | quiet for ${quiet.length ? quiet.join(", ") : "–"} days after the merge |`,
+    `| Clean pull requests | ${quiet("paws")}; ${quiet("human")} |`,
     `| Price per million tokens | ${report.price ? `$${report.price.input} in, $${report.price.cached} cached, $${report.price.output} out` : "not set (pass --price)"} |`,
     "",
     "## Summary",
@@ -418,6 +450,8 @@ export function renderReport(report: ScoreReport, baseline?: ScoreReport): strin
     `| Escapes rejected, but not at the bug | ${summary.elsewhere} |`,
     `| Escapes found at the bug below failOn | ${summary.belowFailOn} |`,
     `| False positives, clean pull requests rejected | ${rate(summary.falsePositives)} |`,
+    `| False positives, Paws squashes | ${rate(summary.falsePositivesPaws)} |`,
+    `| False positives, merged by hand | ${rate(summary.falsePositivesHuman)} |`,
     `| Reviews that recorded no findings (left out) | ${summary.errors} |`,
     `| Time per review | median ${seconds(summary.medianMs)}, mean ${seconds(perReview)} |`,
     `| Tokens, all ${summary.reviews} reviews | ${tokens(summary.usage)} |`,
@@ -441,14 +475,14 @@ export function renderReport(report: ScoreReport, baseline?: ScoreReport): strin
     "",
     "## Clean pull requests",
     "",
-    "| Case | Quiet days | Diff | Outcome | Time | Tokens | Blocking findings |",
-    "| --- | --- | --- | --- | --- | --- | --- |",
+    "| Case | Author | Quiet days | Diff | Outcome | Time | Tokens | Blocking findings |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ...report.results
       .filter((result) => result.kind === "clean")
       .map((result) =>
         caseRow(
           result,
-          `${result.quietDays ?? "–"} | ${result.diff} | ${OUTCOME_TEXT[result.outcome]}`,
+          `${result.author ?? "paws"} | ${result.quietDays ?? "–"} | ${result.diff} | ${OUTCOME_TEXT[result.outcome]}`,
         ),
       ),
     "",
@@ -497,6 +531,8 @@ function comparison(report: ScoreReport, baseline: ScoreReport): string[] {
     `| Recall, likely escapes | ${rate(before.recallLikely)} | ${rate(now.recallLikely)} |`,
     `| Escapes found at the bug below failOn | ${before.belowFailOn} | ${now.belowFailOn} |`,
     `| False positives | ${rate(before.falsePositives)} | ${rate(now.falsePositives)} |`,
+    `| False positives, Paws squashes | ${rate(before.falsePositivesPaws)} | ${rate(now.falsePositivesPaws)} |`,
+    `| False positives, merged by hand | ${rate(before.falsePositivesHuman)} | ${rate(now.falsePositivesHuman)} |`,
     `| Reviews that recorded no findings | ${before.errors} | ${now.errors} |`,
     `| Median time per review | ${seconds(before.medianMs)} | ${seconds(now.medianMs)} |`,
     `| Tokens per review | ${perReviewTokens(before)} | ${perReviewTokens(now)} |`,
@@ -653,6 +689,7 @@ type ReplayCase = {
   original: { pr: number; base: string; head: string; mergeCommit: string };
   escape?: ReviewEscape;
   quietDays?: number;
+  author?: CleanAuthor;
 };
 
 /** base..head when both are in the clone; otherwise the squash, which is the patch as merged. */
@@ -697,6 +734,7 @@ async function replay(
     pr: entry.original.pr,
     ...(entry.escape ? { confidence: entry.escape.confidence } : {}),
     ...(entry.quietDays ? { quietDays: entry.quietDays } : {}),
+    ...(entry.author ? { author: entry.author } : {}),
   };
   let range: ReturnType<typeof replayRange>;
   try {
@@ -771,7 +809,7 @@ async function replay(
 }
 
 function failed(
-  base: Pick<CaseResult, "id" | "kind" | "pr" | "confidence" | "quietDays">,
+  base: Pick<CaseResult, "id" | "kind" | "pr" | "confidence" | "quietDays" | "author">,
   diff: CaseResult["diff"],
   error: unknown,
   durationMs: number,
@@ -827,8 +865,9 @@ const HELP = [
   "bun scripts/review-score.ts [--item independent-review] [--model <codex model>] [--effort medium]",
   "                            [--tolerance 5] [--only id,id] [--concurrency 4] [--timeout-min 20]",
   "                            [--price in,cached,out] [--baseline] [--out reports/<name>]",
-  "bun scripts/review-score.ts --pick-clean [--quiet-days 7] [--min-lines 20] [--count 16]",
-  "                            [--days 30] [--source git|gh] [--branch origin/main] [--app paws-helper]",
+  "bun scripts/review-score.ts --pick-clean [--author paws|human] [--from YYYY-MM-DD] [--to YYYY-MM-DD]",
+  "                            [--quiet-days 7] [--min-lines 20] [--count 16] [--days 30]",
+  "                            [--source git|gh] [--branch origin/main] [--app paws-helper]",
   "",
   "--baseline writes reports/review-score-baseline.{md,json}. Any other run writes",
   "reports/review-score-<time>.{md,json} and compares against the baseline.",
@@ -857,10 +896,22 @@ async function main(args: readonly string[]): Promise<void> {
       now,
       known: new Set<string>(),
     } as const;
+    const author = argValue(args, "--author") ?? "paws";
+    if (author !== "paws" && author !== "human") throw new Error("--author is paws or human");
+    const from = argValue(args, "--from");
+    const to = argValue(args, "--to");
     const pulls = listPulls(git, options);
-    const candidates = findCandidates(git, pulls, options);
+    const candidates = findCandidates(
+      git,
+      pulls,
+      options,
+      (pull) => isAppAuthor(pull.author, app) === (author === "paws"),
+    );
     const picked = pickClean(git, pulls, candidates, {
       app,
+      author,
+      ...(from ? { from } : {}),
+      ...(to ? { to } : {}),
       now,
       quietDays: Number(argValue(args, "--quiet-days") ?? 7),
       minLines: Number(argValue(args, "--min-lines") ?? 20),
@@ -898,6 +949,7 @@ async function main(args: readonly string[]): Promise<void> {
       kind: "clean" as const,
       original: clean.original,
       quietDays: clean.quietDays,
+      author: clean.author,
     })),
   ].filter((entry) => !only || only.includes(entry.id));
   const agentOptions = {
