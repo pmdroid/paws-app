@@ -762,8 +762,21 @@ export function createRemoteAgentRunner(options: {
               () => false,
             );
             if (known) return;
-            await options
-              .fetchCandidate({
+            // A commit Paws already holds is its own history; only a runner's checkpoint is new.
+            const local = await git([
+              "-C",
+              input.worktreePath,
+              "cat-file",
+              "-e",
+              `${wip}^{commit}`,
+            ]).then(
+              () => true,
+              () => false,
+            );
+            if (local) return;
+            // The turn must start from the saved work; a checkout without it would lose it.
+            try {
+              await options.fetchCandidate({
                 itemId,
                 worktree: input.worktreePath,
                 baseSha: head,
@@ -772,10 +785,13 @@ export function createRemoteAgentRunner(options: {
                 remoteUrl: scoped.repository.remoteUrl,
                 networkGit,
                 signal,
-              })
-              .catch((error: unknown) => {
-                journalCaught(error, "runner-backend.forItem.importCheckpoint", itemId);
               });
+            } catch (error) {
+              throw new Error(
+                `Paws could not restore the saved work at ${wip.slice(0, 7)} from ${scoped.item.branchName}: ${error instanceof Error ? error.message : String(error)}`,
+                { cause: error },
+              );
+            }
           };
           const placed =
             attached ??

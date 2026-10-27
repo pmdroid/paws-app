@@ -28,6 +28,7 @@ import {
   runnerFollowUpRequestId,
   runnerHandoverRequestId,
   runnerCheckpointRequestId,
+  runnerCheckpointPublishedId,
 } from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
@@ -120,6 +121,8 @@ type Active = {
    * since a checkpoint with uncommitted changes is not an ancestor of the agent's next commits.
    */
   checkpointSha?: string;
+  /** How many checkpoints this execution pushed, each acknowledged to the worker. */
+  checkpointsPublished?: number;
 };
 
 /** The session description the worker writes next to its bundle. */
@@ -977,6 +980,12 @@ export async function openRunnerRuntime(options: {
     );
     check(entry);
     entry.checkpointSha = sha;
+    // The worker skips an unchanged worktree only once its checkpoint reached the branch.
+    entry.checkpointsPublished = (entry.checkpointsPublished ?? 0) + 1;
+    publishRunnerAnswer(options.spool, entry.execution.id, {
+      requestId: runnerCheckpointPublishedId(entry.checkpointsPublished),
+      answer: sha,
+    });
   }
   async function resumeIfCrashed(entry: Active): Promise<boolean> {
     const id = entry.execution.id;

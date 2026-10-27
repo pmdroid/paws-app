@@ -70,6 +70,7 @@ import {
   runnerFollowUpRequestId,
   runnerHandoverRequestId,
   runnerCheckpointRequestId,
+  runnerCheckpointPublishedId,
 } from "../runner-answers";
 import {
   installRuntimes,
@@ -169,6 +170,11 @@ export interface RunnerWorkerOptions {
   handoverStepTimeoutMs?: number;
   /** Resolves once Paws asks for the `sequence`th checkpoint of this run; the first stops it. */
   checkpoint?: (sequence: number, signal: AbortSignal) => Promise<void>;
+  /**
+   * The commit the runner pushed as this run's `sequence`th checkpoint, or null while it has not.
+   * Without it, every emitted checkpoint counts as published.
+   */
+  checkpointPublished?: (sequence: number) => string | null;
   /** How often a running turn publishes a WIP commit when its worktree changed. Tests lower it. */
   checkpointIntervalMs?: number;
 }
@@ -1220,7 +1226,21 @@ export async function executeRunnerCommand(
         return "snapshot";
       }
     };
+    /** The worktree state this turn last emitted, and the commit it emitted for it. */
     let checkpointed: string | undefined;
+    let checkpointedSha: string | undefined;
+    const published = new Set<string>();
+    let acknowledged = 0;
+    /** Whether the runner pushed `sha`; an unpublished checkpoint is tried again. */
+    const wasPublished = (sha: string | undefined) => {
+      if (!options.checkpointPublished) return true;
+      for (let pushed = options.checkpointPublished(acknowledged + 1); pushed;) {
+        published.add(pushed);
+        acknowledged++;
+        pushed = options.checkpointPublished(acknowledged + 1);
+      }
+      return sha !== undefined && published.has(sha);
+    };
     let checkpointing = Promise.resolve();
     /**
      * Publishes the worktree as a WIP commit on top of the branch, uncommitted changes included,
@@ -1249,7 +1269,7 @@ export async function executeRunnerCommand(
         const key = `${saved.head}:${saved.tree}`;
         // Only an interval skips what this turn already emitted: its push may have failed, so a
         // stop always publishes the worktree as it is.
-        if (reason === "interval" && key === checkpointed) return;
+        if (reason === "interval" && key === checkpointed && wasPublished(checkpointedSha)) return;
         if (saved.sha === run.repository.baseSha) {
           // The base is already the item's checkpoint, unless this turn saved work since.
           if (checkpointed === undefined) {
@@ -1300,6 +1320,7 @@ export async function executeRunnerCommand(
           }
         }
         checkpointed = key;
+        checkpointedSha = saved.sha;
         emit({ type: "checkpoint", reason, sha: saved.sha });
       } catch (error) {
         journalCaught(error, "runner-worker.executeRunnerCommand.checkpoint", run.itemId);
@@ -1731,6 +1752,12 @@ export async function runRunnerWorker(options: {
               if (request) return { deadline: Number(request.answer) };
               await delay(250, undefined, { signal });
             }
+          },
+          checkpointPublished(sequence: number) {
+            return (
+              readRunnerAnswer(spool, options.executionId, runnerCheckpointPublishedId(sequence))
+                ?.answer ?? null
+            );
           },
           async checkpoint(sequence: number, signal: AbortSignal) {
             const requestId = runnerCheckpointRequestId(sequence);
