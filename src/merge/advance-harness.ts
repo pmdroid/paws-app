@@ -135,9 +135,15 @@ export async function mergeHarness(
     riskAsked: [] as string[],
     /** Each task's Linear blockers; a blocker releases it once its merge is confirmed. */
     blockedBy: new Map<string, string[]>(),
+    /** Pull requests a person merged on GitHub, by number, with the merge commit. */
+    handMerged: new Map<number, string>(),
+    /** Lane reads of GitHub's merge state for the task's pull request before it reports one. */
+    handMergeSeenAfter: 0,
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
   const publishedIds: string[] = [];
+  /** Tasks whose lane turn asked GitHub whether their pull request merged by hand. */
+  const handMergeReads: string[] = [];
   let jobId = 0;
 
   const client: GitHubClient = {
@@ -166,6 +172,8 @@ export async function mergeHarness(
           body.data.repository.pullRequest.baseRef.target.statusCheckRollup.contexts.nodes =
             baseNodes;
         body.data.repository.pullRequest.headRefOid = state.pullHead(variables.head);
+        if (state.handMerged.has(variables.number))
+          (body.data.repository.pullRequest as { state: string }).state = "MERGED";
         return { status: 200, body };
       }
       if (state.upToDateRule && req.method === "GET" && req.path.includes("/rules/branches/main"))
@@ -334,6 +342,18 @@ export async function mergeHarness(
       askRiskApproval: async (_, published) => {
         state.riskAsked.push(published.head);
         return { kind: "asked" };
+      },
+      mergedOutsideLane: async () => {
+        handMergeReads.push(id);
+        const sha = state.handMerged.get(item.pull);
+        if (sha === undefined || handMergeReads.length <= state.handMergeSeenAfter) return null;
+        return {
+          repositoryOwner: "acme",
+          repositoryName: "app",
+          pullNumber: item.pull,
+          pullUrl: `https://github.com/acme/app/pull/${item.pull}`,
+          mergeSha: sha,
+        };
       },
       completed: () => completed.push(id),
     };

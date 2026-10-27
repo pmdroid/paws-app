@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { mergedPullHeads } from "./merged-pulls";
+import { describe, expect, test } from "bun:test";
+import { mergedPullHeads, readPullMerge } from "./merged-pulls";
 import type { GitHubClient } from "./types";
 
 const repo = { full_name: "acme/demo" };
@@ -51,6 +51,44 @@ test("rejects a failed pull request listing", async () => {
       tokenProvider: { mode: "token", tokenFor: async () => "token" },
     }),
   ).rejects.toThrow("Could not list");
+});
+
+describe("readPullMerge", () => {
+  const read = (body: unknown, status = 200) =>
+    readPullMerge({
+      client: { request: async () => ({ status, body }) },
+      owner: "acme",
+      repo: "demo",
+      number: 7,
+      tokenProvider: { mode: "token", tokenFor: async () => "token" },
+    });
+  const merged = {
+    merged: true,
+    merged_at: "2026-10-27T03:27:00Z",
+    merge_commit_sha: "abc",
+    html_url: "https://github.com/acme/demo/pull/7",
+    base: { ref: "main", repo },
+  };
+
+  test("a pull request merged into main reports its merge commit", async () => {
+    expect(await read(merged)).toEqual({
+      merged: true,
+      sha: "abc",
+      url: "https://github.com/acme/demo/pull/7",
+    });
+  });
+
+  test("an open, closed or other-base pull request is not merged", async () => {
+    expect(await read({ ...merged, merged: false, merged_at: null })).toEqual({ merged: false });
+    expect(await read({ ...merged, base: { ref: "release", repo } })).toEqual({ merged: false });
+    expect(await read({ ...merged, base: { ref: "main", repo: { full_name: "x/demo" } } })).toEqual(
+      { merged: false },
+    );
+  });
+
+  test("a failed read throws", async () => {
+    await expect(read({}, 404)).rejects.toThrow("Could not read pull request #7");
+  });
 });
 
 function pull(overrides: Record<string, unknown> & { sha: string }) {

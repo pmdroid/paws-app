@@ -44,3 +44,53 @@ export async function mergedPullHeads(input: {
       : [],
   );
 }
+
+export type PullMerge =
+  | { merged: false }
+  | { merged: true; sha: string | null; url: string | null };
+
+/**
+ * Whether pull request `number` merged into this repository's main, by the merge lane or by a
+ * person on GitHub. An open or closed-unmerged pull request, or one on another base, is not merged.
+ */
+export async function readPullMerge(input: {
+  client: GitHubClient;
+  owner: string;
+  repo: string;
+  number: number;
+  tokenProvider?: GitHubTokenProvider;
+  appId?: string;
+  installationId?: string;
+  privateKeyPem?: string;
+  signal?: AbortSignal;
+}): Promise<PullMerge> {
+  input.signal?.throwIfAborted();
+  const token = await acquireOperationToken(input, "pr");
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/pulls/${input.number}`),
+    token,
+    signal: input.signal,
+  });
+  const pull: unknown = read.body;
+  if (read.status !== 200 || typeof pull !== "object" || pull === null)
+    throw new Error(`Could not read pull request #${input.number}`);
+  const body = pull as {
+    merged?: unknown;
+    merged_at?: unknown;
+    merge_commit_sha?: unknown;
+    html_url?: unknown;
+    base?: { ref?: unknown; repo?: { full_name?: unknown } };
+  };
+  if (
+    (body.merged !== true && typeof body.merged_at !== "string") ||
+    body.base?.ref !== "main" ||
+    body.base?.repo?.full_name !== `${input.owner}/${input.repo}`
+  )
+    return { merged: false };
+  return {
+    merged: true,
+    sha: typeof body.merge_commit_sha === "string" ? body.merge_commit_sha : null,
+    url: typeof body.html_url === "string" ? body.html_url : null,
+  };
+}

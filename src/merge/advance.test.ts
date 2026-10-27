@@ -41,6 +41,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     fetchMain: unused("fetchMain"),
     ciFixAttempts: () => 3,
     dependencyHold: () => null,
+    mergedOutsideLane: async () => null,
     completed: () => calls.push("completed"),
     voice: {
       thought: unused("thought"),
