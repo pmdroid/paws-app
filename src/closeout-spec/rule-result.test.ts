@@ -24,7 +24,7 @@ describe("rule results", () => {
       candidate: { ...candidate(), task: TASK },
       changedPaths: ["src/a.ts"],
     };
-    const record = (sha256: string): CommandRecord => ({
+    const record = (sha256: string, exec: Partial<CommandRecord["exec"]> = {}): CommandRecord => ({
       specVersion: "0.1",
       recordType: "command",
       task: TASK,
@@ -43,6 +43,7 @@ describe("rule results", () => {
         headMoved: false,
         durationMs: 5,
         truncated: false,
+        ...exec,
       },
       artifacts: [{ path: probeArtifactPath(sha256, rule.probe), sha256 }],
     });
@@ -62,6 +63,27 @@ describe("rule results", () => {
     expect(missing.decision).toBe("blocked");
     expect(missing.items).toContainEqual(
       expect.objectContaining({ id: "probe-rule", state: "missing" }),
+    );
+
+    const finding = evaluate(policy, [record(rule.probeSha256, { exitCode: 1 })], request);
+    expect(finding.items).toContainEqual(
+      expect.objectContaining({
+        id: "probe-rule",
+        state: "failed",
+        message: "probe exited 1; P1 finding: The probe's rule holds.",
+      }),
+    );
+    const timedOut = evaluate(
+      policy,
+      [record(rule.probeSha256, { exitCode: null, timedOut: true })],
+      request,
+    );
+    expect(timedOut.items).toContainEqual(
+      expect.objectContaining({
+        id: "probe-rule",
+        state: "failed",
+        message: "probe timed out; the rule was not judged: The probe's rule holds.",
+      }),
     );
   });
 });

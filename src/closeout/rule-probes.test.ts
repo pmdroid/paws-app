@@ -11,6 +11,7 @@ import {
   probeArgv,
   trustedPolicyFiles,
   workspacePolicyFiles,
+  type CloseoutCommandPort,
   type CloseoutProgress,
   type ResolvedRule,
 } from "../closeout-spec";
@@ -99,6 +100,81 @@ describe("rule probes", () => {
     expect(summaries).toHaveLength(1);
     expect(summaries[0]).toContain("probe-rule (rule): failed — probe exited 1; P1 finding");
     expect(summaries[0]).toContain("removed field Task.title");
+  });
+
+  test("a remote command runner without runProbe still gets the rule judged here", async () => {
+    // The rule has no `paths`, so it applies to every candidate.
+    const rule = probe(
+      [
+        "const read = Bun.spawnSync(['git', '-C', arg('--repo'), 'show', `${arg('--head')}:src/a.ts`]);",
+        "if (read.stdout.toString().includes('forbidden')) { console.log('src/a.ts:1 says forbidden'); process.exit(1); }",
+        "process.exit(0);",
+      ].join("\n"),
+    );
+    const clean = await candidateRepo(rule);
+    const accepted = await evaluateRepo(clean, undefined, remoteCommands());
+    expect(accepted.outcome).toBe("accepted");
+    expect(accepted.decision?.items).toContainEqual(
+      expect.objectContaining({ id: "probe-rule", kind: "rule", state: "passed" }),
+    );
+
+    const broken = await candidateRepo(rule, { "src/a.ts": "forbidden\n" });
+    const rejected = await evaluateRepo(broken, undefined, remoteCommands());
+    expect(rejected.outcome).toBe("rejected");
+    expect(rejected.decision?.items).toContainEqual(
+      expect.objectContaining({
+        id: "probe-rule",
+        kind: "rule",
+        state: "failed",
+        message: "probe exited 1; P1 finding: The probe's rule holds.",
+      }),
+    );
+    for (const result of [accepted, rejected])
+      expect(result.decision?.items.some((item) => item.state === "missing")).toBe(false);
+  });
+
+  test("a probe that crashes is reported with its error", async () => {
+    const repo = await candidateRepo(
+      probe("throw new Error('could not parse src/a.ts at the candidate head');"),
+    );
+    const summaries: string[] = [];
+    const result = await runCloseoutGate({
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.base,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: noReviewer(),
+      commandRunner: remoteCommands(),
+      maxFixAttempts: 1,
+      fixer: {
+        async applyFix(request) {
+          summaries.push(request.summary);
+          return { ok: false, reason: "stop" };
+        },
+      },
+    });
+
+    expect(result.outcome).not.toBe("accepted");
+    expect(summaries[0]).toContain("probe-rule (rule): failed — probe exited 1");
+    expect(summaries[0]).toContain("could not parse src/a.ts at the candidate head");
+  });
+
+  test("a probe runner that fails blocks with its reason instead of leaving the rule missing", async () => {
+    const repo = await candidateRepo(probe("process.exit(0);"));
+    const result = await evaluateRepo(repo, undefined, {
+      ...remoteCommands(),
+      async runProbe() {
+        throw new Error("the runner went away");
+      },
+    });
+
+    expect(result.outcome).toBe("blocked");
+    expect(result.decision?.message).toBe(
+      `rule probe-rule: probe ${PROBE} could not run: the runner went away`,
+    );
   });
 
   test("replacing the worktree copy of the probe still runs the policy bytes", async () => {
@@ -274,8 +350,22 @@ type Repo = {
   pawsHome: string;
 };
 
-function evaluateRepo(repo: Repo, progress?: CloseoutProgress) {
+/** Like the orchestrator's remote runner: it relays command results and runs no probe. */
+function remoteCommands(): CloseoutCommandPort {
+  return {
+    async runLogged(request) {
+      throw new Error(`no command ${request.itemId} in this policy`);
+    },
+  };
+}
+
+function evaluateRepo(
+  repo: Repo,
+  progress?: CloseoutProgress,
+  commandRunner?: CloseoutCommandPort,
+) {
   return evaluateCandidate({
+    ...(commandRunner ? { commandRunner } : {}),
     worktree: repo.dir,
     taskId: TASK,
     base: repo.base,
