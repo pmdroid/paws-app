@@ -33,6 +33,7 @@ import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
   commitCheckpointSync,
+  git,
   mirrorFiles,
   restartFromFreshMain,
   runAgent,
@@ -175,6 +176,7 @@ import {
   teamRepositoryDenial,
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
+  highRiskPathsFileAt,
 } from "./loop";
 import {
   formatReviewScore,
@@ -963,6 +965,19 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           if (!mirror) return null;
           const policy = policyCheckPaths(mirror.mirror, mirror.commit);
           return { files: mirror.files, checks: policy.ok ? policy.checks : [] };
+        },
+        highRiskFile: async (name: string) => {
+          const [owner, repo] = name.split("/");
+          if (!owner || !repo) return null;
+          const mirror = await mirrorFiles({ owner, repo, pawsRoot: paths.home });
+          if (!mirror) return null;
+          return {
+            commit: mirror.commit,
+            paths: await highRiskPathsFileAt(
+              (args) => git(["--git-dir", mirror.mirror, ...args]),
+              mirror.commit,
+            ),
+          };
         },
         ...(linear?.tracker?.mergeChoices
           ? {

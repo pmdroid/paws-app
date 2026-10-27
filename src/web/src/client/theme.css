@@ -993,3 +993,30 @@ a.visual-review-frame:focus-visible {
 .risk-paths code {
   overflow-wrap: anywhere;
 }
+.risk-paths > li,
+.risk-file > li {
+  padding-block: 0;
+}
+
+/* Settings › Merging › High-risk paths (src/web/src/client/merge-settings.ts). */
+.risk-lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 1rem 1.5rem;
+  min-width: 0;
+}
+.settings-field-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.risk-file {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.risk-file code {
+  overflow-wrap: anywhere;
+}
