@@ -19,4 +19,6 @@ export type MergeSettingsView = MergeSettings & {
   githubQueue?: { repositories: string[] } | null;
   githubQueueError?: string;
   upToDateRule?: string[];
+  /** Whether a high-risk pull request waits for an approval in Paws; `reason` says why not. */
+  riskGate?: { on: boolean; reason?: string };
 };

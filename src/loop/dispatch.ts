@@ -26,7 +26,11 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { visualReviewBody } from "../questions";
-import { AFTER_PULL_REQUEST_RESPONSE, canReportProgress } from "./activity-policy";
+import {
+  AFTER_PULL_REQUEST_RESPONSE,
+  AFTER_PULL_REQUEST_THOUGHT,
+  canReportProgress,
+} from "./activity-policy";
 import { enqueueEvidenceAttachment, evidenceActivityBody } from "./artifacts";
 import { planFiledResponse } from "./plan-proposal";
 
@@ -110,7 +114,8 @@ export async function deliverLinearOutbox(
   }
   if (message.op === "activity" || message.op === "linear.activity") {
     const terminal =
-      payload.kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(message.idempotencyKey);
+      (payload.kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(message.idempotencyKey)) ||
+      (payload.kind === "thought" && AFTER_PULL_REQUEST_THOUGHT.test(message.idempotencyKey));
     if (
       db &&
       !terminal &&

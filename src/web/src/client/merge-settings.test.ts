@@ -102,6 +102,30 @@ describe("Settings → Merging", () => {
     expect(html).toContain("Linear projects and labels could not be loaded.");
   });
 
+  test("says why high-risk approval is off on a Paws without an https link", () => {
+    const off = renderMergeSettings({
+      data: {
+        ...data(),
+        riskGate: { on: false, reason: "The risk gate is off: set PAWS_PUBLIC_URL." },
+      },
+      busy: null,
+      error: null,
+      saved: false,
+    });
+    expect(off).toContain("High-risk approval");
+    expect(off).toContain("The risk gate is off: set PAWS_PUBLIC_URL.");
+    const on = renderMergeSettings({
+      data: { ...data(), riskGate: { on: true } },
+      busy: null,
+      error: null,
+      saved: false,
+    });
+    expect(on).toContain("waits for an approval on its issue page in Paws");
+    expect(
+      renderMergeSettings({ data: data(), busy: null, error: null, saved: false }),
+    ).not.toContain("High-risk approval");
+  });
+
   test("members see why they cannot change it", () => {
     expect(
       renderMergeSettings({ data: null, busy: null, error: null, saved: false, denied: true }),

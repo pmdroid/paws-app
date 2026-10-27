@@ -106,6 +106,8 @@ export type SerialMergeStep =
   | { kind: "carry"; head: string; base: string; message: string }
   | { kind: "return"; reason: "rebase-conflict" | "ci-failed" }
   | { kind: "ask_ci" }
+  /** S is high-risk and no person approved it in Paws. */
+  | { kind: "ask_risk" }
   | { kind: "ask_conflict"; message: string }
   | { kind: "failed"; message: string };
 
@@ -187,6 +189,8 @@ function blocked(facts: SerialMergeFacts, block: LaneBlock, pull: PullFacts): Se
       };
     case "not_accepted":
       return { kind: "reverify", head: pull.head, base: pull.base, rebased: false };
+    case "risk_approval":
+      return { kind: "ask_risk" };
     case "ci_failed":
       return facts.ciFixes < facts.ciFixLimit
         ? { kind: "return", reason: "ci-failed" }

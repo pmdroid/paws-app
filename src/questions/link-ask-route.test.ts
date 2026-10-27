@@ -223,3 +223,31 @@ test("a rounds ask takes Stop without a note and refuses Approve", async () => {
     ["rethink", null],
   ]);
 });
+
+test("Stop on the Risk card goes to the loop without a note; it does not fit other kinds", async () => {
+  const principal = { workspaceId: "ws", userId: "user-1" };
+  const risk = setup();
+  const response = await handleLinkAskAnswer(
+    post({ questionId: risk.questionId, decision: "stop" }),
+    {
+      db: risk.db,
+      principal,
+      sessionIds: ["ses_1"],
+      submit: async (input) => (risk.calls.push(input), "answered"),
+    },
+  );
+  expect(response?.status).toBe(200);
+  expect(risk.calls).toMatchObject([{ decision: "stop", note: null, answeredBy: "linear-1" }]);
+  const bypass = setup("member", "bypass");
+  const refused = await handleLinkAskAnswer(
+    post({ questionId: bypass.questionId, decision: "stop" }),
+    {
+      db: bypass.db,
+      principal,
+      sessionIds: ["ses_1"],
+      submit: async (input) => (bypass.calls.push(input), "answered"),
+    },
+  );
+  expect(refused?.status).toBe(400);
+  expect(bypass.calls).toEqual([]);
+});
