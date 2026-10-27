@@ -187,9 +187,11 @@ async function setup() {
     record: { id: string; runId: string },
     drive: (command: RunCommand) => Promise<void>,
     askTeam?: (question: string, context: AskTeamContext) => Promise<{ answer: string }>,
+    signal?: AbortSignal,
   ) {
     const notices: string[] = [];
     const running = backend.forItem(record.id)({
+      ...(signal ? { signal } : {}),
       profile: { agent: "claude", model: "model" },
       role: "implementer",
       itemId: `display-${record.id}`,
@@ -334,12 +336,23 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
   const record = context.item();
   let wip = "";
   let outcome: unknown;
-  const { result } = await context.turn(record, async (command) => {
-    const handing = context.backend.handOverItem(record.id);
-    wip = await context.handOver(command);
-    outcome = await handing;
-  });
-  expect(result).toMatchObject({ handedOver: true, candidateSha: wip, stopReason: "cancelled" });
+  const stop = new AbortController();
+  const turn = context.turn(
+    record,
+    async (command) => {
+      try {
+        const handing = context.backend.handOverItem(record.id);
+        wip = await context.handOver(command);
+        outcome = await handing;
+      } finally {
+        // A is the only runner, so the session waits for another one until the run stops.
+        stop.abort();
+      }
+    },
+    undefined,
+    stop.signal,
+  );
+  await expect(turn).rejects.toThrow();
   expect(outcome).toEqual({ status: "handed_over", wipCommit: wip });
   // Paws' worktree holds the runner's worktree exactly.
   expect(git(["-C", paws, "rev-parse", "HEAD"])).toBe(wip);
