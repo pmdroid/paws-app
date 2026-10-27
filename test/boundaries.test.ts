@@ -70,6 +70,7 @@ const MODULES = [
   "agent-catalog",
   "provisioning",
   "member-vm",
+  "review-score",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -275,6 +276,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-models": ["journal", "db", "runner-work", "runner-protocol"],
   provisioning: ["journal", "config"],
   "member-vm": ["journal", "db", "provisioning", "workspace"],
+  "review-score": ["db"],
 };
 
 describe("module boundaries", () => {
