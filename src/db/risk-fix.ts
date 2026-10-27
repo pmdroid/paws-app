@@ -37,6 +37,11 @@ export function saveRiskFix(db: Database, fix: RiskFix): void {
   );
 }
 
+/** Forgets the comparison for a head, as when Paws can no longer read the fix. */
+export function deleteRiskFix(db: Database, itemId: string, head: string): void {
+  db.run("DELETE FROM risk_fix WHERE item_id = ? AND head_sha = ?", [itemId, head]);
+}
+
 type Row = {
   itemId: string;
   head: string;

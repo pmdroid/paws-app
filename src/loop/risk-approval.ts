@@ -4,6 +4,7 @@ import { JOB_KIND, riskLine } from "../core";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
+  deleteRiskFix,
   enqueueJobOnce,
   enqueueOutboxOnce,
   getCandidateRisk,
@@ -87,7 +88,11 @@ export async function riskApprovalFor(
   return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
 }
 
-/** The recorded fix of S since the approved ask, compared once per approval. */
+/**
+ * Compares S with the approved ask and records the result. It runs on every read: the high-risk
+ * paths come from Settings and `.paws/high-risk-paths`, which can change before S merges, so a
+ * stored comparison is never trusted. A fix Paws cannot read drops any earlier record of S.
+ */
 async function fixSinceApproval(
   db: Database,
   input: {
@@ -99,10 +104,11 @@ async function fixSinceApproval(
     now: number;
   },
 ): Promise<RiskFix | null> {
-  const recorded = getRiskFix(db, input.itemId, input.head);
-  if (recorded?.approvedQuestionId === input.approved.questionId) return recorded;
   const fix = await input.fixRisk(input.approved.headCommit, input.base);
-  if (fix === null) return null;
+  if (fix === null) {
+    deleteRiskFix(db, input.itemId, input.head);
+    return null;
+  }
   const row: RiskFix = {
     itemId: input.itemId,
     head: input.head,

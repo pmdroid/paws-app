@@ -168,7 +168,7 @@ export {
   saveCandidateRisk,
   type CandidateRisk,
 } from "./candidate-risk";
-export { getRiskFix, latestRiskFix, saveRiskFix, type RiskFix } from "./risk-fix";
+export { deleteRiskFix, getRiskFix, latestRiskFix, saveRiskFix, type RiskFix } from "./risk-fix";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,
