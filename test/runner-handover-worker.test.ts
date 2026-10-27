@@ -27,7 +27,7 @@ const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).p
 const EXECUTION = "01J00000000000000000000001";
 const SESSION = "4f1c2a3b-claude-session";
 
-async function fixture(agent: "claude" | "codex" = "claude") {
+async function fixture(agent: "claude" | "codex" | "grok" = "claude") {
   const root = mkdtempSync(join(tmpdir(), "paws-handover-worker-"));
   roots.push(root);
   const source = join(root, "source");
@@ -101,6 +101,8 @@ async function fixture(agent: "claude" | "codex" = "claude") {
       JSON.stringify({
         model: "fixture-model",
         sessionId: SESSION,
+        // A runner's Grok signs in with its cached `grok login` token.
+        ...(agent === "grok" ? { authMethods: [{ id: "cached_token", name: "Grok login" }] } : {}),
         steps,
         ...(later.length ? { sessions: [steps, ...later] } : {}),
       }),
@@ -259,6 +261,46 @@ test.skipIf(!linux)(
     expect(context.events()).toContain('{"type":"handover","handedOver":true}');
   },
 );
+
+test.skipIf(!linux)("a Grok handover publishes the WIP commit and the session folder", async () => {
+  const context = await fixture("grok");
+  const folder = `.grok/sessions/${context.checkout.replaceAll("/", "%2F")}/${SESSION}`;
+  const result = await context.execute(
+    [
+      {
+        type: "write_file",
+        path: join(context.home, folder, "updates.jsonl"),
+        content: '{"update":"user_message"}\n',
+      },
+      { type: "write_file", path: join(context.home, folder, "summary.json"), content: "{}" },
+      { type: "write_file", path: join(context.checkout, "work.txt"), content: "work\n" },
+      context.toolCall("in_progress", 100),
+      context.toolCall("completed"),
+      { type: "hang" },
+    ],
+    { handover: context.requestWhen('"toolCallId":"tool-1"') },
+  );
+  expect(result.run.handedOver).toBe(true);
+  const metadata = JSON.parse(readFileSync(join(context.output, "session.json"), "utf8"));
+  expect(metadata).toMatchObject({
+    agent: "grok",
+    sessionId: SESSION,
+    workspacePath: context.checkout,
+    commitSha: result.candidateSha,
+    turn: 4,
+  });
+  const bundle = gunzipSync(readFileSync(join(context.output, "session.ndjson.gz")))
+    .toString("utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { path: string });
+  expect(bundle.map((entry) => entry.path)).toEqual([
+    `${folder}/summary.json`,
+    `${folder}/updates.jsonl`,
+  ]);
+  const clone = await context.published(result.candidateSha!);
+  expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
+});
 
 test.skipIf(!linux)(
   "a handover with no safe point in time is reported and the session keeps running",
