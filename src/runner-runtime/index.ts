@@ -118,7 +118,7 @@ type Active = {
 const SessionMetadataSchema = AgentSessionFinishSchema.omit({
   generation: true,
   agentVersion: true,
-}).extend({ agent: z.literal("claude") });
+}).extend({ agent: z.enum(["claude", "codex"]) });
 const SESSION_UPLOAD_TRIES = 5;
 
 export async function openRunnerRuntime(options: {
