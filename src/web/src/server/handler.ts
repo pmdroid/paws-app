@@ -24,6 +24,7 @@ import {
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { injectCsrf } from "./csrf";
+import { statusResponseSizes, type ResponseSizeJournal } from "./response-size";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
 import { handleAgentTranscriptRequest } from "./transcript";
 
@@ -59,6 +60,8 @@ export interface StatusServerOptions {
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   linearUsage?: LiveStatusOptions["linearUsage"];
+  /** Where status API response sizes go. Defaults to the process's per-minute journal line. */
+  responseSizes?: ResponseSizeJournal;
 }
 
 export function fakeStatusProvider(): StatusProvider {
@@ -122,9 +125,10 @@ export async function handleStatusRequest(
   if (artifact !== null) return artifact;
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
-  if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(options));
+  const sizes = options.responseSizes ?? statusResponseSizes;
+  if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(options), sizes);
   if (pathname.startsWith(`${STATUS_ITEM_API_PATH}/`))
-    return itemResponse(request, providerFor(options), pathname);
+    return itemResponse(request, providerFor(options), pathname, sizes);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -236,7 +240,11 @@ function artifactHome(options: StatusServerOptions): string | null {
   return null;
 }
 
-async function apiResponse(request: Request, provider: StatusProvider): Promise<Response> {
+async function apiResponse(
+  request: Request,
+  provider: StatusProvider,
+  sizes: ResponseSizeJournal,
+): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: { ...CORS } });
   }
@@ -247,7 +255,7 @@ async function apiResponse(request: Request, provider: StatusProvider): Promise<
     const snapshot = await provider.snapshot();
     const parsed = parseStatusSnapshot(snapshot);
     if (!parsed.ok) return json({ error: parsed.error }, 500);
-    return json(parsed.snapshot, 200);
+    return served(sizes, request, parsed.snapshot);
   } catch (caughtError1) {
     journalCaught(caughtError1, "handler.apiResponse.snapshot", null);
     return json({ error: "status unavailable" }, 500);
@@ -258,6 +266,7 @@ async function itemResponse(
   request: Request,
   provider: StatusProvider,
   pathname: string,
+  sizes: ResponseSizeJournal,
 ): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: { ...CORS } });
@@ -266,7 +275,7 @@ async function itemResponse(
     return json({ error: "Method not allowed" }, 405);
   }
   const rest = pathname.slice(STATUS_ITEM_API_PATH.length + 1).split("/");
-  if (rest.length > 1) return checkLogResponse(request, provider, rest);
+  if (rest.length > 1) return checkLogResponse(request, provider, rest, sizes);
   const id = itemId(rest[0]!);
   if (id === null || provider.item === undefined) return json({ error: "Not found" }, 404);
   try {
@@ -275,7 +284,7 @@ async function itemResponse(
     if (detail === null) return json({ error: "Not found" }, 404);
     const parsed = parseStatusItemDetail(detail);
     if (!parsed.ok) return json({ error: parsed.error }, 500);
-    return json(parsed.detail, 200);
+    return served(sizes, request, parsed.detail);
   } catch (caughtError3) {
     journalCaught(caughtError3, "handler.itemResponse.item", null);
     return json({ error: "status unavailable" }, 500);
@@ -291,6 +300,7 @@ async function checkLogResponse(
   request: Request,
   provider: StatusProvider,
   segments: readonly string[],
+  sizes: ResponseSizeJournal,
 ): Promise<Response> {
   const [rawId, attempts, rawAttempt, checks, rawCheck, log] = segments;
   const id = itemId(rawId ?? "");
@@ -323,7 +333,7 @@ async function checkLogResponse(
       truncated,
       fullPath: truncated ? statusCheckLogPath(id, attempt, checkId, { run, full: true }) : null,
     };
-    return json(body, 200);
+    return served(sizes, request, body);
   } catch (caughtError5) {
     journalCaught(caughtError5, "handler.checkLogResponse.checkLog", null);
     return json({ error: "status unavailable" }, 500);
@@ -437,8 +447,19 @@ function defaultStaticDir(): string | null {
   return existsSync(join(dir, "index.html")) ? dir : null;
 }
 
+/** A 200 JSON body whose size counts toward the minute's largest response. */
+function served(sizes: ResponseSizeJournal, request: Request, body: unknown): Response {
+  const encoded = JSON.stringify(body);
+  sizes.record(new URL(request.url).pathname, Buffer.byteLength(encoded));
+  return jsonText(encoded, 200);
+}
+
 function json(body: unknown, status: number): Response {
-  return new Response(JSON.stringify(body), {
+  return jsonText(JSON.stringify(body), status);
+}
+
+function jsonText(body: string, status: number): Response {
+  return new Response(body, {
     status,
     headers: {
       ...CORS,
