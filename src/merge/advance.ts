@@ -14,6 +14,7 @@ import {
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
   type CiRound,
+  type ConfirmedRemoteMerge,
   type TaskMergeSettings,
   type WorkItemRecord,
 } from "../db";
@@ -26,6 +27,7 @@ import {
   type PullFacts,
   type SerialMergeInput,
 } from "../github";
+import { journal } from "../journal";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import type { MergeFacts, RiskApproval } from "./mergeable";
 import {
@@ -76,6 +78,13 @@ export type MergeCapabilities = OrderCapabilities & {
    * in `awaiting_input`. `asked`, or `failed` when Paws could not ask.
    */
   askRiskApproval(item: WorkItemRecord, published: MergePublication): Promise<MergeStep>;
+  /**
+   * The merge GitHub reports for the pull request Paws opened for the item, when it merged by
+   * hand outside the lane. Null when there is none, it is not merged, or GitHub could not say.
+   */
+  mergedOutsideLane(
+    item: WorkItemRecord,
+  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null>;
   completed(): void;
 };
 
@@ -103,6 +112,9 @@ export async function advanceMerge(
     if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
   }
+  // A pull request merged by hand on GitHub merges the item: publishing again would open another.
+  const outside = await mergedOutsideLane(db, item, caps);
+  if (outside) return outside;
   const held = reviewHold(db, item.id, caps.now());
   if (held) return held;
   const waiting = dependencyWait(item, caps);
@@ -293,9 +305,36 @@ export async function advanceMerge(
     }
     round("failed");
   }
+  // A person merged the pull request on GitHub during the turn, so the lane found it closed.
+  const late = await mergedOutsideLane(db, item, caps);
+  if (late) return late;
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
   return { kind: "failed", reason: "merge", message };
+}
+
+/**
+ * Records the merge of a pull request merged outside the lane, and takes the item out of the
+ * queue. The `merged` step completes it like a lane merge, which cancels its queued merge jobs.
+ */
+async function mergedOutsideLane(
+  db: Database,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+): Promise<MergeStep | null> {
+  const merge = await caps.mergedOutsideLane(item);
+  if (merge === null || getWorkItem(db, item.id)?.state !== "merge_queue") return null;
+  recordConfirmedRemoteMerge(db, { ...merge, itemId: item.id, confirmedAt: caps.now() });
+  leaveMergeQueue(db, item.id);
+  wakeMergesBehind(db, caps.now());
+  journal(
+    `item ${item.linearIdentifier} merged outside the merge lane: #${merge.pullNumber} at ${merge.mergeSha ?? "unknown commit"}`,
+  );
+  if (caps.stopped()) {
+    completeMergedItem(db, { itemId: item.id, now: caps.now() });
+    return { kind: "obsolete" };
+  }
+  return { kind: "merged" };
 }
 
 /**
