@@ -57,6 +57,7 @@ import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
+import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -505,7 +506,8 @@ export function createRemoteAgentRunner(options: {
       cursor: row.cursor,
     };
   }
-  const cancelItem = createRemoteCancellation(options);
+  const checkpointBeforeStop = createRemoteCheckpoint(options);
+  const cancelItem = createRemoteCancellation({ ...options, checkpoint: checkpointBeforeStop });
   const handOverItem = createRemoteHandover(options);
   function usageLimitWait(itemId: string, input: RunAgentOptions): UsageLimitWait {
     return {
@@ -739,6 +741,58 @@ export function createRemoteAgentRunner(options: {
             }
             throw new RemotePreparationTimeout();
           }
+          /**
+           * Brings a WIP commit a runner published after this worktree's head into it, so a
+           * restarted turn starts from the work a stopped or lost one saved.
+           */
+          const importCheckpoint = async (networkGit: (args: string[]) => Promise<string>) => {
+            const scoped = work.scope(selected.runId, selected.workspaceId);
+            const wip = getWorkItem(db, itemId)?.checkpoint?.wipCommit;
+            const head = (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+            if (!wip || wip === head || !scoped.repository) return;
+            const known = await git([
+              "-C",
+              input.worktreePath,
+              "merge-base",
+              "--is-ancestor",
+              wip,
+              head,
+            ]).then(
+              () => true,
+              () => false,
+            );
+            if (known) return;
+            // A commit Paws already holds is its own history; only a runner's checkpoint is new.
+            const local = await git([
+              "-C",
+              input.worktreePath,
+              "cat-file",
+              "-e",
+              `${wip}^{commit}`,
+            ]).then(
+              () => true,
+              () => false,
+            );
+            if (local) return;
+            // The turn must start from the saved work; a checkout without it would lose it.
+            try {
+              await options.fetchCandidate({
+                itemId,
+                worktree: input.worktreePath,
+                baseSha: head,
+                candidateSha: wip,
+                branch: scoped.item.branchName,
+                remoteUrl: scoped.repository.remoteUrl,
+                networkGit,
+                signal,
+              });
+            } catch (error) {
+              throw new Error(
+                `Paws could not restore the saved work at ${wip.slice(0, 7)} from ${scoped.item.branchName}: ${error instanceof Error ? error.message : String(error)}`,
+                { cause: error },
+              );
+            }
+          };
           const placed =
             attached ??
             (await (async () => {
@@ -803,6 +857,8 @@ export function createRemoteAgentRunner(options: {
                       targetRunnerId: selected.id,
                     })
                   : undefined;
+              if (!taskScope && input.role === "implementer" && input.networkGit)
+                await importCheckpoint(input.networkGit);
               const head = taskScope
                 ? undefined
                 : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
@@ -1288,6 +1344,14 @@ export function createRemoteAgentRunner(options: {
                 });
               }
               if (event.type === "hook_failed") await emit(event);
+              if (event.type === "checkpoint" && assigned.type === "run")
+                recordRunnerCheckpoint(db, {
+                  itemId,
+                  runId: assigned.runId,
+                  baseSha: baseSha!,
+                  event,
+                  now: now(),
+                });
               if (event.type === "handover" && !event.handedOver) {
                 const runner =
                   db
@@ -1705,6 +1769,17 @@ export function createRemoteAgentRunner(options: {
             command.checkpoint !== false &&
             !responseTask &&
             getWorkItem(db, itemId)?.state === "running";
+          // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
+          // first, and the next turn starts from it.
+          const saving =
+            command?.type === "run" &&
+            command.checkpoint !== false &&
+            !detached &&
+            signal.aborted &&
+            !(signal.reason instanceof PawsShutdown)
+              ? checkpointBeforeStop(command.runId)
+              : null;
+          if (saving) await saving;
           if (command && !detached) {
             try {
               const issuedAt = now();
@@ -1746,6 +1821,8 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
+
+export { CHECKPOINT_RUNNER_VERSION, createRemoteCheckpoint } from "./checkpoint";
 
 export {
   createRemoteHandover,

@@ -94,6 +94,20 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   }),
   /** The runner stopped the agent at a safe point and is making the WIP commit and snapshot. */
   z.strictObject({ type: z.literal("handover_interrupted") }),
+  /**
+   * A WIP commit of the running worktree, published to the item's branch: before a stop Paws
+   * asked for (`stop`), or on the runner's own interval (`interval`). A stop with no `sha` found
+   * nothing new to save. `dropped` is set by the runner when it could not publish the commit.
+   */
+  z.strictObject({
+    type: z.literal("checkpoint"),
+    reason: z.enum(["stop", "interval"]),
+    sha: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/)
+      .optional(),
+    dropped: z.string().min(1).max(1024).optional(),
+  }),
   z.strictObject({
     type: z.literal("hook_failed"),
     hookId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/),
