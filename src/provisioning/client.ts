@@ -1,9 +1,10 @@
 import { journal, journalCaught } from "../journal";
-import { assertCommand, assertVmName, shellQuote } from "./names";
+import { assertCommand, assertVmName, newVmCommand, shellQuote } from "./names";
 import {
   ProvisioningError,
   type ExeDev,
   type ExeDevCreatedVm,
+  type ExeDevVmSize,
   type ExeDevDeleteResult,
   type ExeDevExecOptions,
   type ExeDevExecResult,
@@ -130,16 +131,28 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
   }
 
   return {
-    async createVm(name) {
+    async createVm(name, size) {
       const vm = assertVmName("createVm", name);
-      const { status, text } = await call(
-        "createVm",
-        vm,
-        `new --name=${vm}`,
-        "application/json",
-        timeout.createVm,
-      );
-      return parseCreated(vm, status, text);
+      const command = newVmCommand(vm, size);
+      try {
+        const { status, text } = await call(
+          "createVm",
+          vm,
+          command,
+          "application/json",
+          timeout.createVm,
+        );
+        return parseCreated(vm, status, text);
+      } catch (error) {
+        if (!sizeRefusal(error, size)) throw error;
+        const token = await Promise.resolve()
+          .then(() => options.readToken())
+          .catch((caughtError6) => {
+            journalCaught(caughtError6, "client.createVm.readToken", null);
+            return null;
+          });
+        throw sizeRefused(error, vm, command, token);
+      }
     },
 
     async deleteVm(name) {
@@ -298,12 +311,56 @@ function httpError(
       status,
     );
   }
-  const code = codeFor(status, text === null ? null : errorText(text));
+  const detail = text === null ? null : errorText(text);
+  const code = codeFor(status, detail);
   return new ProvisioningError(
     operation,
     code,
     `exe.dev ${operation} for ${vm} failed with HTTP ${status} (${code}).`,
     status,
+    detail,
+  );
+}
+
+const SIZE_FLAGS = /^--(?:cpu|memory|disk|image)=/;
+const MAX_DETAIL = 300;
+
+/**
+ * A `new` with size flags that exe.dev refuses, for example over the plan's CPU limit, carries
+ * exe.dev's own message so the Runners page can say which value to change. A bare `new` keeps
+ * the message without exe.dev's text.
+ */
+function sizeRefusal(
+  error: unknown,
+  size: ExeDevVmSize | undefined,
+): error is ProvisioningError & { detail: string } {
+  return (
+    error instanceof ProvisioningError &&
+    error.detail !== null &&
+    error.code === "unknown" &&
+    size !== undefined &&
+    Object.values(size).some((value) => value !== undefined)
+  );
+}
+
+function sizeRefused(
+  error: ProvisioningError & { detail: string },
+  vm: string,
+  command: string,
+  token: string | null,
+): ProvisioningError {
+  const flags = command.split(" ").filter((flag) => SIZE_FLAGS.test(flag));
+  const trimmed = token?.trim();
+  const said = (trimmed ? error.detail.replaceAll(trimmed, "[redacted]") : error.detail)
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim();
+  const shown = said.length > MAX_DETAIL ? `${said.slice(0, MAX_DETAIL - 1)}…` : said;
+  return new ProvisioningError(
+    "createVm",
+    error.code,
+    `exe.dev refused Create VM for ${vm} with ${flags.join(" ")}: ${shown}${/[.!?]$/.test(shown) ? "" : "."} Change [member_vm] in config.toml.`,
+    error.status,
+    error.detail,
   );
 }
 
@@ -496,6 +553,7 @@ function commandFailure(
     code,
     `exe.dev ${operation} for ${vm} was refused (${code}).`,
     status,
+    error,
   );
 }
 

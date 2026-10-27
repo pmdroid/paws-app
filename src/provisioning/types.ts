@@ -16,18 +16,22 @@ export class ProvisioningError extends Error {
   readonly operation: ProvisioningOperation;
   readonly code: ProvisioningErrorCode;
   readonly status: number | null;
+  /** exe.dev's own `error` text. Kept out of `message`, which may be logged or shown. */
+  readonly detail: string | null;
 
   constructor(
     operation: ProvisioningOperation,
     code: ProvisioningErrorCode,
     message: string,
     status: number | null = null,
+    detail: string | null = null,
   ) {
     super(message);
     this.name = "ProvisioningError";
     this.operation = operation;
     this.code = code;
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -58,8 +62,19 @@ export type ExeDevExecOptions = {
 
 export type ExeDevDeleteResult = "deleted" | "missing";
 
+/**
+ * Size flags for `new`, as `ssh exe.dev help new` names them: `--cpu`, `--memory`, `--disk`
+ * and `--image`. A missing field sends no flag, so exe.dev uses its default.
+ */
+export type ExeDevVmSize = {
+  cpu?: number;
+  memoryGb?: number;
+  diskGb?: number;
+  image?: string;
+};
+
 export type ExeDev = {
-  createVm(name: string): Promise<ExeDevCreatedVm>;
+  createVm(name: string, size?: ExeDevVmSize): Promise<ExeDevCreatedVm>;
   deleteVm(name: string): Promise<ExeDevDeleteResult>;
   execVm(name: string, command: string, options?: ExeDevExecOptions): Promise<ExeDevExecResult>;
   getVm(name: string): Promise<ExeDevVm>;
