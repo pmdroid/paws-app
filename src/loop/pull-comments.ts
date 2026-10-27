@@ -7,6 +7,7 @@ import {
   immediate,
   pendingPullComments,
   recordPullComment,
+  recordReviewEscape,
   settlePullComments,
   type PullCommentRecord,
   type WorkItemRecord,
@@ -216,15 +217,34 @@ export async function handlePullComments(
     const limit = caps.fixRoundLimit(current);
     if (rounds < limit) {
       const first = batch[0]!;
+      const jobKey = `review:${current.id}:${first.source}:${first.commentId}`;
       const jobId = restart(db, current, {
         reason: "review",
         body: [digest, closeoutFindingsNote(findings, batch), COMMENT_FIX_INSTRUCTION]
           .filter((part) => part !== "")
           .join("\n\n"),
-        jobKey: `review:${current.id}:${first.source}:${first.commentId}`,
+        jobKey,
         now,
       });
       if (jobId === null) return "wait";
+      if (current.acceptedHead !== null)
+        recordReviewEscape(db, {
+          triggerKey: jobKey,
+          itemId: current.id,
+          trigger: "comment",
+          acceptedHead: current.acceptedHead,
+          pullNumber,
+          detail: {
+            comments: batch
+              .filter((comment) => comment.body.trim() !== "")
+              .map((comment) => ({
+                id: comment.commentId,
+                author: comment.author,
+                body: comment.body,
+              })),
+          },
+          recordedAt: now,
+        });
       settlePullComments(db, batch, "restarted", now);
       return "restarted";
     }

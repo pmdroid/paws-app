@@ -415,6 +415,7 @@ import {
   type RunnerWaitQuestion,
 } from "./runner-wait";
 import { createRepositoryGit } from "./repository-git";
+import { readFixDiff, settleReviewEscapes } from "./review-escapes";
 import { RUNTIME_FILES, runtimeList, type RuntimeList } from "../runtimes";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
@@ -2727,7 +2728,7 @@ export class Orchestrator {
       if (after === null) return;
       if (verdict.decision === "accepted" && !verdict.exhausted) {
         const acceptedHead = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
-        acceptCloseout(this.db, {
+        const mergeJob = acceptCloseout(this.db, {
           itemId: item.id,
           expected: verdict.owner,
           base,
@@ -2736,6 +2737,22 @@ export class Orchestrator {
           now: this.now(),
           ...(options.reverifyJobId !== undefined ? { reverifyJobId: options.reverifyJobId } : {}),
         });
+        if (mergeJob !== null)
+          await settleReviewEscapes(this.db, {
+            itemId: item.id,
+            fixHead: acceptedHead,
+            base,
+            now: this.now(),
+            read: readFixDiff((args) => git(args), worktree),
+          }).catch((error: unknown) =>
+            journalCaught(
+              error,
+              "orchestrator.evaluateHead.settleReviewEscapes",
+              item.id,
+              undefined,
+              this.options.journal,
+            ),
+          );
         return;
       }
       if (pass < 2 && awaitsVisualReview(verdict.result)) {

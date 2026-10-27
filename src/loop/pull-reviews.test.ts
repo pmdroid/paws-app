@@ -10,6 +10,8 @@ import {
   getPullReview,
   getWorkItem,
   insertQueuedItem,
+  listReviewEscapes,
+  markCloseoutAccepted,
   pendingPullComments,
   recordItemPullRequest,
   listJobs,
@@ -203,6 +205,26 @@ describe("changes-requested reviews", () => {
     expect(handoff).not.toContain('Typo here."');
     expect(handoff).toContain(CONTRADICTION_INSTRUCTION);
     expect(handoff).toEndWith(REVIEW_FIX_INSTRUCTION);
+  });
+
+  test("a review fix on an accepted head is one candidate review escape, even redelivered", async () => {
+    const { db, caps, deliver } = setup();
+    markCloseoutAccepted(db, "eng-1", "h");
+    deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
+    deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    expect(await handlePullReview(db, 501, caps)).toBe("done");
+    deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
+    expect(await handlePullReview(db, 501, caps)).toBe("done");
+    expect(listReviewEscapes(db)).toEqual([
+      expect.objectContaining({
+        triggerKey: "review:eng-1:501",
+        trigger: "review",
+        acceptedHead: "h",
+        pullNumber: 7,
+        detail: { comments: [{ id: 501, author: "rev", body: "The ranking is reversed." }] },
+      }),
+    ]);
   });
 
   test("wait for a running turn or evaluation, and hold the merge until the restart", async () => {
