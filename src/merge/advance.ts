@@ -281,6 +281,8 @@ export async function advanceMerge(
       sendBack(merge, "ci-failed", (fixes) => fixes < ciFixLimit, ciFixHandoff(checks), {
         thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
         record: (_, attempt) => round("agent", attempt),
+        failedChecks: checks,
+        pullNumber: pull.number,
       })
     )
       return { kind: "returned" };

@@ -11,6 +11,8 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
+  listReviewEscapes,
+  markCloseoutAccepted,
   migrate,
   openDatabase,
   pendingPullComments,
@@ -342,6 +344,32 @@ describe("pull request comments restart the item", () => {
     expect(resumeJobs(db)).toHaveLength(1);
     expect(handoff(db)?.handoff).toContain("@pascal in the conversation:");
     expect(handoff(db)?.handoff).toContain("Please also fix the README.");
+  });
+
+  test("a comment fix on an accepted head is one candidate review escape, even redelivered", async () => {
+    const { db, caps, conversation, inline } = setup();
+    markCloseoutAccepted(db, "eng-1", "h");
+    conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
+    conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
+    inline({ id: 9001, review: 601, author: "cursor[bot]", body: "Bug: off by one." });
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(listReviewEscapes(db)).toEqual([
+      expect.objectContaining({
+        itemId: "eng-1",
+        trigger: "comment",
+        acceptedHead: "h",
+        pullNumber: 7,
+        detail: {
+          comments: [
+            { id: 3001, author: "pascal", body: "This drops the last page." },
+            { id: 9001, author: "cursor[bot]", body: "Bug: off by one." },
+          ],
+        },
+        escape: null,
+      }),
+    ]);
   });
 
   test("an inline comment without a readable thread still carries its text", async () => {

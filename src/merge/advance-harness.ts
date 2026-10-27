@@ -117,6 +117,8 @@ export async function mergeHarness(
   };
   const state = {
     ci: (_head: string): CheckNodes | undefined => undefined,
+    /** The checks on main's head; none by default. */
+    baseCi: (): CheckNodes | undefined => undefined,
     pullHead: (head: string): string => head,
     reviews: new Map<number, "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED">(),
     /** The digest the lane reads now; acceptances record {@link CLOSEOUT_DIGEST}. */
@@ -159,6 +161,10 @@ export async function mergeHarness(
         const body = fakeMergeReadiness(variables.head);
         const nodes = state.ci(variables.head);
         if (nodes) body.data.repository.object.statusCheckRollup.contexts.nodes = nodes;
+        const baseNodes = state.baseCi();
+        if (baseNodes)
+          body.data.repository.pullRequest.baseRef.target.statusCheckRollup.contexts.nodes =
+            baseNodes;
         body.data.repository.pullRequest.headRefOid = state.pullHead(variables.head);
         return { status: 200, body };
       }
