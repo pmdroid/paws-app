@@ -95,6 +95,7 @@ export {
   retryBaseline,
   reviewRecordsSince,
   reviewRequirements,
+  reviewRoundFindings,
   run,
   trustedPolicyFiles,
   trustedRootFiles,
