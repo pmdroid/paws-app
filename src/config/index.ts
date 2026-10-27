@@ -8,12 +8,14 @@ export {
   loadConfigFile,
   parseConfigToml,
   renderConfigToml,
+  setConfigKeys,
   writeConfigFile,
   writeImplementer,
   IMPLEMENTERS,
 } from "./file";
 export type {
   AgentsConfig,
+  ConfigKeyValue,
   GitHubConfigAuth,
   GrokConfig,
   ImplementerName,

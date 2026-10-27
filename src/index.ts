@@ -108,6 +108,7 @@ import {
   workspaceMember,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
+import { installHostMain } from "./install-host";
 import {
   createGitHubTokenProvider,
   createGitHubInstallationCheck,
@@ -1758,6 +1759,7 @@ const CLI_HELP = `usage: paws
 Commands:
   paws                          start Paws on 127.0.0.1:8787
   paws doctor                   check prerequisites, including the GitHub App
+  paws install                  set up the env file, config.toml and the user service
   paws review-score [--since D] count review escapes, found after merge and after the PR
   paws login slack              connect Slack
   paws runner <command>         enroll and run a remote runner
@@ -1908,6 +1910,7 @@ if (import.meta.main) {
   if (command === "doctor") {
     process.exit(await doctorMain());
   }
+  if (command === "install") process.exit(await installHostMain(argv.slice(1)));
   if (command === "review-score") process.exit(reviewScoreMain(argv.slice(1)));
   if (command === "login" && argv[1] === "slack") {
     try {
