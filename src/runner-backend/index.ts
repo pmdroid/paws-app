@@ -56,7 +56,6 @@ import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
-  MAIN_COMMIT_RUNNER_VERSION,
   REBASE_RUNNER_VERSION,
   REVIEW_COMMAND_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
@@ -1028,14 +1027,6 @@ export function createRemoteAgentRunner(options: {
                   : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
                 saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
-              const acceptsMainCommit = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                MAIN_COMMIT_RUNNER_VERSION,
-              );
               const acceptsRebase =
                 !taskScope &&
                 versionAtLeast(
@@ -1084,7 +1075,6 @@ export function createRemoteAgentRunner(options: {
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
               const mainSha =
                 !taskScope &&
-                acceptsMainCommit &&
                 baseSha &&
                 mainCandidate &&
                 mainCandidate !== baseSha &&
@@ -1262,9 +1252,7 @@ export function createRemoteAgentRunner(options: {
                         checkoutExclusions,
                         ...(mainSha ? { mainSha } : {}),
                       },
-                      ...(acceptsMainCommit &&
-                      input.role !== "reviewer" &&
-                      input.checkpoint === false
+                      ...(input.role !== "reviewer" && input.checkpoint === false
                         ? { checkpoint: false as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
