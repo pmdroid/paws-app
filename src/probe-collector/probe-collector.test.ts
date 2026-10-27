@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunAgentOptions, RunAgentResult } from "../acp";
@@ -12,7 +20,9 @@ import {
   type GitHubTokenProvider,
 } from "../github";
 import { collectProbes, type CollectOptions } from "./collect";
+import { checkStatus } from "./check";
 import { parseProbesArgs } from "./cli";
+import { checkNotes, proposalScripts } from "./output";
 import { collectPullSources } from "./sources";
 import type { AgentTurn, StoredFinding } from "./types";
 
@@ -428,9 +438,14 @@ describe("paws probes collect", () => {
     expect(yaml).toContain(
       "# - friendly-changelog: The changelog stays friendly. (Tone needs a person.)",
     );
-    expect(
-      readFileSync(join(dirname(out), "probes.proposed", "migrations-append-only.ts"), "utf8"),
-    ).toBe(MIGRATIONS_PROBE);
+    // One file: each probe script rides along as a comment block under its rule.
+    expect(readdirSync(dirname(out))).toEqual(["probes.proposed.yaml"]);
+    const scripts = proposalScripts(yaml);
+    expect(scripts.get(".agents/probes/migrations-append-only.ts")).toBe(MIGRATIONS_PROBE);
+    expect(scripts.get(".agents/probes/api-fields-stay.ts")).toBe(BLIND_PROBE);
+    expect(yaml).toContain(
+      "    # probe script begin\n    #   const args = process.argv.slice(2);\n",
+    );
 
     expect(turn.calls.map((call) => [call.role, call.readOnly])).toEqual([
       ["reviewer", true],
@@ -497,7 +512,7 @@ describe("paws probes collect", () => {
     expect(result.rules).toEqual([]);
     expect(result.out).toBeNull();
     expect(existsSync(out)).toBe(false);
-    expect(existsSync(join(outDir, "probes.proposed"))).toBe(false);
+    expect(readdirSync(outDir)).toEqual([]);
     expect(existsSync(join(pawsRoot, "worktrees"))).toBe(false);
     const listing = printed.join("\n");
     expect(listing).toContain("+ migrations-append-only: Shipped migration files never change.");
@@ -526,6 +541,36 @@ describe("paws probes collect", () => {
       ["friendly-changelog", "Tone needs a person."],
       ["api-fields-stay", "not kept"],
     ]);
+  });
+});
+
+describe("check status", () => {
+  const main = { passed: true, output: "" };
+  const caught = {
+    ref: { commit: "a".repeat(40) },
+    commit: "a".repeat(40),
+    run: { passed: false, output: "found" },
+  };
+  const unresolved = {
+    ref: { pull: 99 },
+    commit: null,
+    run: null,
+    note: "#99 names no commit on origin/main",
+  };
+
+  test("checked needs every named commit to have been run", () => {
+    expect(checkStatus(main, [caught])).toBe("checked");
+    expect(checkStatus(main, [caught, unresolved])).toBe("unverified");
+  });
+
+  test("an unresolved commit is not reported as no commit named", () => {
+    const notes = checkNotes({ check: { main, breaks: [unresolved], status: "unverified" } });
+    expect(notes).toContain("not checked on #99: #99 names no commit on origin/main");
+    expect(notes).toContain("not every commit its sources name could be checked");
+    expect(notes).not.toContain("no source names a commit that broke the rule");
+    expect(checkNotes({ check: { main, breaks: [], status: "unverified" } })).toContain(
+      "no source names a commit that broke the rule",
+    );
   });
 });
 

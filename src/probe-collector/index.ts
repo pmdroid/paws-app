@@ -13,7 +13,7 @@ export {
   DEFAULT_OUT,
   checkNotes,
   formatCandidate,
-  probesDir,
+  proposalScripts,
   renderProposal,
   statusLabel,
   validateProposal,

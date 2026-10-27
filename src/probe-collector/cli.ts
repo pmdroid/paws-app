@@ -13,8 +13,8 @@ export const PROBES_USAGE = `usage: paws probes collect <owner/repo> [--since <d
 
 Drafts Closeout probe rules from the pull request comments of the last ${DEFAULT_SINCE_DAYS} days,
 stored Closeout review findings, and the repository's agent docs. The agent runs on this machine
-with your own sign-in. It writes ${DEFAULT_OUT} (or --out) and the probe scripts next to it,
-for you to review and add to .agents/closeout.yaml. It does not commit, push, or open a pull request.`;
+with your own sign-in. It writes one file, ${DEFAULT_OUT} (or --out): the proposed rules with
+their probe scripts, for you to review and add to .agents/closeout.yaml. It does not commit, push, or open a pull request.`;
 
 export type ProbesCommand = {
   owner: string;
