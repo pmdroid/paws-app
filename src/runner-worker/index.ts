@@ -101,16 +101,19 @@ import { compactAcpEvent } from "./compact";
 import {
   CLAUDE_SESSION_TOO_LARGE,
   CODEX_SESSION_TOO_LARGE,
+  GROK_SESSION_TOO_LARGE,
   SESSION_BUNDLE_FILE,
   SESSION_METADATA_FILE,
   SessionTooLargeError,
   writeClaudeSessionBundle,
   writeCodexSessionBundle,
+  writeGrokSessionBundle,
 } from "./session-snapshot";
 import {
   removeRestoredSession,
   restoreClaudeSessionBundle,
   restoreCodexSessionBundle,
+  restoreGrokSessionBundle,
   SessionIntegrityError,
   type RestoredAgentSession,
 } from "./session-restore";
@@ -121,10 +124,13 @@ export {
   SESSION_METADATA_FILE,
   CLAUDE_SESSION_TOO_LARGE,
   CODEX_SESSION_TOO_LARGE,
+  GROK_SESSION_TOO_LARGE,
   writeClaudeSessionBundle,
   writeCodexSessionBundle,
+  writeGrokSessionBundle,
   restoreClaudeSessionBundle,
   restoreCodexSessionBundle,
+  restoreGrokSessionBundle,
 };
 
 export interface RunnerWorkerOptions {
@@ -358,14 +364,14 @@ function removeLeftoverCheckout(path: string): void {
 }
 
 /**
- * Bundles the Claude or Codex session a run's turn used into the output directory, with a
+ * Bundles the Claude, Codex or Grok session a run's turn used into the output directory, with a
  * description the runner runtime uploads. A bundle over the cap is skipped with a notice. Any
  * other failure is logged without contents and never fails the run.
  */
 async function snapshotAgentSession(
   options: RunnerWorkerOptions,
   executionId: string,
-  agent: "claude" | "codex",
+  agent: SessionAgent,
   session: {
     sessionId: string;
     workspacePath: string;
@@ -392,7 +398,9 @@ async function snapshotAgentSession(
       bundle =
         agent === "codex"
           ? await writeCodexSessionBundle(target)
-          : await writeClaudeSessionBundle({ ...target, cwd: session.workspacePath });
+          : agent === "grok"
+            ? await writeGrokSessionBundle({ ...target, cwd: session.workspacePath })
+            : await writeClaudeSessionBundle({ ...target, cwd: session.workspacePath });
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -427,7 +435,7 @@ async function snapshotAgentSession(
       try {
         emit({
           type: "progress",
-          text: agent === "codex" ? CODEX_SESSION_TOO_LARGE : CLAUDE_SESSION_TOO_LARGE,
+          text: SESSION_TOO_LARGE[agent],
           notice: true,
         });
       } catch (caught) {
@@ -446,6 +454,14 @@ async function snapshotAgentSession(
     rmSync(stagingPath, { force: true });
   }
 }
+
+/** The agents whose native session a run snapshots at turn end and restores on a move. */
+type SessionAgent = "claude" | "codex" | "grok";
+const SESSION_TOO_LARGE: Record<SessionAgent, string> = {
+  claude: CLAUDE_SESSION_TOO_LARGE,
+  codex: CODEX_SESSION_TOO_LARGE,
+  grok: GROK_SESSION_TOO_LARGE,
+};
 
 function resumedSession(directory: string): string | undefined {
   let sessionId: string | undefined;
@@ -783,7 +799,9 @@ export async function executeRunnerCommand(
           restored =
             restoreRequest.agent === "codex"
               ? await restoreCodexSessionBundle(source)
-              : await restoreClaudeSessionBundle({ ...source, cwd: worktree });
+              : restoreRequest.agent === "grok"
+                ? await restoreGrokSessionBundle({ ...source, cwd: worktree })
+                : await restoreClaudeSessionBundle({ ...source, cwd: worktree });
         } catch (error) {
           console.warn(
             JSON.stringify({
@@ -1126,8 +1144,8 @@ export async function executeRunnerCommand(
         return false;
       });
     /**
-     * The interrupted turn's WIP commit and, for Claude and Codex, its session snapshot. Both always run
-     * once the agent stopped; a step that fails or runs out of time names the failure.
+     * The interrupted turn's WIP commit and its session snapshot. Both always run once the agent
+     * stopped; a step that fails or runs out of time names the failure.
      */
     const prepareHandover = async (turn: RunAgentResult): Promise<RunnerHandoverFailure | null> => {
       try {
@@ -1159,7 +1177,6 @@ export async function executeRunnerCommand(
       for (const name of [SESSION_METADATA_FILE, SESSION_BUNDLE_FILE])
         rmSync(join(options.outputDirectory, name), { force: true });
       const sessionAgent = runCommand!.profile.agent;
-      if (sessionAgent !== "claude" && sessionAgent !== "codex") return null;
       try {
         if (!turn.sessionId) throw new Error("The agent reported no session to save");
         const sessionId = turn.sessionId;
@@ -1383,7 +1400,6 @@ export async function executeRunnerCommand(
     if (
       command.type === "run" &&
       !handedOver &&
-      (command.profile.agent === "claude" || command.profile.agent === "codex") &&
       installFailure === undefined &&
       run.agentExited &&
       !run.cancelled &&

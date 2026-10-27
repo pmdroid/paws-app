@@ -50,7 +50,9 @@ function git(args: string[], cwd: string) {
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-function fixture(options: { claudeVersion?: string; codexVersion?: string } = {}) {
+function fixture(
+  options: { claudeVersion?: string; codexVersion?: string; grokVersion?: string } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-session-"));
   const now = Date.now();
   const source = join(root, "source");
@@ -129,6 +131,7 @@ function fixture(options: { claudeVersion?: string; codexVersion?: string } = {}
         [
           ["claude", options.claudeVersion],
           ["codex", options.codexVersion],
+          ["grok", options.grokVersion],
         ] as const
       ).flatMap(([agent, version]) =>
         version === undefined ? [] : [{ agent, version, status: "current" }],
@@ -256,7 +259,7 @@ function fixture(options: { claudeVersion?: string; codexVersion?: string } = {}
     id: string,
     bundle: Buffer | null,
     run: Partial<RunnerResult> = {},
-    agent: "claude" | "codex" = "claude",
+    agent: "claude" | "codex" | "grok" = "claude",
   ) {
     const directory = outputDirectory(id);
     write(directory, "events.jsonl", "");
@@ -337,6 +340,29 @@ function fixture(options: { claudeVersion?: string; codexVersion?: string } = {}
     },
   };
 }
+
+test.skipIf(!linux)("a Grok session folder seals with the runner's Grok version", async () => {
+  const context = fixture({ claudeVersion: "2.1.7", grokVersion: "1.0.50" });
+  const runtime = await context.open();
+  try {
+    await context.drive(runtime, () => context.started() !== "");
+    const bundle = randomBytes(600_000);
+    context.finishWorker(context.started(), bundle, {}, "grok");
+    await context.drive(runtime, () => context.posted.length > 0);
+    expect(context.finishes).toMatchObject([
+      { generation: 3, agent: "grok", agentVersion: "1.0.50", sha256: sha(bundle) },
+    ]);
+    expect(context.sessions.snapshot("run", 3)).toMatchObject({
+      status: "sealed",
+      agent: "grok",
+      agentVersion: "1.0.50",
+    });
+    expect((await context.read(3)).equals(bundle)).toBe(true);
+  } finally {
+    await runtime.stop();
+    context.cleanup();
+  }
+});
 
 test.skipIf(!linux)("a Codex rollout seals with the runner's Codex version", async () => {
   const context = fixture({ claudeVersion: "2.1.7", codexVersion: "2.1.1" });
