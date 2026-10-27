@@ -50,6 +50,112 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
+/** `probe-rule` waits for a person when it fails; `fix-rule` runs the same probe and goes to the agent. */
+const APPROVE_POLICY = [
+  'specVersion: "0.1"',
+  "items: []",
+  "rules:",
+  "  - id: probe-rule",
+  "    summary: No removed field or route.",
+  `    probe: ${PROBE}`,
+  "    failOn: P1",
+  "    onFail: approve",
+  "",
+].join("\n");
+
+const MIXED_POLICY = [
+  APPROVE_POLICY.trimEnd(),
+  "  - id: fix-rule",
+  "    summary: The fix rule holds.",
+  `    probe: ${PROBE}`,
+  "    failOn: P1",
+  "",
+].join("\n");
+
+describe("rules set to approve", () => {
+  const failing = probe("console.error('removed field Task.title'); process.exit(1);");
+
+  test("a failing approve rule uses no fix attempt and waits with its finding", async () => {
+    const repo = await candidateRepo(failing, {}, APPROVE_POLICY);
+    const fixes: string[] = [];
+    const result = await runCloseoutGate({
+      ...gateInput(repo),
+      maxFixAttempts: 2,
+      fixer: {
+        async applyFix(request) {
+          fixes.push(request.summary);
+          return { ok: false, reason: "stop" };
+        },
+      },
+    });
+
+    expect(fixes).toEqual([]);
+    expect(result).toMatchObject({ outcome: "exhausted", fixAttempts: 0, head: repo.head });
+    expect(result.ruleApprovals).toEqual([
+      {
+        id: "probe-rule",
+        summary: "No removed field or route.",
+        message: expect.stringContaining("probe exited 1"),
+        attempt: 1,
+        feedback: expect.stringContaining("removed field Task.title"),
+      },
+    ]);
+  });
+
+  test("only the fix rule goes to the agent when both break", async () => {
+    const repo = await candidateRepo(failing, {}, MIXED_POLICY);
+    const fixes: string[] = [];
+    await runCloseoutGate({
+      ...gateInput(repo),
+      maxFixAttempts: 1,
+      fixer: {
+        async applyFix(request) {
+          fixes.push(request.summary);
+          return { ok: false, reason: "stop" };
+        },
+      },
+    });
+    expect(fixes).toHaveLength(1);
+    expect(fixes[0]).toContain("fix-rule (rule): failed");
+    expect(fixes[0]).not.toContain("probe-rule");
+
+    const held = await runCloseoutGate({ ...gateInput(repo), maxFixAttempts: 0 });
+    expect(held.handoff).toContain("fix-rule (rule): failed");
+    expect(held.handoff).not.toContain("probe-rule");
+    expect(held.ruleApprovals?.map((rule) => rule.id)).toEqual(["probe-rule"]);
+  });
+
+  test("an approval passes the rule for its head only", async () => {
+    const repo = await candidateRepo(failing, {}, APPROVE_POLICY);
+    const policyDigest = (await evaluateRepo(repo)).decision!.policy.digest!;
+    const approval = {
+      questionId: "question-1",
+      taskId: TASK,
+      base: repo.base,
+      head: repo.head,
+      policyDigest,
+      checkIds: ["probe-rule"],
+      actor: "lead",
+      actorName: "Lea Lead",
+      reason: "The contract change is intended.",
+    };
+
+    const approved = await runCloseoutGate({ ...gateInput(repo), bypasses: [approval] });
+    expect(approved.outcome).toBe("accepted");
+    expect(approved.ruleApprovals).toBeUndefined();
+    expect(approved.summary).toContain("probe-rule: The contract change is intended.");
+
+    const other = await runCloseoutGate({
+      ...gateInput(repo),
+      bypasses: [{ ...approval, head: repo.base }],
+    });
+    expect(other.outcome).toBe("exhausted");
+    // The third failure spends the rule's attempts; it still waits for a person, not the agent.
+    expect(other.decision?.items[0]?.state).toBe("exhausted");
+    expect(other.ruleApprovals?.map((rule) => rule.id)).toEqual(["probe-rule"]);
+  });
+});
+
 describe("rule probes", () => {
   test("a probe that exits 0 against a clean candidate at the expected head passes", async () => {
     const repo = await candidateRepo(probe("process.exit(0);"));
@@ -314,6 +420,25 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+function gateInput(repo: Repo) {
+  return {
+    worktree: repo.dir,
+    taskId: TASK,
+    base: repo.base,
+    head: repo.head,
+    candidate: candidate(),
+    home: repo.home,
+    pawsHome: repo.pawsHome,
+    reviewer: noReviewer(),
+    maxFixAttempts: 0,
+    fixer: {
+      async applyFix(): Promise<{ ok: false; reason: string }> {
+        throw new Error("fixer should not be called");
+      },
+    },
+  };
+}
+
 function candidate() {
   return { session: "impl-session", model: "claude", provider: "anthropic" };
 }
@@ -385,6 +510,7 @@ function evaluateRepo(
 async function candidateRepo(
   probeSource: string,
   candidateFiles: Record<string, string> = {},
+  policy: string = POLICY,
 ): Promise<Repo> {
   const root = await mkdtemp(path.join(tmpdir(), "paws-rule-probe-"));
   roots.push(root);
@@ -406,7 +532,7 @@ async function candidateRepo(
     }
     await exec("git", ["-C", dir, "add", "."]);
   };
-  await write({ ".agents/closeout.yaml": POLICY, [PROBE]: probeSource, "src/a.ts": "a\n" });
+  await write({ ".agents/closeout.yaml": policy, [PROBE]: probeSource, "src/a.ts": "a\n" });
   await exec("git", ["-C", dir, "commit", "-qm", "main"]);
   await exec("git", ["-C", dir, "push", "-q", "origin", "HEAD:main"]);
   await exec("git", ["-C", dir, "fetch", "-q", "origin"]);

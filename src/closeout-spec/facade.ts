@@ -59,6 +59,7 @@ import {
   type ResolvedEvidence,
   type ResolvedPolicyAbsent,
   type ResolvedReview,
+  type ResolvedRule,
   type ReviewRecord,
   type ReviewRequest,
   type ReviewResult,
@@ -326,6 +327,16 @@ export function visualReviewRequirements(
         item.kind === "evidence" && (item as ResolvedEvidence).approval === "human",
     ),
   };
+}
+
+/**
+ * Rules with `onFail: approve`, from the same trusted policy as Closeout. Their findings wait for
+ * a person instead of going back to the agent.
+ */
+export function approvalRules(repo: string, home?: string, policyRoot?: string): ResolvedRule[] {
+  const loaded = loadOrigin(repo, home, policyRoot);
+  if (!loaded.ok || loaded.policy.source === "none") return [];
+  return (loaded.policy.rules ?? []).filter((rule) => rule.onFail === "approve");
 }
 
 export function policyFixBudget(repo: string, home?: string, policyRoot?: string): number | null {
