@@ -1,7 +1,7 @@
 import type {
   StatusItem,
   StatusQuestion,
-  StatusSnapshot,
+  StatusSnapshotBase,
   StatusVisualReview,
   StatusVisualReviewCarry,
 } from "../contract";
@@ -48,7 +48,7 @@ export function waitingVisualReview(item: StatusItem | undefined): StatusVisualR
 
 /** The open screenshots link ask of the item's latest review, decided on this page. */
 export function visualReviewAsk(
-  snapshot: StatusSnapshot,
+  snapshot: StatusSnapshotBase,
   item: StatusItem,
 ): { question: StatusQuestion; review: StatusVisualReview } | undefined {
   const review = item.visualReviews?.at(-1);
@@ -65,7 +65,7 @@ export function visualReviewAsk(
  * is the item the execution controls stop.
  */
 export function visualReviewSection(
-  snapshot: StatusSnapshot,
+  snapshot: StatusSnapshotBase,
   item: StatusItem,
   engineUrl: string | null,
   stopItemId?: string,
@@ -95,7 +95,7 @@ export function visualReviewSection(
 }
 
 function carriedSummary(
-  snapshot: StatusSnapshot,
+  snapshot: StatusSnapshotBase,
   reviews: readonly StatusVisualReview[],
   review: StatusVisualReview,
 ): string {
@@ -106,7 +106,7 @@ function carriedSummary(
 }
 
 function roundEntry(
-  snapshot: StatusSnapshot,
+  snapshot: StatusSnapshotBase,
   review: StatusVisualReview,
   next: StatusVisualReview | undefined,
   engineUrl: string | null,
@@ -148,7 +148,7 @@ function marksLabel(count: number): string {
 }
 
 function askCard(
-  snapshot: StatusSnapshot,
+  snapshot: StatusSnapshotBase,
   item: StatusItem,
   ask: { question: StatusQuestion; review: StatusVisualReview },
   engineUrl: string | null,

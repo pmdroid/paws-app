@@ -1,8 +1,8 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { StatusAgentCloseout, StatusSnapshot } from "../contract";
+import type { StatusAgentCloseout } from "../contract";
 import { agentSectionKey, agentVerdict, renderAgentCloseout } from "./agent-closeout";
 import { checkKey, emptyCloseoutView } from "./closeout";
 import { render } from "./render";
@@ -10,27 +10,22 @@ import { routeHref } from "./route";
 import { themedMarkup } from "./theme";
 
 function demoAgent(): StatusAgentCloseout {
-  return statusFixture().agentCloseout![0]!;
+  return fullStatusFixture().agentCloseout![0]!;
 }
 
-function runPage(
-  snapshot: StatusSnapshot,
-  open: Record<string, boolean> = {},
-  id = "r-102",
-): string {
+function runPage(snapshot: FullStatus, open: Record<string, boolean> = {}, id = "r-102"): string {
   return render({
-    route: { view: "runs", id },
     phase: "ready",
-    snapshot,
     error: null,
     engineUrl: null,
     closeout: { ...emptyCloseoutView(), open },
+    ...pageData(snapshot, { view: "runs", id }),
   }).content;
 }
 
 describe("Agent Closeout", () => {
   test("while implementing, a running check shows its attempt, elapsed time and the progress", () => {
-    const html = runPage(statusFixture());
+    const html = runPage(fullStatusFixture());
     expect(html).toContain('aria-label="Agent Closeout"');
     expect(html).toContain("<h2>Agent Closeout</h2>");
     expect(html).not.toContain('aria-label="Closeout"');
@@ -99,7 +94,7 @@ describe("Agent Closeout", () => {
   });
 
   test("once Paws Closeout starts, it sits above Agent Closeout, which stays collapsed until opened", () => {
-    const snapshot = statusFixture();
+    const snapshot = fullStatusFixture();
     snapshot.items = snapshot.items.map((item) =>
       item.id === "ENG-102" ? { ...item, state: "verifying" } : item,
     );
@@ -184,8 +179,8 @@ describe("Agent Closeout", () => {
 
 const CURRENT = "c1b566d1-d000-4322-809e-0e36a2af3f93";
 
-function endedRun(): StatusSnapshot {
-  const snapshot = statusFixture();
+function endedRun(): FullStatus {
+  const snapshot = fullStatusFixture();
   const agent = snapshot.agentCloseout![0]!;
   agent.endedAt = "2026-10-22T04:15:48.000Z";
   agent.continuesIn = CURRENT;

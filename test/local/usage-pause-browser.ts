@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
 // Captures the run page while the agent waits for its usage limit, at desktop and 390 px in light
 // and dark, and fails on horizontal scroll or page errors.
 // Usage: bun run build:status && bun --no-env-file test/local/usage-pause-browser.ts <evidence-directory>
@@ -10,7 +10,7 @@ import { handleStatusRequest } from "../../src/web";
 const directory = resolve(process.argv[2] ?? "usage-pause-evidence");
 await mkdir(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const resumeAt = new Date(Date.now() + 95 * 60_000);
 resumeAt.setUTCSeconds(0, 0);
@@ -52,7 +52,7 @@ const server = Bun.serve({
     }
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "usage-pause-fixture",
       })) ?? new Response(null, { status: 404 })
     );

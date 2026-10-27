@@ -13,7 +13,8 @@ import {
 } from "../src/db";
 import { handleStatusRequest } from "../src/web";
 import { render } from "../src/web/src/client/render";
-import { parseStatusSnapshot } from "../src/web/src/contract";
+import { parseStatusItemDetail, parseStatusSnapshot } from "../src/web/src/contract";
+import { parseRoute } from "../src/web/src/client/route";
 
 const NOW = 1_700_000_000_000;
 
@@ -85,10 +86,23 @@ test("one Linear session shows as one run with every attempt in its timeline", a
     );
     expect(parsed.snapshot.items.find((entry) => entry.id === "ENG-7")?.runId).toBe(first.id);
 
+    // A run link opens the issue page, which loads that issue's detail.
+    const route = parseRoute(`/runs/${review.id}`, parsed.snapshot);
+    expect(route).toEqual({ view: "issues", id: "ENG-7" });
+    const itemResponse = await handleStatusRequest(
+      new Request("http://127.0.0.1/api/status/items/ENG-7"),
+      {
+        db,
+        env: {},
+      },
+    );
+    const detail = parseStatusItemDetail(await itemResponse?.json());
+    if (!detail.ok) throw new Error(detail.error);
     const page = render({
-      route: { view: "runs", id: review.id },
+      route: route!,
       phase: "ready",
       snapshot: parsed.snapshot,
+      detail: detail.detail,
       error: null,
       engineUrl: null,
     });

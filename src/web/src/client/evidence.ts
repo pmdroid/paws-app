@@ -1,4 +1,4 @@
-import type { EvidenceKind, StatusEvidence, StatusSnapshot } from "../contract";
+import type { EvidenceKind, StatusEvidence, StatusSnapshotBase } from "../contract";
 import { parseEngineUrl } from "./format";
 import { checkHash } from "./closeout";
 import { esc } from "./format";
@@ -19,7 +19,7 @@ export const EVIDENCE_FILTERS: readonly { id: EvidenceFilter; label: string }[] 
   { id: "image", label: "Images" },
 ];
 
-export function runEvidence(snapshot: StatusSnapshot, runId: string): StatusEvidence[] {
+export function runEvidence(snapshot: StatusSnapshotBase, runId: string): StatusEvidence[] {
   const attempts = snapshot.runs.find((run) => run.id === runId)?.attempts ?? [runId];
   return (snapshot.evidence ?? []).filter((entry) => attempts.includes(entry.runId));
 }
@@ -110,14 +110,14 @@ export function thumbnailMedia(evidence: StatusEvidence, engineUrl: string | nul
 }
 
 /** The run page placeholder. A run without evidence has no Evidence section at all. */
-export function evidenceSlot(snapshot: StatusSnapshot, runId: string): string {
+export function evidenceSlot(snapshot: StatusSnapshotBase, runId: string): string {
   return runEvidence(snapshot, runId).length
     ? `<div id="evidence-gallery" data-run="${esc(runId)}"></div>`
     : "";
 }
 
 export function renderEvidencePage(
-  snapshot: StatusSnapshot,
+  snapshot: StatusSnapshotBase,
   id: string | null,
   info: ReadonlyMap<string, MediaInfo>,
   engineUrl: string | null,

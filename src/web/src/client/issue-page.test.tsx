@@ -1,20 +1,21 @@
-import { statusFixture } from "../../test/fixtures";
+import {
+  fullStatusFixture,
+  itemDetail,
+  pageData,
+  statusList,
+  type FullStatus,
+} from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import {
-  parseStatusItemDetail,
-  parseStatusSnapshot,
-  statusIntegrity,
-  type StatusSnapshot,
-} from "../contract";
+import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
 import { emptyCloseoutView } from "./closeout";
 import { plainTask, render } from "./render";
 import { themedMarkup } from "./theme";
 
 /** ENG-101 delegated twice: the current session shares a Linear session with ENG-102. */
-function redelegated(): StatusSnapshot {
-  const snapshot = statusFixture();
+function redelegated(): FullStatus {
+  const snapshot = fullStatusFixture();
   const item = snapshot.items.find((entry) => entry.id === "ENG-101")!;
   const run = snapshot.runs.find((entry) => entry.itemId === "ENG-101")!;
   item.session = {
@@ -39,20 +40,19 @@ function redelegated(): StatusSnapshot {
     startedAt: "2026-10-09T19:00:00.000Z",
     activity: [{ at: "2026-10-09T19:05:00.000Z", kind: "thought", text: "Earlier session turn." }],
   });
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(statusList(snapshot))));
   if (!parsed.ok) throw new Error(parsed.error);
   expect(statusIntegrity(parsed.snapshot)).toEqual([]);
-  return parsed.snapshot;
+  return snapshot;
 }
 
-function page(snapshot: StatusSnapshot, id = "ENG-101"): string {
+function page(snapshot: FullStatus, id = "ENG-101"): string {
   return render({
-    route: { view: "issues", id },
     phase: "ready",
-    snapshot,
     error: null,
     engineUrl: null,
     closeout: emptyCloseoutView(),
+    ...pageData(snapshot, { view: "issues", id }),
   }).content;
 }
 
@@ -85,9 +85,18 @@ describe("issue page", () => {
   });
 
   test("the item timeline lists every state change from the fake, the restart with its reason", () => {
-    const snapshot = parseStatusSnapshot(JSON.parse(JSON.stringify(statusFixture())));
-    if (!snapshot.ok) throw new Error(snapshot.error);
-    const html = page(snapshot.snapshot);
+    const parsed = parseStatusItemDetail(
+      JSON.parse(JSON.stringify(itemDetail(fullStatusFixture(), "ENG-101"))),
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    const html = render({
+      route: { view: "issues", id: "ENG-101" },
+      phase: "ready",
+      snapshot: null,
+      detail: parsed.detail,
+      error: null,
+      engineUrl: null,
+    }).content;
     const section = html.slice(html.indexOf('id="item-timeline-heading"'));
     expect(section).toContain(">Item timeline</h2>");
     const entries = section.slice(0, section.indexOf("</ol>")).match(/<li /g);
@@ -100,30 +109,12 @@ describe("issue page", () => {
   });
 
   test("an item without recorded state changes has no item timeline", () => {
-    expect(page(statusFixture(), "ENG-102")).not.toContain("item-timeline");
+    expect(page(fullStatusFixture(), "ENG-102")).not.toContain("item-timeline");
   });
 
   test("renders from the item detail alone, with no list snapshot", () => {
-    const full = redelegated();
-    const mine = <T extends { itemId: string }>(rows: readonly T[] | undefined) =>
-      (rows ?? []).filter((row) => row.itemId === "ENG-101");
     const parsed = parseStatusItemDetail(
-      JSON.parse(
-        JSON.stringify({
-          ...full,
-          id: "ENG-101",
-          blocks: ["ENG-105"],
-          items: full.items.filter((item) => item.id === "ENG-101"),
-          runs: mine(full.runs),
-          questions: mine(full.questions),
-          verdicts: mine(full.verdicts),
-          mergeQueue: mine(full.mergeQueue),
-          events: [],
-          evidence: mine(full.evidence),
-          agentCloseout: mine(full.agentCloseout),
-          ciRounds: mine(full.ciRounds),
-        }),
-      ),
+      JSON.parse(JSON.stringify({ ...itemDetail(redelegated(), "ENG-101"), blocks: ["ENG-105"] })),
     );
     if (!parsed.ok) throw new Error(parsed.error);
     const html = render({

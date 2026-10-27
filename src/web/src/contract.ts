@@ -5,10 +5,12 @@ import { journalCaught } from "./journal";
  * Read-only status snapshot served by the local Paws engine.
  *
  * `GET /api/status` returns JSON of this shape. `source` is `"live"` because the body comes from the serving process.
- * The array `questions` lists open questions only.
+ * The array `questions` lists open questions only. The list carries open items and items that
+ * finished in the last 24 hours, with one Closeout summary per item; `GET /api/status/items/<id>`
+ * carries everything about one item.
  */
 
-export const STATUS_API_VERSION = 1 as const;
+export const STATUS_API_VERSION = 2 as const;
 
 export const STATUS_API_PATH = "/api/status";
 /** `GET /api/status/items/<id>` returns a `StatusItemDetail` for the issue with that id. */
@@ -68,7 +70,6 @@ export const ACTIVITY_KINDS = [
   "err",
   "prompt",
 ] as const;
-export const EVENT_LEVELS = ["info", "ok", "warn", "err"] as const;
 export const ITEM_EVENT_KINDS = ["transition", "restart", "ask"] as const;
 export const SOURCES = ["live"] as const;
 
@@ -81,7 +82,6 @@ export type CheckState = (typeof CHECK_STATES)[number];
 export type CheckKind = (typeof CHECK_KINDS)[number];
 export type StepState = (typeof STEP_STATES)[number];
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
-export type EventLevel = (typeof EVENT_LEVELS)[number];
 export type ItemEventKind = (typeof ITEM_EVENT_KINDS)[number];
 export type StatusSource = (typeof SOURCES)[number];
 
@@ -377,6 +377,35 @@ export interface StatusCloseoutAttempt {
   checks: StatusCheck[];
 }
 
+/** The list's Closeout of an item: the latest verdict, with each check's kind and state only. */
+export interface StatusVerdictSummary {
+  itemId: string;
+  /** The `StatusRun.id` of the attempt this verdict belongs to, when the issue had several. */
+  runId?: string;
+  decision: VerdictDecision;
+  headSha: string | null;
+  checks: StatusCheckSummary[];
+}
+
+export interface StatusCheckSummary {
+  id: string;
+  kind: CheckKind;
+  state: CheckState;
+}
+
+/** The list's agent-side Closeout of a run: its latest state, without attempts or steps. */
+export interface StatusAgentCloseoutSummary {
+  itemId: string;
+  runId: string;
+  /** The latest attempt's decision, null before the agent's first attempt. */
+  decision: VerdictDecision | null;
+  headSha: string | null;
+  blocked: string | null;
+  updatedAt: string;
+  endedAt?: string;
+  continuesIn?: string;
+}
+
 export interface StatusAgentCloseout {
   itemId: string;
   runId: string;
@@ -494,12 +523,6 @@ export interface StatusMergeOutcome {
   settings: StatusMergeSettings;
 }
 
-export interface StatusEvent {
-  at: string;
-  level: EventLevel;
-  text: string;
-}
-
 export interface StatusProject {
   name: string;
   team: string;
@@ -507,7 +530,8 @@ export interface StatusProject {
   workspace: string | null;
 }
 
-export interface StatusSnapshot {
+/** The fields the status list and the item detail share. */
+export interface StatusSnapshotBase {
   version: typeof STATUS_API_VERSION;
   source: StatusSource;
   generatedAt: string;
@@ -515,14 +539,11 @@ export interface StatusSnapshot {
   items: StatusItem[];
   runs: StatusRun[];
   questions: StatusQuestion[];
-  verdicts: StatusVerdict[];
   mergeQueue: StatusMergeEntry[];
   /** Merged in the last 24 hours, and tasks back with the agent after CI or a conflict. */
   mergeHistory?: StatusMergeOutcome[];
-  events: StatusEvent[];
   /** Closeout videos and screenshots of the visible items, oldest first. */
   evidence?: StatusEvidence[];
-  agentCloseout?: StatusAgentCloseout[];
   /** Failed CI reads of the visible items' pull requests, with every check on each head. */
   ciRounds?: StatusCiRound[];
   intake?: StatusIntakeEntry[];
@@ -533,15 +554,27 @@ export interface StatusSnapshot {
 }
 
 /**
+ * The status list from `GET /api/status`: open items, and items that finished in the last
+ * 24 hours (at most 50). Each item has one Closeout summary and each run its agent Closeout
+ * state; the attempts, checks and findings are in the item detail.
+ */
+export interface StatusSnapshot extends StatusSnapshotBase {
+  verdicts: StatusVerdictSummary[];
+  agentCloseout?: StatusAgentCloseoutSummary[];
+}
+
+/**
  * One issue for its page, from `GET /api/status/items/<id>`: every visible session of the issue
  * (`items`, an earlier one with `endedAt`), its runs, questions, Closeout verdicts with every
- * attempt, agent Closeout, evidence, CI rounds and merge state. `events` is empty and check
- * `stdout` and `stderr` are left out; `statusCheckLogPath` loads one check's log. `blocks` lists
- * the issues this one blocks.
+ * attempt, agent Closeout, evidence, CI rounds and merge state, whether or not the issue is in
+ * the list. Check `stdout` and `stderr` are left out; `statusCheckLogPath` loads one check's
+ * log. `blocks` lists the issues this one blocks.
  */
-export interface StatusItemDetail extends StatusSnapshot {
+export interface StatusItemDetail extends StatusSnapshotBase {
   id: string;
   blocks: string[];
+  verdicts: StatusVerdict[];
+  agentCloseout?: StatusAgentCloseout[];
 }
 
 export type ItemDetailParseResult =
@@ -611,16 +644,52 @@ export function parseStatusItemDetail(input: unknown): ItemDetailParseResult {
     return {
       ok: true,
       detail: {
-        ...readSnapshot(input),
+        ...readBase(body),
         id: text(body, "id", "detail"),
         blocks: stringArray(body, "blocks", "detail"),
+        verdicts: array(body, "verdicts", "status").map((entry, index) =>
+          readVerdict(entry, index),
+        ),
+        ...(body.agentCloseout === undefined
+          ? {}
+          : {
+              agentCloseout: array(body, "agentCloseout", "status").map((entry, index) =>
+                readAgentCloseout(entry, `agentCloseout[${index}]`),
+              ),
+            }),
       },
     };
   } catch (error) {
-    journalCaught(error, "contract.parseStatusItemDetail.readSnapshot", null);
+    journalCaught(error, "contract.parseStatusItemDetail.readBase", null);
     const message = error instanceof Error ? error.message : "Invalid item detail";
     return { ok: false, error: message };
   }
+}
+
+/** The list's summary of a full verdict: decision, head, and each check's id, kind and state. */
+export function verdictSummary(verdict: StatusVerdict): StatusVerdictSummary {
+  return {
+    itemId: verdict.itemId,
+    ...(verdict.runId === undefined ? {} : { runId: verdict.runId }),
+    decision: verdict.decision,
+    headSha: verdict.headSha,
+    checks: verdict.checks.map((check) => ({ id: check.id, kind: check.kind, state: check.state })),
+  };
+}
+
+/** The list's summary of a run's agent Closeout: its latest attempt's decision and head. */
+export function agentCloseoutSummary(agent: StatusAgentCloseout): StatusAgentCloseoutSummary {
+  const latest = agent.attempts.at(-1);
+  return {
+    itemId: agent.itemId,
+    runId: agent.runId,
+    decision: latest?.decision ?? null,
+    headSha: latest?.headSha ?? null,
+    blocked: agent.blocked,
+    updatedAt: agent.updatedAt,
+    ...(agent.endedAt === undefined ? {} : { endedAt: agent.endedAt }),
+    ...(agent.continuesIn === undefined ? {} : { continuesIn: agent.continuesIn }),
+  };
 }
 
 export interface StatusIntakeEntry {
@@ -701,7 +770,9 @@ export function parseStatusSnapshot(input: unknown): ParseResult {
   }
 }
 
-export function statusIntegrity(snapshot: StatusSnapshot): string[] {
+export function statusIntegrity(
+  snapshot: StatusSnapshotBase & { verdicts: readonly { itemId: string }[] },
+): string[] {
   const problems: string[] = [];
   // An earlier attempt (a replaced Linear session) shares its issue's id with the current one.
   const items = ids(
@@ -771,6 +842,22 @@ function ids(values: string[], label: string, problems: string[]): Set<string> {
 
 function readSnapshot(input: unknown): StatusSnapshot {
   const body = object(input, "status");
+  return {
+    ...readBase(body),
+    verdicts: array(body, "verdicts", "status").map((entry, index) =>
+      readVerdictSummary(entry, `verdicts[${index}]`),
+    ),
+    ...(body.agentCloseout === undefined
+      ? {}
+      : {
+          agentCloseout: array(body, "agentCloseout", "status").map((entry, index) =>
+            readAgentCloseoutSummary(entry, `agentCloseout[${index}]`),
+          ),
+        }),
+  };
+}
+
+function readBase(body: Record<string, unknown>): StatusSnapshotBase {
   const version = body.version;
   if (version !== STATUS_API_VERSION) {
     throw new StatusContractError(`status.version must be ${STATUS_API_VERSION}`);
@@ -784,7 +871,6 @@ function readSnapshot(input: unknown): StatusSnapshot {
     items: array(body, "items", "status").map((entry, index) => readItem(entry, index)),
     runs: array(body, "runs", "status").map((entry, index) => readRun(entry, index)),
     questions: array(body, "questions", "status").map((entry, index) => readQuestion(entry, index)),
-    verdicts: array(body, "verdicts", "status").map((entry, index) => readVerdict(entry, index)),
     mergeQueue: array(body, "mergeQueue", "status").map((entry, index) =>
       readMerge(entry, index, project.repo),
     ),
@@ -795,19 +881,11 @@ function readSnapshot(input: unknown): StatusSnapshot {
             readMergeOutcome(entry, `mergeHistory[${index}]`, project.repo),
           ),
         }),
-    events: array(body, "events", "status").map((entry, index) => readEvent(entry, index)),
     ...(body.evidence === undefined
       ? {}
       : {
           evidence: array(body, "evidence", "status").map((entry, index) =>
             readEvidence(entry, `evidence[${index}]`),
-          ),
-        }),
-    ...(body.agentCloseout === undefined
-      ? {}
-      : {
-          agentCloseout: array(body, "agentCloseout", "status").map((entry, index) =>
-            readAgentCloseout(entry, `agentCloseout[${index}]`),
           ),
         }),
     ...(body.ciRounds === undefined
@@ -914,6 +992,21 @@ function readCiRound(input: unknown, path: string): StatusCiRound {
         logSource: source === null ? null : oneOf(source, CI_LOG_SOURCES, `${at}.logSource`),
       };
     }),
+  };
+}
+
+function readAgentCloseoutSummary(input: unknown, path: string): StatusAgentCloseoutSummary {
+  const body = object(input, path);
+  const decision = optionalText(body, "decision");
+  return {
+    itemId: text(body, "itemId", path),
+    runId: text(body, "runId", path),
+    decision: decision === null ? null : oneOf(decision, VERDICT_DECISIONS, `${path}.decision`),
+    headSha: optionalText(body, "headSha"),
+    blocked: optionalText(body, "blocked"),
+    updatedAt: dateString(body, "updatedAt", path),
+    ...(body.endedAt === undefined ? {} : { endedAt: dateString(body, "endedAt", path) }),
+    ...(body.continuesIn === undefined ? {} : { continuesIn: text(body, "continuesIn", path) }),
   };
 }
 
@@ -1342,6 +1435,25 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
   };
 }
 
+function readVerdictSummary(input: unknown, path: string): StatusVerdictSummary {
+  const body = object(input, path);
+  return {
+    itemId: text(body, "itemId", path),
+    ...(body.runId === undefined ? {} : { runId: text(body, "runId", path) }),
+    decision: oneOf(string(body, "decision", path), VERDICT_DECISIONS, `${path}.decision`),
+    headSha: optionalText(body, "headSha"),
+    checks: array(body, "checks", path).map((entry, index) => {
+      const at = `${path}.checks[${index}]`;
+      const check = object(entry, at);
+      return {
+        id: text(check, "id", at),
+        kind: oneOf(string(check, "kind", at), CHECK_KINDS, `${at}.kind`),
+        state: oneOf(string(check, "state", at), CHECK_STATES, `${at}.state`),
+      };
+    }),
+  };
+}
+
 function readAttempt(input: unknown, path: string): StatusCloseoutAttempt {
   const body = object(input, path);
   const number = body.number;
@@ -1462,16 +1574,6 @@ function readStep(input: unknown, path: string): StatusMergeStep {
     name: text(body, "name", path),
     state: oneOf(string(body, "state", path), STEP_STATES, `${path}.state`),
     detail,
-  };
-}
-
-function readEvent(input: unknown, index: number): StatusEvent {
-  const path = `events[${index}]`;
-  const body = object(input, path);
-  return {
-    at: dateString(body, "at", path),
-    level: oneOf(string(body, "level", path), EVENT_LEVELS, `${path}.level`),
-    text: text(body, "text", path),
   };
 }
 

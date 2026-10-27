@@ -88,10 +88,12 @@ test("full transcript reads unfinished ACP output, tools and classification whil
     "Start browser · in_progress",
     "[redacted]",
   ]);
+  const itemId = first.runs[0]!.itemId;
   const html = render({
-    route: { view: "runs", id: run.id },
+    route: { view: "issues", id: itemId },
     phase: "ready",
     snapshot: first,
+    detail: provider.item(itemId),
     error: null,
     engineUrl: null,
   }).content;

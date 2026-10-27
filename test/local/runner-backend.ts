@@ -500,9 +500,11 @@ export async function probeRunnerBackend(
     assert.throws(() => work.current(first.run.id, 1), /fenced/);
     assert.deepEqual(updates, ["Implementation progress"]);
     const status = createLiveStatusProvider(db);
+    const listed = status.snapshot().agentCloseout?.find((entry) => entry.runId === first.run.id);
+    assert.ok(listed);
     const remoteCloseout = status
-      .snapshot()
-      .agentCloseout?.find((entry) => entry.runId === first.run.id);
+      .item(listed!.itemId)
+      ?.agentCloseout?.find((entry) => entry.runId === first.run.id);
     const remoteAttempt = remoteCloseout?.attempts.at(-1);
     assert.deepEqual(
       remoteAttempt?.checks.map((check) => [

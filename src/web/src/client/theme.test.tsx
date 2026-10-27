@@ -1,4 +1,4 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, pageData, statusFixture } from "../../test/fixtures";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -14,11 +14,10 @@ function markup(html: string) {
 
 function ready(view: "overview" | "questions" | "runs", id: string | null = null) {
   return render({
-    route: { view, id },
     phase: "ready",
-    snapshot: statusFixture(),
     error: null,
     engineUrl: null,
+    ...pageData(fullStatusFixture(), { view, id }),
   });
 }
 
