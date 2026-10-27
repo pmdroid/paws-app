@@ -7,10 +7,6 @@ export type Visibility = Pick<
   "visibilityState" | "addEventListener" | "removeEventListener"
 >;
 
-/**
- * Runs `tick` every `every` ms while the document is visible, and once when it becomes visible
- * again. A hidden tab makes no requests. The returned function stops it.
- */
 export function livePoll(
   tick: () => void,
   every: number,
