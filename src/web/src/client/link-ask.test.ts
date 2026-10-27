@@ -193,3 +193,37 @@ test("the Risk card shows the paths, Closeout and findings, and three decisions"
   expect(html).toContain("The pull request stays open.");
   expect(html).toContain("never approves");
 });
+
+test("an ask after an approval lists the fix's high-risk paths since the approved head", () => {
+  const snapshot = withRisk();
+  snapshot.questions[0]!.linkAsk!.risk!.since = "4b317d5cc2";
+  const html = render(model({ snapshot, route: { view: "issues", id: "ENG-103" } })).content;
+  expect(html).toContain(
+    'High-risk paths the fix changed since the approved <span class="mono">4b317d5</span>:',
+  );
+  expect(html).toContain("<li>src/auth/session.ts</li>");
+});
+
+test("the Risk card shows an approval a fix carried over, with the approved head", () => {
+  const snapshot = withLinkAsk();
+  snapshot.questions = snapshot.questions.filter((question) => question.itemId !== "ENG-103");
+  const item = snapshot.items.find((entry) => entry.id === "ENG-103")!;
+  item.riskCarryOver = {
+    head: "9c1d2e3ff0",
+    approvedHead: "4b317d5cc2",
+    changed: ["test/x.test.ts"],
+    reason: "The approval of 4b317d5 carried over.",
+  };
+  const html = render(model({ snapshot, route: { view: "issues", id: "ENG-103" } })).content;
+  expect(html).toContain('id="risk-carry-over"');
+  expect(html).toContain(
+    'The approval of <span class="mono">4b317d5</span> carried over to <span class="mono">9c1d2e3</span>: none of the files the fix changed since then is a high-risk path.',
+  );
+  expect(html).toContain("<li>test/x.test.ts</li>");
+  // An open risk ask on the item replaces it.
+  const asking = withRisk();
+  asking.items.find((entry) => entry.id === "ENG-103")!.riskCarryOver = item.riskCarryOver;
+  expect(
+    render(model({ snapshot: asking, route: { view: "issues", id: "ENG-103" } })).content,
+  ).not.toContain('id="risk-carry-over"');
+});
