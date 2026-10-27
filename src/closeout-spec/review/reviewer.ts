@@ -1,4 +1,7 @@
 import { journalCaught } from "../../journal";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   Artifact,
   CandidateIdentity,
@@ -10,45 +13,31 @@ import type {
 } from "../types";
 import { SPEC_VERSION } from "../types";
 import { createCandidateCheckout } from "./checkout";
-import { parseFindings, reaskPrompt } from "./findings";
-import { loadReviewMaterial, renderReviewPrompt, type ReviewMaterial } from "./prompt";
-
-const PROVIDER = "codex";
+import {
+  parseReviewEvents,
+  reaskArgv,
+  reviewArgv,
+  reviewProvider,
+  type ReviewCommandAgent,
+  type ReviewCommandReply,
+  type ReviewCommandRunner,
+} from "./command";
+import { findingsJsonSchema, parseFindings, reaskPrompt } from "./findings";
+import { assertCommit } from "./prompt";
 
 const DEFAULT_EVALUATOR: ProducerIdentity = { name: "paws", version: "0.1" };
 
-export type ReviewAgentRequest = {
-  itemId: string;
-  worktree: string;
-  prompt: string;
-  readOnly: true;
-  /** Set when this prompt continues the session that returned an invalid reply. */
-  sessionId?: string;
-};
-
-export type ReviewAgentReply = {
-  sessionId: string;
-  /** Model id the agent reported for this session. */
-  model?: string;
-  text: string;
-};
-
-/** One fresh ACP session of the reviewer agent, pointed at a read-only checkout. */
-export interface ReviewAgent {
-  run(request: ReviewAgentRequest): Promise<ReviewAgentReply>;
-}
-
 export type ReviewerOptions = {
-  /** Configured model id, used when the session does not report one. */
+  /** Agent whose own review command runs: `codex exec review` or Claude `/code-review`. */
+  agent: ReviewCommandAgent;
+  /** Reviewer profile's model, passed with the command's model flag. */
   model: string;
+  /** Executable to start. Defaults to `codex` or `claude`. */
+  command?: string;
   evaluator?: ProducerIdentity;
   /** Evidence attempt written on the review record. Defaults to 1. */
   attempt?: number;
-  diffBudget?: number;
-  maxPromptChars?: number;
 };
-
-export const MAX_PROMPT_CHARS = 1_000_000;
 
 export type RecordedReview = {
   status: "recorded";
@@ -73,116 +62,159 @@ export type InvalidReview = {
 export type ReviewRunResult = RecordedReview | InvalidReview;
 
 /**
- * Closeout {@link ReviewRequest} reviewer.
- * Independence is left for the evaluator. This port records identities and findings.
+ * Closeout {@link ReviewRequest} reviewer on the agent's own review command.
+ * The command runs in a detached checkout of `head` and reviews `base..head`
+ * with its own rubric and the repository's `AGENTS.md` or `CLAUDE.md`. The policy
+ * skill stays in the digest and is not sent. Independence is left for the
+ * evaluator. This port records identities and findings.
  */
-export function createReviewer(agent: ReviewAgent, options: ReviewerOptions) {
+export function createReviewer(runner: ReviewCommandRunner, options: ReviewerOptions) {
   const evaluator = options.evaluator ?? DEFAULT_EVALUATOR;
   const attempt = options.attempt ?? 1;
   return {
     async review(request: ReviewRequest): Promise<ReviewRunResult> {
       const candidate = passThrough(request.candidate);
-      let material;
+      const blank = blankProducer(options);
       try {
-        material = await loadReviewMaterial({
-          repo: request.worktree,
-          skill: request.item.skill,
-          skillFiles: request.skillFiles,
-          base: request.base,
-          head: request.head,
-          ...(options.diffBudget !== undefined ? { diffBudget: options.diffBudget } : {}),
-        });
+        assertCommit(request.base, "base");
+        assertCommit(request.head, "head");
       } catch (error) {
-        journalCaught(error, "reviewer.review.loadReviewMaterial", null);
-        return invalid(candidate, blankProducer(options.model), messageOf(error));
+        journalCaught(error, "reviewer.review.assertCommit", null);
+        return invalid(candidate, blank, messageOf(error));
       }
-      const prompt = renderReviewPrompt(
-        material,
-        request.base,
-        request.head,
-        request.item.scope,
-        request.earlier,
-      );
-      const limit = options.maxPromptChars ?? MAX_PROMPT_CHARS;
-      if (prompt.length > limit) {
-        return invalid(
-          candidate,
-          blankProducer(options.model),
-          tooLong(prompt.length, limit, material),
-        );
-      }
+      let schemaDir: string;
       let checkout: Awaited<ReturnType<typeof createCandidateCheckout>>;
+      const schema = JSON.stringify(findingsJsonSchema());
       try {
-        checkout = await createCandidateCheckout(
-          request.worktree,
-          request.head,
-          request.checkoutExclusions,
-        );
+        schemaDir = await mkdtemp(join(tmpdir(), "paws-review-schema-"));
       } catch (error) {
-        journalCaught(error, "reviewer.review.createCandidateCheckout", null);
-        return invalid(candidate, blankProducer(options.model), messageOf(error));
+        journalCaught(error, "reviewer.review.mkdtemp", null);
+        return invalid(candidate, blank, messageOf(error));
       }
       try {
-        return await runSession({
-          agent,
-          request,
-          candidate,
-          prompt,
-          worktree: checkout.path,
-          model: options.model,
-          evaluator,
-          attempt,
-        });
+        const schemaPath = join(schemaDir, "findings.schema.json");
+        await writeFile(schemaPath, schema);
+        try {
+          checkout = await createCandidateCheckout(
+            request.worktree,
+            request.head,
+            request.checkoutExclusions,
+          );
+        } catch (error) {
+          journalCaught(error, "reviewer.review.createCandidateCheckout", null);
+          return invalid(candidate, blank, messageOf(error));
+        }
+        try {
+          return await runCommand({
+            runner,
+            options,
+            request,
+            candidate,
+            cwd: checkout.path,
+            schemaPath,
+            schema,
+            evaluator,
+            attempt,
+          });
+        } finally {
+          await checkout.remove();
+        }
+      } catch (error) {
+        journalCaught(error, "reviewer.review.runCommand", null);
+        return invalid(candidate, blank, messageOf(error));
       } finally {
-        await checkout.remove();
+        await rm(schemaDir, { recursive: true, force: true });
       }
     },
   };
 }
 
-async function runSession(input: {
-  agent: ReviewAgent;
+type CommandInput = {
+  runner: ReviewCommandRunner;
+  options: ReviewerOptions;
   request: ReviewRequest;
   candidate: CandidateIdentity;
-  prompt: string;
-  worktree: string;
-  model: string;
+  cwd: string;
+  schemaPath: string;
+  schema: string;
   evaluator: ProducerIdentity;
   attempt: number;
-}): Promise<ReviewRunResult> {
-  let first: ReviewAgentReply;
-  try {
-    first = await input.agent.run({
-      itemId: input.request.item.id,
-      worktree: input.worktree,
-      prompt: input.prompt,
-      readOnly: true,
-    });
-  } catch (error) {
-    journalCaught(error, "reviewer.runSession.run", null);
-    return invalid(input.candidate, blankProducer(input.model), messageOf(error));
+};
+
+async function runCommand(input: CommandInput): Promise<ReviewRunResult> {
+  const { options } = input;
+  const first = await invoke(
+    input,
+    reviewArgv({
+      agent: options.agent,
+      ...(options.command !== undefined ? { command: options.command } : {}),
+      model: options.model,
+      base: input.request.base,
+      head: input.request.head,
+      schemaPath: input.schemaPath,
+      schema: input.schema,
+    }),
+  );
+  if (!first.ok) return invalid(input.candidate, first.producer, first.reason);
+  const firstParsed = parseFindings(first.reply.text);
+  if (firstParsed.ok) return recorded(input, first.producer, firstParsed.findings);
+  if (!first.reply.session) {
+    return invalid(
+      input.candidate,
+      first.producer,
+      `${firstParsed.reason}; the review command reported no session to re-ask`,
+    );
   }
-  const firstParsed = parseFindings(first.text);
-  if (firstParsed.ok) {
-    return recorded(input, producerOf(first, input.model), firstParsed.findings);
-  }
-  let second: ReviewAgentReply;
-  try {
-    second = await input.agent.run({
-      itemId: input.request.item.id,
-      worktree: input.worktree,
+  const second = await invoke(
+    input,
+    reaskArgv({
+      agent: options.agent,
+      ...(options.command !== undefined ? { command: options.command } : {}),
+      model: options.model,
+      session: first.reply.session,
+      schemaPath: input.schemaPath,
+      schema: input.schema,
       prompt: reaskPrompt(firstParsed.reason),
-      readOnly: true,
-      ...(first.sessionId ? { sessionId: first.sessionId } : {}),
-    });
-  } catch (error) {
-    journalCaught(error, "reviewer.runSession.run", null);
-    return invalid(input.candidate, producerOf(first, input.model), messageOf(error));
+    }),
+    first.reply,
+  );
+  if (!second.ok) return invalid(input.candidate, second.producer, second.reason);
+  const secondParsed = parseFindings(second.reply.text);
+  if (!secondParsed.ok) return invalid(input.candidate, second.producer, secondParsed.reason);
+  return recorded(input, second.producer, secondParsed.findings);
+}
+
+type Invocation =
+  | { ok: true; reply: ReviewCommandReply; producer: ReviewProducer }
+  | { ok: false; producer: ReviewProducer; reason: string };
+
+async function invoke(
+  input: CommandInput,
+  argv: string[],
+  earlier?: ReviewCommandReply,
+): Promise<Invocation> {
+  const result = await input.runner.run({ argv, cwd: input.cwd });
+  const parsed = parseReviewEvents(input.options.agent, result.stdout);
+  const reply: ReviewCommandReply = {
+    ...parsed,
+    session: parsed.session || earlier?.session || "",
+    ...(parsed.model ? {} : earlier?.model ? { model: earlier.model } : {}),
+    ...(parsed.provider ? {} : earlier?.provider ? { provider: earlier.provider } : {}),
+  };
+  const producer = producerOf(reply, input.options);
+  const name = argv.slice(0, 3).join(" ");
+  if (result.timedOut) return { ok: false, producer, reason: `${name} timed out` };
+  if (result.exitCode !== 0) {
+    const detail = reply.error ?? lastLine(result.stderr) ?? lastLine(result.stdout);
+    const status = result.exitCode === null ? "did not start" : `exited ${result.exitCode}`;
+    return {
+      ok: false,
+      producer,
+      reason: detail ? `${name} ${status}: ${detail}` : `${name} ${status}`,
+    };
   }
-  const secondParsed = parseFindings(second.text);
-  const producer = producerOf(second, input.model);
-  if (!secondParsed.ok) return invalid(input.candidate, producer, secondParsed.reason);
-  return recorded(input, producer, secondParsed.findings);
+  if (reply.error) return { ok: false, producer, reason: `${name} failed: ${reply.error}` };
+  return { ok: true, reply, producer };
 }
 
 function recorded(
@@ -228,17 +260,16 @@ function invalid(
   return { status: "invalid", candidate, producer, reason };
 }
 
-function producerOf(reply: ReviewAgentReply, configured: string): ReviewProducer {
-  const reported = reply.model?.trim();
+function producerOf(reply: ReviewCommandReply, options: ReviewerOptions): ReviewProducer {
   return {
-    session: reply.sessionId,
-    model: reported ? reported : configured,
-    provider: PROVIDER,
+    session: reply.session,
+    model: reply.model ?? options.model,
+    provider: reply.provider ?? reviewProvider(options.agent),
   };
 }
 
-function blankProducer(model: string): ReviewProducer {
-  return { session: "", model, provider: PROVIDER };
+function blankProducer(options: ReviewerOptions): ReviewProducer {
+  return { session: "", model: options.model, provider: reviewProvider(options.agent) };
 }
 
 function passThrough(candidate: CandidateIdentity): CandidateIdentity {
@@ -250,9 +281,12 @@ function passThrough(candidate: CandidateIdentity): CandidateIdentity {
   };
 }
 
-function tooLong(length: number, limit: number, material: ReviewMaterial): string {
-  const references = material.references.reduce((sum, entry) => sum + entry.text.length, 0);
-  return `the review prompt is ${length} characters, over the ${limit} limit: skill ${material.skill.length}, references ${references}, diff ${material.diff.length}. Move long material out of the skill's references/ folder or lower the diff budget.`;
+function lastLine(text: string): string | undefined {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.at(-1)?.slice(0, 500);
 }
 
 function messageOf(error: unknown): string {

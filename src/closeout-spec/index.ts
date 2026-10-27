@@ -122,14 +122,27 @@ export {
   renderReviewPrompt,
 } from "./review/index";
 export type { ChangedLines, FindingLocation, ReviewMaterial } from "./review/index";
-export { createReviewer, FINDING_FORMAT, formatFixFeedback, parseFindings } from "./review/index";
+export {
+  createFakeReviewCommandRunner,
+  createReviewCommandRunner,
+  createReviewer,
+  FINDING_FORMAT,
+  findingsJsonSchema,
+  formatFixFeedback,
+  parseFindings,
+  parseReviewEvents,
+  reviewArgv,
+} from "./review/index";
 export type {
   FeedbackRecord,
   InvalidReview,
   RecordedReview,
-  ReviewAgent,
-  ReviewAgentReply,
-  ReviewAgentRequest,
+  FakeReviewCommandRunner,
+  ReviewCommandAgent,
+  ReviewCommandReply,
+  ReviewCommandRequest,
+  ReviewCommandResult,
+  ReviewCommandRunner,
   ReviewerOptions,
   ReviewRunResult,
 } from "./review/index";
