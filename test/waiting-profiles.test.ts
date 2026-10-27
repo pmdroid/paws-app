@@ -206,7 +206,7 @@ test("a pending agent switch announcement carries to a retry's new run", async (
   await f.save(true);
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): { id: string };
-    readProfileSnapshot(id: string): { settingsSwitch?: unknown } | null;
+    readProfileSnapshot(id: string): { profiles?: unknown; settingsSwitch?: unknown } | null;
   };
   const pending = internals.readProfileSnapshot(waiting.run.id)!.settingsSwitch;
   expect(pending).toMatchObject({ previousAgent: "claude" });
