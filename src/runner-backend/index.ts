@@ -31,6 +31,8 @@ import {
   startUsagePause,
   usagePause,
   runnerLeaseCutoff,
+  clearRunnerSessionMove,
+  noteRunnerSessionMove,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -336,11 +338,15 @@ export function createRemoteAgentRunner(options: {
     limit: UsageLimit | undefined,
     move: HandoverMove,
     onEvent: RunAgentOptions["onEvent"],
+    runId: string,
   ) {
     for (;;) {
       const rejected: string[] = [];
       try {
-        return await select(itemId, placement, limit, rejected);
+        const selected = await select(itemId, placement, limit, rejected);
+        // It lands: the session leaves the old runner's card and shows on the new one.
+        if (move.from) clearRunnerSessionMove(db, runId, move.from);
+        return selected;
       } catch (error) {
         if (error instanceof UsageLimitPause || placement.signal?.aborted) throw error;
         journalCaught(
@@ -351,10 +357,17 @@ export function createRemoteAgentRunner(options: {
         );
         if (!move.waiting) {
           move.waiting = true;
-          await onEvent?.({
-            type: "progress",
-            text: handoverWaitNotice(db, move, rejected, error, placement.profile?.agent),
-          });
+          const why = handoverWaitReason(move, rejected, error, placement.profile?.agent);
+          // The runner card shows the reason Linear gets on the session's row.
+          if (move.from)
+            noteRunnerSessionMove(db, {
+              runId,
+              runnerId: move.from,
+              status: "waiting",
+              reason: why,
+              now: now(),
+            });
+          await onEvent?.({ type: "progress", text: handoverWaitNotice(db, move, why) });
         }
       }
       await delay(interval * 20, undefined, { signal: placement.signal });
@@ -615,7 +628,14 @@ export function createRemoteAgentRunner(options: {
         const chosen = attached
           ? undefined
           : move.from
-            ? await selectAfterHandover(itemId, placementRequest, limit, move, input.onEvent)
+            ? await selectAfterHandover(
+                itemId,
+                placementRequest,
+                limit,
+                move,
+                input.onEvent,
+                input.runId,
+              )
             : await select(itemId, placementRequest, limit);
         const selected = attached?.selected ?? chosen!;
         const sessionBusy =
@@ -1630,6 +1650,14 @@ export function createRemoteAgentRunner(options: {
               true,
             );
           }
+          if (complete.handedOver && assigned.type === "run")
+            noteRunnerSessionMove(db, {
+              runId: assigned.runId,
+              runnerId: selected.id,
+              status: "stayed",
+              reason: "The session waits on its question, so it stays here until the team answers.",
+              now: now(),
+            });
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
             signal.throwIfAborted();
@@ -1778,9 +1806,8 @@ function handedOverFrom(db: Database, itemId: string): HandoverMove | null {
   };
 }
 
-/** Why no runner can take a handed-over run yet, posted once while it waits. */
-function handoverWaitNotice(
-  db: Database,
+/** Why no runner can take a handed-over run yet. */
+function handoverWaitReason(
   move: HandoverMove,
   rejected: readonly string[],
   error: unknown,
@@ -1793,16 +1820,19 @@ function handoverWaitNotice(
       : [entry.slice(separator + 1).trim()];
   });
   const message = error instanceof Error ? error.message : "";
-  const why =
-    /repository is outside workspace access/.test(message) && move.repository
-      ? `No other runner allows ${move.repository}.`
-      : reasons.some((reason) => reason === NO_FREE_CAPACITY.slice(2))
-        ? "Every other runner is busy."
-        : reasons.some((reason) => reason === "agent-not-signed-in" || reason === "auth-expired")
-          ? `Sign in to ${agent ? agentName(agent) : "the agent"} on another runner.`
-          : reasons.length === 0 || reasons.every((reason) => /^(offline|paused)$/.test(reason))
-            ? "No other runner is online."
-            : "No other runner can take this work.";
+  return /repository is outside workspace access/.test(message) && move.repository
+    ? `No other runner allows ${move.repository}.`
+    : reasons.some((reason) => reason === NO_FREE_CAPACITY.slice(2))
+      ? "Every other runner is busy."
+      : reasons.some((reason) => reason === "agent-not-signed-in" || reason === "auth-expired")
+        ? `Sign in to ${agent ? agentName(agent) : "the agent"} on another runner.`
+        : reasons.length === 0 || reasons.every((reason) => /^(offline|paused)$/.test(reason))
+          ? "No other runner is online."
+          : "No other runner can take this work.";
+}
+
+/** The wait reason as Linear hears it, posted once while the run waits. */
+function handoverWaitNotice(db: Database, move: HandoverMove, why: string): string {
   const from = move.from
     ? (db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(move.from)
         ?.name ?? move.from)

@@ -3,8 +3,10 @@ import {
   insertRun,
   listRunnerOverview,
   markRun,
+  noteRunnerSessionMove,
   putWorkspaceUser,
   releaseRunCapacity,
+  requestRunnerSessionMove,
   syncWorkspaceMember,
 } from "../src/db";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
@@ -98,6 +100,8 @@ test("the runner overview lists each live session with its issue and phase", () 
       title: "Write the parser",
       phase: "working",
       startedAt: now - 50_000,
+      movable: true,
+      move: null,
     },
     {
       runId: closeout,
@@ -105,14 +109,26 @@ test("the runner overview lists each live session with its issue and phase", () 
       title: "Task",
       phase: "closeout",
       startedAt: now - 40_000,
+      movable: true,
+      move: null,
     },
-    { runId: fixing, identifier: "ENG-2", title: "Task", phase: "fixing", startedAt: now - 30_000 },
+    {
+      runId: fixing,
+      identifier: "ENG-2",
+      title: "Task",
+      phase: "fixing",
+      startedAt: now - 30_000,
+      movable: true,
+      move: null,
+    },
     {
       runId: merging,
       identifier: "ENG-3",
       title: "Task",
       phase: "merging",
       startedAt: now - 20_000,
+      movable: true,
+      move: null,
     },
   ]);
 });
@@ -127,17 +143,55 @@ test("a run placed on a runner stays in its list through Closeout and leaves whe
     title: "Write the parser",
     phase: "working" as const,
     startedAt: now - 30_000,
+    movable: true,
+    move: null,
   };
   expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([session]);
 
   db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, runId]);
   db.run("UPDATE work_item SET state='verifying' WHERE id='item-0'");
   const [held] = listRunnerOverview(db, "ws-1", now + 120_000);
-  expect(held?.running).toEqual([{ ...session, phase: "closeout" }]);
+  expect(held?.running).toEqual([{ ...session, phase: "closeout", movable: false }]);
   expect(held?.slots.used).toBe(1);
 
   releaseRunCapacity(db, runId, now + 130_000);
   const [after] = listRunnerOverview(db, "ws-1", now + 130_000);
   expect(after?.running).toEqual([]);
   expect(after?.slots.used).toBe(0);
+});
+
+test("a session moving off a runner shows its move there, and not once it landed elsewhere", () => {
+  const now = Date.now();
+  const { db, work } = fixture(now);
+  const runId = work(0, now + 60_000);
+  requestRunnerSessionMove(db, { runId, runnerId: "runner-1", userId: "owner", now });
+  expect(listRunnerOverview(db, "ws-1", now)[0]?.running[0]?.move).toEqual({
+    status: "moving",
+    reason: null,
+  });
+  // Handed over and waiting: the slot is held, the lease ended, and the row says why.
+  db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, runId]);
+  noteRunnerSessionMove(db, {
+    runId,
+    runnerId: "runner-1",
+    status: "waiting",
+    reason: "Every other runner is busy.",
+    now,
+  });
+  const [waiting] = listRunnerOverview(db, "ws-1", now)[0]!.running;
+  expect(waiting).toMatchObject({
+    movable: false,
+    move: { status: "waiting", reason: "Every other runner is busy." },
+  });
+  // It lands on runner-2: it leaves runner-1's list and shows on runner-2's with no move.
+  db.run(
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner-2','ws-1','user-1','other','active',?,?)",
+    [now, now],
+  );
+  db.run("UPDATE runner_work SET runner_id='runner-2',ended_at=NULL WHERE run_id=?", [runId]);
+  const overview = listRunnerOverview(db, "ws-1", now);
+  expect(overview.find((runner) => runner.id === "runner-1")?.running).toEqual([]);
+  expect(overview.find((runner) => runner.id === "runner-2")?.running).toMatchObject([
+    { runId, movable: true, move: null },
+  ]);
 });
