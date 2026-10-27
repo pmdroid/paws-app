@@ -24,6 +24,15 @@ const RETRYABLE_OUTCOMES = new Set([
   "model_conflict",
 ]);
 
+/**
+ * The runner placement chose is no longer the one it admitted: the runner restarted, re-reported
+ * its agents, another placement on it started first, or the admission expired. The work was not
+ * assigned, so placing it again is safe.
+ */
+export class PlacementRaceError extends Error {
+  override readonly name = "PlacementRaceError";
+}
+
 /** How long a continuing task waits for the busy runner that holds its agent session. */
 export const SESSION_GRACE_MS = 2 * 60_000;
 /** How far back finished executions count toward a runner's recent load. */
@@ -417,13 +426,13 @@ export function createRunnerPlacement(options: {
           admission.scope !== authority(scope(admission.request)) ||
           admission.policy !== policy(input.runnerId, input.profile?.agent)
         )
-          throw new Error("Runner selection authority changed before assignment");
+          throw new PlacementRaceError("Runner selection authority changed before assignment");
         const runner = db
           .query<{ ownerId: string }, [string]>(
             "SELECT owner_user_id AS ownerId FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL",
           )
           .get(input.runnerId);
-        if (!runner) throw new Error("Runner identity changed before assignment");
+        if (!runner) throw new PlacementRaceError("Runner identity changed before assignment");
         if (input.profile) {
           db.run(
             "INSERT INTO runner_agent_policy(runner_id,agent) VALUES(?,?) ON CONFLICT DO NOTHING",
