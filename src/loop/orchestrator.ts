@@ -3753,7 +3753,8 @@ export class Orchestrator {
   /**
    * The files the fix from the approved head to the published head changed, and which of them
    * are high-risk against the repository's settings globs and `.paws/high-risk-paths` at main's
-   * `base`. Null when git cannot read them, so the head asks again rather than carrying over.
+   * `base`. Null when the head is no fix on the approved patch, as after a rebase that changed
+   * it, or when git cannot read it, so the head asks again rather than carrying over.
    */
   private async fixRisk(
     item: WorkItemRecord,

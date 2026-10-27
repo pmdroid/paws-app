@@ -45,6 +45,9 @@ const heads = {
   ciFix: "",
   authFix: "",
   rebasedCiFix: "",
+  both: "",
+  mainWithTest: "",
+  absorbed: "",
 };
 
 function git(...args: string[]): string {
@@ -83,6 +86,17 @@ beforeAll(() => {
   git("checkout", "-qb", "rebased-ci-fix", heads.rebased);
   git("cherry-pick", heads.ciFix);
   heads.rebasedCiFix = git("rev-parse", "HEAD");
+  // A patch that changes auth code and a test, and main taking the same test on its own: the
+  // rebase drops the test from the patch, which is a changed patch, not a fix.
+  git("checkout", "-qb", "both", heads.base);
+  mkdirSync(path.join(repo, "test"), { recursive: true });
+  writeFileSync(path.join(repo, "test/y.test.ts"), "test('token', () => {});\n");
+  heads.both = commit("src/auth/token.ts", "export const token = 1;\n", "tokens and their test");
+  git("checkout", "-qb", "main-with-test", heads.newMain);
+  heads.mainWithTest = commit("test/y.test.ts", "test('token', () => {});\n", "main adds the test");
+  git("checkout", "-qb", "absorbed", heads.mainWithTest);
+  git("cherry-pick", heads.both);
+  heads.absorbed = git("rev-parse", "HEAD");
 });
 
 afterAll(() => rmSync(repo, { recursive: true, force: true }));
@@ -590,4 +604,23 @@ test("a carried-over approval is checked again against the high-risk paths in fo
     }),
   ).toBe("missing");
   expect(getRiskFix(db, itemId, heads.ciFix)).toBeNull();
+});
+
+test("a rebase that changed the patch asks again, even when the change is only a test", async () => {
+  const { db, itemId } = asked(heads.both);
+  const question = findOpenQuestion(db, "ses_1")!;
+  decideLinkAsk(db, {
+    questionId: question.id,
+    decision: "approve",
+    note: null,
+    answeredBy: "delegator",
+    actor,
+    now: NOW + 100,
+  });
+  fixAccepted(db, heads.absorbed, heads.mainWithTest);
+  // The rebased patch lost the test main already had: not samePatch, and no fix was made.
+  expect(await samePatch(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBe(false);
+  expect(await fixChangedPaths(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBeNull();
+  expect(await approvalWithFixes(db, heads.absorbed)).toBe("missing");
+  expect(getRiskFix(db, itemId, heads.absorbed)).toBeNull();
 });

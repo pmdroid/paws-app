@@ -50,7 +50,8 @@ export type FixRisk = { changed: string[]; paths: string[] };
  * as after a rebase. A Linear reply never approves, so only `approve` decisions count.
  *
  * A fix Paws made after the latest approval (CI, a review, a comment) keeps that approval when
- * none of the files the fix itself changed since the approved head is a high-risk path. The
+ * none of the files the fix itself changed since the approved head is a high-risk path. A fix
+ * is commits on top of the approved patch; a rebase that changed the patch is not one and asks. The
  * comparison is recorded for S either way: it names the approved head and why the approval
  * carried over, or the high-risk paths the next ask lists.
  */
