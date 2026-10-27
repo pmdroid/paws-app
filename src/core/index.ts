@@ -161,10 +161,13 @@ export {
   HIGH_RISK_PATHS_FILE,
   HIGH_RISK_PATHS_FILE_MAX_BYTES,
   classifyRisk,
+  classifyRiskByList,
   highRiskGlobError,
   parseHighRiskPathsFile,
   riskCarryOverReason,
   riskLine,
   type RiskClassification,
+  type RiskList,
+  type RiskMatch,
   type RiskTier,
 } from "./risk";
