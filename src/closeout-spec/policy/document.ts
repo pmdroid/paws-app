@@ -13,9 +13,11 @@ import type {
   PolicyImport,
   PolicyItem,
   PolicyReview,
+  PolicyRule,
   PolicySetupStep,
   RetryPolicy,
   RetryScope,
+  RuleOnFail,
   Severity,
 } from "../types";
 
@@ -150,7 +152,32 @@ function decodeDocument(value: unknown): PolicyDocument {
   }
   if (value.retry !== undefined) document.retry = decodeRetry(value.retry);
   if (value.setup !== undefined) document.setup = decodeSetup(value.setup);
+  if (value.rules !== undefined) document.rules = decodeRules(value.rules);
   return document;
+}
+
+function decodeRules(value: unknown): PolicyRule[] {
+  if (!Array.isArray(value)) throw new Error("document does not match the schema");
+  return value.map((entry) => {
+    if (!isRecord(entry) || typeof entry.id !== "string") {
+      throw new Error("document does not match the schema");
+    }
+    const rule: PolicyRule = {
+      id: entry.id,
+      probe: expectString(entry.probe),
+      summary: expectString(entry.summary),
+      failOn: expectSeverity(entry.failOn),
+    };
+    if (entry.exec !== undefined) rule.exec = expectStrings(entry.exec);
+    if (entry.paths !== undefined) rule.paths = expectStrings(entry.paths);
+    if (entry.onFail !== undefined) rule.onFail = expectOnFail(entry.onFail);
+    return rule;
+  });
+}
+
+function expectOnFail(value: unknown): RuleOnFail {
+  if (value === "fix" || value === "approve") return value;
+  throw new Error("document does not match the schema");
 }
 
 function decodeRetry(value: unknown): RetryPolicy {

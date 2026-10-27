@@ -16,6 +16,7 @@ import type {
   ResolvedEvidence,
   ResolvedItem,
   ResolvedRequirement,
+  ResolvedRule,
   ResolvedSetup,
 } from "./types";
 
@@ -122,7 +123,16 @@ type Listed = {
 type Prepared =
   | { kind: "empty" }
   | { kind: "blocked"; message: string }
-  | { kind: "ready"; policy: TreePolicy; required: Listed[]; published: PublishedEvidence[] };
+  | {
+      kind: "ready";
+      policy: TreePolicy;
+      required: Listed[];
+      rules: ListedRule[];
+      published: PublishedEvidence[];
+    };
+
+/** A rule the change must keep. Listing it does not run its probe. */
+type ListedRule = { id: string; summary: string; matched_paths: string[] };
 
 export function createCloseoutSession(
   workspace: string,
@@ -154,7 +164,7 @@ export function createCloseoutSession(
     if (loaded.absent || loaded.policy.digest !== source.digest)
       return { kind: "blocked", message: "The Closeout policy does not match its digest" };
     const policy = loaded.policy;
-    const needsPaths = [...policy.setup, ...policy.items].some(
+    const needsPaths = [...policy.setup, ...policy.items, ...policy.rules].some(
       (item) => item.paths !== undefined && item.paths.length > 0,
     );
     const changes = await changedPaths(workspace, needsPaths);
@@ -183,7 +193,13 @@ export function createCloseoutSession(
           await comparisonBase(workspace),
         )
       : [];
-    return { kind: "ready", policy, required: select(policy, changes.paths), published };
+    return {
+      kind: "ready",
+      policy,
+      required: select(policy, changes.paths),
+      rules: selectRules(policy.rules, changes.paths),
+      published,
+    };
   };
 
   return {
@@ -319,7 +335,13 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
             return `Check ${item.id} is exhausted. Failed attempts ${failures} of ${item.kind === "setup" ? 2 : max}. Hint: ${item.hint}.`;
           })
           .join(" ")}`;
-  return { required, pending, blocked, bypassed: false };
+  return {
+    required,
+    pending,
+    blocked,
+    bypassed: false,
+    ...(prepared.rules.length > 0 ? { rules: prepared.rules } : {}),
+  };
 }
 
 function boundedReport(report: Record<string, unknown>): string {
@@ -516,6 +538,17 @@ function select(policy: TreePolicy, paths: readonly string[]): Listed[] {
   if (items.length === 0) return [];
   const setup = policy.setup.filter((step) => step.gate === "beforePR" && matches(step, paths));
   return [...setup, ...items].map((item) => describeItem(item, paths));
+}
+
+function selectRules(rules: readonly ResolvedRule[], paths: readonly string[]): ListedRule[] {
+  if (paths.length === 0) return [];
+  return rules
+    .filter((rule) => matches(rule, paths))
+    .map((rule) => ({
+      id: rule.id,
+      summary: rule.summary,
+      matched_paths: matchedPaths(rule, paths),
+    }));
 }
 
 function matches(item: { paths?: string[] }, paths: readonly string[]): boolean {
