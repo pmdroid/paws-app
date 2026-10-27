@@ -38,9 +38,15 @@ order = "ci-green"
 ```
 
 - **`order`**: how pull requests in one repository merge. `queue` (default) merges one at a time through the merge lane. `ci-green` merges each one on its own green CI. `github-queue` hands the merge to GitHub's merge queue. A rule matching one of the issue's labels wins over the issue's Linear project, which wins over the default. A rule with `project` applies only to that project and wins over a rule without one.
-- **`main_moved`**: deprecated. The only accepted value is `"closeout"`, which is also what a missing key means: when `main` moves before the merge, the lane rebases and Closeout verifies the rebased head before it can merge. `"ci"` and `"overlap"` are rejected at startup, because they merged heads Closeout never saw. Set the key to `"closeout"` or delete it, in `[merge]`, in `[merge.projects.*]` and in `[[merge.rules]]`.
+- **`main_moved`**: what the merge lane does when `main` moved before the merge. Set it in `[merge]`, `[merge.projects.*]` or `[[merge.rules]]`, or in Settings › Merging as "When main moved before the merge".
+  - `"ci"` (default, and what a missing key means): rebase onto `main`, and the new head merges once its CI is green. Closeout does not run again; the new head carries Closeout's acceptance of the head it was rebased from.
+  - `"overlap"`: when main's new commits touch none of the pull request's files, grouped by the repository's `packages` roots, merge without a rebase. When they do, or when GitHub requires branches to be up to date before merging, rebase and wait for CI as with `"ci"`.
+  - `"closeout"`: rebase and run Closeout again on the new head before it can merge.
+
+  A changed Closeout policy sends a carried head back through Closeout under every value.
+
 - **`ci_fix_attempts`**: legacy. Still read and shown in Settings, but it no longer sets a separate CI budget. Red CI on the pull request is a fix round and counts against the policy's `retry.fix_rounds_per_item`.
-- **`[merge.repositories."owner/repo"] packages`**: package roots such as `apps/*`. Accepted and kept when Settings rewrites the file; no merge order reads them today.
+- **`[merge.repositories."owner/repo"] packages`**: package roots such as `apps/*`. With `main_moved = "overlap"`, a change anywhere under the same root on main counts as an overlap.
 - **`[merge.repositories."owner/repo"] ignore_comment_bots`**: bot logins such as `codecov[bot]` whose pull request comments only report status, so they never restart the item. Replaces the default list (Cloudflare Pages, Linear, Codecov, Netlify, Vercel, changesets) for that repository; `[]` ignores no bot.
 
 The merge lane squashes head S only when `mergeable(S)` holds: the pull request head is S, S contains the current `main`, Closeout accepted S under the current policy digest, CI is green for S, no review thread is unresolved and branch protection is satisfied. [After acceptance](closeout.md#after-acceptance) has the details.

@@ -6,6 +6,7 @@ import type { GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitFailureReason, redact, withCredential } from "./git";
+import { mainOverlap, readUpToDateRule } from "./overlap";
 import { pushWithLease } from "./push";
 import { waitForMergeReadiness, type Readiness } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
@@ -40,6 +41,11 @@ export type SerialMergeInput = {
   commitEnv?: Record<string, string>;
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
+  /**
+   * `[merge] main_moved = "overlap"`: compare main's new commits with the pull request's files,
+   * grouped by these package roots, when S is behind main.
+   */
+  overlap?: { packages: readonly string[] };
 };
 
 /** What the merge lane reads about the branch head S under the repository lock. */
@@ -50,6 +56,15 @@ export type PullFacts = {
   /** Main as just fetched. */
   base: string;
   containsMain: boolean;
+  /**
+   * Only with `overlap`, for S behind main: main's new commits touch none of S's files or package
+   * roots, and GitHub does not require branches to be up to date. S may merge without a rebase.
+   */
+  apart?: boolean;
+  /** With `overlap`: the files or package roots main's new commits share with S. */
+  shared?: string[];
+  /** With `overlap`: GitHub requires branches to be up to date, so S is rebased anyway. */
+  upToDateRule?: boolean;
   /** CI and review threads for S, and whether the pull request still carries S. */
   readiness: Readiness;
   review: PullReview;
@@ -100,14 +115,45 @@ export async function readPullFacts(input: SerialMergeInput): Promise<PullFactsR
     releaseWhilePending: true,
   });
   const review = await readPullReview({ ...input, tokenProvider: input.tokenProvider });
-  return { kind: "facts", branch, head, base, containsMain, readiness, review };
+  const overlap =
+    input.overlap && !containsMain ? await readOverlap(input, token, gitExec) : undefined;
+  return { kind: "facts", branch, head, base, containsMain, ...overlap, readiness, review };
+}
+
+/**
+ * Whether S, behind main, may merge without a rebase under `overlap`. A shared file or package
+ * root, GitHub's up-to-date rule, or a rule Paws cannot read all mean it may not.
+ */
+async function readOverlap(
+  input: SerialMergeInput,
+  token: string,
+  gitExec: GitExec,
+): Promise<Pick<PullFacts, "apart" | "shared" | "upToDateRule">> {
+  const { shared } = await mainOverlap(input.worktree, input.overlap?.packages ?? [], gitExec);
+  if (shared.length > 0) return { apart: false, shared };
+  const rule = await readUpToDateRule({
+    client: input.client,
+    token,
+    owner: input.owner,
+    repo: input.repo,
+    branch: "main",
+    prNumber: input.prNumber,
+  }).catch((caughtError) => {
+    journalCaught(caughtError, "merge.readOverlap.readUpToDateRule", input.issue);
+    return null;
+  });
+  if (rule === true) return { apart: false, shared, upToDateRule: true };
+  return { apart: rule === false, shared };
 }
 
 export type RebaseResult =
   | { rebased: true; branch: string; base: string; head: string }
   | { rebased: false; result: SerialMergeResult };
 
-/** Rebase the branch onto the fetched main and push it. The new head still needs Closeout. */
+/**
+ * Rebase the branch onto the fetched main and push it. The new head needs Closeout again, or
+ * under `ci` and `overlap` carries the acceptance of the head it was rebased from.
+ */
 export async function rebaseOntoMain(input: SerialMergeInput): Promise<RebaseResult> {
   const branch = laneBranch(input);
   if (typeof branch !== "string") return { rebased: false, result: branch };

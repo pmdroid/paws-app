@@ -27,8 +27,10 @@ flowchart TD
   R --> Q
   J -->|bypass on the item page, with reasons| G
   H -->|"mergeable(S)"| M[Squash with expected head S]
-  H -->|main moved| K[Rebase to S', verifying again]
+  H -->|"main moved, main_moved = closeout"| K[Rebase to S', verifying again]
   K --> G
+  H -->|"main moved, main_moved = ci or overlap"| L[Rebase to S', S' carries the accept row]
+  L --> H
   H -->|"red CI or changes requested, fix rounds left"| P["restart(item, ci or review)"]
   P --> Q
 ```
@@ -162,17 +164,23 @@ A reply in Linear is guidance, whatever it says. `/paws bypass check -- reason` 
 When Closeout accepts head S, it writes an accept row: S, the policy digest it ran under, and any bypass rows for S. The item enters `merge_queue`. The merge lane takes the repository lock, reads the pull request and checks one predicate, `mergeable(S)`:
 
 1. The pull request head is still S.
-2. S contains the current `main`.
-3. An accept row exists for S under the current policy digest.
+2. S contains the current `main`. Under `[merge] main_moved = "overlap"`, a head whose files main's new commits do not touch also counts.
+3. An accept row exists for S under the current policy digest. Under `main_moved = "ci"` or `"overlap"`, a head the lane rebased from the accepted head carries that head's row.
 4. CI is green for S.
 5. No review thread is unresolved.
 6. Branch protection is satisfied.
 
-Only when all six hold does the lane squash, with GitHub's expected-head guard set to S. A head that changes, or a main that moves between the read and the squash, releases the lane, and the next turn reads again. Paws never merges a head Closeout did not accept.
+Only when all six hold does the lane squash, with GitHub's expected-head guard set to S. A head that changes, or a main that moves between the read and the squash, releases the lane, and the next turn reads again. Paws never merges a head that is neither accepted by Closeout nor rebased by the lane from an accepted head.
 
 When `mergeable(S)` is false, the first failing condition decides:
 
-- **S is behind main.** The lane rebases to a new head S', releases the lock and sends the item back to `verifying`. Closeout runs on S' like any candidate. On a remote runner, Paws runs the command checks for S' on the item's runner. A human visual approval carries over when the patch is unchanged. After the pull request, only the title ("rebased onto main, re-verifying") and the plan move.
+- **S is behind main.** The lane rebases to a new head S' and releases the lock. What happens next follows `[merge] main_moved` (see the [configuration reference](configuration.md#merge)):
+  - `ci` (default): S' carries the accept row of the head it was rebased from and merges once its CI is green. Closeout does not run again.
+  - `overlap`: as `ci`, but the lane rebases only when main's new commits touch a file or package root the pull request changes, or GitHub requires branches to be up to date. Otherwise S merges without a rebase.
+  - `closeout`: the item goes back to `verifying`. Closeout runs on S' like any candidate. On a remote runner, Paws runs the command checks for S' on the item's runner. A human visual approval carries over when the patch is unchanged. After the pull request, only the title ("rebased onto main, re-verifying") and the plan move.
+
+  Under `ci` and `overlap`, a carried head goes back to `verifying` as well when the policy digest changed or Closeout never accepted the head the lane rebased.
+
 - **No accept row for S, or the policy changed.** S goes back to `verifying`.
 - **CI failed.** `restart(item, ci)` while fix rounds are left, then a question.
 - **CI pending, threads open or protection unsatisfied.** The item waits in `merge_queue`.
@@ -187,7 +195,7 @@ retry:
   fix_rounds_per_item: 3
 ```
 
-`maxFailedAttemptsPerItem` remains a legacy alias for `attempts_per_check`. The legacy `[merge] ci_fix_attempts` setting in `config.toml` no longer sets a separate CI budget; CI fixes count against `fix_rounds_per_item`. `[merge] main_moved = "ci"` is rejected; see the [configuration reference](configuration.md#merge).
+`maxFailedAttemptsPerItem` remains a legacy alias for `attempts_per_check`. The legacy `[merge] ci_fix_attempts` setting in `config.toml` no longer sets a separate CI budget; CI fixes count against `fix_rounds_per_item`. `[merge] main_moved` decides whether a rebased head runs Closeout again; see the [configuration reference](configuration.md#merge).
 
 ## Review escapes
 
