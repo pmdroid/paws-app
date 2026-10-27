@@ -6,20 +6,14 @@ import {
   type StatusSnapshot,
 } from "../contract";
 
-/** The dashboard polls the status list this often while the tab is visible. */
 export const STATUS_POLL_MS = 5000;
 
 export type StatusRead =
   | { kind: "loaded"; snapshot: StatusSnapshot }
-  /** Anything but 200 or 304, such as 401 or a server error, for the caller to handle. */
   | { kind: "response"; response: Response };
 
 type Fetch = (path: string, init: RequestInit) => Promise<Response>;
 
-/**
- * Reads the named slices of `/api/status`. A repeated read of the same slices sends the last
- * `ETag`, and a 304 returns the list it already has with the server's newer `generatedAt`.
- */
 export function createStatusReader(
   fetcher: Fetch = (path, init) => fetch(path, init),
 ): (slices: readonly StatusSlice[]) => Promise<StatusRead> {

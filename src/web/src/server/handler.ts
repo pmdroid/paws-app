@@ -525,10 +525,6 @@ function defaultStaticDir(): string | null {
   return existsSync(join(dir, "index.html")) ? dir : null;
 }
 
-/**
- * A weak ETag over the body without `generatedAt`, which changes on every read. An unchanged
- * list answers a request carrying it with 304.
- */
 function statusEtag(snapshot: StatusSnapshot): string {
   const { generatedAt: _generatedAt, ...rest } = snapshot;
   return `W/"${createHash("sha256").update(JSON.stringify(rest)).digest("base64url").slice(0, 32)}"`;

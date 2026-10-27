@@ -1,6 +1,3 @@
-// Each dashboard page asks /api/status only for its slices, an unchanged list is a 304, Settings
-// and Runners load no status, and a hidden tab stops polling.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-status-slices-ui.ts <screenshot dir>
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -85,12 +82,10 @@ try {
     await page.screenshot({ path: join(directory, `runners-${width}.png`), fullPage: true });
 
     if (width === 1440) {
-      // The overview polls, and an unchanged list answers 304.
       await visit(page, "/");
       await page.waitForTimeout(5500);
       expect(served.map((entry) => entry.status)).toEqual([200, 304]);
 
-      // A hidden tab makes no requests and loads once when shown again.
       await setHidden(page, true);
       served.length = 0;
       await page.waitForTimeout(11_000);

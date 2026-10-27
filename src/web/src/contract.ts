@@ -717,14 +717,9 @@ export interface StatusSnapshotBase {
 export interface StatusSnapshot extends StatusSnapshotBase {
   verdicts: StatusVerdictSummary[];
   agentCloseout?: StatusAgentCloseoutSummary[];
-  /**
-   * The slices a `?slices=` request named. Fields of other slices are left out of the body and
-   * read as empty. Absent when the whole list was asked for.
-   */
   slices?: StatusSlice[];
 }
 
-/** The parts of the status list a page can ask for with `GET /api/status?slices=…`. */
 export const STATUS_SLICES = [
   "items",
   "questions",
@@ -737,7 +732,6 @@ export const STATUS_SLICES = [
 ] as const;
 export type StatusSlice = (typeof STATUS_SLICES)[number];
 
-/** The snapshot fields each slice carries. `version`, `source`, `generatedAt` and `project` always come. */
 export const STATUS_SLICE_FIELDS = {
   items: ["items", "runs", "verdicts", "agentCloseout"],
   questions: ["questions"],
@@ -749,22 +743,13 @@ export const STATUS_SLICE_FIELDS = {
   dead: ["dead"],
 } as const satisfies Record<StatusSlice, readonly (keyof StatusSnapshot)[]>;
 
-/**
- * The `generatedAt` of the list a `/api/status` response describes. A 304 has no body, so the
- * page reads the time of the unchanged list from this header.
- */
 export const GENERATED_AT_HEADER = "Paws-Generated-At";
 
-/** `/api/status?slices=a,b` for these slices, in `STATUS_SLICES` order. */
 export function statusSlicesPath(slices: readonly StatusSlice[]): string {
   const named = STATUS_SLICES.filter((slice) => slices.includes(slice));
   return `${STATUS_API_PATH}?slices=${named.join(",")}`;
 }
 
-/**
- * The slices named by a `slices` query value, in `STATUS_SLICES` order. Null when the query has
- * none (the whole list); an `error` when it names an unknown slice or none at all.
- */
 export function parseStatusSlices(
   raw: string | null,
 ): { ok: true; slices: StatusSlice[] | null } | { ok: false; error: string } {
@@ -775,7 +760,6 @@ export function parseStatusSlices(
   return { ok: true, slices: STATUS_SLICES.filter((slice) => named.includes(slice)) };
 }
 
-/** The list with only the fields of `slices`, and `slices` naming them. */
 export function selectStatusSlices(
   snapshot: StatusSnapshot,
   slices: readonly StatusSlice[],
@@ -793,7 +777,6 @@ export function selectStatusSlices(
   return body as unknown as StatusSnapshot;
 }
 
-/** True when the list carries `slice`: it was asked for, or the whole list was. */
 export function hasStatusSlice(snapshot: StatusSnapshot | null, slice: StatusSlice): boolean {
   return snapshot !== null && (snapshot.slices === undefined || snapshot.slices.includes(slice));
 }
@@ -1153,7 +1136,6 @@ function ids(values: string[], label: string, problems: string[]): Set<string> {
 function readSnapshot(input: unknown): StatusSnapshot {
   const sent = object(input, "status");
   const slices = readSlices(sent);
-  // The required arrays of slices that were not asked for are left out and read as empty.
   const body: Record<string, unknown> = { ...sent };
   if (slices !== undefined) {
     const carried = new Set<string>(slices.flatMap((slice) => STATUS_SLICE_FIELDS[slice]));
