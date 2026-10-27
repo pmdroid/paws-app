@@ -287,15 +287,12 @@ async function setup() {
     });
     return { id, runId: run.id };
   }
-  /**
-   * Starts a turn on A, which says something and is then handed over. `B` is paused until the
-   * turn lands on A, then `whileMoving` sets it up before Paws looks for another runner.
-   */
-  async function handOverTurn(whileMoving: () => void = () => {}) {
-    const record = item();
-    const notices: string[] = [];
-    const prompts: string[] = [];
-    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  /** One turn of `record`, which runs until a runner finishes it or `stop` aborts it. */
+  function turn(
+    record: { id: string; runId: string },
+    notices: string[],
+    question?: "answered" | "open",
+  ) {
     const stop = new AbortController();
     stops.add(stop);
     const running = backend
@@ -309,16 +306,53 @@ async function setup() {
         pawsRoot: root,
         networkGit: async () => "",
         signal: stop.signal,
+        ...(question
+          ? {
+              askTeam: {
+                // The question store records the question, answered or still open.
+                async ask(request: { question: string }) {
+                  db.run(
+                    `INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at)
+                     VALUES(?,?,?,?,'agent',?,?,?)`,
+                    [
+                      workspaceId(),
+                      record.id,
+                      record.runId,
+                      `session-${record.id}`,
+                      request.question,
+                      question,
+                      now,
+                    ],
+                  );
+                  return { answer: "Use the default." };
+                },
+              },
+            }
+          : {}),
         onEvent(event) {
           if (event.type === "progress") notices.push(event.text);
         },
       })
       .catch((error: unknown) => error);
+    return { running, stop };
+  }
+  /**
+   * Starts a turn on A, which says something and is then handed over. `B` is paused until the
+   * turn lands on A, then `whileMoving` sets it up before Paws looks for another runner. With
+   * `question`, A asks first and the question is answered or still open at the handover.
+   */
+  async function handOverTurn(whileMoving: () => void = () => {}, question?: "answered" | "open") {
+    const record = item();
+    const notices: string[] = [];
+    const prompts: string[] = [];
+    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+    const { running, stop } = turn(record, notices, question);
     const onA = (await next(runners.a)) as RunCommand;
     prompts.push(onA.prompt);
     db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
     whileMoving();
     events(onA, runners.a, [
+      ...(question ? [{ type: "question" as const, text: "Which delimiter?", options: [] }] : []),
       {
         type: "activity",
         update: {
@@ -327,6 +361,13 @@ async function setup() {
         },
       },
     ]);
+    if (question)
+      for (
+        let index = 0;
+        index < 5000 && !db.query("SELECT 1 FROM question WHERE run_id=?").get(record.runId);
+        index++
+      )
+        await delay(1);
     const handing = backend.handOverItem(record.id);
     const wip = await handOver(onA);
     expect(await handing).toEqual({ status: "handed_over", wipCommit: wip });
@@ -341,6 +382,7 @@ async function setup() {
     events,
     submit,
     handOverTurn,
+    turn,
     stopAll() {
       for (const stop of stops) stop.abort();
       stops.clear();
@@ -428,4 +470,51 @@ test("a run that stops while it waits for a runner ends with the stop, not a fai
   const error = await running;
   expect(error).toBeInstanceOf(Error);
   expect((error as Error).name).toBe("AbortError");
+});
+
+test("a session whose question was answered still moves to another runner", async () => {
+  const { runners } = context;
+  const { onA, wip, running } = await context.handOverTurn(undefined, "answered");
+  const onB = (await context.next(runners.b)) as RunCommand;
+  expect(onB.runId).toBe(onA.runId);
+  expect(onB.repository.baseSha).toBe(wip);
+  context.submit(onB, runners.b, { candidateSha: wip });
+  expect(await running).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
+});
+
+test("a session still waiting on its question keeps it and does not move", async () => {
+  const { runners } = context;
+  const { running } = await context.handOverTurn(undefined, "open");
+  expect(await running).toMatchObject({ handedOver: true });
+  expect(await context.next(runners.b, 50)).toBeNull();
+});
+
+test("after a restart the handed-over run still avoids the runner it left and waits", async () => {
+  const { db, runners } = context;
+  const { record, onA, wip, notices, stop, running } = await context.handOverTurn(() =>
+    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]),
+  );
+  for (
+    let index = 0;
+    index < 5000 && !notices.some((notice) => notice.startsWith("Waiting"));
+    index++
+  )
+    await delay(1);
+  // Paws stops while the run waits; a new call knows nothing of the first one.
+  stop.abort();
+  await running;
+  const again: string[] = [];
+  const resumed = context.turn(record, again);
+  // A is active and online, yet the run neither returns to it nor fails.
+  expect(await context.next(runners.a, 300)).toBeNull();
+  for (let index = 0; index < 5000 && !again.length; index++) await delay(1);
+  expect(again.filter((notice) => notice.startsWith("Waiting"))).toEqual([
+    "Waiting to move this session from A: No other runner is online. Paws moves it as soon as a runner fits.\n",
+  ]);
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  const onB = (await context.next(runners.b)) as RunCommand;
+  expect(onB.runId).toBe(onA.runId);
+  expect(onB.repository.baseSha).toBe(wip);
+  context.submit(onB, runners.b, { candidateSha: wip });
+  expect(await resumed.running).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
 });
