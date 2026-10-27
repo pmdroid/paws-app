@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { enqueueJob, enqueueOutbox, getJob, getOutbox, getWorkItem } from "../src/db";
+import {
+  CLEANUP_BLOCKED_NOTICE,
+  blockConversation,
+  enqueueJob,
+  enqueueOutbox,
+  getConversation,
+  getJob,
+  getOutbox,
+  getWorkItem,
+} from "../src/db";
 import { createExecutionControlsFixture, probeExecutionControls } from "./local/execution-controls";
 
 test("Workspace execution controls reach canonical Stop, Pause and Resume with current authorization", async () => {
@@ -82,6 +91,47 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     assert.equal((await retry(`outbox:${stop}`, "observer")).status, 403);
     assert.equal((await retry(`outbox:${stop}`)).status, 200);
     assert.equal(getOutbox(db, stop)!.status, "pending");
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Clear stuck agent clears a blocked conversation for an owner, refuses a member and is audited", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-controls-stuck-"));
+  const fixture = createExecutionControlsFixture(root);
+  try {
+    const { db, call } = fixture;
+    blockConversation(db, "controlled", Date.now());
+    const view = (await (await call(undefined, "owner")).json()) as {
+      actions: string[];
+      notice?: string;
+    };
+    assert(view.actions.includes("clear_stuck_agent"));
+    assert.equal(view.notice, CLEANUP_BLOCKED_NOTICE);
+    const member = (await (await call()).json()) as { actions: string[]; notice?: string };
+    assert(!member.actions.includes("clear_stuck_agent"));
+    assert.equal(member.notice, CLEANUP_BLOCKED_NOTICE);
+
+    assert.equal((await call("clear_stuck_agent")).status, 403);
+    assert.equal(getConversation(db, "controlled").blocked, true);
+    assert.equal((await call("clear_stuck_agent", "owner")).status, 200);
+    assert.equal(getConversation(db, "controlled").blocked, false);
+    const audit = db
+      .query<{ userId: string; action: string; subject: string }, []>(
+        "SELECT user_id AS userId,action,subject FROM workspace_access_audit WHERE action LIKE '%clear_stuck_agent%' OR subject LIKE '%clear_stuck_agent%' ORDER BY id",
+      )
+      .all();
+    assert.deepEqual(audit, [
+      {
+        userId: "member",
+        action: "access.denied",
+        subject: "execution.clear_stuck_agent:controlled",
+      },
+      { userId: "owner", action: "execution.clear_stuck_agent", subject: "controlled" },
+    ]);
+    // Nothing is blocked any more, so the action is gone.
+    assert.equal((await call("clear_stuck_agent", "owner")).status, 409);
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });
