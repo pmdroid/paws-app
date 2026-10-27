@@ -3542,7 +3542,7 @@ export class Orchestrator {
     item: WorkItemRecord,
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null> {
     const pull = getItemPullRequest(this.db, item.id);
-    const repository = this.repositoryForItem(item);
+    const repository = pull ? this.repositoryForItem(item) : null;
     const github = repository ? this.githubForRepository(repository) : null;
     if (!pull || !repository || !github) return null;
     const read = await readPullMerge({

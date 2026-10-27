@@ -477,9 +477,11 @@ describe("timing", () => {
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='eng-1'");
     setBusy(true);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
-    const step = await advanceMerge(db, { itemId: "eng-1", payload: {}, jobId: 1 }, {
-      now: () => 10,
-    } as MergeCapabilities);
+    const step = await advanceMerge(
+      db,
+      { itemId: "eng-1", payload: {}, jobId: 1 },
+      laneCapabilities(),
+    );
     expect(step).toMatchObject({ kind: "wait", reason: "review" });
     setBusy(false);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
@@ -499,3 +501,9 @@ describe("timing", () => {
     expect(getPullComment(db, "conversation", 1)?.outcome).toBe("asked");
   });
 });
+
+/** The merge lane reads only these before a review holds it. */
+function laneCapabilities(): MergeCapabilities {
+  const caps: Partial<MergeCapabilities> = { now: () => 10, mergedOutsideLane: async () => null };
+  return caps as MergeCapabilities;
+}
