@@ -15,7 +15,8 @@ import {
   recordLinearInstallation,
   saveCheckpoint,
 } from "../src/db";
-import { createRemoteAgentRunner } from "../src/runner-backend";
+import { isTransient } from "../src/core";
+import { createRemoteAgentRunner, RemoteStartUnverified } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -61,7 +62,47 @@ test("a head whose push keeps failing starts from the PR branch head and names t
   expect(result.wipCommit, result.detail).toBe(result.prHead);
 });
 
-async function startScenario(input: { local: string[]; push: "works" | "fails" }) {
+test("an item branch never pushed to a repository whose default branch is master is still pushed", async () => {
+  const result = await startScenario({
+    local: ["Lost one"],
+    push: "works",
+    defaultBranch: "master",
+    prBranch: false,
+  });
+  expect(result.pushes, result.detail).toBe(1);
+  expect(result.baseSha, result.detail).toBe(result.localHead);
+  expect(result.remoteBranch, result.detail).toBe(result.localHead);
+});
+
+test("without a PR branch a failed push falls back to the base on the default branch", async () => {
+  const result = await startScenario({
+    local: ["Lost one"],
+    push: "fails",
+    defaultBranch: "master",
+    prBranch: false,
+  });
+  expect(result.baseSha, result.detail).toBe(result.base);
+  expect(result.prompt, result.detail).toStartWith(
+    `Your commits after ${result.base.slice(0, 8)} didn't reach GitHub: Lost one; On the PR branch. Redo them.`,
+  );
+});
+
+test("a start Paws cannot establish on GitHub dispatches nothing and retries later", async () => {
+  const result = await startScenario({ local: ["Lost one"], push: "fails", fetch: "fails" });
+  expect(result.error, result.detail).toBeInstanceOf(RemoteStartUnverified);
+  expect(isTransient(result.error), result.detail).toBe(true);
+  expect(result.pushes, result.detail).toBe(1);
+  expect(result.baseSha, result.detail).toBeUndefined();
+  expect(result.head, result.detail).toBe(result.localHead);
+});
+
+async function startScenario(input: {
+  local: string[];
+  push: "works" | "fails";
+  fetch?: "fails";
+  defaultBranch?: string;
+  prBranch?: false;
+}) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
   const source = join(root, "source");
   const origin = join(root, "origin.git");
@@ -91,14 +132,16 @@ async function startScenario(input: { local: string[]; push: "works" | "fails" }
     await git(["-C", directory, "add", "."]);
     await git(["-C", directory, "commit", "-m", message]);
   }
-  await git(["init", "-b", "main", source]);
+  await git(["init", "-b", input.defaultBranch ?? "main", source]);
   await commit(source, "Fixture");
   await git(["clone", "--bare", source, origin]);
-  await commit(source, "On the PR branch");
-  await git(["-C", source, "push", origin, `HEAD:refs/heads/${BRANCH}`]);
-  const prHead = await git(["-C", source, "rev-parse", "HEAD"]);
-  const base = await git(["-C", source, "rev-parse", "HEAD~1"]);
-  await git(["clone", "-b", BRANCH, origin, worktree]);
+  const base = await git(["-C", source, "rev-parse", "HEAD"]);
+  await git(["clone", origin, worktree]);
+  await git(["-C", worktree, "checkout", "-b", BRANCH]);
+  await commit(worktree, "On the PR branch");
+  if (input.prBranch !== false)
+    await git(["-C", worktree, "push", origin, `HEAD:refs/heads/${BRANCH}`]);
+  const prHead = await git(["-C", worktree, "rev-parse", "HEAD"]);
   // Commits Paws fetched from the runner whose push to GitHub was refused.
   for (const message of input.local) await commit(worktree, message);
   const localHead = await git(["-C", worktree, "rev-parse", "HEAD"]);
@@ -106,6 +149,8 @@ async function startScenario(input: { local: string[]; push: "works" | "fails" }
   // GitHub, served from the bare repository; a refused push fails like the 403s did.
   let pushes = 0;
   const networkGit = async (args: string[]) => {
+    if (input.fetch === "fails" && args.includes("fetch"))
+      throw new Error("fatal: unable to access GitHub: The requested URL returned error: 502");
     if (args.includes("push")) {
       pushes++;
       if (input.push === "fails") throw new Error("remote: Permission denied (403)");
@@ -227,33 +272,50 @@ async function startScenario(input: { local: string[]; push: "works" | "fails" }
   })();
 
   const thoughts: string[] = [];
+  let error: unknown;
   try {
-    await backend.forItem(item.id)({
-      role: "implementer",
-      itemId: item.id,
-      runId: run.id,
-      prompt: "Write output",
-      worktreePath: worktree,
-      pawsRoot: root,
-      profile: { agent: "claude", model: null },
-      networkGit,
-      signal: new AbortController().signal,
-      onEvent(event: AcpEvent) {
-        if (event.type === "progress" && event.text.includes("GitHub")) thoughts.push(event.text);
-      },
-    });
+    await backend
+      .forItem(item.id)({
+        role: "implementer",
+        itemId: item.id,
+        runId: run.id,
+        prompt: "Write output",
+        worktreePath: worktree,
+        pawsRoot: root,
+        profile: { agent: "claude", model: null },
+        networkGit,
+        signal: new AbortController().signal,
+        onEvent(event: AcpEvent) {
+          if (event.type === "progress" && event.text.includes("GitHub")) thoughts.push(event.text);
+        },
+      })
+      .catch((caught: unknown) => {
+        error = caught;
+      });
     const stored = getWorkItem(db, item.id);
     return {
+      error,
+      base,
+      head: await git(["-C", worktree, "rev-parse", "HEAD"]),
       prHead,
       localHead,
       pushes,
       thoughts,
       baseSha: assigned?.repository.baseSha,
       prompt: assigned?.prompt,
-      remoteBranch: await git(["--git-dir", origin, "rev-parse", `refs/heads/${BRANCH}`]),
+      remoteBranch: await git(["--git-dir", origin, "rev-parse", `refs/heads/${BRANCH}`]).catch(
+        () => undefined,
+      ),
       state: stored?.state,
       wipCommit: stored?.checkpoint?.wipCommit,
-      detail: JSON.stringify({ prHead, localHead, pushes, thoughts, assigned }),
+      detail: JSON.stringify({
+        prHead,
+        localHead,
+        pushes,
+        thoughts,
+        assigned,
+        error: String(error),
+      }),
     };
   } finally {
     sim.stopped = true;

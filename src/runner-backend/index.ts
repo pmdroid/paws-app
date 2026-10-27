@@ -58,7 +58,7 @@ import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
-import { ensureStartOnRemote, lostCommitsNote } from "./start-commit";
+import { ensureStartOnRemote, lostCommitsNote, RemoteStartUnverified } from "./start-commit";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -826,14 +826,13 @@ export function createRemoteAgentRunner(options: {
               ...(checkpoint?.wipCommit ? { wipCommit: checkpoint.wipCommit } : {}),
               ...(checkpoint?.baseSha ? { baseSha: checkpoint.baseSha } : {}),
               signal,
+            }).catch((error: unknown) => {
+              // No runner gets a commit GitHub may lack; the item retries later.
+              if (error instanceof RemoteStartUnverified)
+                journal(`item ${itemId}: ${error.message}`);
+              throw error;
             });
             if (start.status === "remote") return undefined;
-            if (start.status === "unknown") {
-              journal(
-                `item ${itemId} could not confirm that ${start.head} is on GitHub: ${start.error}`,
-              );
-              return undefined;
-            }
             if (start.status === "pushed") {
               journal(`item ${itemId} pushed ${start.head} to GitHub before the run`);
               return undefined;
@@ -1900,6 +1899,7 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
+export { RemoteStartUnverified } from "./start-commit";
 
 export { CHECKPOINT_RUNNER_VERSION, createRemoteCheckpoint } from "./checkpoint";
 
