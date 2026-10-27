@@ -525,6 +525,7 @@ export {
 } from "./runner-setup-hold";
 export type { RunnerSetupHold } from "./runner-setup-hold";
 export type { ItemHold, ItemHoldChange, ItemHoldReason } from "./item-hold";
+export { carriedAcceptFor, recordCarriedAccept } from "./merge-carried-accept";
 export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
 export {
   getTaskLinearRead,

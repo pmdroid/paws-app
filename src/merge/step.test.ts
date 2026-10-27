@@ -86,6 +86,7 @@ function stepFor(turn: LaneTurn, rest: Partial<SerialMergeFacts> = {}) {
   return serialMergeStep({
     turn,
     queued: true,
+    mainMoved: "closeout",
     rebaseBudget: { allowed: true, spent: 0 },
     ciFixes: 0,
     ciFixLimit: 3,
@@ -117,6 +118,18 @@ describe("mergeable(S)", () => {
     expect(mergeable(facts({ protection: "review_required" }))).toEqual({
       ok: false,
       block: "protection",
+    });
+  });
+
+  test("under overlap, a head behind main that main's commits do not touch is not behind", () => {
+    expect(mergeable(facts({ containsMain: false, apart: true }))).toEqual({ ok: true });
+    expect(mergeable(facts({ containsMain: false, apart: false }))).toEqual({
+      ok: false,
+      block: "behind_main",
+    });
+    expect(mergeable(facts({ containsMain: false, apart: true, accept: null }))).toEqual({
+      ok: false,
+      block: "not_accepted",
     });
   });
 
@@ -157,10 +170,69 @@ describe("merge lane turn", () => {
     const lane = fakeLane({ containsMain: false }, { read: pull({}, { containsMain: false }) });
     const turn = await lane.turn;
     expect(lane.calls).toEqual(["read", "rebase"]);
-    expect(turn).toEqual({ kind: "rebased", base: MAIN, head: S2 });
+    expect(turn).toMatchObject({ kind: "rebased", base: MAIN, head: S2, accepted: true });
     expect(stepFor(turn)).toEqual({
       step: { kind: "reverify", head: S2, base: MAIN, rebased: true },
       leaveQueue: false,
+    });
+  });
+
+  test("with ci, an accepted head the lane rebased carries the acceptance and waits for CI", async () => {
+    const lane = fakeLane({ containsMain: false }, { read: pull({}, { containsMain: false }) });
+    const turn = await lane.turn;
+    expect(lane.calls).toEqual(["read", "rebase"]);
+    expect(stepFor(turn, { mainMoved: "ci" })).toEqual({
+      step: {
+        kind: "carry",
+        head: S2,
+        base: MAIN,
+        message: `Branch updated onto main ${MAIN.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`,
+      },
+      leaveQueue: false,
+    });
+  });
+
+  test("with ci or overlap, a rebased head Closeout never accepted still goes to Closeout", async () => {
+    const turn = await fakeLane(
+      { containsMain: false, accept: null },
+      { read: pull({}, { containsMain: false }) },
+    ).turn;
+    for (const mainMoved of ["ci", "overlap"] as const)
+      expect(stepFor(turn, { mainMoved }).step).toEqual({
+        kind: "reverify",
+        head: S2,
+        base: MAIN,
+        rebased: true,
+      });
+  });
+
+  test("with overlap, a head main's commits do not touch merges without a rebase", async () => {
+    const lane = fakeLane(
+      { containsMain: false, apart: true },
+      { read: pull({}, { containsMain: false, apart: true, shared: [] }) },
+    );
+    const turn = await lane.turn;
+    expect(lane.calls).toEqual(["read", `squash:${S}`]);
+    expect(stepFor(turn, { mainMoved: "overlap" }).step).toEqual({ kind: "merged" });
+  });
+
+  test("with overlap, a shared file or GitHub's up-to-date rule rebases and names why", async () => {
+    const shared = await fakeLane(
+      { containsMain: false, apart: false },
+      { read: pull({}, { containsMain: false, apart: false, shared: ["apps/web"] }) },
+    ).turn;
+    expect(stepFor(shared, { mainMoved: "overlap" }).step).toMatchObject({
+      kind: "carry",
+      head: S2,
+      message: `Main changed apps/web, which this pull request changes too. Branch updated onto main ${MAIN.slice(0, 7)}, waiting for CI.`,
+    });
+    const rule = await fakeLane(
+      { containsMain: false, apart: false },
+      { read: pull({}, { containsMain: false, apart: false, shared: [], upToDateRule: true }) },
+    ).turn;
+    expect(stepFor(rule, { mainMoved: "overlap" }).step).toMatchObject({
+      kind: "carry",
+      message: expect.stringContaining("GitHub requires branches to be up to date"),
     });
   });
 

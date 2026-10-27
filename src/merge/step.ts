@@ -1,6 +1,7 @@
+import type { TaskMergeSettings } from "../db";
 import type { PullFacts, PullFactsRead, RebaseResult, SerialMergeResult } from "../github";
 import type { RebaseBudget } from "./budget";
-import { mergeable, type MergeBlock, type MergeFacts } from "./mergeable";
+import { closeoutAccepted, mergeable, type MergeBlock, type MergeFacts } from "./mergeable";
 import type { MergeWait } from "./wait";
 
 /** What one lane turn may do. Each is called at most once per turn. */
@@ -17,7 +18,14 @@ export type LaneBlock = Exclude<MergeBlock, "behind_main"> | "main_moved";
 export type LaneTurn =
   | { kind: "merged"; result: SerialMergeResult }
   | { kind: "blocked"; block: LaneBlock; pull: PullFacts }
-  | { kind: "rebased"; base: string; head: string }
+  | {
+      kind: "rebased";
+      base: string;
+      head: string;
+      /** Closeout had accepted the head the lane rebased, under the current policy digest. */
+      accepted: boolean;
+      pull: PullFacts;
+    }
   | { kind: "stopped"; result: SerialMergeResult };
 
 /**
@@ -40,7 +48,8 @@ export async function laneTurn(actions: LaneActions): Promise<LaneTurn> {
         message: pull.readiness.message,
       },
     };
-  const verdict = mergeable(actions.facts(pull));
+  const facts = actions.facts(pull);
+  const verdict = mergeable(facts);
   if (verdict.ok) {
     const result = await actions.squash(pull.head, pull);
     if (result.merged) return { kind: "merged", result };
@@ -64,12 +73,20 @@ export async function laneTurn(actions: LaneActions): Promise<LaneTurn> {
   if (verdict.block !== "behind_main") return { kind: "blocked", block: verdict.block, pull };
   const rebased = await actions.rebase();
   if (!rebased.rebased) return { kind: "stopped", result: rebased.result };
-  return { kind: "rebased", base: rebased.base, head: rebased.head };
+  return {
+    kind: "rebased",
+    base: rebased.base,
+    head: rebased.head,
+    accepted: closeoutAccepted(facts),
+    pull,
+  };
 }
 
 export type SerialMergeFacts = {
   turn: LaneTurn;
   queued: boolean;
+  /** `[merge] main_moved` for the task. */
+  mainMoved: TaskMergeSettings["mainMoved"];
   /** The budget for a conflict on this pass's main and files. */
   rebaseBudget: RebaseBudget;
   ciFixes: number;
@@ -82,6 +99,11 @@ export type SerialMergeStep =
   | { kind: "unreadable"; message: string }
   /** Closeout runs on `head` before the lane may merge it. `rebased` when the lane just made it. */
   | { kind: "reverify"; head: string; base: string; rebased: boolean }
+  /**
+   * `ci` or `overlap`: the lane rebased an accepted head into `head`. Closeout's acceptance carries
+   * to it, and it merges once its CI is green.
+   */
+  | { kind: "carry"; head: string; base: string; message: string }
   | { kind: "return"; reason: "rebase-conflict" | "ci-failed" }
   | { kind: "ask_ci" }
   | { kind: "ask_conflict"; message: string }
@@ -95,6 +117,7 @@ export function serialMergeStep(facts: SerialMergeFacts): {
   const keepsPlace =
     next.kind === "unreadable" ||
     next.kind === "reverify" ||
+    next.kind === "carry" ||
     (next.kind === "wait" && next.reason === "ci");
   return { step: next, leaveQueue: facts.queued && !keepsPlace };
 }
@@ -105,7 +128,14 @@ function step(facts: SerialMergeFacts): SerialMergeStep {
     case "merged":
       return { kind: "merged" };
     case "rebased":
-      return { kind: "reverify", head: turn.head, base: turn.base, rebased: true };
+      return turn.accepted && facts.mainMoved !== "closeout"
+        ? {
+            kind: "carry",
+            head: turn.head,
+            base: turn.base,
+            message: carriedMessage(facts.mainMoved, turn.base, turn.pull),
+          }
+        : { kind: "reverify", head: turn.head, base: turn.base, rebased: true };
     case "blocked":
       return blocked(facts, turn.block, turn.pull);
     case "stopped": {
@@ -119,6 +149,22 @@ function step(facts: SerialMergeFacts): SerialMergeStep {
       return { kind: "failed", message: result.message ?? result.outcome };
     }
   }
+}
+
+function carriedMessage(
+  mainMoved: TaskMergeSettings["mainMoved"],
+  base: string,
+  pull: PullFacts,
+): string {
+  const updated = `Branch updated onto main ${base.slice(0, 7)}, waiting for CI.`;
+  if (mainMoved !== "overlap")
+    return `${updated} Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
+  if (pull.upToDateRule)
+    return `${updated} GitHub requires branches to be up to date before merging, so Paws updates the branch and waits for CI even when main changed other files. Turn off "Require branches to be up to date before merging" for the base branch to merge without an update.`;
+  const shared = pull.shared ?? [];
+  if (shared.length === 0) return updated;
+  const listed = shared.slice(0, 5).join(", ") + (shared.length > 5 ? ", …" : "");
+  return `Main changed ${listed}, which this pull request changes too. ${updated}`;
 }
 
 function blocked(facts: SerialMergeFacts, block: LaneBlock, pull: PullFacts): SerialMergeStep {

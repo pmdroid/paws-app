@@ -1,7 +1,7 @@
 import { ask as rawAsk } from "../questions";
 import type { Database } from "bun:sqlite";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -82,7 +82,7 @@ export function pendingCi(): CheckNodes {
 
 export async function mergeHarness(
   options: {
-    settings?: Partial<Pick<TaskMergeSettings, "order">>;
+    settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
     queue?: FakeMergeQueue;
   } = {},
 ) {
@@ -111,7 +111,7 @@ export async function mergeHarness(
   const completed: string[] = [];
   const settings: Pick<TaskMergeSettings, "order" | "mainMoved"> = {
     order: options.settings?.order ?? "ci-green",
-    mainMoved: "closeout",
+    mainMoved: options.settings?.mainMoved ?? "closeout",
   };
   const state = {
     ci: (_head: string): CheckNodes | undefined => undefined,
@@ -122,6 +122,9 @@ export async function mergeHarness(
     ciFixAttempts: 3,
     stopped: false,
     orders: new Map<string, TaskMergeSettings["order"]>(),
+    /** GitHub's "Require branches to be up to date before merging" on main. */
+    upToDateRule: false,
+    packages: [] as string[],
   };
   let jobId = 0;
 
@@ -149,6 +152,16 @@ export async function mergeHarness(
         body.data.repository.pullRequest.headRefOid = state.pullHead(variables.head);
         return { status: 200, body };
       }
+      if (state.upToDateRule && req.method === "GET" && req.path.includes("/rules/branches/main"))
+        return {
+          status: 200,
+          body: [
+            {
+              type: "required_status_checks",
+              parameters: { strict_required_status_checks_policy: true },
+            },
+          ],
+        };
       const required = fakeRequiredChecks(req);
       if (required) return required;
       if (req.method === "PUT" && req.path.endsWith("/merge")) {
@@ -173,7 +186,9 @@ export async function mergeHarness(
     await exec("git", ["clone", "-q", bare, worktree]);
     await identity(worktree);
     await git(worktree, "checkout", "-qb", `paws/${id}`);
-    await writeFile(path.join(worktree, change.file ?? `${id}.txt`), change.content ?? `${id}\n`);
+    const file = path.join(worktree, change.file ?? `${id}.txt`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, change.content ?? `${id}\n`);
     await git(worktree, "add", ".");
     await git(worktree, "commit", "-qm", `${id} change`);
     await git(worktree, "push", "-q", "origin", `HEAD:paws/${id}`);
@@ -238,6 +253,7 @@ export async function mergeHarness(
 
   async function moveMain(file: string, content: string): Promise<string> {
     await git(seed, "pull", "-q", "--ff-only", "origin", "main");
+    await mkdir(path.dirname(path.join(seed, file)), { recursive: true });
     await writeFile(path.join(seed, file), content);
     await git(seed, "add", ".");
     await git(seed, "commit", "-qm", `main changes ${file}`);
@@ -287,6 +303,7 @@ export async function mergeHarness(
         resolved: {},
       }),
       policyDigest: () => state.policyDigest,
+      packages: () => state.packages,
       assertReady: async () => {},
       completed: () => completed.push(id),
     };
