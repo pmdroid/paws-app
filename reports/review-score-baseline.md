@@ -1,75 +1,85 @@
 # Reviewer score: independent-review
 
-Generated 2026-10-27T03:54:44.310Z by `bun scripts/review-score.ts`. See [Reviewer score](../docs/closeout.md#reviewer-score).
+Generated 2026-10-27T04:19:45.271Z by `bun scripts/review-score.ts`. See [Reviewer score](../docs/closeout.md#reviewer-score).
 
-| Setting                  | Value                                                         |
-| ------------------------ | ------------------------------------------------------------- |
-| Skill                    | `.agents/skills/review-paws/SKILL.md` (sha256 `3fb91d9be4d2`) |
-| Model                    | `gpt-6.1-sol`, effort `medium`                                |
-| Scope                    | `diff`                                                        |
-| failOn                   | `P1`                                                          |
-| Caught when              | a finding at or above `P1` is within 5 lines of the bug       |
-| Clean pull requests      | quiet for 7 days after the merge                              |
-| Price per million tokens | not set (pass --price)                                        |
+| Setting                  | Value                                                                   |
+| ------------------------ | ----------------------------------------------------------------------- |
+| Skill                    | `.agents/skills/review-paws/SKILL.md` (sha256 `3fb91d9be4d2`)           |
+| Model                    | `gpt-6.1-sol`, effort `medium`                                          |
+| Scope                    | `diff`                                                                  |
+| failOn                   | `P1`                                                                    |
+| Caught when              | a finding at or above `P1` is within 5 lines of the bug                 |
+| Clean pull requests      | 4 Paws squashes, quiet for 7 days; 12 merged by hand, quiet for 14 days |
+| Price per million tokens | not set (pass --price)                                                  |
 
 ## Summary
 
-| Measure                                       | Value                                   |
-| --------------------------------------------- | --------------------------------------- |
-| Recall, confirmed escapes                     | 0 of 14 (0%)                            |
-| Recall, likely escapes                        | 0 of 2 (0%)                             |
-| Escapes rejected, but not at the bug          | 4                                       |
-| Escapes found at the bug below failOn         | 1                                       |
-| False positives, clean pull requests rejected | 0 of 4 (0%)                             |
-| Reviews that recorded no findings (left out)  | 0                                       |
-| Time per review                               | median 36 s, mean 39 s                  |
-| Tokens, all 20 reviews                        | 838,353 in (420,864 cached), 36,131 out |
-| Cost                                          | not priced                              |
+| Measure                                       | Value                                     |
+| --------------------------------------------- | ----------------------------------------- |
+| Recall, confirmed escapes                     | 0 of 14 (0%)                              |
+| Recall, likely escapes                        | 0 of 2 (0%)                               |
+| Escapes rejected, but not at the bug          | 1                                         |
+| Escapes found at the bug below failOn         | 0                                         |
+| False positives, clean pull requests rejected | 2 of 16 (13%)                             |
+| False positives, Paws squashes                | 0 of 4 (0%)                               |
+| False positives, merged by hand               | 2 of 12 (17%)                             |
+| Reviews that recorded no findings (left out)  | 0                                         |
+| Time per review                               | median 23 s, mean 29 s                    |
+| Tokens, all 32 reviews                        | 1,158,726 in (584,064 cached), 41,419 out |
+| Cost                                          | not priced                                |
 
 ## Escapes
 
 | Case      | Confidence | Diff      | Outcome            | Near the bug | Time | Tokens  | Blocking findings                       |
 | --------- | ---------- | --------- | ------------------ | ------------ | ---- | ------- | --------------------------------------- |
-| 579-655   | confirmed  | squash    | missed             | –            | 28 s | 30,507  | –                                       |
-| 673-678   | confirmed  | squash    | missed             | –            | 28 s | 32,609  | –                                       |
-| 707-791   | confirmed  | candidate | missed             | –            | 11 s | 23,492  | –                                       |
-| 709-779   | confirmed  | candidate | rejected elsewhere | P2           | 83 s | 47,709  | P1 `src/web/src/client/skills.ts:43`    |
-| 724-781   | confirmed  | candidate | missed             | –            | 33 s | 62,536  | –                                       |
-| 735-877   | confirmed  | squash    | rejected elsewhere | –            | 68 s | 35,786  | P1 `src/runner-execution/skills.ts:174` |
-| 927-929   | confirmed  | squash    | missed             | –            | 63 s | 62,962  | –                                       |
-| 941-955   | confirmed  | squash    | missed             | –            | 26 s | 34,226  | –                                       |
-| 973-983   | confirmed  | squash    | missed             | –            | 19 s | 25,605  | –                                       |
-| 978-982   | confirmed  | squash    | missed             | –            | 16 s | 29,604  | –                                       |
-| 985-989   | confirmed  | squash    | rejected elsewhere | –            | 75 s | 144,076 | P1 `src/loop/orchestrator.ts:1674`      |
-| 990-994   | confirmed  | squash    | missed             | –            | 54 s | 71,540  | –                                       |
-| 732-834   | confirmed  | candidate | missed             | –            | 25 s | 28,078  | –                                       |
-| 1006-1015 | confirmed  | squash    | rejected elsewhere | –            | 40 s | 83,150  | P1 `src/runner-backend/index.ts:843`    |
-| 783-974   | likely     | candidate | missed             | –            | 50 s | 29,555  | –                                       |
-| 715-851   | likely     | squash    | missed             | –            | 38 s | 26,822  | –                                       |
+| 579-655   | confirmed  | squash    | missed             | –            | 45 s | 31,122  | –                                       |
+| 673-678   | confirmed  | squash    | missed             | –            | 42 s | 65,030  | –                                       |
+| 707-791   | confirmed  | candidate | missed             | –            | 21 s | 24,014  | –                                       |
+| 709-779   | confirmed  | candidate | missed             | –            | 67 s | 46,811  | –                                       |
+| 724-781   | confirmed  | candidate | missed             | –            | 22 s | 31,338  | –                                       |
+| 735-877   | confirmed  | squash    | rejected elsewhere | –            | 61 s | 35,638  | P1 `src/runner-execution/skills.ts:175` |
+| 927-929   | confirmed  | squash    | missed             | –            | 46 s | 60,370  | –                                       |
+| 941-955   | confirmed  | squash    | missed             | –            | 21 s | 34,194  | –                                       |
+| 973-983   | confirmed  | squash    | missed             | –            | 17 s | 25,567  | –                                       |
+| 978-982   | confirmed  | squash    | missed             | –            | 13 s | 29,418  | –                                       |
+| 985-989   | confirmed  | squash    | missed             | –            | 81 s | 144,314 | –                                       |
+| 990-994   | confirmed  | squash    | missed             | –            | 37 s | 36,077  | –                                       |
+| 732-834   | confirmed  | candidate | missed             | –            | 51 s | 57,723  | –                                       |
+| 1006-1015 | confirmed  | squash    | missed             | –            | 49 s | 84,221  | –                                       |
+| 783-974   | likely     | candidate | missed             | –            | 33 s | 28,975  | –                                       |
+| 715-851   | likely     | squash    | missed             | –            | 35 s | 26,960  | –                                       |
 
 ## Clean pull requests
 
-| Case      | Quiet days | Diff   | Outcome | Time | Tokens | Blocking findings |
-| --------- | ---------- | ------ | ------- | ---- | ------ | ----------------- |
-| clean-544 | 7          | squash | passed  | 16 s | 20,412 | –                 |
-| clean-549 | 7          | squash | passed  | 39 s | 27,723 | –                 |
-| clean-552 | 7          | squash | passed  | 36 s | 21,665 | –                 |
-| clean-560 | 7          | squash | passed  | 37 s | 36,427 | –                 |
+| Case      | Author | Quiet days | Diff      | Outcome  | Time | Tokens | Blocking findings                      |
+| --------- | ------ | ---------- | --------- | -------- | ---- | ------ | -------------------------------------- |
+| clean-544 | paws   | 7          | squash    | passed   | 13 s | 20,580 | –                                      |
+| clean-549 | paws   | 7          | squash    | passed   | 41 s | 27,845 | –                                      |
+| clean-552 | paws   | 7          | squash    | passed   | 17 s | 20,781 | –                                      |
+| clean-560 | paws   | 7          | squash    | passed   | 33 s | 36,434 | –                                      |
+| clean-8   | human  | 14         | candidate | rejected | 24 s | 49,829 | P1 `install/closeout-manifest.json:13` |
+| clean-85  | human  | 14         | candidate | passed   | 8 s  | 22,836 | –                                      |
+| clean-128 | human  | 14         | candidate | passed   | 32 s | 28,484 | –                                      |
+| clean-165 | human  | 14         | candidate | passed   | 18 s | 45,098 | –                                      |
+| clean-130 | human  | 14         | candidate | passed   | 12 s | 21,894 | –                                      |
+| clean-178 | human  | 14         | candidate | passed   | 10 s | 21,458 | –                                      |
+| clean-190 | human  | 14         | candidate | passed   | 9 s  | 19,014 | –                                      |
+| clean-218 | human  | 14         | candidate | passed   | 9 s  | 25,610 | –                                      |
+| clean-238 | human  | 14         | candidate | rejected | 34 s | 30,382 | P1 `src/workspace/runtime.ts:12`       |
+| clean-247 | human  | 14         | candidate | passed   | 14 s | 25,146 | –                                      |
+| clean-267 | human  | 14         | candidate | passed   | 9 s  | 23,101 | –                                      |
+| clean-285 | human  | 14         | candidate | passed   | 8 s  | 19,881 | –                                      |
 
 ## Findings
 
-### 709-779 (rejected elsewhere)
-
-- **P1** `src/web/src/client/skills.ts:43`: Missing runner integration: the UI says registered skills are installed before every run, but the change only stores bundles and database pins and exposes settings operations. No execution or runner path receives those pins or bundles. Adding, updating, re-scoping, or removing a skill therefore does not change what agents load. The removal notices in src/settings/skills.ts and src/web/src/client/skills.ts also promise an uninstall that is not implemented.
-
 ### 735-877 (rejected elsewhere)
 
-- **P1** `src/runner-execution/skills.ts:174`: Symlink traversal: removeFolder renames and recursively deletes a target without checking its parent directories. The agent owns the home’s skill directories and can replace .claude/skills, .codex/skills, or .grok/skills with a symlink to another directory. When Paws removes a previously installed skill or removes an agent from its configuration, the privileged daemon can then delete a directory outside the agent home.
+- **P1** `src/runner-execution/skills.ts:175`: Unchecked parent symlink permits privileged directory deletion. removeFolder constructs its target through agent-writable parent directories without verifying those parents. Both skill removal and removal of an agent from a skill call this function without installFolder's directory checks. An agent can replace .claude/skills or another agent's skills directory with a symlink, causing the privileged daemon to move and recursively delete a directory outside the agent home.
 
-### 985-989 (rejected elsewhere)
+### clean-8 (rejected)
 
-- **P1** `src/loop/orchestrator.ts:1674`: Missing execution authorization check: removing admission.canStart from the execution path allows a queued task to launch after execution permission is revoked. A scheduler reservation can already exist when permission changes, and the new claim gate checks only the reservation, item state, cancellation flag, and live runs. Revalidate execution permission before launching the task so an existing reservation cannot bypass a subsequent restriction.
+- **P1** `install/closeout-manifest.json:13`: Unusable release pins: all four platform assets use hashes of placeholder strings rather than Closeout binaries. With the default manifest, installCloseout cannot install Closeout: the documented absent release assets fail downloading, and a real binary supplied through offlineFile fails checksum verification. Replace every placeholder asset digest with the digest of an available binary before exposing this as a working installer.
 
-### 1006-1015 (rejected elsewhere)
+### clean-238 (rejected)
 
-- **P1** `src/runner-backend/index.ts:843`: Incorrect conditional precedence prevents restoration on a capable target runner. The restore session ID is selected only when the existing session-resume condition is false. When that condition is true, earlierSession instead searches the target runner, which may have no prior session for this run. The command then includes restoreSession with an undefined or different resumeSessionId, violating the newly added RunnerCommandSchema refinement and preventing dispatch. Prefer the eligible restore session ID before consulting earlierSession.
+- **P1** `src/workspace/runtime.ts:12`: Missing production wiring: slackIdentities is optional, but the candidate never constructs createSlackIdentityReads or passes it into production workspace access. Only the test fixtures supply it. Consequently, production Slack synchronization always returns without looking up users, and the account-links UI reports Slack as disconnected even when Slack credentials are installed. Wire the credential-backed adapter into production workspace initialization.

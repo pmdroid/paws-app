@@ -267,8 +267,8 @@ After an incident, or when a candidate holds up:
 `scripts/review-score.ts` replays a review item from `.agents/closeout.yaml` on known cases and writes a report to `reports/`:
 
 - **Recall.** Each case in `evals/review-escapes.jsonl` counts as caught when the review has a finding at or above `failOn`, on a line the change touched, within five lines (`--tolerance`) of the case's `file` and `line`. A blocking finding somewhere else is listed as "rejected elsewhere", not as caught. `likely` cases are scored apart from `confirmed` ones. The most severe finding near the bug at any severity is recorded too, so the effect of a lower `failOn` can be read off a report.
-- **False positives.** Each pull request in `evals/review-clean.jsonl` counts as a false positive when the review would have rejected it.
-- **Time and cost per review.** Wall time and the tokens Codex reports, including the re-ask. Cost needs a price: `--price input,cached,output` in USD per million tokens.
+- **False positives.** Each pull request in `evals/review-clean.jsonl` counts as a false positive when the review would have rejected it. The report gives the rate for Paws squashes and for pull requests merged by hand apart, and both together.
+- **Time and cost per review.** Wall time and the tokens Codex reports, including the re-ask. Cost needs a price: `--price input,cached,output` in USD per million tokens. Without one the report says "not priced". The baseline is not priced, because Codex runs on a ChatGPT sign-in here and has no per-token bill.
 
 The replay uses Paws's own reviewer, so the prompt, the finding format, the re-ask and the pre-existing filter are the gate's. It takes the item's `skill` (read from the working tree, so an uncommitted edit is scored), `scope` and `failOn`, and runs the model through `codex exec` in a read-only checkout of the case's head. The model is Codex's default unless `--model` names one; set `--model` and `--effort` to what Settings › Agents uses for the reviewer. A case replays `original.base..original.head` when both commits are in the clone. Otherwise it replays the squash commit on `main`, which is the patch as merged, and the report's Diff column says `squash`.
 
@@ -285,11 +285,12 @@ A run without `--baseline` adds a "Compared with the baseline" section: the sett
 
 ### Clean pull requests
 
-A clean pull request is a Paws squash that no later fix or revert touched for `quietDays` after its merge, found the same way as escape candidates: `git blame` from every later pull request. Each line of `evals/review-clean.jsonl` pins one, so every rescore uses the same set as the baseline:
+A clean pull request is one that no later fix or revert touched for `quietDays` after its merge, found the same way as escape candidates: `git blame` from every later pull request. `author` is `paws` for a Paws squash, which replays the candidate its Closeout trailer names, or `human` for a pull request merged by hand, which replays its merge commit against the first parent. Each line of `evals/review-clean.jsonl` pins one, so every rescore uses the same set as the baseline:
 
 ```json
 {
   "id": "clean-544",
+  "author": "paws",
   "original": { "pr": 544, "title": "…", "base": "f624…", "head": "a378…", "mergeCommit": "550a…" },
   "mergedAt": "2026-10-18T02:02:53+00:00",
   "changedLines": 212,
@@ -298,10 +299,11 @@ A clean pull request is a Paws squash that no later fix or revert touched for `q
 }
 ```
 
-`--pick-clean` prints candidates and runs no model. It keeps Paws squashes with a Closeout trailer, at least `--min-lines` changed lines (default 20, without lockfiles and snapshots), merged at least `--quiet-days` ago (default 7), and not the original of an escape, then spreads `--count` of them (default 16) over the range:
+`--pick-clean` prints candidates and runs no model. It keeps pull requests by `--author` (`paws`, the default, needs a Closeout trailer), merged between `--from` and `--to` when given and at least `--quiet-days` ago (default 7), with at least `--min-lines` changed lines (default 20, without lockfiles and snapshots), and not the original of an escape. It then spreads `--count` of them (default 16) over the range:
 
 ```sh
 bun scripts/review-score.ts --pick-clean --quiet-days 7 > /tmp/clean.jsonl
+bun scripts/review-score.ts --pick-clean --author human --from 2026-10-09 --to 2026-10-12 --quiet-days 14 --count 12
 ```
 
-The set uses 7 quiet days, not 14, because the first Paws squash on `main` is from 2026-10-17. On 2026-10-27 only #522 to #582 had 7 days behind them, and four of those were never touched by a fix, so the baseline has four clean pull requests. Re-pin with more cases and 14 quiet days once enough squashes qualify, and write a new baseline when the set changes.
+Until the re-pin, the set is 4 Paws squashes with 7 quiet days and 12 pull requests merged by hand with 14. The first Paws squash on `main` is from 2026-10-17. On 2026-10-27 only #522 to #582 had 7 days behind them, and a fix touched all but four of those. The 12 hand-merged pull requests are from 2026-10-09 to 2026-10-12 and never went through Closeout, but the reviewer reads only the diff, so they still measure noise. Re-pin to 16 Paws squashes with 14 quiet days once enough qualify, and write a new baseline when the set changes.
