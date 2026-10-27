@@ -1967,6 +1967,9 @@ if (import.meta.main) {
   try {
     await paws.ready;
   } catch (caughtError5) {
+    // A signal during startup stops what `ready` waits on; that shutdown chooses the exit code.
+    if (exiting) await new Promise<never>(() => {});
+    exiting = true;
     journalCaught(caughtError5, "Paws startup failed.", null);
     await shutdownPaws(paws, 1);
     process.exit(1);
