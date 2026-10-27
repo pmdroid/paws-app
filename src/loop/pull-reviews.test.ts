@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { StoredReviewFinding } from "../closeout";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
@@ -27,6 +28,7 @@ import { advanceMerge, type MergeCapabilities } from "../merge";
 import { findOpenQuestion } from "../questions";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import {
+  CONTRADICTION_INSTRUCTION,
   REVIEW_FIX_INSTRUCTION,
   handlePullReview,
   type PullReviewCapabilities,
@@ -66,6 +68,7 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
   const tokenProvider = { mode: "app" as const, tokenFor: async () => "token" };
   let busy = false;
   let limit = 3;
+  let findings: StoredReviewFinding[] = [];
   const caps: PullReviewCapabilities = {
     now: () => 10,
     busy: () => busy,
@@ -86,6 +89,7 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
         tokenProvider,
       }),
     fixRoundLimit: () => limit,
+    closeoutFindings: async () => findings,
     session: (item) => item.sessionKey,
     flush: async () => {},
   };
@@ -134,6 +138,7 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
     deliver,
     setBusy: (value: boolean) => (busy = value),
     setLimit: (value: number) => (limit = value),
+    setFindings: (value: StoredReviewFinding[]) => (findings = value),
   };
 }
 
@@ -174,6 +179,30 @@ describe("changes-requested reviews", () => {
     expect(reviewJobs(db)).toHaveLength(1);
     expect(resumeJobs(db)).toHaveLength(1);
     expect(github.reads).toBe(1);
+  });
+
+  test("a review thread on a file an open Closeout finding names is quoted beside it", async () => {
+    const { db, caps, deliver, setFindings } = setup();
+    setFindings([
+      {
+        reviewId: "independent-review",
+        severity: "P2",
+        location: "src/rank.ts:14",
+        path: "src/rank.ts",
+        explanation: "Ties must keep insertion order.",
+        status: "open",
+      },
+    ]);
+    deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    const { handoff } = resumeJobs(db)[0]!.payload as { handoff: string };
+    expect(handoff).toContain("- open, P2 at `src/rank.ts:14`: Ties must keep insertion order.");
+    expect(handoff).toContain(
+      '- @rev at `src/rank.ts:12`: "This sorts the wrong way round."\n  Closeout (open) at `src/rank.ts:14`: "Ties must keep insertion order."',
+    );
+    expect(handoff).not.toContain('Typo here."');
+    expect(handoff).toContain(CONTRADICTION_INSTRUCTION);
+    expect(handoff).toEndWith(REVIEW_FIX_INSTRUCTION);
   });
 
   test("wait for a running turn or evaluation, and hold the merge until the restart", async () => {
