@@ -865,6 +865,126 @@ describe("live status provider", () => {
     expect(statusIntegrity(parsed.snapshot)).toEqual([]);
   });
 
+  test("the item detail reads each review round's findings from the stored review evidence", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const base = "d".repeat(40);
+    const pawsHome = mkdtempSync(join(tmpdir(), "paws-reviews-"));
+    homes.push(pawsHome);
+    const item = insertQueuedItem(db, {
+      id: "ENG-11",
+      title: "Reviews",
+      sessionKey: "ses_11",
+      now,
+    });
+    beginImplementRun(db, item.id, now);
+    enterMergeQueue(db, item.id, {
+      phase: "merge_queue",
+      baseSha: base,
+      wipCommit: "c".repeat(40),
+    });
+    const rounds = [
+      {
+        head: "a".repeat(40),
+        findings: [
+          {
+            severity: "P1",
+            location: "src/auth.ts:10",
+            explanation: "token leaks",
+            evidence: "e1",
+          },
+          { severity: "P2", location: "src/old.ts:4", explanation: "<b>stale</b>", evidence: "e2" },
+        ],
+        preExisting: [],
+      },
+      {
+        head: "c".repeat(40),
+        findings: [
+          {
+            severity: "P1",
+            location: "src/auth.ts:12",
+            explanation: "token leaks",
+            evidence: "e3",
+          },
+          { severity: "P2", location: "src/legacy.ts:3", explanation: "old code", evidence: "e4" },
+        ],
+        preExisting: [1],
+      },
+    ];
+    for (const [index, round] of rounds.entries()) {
+      const at = now + index * 1000;
+      const evidencePath = `evidence/policy/${round.head}/independent-review/${index + 1}.json`;
+      const file = join(pawsHome, "closeout", "evidence", item.id, evidencePath);
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(
+        file,
+        JSON.stringify({
+          specVersion: "0.1",
+          recordType: "review",
+          task: item.id,
+          itemId: "independent-review",
+          base,
+          head: round.head,
+          policyDigest: "sha256:policy",
+          attempt: index + 1,
+          findings: round.findings,
+          artifacts: [],
+        }),
+      );
+      const identity = { taskId: item.id, base, head: round.head, policyDigest: "sha256:policy" };
+      upsertCloseoutStep(
+        db,
+        item.id,
+        { ...identity, policyPath: null },
+        {
+          id: "independent-review",
+          kind: "review",
+          state: "failed",
+          command: "",
+          detail: "finding at P1 meets failOn P1",
+          attempt: index + 1,
+          timeoutSeconds: null,
+          startedAt: at,
+          finishedAt: at,
+          exitCode: null,
+          timedOut: false,
+          timeoutReason: null,
+          truncated: false,
+          logPath: null,
+          evidencePath,
+          findings: null,
+          ordinal: -1,
+          failOn: "P1",
+          preExisting: round.preExisting,
+        },
+        at,
+      );
+      finishCloseoutProgress(db, item.id, { ...identity, policyPath: null }, "rejected", at);
+    }
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000), pawsHome });
+    // Findings are only in the item detail, never in the list.
+    expect(JSON.stringify(provider.snapshot())).not.toContain("token leaks");
+    const [review] = provider.item("ENG-11")!.verdicts[0]!.reviews!;
+    expect(review!.id).toBe("independent-review");
+    const mark = (finding: {
+      location: string;
+      preExisting: boolean;
+      blocking: boolean;
+      since: string | null;
+    }) => [finding.location, finding.preExisting, finding.blocking, finding.since];
+    expect(review!.rounds[0]!.findings.map(mark)).toEqual([
+      ["src/auth.ts:10", false, true, null],
+      ["src/old.ts:4", false, false, null],
+    ]);
+    const latest = review!.rounds[1]!;
+    expect(latest.failOn).toBe("P1");
+    expect(latest.findings.map(mark)).toEqual([
+      ["src/auth.ts:12", false, true, "open"],
+      ["src/legacy.ts:3", true, false, "new"],
+    ]);
+    expect(latest.fixed.map((finding) => finding.explanation)).toEqual(["<b>stale</b>"]);
+  });
+
   test("the item detail carries one issue's Closeout attempts without check logs", async () => {
     const db = database();
     const now = 1_700_000_000_000;
