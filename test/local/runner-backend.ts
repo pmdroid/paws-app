@@ -883,6 +883,86 @@ export async function probeRunnerBackend(
       true,
       { reviewText: text, implementationFetches: fetched },
     );
+    // The live gate's review command goes only to a runner release that runs it.
+    const reviewBase = "b".repeat(40);
+    const reviewCommandInput = (record: ReturnType<typeof item>) =>
+      input(record, {
+        role: "reviewer",
+        profile: { agent: "codex", model: "review-model" },
+        readOnly: true,
+        reviewCommand: { base: reviewBase },
+      });
+    const refusedReviews: string[] = [];
+    for (const overrides of [
+      { role: "implementer" as const },
+      {
+        role: "reviewer" as const,
+        readOnly: true,
+        profile: { agent: "codex" as const, model: null },
+      },
+    ]) {
+      const record = item();
+      await backend
+        .forItem(record.id)(input(record, { ...overrides, reviewCommand: { base: reviewBase } }))
+        .catch((error: Error) => refusedReviews.push(error.message));
+    }
+    db.run(
+      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+      [runnerId, "0.1.46", Date.now()],
+    );
+    const oldRunner = item();
+    const tooOld = await backend
+      .forItem(oldRunner.id)(reviewCommandInput(oldRunner))
+      .then(
+        () => "",
+        (error: Error) => error.message,
+      );
+    db.run(
+      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+      [runnerId, "0.1.47", Date.now()],
+    );
+    const commandReviewer = item();
+    let commandText = "";
+    const commandReviewed = backend.forItem(commandReviewer.id)({
+      ...reviewCommandInput(commandReviewer),
+      onEvent: (e) => {
+        if (
+          e.type === "session_update" &&
+          e.update.sessionUpdate === "agent_message_chunk" &&
+          e.update.content.type === "text"
+        )
+          commandText += e.update.content.text;
+      },
+    });
+    let commandReview = await next();
+    while (commandReview.type !== "review" || commandReview.itemId !== commandReviewer.id)
+      commandReview = await next();
+    const commandGrant = work.issueGrant({
+      runnerId,
+      runId: commandReview.runId,
+      commandId: commandReview.id,
+      generation: commandReview.generation,
+    });
+    results.submit({
+      runnerId,
+      runId: commandReview.runId,
+      generation: commandReview.generation,
+      token: commandGrant.token,
+      result: { ...result(commandReview, "reviewer"), reviewText: "[]" },
+    });
+    await commandReviewed;
+    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    observe(
+      "a review command is sent as a review on its runner with the diff base, and only to a runner release that runs it",
+      commandReview.reviewCommand?.base === reviewBase &&
+        commandReview.repository.baseSha === head &&
+        commandText === "[]" &&
+        /needs runner 0\.1\.47 or later/.test(tooOld) &&
+        refusedReviews.length === 2 &&
+        /read-only reviewer work/.test(refusedReviews[0]!) &&
+        /Claude or Codex model/.test(refusedReviews[1]!),
+      { reviewCommand: commandReview.reviewCommand, commandText, tooOld, refusedReviews },
+    );
     const transcriptObjects = createFakeRunnerTranscriptObjects();
     const transcripts = createRunnerTranscripts({ db, work, objects: transcriptObjects });
     let cancelDuringDownload = false;
