@@ -82,94 +82,124 @@ export function createReviewer(runner: ReviewCommandRunner, options: ReviewerOpt
         journalCaught(error, "reviewer.review.assertCommit", null);
         return invalid(candidate, blank, messageOf(error));
       }
-      let schemaDir: string;
       let checkout: Awaited<ReturnType<typeof createCandidateCheckout>>;
-      const schema = JSON.stringify(findingsJsonSchema());
       try {
-        schemaDir = await mkdtemp(join(tmpdir(), "paws-review-schema-"));
+        checkout = await createCandidateCheckout(
+          request.worktree,
+          request.head,
+          request.checkoutExclusions,
+        );
       } catch (error) {
-        journalCaught(error, "reviewer.review.mkdtemp", null);
+        journalCaught(error, "reviewer.review.createCandidateCheckout", null);
         return invalid(candidate, blank, messageOf(error));
       }
       try {
-        const schemaPath = join(schemaDir, "findings.schema.json");
-        await writeFile(schemaPath, schema);
-        try {
-          checkout = await createCandidateCheckout(
-            request.worktree,
-            request.head,
-            request.checkoutExclusions,
-          );
-        } catch (error) {
-          journalCaught(error, "reviewer.review.createCandidateCheckout", null);
-          return invalid(candidate, blank, messageOf(error));
-        }
-        try {
-          return await runCommand({
-            runner,
-            options,
-            request,
-            candidate,
-            cwd: checkout.path,
-            schemaPath,
-            schema,
-            evaluator,
-            attempt,
-          });
-        } finally {
-          await checkout.remove();
-        }
-      } catch (error) {
-        journalCaught(error, "reviewer.review.runCommand", null);
-        return invalid(candidate, blank, messageOf(error));
+        const outcome = await runReviewCommand(runner, {
+          agent: options.agent,
+          ...(options.command !== undefined ? { command: options.command } : {}),
+          model: options.model,
+          base: request.base,
+          head: request.head,
+          cwd: checkout.path,
+        });
+        if (!outcome.ok) return invalid(candidate, outcome.producer, outcome.reason);
+        return recorded(
+          { request, candidate, evaluator, attempt },
+          outcome.producer,
+          outcome.findings,
+        );
       } finally {
-        await rm(schemaDir, { recursive: true, force: true });
+        await checkout.remove();
       }
     },
   };
 }
 
-type CommandInput = {
-  runner: ReviewCommandRunner;
-  options: ReviewerOptions;
-  request: ReviewRequest;
-  candidate: CandidateIdentity;
+export type ReviewCommandOptions = {
+  agent: ReviewCommandAgent;
+  model: string;
+  /** Executable to start. Defaults to `codex` or `claude`. */
+  command?: string;
+  base: string;
+  head: string;
+  /** Checkout at `head`. */
   cwd: string;
-  schemaPath: string;
-  schema: string;
-  evaluator: ProducerIdentity;
-  attempt: number;
 };
 
-async function runCommand(input: CommandInput): Promise<ReviewRunResult> {
+/** Findings from the review command, or why it produced none. Either way, who produced them. */
+export type ReviewCommandOutcome =
+  | { ok: true; producer: ReviewProducer; findings: Finding[] }
+  | { ok: false; producer: ReviewProducer; reason: string };
+
+/**
+ * Runs the agent's review command of `base..head` in `cwd` and parses its findings.
+ * A final message that does not parse gets one re-ask in the same review session.
+ * The findings schema is written to a temporary file outside the checkout.
+ */
+export async function runReviewCommand(
+  runner: ReviewCommandRunner,
+  options: ReviewCommandOptions,
+): Promise<ReviewCommandOutcome> {
+  const blank = blankProducer(options);
+  let schemaDir: string;
+  try {
+    assertCommit(options.base, "base");
+    assertCommit(options.head, "head");
+    schemaDir = await mkdtemp(join(tmpdir(), "paws-review-schema-"));
+  } catch (error) {
+    journalCaught(error, "reviewer.runReviewCommand.prepare", null);
+    return { ok: false, producer: blank, reason: messageOf(error) };
+  }
+  try {
+    const schema = JSON.stringify(findingsJsonSchema());
+    const schemaPath = join(schemaDir, "findings.schema.json");
+    await writeFile(schemaPath, schema);
+    return await runCommand({ runner, options, schemaPath, schema });
+  } catch (error) {
+    journalCaught(error, "reviewer.runReviewCommand.run", null);
+    return { ok: false, producer: blank, reason: messageOf(error) };
+  } finally {
+    await rm(schemaDir, { recursive: true, force: true });
+  }
+}
+
+type CommandInput = {
+  runner: ReviewCommandRunner;
+  options: ReviewCommandOptions;
+  schemaPath: string;
+  schema: string;
+};
+
+async function runCommand(input: CommandInput): Promise<ReviewCommandOutcome> {
   const { options } = input;
+  const command = options.command !== undefined ? { command: options.command } : {};
   const first = await invoke(
     input,
     reviewArgv({
       agent: options.agent,
-      ...(options.command !== undefined ? { command: options.command } : {}),
+      ...command,
       model: options.model,
-      base: input.request.base,
-      head: input.request.head,
+      base: options.base,
+      head: options.head,
       schemaPath: input.schemaPath,
       schema: input.schema,
     }),
   );
-  if (!first.ok) return invalid(input.candidate, first.producer, first.reason);
+  if (!first.ok) return first;
   const firstParsed = parseFindings(first.reply.text);
-  if (firstParsed.ok) return recorded(input, first.producer, firstParsed.findings);
+  if (firstParsed.ok) return { ok: true, producer: first.producer, findings: firstParsed.findings };
   if (!first.reply.session) {
-    return invalid(
-      input.candidate,
-      first.producer,
-      `${firstParsed.reason}; the review command reported no session to re-ask`,
-    );
+    return {
+      ok: false,
+      producer: first.producer,
+      reason: `${firstParsed.reason}; the review command reported no session to re-ask`,
+    };
   }
   const second = await invoke(
     input,
     reaskArgv({
       agent: options.agent,
-      ...(options.command !== undefined ? { command: options.command } : {}),
+      ...command,
       model: options.model,
       session: first.reply.session,
       schemaPath: input.schemaPath,
@@ -178,10 +208,10 @@ async function runCommand(input: CommandInput): Promise<ReviewRunResult> {
     }),
     first.reply,
   );
-  if (!second.ok) return invalid(input.candidate, second.producer, second.reason);
+  if (!second.ok) return second;
   const secondParsed = parseFindings(second.reply.text);
-  if (!secondParsed.ok) return invalid(input.candidate, second.producer, secondParsed.reason);
-  return recorded(input, second.producer, secondParsed.findings);
+  if (!secondParsed.ok) return { ok: false, producer: second.producer, reason: secondParsed.reason };
+  return { ok: true, producer: second.producer, findings: secondParsed.findings };
 }
 
 type Invocation =
@@ -193,7 +223,7 @@ async function invoke(
   argv: string[],
   earlier?: ReviewCommandReply,
 ): Promise<Invocation> {
-  const result = await input.runner.run({ argv, cwd: input.cwd });
+  const result = await input.runner.run({ argv, cwd: input.options.cwd });
   const parsed = parseReviewEvents(input.options.agent, result.stdout);
   const reply: ReviewCommandReply = {
     ...parsed,
@@ -260,7 +290,10 @@ function invalid(
   return { status: "invalid", candidate, producer, reason };
 }
 
-function producerOf(reply: ReviewCommandReply, options: ReviewerOptions): ReviewProducer {
+function producerOf(
+  reply: ReviewCommandReply,
+  options: { agent: ReviewCommandAgent; model: string },
+): ReviewProducer {
   return {
     session: reply.session,
     model: reply.model ?? options.model,
@@ -268,7 +301,7 @@ function producerOf(reply: ReviewCommandReply, options: ReviewerOptions): Review
   };
 }
 
-function blankProducer(options: ReviewerOptions): ReviewProducer {
+function blankProducer(options: { agent: ReviewCommandAgent; model: string }): ReviewProducer {
   return { session: "", model: options.model, provider: reviewProvider(options.agent) };
 }
 
