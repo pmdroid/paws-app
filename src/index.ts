@@ -194,6 +194,7 @@ import {
   type RunnerCoordinator,
   type RunnerRepositoryAccessOptions,
 } from "./runner-coordinator";
+import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
 import type { RunnerTranscriptObjects } from "./runner-transcripts";
 import {
@@ -762,6 +763,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     ? createRunnerPlacement({ db, ...(parents ? { sessionActor: parents.actor } : {}) })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
+  const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({ db, available: createVmAvailable });
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
@@ -815,8 +817,18 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
       }
     : unavailableRemoteExecution();
+  // Move to another runner on the runner card: the runner hands the session over and the
+  // failover in `forItem` resumes it on another eligible runner.
+  const sessionMoves = remote
+    ? createRunnerSessionMoves({
+        db,
+        signal: sessionMovesStop.signal,
+        handOver: async (itemId, signal) => (await remote).agents.handOverItem(itemId, signal),
+      })
+    : undefined;
   async function stopRunner() {
     runnerStopping = true;
+    sessionMovesStop.abort();
     await runnerReady.catch((caughtError5) => {
       journalCaught(caughtError5, "index.stopRunner", null);
     });
@@ -873,6 +885,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             runnerControl: async (request: Request, principal: WorkspacePrincipal) =>
               (await memberVmHttp(request, principal)) ??
               (await placementBrowser(request, principal)) ??
+              (await sessionMoves?.fetch(request, principal)) ??
               (runner
                 ? await runner.browser(request, principal)
                 : Response.json({ error: "Runner control is starting." }, { status: 503 })),
