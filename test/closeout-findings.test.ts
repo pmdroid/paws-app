@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseFindings } from "../src/closeout-spec";
+import { findingsJsonSchema, parseFindings } from "../src/closeout-spec";
 
 const finding = {
   severity: "P2" as const,
@@ -23,4 +23,21 @@ test("an empty findings array after bracketed prose parses", () => {
 
 test("bracketed prose without a findings array is still rejected", () => {
   expect(parseFindings("Checked `opus[1m]` and `sonnet[1m]`.").ok).toBe(false);
+});
+
+test("the review command schema is an object, as OpenAI structured output requires", () => {
+  const schema = findingsJsonSchema() as Record<string, unknown>;
+  expect(schema.type).toBe("object");
+  expect(schema.required).toEqual(["findings"]);
+  expect(schema.additionalProperties).toBe(false);
+  expect((schema.properties as Record<string, { type: string }>).findings.type).toBe("array");
+});
+
+test("a reply shaped by the object schema parses to its findings", () => {
+  const finding = { severity: "P2", location: "src/a.ts:1", explanation: "x", evidence: "y" };
+  expect(parseFindings(JSON.stringify({ findings: [finding] }))).toEqual({
+    ok: true,
+    findings: [finding],
+  });
+  expect(parseFindings('{"findings":[]}')).toEqual({ ok: true, findings: [] });
 });
