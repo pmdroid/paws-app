@@ -51,12 +51,24 @@ export function reaskPrompt(reason: string): string {
   ].join("\n\n");
 }
 
-/** The evidence schema's finding array, as JSON Schema for a review command's final message. */
+/**
+ * JSON Schema for a review command's final message: `{ findings: [...] }`. Structured output
+ * from OpenAI and Anthropic requires an object at the top level, so the array is wrapped.
+ */
 export function findingsJsonSchema(): AnySchema {
-  return findingsSchema(evidenceSchema as unknown);
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["findings"],
+    properties: { findings: findingsSchema(evidenceSchema as unknown) },
+  };
 }
 
-function validateParsed(value: unknown): ParsedFindings {
+function validateParsed(parsed: unknown): ParsedFindings {
+  const value =
+    isRecord(parsed) && Object.keys(parsed).length === 1 && "findings" in parsed
+      ? parsed.findings
+      : parsed;
   const validate = findingsValidator();
   if (!validate(value)) return { ok: false, reason: schemaReason(validate.errors) };
   if (!Array.isArray(value) || !value.every(isFinding)) {

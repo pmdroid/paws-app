@@ -30,14 +30,19 @@ test("the review command schema is an object, as OpenAI structured output requir
   expect(schema.type).toBe("object");
   expect(schema.required).toEqual(["findings"]);
   expect(schema.additionalProperties).toBe(false);
-  expect((schema.properties as Record<string, { type: string }>).findings.type).toBe("array");
+  expect((schema.properties as Record<string, { type: string }>)["findings"]?.type).toBe("array");
 });
 
 test("a reply shaped by the object schema parses to its findings", () => {
-  const finding = { severity: "P2", location: "src/a.ts:1", explanation: "x", evidence: "y" };
-  expect(parseFindings(JSON.stringify({ findings: [finding] }))).toEqual({
+  const reported = {
+    severity: "P2" as const,
+    location: "src/a.ts:1",
+    explanation: "x",
+    evidence: "y",
+  };
+  expect(parseFindings(JSON.stringify({ findings: [reported] }))).toEqual({
     ok: true,
-    findings: [finding],
+    findings: [reported],
   });
   expect(parseFindings('{"findings":[]}')).toEqual({ ok: true, findings: [] });
 });
