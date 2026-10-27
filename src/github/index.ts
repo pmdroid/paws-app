@@ -55,6 +55,8 @@ export { readPullReview } from "./review";
 export type { PullReview } from "./review";
 export { readReviewThreads } from "./review-threads";
 export type { ReviewThread, ReviewThreadComment } from "./review-threads";
+export { listMergedPullsSince, readMergedPull, readPullComments } from "./pull-comments";
+export type { MergedPull, PullComment } from "./pull-comments";
 export type {
   FetchUpstreamMainInput,
   PullFacts,

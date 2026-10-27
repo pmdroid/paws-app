@@ -78,7 +78,7 @@ export type FakeReviewThread = {
   outdated?: boolean;
   path?: string | null;
   line?: number | null;
-  comments: { author?: string | null; body: string; reviewId?: number | null }[];
+  comments: { author?: string | null; body: string; reviewId?: number | null; url?: string }[];
 };
 
 /**
@@ -106,6 +106,7 @@ export function createFakeReviewThreads(
       },
       nodes: page.map((comment) => ({
         body: comment.body,
+        ...(comment.url ? { url: comment.url } : {}),
         author: comment.author ? { login: comment.author } : null,
         pullRequestReview: comment.reviewId == null ? null : { databaseId: comment.reviewId },
       })),

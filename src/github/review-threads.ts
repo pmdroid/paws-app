@@ -8,10 +8,14 @@ export type ReviewThreadComment = {
   body: string;
   /** The GitHub review id the comment was submitted with. */
   reviewId: number | null;
+  /** The comment's page on GitHub, when GitHub returned it. */
+  url?: string;
 };
 
-/** One unresolved review thread on a pull request, its comments oldest first. */
+/** One review thread on a pull request, its comments oldest first. */
 export type ReviewThread = {
+  /** Set when the read included resolved threads. */
+  resolved?: boolean;
   path: string | null;
   line: number | null;
   outdated: boolean;
@@ -26,6 +30,7 @@ const commentsSchema = z.object({
     z.object({
       body: z.string(),
       author: z.object({ login: z.string() }).nullable().optional(),
+      url: z.string().optional(),
       pullRequestReview: z.object({ databaseId: z.number().nullable() }).nullable().optional(),
     }),
   ),
@@ -58,7 +63,7 @@ const commentsResponseSchema = z.object({
 });
 
 const COMMENT_FIELDS = `pageInfo { hasNextPage endCursor }
-            nodes { body author { login } pullRequestReview { databaseId } }`;
+            nodes { body url author { login } pullRequestReview { databaseId } }`;
 
 const query = `query ReviewThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) {
@@ -99,12 +104,17 @@ function threadComments(comments: Comments): ReviewThreadComment[] {
     author: comment.author?.login ?? null,
     body: comment.body,
     reviewId: comment.pullRequestReview?.databaseId ?? null,
+    ...(comment.url ? { url: comment.url } : {}),
   }));
 }
 
-/** The pull request's unresolved review threads. Throws when GitHub cannot be read. */
+/**
+ * The pull request's unresolved review threads, or every thread with `includeResolved`.
+ * Throws when GitHub cannot be read.
+ */
 export async function readReviewThreads(input: {
   client: GitHubClient;
+  includeResolved?: boolean;
   owner: string;
   repo: string;
   prNumber: number;
@@ -136,7 +146,7 @@ export async function readReviewThreads(input: {
     );
     const connection = parsed.data.repository.pullRequest.reviewThreads;
     for (const node of connection.nodes) {
-      if (node.isResolved) continue;
+      if (node.isResolved && !input.includeResolved) continue;
       const comments = threadComments(node.comments);
       // A long thread continues past the first page; a review's comment can sit there.
       let more = node.comments.pageInfo;
@@ -150,6 +160,7 @@ export async function readReviewThreads(input: {
         more = rest.data.node.comments.pageInfo;
       }
       threads.push({
+        ...(input.includeResolved ? { resolved: node.isResolved } : {}),
         path: node.path ?? null,
         line: node.line ?? null,
         outdated: node.isOutdated ?? false,
