@@ -103,7 +103,7 @@ export {
   visualReviewRequirements,
   workspacePolicyFiles,
 } from "./facade";
-export { approvalsAtHead, samePatch } from "./published";
+export { approvalsAtHead, fixChangedPaths, samePatch } from "./published";
 export { decodePolicyFiles, encodePolicyFiles } from "./policy/transfer";
 export type { PolicyFilesLoad, RootFilesLoad } from "./policy/load";
 export type {

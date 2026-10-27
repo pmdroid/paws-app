@@ -4,15 +4,19 @@ import { JOB_KIND, riskLine } from "../core";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
+  deleteRiskFix,
   enqueueJobOnce,
   enqueueOutboxOnce,
   getCandidateRisk,
+  getRiskFix,
   getWorkItem,
   listLinkAsks,
   openLinkAsks,
   saveCheckpoint,
+  saveRiskFix,
   type CandidateRisk,
   type LinkAsk,
+  type RiskFix,
   type WorkItemRecord,
 } from "../db";
 import type { RiskApproval } from "../merge";
@@ -36,11 +40,20 @@ export function riskGateOn(publicUrl: string | null | undefined): boolean {
   return linkAskAvailable(publicUrl);
 }
 
+/** The files a fix changed since `approved`, and which of them a high-risk glob matched. */
+export type FixRisk = { changed: string[]; paths: string[] };
+
 /**
  * Whether head S may merge as far as its risk goes. A normal-tier head, or any head on a Paws
  * whose risk gate is off, needs nothing. A high-risk or unclassified head needs a person's
  * approval of S in Paws, or of an earlier head with the same patch against main (`samePatch`),
  * as after a rebase. A Linear reply never approves, so only `approve` decisions count.
+ *
+ * A fix Paws made after the latest approval (CI, a review, a comment) keeps that approval when
+ * none of the files the fix itself changed since the approved head is a high-risk path. A fix
+ * is commits on top of the approved patch; a rebase that changed the patch is not one and asks. The
+ * comparison is recorded for S either way: it names the approved head and why the approval
+ * carried over, or the high-risk paths the next ask lists.
  */
 export async function riskApprovalFor(
   db: Database,
@@ -50,6 +63,9 @@ export async function riskApprovalFor(
     publicUrl: string | null | undefined;
     /** Whether `approved` carries the same patch as S against `base`. */
     samePatch: (approved: string, base: string) => Promise<boolean>;
+    /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
+    fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
+    now?: number;
   },
 ): Promise<RiskApproval> {
   if (!riskGateOn(input.publicUrl)) return "not_required";
@@ -60,7 +76,56 @@ export async function riskApprovalFor(
   if (risk === null) return "missing";
   for (const ask of approvals.toReversed())
     if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
-  return "missing";
+  const latest = approvals.at(-1);
+  if (latest === undefined || input.fixRisk === undefined) return "missing";
+  const fix = await fixSinceApproval(db, {
+    itemId: input.itemId,
+    head: input.head,
+    approved: latest,
+    base: risk.base,
+    fixRisk: input.fixRisk,
+    now: input.now ?? Date.now(),
+  });
+  return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
+}
+
+/**
+ * Compares S with the approved ask and records the result. It runs on every read: the high-risk
+ * paths come from Settings and `.paws/high-risk-paths`, which can change before S merges, so a
+ * stored comparison is never trusted. A fix Paws cannot read drops any earlier record of S.
+ */
+async function fixSinceApproval(
+  db: Database,
+  input: {
+    itemId: string;
+    head: string;
+    approved: LinkAsk;
+    base: string;
+    fixRisk: (approved: string, base: string) => Promise<FixRisk | null>;
+    now: number;
+  },
+): Promise<RiskFix | null> {
+  const fix = await input.fixRisk(input.approved.headCommit, input.base);
+  if (fix === null) {
+    deleteRiskFix(db, input.itemId, input.head);
+    return null;
+  }
+  const row: RiskFix = {
+    itemId: input.itemId,
+    head: input.head,
+    approvedHead: input.approved.headCommit,
+    approvedQuestionId: input.approved.questionId,
+    changed: [...fix.changed].sort(),
+    paths: [...fix.paths].sort(),
+    recordedAt: input.now,
+  };
+  saveRiskFix(db, row);
+  return row;
+}
+
+/** "`a.ts`, `b.ts` and 3 more", as `riskLine` lists paths. */
+function listedPaths(paths: string[]): string {
+  return riskLine({ tier: "high", paths }).replace(/^Risk: high — /, "");
 }
 
 /** Risk link asks a signed-in person approved on the item page, oldest first. */
@@ -75,8 +140,13 @@ export function openRiskAsk(db: Database, itemId: string): LinkAsk | null {
   return openLinkAsks(db, itemId).find((ask) => ask.kind === "risk") ?? null;
 }
 
-/** "High-risk paths changed: `src/auth/session.ts`." for Linear and the Risk card. */
-export function riskAskDetail(risk: CandidateRisk | null): string {
+/**
+ * "High-risk paths changed: `src/auth/session.ts`." for Linear and the Risk card. After an
+ * approval only the fix's own high-risk paths since the approved head are listed.
+ */
+export function riskAskDetail(risk: CandidateRisk | null, fix: RiskFix | null = null): string {
+  if (fix !== null && fix.paths.length > 0)
+    return `High-risk paths the fix changed since the approved ${shortCommit(fix.approvedHead)}: ${listedPaths(fix.paths)}.`;
   const line = riskLine(risk);
   return risk === null
     ? `${line}. Approve only after you checked what it changes.`
@@ -102,7 +172,10 @@ export function askRiskApproval(
     runId: item.currentRunId,
     kind: "risk",
     head: input.head,
-    detail: riskAskDetail(getCandidateRisk(db, item.id, input.head)),
+    detail: riskAskDetail(
+      getCandidateRisk(db, item.id, input.head),
+      getRiskFix(db, item.id, input.head),
+    ),
     publicUrl: input.publicUrl,
     now: input.now,
   });

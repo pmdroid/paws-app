@@ -119,6 +119,8 @@ export interface StatusItem {
   githubQueue?: StatusGitHubQueue;
   linearRequests?: number;
   visualReviews?: StatusVisualReview[];
+  /** The latest head kept a person's high-risk approval of an earlier head. */
+  riskCarryOver?: StatusRiskCarryOver;
   /** The Linear session this work belongs to. Sub-issues delegated together share one. */
   session?: StatusItemSession;
   /** Set on an earlier attempt that a newer Linear session on the same issue replaced. */
@@ -297,10 +299,28 @@ export interface StatusLinkAsk {
   risk?: StatusRiskAsk;
 }
 
+/**
+ * A fix after the risk approval that changed no high-risk path: the approval of `approvedHead`
+ * carried over to `head`.
+ */
+export interface StatusRiskCarryOver {
+  head: string;
+  approvedHead: string;
+  /** Every file the fix changed since the approved head. */
+  changed: string[];
+  /** Why it carried over, for the Risk card. */
+  reason: string;
+}
+
 /** The high-risk paths of the head, and what Closeout and its reviewers said about it. */
 export interface StatusRiskAsk {
   /** Changed paths a high-risk glob matched. Empty when Paws could not classify the head. */
   paths: string[];
+  /**
+   * Set when a person approved an earlier head: `paths` are then only the high-risk paths the
+   * fix changed since this approved head.
+   */
+  since?: string;
   /** Closeout's summary for the head. */
   summary: string;
   /** Findings of the head's review checks, by check id. */
@@ -1175,6 +1195,9 @@ function readItem(input: unknown, index: number): StatusItem {
             readVisualReview(entry, `${path}.visualReviews[${at}]`),
           ),
         }),
+    ...(body.riskCarryOver === undefined
+      ? {}
+      : { riskCarryOver: readRiskCarryOver(body.riskCarryOver, `${path}.riskCarryOver`) }),
     ...(body.session === undefined
       ? {}
       : { session: readItemSession(body.session, `${path}.session`) }),
@@ -1401,10 +1424,21 @@ function readLinkAsk(input: unknown, path: string): StatusLinkAsk {
   };
 }
 
+function readRiskCarryOver(input: unknown, path: string): StatusRiskCarryOver {
+  const body = object(input, path);
+  return {
+    head: text(body, "head", path),
+    approvedHead: text(body, "approvedHead", path),
+    changed: stringArray(body, "changed", path),
+    reason: text(body, "reason", path),
+  };
+}
+
 function readRiskAsk(input: unknown, path: string): StatusRiskAsk {
   const body = object(input, path);
   return {
     paths: stringArray(body, "paths", path),
+    ...(body.since === undefined ? {} : { since: text(body, "since", path) }),
     summary: string(body, "summary", path),
     findings: array(body, "findings", path).map((entry, index) => {
       const at = `${path}.findings[${index}]`;
