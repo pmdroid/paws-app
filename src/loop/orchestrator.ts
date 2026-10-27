@@ -3290,16 +3290,15 @@ export class Orchestrator {
     const current = getWorkItem(this.db, item.id);
     if (!current) return;
     const checks = result?.decision?.items ?? [];
-    const failed = checks.some((check) => check.state === "failed");
-    const exhausted = checks.some((check) => check.state === "exhausted");
+    // A failed rule set to `onFail: approve` is not the agent's to fix: it waits for a person.
+    const held = result?.ruleApprovals ?? [];
+    const free = checks.filter((check) => !held.some((rule) => rule.id === check.id));
+    const failed = free.some((check) => check.state === "failed");
+    const exhausted = free.some((check) => check.state === "exhausted");
+    const setupFailed = checks.some((check) => check.kind === "setup" && check.state === "failed");
     const rounds = fixRounds(this.db, item.id);
     const limit = this.fixRoundLimit(item);
-    if (
-      failed &&
-      !exhausted &&
-      !checks.some((check) => check.kind === "setup" && check.state === "failed") &&
-      rounds < limit
-    ) {
+    if (failed && !exhausted && !setupFailed && rounds < limit) {
       restart(this.db, current, {
         reason: "findings",
         body: result?.handoff ?? summary,
@@ -3339,6 +3338,10 @@ export class Orchestrator {
       retryBaseline,
       summary,
     };
+    // Only held rules failed: ask about them, whatever fix rounds are left; none is used.
+    const rules =
+      !failed && !exhausted && !setupFailed && result?.outcome === "exhausted" ? held : [];
+    if (rules.length > 0) context.failedChecks = rules.map((rule) => rule.id);
     this.assertJobCurrent(item.id);
     if (
       exhausted &&
@@ -3350,6 +3353,7 @@ export class Orchestrator {
       now: this.now(),
       version: current.version,
       publicUrl: this.options.publicUrl ?? null,
+      ...(rules.length > 0 ? { rules } : {}),
       checks: checks.map((check) => ({
         id: check.id,
         kind: check.kind,
@@ -3358,11 +3362,13 @@ export class Orchestrator {
         message: check.message,
       })),
       reason:
-        exhausted || rounds >= limit
-          ? "budget_spent"
-          : result?.outcome === "blocked"
-            ? "blocked_check"
-            : "setup_fault",
+        rules.length > 0
+          ? "rule_approval"
+          : exhausted || rounds >= limit
+            ? "budget_spent"
+            : result?.outcome === "blocked"
+              ? "blocked_check"
+              : "setup_fault",
     });
     await this.flush();
   }
@@ -5909,6 +5915,7 @@ export class Orchestrator {
       { ...input, now: this.now() },
       {
         bypass: (linkAsk, item, now) => reverifyBypassed(this.db, linkAsk, item, now),
+        rule: (linkAsk, item, now) => reverifyBypassed(this.db, linkAsk, item, now),
         ...effects,
       },
     );

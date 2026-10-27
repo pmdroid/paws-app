@@ -100,6 +100,9 @@ export async function handleLinkAskAnswer(
       { error: decision === "answer" ? "Write your answer." : "Write what to change." },
       { status: 400 },
     );
+  // A rule break is approved with a reason, which is recorded with the approver.
+  if (ask.kind === "rule" && note.trim() === "")
+    return Response.json({ error: "Write why the rule may break." }, { status: 400 });
   const member = workspaceMember(db, principal.workspaceId, principal.userId);
   const refuse = () => {
     auditWorkspaceAccess(db, {

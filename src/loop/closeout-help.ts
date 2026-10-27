@@ -7,6 +7,7 @@ import {
   saveCloseoutRecovery,
   type CloseoutRecovery,
 } from "../db";
+import type { RuleApproval } from "../closeout";
 import { shortCommit } from "../questions";
 import { ask } from "./operations";
 import { PREPARATION_FAILED, recoveryQuestion } from "./closeout-recovery";
@@ -29,6 +30,10 @@ export type CloseoutHelpCheck = {
  * delegator or the project lead bypasses checks on the item page, and a reply
  * in Linear is guidance. Otherwise a reply in Linear is the only answer, and
  * it is guidance too.
+ *
+ * With `rules`, the failed checks are rules set to `onFail: approve`: the link
+ * ask is the `rule` kind, Approve accepts the break for this head with a
+ * reason, and Send back or a reply in Linear hands the agent the finding.
  */
 export function askCloseoutHelp(
   db: Database,
@@ -41,8 +46,10 @@ export function askCloseoutHelp(
     version?: number;
     publicUrl?: string | null;
     checks?: readonly CloseoutHelpCheck[];
+    rules?: readonly RuleApproval[];
   },
 ): void {
+  const rules = input.rules ?? [];
   immediate(db, () => {
     const item = getWorkItem(db, help.itemId);
     if (!item || item.state === "cancelled") return;
@@ -54,9 +61,9 @@ export function askCloseoutHelp(
         ? askWithLink(db, {
             item,
             runId: item.currentRunId,
-            kind: "bypass",
+            kind: rules.length > 0 ? "rule" : "bypass",
             head: help.head,
-            detail: bypassDetail(help, input.error),
+            detail: rules.length > 0 ? ruleDetail(rules) : bypassDetail(help, input.error),
             publicUrl: input.publicUrl,
             now: input.now,
             ...(input.version !== undefined ? { version: input.version } : {}),
@@ -80,6 +87,7 @@ export function askCloseoutHelp(
         question.id,
         help.failedChecks.map(
           (id) =>
+            ruleCheck(rules.find((rule) => rule.id === id)) ??
             input.checks?.find((check) => check.id === id) ?? {
               id,
               kind: "",
@@ -104,4 +112,28 @@ function bypassDetail(help: CloseoutHelp, error: string | undefined): string {
     `Closeout stopped on ${shortCommit(help.head)}: ${count === 1 ? "1 check" : `${count} checks`} failed (${help.failedChecks.join(", ")}).`,
     "Bypass a failed check for this commit with a reason, send the agent guidance, or stop.",
   ].join(" ");
+}
+
+/**
+ * A held rule as a stored check of its ask. The message is the finding a send
+ * back hands the agent.
+ */
+function ruleCheck(rule: RuleApproval | undefined): CloseoutHelpCheck | undefined {
+  return rule === undefined
+    ? undefined
+    : {
+        id: rule.id,
+        kind: "rule",
+        state: "failed",
+        ...(rule.attempt === undefined ? {} : { attempt: rule.attempt }),
+        message: rule.feedback,
+      };
+}
+
+/** The text under a rule ask's title, in Linear and on the card: each broken rule, its summary and the finding. */
+function ruleDetail(rules: readonly RuleApproval[]): string {
+  return [
+    ...rules.map((rule) => `Rule ${rule.id} broke: ${rule.summary} Finding: ${rule.message}.`),
+    "Approve the break for this commit with a reason, or send the finding back to the agent.",
+  ].join("\n");
 }
