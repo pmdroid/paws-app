@@ -1,4 +1,4 @@
-import type { LinkAskKind, StatusBypassAsk, StatusQuestion } from "../contract";
+import type { LinkAskKind, StatusBypassAsk, StatusQuestion, StatusReviewRounds } from "../contract";
 import { esc } from "./format";
 
 /** The Needs you button for each kind. */
@@ -7,6 +7,7 @@ export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
   screenshots: "Review screenshots",
   risk: "Review risk",
   question: "Answer question",
+  rounds: "Answer question",
 };
 
 /** The card's id on the item page; Linear links to `/status/issues/<id>#<anchor>`. */
@@ -15,6 +16,7 @@ export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
   screenshots: "visual-review",
   risk: "risk",
   question: "question",
+  rounds: "review-rounds",
 };
 
 const HEADINGS: Record<LinkAskKind, string> = {
@@ -22,6 +24,7 @@ const HEADINGS: Record<LinkAskKind, string> = {
   screenshots: "Visual review",
   risk: "Risk",
   question: "Question",
+  rounds: "Review rounds",
 };
 
 const NOTE_LABELS: Record<LinkAskKind, string> = {
@@ -29,9 +32,19 @@ const NOTE_LABELS: Record<LinkAskKind, string> = {
   screenshots: "What to change",
   risk: "Note, or what to change",
   question: "Your answer",
+  rounds: "Note for the agent (optional)",
 };
 
-const APPROVE: Record<Exclude<LinkAskKind, "question">, string> = {
+/** What a reply in Linear does for each kind, under the card. */
+const LINEAR_REPLY: Record<LinkAskKind, string> = {
+  bypass: "A reply in Linear only sends the agent guidance.",
+  screenshots: "A reply in Linear only sends the agent guidance.",
+  risk: "A reply in Linear only sends the agent guidance.",
+  question: "A reply in Linear only sends the agent guidance.",
+  rounds: "A reply in Linear counts as Rethink the approach, with the reply as the note.",
+};
+
+const APPROVE: Record<Exclude<LinkAskKind, "question" | "rounds">, string> = {
   bypass: "Bypass",
   screenshots: "Accept screens",
   risk: "Approve",
@@ -57,11 +70,32 @@ export function linkAskCard(question: StatusQuestion): string {
   if (ask.kind === "bypass" && ask.bypass) return bypassCard(question, ask.bypass);
   const id = question.id;
   const busy = pending.has(id);
+  const disabled = busy ? ' disabled=""' : "";
   const buttons =
     ask.kind === "question"
-      ? `<button class="btn primary" type="submit" name="decision" value="answer"${busy ? ' disabled=""' : ""}>Send answer</button>`
-      : `<button class="btn primary" type="submit" name="decision" value="approve"${busy ? ' disabled=""' : ""}>${APPROVE[ask.kind]}</button><button class="btn" type="submit" name="decision" value="changes"${busy ? ' disabled=""' : ""}>${ask.kind === "bypass" ? "Send guidance" : "Request changes"}</button>`;
-  return `<section id="${LINK_ASK_ANCHORS[ask.kind]}" class="closeout-result blocked link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><h2 id="link-ask-${esc(id)}">${HEADINGS[ask.kind]}</h2><p><b>${esc(ask.title)}</b></p>${ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}<p class="muted">Commit <span class="mono">${esc(ask.head.slice(0, 7))}</span>. ${LINK_ASK_ANSWERERS} A reply in Linear only sends the agent guidance.</p><form class="link-ask-form" data-link-ask="${esc(id)}"><label class="field"><span>${NOTE_LABELS[ask.kind]}</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><div class="row wrap">${buttons}</div><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
+      ? `<button class="btn primary" type="submit" name="decision" value="answer"${disabled}>Send answer</button>`
+      : ask.kind === "rounds"
+        ? `<button class="btn primary" type="submit" name="decision" value="rethink"${disabled}>Rethink the approach</button><button class="btn" type="submit" name="decision" value="continue"${disabled}>Keep going</button><button class="btn" type="submit" name="decision" value="stop"${disabled}>Stop</button>`
+        : `<button class="btn primary" type="submit" name="decision" value="approve"${disabled}>${APPROVE[ask.kind]}</button><button class="btn" type="submit" name="decision" value="changes"${disabled}>${ask.kind === "bypass" ? "Send guidance" : "Request changes"}</button>`;
+  return `<section id="${LINK_ASK_ANCHORS[ask.kind]}" class="closeout-result blocked link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><h2 id="link-ask-${esc(id)}">${HEADINGS[ask.kind]}</h2><p><b>${esc(ask.title)}</b></p>${ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}${ask.rounds ? reviewRounds(ask.rounds) : ""}<p class="muted">Commit <span class="mono">${esc(ask.head.slice(0, 7))}</span>. ${LINK_ASK_ANSWERERS} ${LINEAR_REPLY[ask.kind]}</p><form class="link-ask-form" data-link-ask="${esc(id)}"><label class="field"><span>${NOTE_LABELS[ask.kind]}</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><div class="row wrap">${buttons}</div><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
+}
+
+/** Each round with its commit and finding count, the findings still open, and what each choice does. */
+function reviewRounds(rounds: StatusReviewRounds): string {
+  const list = rounds.rounds
+    .map(
+      (round, index) =>
+        `<li>Round ${index + 1}: <span class="mono">${esc(round.head.slice(0, 7))}</span>, ${round.findings} ${round.findings === 1 ? "finding" : "findings"}</li>`,
+    )
+    .join("");
+  const open = rounds.open
+    .map(
+      (finding) =>
+        `<li><b>${esc(finding.severity)}</b> <span class="mono">${esc(finding.location)}</span>: ${esc(finding.bugClass)}</li>`,
+    )
+    .join("");
+  const more = rounds.limit === null ? "more rounds" : `${rounds.limit} more rounds`;
+  return `<h3>Rounds</h3><ol class="review-rounds">${list}</ol>${open ? `<h3>Still open</h3><ul class="review-open">${open}</ul>` : ""}<p class="muted"><b>Rethink the approach</b> restarts the agent with these findings and your note. <b>Keep going</b> allows ${esc(more)}. <b>Stop</b> ends the work; the branch keeps it.</p>`;
 }
 
 /** "Bypass 2 checks for 7f65200 and re-verify". */

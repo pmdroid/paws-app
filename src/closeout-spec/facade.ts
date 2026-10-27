@@ -392,6 +392,20 @@ export async function retryBaseline(evidenceDir: string): Promise<string[]> {
   return snapshot.records.map(evidenceAttemptKey);
 }
 
+/** Review records stored since `baseline` was taken, in the order they were written. */
+export async function reviewRecordsSince(
+  evidenceDir: string,
+  baseline: readonly string[],
+): Promise<ReviewRecord[]> {
+  const snapshot = await createEvidenceStore({ root: evidenceDir }).load();
+  if (snapshot.invalid) throw new Error(snapshot.invalid.message);
+  const before = new Set(baseline);
+  return snapshot.records.filter(
+    (record): record is ReviewRecord =>
+      record.recordType === "review" && !before.has(evidenceAttemptKey(record)),
+  );
+}
+
 /**
  * SHA-256 identity of the policy files currently in the repository directory.
  * A newline added to a referenced skill file changes this digest.

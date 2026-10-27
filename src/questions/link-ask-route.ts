@@ -3,6 +3,8 @@ import {
   auditWorkspaceAccess,
   getLinkAsk,
   getWorkItem,
+  LINK_ASK_DECISIONS,
+  LINK_ASK_NOTE_REQUIRED,
   workspaceMember,
   type LinkAskDecision,
 } from "../db";
@@ -16,7 +18,7 @@ export const LINK_ASK_ANSWER_PATH = "/api/link-asks";
 const MAX_NOTE = 10_000;
 const MAX_BYPASSES = 100;
 
-const DECISIONS = new Set<LinkAskDecision>(["approve", "changes", "answer"]);
+const DECISIONS = new Set<LinkAskDecision>(Object.values(LINK_ASK_DECISIONS).flat());
 
 export const LINK_ASK_ANSWERERS =
   "Only the person who delegated this issue or the Linear project's lead can decide this.";
@@ -84,7 +86,7 @@ export async function handleLinkAskAnswer(
       { error: "This decision is no longer waiting. Refresh the issue." },
       { status: 409 },
     );
-  if ((decision === "answer") !== (ask.kind === "question"))
+  if (!LINK_ASK_DECISIONS[ask.kind].includes(decision))
     return Response.json({ error: "That decision does not fit this question." }, { status: 400 });
   const bypassing = ask.kind === "bypass" && decision === "approve";
   const bypasses = bypassing ? readBypasses(body.bypasses) : undefined;
@@ -93,7 +95,7 @@ export async function handleLinkAskAnswer(
       { error: "Select a failed check and write why it may be bypassed." },
       { status: 400 },
     );
-  if (decision !== "approve" && note.trim() === "")
+  if (LINK_ASK_NOTE_REQUIRED.has(decision) && note.trim() === "")
     return Response.json(
       { error: decision === "answer" ? "Write your answer." : "Write what to change." },
       { status: 400 },
