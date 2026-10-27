@@ -2,10 +2,14 @@ import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type {
-  CommandRunResult,
-  LoggedCommandRequest,
-  SessionCommandResult,
+import {
+  writeProbeLog,
+  type CommandRunResult,
+  type LoggedCommandRequest,
+  type ProbeRunRequest,
+  type ProbeRunResult,
+  type SessionCommandResult,
+  type SessionRuleResult,
 } from "../closeout-spec";
 
 const REPORT_LIMIT = 65_536;
@@ -95,6 +99,62 @@ export function sessionCloseoutResult(
     journalCaught(caughtError3, "session-report.sessionCloseoutResult.parse", request.itemId);
     return undefined;
   }
+}
+
+/**
+ * The runner's result for a rule, when its probe hash is the policy's and its argv, head and
+ * timeout are the ones this host would run. Anything else is no result.
+ */
+export function sessionProbeResult(
+  report: string | undefined,
+  request: Pick<ProbeRunRequest, "rule" | "argv" | "head" | "timeoutSeconds">,
+): SessionRuleResult | undefined {
+  try {
+    const parsed = JSON.parse(report ?? "null");
+    const entries = Array.isArray(parsed?.rules) ? parsed.rules : [];
+    return entries.find(
+      (entry: { id?: string; result?: SessionRuleResult }) =>
+        entry.id === request.rule.id &&
+        entry.result?.probeSha256 === request.rule.probeSha256 &&
+        entry.result.head === request.head &&
+        JSON.stringify(entry.result.argv) === JSON.stringify(request.argv) &&
+        entry.result.timeoutSeconds === request.timeoutSeconds &&
+        (entry.result.exitCode === null || Number.isSafeInteger(entry.result.exitCode)) &&
+        Number.isFinite(entry.result.durationMs) &&
+        entry.result.durationMs >= 0 &&
+        typeof entry.result.stdout === "string" &&
+        typeof entry.result.stderr === "string" &&
+        typeof entry.result.timedOut === "boolean" &&
+        typeof entry.result.dirty === "boolean" &&
+        typeof entry.result.headMoved === "boolean" &&
+        typeof entry.result.truncated === "boolean",
+    )?.result;
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "session-report.sessionProbeResult.parse", request.rule.id);
+    return undefined;
+  }
+}
+
+/** {@link sessionProbeResult} as a probe run on this host: the log is written, nothing is run. */
+export function loggedSessionProbe(
+  report: string | undefined,
+  request: ProbeRunRequest,
+): ProbeRunResult | undefined {
+  const result = sessionProbeResult(report, request);
+  if (!result) return undefined;
+  if (result.stdout) request.onOutput?.("stdout", result.stdout, result.truncated);
+  if (result.stderr) request.onOutput?.("stderr", result.stderr, result.truncated);
+  return {
+    argv: [...request.argv],
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
+    dirty: result.dirty,
+    headMoved: result.headMoved,
+    durationMs: result.durationMs,
+    truncated: result.truncated,
+    probeSha256: result.probeSha256,
+    artifacts: [writeProbeLog(request, result.stdout, result.stderr)],
+  };
 }
 
 export function loggedSessionCloseout(

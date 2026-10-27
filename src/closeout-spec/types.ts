@@ -358,6 +358,11 @@ export type ResolvedRequirement = Exclude<ResolvedItem, ResolvedSetup>;
  */
 export type ResolvedPolicyPresent = {
   skillFiles?: ReadonlyMap<string, Uint8Array>;
+  /**
+   * Each rule's probe bytes by probe path, read from the policy tree. The runner writes these
+   * outside the candidate checkout and runs them. Not digested again: `files` has their hashes.
+   */
+  probeFiles?: ReadonlyMap<string, Uint8Array>;
   source: "repo" | "global" | "local";
   digest: string;
   /**

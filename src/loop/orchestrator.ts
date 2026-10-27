@@ -72,9 +72,11 @@ import {
   readReviewRounds,
   snapshotRetryBaseline,
   loggedSessionCloseout,
+  loggedSessionProbe,
   readSessionCloseout,
   sessionCloseoutPath,
   sessionCloseoutResult,
+  sessionProbeResult,
   writeSessionCloseout,
   type GateResult,
   type ReviewRounds,
@@ -2889,30 +2891,44 @@ export class Orchestrator {
       return saved?.head === commit ? saved.report : undefined;
     };
     const runnerChecks = new Map<string, Promise<void>>();
+    const runnerResults = (commit: string, stepId: string | undefined) => {
+      let checks = runnerChecks.get(commit);
+      if (!checks) {
+        checks = this.runRunnerCloseout(item, deps, {
+          worktree,
+          base,
+          head: commit,
+          stepId,
+          sessionPath,
+          policy,
+          assertCurrent,
+          report: (body) => report(body),
+        });
+        runnerChecks.set(commit, checks);
+      }
+      return checks;
+    };
     const commands = this.options.remoteExecution
       ? {
           runLogged: async (request: Parameters<typeof loggedSessionCloseout>[1]) => {
             assertCurrent();
             const commit = request.expectedHead;
-            if (!sessionCloseoutResult(savedReport(commit), request)) {
-              let checks = runnerChecks.get(commit);
-              if (!checks) {
-                checks = this.runRunnerCloseout(item, deps, {
-                  worktree,
-                  base,
-                  head: commit,
-                  stepId: request.itemId,
-                  sessionPath,
-                  policy,
-                  assertCurrent,
-                  report: (body) => report(body),
-                });
-                runnerChecks.set(commit, checks);
-              }
-              await checks;
-            }
+            if (!sessionCloseoutResult(savedReport(commit), request))
+              await runnerResults(commit, request.itemId);
             assertCurrent();
             const result = loggedSessionCloseout(savedReport(commit), request);
+            assertCurrent();
+            return result;
+          },
+          // A rule counts only from the runner's own probe run with the policy's hash, argv,
+          // head and timeout. No such result leaves the rule missing, which holds the PR.
+          runProbe: async (request: Parameters<typeof loggedSessionProbe>[1]) => {
+            assertCurrent();
+            const commit = request.head;
+            if (!sessionProbeResult(savedReport(commit), request))
+              await runnerResults(commit, request.rule.id);
+            assertCurrent();
+            const result = loggedSessionProbe(savedReport(commit), request);
             assertCurrent();
             return result;
           },
@@ -6821,8 +6837,11 @@ function sameRepository(left: RepositoryBinding, right: RepositoryBinding): bool
 
 function listsChecks(report: string): boolean {
   try {
-    const parsed = JSON.parse(report) as { required?: unknown };
-    return Array.isArray(parsed.required) && parsed.required.length > 0;
+    const parsed = JSON.parse(report) as { required?: unknown; rules?: unknown };
+    return (
+      (Array.isArray(parsed.required) && parsed.required.length > 0) ||
+      (Array.isArray(parsed.rules) && parsed.rules.length > 0)
+    );
   } catch (caughtError18) {
     journalCaught(caughtError18, "orchestrator.listsChecks.parse", null);
     return false;

@@ -258,9 +258,10 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         },
       ],
     },
+    /** The report that closes the turn. It runs the rule probes; the agent's tools never do. */
     async closeoutReport() {
       if (!closeout) return undefined;
-      return closeout.report();
+      return closeout.report({ probes: true });
     },
     async close() {
       options.signal.removeEventListener("abort", onAbort);

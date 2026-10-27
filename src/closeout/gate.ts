@@ -1,4 +1,4 @@
-import type { PawsCommandRunner } from "../closeout-spec";
+import type { CloseoutCommandPort } from "../closeout-spec";
 import type { FixRunner } from "./fixer";
 import { decideCloseoutGate, runCloseoutGate, type GateInput } from "./run";
 import type { CodexReviewer } from "./reviewer";
@@ -54,7 +54,7 @@ export type CloseoutGateOptions = {
   retryBaseline?: readonly string[];
   bypasses?: GateInput["bypasses"];
   progress?: GateInput["progress"];
-  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
+  commandRunner?: CloseoutCommandPort;
   published?: GateInput["published"];
   approvals?: GateInput["approvals"];
 };
