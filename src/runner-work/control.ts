@@ -60,6 +60,12 @@ type Assignment = {
 const columns =
   "run_id AS runId,runner_id AS runnerId,workspace_id AS workspaceId,generation,runner_fence AS runnerFence,command_id AS commandId,lease_until AS leaseUntil,last_sequence AS lastSequence,ended_at AS endedAt";
 
+/**
+ * Work the runner acknowledged this long ago and no longer reports is lost. The margin covers a
+ * heartbeat sampled just before the runner acknowledged the command.
+ */
+export const RUNNER_LIVE_GRACE_MS = 30_000;
+
 export class RunnerWorkFencedError extends Error {
   override readonly name = "RunnerWorkFencedError";
 }
@@ -248,6 +254,13 @@ export function createRunnerWork(options: {
       db
         .query("SELECT 1 FROM runner_result WHERE run_id=? AND generation=? AND command_id=?")
         .get(work.runId, work.generation, work.commandId) !== null
+    );
+  }
+  function acknowledgedBy(work: Assignment, at: number) {
+    return (
+      db
+        .query("SELECT 1 FROM runner_command WHERE id=? AND acknowledged_at<=?")
+        .get(work.commandId, at) !== null
     );
   }
   function workCommand(work: Assignment): WorkCommand {
@@ -499,6 +512,8 @@ export function createRunnerWork(options: {
      * comes from runners that install skills; only they get the skill manifest back. `runtimes`
      * comes from runners that have installed task runtimes with mise. `agents` comes from runners
      * whose coding agents the installer manages; only they get the agent versions asked for back.
+     * `reported` comes from runners that name the work they still run: only that work is renewed,
+     * and acknowledged work without a result that the runner no longer runs is fenced as lost.
      */
     heartbeat(
       runnerId: string,
@@ -508,7 +523,10 @@ export function createRunnerWork(options: {
       installed?: readonly RunnerInstalledSkill[],
       runtimes?: readonly RunnerInstalledRuntime[],
       agents?: readonly RunnerInstalledAgent[],
+      reported?: readonly { runId: string; generation: number }[],
     ) {
+      const running =
+        reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
       return immediate(db, () => {
         runner(runnerId);
         const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling);
@@ -535,7 +553,20 @@ export function createRunnerWork(options: {
         const fenced: { runId: string; generation: number }[] = [];
         for (const row of rows) {
           try {
-            live(runnerId, row.runId, row.generation, at, true, accepted(row));
+            const settled = accepted(row);
+            live(runnerId, row.runId, row.generation, at, true, settled);
+            if (running?.has(`${row.runId}:${row.generation}`))
+              db.run("UPDATE runner_work SET confirmed_at=? WHERE run_id=?", [at, row.runId]);
+            else if (running && !settled && acknowledgedBy(row, at - RUNNER_LIVE_GRACE_MS)) {
+              db.run("UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=?", [
+                at,
+                at,
+                row.runId,
+              ]);
+              db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]);
+              fenced.push({ runId: row.runId, generation: row.generation });
+              continue;
+            }
             if (row.leaseUntil + RUNNER_LEASE_GRACE_MS <= at) continue;
             leases.push({
               runId: row.runId,
