@@ -9,10 +9,16 @@ import { acquireOperationToken } from "./auth/provider";
 import type { GitHubCredentialInput, GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, githubHttpsUrl, pullRequestBody } from "./branch";
 import { repoApiPath } from "./client";
-import { defaultGitExec, git, gitFailureReason } from "./git";
-import { pushWithLease } from "./push";
+import { defaultGitExec, git, gitFailureReason, redact } from "./git";
+import { pushDenial, pushWithLease } from "./push";
 import { splitRepository } from "./token";
-import { type GitExec, type GitHubClient, type OpenedPull, type PublishResult } from "./types";
+import {
+  GitCommandError,
+  type GitExec,
+  type GitHubClient,
+  type OpenedPull,
+  type PublishResult,
+} from "./types";
 
 export async function pushBranch(
   input: {
@@ -32,7 +38,15 @@ export async function pushBranch(
   try {
     await pushWithLease({ worktree: input.worktree, url, branch, token, gitExec });
   } catch (error) {
-    throw new Error(`push failed: ${gitFailureReason(token, error)}`, { cause: error });
+    const denial =
+      error instanceof GitCommandError
+        ? pushDenial(redact(token, error.stderr), {
+            owner: input.owner,
+            repo: input.repo,
+            ...(input.installationId ? { installationId: input.installationId } : {}),
+          })
+        : null;
+    throw new Error(`push failed: ${denial ?? gitFailureReason(token, error)}`, { cause: error });
   }
   const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
   return { branch, head };
