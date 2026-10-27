@@ -417,7 +417,10 @@ export function createMergeSettings(invalidate: () => void): {
   const change = (event: Event) => {
     if (view.busy) return;
     const target = event.target as HTMLInputElement | HTMLSelectElement;
+    // A High-risk paths box changes on blur; repainting then would swallow the click that blurred
+    // it, such as Save. Submit and the other buttons read it.
     if (["new-project", "rule-project", "rule-label"].includes(target.name)) return;
+    if (target.name.startsWith("risk-")) return;
     draft();
     paint();
   };
