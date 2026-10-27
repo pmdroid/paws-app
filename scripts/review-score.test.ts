@@ -88,8 +88,10 @@ test("the repository's independent-review item and clean set parse", () => {
     expect(entry.original.head).toMatch(/^[0-9a-f]{40}$/);
     expect(entry.original.mergeCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(entry.changedLines).toBeGreaterThanOrEqual(20);
-    expect(entry.quietDays).toBe(7);
+    expect(entry.quietDays).toBe(entry.author === "paws" ? 7 : 14);
   }
+  expect(clean.filter((entry) => entry.author === "paws").length).toBe(4);
+  expect(clean.filter((entry) => entry.author === "human").length).toBe(12);
 });
 
 test("readReviewItem applies defaults and rejects other kinds", () => {
@@ -154,16 +156,19 @@ test("summary keeps likely escapes and errors apart", () => {
     result({ id: "b", outcome: "missed", nearSeverity: "P2" }),
     result({ id: "c", outcome: "caught", confidence: "likely" }),
     result({ id: "d", outcome: "error", durationMs: 5000 }),
-    result({ id: "e", kind: "clean", outcome: "rejected", quietDays: 7 }),
-    result({ id: "f", kind: "clean", outcome: "passed", quietDays: 7 }),
+    result({ id: "e", kind: "clean", outcome: "rejected", quietDays: 7, author: "paws" }),
+    result({ id: "f", kind: "clean", outcome: "passed", quietDays: 7, author: "paws" }),
+    result({ id: "g", kind: "clean", outcome: "passed", quietDays: 14, author: "human" }),
   ]);
   expect(summary.recall).toEqual({ hits: 1, total: 2 });
   expect(summary.recallLikely).toEqual({ hits: 1, total: 1 });
   expect(summary.belowFailOn).toBe(1);
-  expect(summary.falsePositives).toEqual({ hits: 1, total: 2 });
+  expect(summary.falsePositives).toEqual({ hits: 1, total: 3 });
+  expect(summary.falsePositivesPaws).toEqual({ hits: 1, total: 2 });
+  expect(summary.falsePositivesHuman).toEqual({ hits: 0, total: 1 });
   expect(summary.errors).toBe(1);
   expect(summary.medianMs).toBe(1000);
-  expect(summary.usage).toEqual({ input: 600, cached: 240, output: 60 });
+  expect(summary.usage).toEqual({ input: 700, cached: 280, output: 70 });
   expect(summary.costUsd).toBeUndefined();
 });
 
@@ -188,7 +193,10 @@ test("a report against the baseline names the changed setting and the flipped ca
   expect(text).toContain("| gone | missed | not run |");
   expect(text).toContain("| new | not in the baseline | missed |");
   expect(text).not.toContain("| clean-1 | passed | passed |");
-  expect(text).toContain("| Clean pull requests | quiet for 7 days after the merge |");
+  expect(text).toContain(
+    "| Clean pull requests | 1 Paws squashes, quiet for 7 days; 0 merged by hand |",
+  );
+  expect(text).toContain("| clean-1 | paws | 7 | candidate | passed |");
   expect(text).toContain("- **P2** `src/a.ts:41`: wrong");
   expect(renderReport(current)).not.toContain("Compared with the baseline");
   expect(renderReport(baseline, baseline)).toContain(
@@ -331,13 +339,51 @@ test("pickClean keeps old, large Paws squashes that no fix touched in the quiet 
       candidate(3, "fix", "2026-10-14T00:00:00Z"),
       candidate(4, "change", "2026-10-14T00:00:00Z"),
     ],
-    { app: "paws-helper", now, quietDays: 7, minLines: 20, count: 16, exclude: new Set([7]) },
+    {
+      app: "paws-helper",
+      author: "paws",
+      now,
+      quietDays: 7,
+      minLines: 20,
+      count: 16,
+      exclude: new Set([7]),
+    },
   );
   expect(picked.map((entry) => entry.id)).toEqual(["clean-2", "clean-4"]);
   expect(picked[0]).toMatchObject({
     changedLines: 30,
     quietDays: 7,
     pickedAt: "2026-10-27",
+    author: "paws",
     original: { base: `${"a".repeat(39)}2`, head: `${"b".repeat(39)}2` },
   });
+  const human = pickClean(git, pulls, [], {
+    app: "paws-helper",
+    author: "human",
+    from: "2026-10-14",
+    to: "2026-10-14",
+    now,
+    quietDays: 7,
+    minLines: 20,
+    count: 16,
+    exclude: new Set(),
+  });
+  expect(human).toEqual([
+    expect.objectContaining({
+      id: "clean-5",
+      author: "human",
+      original: expect.objectContaining({ base: commits[0], head: commits[1] }),
+    }),
+  ]);
+  const outside = pickClean(git, pulls, [], {
+    app: "paws-helper",
+    author: "human",
+    from: "2026-10-15",
+    now,
+    quietDays: 7,
+    minLines: 20,
+    count: 16,
+    exclude: new Set(),
+  });
+  expect(outside).toEqual([]);
 });
