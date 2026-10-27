@@ -51,6 +51,11 @@ export function reaskPrompt(reason: string): string {
   ].join("\n\n");
 }
 
+/** The evidence schema's finding array, as JSON Schema for a review command's final message. */
+export function findingsJsonSchema(): AnySchema {
+  return findingsSchema(evidenceSchema as unknown);
+}
+
 function validateParsed(value: unknown): ParsedFindings {
   const validate = findingsValidator();
   if (!validate(value)) return { ok: false, reason: schemaReason(validate.errors) };

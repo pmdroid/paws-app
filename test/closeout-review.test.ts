@@ -8,17 +8,17 @@ import { describe, expect, test } from "bun:test";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema } from "ajv/dist/2020";
 import {
+  createFakeReviewCommandRunner,
+  createReviewCommandRunner,
+  createReviewer,
+  findingsJsonSchema,
   formatFixFeedback,
   type CommandRecord,
   type DecisionDocument,
   type Finding,
+  type ReviewCommandRequest,
   type ReviewRecord,
 } from "../src/closeout-spec";
-import {
-  createCodexReviewer,
-  type CodexAcpReply,
-  type CodexAcpStart,
-} from "../src/closeout/reviewer";
 
 const exec = promisify(execFile);
 const HEAD = "b".repeat(40);
@@ -34,70 +34,67 @@ const finding = (severity: Finding["severity"], explanation: string): Finding =>
   evidence: `${severity} observation`,
 });
 
-describe("closeout reviewer", () => {
-  test("uses the policy skill snapshot instead of the candidate skill", async () => {
-    const repo = await gitRepo();
-    const script = scripted([{ sessionId: "review-local", model: "review-model", text: "[]" }]);
-    try {
-      const result = await createCodexReviewer(script.runner, { model: "configured" }).review({
-        item: reviewItem(),
-        candidate: { session: "implementer", model: "implementer-model", provider: "test" },
-        base: repo.base,
-        head: repo.head,
-        policyDigest: DIGEST,
-        worktree: repo.dir,
-        skillFiles: new Map([[SKILL, new TextEncoder().encode("Policy snapshot review skill")]]),
-      });
-      expect(result.status).toBe("recorded");
-      expect(script.starts[0]?.prompt).toContain("Policy snapshot review skill");
-      expect(script.starts[0]?.prompt.split("# Diff ")[0]).not.toContain(SKILL_TEXT);
-    } finally {
-      await repo.cleanup();
-    }
-  });
+const jsonl = (...events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n");
 
-  test("records the ACP session, reported model, and provider without judging independence", async () => {
+const codexEvents = (thread: string, text: string) =>
+  jsonl(
+    { type: "thread.started", thread_id: thread },
+    { type: "turn.started" },
+    { type: "item.completed", item: { id: "item_0", type: "reasoning", text: "Reading git diff" } },
+    { type: "item.completed", item: { id: "item_1", type: "agent_message", text } },
+    { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 5 } },
+  );
+
+const claudeEvents = (session: string, model: string, result: Record<string, unknown>) =>
+  jsonl(
+    { type: "system", subtype: "init", session_id: session, model, cwd: "/tmp" },
+    { type: "assistant", session_id: session, message: { model, content: [] } },
+    { type: "result", subtype: "success", is_error: false, session_id: session, ...result },
+  );
+
+const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: "" });
+
+describe("closeout reviewer runs the agent's review command", () => {
+  test("Codex runs codex exec review --base with the findings schema and stores its findings", async () => {
     const repo = await gitRepo();
-    const session = "implementer-session";
-    const script = scripted([
-      {
-        sessionId: session,
-        model: "gpt-5-codex",
-        text: [
-          "```json",
-          JSON.stringify([finding("P1", "The constant changed without a test.")]),
-          "```",
-        ].join("\n"),
+    const seen: Array<{ head: string; schema: unknown }> = [];
+    const runner = createFakeReviewCommandRunner(
+      [ok(codexEvents("thread-codex", JSON.stringify([finding("P1", "The constant changed.")])))],
+      async (call) => {
+        seen.push(await inspectCall(call));
       },
-    ]);
+    );
     try {
-      const result = await createCodexReviewer(script.runner, { model: "codex-configured" }).review(
-        {
-          item: reviewItem(),
-          candidate: {
-            task: "QM-32",
-            session,
-            model: "claude-opus",
-            provider: "anthropic",
-          },
-          base: repo.base,
-          head: repo.head,
-          policyDigest: DIGEST,
-          worktree: repo.dir,
-        },
-      );
+      const result = await createReviewer(runner, { agent: "codex", model: "gpt-5-codex" }).review({
+        ...request(repo),
+        candidate: { task: "QM-32", session: "impl", model: "claude-opus", provider: "anthropic" },
+      });
+      expect(runner.calls).toHaveLength(1);
+      const call = runner.calls[0]!;
+      const schemaPath = call.argv.at(-1)!;
+      expect(call.argv).toEqual([
+        "codex",
+        "exec",
+        "review",
+        "--base",
+        repo.base,
+        "--model",
+        "gpt-5-codex",
+        "--json",
+        "--output-schema",
+        schemaPath,
+      ]);
+      expect(seen[0]?.schema).toEqual(findingsJsonSchema());
+      expect(existsSync(schemaPath)).toBe(false);
+      expect(call.cwd).not.toBe(repo.dir);
+      expect(seen[0]?.head).toBe(repo.head);
+      expect(existsSync(call.cwd)).toBe(false);
       expect(result.status).toBe("recorded");
       if (result.status !== "recorded") return;
-      expect(result.candidate).toEqual({
-        task: "QM-32",
-        session,
-        model: "claude-opus",
-        provider: "anthropic",
-      });
       expect(result.record.producer).toEqual({
-        session,
+        session: "thread-codex",
         model: "gpt-5-codex",
-        provider: "codex",
+        provider: "openai",
       });
       expect(result.record).toMatchObject({
         specVersion: "0.1",
@@ -109,81 +106,256 @@ describe("closeout reviewer", () => {
         policyDigest: DIGEST,
         attempt: 1,
         evaluator: { name: "paws", version: "0.1" },
-        findings: [finding("P1", "The constant changed without a test.")],
+        findings: [finding("P1", "The constant changed.")],
         artifacts: [],
       });
       expect(evidenceValidator()(result.record)).toBe(true);
-      expect(script.starts).toHaveLength(1);
-      const start = script.starts[0];
-      expect(start?.role).toBe("reviewer");
-      expect(start?.readOnly).toBe(true);
-      expect(start?.checkpoint).toBe(false);
-      expect(start?.fresh).toBe(true);
-      expect(start?.itemId).toBe("adversarial-review");
-      expect(start?.worktree).not.toBe(repo.dir);
-      expect(start?.seenHead).toBe(repo.head);
-      expect(existsSync(start?.worktree ?? "")).toBe(false);
-      expect(start?.prompt).toContain(SKILL_TEXT);
-      expect(start?.prompt).toContain(REFERENCE_TEXT);
-      expect(start?.prompt).toContain("export const reviewed = 2");
-      expect(start?.prompt).toContain("src/reviewed.ts");
-      expect(start?.prompt).toContain("severity: P0, P1, P2, or P3");
     } finally {
       await repo.cleanup();
     }
   });
 
-  test("re-asks once when the reply is malformed, then records an invalid review", async () => {
+  test("Claude runs /code-review base..head in plan mode and stores its structured findings", async () => {
     const repo = await gitRepo();
-    const script = scripted([
-      { sessionId: "review-1", text: "Looks good." },
-      {
-        sessionId: "review-2",
-        text: JSON.stringify([
-          {
-            severity: "P1",
-            location: "src/reviewed.ts",
-            explanation: "changed",
-            evidence: "diff",
-            extra: true,
-          },
-        ]),
+    const seen: Array<{ head: string; schema: unknown }> = [];
+    const runner = createFakeReviewCommandRunner(
+      [
+        ok(
+          claudeEvents("claude-session", "claude-sonnet-reported", {
+            result: "Review done.",
+            structured_output: [finding("P2", "The rename dropped a caller.")],
+          }),
+        ),
+      ],
+      async (call) => {
+        seen.push(await inspectCall(call));
       },
+    );
+    try {
+      const result = await createReviewer(runner, {
+        agent: "claude",
+        model: "claude-sonnet",
+      }).review(request(repo));
+      const call = runner.calls[0]!;
+      expect(call.argv).toEqual([
+        "claude",
+        "-p",
+        "--permission-mode",
+        "plan",
+        "--model",
+        "claude-sonnet",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--json-schema",
+        JSON.stringify(findingsJsonSchema()),
+        `/code-review ${repo.base}..${repo.head}`,
+      ]);
+      expect(seen[0]?.head).toBe(repo.head);
+      expect(result.status).toBe("recorded");
+      if (result.status !== "recorded") return;
+      expect(result.record.producer).toEqual({
+        session: "claude-session",
+        model: "claude-sonnet-reported",
+        provider: "anthropic",
+      });
+      expect(result.record.findings).toEqual([finding("P2", "The rename dropped a caller.")]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("passes no bypass flag, skill text, or diff to either command", async () => {
+    const repo = await gitRepo();
+    try {
+      for (const agent of ["codex", "claude"] as const) {
+        const runner = createFakeReviewCommandRunner([
+          ok(agent === "codex" ? codexEvents("t", "[]") : claudeEvents("s", "m", { result: "[]" })),
+        ]);
+        const result = await createReviewer(runner, { agent, model: "reviewer" }).review({
+          ...request(repo),
+          earlier: [
+            {
+              severity: "P1",
+              location: "src/reviewed.ts:1",
+              explanation: "Earlier round finding",
+              head: repo.base,
+              status: "open",
+            },
+          ],
+          skillFiles: new Map([
+            [SKILL, new TextEncoder().encode(SKILL_TEXT)],
+            [
+              ".agents/skills/adversarial-review/references/tool.md",
+              new TextEncoder().encode("x".repeat(1_500_000)),
+            ],
+          ]),
+        });
+        expect(result.status).toBe("recorded");
+        const argv = runner.calls[0]!.argv.join("\n");
+        expect(argv).not.toContain("dangerously");
+        expect(argv).not.toContain("bypass");
+        expect(argv).not.toContain(SKILL_TEXT);
+        expect(argv).not.toContain(REFERENCE_TEXT);
+        expect(argv).not.toContain("Earlier round finding");
+        expect(argv).not.toContain("export const reviewed");
+        expect(argv.length).toBeLessThan(10_000);
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("re-asks once in the same Codex session with the schema restated, then parses", async () => {
+    const repo = await gitRepo();
+    const runner = createFakeReviewCommandRunner([
+      ok(codexEvents("thread-1", "Looks good to me.")),
+      ok(
+        jsonl({
+          type: "item.completed",
+          item: { type: "agent_message", text: JSON.stringify([finding("P2", "Dropped caller.")]) },
+        }),
+      ),
     ]);
     try {
-      const result = await createCodexReviewer(script.runner, { model: "codex-configured" }).review(
-        {
-          item: reviewItem(),
-          candidate: {
-            session: "implementer-session",
-            model: "claude-opus",
-            provider: "anthropic",
-          },
-          base: repo.base,
-          head: repo.head,
-          policyDigest: DIGEST,
-          worktree: repo.dir,
-        },
+      const result = await createReviewer(runner, { agent: "codex", model: "gpt-5-codex" }).review(
+        request(repo),
       );
-      expect(script.starts).toHaveLength(2);
-      expect(script.starts[0]?.fresh).toBe(true);
-      expect(script.starts[1]?.fresh).toBe(false);
-      expect(script.starts[1]?.sessionId).toBe("review-1");
-      expect(script.starts[1]?.prompt).toContain(
-        "The previous reply was not a valid findings array.",
-      );
-      expect(script.starts[0]?.prompt).toContain(SKILL_TEXT);
-      expect(script.starts[0]?.prompt).toContain(`Diff ${repo.base}..${repo.head}`);
+      expect(runner.calls).toHaveLength(2);
+      const reask = runner.calls[1]!.argv;
+      expect(reask.slice(0, 6)).toEqual([
+        "codex",
+        "exec",
+        "resume",
+        "thread-1",
+        "--model",
+        "gpt-5-codex",
+      ]);
+      expect(reask).toContain("--json");
+      expect(reask).toContain("--output-schema");
+      const prompt = reask.at(-1)!;
+      expect(prompt).toContain("The previous reply was not a valid findings array.");
+      expect(prompt).toContain("severity: P0, P1, P2, or P3");
+      expect(runner.calls[1]!.cwd).toBe(runner.calls[0]!.cwd);
+      expect(result.status).toBe("recorded");
+      if (result.status !== "recorded") return;
+      expect(result.record.producer.session).toBe("thread-1");
+      expect(result.record.findings).toEqual([finding("P2", "Dropped caller.")]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("re-asks once in the same Claude session, then parses", async () => {
+    const repo = await gitRepo();
+    const runner = createFakeReviewCommandRunner([
+      ok(claudeEvents("claude-1", "claude-model", { result: "No issues found." })),
+      ok(claudeEvents("claude-1", "claude-model", { result: "[]" })),
+    ]);
+    try {
+      const result = await createReviewer(runner, {
+        agent: "claude",
+        model: "claude-model",
+      }).review(request(repo));
+      expect(runner.calls).toHaveLength(2);
+      expect(runner.calls[1]!.argv.slice(0, 4)).toEqual(["claude", "-p", "--resume", "claude-1"]);
+      expect(runner.calls[1]!.argv).toContain("--json-schema");
+      expect(runner.calls[1]!.argv.at(-1)).toContain("Reply again with only a JSON array");
+      expect(result.status).toBe("recorded");
+      if (result.status !== "recorded") return;
+      expect(result.record.findings).toEqual([]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("records an invalid review when the re-ask still does not parse", async () => {
+    const repo = await gitRepo();
+    const runner = createFakeReviewCommandRunner([
+      ok(codexEvents("review-1", "Looks good.")),
+      ok(codexEvents("review-1", JSON.stringify([{ ...finding("P1", "changed"), extra: true }]))),
+    ]);
+    try {
+      const result = await createReviewer(runner, {
+        agent: "codex",
+        model: "codex-configured",
+      }).review(request(repo));
+      expect(runner.calls).toHaveLength(2);
       expect(result.status).toBe("invalid");
       if (result.status !== "invalid") return;
       expect(result.producer).toEqual({
-        session: "review-2",
+        session: "review-1",
         model: "codex-configured",
-        provider: "codex",
+        provider: "openai",
       });
-      expect(result.candidate.session).toBe("implementer-session");
       expect("record" in result).toBe(false);
       expect(result.reason.length).toBeGreaterThan(0);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a non-zero exit records an invalid review and invents no findings", async () => {
+    const repo = await gitRepo();
+    try {
+      for (const agent of ["codex", "claude"] as const) {
+        const runner = createFakeReviewCommandRunner([
+          {
+            exitCode: 1,
+            stdout: agent === "codex" ? codexEvents("t-fail", "[]") : "",
+            stderr: "Input exceeds the maximum length\n",
+          },
+        ]);
+        const result = await createReviewer(runner, { agent, model: "reviewer" }).review(
+          request(repo),
+        );
+        expect(runner.calls).toHaveLength(1);
+        expect(result.status).toBe("invalid");
+        if (result.status !== "invalid") continue;
+        expect("findings" in result).toBe(false);
+        expect(result.reason).toContain("exited 1");
+        expect(result.reason).toContain("Input exceeds the maximum length");
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a command that did not start or timed out records an invalid review", async () => {
+    const repo = await gitRepo();
+    try {
+      const runner = createFakeReviewCommandRunner([
+        { exitCode: null, stdout: "", stderr: "", timedOut: true },
+      ]);
+      const result = await createReviewer(runner, { agent: "codex", model: "m" }).review(
+        request(repo),
+      );
+      expect(result.status).toBe("invalid");
+      expect(result.status === "invalid" ? result.reason : "").toContain("timed out");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a failed Claude result records an invalid review", async () => {
+    const repo = await gitRepo();
+    try {
+      const runner = createFakeReviewCommandRunner([
+        ok(
+          jsonl({
+            type: "result",
+            subtype: "error_max_turns",
+            is_error: true,
+            session_id: "s",
+          }),
+        ),
+      ]);
+      const result = await createReviewer(runner, { agent: "claude", model: "m" }).review(
+        request(repo),
+      );
+      expect(runner.calls).toHaveLength(1);
+      expect(result.status).toBe("invalid");
+      expect(result.status === "invalid" ? result.reason : "").toContain("error_max_turns");
     } finally {
       await repo.cleanup();
     }
@@ -204,24 +376,14 @@ describe("closeout reviewer", () => {
         "!/src/",
         "!/.agents/",
       ]);
-      const result = await createCodexReviewer(
-        {
-          async start(input) {
-            started = true;
-            expect(existsSync(path.join(input.worktree, "src"))).toBe(false);
-            expect(existsSync(path.join(input.worktree, SKILL))).toBe(true);
-            return { sessionId: "review-sparse", model: "gpt-5-codex", text: "[]" };
-          },
-        },
-        { model: "codex-configured" },
-      ).review({
-        item: reviewItem(),
+      const runner = createFakeReviewCommandRunner([ok(codexEvents("sparse", "[]"))], (call) => {
+        started = true;
+        expect(existsSync(path.join(call.cwd, "src"))).toBe(false);
+        expect(existsSync(path.join(call.cwd, SKILL))).toBe(true);
+      });
+      const result = await createReviewer(runner, { agent: "codex", model: "m" }).review({
+        ...request(repo),
         checkoutExclusions: ["src"],
-        candidate: { session: "implementer-session", model: "claude-opus", provider: "anthropic" },
-        base: repo.base,
-        head: repo.head,
-        policyDigest: DIGEST,
-        worktree: repo.dir,
       });
       expect(started).toBe(true);
       expect(result.status).toBe("recorded");
@@ -230,147 +392,53 @@ describe("closeout reviewer", () => {
     }
   });
 
-  test("records findings when the single re-ask is valid", async () => {
+  test("rejects a base that is not a commit id before starting a command", async () => {
     const repo = await gitRepo();
-    const script = scripted([
-      { sessionId: "review-1", text: "not json" },
-      {
-        sessionId: "review-2",
-        model: "gpt-5-codex",
-        text: JSON.stringify([finding("P2", "The rename dropped a caller.")]),
-      },
-    ]);
     try {
-      const result = await createCodexReviewer(script.runner, { model: "codex-configured" }).review(
-        {
-          item: reviewItem(),
-          candidate: {
-            session: "implementer-session",
-            model: "claude-opus",
-            provider: "anthropic",
-          },
-          base: repo.base,
-          head: repo.head,
-          policyDigest: DIGEST,
-          worktree: repo.dir,
-        },
-      );
-      expect(script.starts).toHaveLength(2);
-      expect(result.status).toBe("recorded");
-      if (result.status !== "recorded") return;
-      expect(result.record.producer).toEqual({
-        session: "review-2",
-        model: "gpt-5-codex",
-        provider: "codex",
+      const runner = createFakeReviewCommandRunner([]);
+      const result = await createReviewer(runner, { agent: "codex", model: "m" }).review({
+        ...request(repo),
+        base: "--help",
       });
-      expect(result.record.findings).toEqual([finding("P2", "The rename dropped a caller.")]);
+      expect(result.status).toBe("invalid");
+      expect(runner.calls).toHaveLength(0);
     } finally {
       await repo.cleanup();
     }
   });
 });
 
-describe("review prompt size", () => {
-  const encode = (text: string) => new TextEncoder().encode(text);
-
-  test("inlines the skill's references/ files and lists its other files by size and hash", async () => {
-    const repo = await gitRepo();
-    const script = scripted([{ sessionId: "review-refs", model: "review-model", text: "[]" }]);
-    const dir = ".agents/skills/adversarial-review";
+describe("review command runner", () => {
+  test("captures stdout, stderr, and the exit code in the given directory", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "paws-review-runner-"));
     try {
-      await createCodexReviewer(script.runner, { model: "configured" }).review({
-        item: reviewItem(),
-        candidate: { session: "implementer", model: "implementer-model", provider: "test" },
-        base: repo.base,
-        head: repo.head,
-        policyDigest: DIGEST,
-        worktree: repo.dir,
-        skillFiles: new Map([
-          [SKILL, encode("Review skill")],
-          [`${dir}/references/severity.md`, encode(REFERENCE_TEXT)],
-          [`${dir}/scripts/helper.py`, encode("SCRIPT BODY ".repeat(1000))],
-          [`${dir}/tests/helper_test.py`, encode("TEST BODY")],
-          [`${dir}/CLAUDE.md`, encode("Notes for the skill's maintainers")],
-        ]),
+      const result = await createReviewCommandRunner().run({
+        argv: ["sh", "-c", "pwd; echo err >&2; exit 3"],
+        cwd: dir,
       });
-      const prompt = script.starts[0]?.prompt ?? "";
-      expect(prompt).toContain(REFERENCE_TEXT);
-      expect(prompt).toMatch(
-        new RegExp(
-          `## ${dir}/scripts/helper\\.py\\nNot inlined: 12000 bytes outside references/, SHA-256 [0-9a-f]{64}`,
-        ),
-      );
-      expect(prompt).toContain(`## ${dir}/tests/helper_test.py\nNot inlined: 9 bytes`);
-      expect(prompt).not.toContain("SCRIPT BODY");
-      expect(prompt).not.toContain("TEST BODY");
-      expect(prompt).not.toContain("maintainers");
+      expect(result.exitCode).toBe(3);
+      expect(result.stdout.trim().endsWith(path.basename(dir))).toBe(true);
+      expect(result.stderr.trim()).toBe("err");
     } finally {
-      await repo.cleanup();
+      await rm(dir, { recursive: true, force: true });
     }
   });
 
-  test("lists generated files instead of inlining their diff", async () => {
-    const repo = await changedRepo({
-      ".gitattributes": "gen/** linguist-generated\n",
-      "gen/queries.go": "package gen\n\nconst Generated = 1\n",
-      "src/added.ts": "export const added = 1;\n",
+  test("stops a command at its timeout", async () => {
+    const result = await createReviewCommandRunner({ timeoutMs: 50 }).run({
+      argv: ["sleep", "5"],
+      cwd: tmpdir(),
     });
-    const script = scripted([{ sessionId: "review-gen", model: "review-model", text: "[]" }]);
-    try {
-      await createCodexReviewer(script.runner, { model: "configured" }).review(request(repo));
-      const prompt = script.starts[0]?.prompt ?? "";
-      const [diff = "", rest = ""] = prompt.split("# Changed files not in the diff above");
-      expect(diff).toContain("export const added = 1;");
-      expect(diff).not.toContain("const Generated = 1");
-      expect(rest).toContain("- gen/queries.go (+3 -0, generated)");
-    } finally {
-      await repo.cleanup();
-    }
+    expect(result).toMatchObject({ exitCode: null, timedOut: true });
   });
 
-  test("inlines the diff up to its budget and lists the remaining files with line counts", async () => {
-    const repo = await changedRepo({
-      "src/first.ts": "export const first = 1;\n",
-      "src/second.ts": "export const second = 2;\nexport const more = 3;\n",
+  test("reports a command that does not start", async () => {
+    const result = await createReviewCommandRunner().run({
+      argv: ["paws-no-such-review-command"],
+      cwd: tmpdir(),
     });
-    const script = scripted([{ sessionId: "review-budget", model: "review-model", text: "[]" }]);
-    try {
-      await createCodexReviewer(script.runner, { model: "configured", diffBudget: 250 }).review(
-        request(repo),
-      );
-      const prompt = script.starts[0]?.prompt ?? "";
-      const [diff = "", rest = ""] = prompt.split("# Changed files not in the diff above");
-      expect(diff).toContain("export const first = 1;");
-      expect(diff).not.toContain("export const second = 2;");
-      expect(rest).toContain("- src/second.ts (+2 -0)");
-      expect(rest).toContain(`git diff ${repo.base} ${repo.head} -- <path>`);
-    } finally {
-      await repo.cleanup();
-    }
-  });
-
-  test("records an oversize prompt as invalid with its parts and never starts the agent", async () => {
-    const repo = await gitRepo();
-    const script = scripted([]);
-    try {
-      const result = await createCodexReviewer(script.runner, {
-        model: "configured",
-        maxPromptChars: 200,
-      }).review({
-        ...request(repo),
-        skillFiles: new Map([
-          [SKILL, encode("Review skill")],
-          [".agents/skills/adversarial-review/references/long.md", encode("x".repeat(5000))],
-        ]),
-      });
-      expect(result.status).toBe("invalid");
-      expect(result.status === "invalid" ? result.reason : "").toMatch(
-        /^the review prompt is \d+ characters, over the 200 limit: skill 12, references 5000, diff \d+\./,
-      );
-      expect(script.starts).toHaveLength(0);
-    } finally {
-      await repo.cleanup();
-    }
+    expect(result.exitCode).toBeNull();
+    expect(result.timedOut).toBeUndefined();
   });
 });
 
@@ -539,24 +607,14 @@ function reviewRecord(findings: Finding[]): ReviewRecord {
   };
 }
 
-function scripted(replies: CodexAcpReply[]) {
-  const starts: Array<CodexAcpStart & { seenHead: string }> = [];
-  let index = 0;
-  return {
-    starts,
-    runner: {
-      async start(input: CodexAcpStart) {
-        const seenHead = (
-          await exec("git", ["-C", input.worktree, "rev-parse", "HEAD"])
-        ).stdout.trim();
-        starts.push({ ...input, seenHead });
-        const reply = replies[index];
-        index += 1;
-        if (!reply) throw new Error("no scripted reply");
-        return reply;
-      },
-    },
-  };
+async function inspectCall(call: ReviewCommandRequest) {
+  const head = (await exec("git", ["-C", call.cwd, "rev-parse", "HEAD"])).stdout.trim();
+  const schemaFlag = call.argv.indexOf("--output-schema");
+  const schema =
+    schemaFlag === -1
+      ? undefined
+      : (JSON.parse(readFileSync(call.argv[schemaFlag + 1]!, "utf8")) as unknown);
+  return { head, schema };
 }
 
 function evidenceValidator() {
@@ -606,29 +664,4 @@ function request(repo: { dir: string; base: string; head: string }) {
     worktree: repo.dir,
     skillFiles: new Map([[SKILL, new TextEncoder().encode("Review skill")]]),
   };
-}
-
-async function changedRepo(files: Record<string, string>): Promise<{
-  dir: string;
-  base: string;
-  head: string;
-  cleanup: () => Promise<void>;
-}> {
-  const dir = await mkdtemp(path.join(tmpdir(), "paws-review-size-"));
-  await exec("git", ["init", "-b", "main", dir]);
-  await exec("git", ["-C", dir, "config", "user.email", "paws-test@example.com"]);
-  await exec("git", ["-C", dir, "config", "user.name", "Paws Test"]);
-  await exec("git", ["-C", dir, "config", "commit.gpgsign", "false"]);
-  await writeFile(path.join(dir, "README.md"), "base\n");
-  await exec("git", ["-C", dir, "add", "."]);
-  await exec("git", ["-C", dir, "commit", "-m", "base"]);
-  const base = (await exec("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
-  for (const [name, text] of Object.entries(files)) {
-    await mkdir(path.dirname(path.join(dir, name)), { recursive: true });
-    await writeFile(path.join(dir, name), text);
-  }
-  await exec("git", ["-C", dir, "add", "."]);
-  await exec("git", ["-C", dir, "commit", "-m", "candidate"]);
-  const head = (await exec("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
-  return { dir, base, head, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
