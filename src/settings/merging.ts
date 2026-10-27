@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import {
   loadConfigFile,
+  parseHighRiskPathSettings,
   parseMergePolicy,
   readMergeSettings,
   storedMerge,
@@ -9,6 +10,7 @@ import {
   type MergeOverride,
   type MergePolicy,
   type MergeRule,
+  type MergeSettings,
   type StoredMerge,
 } from "../config";
 import { json, localRequest, readJson, sameToken } from "./handler";
@@ -54,7 +56,7 @@ export async function handleMergeSettingsRequest(
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Merging settings are only available on the local Paws origin" }, 403);
   if (request.method === "GET") {
-    let policy: MergePolicy;
+    let policy: MergeSettings;
     try {
       policy = readMergeSettings(loadConfigFile(options.configPath));
     } catch (caughtError1) {
@@ -73,6 +75,7 @@ export async function handleMergeSettingsRequest(
     }
     return json({
       ...view(policy),
+      highRiskPaths: highRiskPathsView(policy),
       choices,
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
@@ -90,7 +93,14 @@ export async function handleMergeSettingsRequest(
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   let policy: MergePolicy;
+  // Optional, so a page that does not show High-risk paths keeps them.
+  let highRiskPaths: Record<string, string[]> | undefined;
   try {
+    if (isRecord(body) && "highRiskPaths" in body) {
+      const { highRiskPaths: paths, ...rest } = body;
+      highRiskPaths = parseHighRiskPathSettings(paths);
+      body = rest;
+    }
     policy = parseMergePolicy(body);
   } catch (error) {
     journalCaught(error, "merging.handleMergeSettingsRequest.parseMergePolicy", null);
@@ -101,7 +111,7 @@ export async function handleMergeSettingsRequest(
   }
   // A malformed saved file is repaired by this write.
   let current: StoredMerge = { projects: {}, rules: [] };
-  let before: MergePolicy | null = null;
+  let before: MergeSettings | null = null;
   try {
     const config = loadConfigFile(options.configPath);
     current = storedMerge(config);
@@ -126,13 +136,61 @@ export async function handleMergeSettingsRequest(
       );
   }
   try {
-    writeMergePolicy(options.configPath, policy, current);
+    writeMergePolicy(options.configPath, policy, current, highRiskPaths);
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
-  return json(view(policy));
+  const saved =
+    highRiskPaths ??
+    Object.fromEntries(highRiskPathsView(before).map((entry) => [entry.repository, entry.paths]));
+  for (const change of highRiskPathChanges(before, saved))
+    options.audit?.("settings.merging", change);
+  return json({
+    ...view(policy),
+    highRiskPaths: Object.entries(saved)
+      .filter(([, paths]) => paths.length > 0)
+      .map(([repository, paths]) => ({ repository, paths })),
+  });
+}
+
+/** Settings › Merging › High-risk paths: each repository with globs. */
+function highRiskPathsView(
+  settings: MergeSettings | null,
+): { repository: string; paths: string[] }[] {
+  return Object.entries(settings?.repositories ?? {})
+    .filter(([, value]) => value.highRiskPaths?.length)
+    .map(([repository, value]) => ({ repository, paths: value.highRiskPaths! }));
+}
+
+/** One line per repository whose high-risk paths changed, for the audit history. */
+function highRiskPathChanges(
+  before: MergeSettings | null,
+  after: Record<string, string[]>,
+): string[] {
+  const old = new Map(
+    highRiskPathsView(before).map((entry) => [entry.repository.toLowerCase(), entry]),
+  );
+  const changes: string[] = [];
+  const seen = new Set<string>();
+  for (const [repository, paths] of Object.entries(after)) {
+    const key = repository.toLowerCase();
+    seen.add(key);
+    const previous = old.get(key)?.paths ?? [];
+    if (previous.join("\n") === paths.join("\n")) continue;
+    changes.push(
+      `High-risk paths for ${repository}: ${previous.join(", ") || "none"} → ${paths.join(", ") || "none"}`,
+    );
+  }
+  for (const [key, entry] of old)
+    if (!seen.has(key))
+      changes.push(`High-risk paths for ${entry.repository}: ${entry.paths.join(", ")} → none`);
+  return changes;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function githubQueueView(

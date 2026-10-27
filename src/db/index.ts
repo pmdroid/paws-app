@@ -156,6 +156,12 @@ export {
   savePullRequestDraft,
   type PullRequestDraft,
 } from "./pull-request-drafts";
+export {
+  getCandidateRisk,
+  latestCandidateRisk,
+  saveCandidateRisk,
+  type CandidateRisk,
+} from "./candidate-risk";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,

@@ -7,6 +7,7 @@ import {
   loadConfigFile,
   parseConfigToml,
   readMergeSettings,
+  highRiskPaths,
   repositoryPackages,
   resolveMergeSettings,
   type MergePolicy,
@@ -141,6 +142,28 @@ packages = ["apps/*", "packages/*"]
       ).toThrow();
   });
 
+  test("a repository's high-risk paths are globs in the repository", () => {
+    const settings = readMergeSettings(
+      parseConfigToml(
+        `[merge.repositories."acme/platform"]\nhigh_risk_paths = ["src/auth/**", ".github/workflows/**"]\n`,
+      ),
+    );
+    expect(settings.repositories).toEqual({
+      "acme/platform": { packages: [], highRiskPaths: ["src/auth/**", ".github/workflows/**"] },
+    });
+    expect(highRiskPaths(settings, "Acme/Platform")).toEqual([
+      "src/auth/**",
+      ".github/workflows/**",
+    ]);
+    expect(highRiskPaths(settings, "acme/web")).toEqual([]);
+    for (const glob of ["!src/**", "/src/**", "../x", ""])
+      expect(() =>
+        parseConfigToml(
+          `[merge.repositories."acme/platform"]\nhigh_risk_paths = [${JSON.stringify(glob)}]\n`,
+        ),
+      ).toThrow("high_risk_paths");
+  });
+
   test("unknown choices are rejected", () => {
     expect(() => parseConfigToml('[merge]\norder = "fast"\n')).toThrow("merge.order");
     expect(() => parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "x"\n')).toThrow(
@@ -208,6 +231,7 @@ describe("Merging settings API", () => {
       default: { order: "queue", mainMoved: "closeout" },
       projects: [],
       rules: [],
+      highRiskPaths: [],
       choices: {
         projects: [
           { id: PAWS, name: "Paws" },
@@ -240,7 +264,7 @@ describe("Merging settings API", () => {
     };
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
-    expect(await saved!.json()).toEqual(body);
+    expect(await saved!.json()).toEqual({ ...body, highRiskPaths: [] });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
@@ -283,6 +307,80 @@ describe("Merging settings API", () => {
     // Saving the same settings again is not a change.
     await handleMergeSettingsRequest(request("PUT", body), options);
     expect(audits).toHaveLength(7);
+  });
+
+  test("PUT saves high-risk paths per repository and a body without them keeps them", async () => {
+    const { options, audits } = fixture();
+    writeFileSync(
+      options.configPath,
+      '[merge.repositories."acme/platform"]\npackages = ["apps/*"]\nignore_comment_bots = ["codecov[bot]"]\n',
+    );
+    const valid = { default: { order: "queue", mainMoved: "closeout" }, projects: [], rules: [] };
+    const saved = await handleMergeSettingsRequest(
+      request("PUT", {
+        ...valid,
+        highRiskPaths: [
+          { repository: "acme/platform", paths: ["src/auth/**", " .github/workflows/** "] },
+          { repository: "acme/web", paths: ["infra/**"] },
+        ],
+      }),
+      options,
+    );
+    expect(saved?.status).toBe(200);
+    const expected = [
+      { repository: "acme/platform", paths: ["src/auth/**", ".github/workflows/**"] },
+      { repository: "acme/web", paths: ["infra/**"] },
+    ];
+    expect(((await saved!.json()) as { highRiskPaths: unknown }).highRiskPaths).toEqual(expected);
+    expect(readMergeSettings(loadConfigFile(options.configPath)).repositories).toEqual({
+      "acme/platform": {
+        packages: ["apps/*"],
+        ignoreCommentBots: ["codecov[bot]"],
+        highRiskPaths: ["src/auth/**", ".github/workflows/**"],
+      },
+      "acme/web": { packages: [], highRiskPaths: ["infra/**"] },
+    });
+    expect(audits.filter(([, subject]) => subject.startsWith("High-risk"))).toEqual([
+      [
+        "settings.merging",
+        "High-risk paths for acme/platform: none → src/auth/**, .github/workflows/**",
+      ],
+      ["settings.merging", "High-risk paths for acme/web: none → infra/**"],
+    ]);
+
+    // The page that does not send highRiskPaths keeps them.
+    await handleMergeSettingsRequest(request("PUT", valid), options);
+    const got = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
+      highRiskPaths: unknown;
+    };
+    expect(got.highRiskPaths).toEqual(expected);
+
+    // An empty list removes a repository's paths.
+    await handleMergeSettingsRequest(
+      request("PUT", { ...valid, highRiskPaths: [{ repository: "acme/web", paths: [] }] }),
+      options,
+    );
+    expect(readMergeSettings(loadConfigFile(options.configPath)).repositories).toEqual({
+      "acme/platform": { packages: ["apps/*"], ignoreCommentBots: ["codecov[bot]"] },
+      "acme/web": { packages: [] },
+    });
+    for (const riskPaths of [
+      [{ repository: "acme/web", paths: ["!src/**"] }],
+      [{ repository: "acme/web", paths: ["src/../x"] }],
+      [{ repository: "nope", paths: [] }],
+      [
+        { repository: "acme/web", paths: [] },
+        { repository: "ACME/web", paths: [] },
+      ],
+    ])
+      expect(
+        (
+          await handleMergeSettingsRequest(
+            request("PUT", { ...valid, highRiskPaths: riskPaths }),
+            options,
+          )
+        )?.status,
+      ).toBe(400);
   });
 
   test("PUT rejects invalid settings and a missing CSRF token", async () => {
