@@ -4,6 +4,8 @@ import type { ExeDevTokenReader } from "./client";
 
 export {
   BOOTSTRAP_AUTHKEY_FILE,
+  BOOTSTRAP_EXEC_TIMEOUT_MS,
+  BOOTSTRAP_LOG_DIR,
   BOOTSTRAP_MISE_PATH,
   BOOTSTRAP_STAGE_DIR,
   BOOTSTRAP_TAILNET_KEY,
@@ -17,6 +19,7 @@ export {
   RUNNER_STATE_DIR,
 } from "./bootstrap";
 export type {
+  BootstrapClock,
   BootstrapStep,
   EnrolledRunner,
   ExeDevBootstrap,
@@ -35,6 +38,7 @@ export {
   DEFAULT_MAX_RESPONSE_BYTES,
   DEFAULT_TIMEOUT_MS,
   EXE_DEV_ENDPOINT,
+  EXE_DEV_EXEC_LIMIT_MS,
 } from "./client";
 export type { ExeDevFetch, ExeDevOptions, ExeDevTokenReader } from "./client";
 export { createFakeExeDev, FAKE_UNSCRIPTED_EXIT } from "./fake";
