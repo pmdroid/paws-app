@@ -2281,6 +2281,39 @@ test("Linear's Fix merge conflicts request on a conflicting pull request is a re
   expect(result.requeuedBases, result.detail).toEqual([result.movedMain]);
 }, 90_000);
 
+test("by default a rebased head merges on green CI without running Closeout again", async () => {
+  const result = await withGitIdentity(() => runRebaseConflict("clean"));
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.merged, result.detail).toBe(1);
+  expect(result.mergedOnMovedMain, result.detail).toBe(true);
+  // No Closeout round for the rebased head, and no second review.
+  expect(result.rounds, result.detail).toEqual([]);
+  expect(result.reviews, result.detail).toBe(result.reviewsBeforeUpdate);
+  const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI.`;
+  expect(
+    result.summaries.some((line) => line.startsWith(updated)),
+    result.detail,
+  ).toBe(true);
+  expect(result.summaries, result.detail).not.toContain(
+    `Rebased onto main ${result.movedMain.slice(0, 7)}, re-verifying.`,
+  );
+}, 120_000);
+
+test("an issue rule for the task's Linear label runs Closeout again after a rebase", async () => {
+  const result = await withGitIdentity(() =>
+    runRebaseConflict("clean", undefined, {
+      toml: '[merge]\nmain_moved = "ci"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"\n',
+      labels: ["Feature", "bug"],
+    }),
+  );
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.rounds, result.detail).toHaveLength(1);
+  expect(result.reviews, result.detail).toBeGreaterThan(result.reviewsBeforeUpdate);
+  expect(result.summaries, result.detail).toContain(
+    `Rebased onto main ${result.movedMain.slice(0, 7)}, re-verifying.`,
+  );
+}, 120_000);
+
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
   let checks = 0;
   const host = new FakeGitHubIntegration({
@@ -2289,7 +2322,9 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
       return true;
     },
   });
-  const result = await withGitIdentity(() => runRebaseConflict("clean", host));
+  const result = await withGitIdentity(() =>
+    runRebaseConflict("clean", host, { toml: '[merge]\nmain_moved = "closeout"\n' }),
+  );
   expect(result.state, result.detail).toBe("merged");
   expect(result.merged, result.detail).toBe(1);
   expect(result.mergedOnMovedMain, result.detail).toBe(true);
@@ -3626,6 +3661,7 @@ test.each([
 async function runRebaseConflict(
   mode: "clean" | "linear",
   githubInstallation?: FakeGitHubIntegration,
+  merging?: { toml: string; labels?: string[] },
 ): Promise<{
   state: string | null;
   reviews: number;
@@ -3652,6 +3688,11 @@ async function runRebaseConflict(
       subIssues: [],
     },
   ]);
+  if (merging !== undefined) {
+    await writeFile(path.join(layout.pawsRoot, "config.toml"), merging.toml);
+    if (merging.labels)
+      tracker.mergeContexts.set(`rebase-${mode}`, { projectId: null, labels: merging.labels });
+  }
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const queuedSummary = queuedSummaries(db);

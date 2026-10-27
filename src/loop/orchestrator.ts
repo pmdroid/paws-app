@@ -49,6 +49,7 @@ import {
   highRiskPaths,
   loadConfigFile,
   readMergeSettings,
+  repositoryPackages,
   readQueueSettings,
   resolveAgentProfiles,
   resolveMergeSettings,
@@ -3452,6 +3453,7 @@ export class Orchestrator {
           const { home, policyRoot } = this.closeoutHome(item);
           return candidatePolicyDigest(worktree, home, policyRoot, this.runCheckout(item).checks);
         },
+        packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         completed: () => this.dispatch(),
@@ -3789,6 +3791,24 @@ export class Orchestrator {
         this.options.journal,
       );
       return DEFAULT_QUEUE_START_TIMEOUT_HOURS;
+    }
+  }
+
+  private repositoryPackages(repository: string): string[] {
+    try {
+      return repositoryPackages(
+        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        repository,
+      );
+    } catch (caughtError) {
+      journalCaught(
+        caughtError,
+        "orchestrator.repositoryPackages",
+        null,
+        undefined,
+        this.options.journal,
+      );
+      return [];
     }
   }
 
