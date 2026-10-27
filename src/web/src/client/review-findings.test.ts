@@ -115,18 +115,18 @@ describe("review findings on the issue page", () => {
     expect(html).toContain("Round 2 · head 91fd0c4 · fails on P1 or worse");
 
     const blocking = findingHtml(html, "src/retention/job.ts:44");
-    expect(blocking).toContain('class="review-finding blocking"');
+    expect(blocking).toContain('class="review-finding finding-blocking"');
     expect(blocking).toContain("Blocked: meets failOn P1");
     expect(blocking).toContain("Still open since round 1");
 
     const old = findingHtml(html, "src/retention/legacy.ts:7");
-    expect(old).toContain('class="review-finding pre-existing"');
+    expect(old).toContain('class="review-finding finding-pre-existing"');
     expect(old).toContain("Pre-existing, does not block");
     expect(old).toContain("New in round 2");
     expect(old).not.toContain("Blocked");
 
     const fixed = findingHtml(html, "src/retention/policy.ts:12");
-    expect(fixed).toContain('class="review-finding fixed"');
+    expect(fixed).toContain('class="review-finding finding-fixed"');
     expect(fixed).toContain("Fixed since round 1");
     expect(fixed).not.toContain("Blocked");
 
@@ -165,6 +165,8 @@ describe("review findings on the issue page", () => {
       createElement(Fragment, null, themedMarkup(page(withReviews()))),
     );
     expect(html).toContain("review-location");
+    // Tailwind's `fixed` utility would pull a fixed finding out of the list.
+    expect(html).not.toMatch(/class="(?:[^"]*\s)?fixed(?:\s[^"]*)?"/);
     expect(html).not.toMatch(/class="[^"]*review-finding[^"]*whitespace-nowrap/);
   });
 });

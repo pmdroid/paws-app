@@ -452,10 +452,10 @@ a.evidence-thumb:focus-visible {
   padding: 0.75rem 1rem;
   background: var(--secondary-background);
 }
-.review-finding.blocking {
+.review-finding.finding-blocking {
   border-left: 8px solid #e5484d;
 }
-.review-finding.fixed .review-location {
+.review-finding.finding-fixed .review-location {
   text-decoration: line-through;
 }
 .review-explanation,
