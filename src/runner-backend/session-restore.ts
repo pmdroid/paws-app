@@ -32,7 +32,7 @@ export type SessionRestorePlan =
 
 const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 
-function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
+export function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
   const parts = version
     ?.match(/^(\d+)\.(\d+)\.(\d+)/)
     ?.slice(1)

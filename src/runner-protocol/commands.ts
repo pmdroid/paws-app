@@ -2,6 +2,14 @@ import { z } from "zod";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 
 export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
+/** A handover waits this long for a safe point; after that the session keeps running. */
+export const RUNNER_HANDOVER_LIMIT_MS = 120_000;
+/**
+ * Why a handover failed after the agent stopped: the WIP commit, the session snapshot or their
+ * publication. The run then stays on its runner, and its next turn loads the session there.
+ */
+export const RUNNER_HANDOVER_FAILURES = ["commit", "snapshot", "publication"] as const;
+export type RunnerHandoverFailure = (typeof RUNNER_HANDOVER_FAILURES)[number];
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -211,6 +219,8 @@ export const RunnerCommandSchema = z
     z.strictObject({ ...common, type: z.literal("login_check"), agent }),
     z.strictObject({ ...common, type: z.literal("login"), agent }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
+    /** Stop the run's agent at a safe point and publish what another runner needs to continue. */
+    z.strictObject({ ...common, type: z.literal("handover"), runId: id, generation }),
     z.strictObject({
       ...common,
       type: z.literal("upgrade"),

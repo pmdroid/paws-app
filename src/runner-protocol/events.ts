@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RUNNER_HANDOVER_FAILURES } from "./commands";
 import { RunnerArtifactSchema } from "./artifacts";
 import { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 
@@ -81,6 +82,18 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     restored: z.boolean(),
     reason: z.enum(["download", "integrity", "unpack", "load"]).optional(),
   }),
+  /**
+   * A handover Paws asked for: the runner handed the session over (the WIP commit and session are
+   * published and the result follows), found no safe point in time (`timeout`, the session keeps
+   * running), or failed after it stopped the agent (the run stays on this runner).
+   */
+  z.strictObject({
+    type: z.literal("handover"),
+    handedOver: z.boolean(),
+    reason: z.enum(["timeout", ...RUNNER_HANDOVER_FAILURES]).optional(),
+  }),
+  /** The runner stopped the agent at a safe point and is making the WIP commit and snapshot. */
+  z.strictObject({ type: z.literal("handover_interrupted") }),
   z.strictObject({
     type: z.literal("hook_failed"),
     hookId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/),

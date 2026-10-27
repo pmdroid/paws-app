@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RUNNER_HANDOVER_FAILURES } from "./commands";
 
 export const RUNNER_RESULT_BODY_LIMIT = 1_048_576;
 const resultMetadataBudget = 131_072;
@@ -55,6 +56,10 @@ export const RunnerResultSchema = z.strictObject({
     .min(1)
     .max(4)
     .optional(),
+  /** The run stopped for a handover: `candidateSha` is its WIP commit, if the worktree changed. */
+  handedOver: z.literal(true).optional(),
+  /** The handover stopped the agent, then failed; the next turn resumes the session here. */
+  handoverFailure: z.enum(RUNNER_HANDOVER_FAILURES).optional(),
   pushFailure: z
     .strictObject({
       branch: z.string().min(1).max(256),
@@ -69,6 +74,8 @@ export const RunnerHelperResultSchema = RunnerResultSchema.omit({
   candidateSha: true,
   reviewText: true,
   closeoutReport: true,
+  handedOver: true,
+  handoverFailure: true,
 }).extend({
   role: z.literal("implementer"),
   text: z
