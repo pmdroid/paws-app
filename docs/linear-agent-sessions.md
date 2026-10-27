@@ -73,6 +73,34 @@ Linear's stop button, the `stopping` status and a `/paws stop` reply all end in 
 
 The keepalive (`KEEPALIVE_MS` in `src/loop/activity.ts`, `WAIT_KEEPALIVE_MS` in `src/scheduler/waits.ts`) is 25 minutes, below Linear's 30-minute stale window (`LINEAR_STALE_MS`). Its body is the agent's current plan step, else the last `post_update` line, else the phase. A lifecycle thought with an identical body is not posted twice within one phase.
 
+### A first delegation
+
+A delegator who has never signed in to Paws gets the same one session, with a short setup prefix before the ordinary faces. Paws never opens a second session for onboarding and never writes to Linear while it waits. Who may delegate, the onboarding page and the link rules are in [Workspace access](workspace-access.md#a-first-delegation).
+
+| #   | When                                           | Activity                                                                                                                                                                                                                                                                                         | Linear session |
+| --- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- |
+| 1   | The delegation arrives                         | Thought "Picked up this issue.", within 10 seconds, as for everyone                                                                                                                                                                                                                              | active         |
+| 2   | The delegator has no Paws membership           | One auth elicitation addressed to the delegator: "Welcome to Paws. Sign in with Linear so I can start PAS-n. I'll start on my own once you're set up. You can Stop this anytime." and "Optional: link GitHub on the next page so your commits credit you." Its action opens `/onboard/<link id>` | awaitingInput  |
+| 3   | The delegator replies before signing in        | Nothing. The reply is kept and delivered to the agent when the run starts. A reply from anyone else is dropped                                                                                                                                                                                   | awaitingInput  |
+| 4   | Signed in, and no runner the delegator may use | One thought: "You don't have a runner Paws can use yet. Create a VM or add a host here: <origin>/status/runners. I'll start on my own once it's ready."                                                                                                                                          | active         |
+| 4   | Signed in, the runner lacks the agent          | One thought: "Your runner <name> needs <agent> signed in. Sign in on the Runners page; I'll start right after."                                                                                                                                                                                  | active         |
+| 5   | A runner becomes usable                        | One thought: "Starting PAS-n on <runner>.", then the ordinary `running` face                                                                                                                                                                                                                     | active         |
+| 6   | The work merges                                | The pull request response, then the final "Merged #N into main at <sha>. PAS-n is Done." The commits carry the delegator's `Co-authored-by` trailer when they linked GitHub                                                                                                                      | complete       |
+
+A delegator who signs in and already has a usable runner skips step 4 and the "Starting" thought of step 5. A member who is already set up sees only steps 1 and 6 around the ordinary faces. Each thought is posted once per hold: a runner that comes and goes, or a page that is reloaded, posts nothing more. When Paws cannot tell what is missing, step 4 is the general line "PAS-n waits for a runner you can use. Add one on the Runners page and sign in to its agent, or ask your project lead to share theirs. Paws starts PAS-n on its own once a runner is ready." While held, the item is not in the slot line, so it gets no queue position, no start timeout and no retries.
+
+The setup can also end early, each time with at most one activity:
+
+| Cause                                                                   | Activity                                                                                                                             | Linear session    |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------- |
+| No sign-in within one day                                               | Response "This sign-in link expired. Delegate the issue again to retry."                                                             | complete          |
+| The delegator is a guest, an observer, or outside the issue's team      | Error "Paws did not start this work. <reason>" (reasons in [Admission](workspace-access.md#admission))                               | error             |
+| The issue's team, state or delegate changed before the resume           | Error "Paws did not start this work. This issue changed while Paws waited for you to sign in."                                       | error             |
+| The team has no repository Paws may use, or the repository isn't mapped | Response with the reason, such as "ENG has no repository in Paws yet. Ask <admins> to map one in Integrations, then delegate again." | complete          |
+| The delegator presses Stop                                              | None from the hold: it ends with its link, and nothing starts                                                                        | stopped in Linear |
+
+`test/first-delegation-budget.test.ts` holds a first delegation to 30 Linear requests or fewer, with none while it waits.
+
 ### Measuring the story
 
 The outbox records every post, so these queries show whether sessions follow the rule. The live run of them is tracked in PAS-744.
