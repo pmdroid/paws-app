@@ -89,11 +89,17 @@ export async function samePatch(
   return sameOwnChanges(repo, before, after, base, undefined, env);
 }
 
+/** How far back `fixChangedPaths` looks for the commit a fix was made on. */
+const FIX_COMMITS_MAX = 50;
+
 /**
- * The files a fix changed between `approved` and `head`, given main's `base`: the fix's own
- * changes, never main's. When both forked from main at the same commit this is the diff between
- * them. After a rebase it is every file whose own changes against its fork differ between the
- * two, so a file only main touched is left out. Null when git cannot read either commit.
+ * The files a fix changed on top of the approved patch, given main's `base`. A fix is commits
+ * made on a commit that carries the approved patch: `approved` itself, or a rebase of it that
+ * `samePatch` holds for. The nearest such commit on `head`'s first-parent line, down to where
+ * `head` forked from main, is the fix's start, and the result is the diff from there to `head`.
+ *
+ * Null when `head` has no such commit, as after a rebase that changed the patch: a rebase keeps
+ * the approval only under `samePatch`, never as a fix. Null too when git cannot read the commits.
  */
 export async function fixChangedPaths(
   repo: string,
@@ -104,21 +110,20 @@ export async function fixChangedPaths(
 ): Promise<string[] | null> {
   if (approved === head) return [];
   if (!COMMIT.test(approved) || !COMMIT.test(head)) return null;
-  const approvedFork = await forkPoint(repo, approved, base, env);
-  const headFork = await forkPoint(repo, head, base, env);
-  if (approvedFork === null || headFork === null) return null;
-  if (approvedFork === headFork) return changedPaths(repo, approved, head, env);
-  const before = await changedPaths(repo, approvedFork, approved, env);
-  const after = await changedPaths(repo, headFork, head, env);
-  if (before === null || after === null) return null;
-  const changed: string[] = [];
-  for (const path of [...new Set([...before, ...after])].sort()) {
-    const was = await ownFileChanges(repo, approvedFork, approved, path, env);
-    const now = await ownFileChanges(repo, headFork, head, path, env);
-    if (was === null || now === null) return null;
-    if (was !== now) changed.push(path);
-  }
-  return changed;
+  const fork = await forkPoint(repo, head, base, env);
+  if (fork === null) return null;
+  const listed = await git(
+    repo,
+    ["rev-list", "--first-parent", `--max-count=${FIX_COMMITS_MAX}`, `${fork}..${head}`],
+    env,
+  );
+  if (!listed.ok) return null;
+  // Newest first, skipping `head`: the closest commit with the approved patch.
+  const commits = listed.stdout.toString("utf8").split("\n").filter(Boolean).slice(1);
+  for (const commit of commits)
+    if (await samePatch(repo, approved, commit, base, env))
+      return changedPaths(repo, commit, head, env);
+  return null;
 }
 
 async function forkPoint(
@@ -129,34 +134,6 @@ async function forkPoint(
 ): Promise<string | null> {
   const fork = await git(repo, ["merge-base", tip, base], env);
   return fork.ok ? fork.stdout.toString("utf8").trim() : null;
-}
-
-/** One file's own changes from `from` to `tip`, normalized as `ownChanges` does. */
-async function ownFileChanges(
-  repo: string,
-  from: string,
-  tip: string,
-  path: string,
-  env: Record<string, string>,
-): Promise<string | null> {
-  const diff = await git(
-    repo,
-    [
-      "diff",
-      "--no-renames",
-      "--no-color",
-      "--no-ext-diff",
-      "--unified=0",
-      "--binary",
-      from,
-      tip,
-      "--",
-      `:(literal)${path}`,
-    ],
-    env,
-  );
-  if (!diff.ok) return null;
-  return normalizedDiff(diff.stdout.toString("utf8"));
 }
 
 function normalizedDiff(diff: string): string {
