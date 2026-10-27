@@ -153,7 +153,8 @@ export function sessionMoveNotice(input: {
   db: Database;
   from: string;
   to: string;
-  gone: string;
+  /** How the earlier runner became unusable; absent when it handed the session over. */
+  gone?: string;
   agent: string;
   outcome:
     | { restored: true; turn: number }
@@ -167,7 +168,10 @@ export function sessionMoveNotice(input: {
     input.db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
       ?.name ?? id;
   const to = name(input.to);
-  const moved = `Moved this run to ${to} because ${name(input.from)} ${input.gone}.`;
+  const moved =
+    input.gone === undefined
+      ? `Moved from ${name(input.from)} to ${to}.`
+      : `Moved this run to ${to} because ${name(input.from)} ${input.gone}.`;
   const { outcome } = input;
   if (outcome.restored)
     return `${moved} Continuing the agent's session from turn ${outcome.turn}.\n`;

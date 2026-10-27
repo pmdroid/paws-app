@@ -43,6 +43,7 @@ import {
   runDir,
   type AcpEvent,
   type RunAgentOptions,
+  type RunAgentResult,
   encodePolicyFiles,
 } from "../acp";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
@@ -269,8 +270,9 @@ export function createRemoteAgentRunner(options: {
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     limit?: UsageLimit,
+    /** Receives each runner's rejection as `id: reason`. */
+    rejected: string[] = [],
   ) {
-    const rejected: string[] = [];
     const offered: string[] = [];
     const selected = await place(itemId, placement, rejected, offered);
     if (selected) return { ...selected, offered };
@@ -324,6 +326,40 @@ export function createRemoteAgentRunner(options: {
       );
     throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
   }
+  /**
+   * Places a handed-over run. With no eligible runner the run waits where it is, keeping its
+   * turn, says why once, and is placed as soon as a runner fits or the run stops.
+   */
+  async function selectAfterHandover(
+    itemId: string,
+    placement: Parameters<RunnerPlacement["candidates"]>[0],
+    limit: UsageLimit | undefined,
+    move: HandoverMove,
+    onEvent: RunAgentOptions["onEvent"],
+  ) {
+    for (;;) {
+      const rejected: string[] = [];
+      try {
+        return await select(itemId, placement, limit, rejected);
+      } catch (error) {
+        if (error instanceof UsageLimitPause || placement.signal?.aborted) throw error;
+        journalCaught(
+          error,
+          "runner-backend.selectAfterHandover",
+          itemId,
+          "waiting for an eligible runner",
+        );
+        if (!move.waiting) {
+          move.waiting = true;
+          await onEvent?.({
+            type: "progress",
+            text: handoverWaitNotice(db, move, rejected, error, placement.profile?.agent),
+          });
+        }
+      }
+      await delay(interval * 20, undefined, { signal: placement.signal });
+    }
+  }
   /** Whether any runner has already run work, not just preparation, for the item. */
   function startedWork(itemId: string): boolean {
     return (
@@ -372,6 +408,7 @@ export function createRemoteAgentRunner(options: {
     const pinnedOnline = Boolean(
       placement.purpose !== "prepare" &&
       placement.pinnedRunnerId &&
+      placement.pinnedRunnerId !== placement.handedOverFrom &&
       db
         .query(
           "SELECT 1 FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>?",
@@ -384,6 +421,10 @@ export function createRemoteAgentRunner(options: {
     offered.push(...candidates.map((runner) => runner.id));
     const pending = unassigned();
     for (const runner of candidates) {
+      if (runner.id === placement.handedOverFrom) {
+        rejected.push(`${runner.id}: handed the session over`);
+        continue;
+      }
       if (placement.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) {
         rejected.push(`${runner.id}: excluded after failed attempt`);
         continue;
@@ -495,7 +536,12 @@ export function createRemoteAgentRunner(options: {
     cancelItem,
     handOverItem,
     forItem(itemId: string) {
-      const attempt: FailoverAttempt = async (input, excluded, limit) => {
+      const attempt = async (
+        input: RunAgentOptions,
+        excluded: readonly string[],
+        limit: UsageLimit | undefined,
+        move: HandoverMove,
+      ): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
         const mode = getTaskMode(db, itemId);
@@ -536,6 +582,7 @@ export function createRemoteAgentRunner(options: {
           purpose: input.prepareOnly ? "prepare" : "work",
           excludeRunnerIds: excluded,
           ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
+          ...(move.from ? { handedOverFrom: move.from } : {}),
           ...(session ? { session } : {}),
           // A moved run prefers a runner that can continue its saved agent session.
           ...(pinnedRunnerId &&
@@ -560,7 +607,11 @@ export function createRemoteAgentRunner(options: {
         };
         const attached =
           !input.prepareOnly && !responseTask ? attachedWork(itemId, input.role) : undefined;
-        const chosen = attached ? undefined : await select(itemId, placementRequest, limit);
+        const chosen = attached
+          ? undefined
+          : move.from
+            ? await selectAfterHandover(itemId, placementRequest, limit, move, input.onEvent)
+            : await select(itemId, placementRequest, limit);
         const selected = attached?.selected ?? chosen!;
         const sessionBusy =
           session !== undefined &&
@@ -575,6 +626,7 @@ export function createRemoteAgentRunner(options: {
         let question: Promise<void> | undefined;
         let questionError: unknown;
         let publishedEffects = false;
+        let asked = false;
         let transcriptBytes = 0;
         let previousTranscript = Buffer.alloc(0);
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
@@ -1022,7 +1074,9 @@ export function createRemoteAgentRunner(options: {
                   ? {
                       from: pinnedRunnerId,
                       to: selected.id,
-                      gone: runnerGoneReason(db, pinnedRunnerId, now() - RUNNER_ONLINE_MS),
+                      ...(pinnedRunnerId === move.from
+                        ? {}
+                        : { gone: runnerGoneReason(db, pinnedRunnerId, now() - RUNNER_ONLINE_MS) }),
                       agent: profile.agent,
                     }
                   : undefined;
@@ -1332,6 +1386,7 @@ export function createRemoteAgentRunner(options: {
                 if (question) throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
                 publishedEffects = true;
+                asked = true;
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
                 const currentCommand = assigned;
                 question = (async () => {
@@ -1547,6 +1602,24 @@ export function createRemoteAgentRunner(options: {
                 disposition.usageLimit,
               );
           }
+          // The runner stopped the session at a safe point and Paws holds its WIP commit: another
+          // runner continues it there with its session. A run that asked keeps its question.
+          if (complete.handedOver && assigned.type === "run" && !asked) {
+            work.finish(assigned.runId, assigned.generation);
+            command = undefined;
+            move.from = selected.id;
+            move.repository = `${assigned.repository.owner}/${assigned.repository.repo}`;
+            move.waiting = false;
+            throw new RetryableRunnerError(
+              selected.id,
+              "Paws moved this session to another runner. Your work so far is committed; continue where you left off.",
+              transcript,
+              false,
+              undefined,
+              false,
+              true,
+            );
+          }
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
             signal.throwIfAborted();
@@ -1617,13 +1690,17 @@ export function createRemoteAgentRunner(options: {
           reservations.delete(selected.runId);
         }
       };
-      return (input: RunAgentOptions) =>
-        runWithFailover(
+      return (input: RunAgentOptions) => {
+        const move: HandoverMove = {};
+        const moving: FailoverAttempt = (next, excluded, limit) =>
+          attempt(next, excluded, limit, move);
+        return runWithFailover(
           input,
-          attempt,
+          moving,
           async () => cancelItem(itemId, input.signal),
           usageLimitWait(itemId, input),
         );
+      };
     },
   };
 }
@@ -1643,6 +1720,41 @@ const HANDOVER_FAILURE_STEP = {
   snapshot: "save its Claude session",
   publication: "publish its work in progress and session",
 } as const;
+
+/** A run's handover within one failover call: the runner it left, and whether Linear heard why it waits. */
+type HandoverMove = { from?: string; repository?: string; waiting?: boolean };
+
+/** Why no runner can take a handed-over run yet, posted once while it waits. */
+function handoverWaitNotice(
+  db: Database,
+  move: HandoverMove,
+  rejected: readonly string[],
+  error: unknown,
+  agent: string | undefined,
+): string {
+  const reasons = rejected.flatMap((entry) => {
+    const separator = entry.indexOf(":");
+    return separator < 0 || entry.slice(0, separator) === move.from
+      ? []
+      : [entry.slice(separator + 1).trim()];
+  });
+  const message = error instanceof Error ? error.message : "";
+  const why =
+    /repository is outside workspace access/.test(message) && move.repository
+      ? `No other runner allows ${move.repository}.`
+      : reasons.some((reason) => reason === NO_FREE_CAPACITY.slice(2))
+        ? "Every other runner is busy."
+        : reasons.some((reason) => reason === "agent-not-signed-in" || reason === "auth-expired")
+          ? `Sign in to ${agent ? agentName(agent) : "the agent"} on another runner.`
+          : reasons.length === 0 || reasons.every((reason) => /^(offline|paused)$/.test(reason))
+            ? "No other runner is online."
+            : "No other runner can take this work.";
+  const from = move.from
+    ? (db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(move.from)
+        ?.name ?? move.from)
+    : "its runner";
+  return `Waiting to move this session from ${from}: ${why} Paws moves it as soon as a runner fits.\n`;
+}
 
 function agentName(agent: string): string {
   return agent.charAt(0).toUpperCase() + agent.slice(1);

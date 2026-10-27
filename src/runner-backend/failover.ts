@@ -15,6 +15,8 @@ export class RetryableRunnerError extends Error {
     readonly publishedEffects = false,
     readonly usageLimit?: { resetsAt: number | null },
     readonly restarted = false,
+    /** The runner stopped the session at a safe point so another runner continues it. */
+    readonly handedOver = false,
   ) {
     super(message);
   }
@@ -111,7 +113,8 @@ export async function runWithFailover(
       await settle(error);
       input.signal?.throwIfAborted();
       const usageLimit = usageLimits ? error.usageLimit : undefined;
-      if ((!usageLimit && index === 2) || performance.now() >= deadline) throw error;
+      if ((!usageLimit && !error.handedOver && index === 2) || performance.now() >= deadline)
+        throw error;
       if (
         usageLimit &&
         limitedSincePause.has(error.runnerId) &&
@@ -130,7 +133,10 @@ export async function runWithFailover(
               ? usageLimits!.now() + USAGE_LIMIT_RETRY_MS
               : usageLimit.resetsAt + USAGE_LIMIT_RESUME_SLACK_MS,
         };
-      else {
+      else if (error.handedOver) {
+        // A handover is not a failure: it spends no attempt, and the old runner stays out.
+        if (!excluded.includes(error.runnerId)) excluded.push(error.runnerId);
+      } else {
         index++;
         if (!error.restarted) excluded.push(error.runnerId);
       }
@@ -194,7 +200,8 @@ export async function runWithFailover(
       }
       prompt = [
         prompt,
-        "Continue in a fresh agent session.",
+        // A handed-over session may be restored on the new runner, so it is not always fresh.
+        error.handedOver ? "" : "Continue in a fresh agent session.",
         error.message,
         history.length ? `Observed prior conversation:\n${JSON.stringify(history)}` : "",
         approved ? `Continuation instructions:\n${approved}` : "",
