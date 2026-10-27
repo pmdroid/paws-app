@@ -594,6 +594,16 @@ export function createRunnerWork(options: {
             fenced.push({ runId: row.runId, generation: row.generation });
           }
         }
+        // A run Paws already ended that the runner still names keeps its process alive there, so
+        // a conversation blocked on its cleanup stays blocked until a report leaves it out.
+        if (reported) {
+          db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [at, runnerId]);
+          for (const { runId, generation } of reported)
+            db.run(
+              "UPDATE runner_work SET confirmed_at=? WHERE runner_id=? AND run_id=? AND generation=?",
+              [at, runnerId, runId, generation],
+            );
+        }
         return {
           leases,
           fenced,

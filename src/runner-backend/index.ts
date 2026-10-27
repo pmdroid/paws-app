@@ -1850,6 +1850,8 @@ export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
 
+export { remoteCommandsGone } from "./released";
+
 export { CHECKPOINT_RUNNER_VERSION, createRemoteCheckpoint } from "./checkpoint";
 
 export {
