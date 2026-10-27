@@ -352,11 +352,10 @@ describe("visual review asked with a link", () => {
   test("the overview lists it under Needs you with Review screenshots", () => {
     const { snapshot } = linkAsked();
     const html = render({
-      route: { view: "overview" },
       phase: "ready",
-      snapshot,
       error: null,
       engineUrl: null,
+      ...pageData(snapshot, { view: "overview" }),
     }).content;
     expect(html).toContain("2 changed screens for visual-proof: shot-1.png, shot-2.png.");
     expect(html).toContain("#visual-review");
