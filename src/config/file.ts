@@ -18,7 +18,7 @@ import {
 } from "./agents";
 
 import {
-  mainMovedError,
+  MAIN_MOVED,
   MERGE_ORDERS,
   parseMergeTables,
   renderMergeSettings,
@@ -88,7 +88,7 @@ export type PawsConfigFile = {
   agentSettings?: AgentSettings;
   /** `[merge] order`. Missing means the merge queue. */
   mergeOrder?: MergeOrder;
-  /** `[merge] main_moved`, deprecated. Only `closeout` is accepted; missing means `closeout`. */
+  /** `[merge] main_moved`. Missing means `ci`. */
   mainMoved?: MainMoved;
   /** `[merge.projects."<Linear project id>"]`. */
   mergeProjects?: Record<string, MergeOverride>;
@@ -437,11 +437,9 @@ function assignConfig(
   if (section === "merge") {
     if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
     else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
-    else if (key === "main_moved") {
-      if (value !== "closeout")
-        throw new Error(`config.toml line ${line} merge.main_moved ${mainMovedError(value)}`);
-      config.mainMoved = value;
-    } else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
+    else if (key === "main_moved")
+      config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");
+    else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }
   if (section === "queue") {

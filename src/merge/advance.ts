@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
+  carriedAcceptFor,
   closeoutPolicyDigest,
   completeMergedItem,
   enqueueJobOnce,
@@ -9,6 +10,7 @@ import {
   getWorkItem,
   immediate,
   leaveMergeQueue,
+  recordCarriedAccept,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
   type CiRound,
@@ -64,14 +66,18 @@ export type MergeCapabilities = OrderCapabilities & {
   settings(item: WorkItemRecord, signal: AbortSignal): Promise<TaskMergeSettings>;
   /** Closeout's policy digest for the item's worktree now: `""` without a policy, null unreadable. */
   policyDigest(item: WorkItemRecord, worktree: string): string | null;
+  /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
+  packages(repository: string): string[];
   assertReady(item: WorkItemRecord): Promise<void>;
   completed(): void;
 };
 
 /**
  * One merge lane turn for an item in `merge_queue`. The lane squashes head S only when
- * `mergeable(S)` holds, with GitHub's expected-head guard on S. A head behind main is rebased,
- * pushed and sent back to `verifying`, so Closeout accepts every head that merges.
+ * `mergeable(S)` holds, with GitHub's expected-head guard on S. A head behind main is rebased and
+ * pushed. With `[merge] main_moved = "closeout"` the new head goes back to `verifying`; with `ci`
+ * and `overlap` it carries Closeout's acceptance of the head it was rebased from and merges once
+ * its CI is green. `overlap` merges a head main's new commits do not touch without a rebase.
  */
 export async function advanceMerge(
   db: Database,
@@ -129,10 +135,20 @@ export async function advanceMerge(
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,
     isCancelled: () => mergeHeld(merge),
+    ...(mergeSettings.mainMoved === "overlap"
+      ? { overlap: { packages: caps.packages(`${repository.owner}/${repository.repo}`) } }
+      : {}),
   };
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
-    facts: (facts) => mergeFacts(db, item.id, facts, caps.policyDigest(item, published.worktree)),
+    facts: (facts) =>
+      mergeFacts(
+        db,
+        item.id,
+        facts,
+        caps.policyDigest(item, published.worktree),
+        mergeSettings.mainMoved,
+      ),
     rebase: () => rebaseOntoMain(lane),
     squash: (head, facts) => squashPull(lane, { head, base: facts.base }, published.summary),
   });
@@ -151,6 +167,7 @@ export async function advanceMerge(
   const { step, leaveQueue } = serialMergeStep({
     turn,
     queued,
+    mainMoved: mergeSettings.mainMoved,
     rebaseBudget: rebaseBudgetFor(db, item.id, conflict, caps.now()),
     ciFixes: ciFixes(db, item.id),
     ciFixLimit,
@@ -159,6 +176,16 @@ export async function advanceMerge(
     leaveMergeQueue(db, item.id);
     wakeMergesBehind(db, caps.now());
   }
+  // The pushed head carries the acceptance whatever happens to this turn next.
+  const acceptedHead = getWorkItem(db, item.id)?.acceptedHead ?? null;
+  if (step.kind === "carry" && acceptedHead !== null)
+    recordCarriedAccept(db, {
+      itemId: item.id,
+      head: step.head,
+      acceptedHead,
+      base: step.base,
+      now: caps.now(),
+    });
   if (step.kind === "wait" && step.reason === "ci")
     return caps.stopped() ? { kind: "obsolete" } : step;
   if (turn.kind === "merged")
@@ -183,6 +210,11 @@ export async function advanceMerge(
     reverify(merge, step, input.jobId);
     if (step.rebased) await voice.flush();
     return { kind: "returned" };
+  }
+  if (step.kind === "carry") {
+    voice.status(item, step.message, `${item.id}:branch-updated:${step.head}`);
+    await voice.flush();
+    return { kind: "wait", reason: "ci", message: step.message, base: step.base, head: step.head };
   }
   if (step.kind === "wait") {
     voice.status(item, step.message, `${item.id}:merge-wait:${step.reason}:${step.head ?? ""}`);
@@ -249,15 +281,24 @@ export async function advanceMerge(
   return { kind: "failed", reason: "merge", message };
 }
 
-/** The facts `mergeable(S)` judges: GitHub's and Git's read, plus Closeout's accept row for S. */
+/**
+ * The facts `mergeable(S)` judges: GitHub's and Git's read, plus Closeout's accept row for S.
+ * Under `ci` and `overlap`, a head the lane rebased from the accepted head carries its row.
+ */
 function mergeFacts(
   db: Database,
   itemId: string,
   pull: PullFacts,
   policyDigest: string | null,
+  mainMoved: TaskMergeSettings["mainMoved"],
 ): MergeFacts {
   const acceptedHead = getWorkItem(db, itemId)?.acceptedHead ?? null;
   const { readiness } = pull;
+  const carried =
+    mainMoved !== "closeout" &&
+    acceptedHead !== null &&
+    acceptedHead !== pull.head &&
+    carriedAcceptFor(db, itemId, pull.head) === acceptedHead;
   return {
     head: pull.head,
     headMoved: readiness.outcome === "sha_moved",
@@ -265,11 +306,12 @@ function mergeFacts(
       acceptedHead === null
         ? null
         : {
-            head: acceptedHead,
+            head: carried ? pull.head : acceptedHead,
             policyDigest: closeoutPolicyDigest(db, itemId, acceptedHead),
           },
     policyDigest,
     containsMain: pull.containsMain,
+    ...(pull.apart === undefined ? {} : { apart: pull.apart }),
     ci:
       readiness.outcome === "ci_failed"
         ? "failed"
