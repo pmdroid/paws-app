@@ -165,12 +165,19 @@ test.skipIf(!linux)(
     first = await context.commit("contract.ts", "export type Finding = {};\n");
     second = await context.commit("contract.test.ts", "test('finding');\n");
     writeFileSync(join(context.checkout, "ui.tsx"), "<Findings />\n");
-    // Paws hits the time cap and asks for the checkpoint before it cancels the run.
+    // Paws hits the time cap and asks for the checkpoint before it cancels the run. The worker
+    // halts the agent first, so the turn ends without Paws aborting it.
     ask();
-    await context.until(() => context.checkpoints().length === 1);
-    stop.abort();
     const result = await running;
+    expect(stop.signal.aborted).toBe(false);
     expect(result.run.cancelled).toBe(true);
+    expect(result.candidateSha).toBeUndefined();
+    // The snapshot is taken after the agent's turn ended, so no later change can miss it.
+    const lines = context.events().trim().split("\n");
+    const ended = lines.findIndex((line) => line.includes('"type":"cancelled"'));
+    const saving = lines.findIndex((line) => line.includes('"type":"checkpoint"'));
+    expect(ended).toBeGreaterThanOrEqual(0);
+    expect(saving).toBeGreaterThan(ended);
     const [saved] = context.checkpoints();
     expect(saved).toMatchObject({ type: "checkpoint", reason: "stop" });
     const sha = saved!.sha!;
