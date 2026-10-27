@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { JOB_KIND, MERGE_LANE } from "../core";
+import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   claimNextJob,
@@ -132,7 +132,6 @@ describe("advanceMerge in the repository merge queue", () => {
     }
     const behind = enqueueJob(h.db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "ENG-122", mergeWait: { reason: "ahead" } },
       runAt: h.clock.now() + 300_000,
       now: h.clock.now(),
@@ -140,7 +139,6 @@ describe("advanceMerge in the repository merge queue", () => {
 
     const review = enqueueJob(h.db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "ENG-124", mergeWait: { reason: "review" } },
       runAt: h.clock.now() + 300_000,
       now: h.clock.now(),
@@ -248,7 +246,6 @@ describe("advanceMerge in the repository merge queue", () => {
     h.clock.advance(1_000);
     const waiting = enqueueJob(h.db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "ENG-131", mergeWait: { reason: "dependencies" } },
       runAt: h.clock.now() + 300_000,
       now: h.clock.now(),

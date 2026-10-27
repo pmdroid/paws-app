@@ -24,7 +24,6 @@ export type NewJob = {
   runAt?: number;
   maxAttempts?: number;
   recurringEveryMs?: number;
-  lane?: string;
   /** Clock injection for tests. Defaults to Date.now(). */
   now?: number;
 };
@@ -46,7 +45,6 @@ export type Job = {
   finishedAt: number | null;
   recurringEveryMs: number | null;
   fireCount: number;
-  lane: string;
 };
 
 type JobRow = {
@@ -66,7 +64,6 @@ type JobRow = {
   finished_at: number | null;
   recurring_every_ms: number | null;
   fire_count: number;
-  lane: string;
 };
 
 export type ClaimOptions = {
@@ -85,7 +82,7 @@ function sqlLiteral(value: string): string {
 }
 
 export function mergeLaneSql(alias: string): string {
-  return `(${alias}.queue = ${sqlLiteral(MERGE_WORK.queue)} OR ${alias}.queue LIKE ${sqlLiteral(`${MERGE_WORK.queuePrefix}%`)} OR ${alias}.lane = ${sqlLiteral(MERGE_WORK.lane)} OR ${alias}.lane LIKE ${sqlLiteral(`${MERGE_WORK.lanePrefix}%`)})`;
+  return `(${alias}.queue = ${sqlLiteral(MERGE_WORK.queue)} OR ${alias}.queue LIKE ${sqlLiteral(`${MERGE_WORK.queuePrefix}%`)})`;
 }
 
 const EXECUTION_SQL = `(candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")}))`;
@@ -140,11 +137,11 @@ export function enqueueJob(db: Database, job: NewJob): number {
   const row = db
     .query<
       { id: number },
-      [string, string | null, string, number, number, number, number, number | null, string]
+      [string, string | null, string, number, number, number, number, number | null]
     >(
       `INSERT INTO job (
-         queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, lane, item_version
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, (SELECT version FROM work_item WHERE id=json_extract(?3,'$.itemId')))
+         queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, item_version
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT version FROM work_item WHERE id=json_extract(?3,'$.itemId')))
        RETURNING id`,
     )
     .get(
@@ -156,7 +153,6 @@ export function enqueueJob(db: Database, job: NewJob): number {
       job.maxAttempts ?? 10,
       now,
       job.recurringEveryMs ?? null,
-      job.lane ?? "default",
     );
   if (row === null) {
     throw new Error("enqueueJob did not return an id");
@@ -415,7 +411,7 @@ function journalOutcome(job: Job): void {
   if (
     job.status !== "dead" &&
     !(EXCLUSIVE_QUEUES as readonly string[]).includes(job.queue) &&
-    !isMergeWork(job.queue, job.lane)
+    !isMergeWork(job.queue)
   )
     return;
   const payload = job.payload as { itemId?: unknown } | null;
@@ -448,7 +444,6 @@ function mapJob(row: JobRow): Job {
     finishedAt: row.finished_at,
     recurringEveryMs: row.recurring_every_ms,
     fireCount: row.fire_count,
-    lane: row.lane,
   };
 }
 

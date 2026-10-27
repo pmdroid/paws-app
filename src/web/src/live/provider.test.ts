@@ -453,7 +453,6 @@ describe("live status provider", () => {
     });
     enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       jobKey: `merge:${merging.id}:${head}`,
       payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head },
       now,
@@ -734,7 +733,6 @@ describe("live status provider", () => {
       enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
       enqueueJob(db, {
         queue: "github.merge",
-        lane: "merge",
         jobKey: `merge:${item.id}`,
         payload: { itemId: item.id, head },
         now: at,
