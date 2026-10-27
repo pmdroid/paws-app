@@ -200,7 +200,12 @@ export const REVIEW_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** Spawns the review command in the candidate checkout. */
 export function createReviewCommandRunner(
-  options: { env?: Record<string, string | undefined>; timeoutMs?: number } = {},
+  options: {
+    env?: Record<string, string | undefined>;
+    timeoutMs?: number;
+    /** Stops the command when aborted, as at its timeout. */
+    signal?: AbortSignal;
+  } = {},
 ): ReviewCommandRunner {
   const timeoutMs = options.timeoutMs ?? REVIEW_COMMAND_TIMEOUT_MS;
   return {
@@ -224,6 +229,9 @@ export function createReviewCommandRunner(
         timedOut = true;
         proc.kill("SIGKILL");
       }, timeoutMs);
+      const stop = () => proc.kill("SIGKILL");
+      if (options.signal?.aborted) stop();
+      options.signal?.addEventListener("abort", stop, { once: true });
       try {
         const [stdout, stderr, exitCode] = await Promise.all([
           new Response(proc.stdout).text(),
@@ -235,6 +243,7 @@ export function createReviewCommandRunner(
           : { exitCode, stdout, stderr };
       } finally {
         clearTimeout(timer);
+        options.signal?.removeEventListener("abort", stop);
       }
     },
   };

@@ -93,17 +93,17 @@ for await (const line of createInterface({ input: process.stdin })) {
         ]);
       }
     } else {
-      const findings =
-        readFileSync("result.txt", "utf8") === `${value}-fixed`
-          ? []
-          : [
-              {
-                severity: "P1",
-                location: "result.txt",
-                explanation: "Append the required fixed suffix.",
-                evidence: "The result lacks the fixed suffix.",
-              },
-            ];
+      // The reviewer gets no brief, so it checks for the fix's suffix alone.
+      const findings = readFileSync("result.txt", "utf8").endsWith("-fixed")
+        ? []
+        : [
+            {
+              severity: "P1",
+              location: "result.txt",
+              explanation: "Append the required fixed suffix.",
+              evidence: "The result lacks the fixed suffix.",
+            },
+          ];
       send({
         jsonrpc: "2.0",
         method: "session/update",

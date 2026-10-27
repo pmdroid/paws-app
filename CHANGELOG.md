@@ -2,6 +2,14 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-10-27: Closeout's live review runs the agent's review command on the runner
+
+### Changed
+
+- **Upgrade runners to 0.1.47.** The independent review now needs it. On an older runner the review is blocked with "needs runner 0.1.47 or later".
+- The live Closeout review runs the reviewer profile's own review command on the item's runner, in the run's checkout at the candidate commit, with the runner's login. Codex runs `codex exec review --base <base>` and Claude runs `/code-review <base>..<head>`. Paws no longer sends a rendered prompt: the review skill, the diff, the brief and the finding format stay out of it. The policy digest is unchanged.
+- The reviewer profile needs a Claude or Codex model. `scope: diff` on a review item no longer narrows the review.
+
 ## 2026-10-27: "When main moved before the merge" has its three choices again
 
 ### Changed

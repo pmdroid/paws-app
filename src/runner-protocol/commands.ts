@@ -190,7 +190,16 @@ export const RunnerCommandSchema = z
         })
         .optional(),
     }),
-    z.strictObject({ ...common, type: z.literal("review"), ...work }),
+    z.strictObject({
+      ...common,
+      type: z.literal("review"),
+      ...work,
+      /**
+       * Run the agent's own review command of `base..HEAD` in the checkout instead of an ACP
+       * turn: `codex exec review --base` or Claude `/code-review`. HEAD is `repository.baseSha`.
+       */
+      reviewCommand: z.strictObject({ base: z.string().regex(/^[a-f0-9]{40}$/) }).optional(),
+    }),
     z.strictObject({
       ...common,
       type: z.literal("task"),
@@ -262,6 +271,14 @@ export const RunnerCommandSchema = z
       !command.restoreSession ||
       (command.profile.agent === command.restoreSession.agent &&
         command.resumeSessionId === command.restoreSession.sessionId),
+  )
+  .refine(
+    (command) =>
+      command.type !== "review" ||
+      !command.reviewCommand ||
+      (command.profile.agent !== "grok" &&
+        command.profile.model !== null &&
+        command.reviewCommand.base !== command.repository.baseSha),
   )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
