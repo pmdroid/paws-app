@@ -804,6 +804,71 @@ export function createRemoteAgentRunner(options: {
               );
             }
           };
+          /**
+           * Starts the turn from the item's branch on GitHub when an earlier turn pushed work there
+           * past the checkpoint, so the candidate descends from it. Returns why it did not when the
+           * branch holds commits the checkpoint does not lead to.
+           */
+          const adoptBranchTip = async (
+            networkGit: (args: string[]) => Promise<string>,
+          ): Promise<string | undefined> => {
+            const scoped = work.scope(selected.runId, selected.workspaceId);
+            if (!scoped.repository) return undefined;
+            const head = (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+            const ref = `refs/paws/branch-tip/${randomUUID()}`;
+            const contains = (ancestor: string, descendant: string) =>
+              git([
+                "-C",
+                input.worktreePath,
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+              ]).then(
+                () => true,
+                () => false,
+              );
+            try {
+              try {
+                await networkGit([
+                  "-C",
+                  input.worktreePath,
+                  "fetch",
+                  "--no-tags",
+                  "--no-write-fetch-head",
+                  "--",
+                  scoped.repository.remoteUrl,
+                  `+refs/heads/${scoped.item.branchName}:${ref}`,
+                ]);
+              } catch (error) {
+                // A first turn has no branch yet; any failure starts from the checkpoint as before.
+                journalCaught(
+                  error,
+                  "runner-backend.forItem.adoptBranchTip",
+                  itemId,
+                  "the branch may not exist on GitHub yet",
+                );
+                return undefined;
+              }
+              const tip = (
+                await git(["-C", input.worktreePath, "rev-parse", "--verify", `${ref}^{commit}`])
+              ).trim();
+              if (tip === head || (await contains(tip, head))) return undefined;
+              if (!(await contains(head, tip)))
+                return `The branch ${scoped.item.branchName} on GitHub is at ${tip.slice(0, 7)}, which does not descend from the checkpoint ${head.slice(0, 7)}, so this turn starts from the checkpoint.`;
+              await git(["-C", input.worktreePath, "reset", "--hard", tip]);
+              const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+              if (checkpoint) saveCheckpoint(db, itemId, { ...checkpoint, wipCommit: tip });
+              return undefined;
+            } finally {
+              await git(["-C", input.worktreePath, "update-ref", "-d", ref]).catch(
+                (caughtError) => {
+                  journalCaught(caughtError, "runner-backend.forItem.adoptBranchTip.ref", itemId);
+                  return "";
+                },
+              );
+            }
+          };
           const placed =
             attached ??
             (await (async () => {
@@ -870,6 +935,10 @@ export function createRemoteAgentRunner(options: {
                   : undefined;
               if (!taskScope && input.role === "implementer" && input.networkGit)
                 await importCheckpoint(input.networkGit);
+              const branchNotice =
+                !taskScope && input.role === "implementer" && input.networkGit
+                  ? await adoptBranchTip(input.networkGit)
+                  : undefined;
               const head = taskScope
                 ? undefined
                 : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
@@ -1075,6 +1144,7 @@ export function createRemoteAgentRunner(options: {
                   `Runner ${selected.id} needs runner ${REVIEW_COMMAND_RUNNER_VERSION.join(".")} or later to run the agent's review command. Upgrade the runner, then review again.`,
                 );
               const runtimeNotices = [
+                ...(branchNotice ? [branchNotice] : []),
                 ...(runtimeList?.notices ?? []),
                 ...(runtimeList?.runtimes.length && !acceptsRuntimes
                   ? [
@@ -1629,7 +1699,11 @@ export function createRemoteAgentRunner(options: {
               rmSync(pending, { force: true });
             }
           }
-          if (complete.pushFailure && assigned.type === "run" && input.askTeam)
+          const conflictRound =
+            complete.pushFailure?.conflict === true &&
+            assigned.type === "run" &&
+            (input.conflictRound?.() ?? false);
+          if (!conflictRound && complete.pushFailure && assigned.type === "run" && input.askTeam)
             await input.askTeam.ask(
               {
                 question: `Paws could not push the candidate to \`${complete.pushFailure.branch}\` on GitHub:\n\n\`\`\`\n${complete.pushFailure.error}\n\`\`\`\n\nFix the cause if it needs one, then reply to run the task again.`,
@@ -1770,7 +1844,18 @@ export function createRemoteAgentRunner(options: {
           work.finish(assigned.runId, assigned.generation);
           command = undefined;
           await emit({ type: "prompt_complete", stopReason: complete.stopReason });
-          return { ...complete, transcriptPath: transcript };
+          return {
+            ...complete,
+            transcriptPath: transcript,
+            ...(conflictRound && complete.pushFailure
+              ? {
+                  candidateConflict: {
+                    branch: complete.pushFailure.branch,
+                    error: complete.pushFailure.error,
+                  },
+                }
+              : {}),
+          };
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "cancelled" || !signal.aborted) {
             throw error;

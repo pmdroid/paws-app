@@ -120,7 +120,8 @@ export function createRunnerRepositories(options: {
     branch: string,
     signal?: AbortSignal,
   ): Promise<string> {
-    const git = (args: string[]) => invoke(["--git-dir", mirror, "--no-replace-objects", ...args], signal);
+    const git = (args: string[]) =>
+      invoke(["--git-dir", mirror, "--no-replace-objects", ...args], signal);
     if ((await git(["rev-list", "--min-parents=2", sha, `^${onto}`])).trim())
       throw new RunnerCandidateConflict(
         branch,

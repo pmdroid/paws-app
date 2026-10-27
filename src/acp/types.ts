@@ -138,6 +138,11 @@ export interface RunAgentOptions {
   signal?: AbortSignal;
   onEvent?: AcpEventListener;
   askTeam?: AskTeamHook;
+  /**
+   * Whether a candidate that does not rebase onto its branch on GitHub goes back to the agent
+   * as a conflict round. Without it, or when it says no, Paws asks the team.
+   */
+  conflictRound?: () => boolean;
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
@@ -173,6 +178,8 @@ export interface RunAgentResult {
   handedOver?: boolean;
   /** The handover stopped the agent, then failed this step; the session stays on its runner. */
   handoverFailure?: "commit" | "snapshot" | "publication";
+  /** The candidate conflicts with the item's branch on GitHub and goes to a conflict round. */
+  candidateConflict?: { branch: string; error: string };
   transcriptPath?: string;
   authRequired: boolean;
   errorMessage?: string;

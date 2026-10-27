@@ -40,6 +40,7 @@ export {
   type AgentPurpose,
 } from "./agents";
 export {
+  BRANCH_CONFLICT_INSTRUCTION,
   Orchestrator,
   attachOrchestrator,
   type OrchestratorOptions,

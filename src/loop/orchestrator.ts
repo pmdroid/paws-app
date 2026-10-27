@@ -2541,6 +2541,8 @@ export class Orchestrator {
         signal: controller.signal,
         promptRunner,
         askTeam,
+        // One conflict round in a row; a second conflict asks the team.
+        conflictRound: () => returned?.reason !== "conflict",
         updatePlan: this.planHook(item, sessionProgress),
         pullRequest: this.pullRequestHook(item),
         postUpdate: this.updateHook(item),
@@ -2578,6 +2580,14 @@ export class Orchestrator {
       if (executed.run.cancelled || executed.run.stopReason === "cancelled") return;
       if (this.askedRuns.has(run.id)) {
         await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
+        return;
+      }
+      if (executed.run.candidateConflict) {
+        restart(this.db, finished, {
+          reason: "conflict",
+          body: `${BRANCH_CONFLICT_INSTRUCTION}\n\n${executed.run.candidateConflict.error}`,
+          now: this.now(),
+        });
         return;
       }
       if (executed.run.stopReason !== "end_turn") {
@@ -6878,6 +6888,10 @@ export class Orchestrator {
 /** The next turn after a handover that failed once the agent stopped. */
 const HANDOVER_FAILED_PROMPT =
   "Paws asked to move this session to another runner, but the move failed after your turn was stopped, so it stays here. Your work so far is committed. Continue where you left off.";
+
+/** The conflict round after a candidate that did not rebase onto the item's branch on GitHub. */
+export const BRANCH_CONFLICT_INSTRUCTION =
+  "Paws could not push your last candidate: the task's branch on GitHub holds commits it does not contain, and they do not rebase cleanly. This turn starts from the branch on GitHub. Bring your previous turn's change onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
