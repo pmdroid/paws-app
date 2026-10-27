@@ -13,7 +13,7 @@
  * when that exists. It calls real models, so it is a script, not a test; see
  * docs/closeout.md.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -942,6 +942,12 @@ async function main(args: readonly string[]): Promise<void> {
     );
   writeFileSync(join(root, `${stem}.json`), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(root, `${stem}.md`), renderReport(report, baseline));
+  // The repository's formatter checks reports/ too.
+  const formatted = spawnSync(process.execPath, ["x", "oxfmt", `${stem}.md`, `${stem}.json`], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  if (formatted.status !== 0) console.error(`oxfmt failed: ${formatted.stderr.trim()}`);
   const summary = summarize(report.results);
   console.log(
     `recall ${rate(summary.recall)}, false positives ${rate(summary.falsePositives)}; wrote ${stem}.md`,
