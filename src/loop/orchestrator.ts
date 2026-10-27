@@ -4657,8 +4657,7 @@ export class Orchestrator {
     }
     // The installation check answers its own waiting question when the App returns.
     if (open.kind === "github-auth") return "rejected";
-    if (!canAnswer({ kind: open.kind === "closeout-help" ? "closeout-bypass" : open.kind }, user))
-      return "rejected";
+    if (!canAnswer({ kind: open.kind }, user)) return "rejected";
     if (open.kind === "push-outage") {
       const outcome = answerAsked(
         this.db,
