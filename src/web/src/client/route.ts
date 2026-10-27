@@ -77,24 +77,23 @@ export function routeHref(route: Route): string {
   return `${routerBase(page?.pathname ?? "")}${routePath(route)}`;
 }
 
-/**
- * The status slices each page renders, and the only ones it asks `/api/status` for. An issue
- * page loads its item detail instead, and the issue list only when that issue is not visible.
- * Settings and Runners use their own endpoints.
- */
 export const ROUTE_SLICES: Record<Route["view"], readonly StatusSlice[]> = {
   overview: ["items", "questions", "mergeQueue", "intake"],
   issues: ["items"],
   runs: ["items"],
   mergeQueue: ["items", "mergeQueue", "mergeHistory"],
   questions: ["items", "questions"],
-  evidence: ["evidence"],
+  evidence: ["items", "evidence"],
   runners: [],
   settings: [],
 };
 
 export function routeSlices(route: Route): readonly StatusSlice[] {
   return ROUTE_SLICES[route.view];
+}
+
+export function routeCovered(route: Route, snapshot: StatusSnapshot | null): boolean {
+  return routeSlices(route).every((slice) => hasStatusSlice(snapshot, slice));
 }
 
 export function needsSnapshot(route: Route): boolean {
@@ -107,7 +106,7 @@ const FOLDED = new Set(["runs", "sessions", "verdicts"]);
  * The issue page a run, session or verdict link now opens, such as `/issues/PAS-367`.
  * A session link the snapshot does not know opens the issue list, since the Conversations
  * page it used to open no longer exists.
- * Null when the path is not one of those, or a snapshot with the items has not arrived yet.
+ * Null when the path is not one of those, or the snapshot has not arrived yet.
  */
 export function issueRedirect(path: string, snapshot: StatusSnapshot | null): string | null {
   if (!hasStatusSlice(snapshot, "items")) return null;
