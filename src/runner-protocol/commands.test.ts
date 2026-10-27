@@ -60,6 +60,12 @@ function signed(command: RunnerCommand = run) {
 test.each<RunnerCommand>([
   run,
   { ...run, type: "review" },
+  {
+    ...run,
+    type: "review",
+    profile: { agent: "codex", model: "gpt-5.5" },
+    reviewCommand: { base: "b".repeat(40) },
+  },
   { ...common, type: "probe", profile },
   {
     ...common,
@@ -292,4 +298,23 @@ test("helper commands accept only bounded session-owned routing purposes", () =>
     { sessionGeneration: -1 },
   ])
     expect(RunnerCommandSchema.safeParse({ ...helper, ...changed }).success).toBe(false);
+});
+
+test("a review command names a Claude or Codex model and a base other than the checkout head", () => {
+  const review = {
+    ...run,
+    type: "review",
+    profile: { agent: "claude", model: "opus" },
+    reviewCommand: { base: "b".repeat(40) },
+  };
+  expect(RunnerCommandSchema.safeParse(review).success).toBe(true);
+  for (const refused of [
+    { ...review, profile: { agent: "grok", model: "grok-4" } },
+    { ...review, profile: { agent: "claude", model: null } },
+    { ...review, reviewCommand: { base: repository.baseSha } },
+    { ...review, reviewCommand: { base: "main" } },
+    { ...review, reviewCommand: { base: "b".repeat(40), prompt: "Also check docs" } },
+    { ...review, type: "run" },
+  ])
+    expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
 });
