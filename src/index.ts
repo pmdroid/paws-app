@@ -175,6 +175,7 @@ import {
   createItemReconciler,
   createParentDelegations,
   createPublicationReadiness,
+  RELATIONS_POLL_MS,
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
 import { createAdmission, registerScheduler, saveSchedulingContext } from "./scheduler";
@@ -1355,6 +1356,18 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           queue: "linear.epics.reconcile",
           jobKey: "linear.epics.reconcile",
           recurringEveryMs: 1_800_000,
+          now: Date.now(),
+        });
+        created.jobs.register("linear.relations.poll", async () => {
+          const targets = await linearCaller("relations-poll", () =>
+            reconciler?.pollRelations({ signal: abort.signal }),
+          );
+          if (targets?.length) attached.reconcileExecution();
+        });
+        enqueueJobOnce(db, {
+          queue: "linear.relations.poll",
+          jobKey: "linear.relations.poll",
+          recurringEveryMs: RELATIONS_POLL_MS,
           now: Date.now(),
         });
       }
