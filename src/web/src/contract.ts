@@ -280,7 +280,14 @@ export interface StatusQuestion {
   linkAsk?: StatusLinkAsk;
 }
 
-export const LINK_ASK_KINDS = ["bypass", "screenshots", "risk", "question", "rounds"] as const;
+export const LINK_ASK_KINDS = [
+  "bypass",
+  "screenshots",
+  "risk",
+  "question",
+  "rounds",
+  "rule",
+] as const;
 export type LinkAskKind = (typeof LINK_ASK_KINDS)[number];
 
 /** A decision a signed-in person makes on the item page. Linear carries its `link`. */
@@ -291,7 +298,10 @@ export interface StatusLinkAsk {
   title: string;
   detail: string;
   link: string;
-  /** For a `bypass` ask: the failed checks a person may bypass on this head. */
+  /**
+   * For a `bypass` ask: the failed checks a person may bypass on this head. For a `rule` ask: the
+   * broken rules an approval accepts on this head, each with its finding.
+   */
   bypass?: StatusBypassAsk;
   /** On the `rounds` kind: the failed review rounds and the findings still open. */
   rounds?: StatusReviewRounds;
