@@ -4,7 +4,7 @@ import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createOnboardingReadiness } from "./onboarding-readiness";
 import {
   createMemberVmHttp,
@@ -21,6 +21,13 @@ import {
   type ExeDevBootstrap,
 } from "./provisioning";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
+import {
+  collectProbes,
+  keepCandidates,
+  parseProbesArgs,
+  readStoredFindings,
+  type ProbesCommand,
+} from "./probe-collector";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
 import {
@@ -28,6 +35,7 @@ import {
   commitCheckpointSync,
   mirrorFiles,
   restartFromFreshMain,
+  runAgent,
   worktreePath,
 } from "./acp";
 import { policyCheckPaths } from "./closeout";
@@ -145,6 +153,7 @@ import {
   type PullCommentFilter,
   attachOrchestrator,
   createLinearArtifactReader,
+  createRepositoryGit,
   itemPathId,
   repositoryAnswer,
   worktreeBranch,
@@ -1754,6 +1763,8 @@ Commands:
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
   paws public-tls validate      check the public HTTPS certificate
+  paws probes collect <owner/repo>
+                                draft Closeout probe rules into probes.proposed.yaml
 
 GitHub access uses the GitHub App only. See docs/github-app.md.`;
 
@@ -1790,9 +1801,77 @@ function reviewScoreMain(args: string[]): number {
   }
 }
 
+/** `paws probes collect`: the agent runs here, with the signed-in agent of whoever runs it. */
+async function probesMain(argv: string[]): Promise<number> {
+  let command: ProbesCommand;
+  try {
+    command = parseProbesArgs(argv);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  try {
+    const runtime = loadRuntime(process.env);
+    const paths = pawsPaths(runtime.env.home);
+    ensureLayout(paths);
+    const repository = {
+      owner: command.owner,
+      repo: command.repo,
+      remoteUrl: githubHttpsUrl(command.owner, command.repo),
+    };
+    // The App the running Paws uses: the workspace's, else the environment's.
+    const db = existsSync(paths.db) ? openDatabase(paths.db) : null;
+    if (db) process.once("exit", () => db.close());
+    const appActivation = db
+      ? createWorkspaceGitHubActivation(db, runtime.env.home, process.env)
+      : null;
+    const provider = authProvider(
+      runtime,
+      repository,
+      "read",
+      appActivation ? (name) => appActivation.resolve(name) : undefined,
+    );
+    if (!provider) throw new Error("The GitHub App is not configured. Run `paws doctor`.");
+    const print = (text: string) => console.log(text);
+    await collectProbes({
+      repository,
+      pawsRoot: paths.home,
+      since: command.since,
+      dryRun: command.dryRun,
+      out: command.out,
+      github: { client: createFetchGitHubClient(), tokenProvider: gitHostToken(provider) },
+      turn: runAgent,
+      networkGit: createRepositoryGit({
+        remoteUrl: repository.remoteUrl,
+        token: () => provider.token(),
+        signal: controller.signal,
+        assert: async () => undefined,
+        onCleanupFailure: () => undefined,
+      }),
+      findings: () =>
+        readStoredFindings({
+          home: paths.home,
+          dbPath: paths.db,
+          owner: command.owner,
+          repo: command.repo,
+        }),
+      keep: keepCandidates(command.keep, print),
+      print,
+      signal: controller.signal,
+    });
+    return 0;
+  } catch (error) {
+    journalCaught(error, "paws probes collect failed.", null);
+    return 1;
+  }
+}
+
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "probes") process.exit(await probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home));
