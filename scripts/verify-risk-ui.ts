@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/web/test/fixtures";
+import { fullStatusFixture, itemDetail, statusList } from "../src/web/test/fixtures";
 // The Risk card on the issue page from the item detail, and Settings › Merging › High-risk paths
 // against the real settings handler and a temporary config.toml: edit, save, reload, and the
 // repository file read-only. Light and dark, at 1440 and 390 px.
@@ -17,8 +17,8 @@ if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 
 const HEAD = "7f65200".padEnd(40, "a");
-const snapshot = statusFixture();
-snapshot.source = "live";
+const full = fullStatusFixture();
+const snapshot = statusList(full);
 const RISKS: Record<string, StatusItemRisk> = {
   "ENG-101": {
     tier: "high",
@@ -41,19 +41,8 @@ const RISKS: Record<string, StatusItemRisk> = {
   },
 };
 const detail = (id: string): StatusItemDetail | null =>
-  snapshot.items.some((item) => item.id === id)
-    ? {
-        ...snapshot,
-        id,
-        blocks: [],
-        items: snapshot.items.filter((item) => item.id === id),
-        runs: snapshot.runs.filter((run) => run.itemId === id),
-        questions: snapshot.questions.filter((question) => question.itemId === id),
-        verdicts: snapshot.verdicts.filter((verdict) => verdict.itemId === id),
-        mergeQueue: snapshot.mergeQueue.filter((entry) => entry.itemId === id),
-        events: [],
-        risk: RISKS[id] ?? null,
-      }
+  full.items.some((item) => item.id === id)
+    ? { ...itemDetail(full, id), risk: RISKS[id] ?? null }
     : null;
 
 const configPath = join(mkdtempSync(join(tmpdir(), "paws-risk-")), "config.toml");
