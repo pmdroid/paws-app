@@ -1,6 +1,7 @@
 export {
   RUNNER_LEASE_GRACE_MS,
   RUNNER_HANDOVER_LIMIT_MS,
+  RUNNER_CHECKPOINT_LIMIT_MS,
   RUNNER_HANDOVER_FAILURES,
   type RunnerHandoverFailure,
   RunnerCommandSchema,

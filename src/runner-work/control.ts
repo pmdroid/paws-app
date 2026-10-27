@@ -111,22 +111,31 @@ export function createRunnerWork(options: {
   }
   function activeTask(runId: string, allowPendingQuestion = false) {
     const execution = db
-      .query<{ itemId: string }, [string]>(
-        "SELECT item_id AS itemId FROM run WHERE id=? AND status IN ('provisioning','active')",
+      .query<{ itemId: string; status: string }, [string]>(
+        "SELECT item_id AS itemId,status FROM run WHERE id=?",
       )
       .get(runId);
     const item = execution ? getWorkItem(db, execution.itemId) : null;
+    // A run Paws stops for a cap or a restart publishes its WIP commit first: until that
+    // checkpoint request expires, its runner may still send the commit and push it.
+    const checkpointing =
+      item?.currentRunId === runId &&
+      db
+        .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='checkpoint' AND expires_at>?")
+        .get(runId, now()) !== null;
     if (
       !item ||
       item.currentRunId !== runId ||
-      item.cancelRequested ||
-      !["running", "verifying", "awaiting_input"].includes(item.state)
+      (!checkpointing &&
+        (!["provisioning", "active"].includes(execution!.status) ||
+          item.cancelRequested ||
+          !["running", "verifying", "awaiting_input"].includes(item.state)))
     )
       throw new Error("Run is no longer active.");
     const sessionId = item.sessionKey;
     if (!sessionId || getLinearSessionAccess(db, sessionId) !== "allowed")
       throw new Error("Linear task access is unavailable.");
-    if (item.state === "awaiting_input" && !allowPendingQuestion) {
+    if (item.state === "awaiting_input" && !allowPendingQuestion && !checkpointing) {
       const question = findOpenQuestion(db, sessionId);
       if (question?.itemId !== item.id || question.runId !== runId)
         throw new Error("Run has no matching open question.");
@@ -444,7 +453,8 @@ export function createRunnerWork(options: {
           db.run("DELETE FROM runner_work_grant WHERE run_id=?", [work.runId]);
         }
         // A handover keeps the work live: the runner still publishes its WIP commit and result.
-        if (command.type === "handover") {
+        // So does a checkpoint: the runner publishes the WIP commit while the agent goes on.
+        if (command.type === "handover" || command.type === "checkpoint") {
           const work = assignment(command.runId);
           if (
             !work ||
@@ -453,7 +463,11 @@ export function createRunnerWork(options: {
             work.endedAt !== null ||
             workCommand(work).type !== "run"
           )
-            throw new Error("Handover assignment changed.");
+            throw new Error(
+              command.type === "handover"
+                ? "Handover assignment changed."
+                : "Checkpoint assignment changed.",
+            );
         }
         return queue(command);
       });
