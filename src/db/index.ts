@@ -41,6 +41,10 @@ export {
   runnerOccupancy,
   runnerSlotFree,
   runnerSlotsHeldBetweenCommands,
+  pinnedSlotsReserved,
+  releasePinnedSlot,
+  savePinnedSlots,
+  type PinnedSlot,
   RunnerConcurrencyError,
   setRunnerConcurrency,
 } from "./runner-capacity";

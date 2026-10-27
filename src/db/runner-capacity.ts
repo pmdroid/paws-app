@@ -144,3 +144,69 @@ export function setRunnerConcurrency(
     });
   });
 }
+
+/** A runner slot the scheduler reserved for an item resuming on its pinned runner. */
+export type PinnedSlot = { runnerId: string; order: number };
+
+const RESERVING_JOBS = "queue IN ('run.resume','run.reverify')";
+
+/**
+ * Saves the slots the scheduler reserved this tick on the pending resume and reverify jobs that
+ * wait for them, and releases every other reservation those jobs held.
+ */
+export function savePinnedSlots(db: Database, slots: ReadonlyMap<number, PinnedSlot>): void {
+  const ids = [...slots.keys()];
+  db.run(
+    `UPDATE job SET payload=json_remove(payload,'$.pinnedSlot') WHERE status='pending' AND ${RESERVING_JOBS}
+     AND json_extract(payload,'$.pinnedSlot') IS NOT NULL AND id NOT IN (${ids.map(() => "?").join(",")})`,
+    ids,
+  );
+  for (const [id, slot] of slots)
+    db.run(
+      `UPDATE job SET payload=json_set(payload,'$.pinnedSlot',json(?)) WHERE id=? AND status='pending'
+       AND json_extract(payload,'$.pinnedSlot') IS NOT json(?)`,
+      [JSON.stringify(slot), id, JSON.stringify(slot)],
+    );
+}
+
+/** Releases the item's reservation once its run is placed. */
+export function releasePinnedSlot(db: Database, itemId: string): void {
+  db.run(
+    `UPDATE job SET payload=json_remove(payload,'$.pinnedSlot') WHERE ${RESERVING_JOBS}
+     AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?
+     AND json_extract(payload,'$.pinnedSlot') IS NOT NULL`,
+    [itemId],
+  );
+}
+
+/**
+ * Slots on the runner reserved for other items that resume there. An item that holds a
+ * reservation itself only yields to the reservations ranked ahead of its own.
+ */
+export function pinnedSlotsReserved(
+  db: Database,
+  runnerId: string,
+  itemId: string,
+  now: number,
+): number {
+  const rows = db
+    .query<{ itemId: string; runnerId: string; slotOrder: number }, [number]>(
+      `SELECT json_extract(payload,'$.itemId') AS itemId,
+       json_extract(payload,'$.pinnedSlot.runnerId') AS runnerId,
+       json_extract(payload,'$.pinnedSlot.order') AS slotOrder
+       FROM job WHERE ${RESERVING_JOBS} AND json_extract(payload,'$.pinnedSlot') IS NOT NULL
+       AND (status='pending' OR (status='running' AND (locked_until IS NULL OR locked_until>?)))`,
+    )
+    .all(now);
+  const own = rows.find((row) => row.itemId === itemId && row.runnerId === runnerId)?.slotOrder;
+  return new Set(
+    rows
+      .filter(
+        (row) =>
+          row.itemId !== itemId &&
+          row.runnerId === runnerId &&
+          (own === undefined || row.slotOrder < own),
+      )
+      .map((row) => row.itemId),
+  ).size;
+}
