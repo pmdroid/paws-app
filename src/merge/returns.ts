@@ -7,10 +7,12 @@ import {
   listRebaseReturns,
   getWorkItem,
   immediate,
+  recordReviewEscape,
   type WorkItemRecord,
 } from "../db";
 import type { ask } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
+import type { FailedCiCheck } from "./ci-fix";
 
 export type MergeReturnReason = "rebase-conflict" | "ci-failed";
 
@@ -54,6 +56,9 @@ export function returnToAgent(
     now: number;
     record: (jobId: number, attempt: number) => void;
     announce: (running: WorkItemRecord, attempt: number, key: string) => void;
+    /** The failed checks of a `ci-failed` return, kept as a candidate review escape. */
+    failedChecks?: readonly FailedCiCheck[];
+    pullNumber?: number | null;
   },
 ): boolean {
   return immediate(db, () => {
@@ -64,13 +69,30 @@ export function returnToAgent(
     if (!input.admit(returns)) return false;
     const round = `${latestUserTurn(db, current.id)}:${returns}`;
     input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
+    const jobKey = `${input.reason}:${current.id}:${round}`;
     const jobId = restart(db, current, {
       reason: input.reason === "rebase-conflict" ? "conflict" : "ci",
       body: input.handoff,
-      jobKey: `${input.reason}:${current.id}:${round}`,
+      jobKey,
       now: input.now,
     });
     if (jobId === null) return false;
+    // CI failed on a head Closeout accepted: a candidate escape of the independent review.
+    if (input.reason === "ci-failed" && current.acceptedHead !== null)
+      recordReviewEscape(db, {
+        triggerKey: jobKey,
+        itemId: current.id,
+        trigger: "ci",
+        acceptedHead: current.acceptedHead,
+        pullNumber: input.pullNumber ?? null,
+        detail: {
+          checks: (input.failedChecks ?? []).map((check) => ({
+            name: check.name,
+            failsOnBase: check.failsOnBase === true,
+          })),
+        },
+        recordedAt: input.now,
+      });
     input.record(jobId, returns + 1);
     return true;
   });

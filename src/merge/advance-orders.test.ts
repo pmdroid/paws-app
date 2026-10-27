@@ -9,6 +9,7 @@ import {
   listCiRounds,
   listJobs,
   listMergeQueues,
+  listReviewEscapes,
 } from "../db";
 import { createFakeMergeQueue } from "../github";
 import { findOpenQuestion } from "../questions";
@@ -230,6 +231,32 @@ describe("advanceMerge on a CI failure", () => {
       logSource: "actions",
       logTail: LOG_TAIL,
     });
+  });
+
+  test("CI failing on the accepted head is one candidate review escape per fix round", async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
+    h.state.ci = failingTest;
+    h.state.baseCi = () => [{ name: "e2e", conclusion: "FAILURE", detailsUrl: null }];
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(listReviewEscapes(h.db)).toEqual([
+      expect.objectContaining({
+        itemId: "ENG-1",
+        trigger: "ci",
+        acceptedHead: item.accepted,
+        pullNumber: item.pull,
+        detail: { checks: [{ name: "test", failsOnBase: false }] },
+      }),
+    ]);
+
+    // The fix fails again, now on a check that also fails on main.
+    const fix = await h.requeue("ENG-1", "fix 1\n");
+    h.state.ci = () => [{ name: "e2e", conclusion: "FAILURE", detailsUrl: null }];
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(listReviewEscapes(h.db).map((row) => [row.acceptedHead, row.detail.checks])).toEqual([
+      [item.accepted, [{ name: "test", failsOnBase: false }]],
+      [fix, [{ name: "e2e", failsOnBase: true }]],
+    ]);
   });
 
   test("when the CI fix attempts run out, Paws asks in Linear instead of failing", async () => {

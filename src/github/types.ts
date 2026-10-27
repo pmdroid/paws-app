@@ -143,7 +143,12 @@ export type SerialMergeResult = {
   sha?: string;
   summary?: string;
   message?: string;
-  failedChecks?: { name: string; url: string | null; logTail?: string | null }[];
+  failedChecks?: {
+    name: string;
+    url: string | null;
+    logTail?: string | null;
+    failsOnBase?: boolean;
+  }[];
   /** The files a rebase conflict stopped on. */
   conflictFiles?: string[];
   /** Every check on the head when CI failed, with the failing checks' log tails. */
