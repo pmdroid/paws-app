@@ -211,11 +211,14 @@ async function setup() {
       },
     });
   }
-  /** Runner A commits its worktree, seals the session at that commit and ends handed over. */
-  async function handOver(command: RunCommand) {
-    const handover = await next(runners.a);
+  /**
+   * Runner A commits its worktree, seals the session at that commit and ends handed over. With
+   * `handover`, A already took the handover command.
+   */
+  async function handOver(command: RunCommand, handover?: RunnerCommand | null) {
+    handover ??= await next(runners.a);
     expect(handover).toMatchObject({ type: "handover", runId: command.runId });
-    writeFileSync(join(checkout, "result.txt"), "half done");
+    writeFileSync(join(checkout, "result.txt"), `half done in ${command.runId}`);
     git(["-C", checkout, "commit", "-q", "-am", "Save work in progress"]);
     const wip = git(["-C", checkout, "rev-parse", "HEAD"]);
     const access = { runnerId: runners.a, runId: command.runId, token: grant(command, runners.a) };
@@ -244,11 +247,17 @@ async function setup() {
   // A handed-over run waits for a runner until it stops, so every test stops its runs.
   const stops = new Set<AbortController>();
   let sequence = 0;
-  /** Both runners active, online and signed in to Claude; only A is free until `start` places. */
-  function item() {
-    git(["-C", paws, "reset", "-q", "--hard", base]);
-    git(["-C", checkout, "reset", "-q", "--hard", base]);
-    db.run("UPDATE run SET status='ended' WHERE status='active'");
+  /**
+   * Both runners active, online and signed in to Claude; only A is free until `start` places.
+   * With `alongside`, the runs already active keep running.
+   */
+  function item(alongside = false) {
+    if (!alongside) {
+      git(["-C", paws, "reset", "-q", "--hard", base]);
+      git(["-C", checkout, "reset", "-q", "--hard", base]);
+      db.run("UPDATE run SET status='ended' WHERE status='active'");
+      db.run("DELETE FROM runner_capacity");
+    }
     for (const runnerId of Object.values(runners)) {
       db.run("UPDATE runner SET status='active',owner_user_id=? WHERE id=?", [userId, runnerId]);
       work.heartbeat(runnerId);
@@ -677,5 +686,169 @@ test("a session that is not running on that runner is not moved", async () => {
   expect(response.status).toBe(409);
   expect(card(runners.a)[0]?.move).toBeNull();
   expect(await context.next(runners.a, 50)).toBeNull();
+  await finish(onA, running);
+});
+
+/** Move running work on `runnerId`'s card, as the dashboard posts it. */
+function moveAllRequest(runnerId: string) {
+  return new Request(`https://paws.test/api/runners/${runnerId}/sessions/move`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+}
+
+/** Two turns running on A, with B paused until both landed there. */
+async function twoRunningOnA(notices: string[] = []) {
+  const { db, runners } = context;
+  const turns = [];
+  for (const alongside of [false, true]) {
+    const record = context.item(alongside);
+    // Each runner has two slots, so both sessions fit on A and then on B.
+    for (const runnerId of Object.values(runners))
+      db.run("INSERT OR REPLACE INTO runner_capacity(runner_id,capacity) VALUES(?,2)", [runnerId]);
+    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+    const { running } = context.turn(record, notices);
+    turns.push({ record, running, onA: (await context.next(runners.a)) as RunCommand });
+  }
+  return turns;
+}
+
+/** A takes both handover commands, in whichever order Paws sent them, and hands both over. */
+async function handOverBoth(turns: { onA: RunCommand }[]) {
+  const handovers = [await context.next(context.runners.a), await context.next(context.runners.a)];
+  const wips: string[] = [];
+  for (const { onA } of turns)
+    wips.push(
+      await context.handOver(
+        onA,
+        handovers.find((command) => command && "runId" in command && command.runId === onA.runId),
+      ),
+    );
+  return wips;
+}
+
+test("Move running work on a draining runner moves both sessions to the second runner, and A is drained", async () => {
+  const { db, runners } = context;
+  const moves = sessionMoves();
+  const turns = await twoRunningOnA();
+  db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  expect(card(runners.a)).toHaveLength(2);
+
+  const response = await moves.fetch(moveAllRequest(runners.a), context.principal);
+  expect(response.status).toBe(202);
+  expect(await response.json()).toEqual({ ok: true, moving: 2 });
+  // One move per session, each through the same path as Move to another runner.
+  expect(card(runners.a).map((session) => session.move)).toEqual([
+    { status: "moving", reason: null },
+    { status: "moving", reason: null },
+  ]);
+  // Asking again while they move asks the runner for nothing more.
+  expect(await (await moves.fetch(moveAllRequest(runners.a), context.principal)).json()).toEqual({
+    ok: true,
+    moving: 0,
+  });
+
+  const wips = await handOverBoth(turns);
+  const landed = [
+    (await context.next(runners.b)) as RunCommand,
+    (await context.next(runners.b)) as RunCommand,
+  ];
+  await moves.settled();
+  const runIds = turns.map(({ onA }) => onA.runId).sort();
+  expect(landed.map((command) => command.runId).sort()).toEqual(runIds);
+  // Both left A's card, so it is drained, and B lists both with no move pending.
+  expect(card(runners.a)).toEqual([]);
+  expect(
+    card(runners.b)
+      .map(({ runId, movable, move }) => ({ runId, movable, move }))
+      .sort((left, right) => left.runId.localeCompare(right.runId)),
+  ).toEqual(runIds.map((runId) => ({ runId, movable: true, move: null })));
+  const overview = listRunnerOverview(db, context.workspaceId, context.now);
+  expect(overview.find((runner) => runner.id === runners.a)).toMatchObject({
+    status: "draining",
+    slots: { used: 0 },
+    running: [],
+  });
+  expect(await context.next(runners.a, 10)).toBeNull();
+
+  // B finishes both turns from their WIP commits.
+  for (const [index, { onA, running }] of turns.entries()) {
+    const onB = landed.find((command) => command.runId === onA.runId)!;
+    context.submit(onB, runners.b, { candidateSha: wips[index]! });
+    expect(await running).toMatchObject({ stopReason: "end_turn" });
+  }
+});
+
+test("with no eligible runner both sessions stay on the draining card with the reason", async () => {
+  const { db, runners } = context;
+  const moves = sessionMoves();
+  const notices: string[] = [];
+  const turns = await twoRunningOnA(notices);
+  db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id=?", [runners.b]);
+  expect((await moves.fetch(moveAllRequest(runners.a), context.principal)).status).toBe(202);
+  await handOverBoth(turns);
+  await moves.settled();
+  for (
+    let index = 0;
+    index < 5000 && notices.filter((n) => n.startsWith("Waiting")).length < 2;
+    index++
+  )
+    await delay(1);
+  // Both stay listed with the reason, so the card counts two waiting instead of Drained.
+  expect(
+    card(runners.a)
+      .map(({ runId, movable, move }) => ({ runId, movable, move }))
+      .sort((left, right) => left.runId.localeCompare(right.runId)),
+  ).toEqual(
+    turns
+      .map(({ record }) => record.runId)
+      .sort()
+      .map((runId) => ({
+        runId,
+        movable: false,
+        move: { status: "waiting", reason: "Sign in to Claude on another runner." },
+      })),
+  );
+  expect(await context.next(runners.b, 10)).toBeNull();
+});
+
+test("Move running work needs a draining runner and an owner or admin", async () => {
+  const { db, runners } = context;
+  const moves = sessionMoves();
+  const { record, running, onA } = await runningOnA();
+  const refused = await moves.fetch(moveAllRequest(runners.a), context.principal);
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toEqual({
+    error: "Drain this runner before moving all of its running work.",
+  });
+  db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
+  const userId = putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: `observer-all-${record.id}`,
+    name: "observer",
+    email: `observer-all-${record.id}@example.invalid`,
+  });
+  syncWorkspaceMember(db, {
+    workspaceId: context.workspaceId,
+    userId,
+    role: "observer",
+    active: true,
+    teamIds: [],
+    now: context.now,
+  });
+  const observer = await moves.fetch(moveAllRequest(runners.a), {
+    ...context.principal,
+    userId,
+    role: "observer",
+  });
+  expect(observer.status).toBe(403);
+  await moves.settled();
+  expect(card(runners.a)).toMatchObject([{ runId: record.runId, move: null }]);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.a]);
   await finish(onA, running);
 });

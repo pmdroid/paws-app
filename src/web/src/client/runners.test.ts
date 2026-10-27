@@ -315,6 +315,113 @@ describe("what a runner is running now", () => {
     expect(stayed).toContain('data-focus="move:run-1" disabled>Move to another runner</button>');
   });
 
+  describe("a draining runner", () => {
+    const slotsOf = (html: string) =>
+      /<section class="runner-block" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
+        html,
+      )?.[0] ?? "";
+    const draining = (running: RunningSession[]) => ({
+      ...runner,
+      status: "draining" as const,
+      idle: running.length === 0,
+      slots: { used: running.length, total: 4 },
+      running,
+    });
+    const two = [
+      { ...working, movable: true, move: null },
+      { ...closeout, runId: "run-3", phase: "working" as const, movable: true, move: null },
+    ];
+
+    test("Move running work moves both sessions and the card ends Drained", () => {
+      const before = slotsOf(runnerDetailMarkup(draining(two), view));
+      expect(before).toContain("2 sessions still run here.");
+      expect(before).toContain(
+        `<button class="btn" data-runner-move-all="${runner.id}" data-focus="move-all:${runner.id}">Move running work</button>`,
+      );
+      expect(before).not.toContain("Drained");
+
+      // Paws asked one move per session: the card counts them and offers nothing more to move.
+      const moving = slotsOf(
+        runnerDetailMarkup(
+          draining(
+            two.map((session) => ({ ...session, move: { status: "moving", reason: null } })),
+          ),
+          view,
+        ),
+      );
+      expect(moving).toContain("<p><b>Moving 2 sessions</b></p>");
+      expect(moving).not.toContain("data-runner-move-all");
+      expect(moving.match(/Moving to another runner/g)).toHaveLength(2);
+
+      // One landed on the second runner; the other is still on its way.
+      const one = slotsOf(
+        runnerDetailMarkup(
+          draining([{ ...two[1]!, move: { status: "moving", reason: null } }]),
+          view,
+        ),
+      );
+      expect(one).toContain("<p><b>Moving 1 session</b></p>");
+      expect(one).not.toContain("Drained");
+
+      const drained = runnerDetailMarkup(draining([]), view);
+      expect(slotsOf(drained)).toContain(
+        '<div class="runner-drain-state" role="status"><span class="tag ok">Drained</span><p>Nothing runs here any more. It is safe to remove this runner.</p></div>',
+      );
+      expect(drained).toContain("<span>Drained</span>");
+      expect(drained).not.toContain("Draining");
+      expect(runnerRowMarkup(draining([]), row)).toContain('<span class="tag ok">Drained</span>');
+      expect(runnerRowMarkup(draining(two), row)).toContain(
+        '<span class="tag warn">Draining</span>',
+      );
+    });
+
+    test("with no eligible runner the card shows the waiting count and reason, not Drained", () => {
+      const reason = "Sign in to Claude on another runner.";
+      const html = slotsOf(
+        runnerDetailMarkup(
+          draining(
+            two.map((session) => ({
+              ...session,
+              movable: false,
+              move: { status: "waiting" as const, reason },
+            })),
+          ),
+          view,
+        ),
+      );
+      expect(html).toContain(
+        "<p><b>2 sessions waiting for another runner</b>. Each row says why.</p>",
+      );
+      expect(
+        html.match(new RegExp(`<b>Moving to another runner</b> · ${reason}`, "g")),
+      ).toHaveLength(2);
+      expect(html).not.toContain("Drained");
+      expect(html).not.toContain("Moving 2 sessions");
+      expect(html).not.toContain("data-runner-move-all");
+    });
+
+    test("only owners and admins see Move running work, and only while draining", () => {
+      for (const role of ["owner", "admin"])
+        expect(
+          slotsOf(runnerDetailMarkup(draining(two), { ...view, userId: "someone", role })),
+        ).toContain("Move running work</button>");
+      for (const role of ["member", "observer"]) {
+        const html = slotsOf(
+          runnerDetailMarkup(draining(two), { ...view, userId: "someone", role }),
+        );
+        expect(html).toContain("2 sessions still run here.");
+        expect(html).not.toContain("<button");
+      }
+      const active = { ...draining(two), status: "active" as const };
+      expect(runnerDetailMarkup(active, view)).not.toContain("Move running work");
+      expect(runnerDetailMarkup(active, view)).not.toContain("runner-drain");
+      // Busy with another change: shown, but not usable.
+      expect(runnerDetailMarkup(draining(two), { ...view, busy: true })).toContain(
+        'data-focus="move-all:01JRUNNER0000000000000000A" disabled>Move running work</button>',
+      );
+    });
+  });
+
   test("the runner card lists every session to members and observers alike", () => {
     const busy = {
       ...runner,

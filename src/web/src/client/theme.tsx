@@ -364,6 +364,14 @@ function replace(node: DOMNode): ReactElement | undefined {
       "flex min-w-0 flex-wrap items-center gap-2 [&>p]:m-0 [&>p]:min-w-0 [&>p]:break-words",
     );
   if (has("slot-note")) return styled("text-sm");
+  if (has("runner-drain"))
+    return styled(
+      "flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-base border-2 border-border bg-secondary-background px-4 py-3",
+    );
+  if (has("runner-drain-state"))
+    return styled(
+      "flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm [&>p]:m-0 [&>p]:min-w-0 [&>p]:break-words",
+    );
   if (has("runner-status"))
     return styled(
       "flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-semibold [&>span:not(.tag,:last-child)]:after:ml-3 [&>span:not(.tag,:last-child)]:after:content-['·']",
