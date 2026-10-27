@@ -374,6 +374,47 @@ export interface StatusVerdict {
   policyDigest?: string | null;
   policyPath?: string | null;
   attempts?: StatusCloseoutAttempt[];
+  /** Each review item's rounds with their findings. Only the item detail endpoint sends them. */
+  reviews?: StatusReview[];
+}
+
+export const REVIEW_SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
+export type ReviewSeverity = (typeof REVIEW_SEVERITIES)[number];
+/** A finding against the previous round of its review: `new`, or `open` when that round had it. */
+export const REVIEW_FINDING_SINCE = ["new", "open"] as const;
+export type ReviewFindingSince = (typeof REVIEW_FINDING_SINCE)[number];
+
+/** One review item (`independent-review`, `security-review`) of a candidate's Closeout. */
+export interface StatusReview {
+  id: string;
+  /** Each stored review record, oldest first. The last is the latest evaluation. */
+  rounds: StatusReviewRound[];
+}
+
+/** One review record: `~/.paws/closeout/evidence/<task>/evidence/<policy>/<head>/<item>/<n>.json`. */
+export interface StatusReviewRound {
+  attempt: number;
+  baseSha: string;
+  headSha: string;
+  /** Findings at this rank or worse fail the item unless they are pre-existing. */
+  failOn: ReviewSeverity | null;
+  findings: StatusReviewFinding[];
+  /** Findings of the previous round that no finding of this round matches. */
+  fixed: StatusReviewFinding[];
+}
+
+/** One finding as the reviewer wrote it. All text is model output. */
+export interface StatusReviewFinding {
+  severity: ReviewSeverity;
+  location: string;
+  explanation: string;
+  evidence: string;
+  /** The line was not changed in `base..head`, so the finding never fails the item. */
+  preExisting: boolean;
+  /** The finding meets `failOn` and is not pre-existing, so it failed the item. */
+  blocking: boolean;
+  /** Null in a review's first round and in `fixed`. */
+  since: ReviewFindingSince | null;
 }
 
 /** One Closeout run of a candidate (head and policy), oldest first in `StatusVerdict.attempts`. */
@@ -1459,6 +1500,60 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
             readAttempt(entry, `${path}.attempts[${attempt}]`),
           ),
         }),
+    ...(body.reviews === undefined
+      ? {}
+      : {
+          reviews: array(body, "reviews", path).map((entry, review) =>
+            readReview(entry, `${path}.reviews[${review}]`),
+          ),
+        }),
+  };
+}
+
+function readReview(input: unknown, path: string): StatusReview {
+  const body = object(input, path);
+  return {
+    id: text(body, "id", path),
+    rounds: array(body, "rounds", path).map((entry, round) =>
+      readReviewRound(entry, `${path}.rounds[${round}]`),
+    ),
+  };
+}
+
+function readReviewRound(input: unknown, path: string): StatusReviewRound {
+  const body = object(input, path);
+  const failOn = body.failOn;
+  return {
+    attempt: positiveInteger(body, "attempt", path),
+    baseSha: string(body, "baseSha", path),
+    headSha: string(body, "headSha", path),
+    failOn:
+      failOn === null || failOn === undefined
+        ? null
+        : oneOf(string(body, "failOn", path), REVIEW_SEVERITIES, `${path}.failOn`),
+    findings: array(body, "findings", path).map((entry, finding) =>
+      readReviewFinding(entry, `${path}.findings[${finding}]`),
+    ),
+    fixed: array(body, "fixed", path).map((entry, finding) =>
+      readReviewFinding(entry, `${path}.fixed[${finding}]`),
+    ),
+  };
+}
+
+function readReviewFinding(input: unknown, path: string): StatusReviewFinding {
+  const body = object(input, path);
+  const since = body.since;
+  return {
+    severity: oneOf(string(body, "severity", path), REVIEW_SEVERITIES, `${path}.severity`),
+    location: string(body, "location", path),
+    explanation: string(body, "explanation", path),
+    evidence: string(body, "evidence", path),
+    preExisting: boolean(body, "preExisting", path),
+    blocking: boolean(body, "blocking", path),
+    since:
+      since === null || since === undefined
+        ? null
+        : oneOf(string(body, "since", path), REVIEW_FINDING_SINCE, `${path}.since`),
   };
 }
 
