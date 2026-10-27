@@ -20,6 +20,8 @@ export type SessionHandoverOutcome =
 const MOVE_PATH =
   /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/sessions\/([A-Za-z0-9_-]{1,64})\/move$/;
 
+const MOVE_ALL_PATH = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/sessions\/move$/;
+
 const STAYED = {
   timed_out:
     "The runner found no safe point to stop within 2 minutes, so the session keeps running here.",
@@ -72,43 +74,94 @@ export function createRunnerSessionMoves(options: {
       else noteRunnerSessionMove(db, { runId, runnerId, status: "stayed", reason, now: now() });
     });
   }
+  /** Records the move of `runId` unless it already moves; null when it does. */
+  function request(runId: string, runnerId: string, principal: WorkspacePrincipal, at: number) {
+    const status = runnerSessionMove(db, runId, runnerId)?.status;
+    if (status === "moving" || status === "waiting") return null;
+    requestRunnerSessionMove(db, { runId, runnerId, userId: principal.userId, now: at });
+    auditWorkspaceAccess(db, {
+      workspaceId: principal.workspaceId,
+      userId: principal.userId,
+      action: "runner.session.move",
+      subject: runId,
+      now: at,
+    });
+    return runId;
+  }
+  /** Runs the handover the route asked for; the route does not wait for the runner. */
+  function start(runId: string, runnerId: string, itemId: string) {
+    const settling = settle(runId, runnerId, itemId)
+      .catch((error: unknown) => {
+        journalCaught(error, "runner-control.sessionMove.settle", itemId);
+      })
+      .finally(() => pending.delete(settling));
+    pending.add(settling);
+  }
+  /** The admin check every move route shares; a refusal is audited. */
+  function admin(principal: WorkspacePrincipal, subject: string, at: number): boolean {
+    const member = workspaceMember(db, principal.workspaceId, principal.userId);
+    if (member?.active && isWorkspaceAdmin(member.role)) return true;
+    auditWorkspaceAccess(db, {
+      workspaceId: principal.workspaceId,
+      userId: principal.userId,
+      action: "access.denied",
+      subject,
+      now: at,
+    });
+    return false;
+  }
+  /** Sessions on `runnerId` the runner can hand over now: a live work lease on an active run. */
+  function liveSessions(runnerId: string, workspaceId: string, at: number, runId?: string) {
+    return db
+      .query<
+        { runId: string; itemId: string },
+        [string, string, number, string | null, string | null]
+      >(
+        `SELECT w.run_id AS runId,r.item_id AS itemId FROM runner_work w JOIN run r ON r.id=w.run_id
+         WHERE w.runner_id=? AND w.workspace_id=? AND w.ended_at IS NULL AND w.lease_until>?
+         AND r.status IN ('active','provisioning') AND (? IS NULL OR w.run_id=?)
+         ORDER BY r.created_at,w.run_id`,
+      )
+      .all(runnerId, workspaceId, at, runId ?? null, runId ?? null);
+  }
+  /** `POST /api/runners/:runnerId/sessions/move`: Move running work off a draining runner. */
+  function moveAll(runnerId: string, principal: WorkspacePrincipal): Response {
+    const at = now();
+    const decision = immediate(db, () => {
+      if (!admin(principal, `runner_drain_move:${runnerId}`, at)) return "denied" as const;
+      const runner = db
+        .query<{ status: string }, [string, string]>(
+          "SELECT status FROM runner WHERE id=? AND workspace_id=?",
+        )
+        .get(runnerId, principal.workspaceId);
+      if (runner?.status !== "draining") return "not_draining" as const;
+      // One move per session, as Move to another runner asks it.
+      return liveSessions(runnerId, principal.workspaceId, at).filter(
+        (session) => request(session.runId, runnerId, principal, at) !== null,
+      );
+    });
+    if (decision === "denied")
+      return json({ error: "Only workspace owners and admins can move running work." }, 403);
+    if (decision === "not_draining")
+      return json({ error: "Drain this runner before moving all of its running work." }, 409);
+    for (const session of decision) start(session.runId, runnerId, session.itemId);
+    return json({ ok: true, moving: decision.length }, 202);
+  }
   return {
-    async fetch(request: Request, principal: WorkspacePrincipal): Promise<Response | null> {
-      const match = MOVE_PATH.exec(new URL(request.url).pathname);
-      if (!match) return null;
-      if (request.method !== "POST") return json({ error: "Use POST." }, 405);
+    async fetch(httpRequest: Request, principal: WorkspacePrincipal): Promise<Response | null> {
+      const path = new URL(httpRequest.url).pathname;
+      const all = MOVE_ALL_PATH.exec(path);
+      const match = all ? null : MOVE_PATH.exec(path);
+      if (!all && !match) return null;
+      if (httpRequest.method !== "POST") return json({ error: "Use POST." }, 405);
+      if (all) return moveAll(all[1]!, principal);
       const [, runnerId, runId] = match as unknown as [string, string, string];
       const at = now();
       const decision = immediate(db, () => {
-        const member = workspaceMember(db, principal.workspaceId, principal.userId);
-        if (!member?.active || !isWorkspaceAdmin(member.role)) {
-          auditWorkspaceAccess(db, {
-            workspaceId: principal.workspaceId,
-            userId: principal.userId,
-            action: "access.denied",
-            subject: `runner_session_move:${runId}`,
-            now: at,
-          });
-          return "denied" as const;
-        }
-        const session = db
-          .query<{ itemId: string }, [string, string, string, number]>(
-            `SELECT r.item_id AS itemId FROM runner_work w JOIN run r ON r.id=w.run_id
-             WHERE w.run_id=? AND w.runner_id=? AND w.workspace_id=?
-             AND w.ended_at IS NULL AND w.lease_until>? AND r.status IN ('active','provisioning')`,
-          )
-          .get(runId, runnerId, principal.workspaceId, at);
+        if (!admin(principal, `runner_session_move:${runId}`, at)) return "denied" as const;
+        const [session] = liveSessions(runnerId, principal.workspaceId, at, runId);
         if (!session) return "gone" as const;
-        const status = runnerSessionMove(db, runId, runnerId)?.status;
-        if (status === "moving" || status === "waiting") return "moving" as const;
-        requestRunnerSessionMove(db, { runId, runnerId, userId: principal.userId, now: at });
-        auditWorkspaceAccess(db, {
-          workspaceId: principal.workspaceId,
-          userId: principal.userId,
-          action: "runner.session.move",
-          subject: runId,
-          now: at,
-        });
+        if (request(runId, runnerId, principal, at) === null) return "moving" as const;
         return session;
       });
       if (decision === "denied")
@@ -122,12 +175,7 @@ export function createRunnerSessionMoves(options: {
           409,
         );
       if (decision === "moving") return json({ ok: true, moving: true }, 202);
-      const settling = settle(runId, runnerId, decision.itemId)
-        .catch((error: unknown) => {
-          journalCaught(error, "runner-control.sessionMove.settle", decision.itemId);
-        })
-        .finally(() => pending.delete(settling));
-      pending.add(settling);
+      start(runId, runnerId, decision.itemId);
       return json({ ok: true, moving: true }, 202);
     },
     /** Waits for every handover the route started, as tests and shutdown do. */
