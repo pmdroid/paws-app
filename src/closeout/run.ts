@@ -876,6 +876,7 @@ function noteReview(
   attempt: number | null,
   reviewEvidencePath: string | null = null,
   measured?: { durationMs: number; tokens: number | null },
+  marks?: Pick<CloseoutProgressStep, "failOn" | "preExisting">,
 ): void {
   const running = state === "running" || state === "pending";
   input.progress?.step(identity, {
@@ -897,6 +898,7 @@ function noteReview(
     findings: findings === null ? null : scrub(findings),
     ordinal: -1,
     ...measured,
+    ...marks,
   });
 }
 
@@ -908,6 +910,8 @@ function publishReviews(
   metrics: ReviewMetrics,
 ): void {
   const identity = progressIdentity(input.taskId, decision);
+  const required = reviewRequirements(input.worktree, input.home, input.policyRoot);
+  const failOn = new Map(required.ok ? required.items.map((item) => [item.id, item.failOn]) : []);
   for (const item of decision.items) {
     if (item.kind !== "review") continue;
     const found = reviewFindings.find((entry) => entry.itemId === item.id);
@@ -932,8 +936,19 @@ function publishReviews(
       attempt ?? null,
       reviewEvidencePath,
       metrics.get(item.id),
+      {
+        failOn: failOn.get(item.id) ?? null,
+        preExisting: found ? preExistingIndexes(found) : null,
+      },
     );
   }
+}
+
+/** Indexes into the record's findings of those in pre-existing code. */
+function preExistingIndexes(review: ReviewFindings): number[] {
+  return review.findings.flatMap((finding, index) =>
+    review.preExisting?.includes(finding) ? [index] : [],
+  );
 }
 
 function reviewStepState(state: string): CloseoutStepState {

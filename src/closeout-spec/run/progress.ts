@@ -42,6 +42,10 @@ export type CloseoutProgressStep = {
   ordinal: number;
   durationMs?: number | null;
   tokens?: number | null;
+  /** A review's `failOn`. */
+  failOn?: "P0" | "P1" | "P2" | "P3" | null;
+  /** Indexes of the review record's findings that are in pre-existing code. */
+  preExisting?: readonly number[] | null;
 };
 
 export interface CloseoutProgress {
