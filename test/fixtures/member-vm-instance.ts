@@ -113,7 +113,6 @@ const paws = startPaws(
     LINEAR_WEBHOOKS: "false",
   },
   {
-    noTunnel: true,
     ...(process.env.PAWS_FIXTURE_NO_EXE_DEV === "1"
       ? {}
       : { memberVm: { exeDev, bootstrap, pollMs: 250 } }),

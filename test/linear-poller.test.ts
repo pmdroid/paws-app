@@ -401,14 +401,13 @@ describe("linear intake poll", () => {
       db,
       secretsDir: secrets,
       env: { LINEAR_ACCESS_TOKEN: "token" },
-      publicUrl: null,
       fetch: async (_url, init) => {
         queries.push(String(init?.body));
         return json(emptyData());
       },
     });
     expect(linear.usage().lastCatchUpMs).toBeNull();
-    const running = linear.start(8787);
+    const running = linear.start();
     await waitFor(() => createInboxStore(db).getCursor("linear") !== null);
     expect(queries.some((body) => body.includes("IntakePoll"))).toBe(true);
     expect(linear.usage().lastCatchUpMs).toBe(createInboxStore(db).getCursor("linear"));
@@ -881,66 +880,6 @@ describe("linear intake poll", () => {
     await poller.settled;
     db.close();
   });
-
-  test("the default config does not start a tunnel", async () => {
-    const home = tempHome();
-    const secrets = join(home, "secrets");
-    mkdirSync(secrets, { recursive: true });
-    const db = tempDb();
-    const spawned: string[][] = [];
-    const linear = openLinear({
-      db,
-      secretsDir: secrets,
-      env: {
-        LINEAR_ACCESS_TOKEN: "token",
-        LINEAR_TEAM_ID: TEAM,
-      },
-      publicUrl: "https://demo.ngrok-free.app",
-      fetch: async () => json(emptyData()),
-      spawn: (command, args) => {
-        spawned.push([command, ...args]);
-        return { kill() {}, exited: new Promise(() => {}) };
-      },
-    });
-    const running = linear.start(8787);
-    await Bun.sleep(20);
-    expect(running.tunnelRequested).toBe(false);
-    expect(running.tunnelUp()).toBe(false);
-    expect(spawned).toEqual([]);
-    await running.stop();
-    db.close();
-  });
-
-  test("LINEAR_WEBHOOKS starts ngrok with the dev-domain url", async () => {
-    const home = tempHome();
-    const secrets = join(home, "secrets");
-    mkdirSync(secrets, { recursive: true });
-    const db = tempDb();
-    const spawned: string[][] = [];
-    const linear = openLinear({
-      db,
-      secretsDir: secrets,
-      env: {
-        LINEAR_ACCESS_TOKEN: "token",
-        LINEAR_TEAM_ID: TEAM,
-        LINEAR_WEBHOOKS: "true",
-        NGROK_AUTHTOKEN: "token-1",
-      },
-      publicUrl: "https://demo.ngrok-free.app",
-      fetch: async () => json(emptyData()),
-      spawn: (command, args, options) => {
-        spawned.push([command, ...args]);
-        expect(options.env["NGROK_AUTHTOKEN"]).toBe("token-1");
-        expect([command, ...args].join(" ")).not.toContain("token-1");
-        return { kill() {}, exited: new Promise(() => {}) };
-      },
-    });
-    const running = linear.start(8787);
-    expect(running.tunnelRequested).toBe(true);
-    expect(spawned).toEqual([["ngrok", "http", "--url=https://demo.ngrok-free.app", "8787"]]);
-    await running.stop();
-    db.close();
-  });
 });
 
 function emptyPage(): unknown {
@@ -1201,7 +1140,6 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
     db,
     secretsDir: join(tempHome(), "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-    publicUrl: null,
     fetch: async () => json(emptyData()),
     followUp: async () => {
       ready.resolve();
@@ -1209,7 +1147,7 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
       db.run("UPDATE inbox_event SET handled = 1 WHERE dedupe_key = 'accepted'");
     },
   });
-  const running = linear.start(0);
+  const running = linear.start();
   const event: AcceptedLinearEvent = {
     dedupeKey: "accepted",
     deliveryId: null,

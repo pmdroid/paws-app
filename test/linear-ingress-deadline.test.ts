@@ -71,7 +71,6 @@ function fixture() {
     db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
-    publicUrl: null,
     beforeEvent: (event, ...args: unknown[]) =>
       (
         gate.accept as (

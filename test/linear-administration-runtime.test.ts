@@ -84,8 +84,6 @@ async function fixture(token = true, children = false) {
     db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-    publicUrl: null,
-    noTunnel: true,
     isAuthorized: () => !isLinearAppRevoked(db, scope),
     beforeEvent: async (event) =>
       !(await handleLinearAdministration(db, event, {

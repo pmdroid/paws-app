@@ -146,7 +146,6 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     PAWS_PUBLIC_URL: "https://localhost",
     PAWS_TLS_KEY_PATH: keyPath,
     PAWS_TLS_CERT_PATH: certPath,
-    PAWS_NO_TUNNEL: "1",
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent-verification-bus",
   };
   const cwd = fileURLToPath(new URL("../..", import.meta.url));
@@ -309,7 +308,6 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
         "--preload",
         "./test/fixtures/workspace-runtime-linear.ts",
         "src/index.ts",
-        "--no-tunnel",
       ],
       { cwd, env, stdout: "pipe", stderr: "pipe" },
     );

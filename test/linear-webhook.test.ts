@@ -150,7 +150,6 @@ describe("linear webhooks", () => {
       expect(github.status).toBe(404);
       const count = paws.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox_event").get();
       expect(count?.n).toBe(0);
-      expect(paws.tunnelRequested).toBe(false);
     } finally {
       await paws.stop();
     }

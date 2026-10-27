@@ -83,13 +83,6 @@ export function startBrowserOnboarding(
     catchUp: async () => {
       await active?.catchUp();
     },
-    tunnelUp: () => active?.tunnelUp() ?? false,
-    get tunnelRequested() {
-      return active?.tunnelRequested ?? false;
-    },
-    get tunnelUrl() {
-      return active?.tunnelUrl ?? null;
-    },
     async stop() {
       stopping = true;
       await switching;

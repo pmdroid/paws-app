@@ -41,7 +41,7 @@ const NAMES = [
   "repository",
 ];
 
-test("doctor reports the local prerequisites and skips tunnel checks", () => {
+test("doctor reports the local prerequisites and skips webhook checks", () => {
   const checks = doctorChecks(probe(true));
   expect(checks.map((item) => item.name)).toEqual(NAMES);
   expect(checks.every((item) => item.ok)).toBe(true);
