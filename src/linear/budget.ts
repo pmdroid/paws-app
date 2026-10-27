@@ -30,6 +30,7 @@ const CALLER_PRIORITY: Record<string, LinearPriority> = {
   "repository-hints": "background",
   context: "background",
   "epics-sweep": "background",
+  "relations-poll": "background",
   events: "critical",
 };
 

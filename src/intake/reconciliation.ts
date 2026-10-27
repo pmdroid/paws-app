@@ -18,9 +18,11 @@ import type {
 import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
 import { snapshotProject } from "./project";
-import { saveWorkItemLinearProject } from "../db";
+import { listTaskBlockers, saveWorkItemLinearProject } from "../db";
 
 export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
+/** Linear sends no webhook for an issue relation, so open items' blockers are re-read this often. */
+export const RELATIONS_POLL_MS = 5 * 60_000;
 
 export type ItemChanges = {
   delegationId: string;
@@ -130,6 +132,7 @@ export function createItemReconciler(input: {
   const { db } = input;
   const flights = new Map<string, { dirty: boolean; promise: Promise<void> }>();
   let sweepFlight: Promise<void> | null = null;
+  let relationsFlight: Promise<Target[]> | null = null;
   const now = input.now ?? Date.now;
   const shutdown = new AbortController();
   let closing: Promise<void> | null = null;
@@ -524,6 +527,70 @@ export function createItemReconciler(input: {
     return sweepFlight;
   }
 
+  /**
+   * Reads each open item's relations and reconciles the delegations whose blockers no longer
+   * match `task_block`. One relations query per item, against the epic, child and status reads
+   * of a full reconcile.
+   */
+  function pollRelations(options: { signal?: AbortSignal } = {}): Promise<Target[]> {
+    if (shutdown.signal.aborted) return Promise.reject(shutdown.signal.reason);
+    if (relationsFlight) return relationsFlight;
+    relationsFlight = (async () => {
+      try {
+        const items = db
+          .query<Target & { issueId: string; delegationId: string }, []>(
+            `SELECT DISTINCT i.id AS itemId,w.id AS workspaceId,i.linear_issue_id AS issueId,
+             i.delegation_id AS delegationId FROM work_item i
+             JOIN linear_session s ON s.session_id=i.session_key
+             JOIN workspace w ON w.linear_organization_id=s.organization_id
+             JOIN item_dependency_snapshot d ON d.item_id=i.id
+             LEFT JOIN work_item_specification p ON p.item_id=i.id
+             WHERE ${delegationHasOpenWork("i.delegation_id")} AND s.stopped_at IS NULL
+             AND i.state NOT IN ('completed','merged','cancelled') AND COALESCE(p.present,1)=1
+             ORDER BY i.id`,
+          )
+          .all();
+        const changed = new Map<string, Target>();
+        for (const item of items) {
+          if (changed.has(item.delegationId)) continue;
+          options.signal?.throwIfAborted();
+          shutdown.signal.throwIfAborted();
+          let read: readonly DependencyEdge[];
+          try {
+            read = await input.tracker.listDeps(item.issueId);
+          } catch (error) {
+            journalCaught(error, "reconciliation.pollRelations.listDeps", item.itemId);
+            continue;
+          }
+          const blockers = new Set(
+            read
+              .filter((edge) => edge.blockedLinearIssueId === item.issueId)
+              .map((edge) => edge.blockerLinearIssueId),
+          );
+          const saved = new Set(listTaskBlockers(db, item.issueId));
+          if (blockers.size !== saved.size || [...blockers].some((id) => !saved.has(id)))
+            changed.set(item.delegationId, { itemId: item.itemId, workspaceId: item.workspaceId });
+        }
+        db.transaction(() => {
+          for (const target of changed.values())
+            db.run(
+              `INSERT INTO delegation_reconciliation(delegation_id,changes)
+               SELECT delegation_id,1 FROM work_item WHERE id=?
+               ON CONFLICT(delegation_id) DO UPDATE SET changes=changes+1`,
+              [target.itemId],
+            );
+        }).immediate();
+        await Promise.all(
+          [...changed.values()].map((target) => reconcile({ ...target, signal: options.signal })),
+        );
+        return [...changed.values()];
+      } finally {
+        relationsFlight = null;
+      }
+    })();
+    return relationsFlight;
+  }
+
   function close(): Promise<void> {
     if (closing) return closing;
     shutdown.abort(new DOMException("Item reconciliation stopped", "AbortError"));
@@ -533,5 +600,5 @@ export function createItemReconciler(input: {
     return closing;
   }
 
-  return { reconcile, issueChanged, sweep, close };
+  return { reconcile, issueChanged, sweep, pollRelations, close };
 }
