@@ -32,7 +32,7 @@ import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identi
 import { createRunnerPlacement } from "../src/runner-placement";
 import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
-import { createRunnerWork } from "../src/runner-work";
+import { createRunnerWork, RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { migratedDatabase } from "./helpers";
 
@@ -43,8 +43,13 @@ type Fault =
   | "unpaired"
   | "usage-limit"
   | "preparation-usage-limit"
-  | "linear-503";
+  | "linear-503"
+  | "restarted"
+  | "silent-live"
+  | "silent-unconfirmed";
 
+const RUN_LOST = "The runner lost this run after it restarted; continuing from the branch.";
+const SILENT_RUN_MS = 300;
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const fakeAgent = join(import.meta.dir, "../src/acp/testing/fake-agent.ts");
 const gitConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
@@ -85,6 +90,47 @@ test.each([
   },
   60_000,
 );
+
+test("a run whose runner restarted without it is lost on the next heartbeat and the task resumes", async () => {
+  const result = await runRemoteFault("restarted");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  // The lease was never let lapse: the heartbeat that left the command out fenced it.
+  expect(result.lostBeforeLease, result.detail).toBe(true);
+  expect(
+    result.thoughts.filter((body) => body.includes(RUN_LOST)),
+    result.detail,
+  ).toEqual([RUN_LOST]);
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+}, 60_000);
+
+test("a silent run that the runner still reports as live is not recovered", async () => {
+  const result = await runRemoteFault("silent-live");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(
+    result.thoughts.some((body) => body.includes(RUN_LOST)),
+    result.detail,
+  ).toBe(false);
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+}, 60_000);
+
+test("a silent run that the runner does not confirm is recovered after the silence bound", async () => {
+  const result = await runRemoteFault("silent-unconfirmed");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(
+    result.thoughts.filter((body) => body.includes(RUN_LOST)),
+    result.detail,
+  ).toEqual([RUN_LOST]);
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+}, 60_000);
 
 test("a runner that is unreachable for longer than its lease keeps its run and reaches Closeout", async () => {
   const result = await runRemoteFault("outage");
@@ -268,7 +314,27 @@ async function runRemoteFault(fault: Fault) {
     faultedAttempts: 0,
     deferredState: null as string | null,
     heldSlots: null as number | null,
+    lostBeforeLease: null as boolean | null,
   };
+  // The work this fake runner names in its heartbeat, for faults where the runner reports it.
+  const reporting = fault === "restarted" || fault === "silent-live";
+  const live = new Map<string, { command: Extract<RunnerCommand, { type: "run" }>; at: number }>();
+  const heartbeat = () =>
+    work.heartbeat(
+      runnerId,
+      1,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      reporting
+        ? [...live.values()].map(({ command }) => ({
+            runId: command.runId,
+            generation: command.generation,
+          }))
+        : undefined,
+    );
   const backend = createRemoteAgentRunner({
     db,
     work,
@@ -276,6 +342,7 @@ async function runRemoteFault(fault: Fault) {
     health,
     placement: createRunnerPlacement({ db }),
     pollIntervalMs: 5,
+    ...(fault.startsWith("silent") ? { silentRunMs: SILENT_RUN_MS } : {}),
     async fetchCandidate(candidate) {
       await git(["-C", candidate.worktree, "fetch", origin, candidate.candidateSha]);
       await git(["-C", candidate.worktree, "reset", "--hard", candidate.candidateSha]);
@@ -423,10 +490,27 @@ async function runRemoteFault(fault: Fault) {
         unreachable = undefined;
         runner.stale = false;
         runner.faulty = false;
-        work.heartbeat(runnerId);
+        heartbeat();
         if (command.type === "run") deliver(command);
       }
-      if (!runner.stale) work.heartbeat(runnerId);
+      for (const [key, entry] of live)
+        if (Date.now() - entry.at > SILENT_RUN_MS * 2) {
+          live.delete(key);
+          deliver(entry.command);
+        }
+      if (!runner.stale) {
+        const lostBefore =
+          fault === "restarted" && runner.lostBeforeLease === null
+            ? db
+                .query<{ leaseUntil: number }, []>(
+                  "SELECT lease_until AS leaseUntil FROM runner_work WHERE ended_at IS NULL",
+                )
+                .get()
+            : null;
+        const reply = heartbeat();
+        if (lostBefore && reply.fenced.length)
+          runner.lostBeforeLease = lostBefore.leaseUntil > Date.now();
+      }
       for (const envelope of work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
@@ -435,7 +519,7 @@ async function runRemoteFault(fault: Fault) {
         handled.add(command.id);
         work.acknowledge(runnerId, command.id);
         if (command.type === "cancel" && runner.stale) {
-          work.heartbeat(runnerId);
+          heartbeat();
           runner.stale = false;
         }
         if (command.type === "login_check")
@@ -467,6 +551,29 @@ async function runRemoteFault(fault: Fault) {
             Date.now() - 1 - RUNNER_LEASE_GRACE_MS,
             command.runId,
           ]);
+          continue;
+        }
+        if (fault === "restarted" && runner.faulty) {
+          // The runner ran the command for a while, then restarted and came back without it.
+          runner.faultedAttempts++;
+          runner.faulty = false;
+          db.run("UPDATE runner_command SET acknowledged_at=? WHERE id=?", [
+            Date.now() - 2 * RUNNER_LIVE_GRACE_MS,
+            command.id,
+          ]);
+          continue;
+        }
+        if (fault === "silent-live" && runner.faulty) {
+          // A tool call that prints nothing for longer than the silence bound, then finishes.
+          runner.faultedAttempts++;
+          runner.faulty = false;
+          live.set(command.id, { command, at: Date.now() });
+          continue;
+        }
+        if (fault === "silent-unconfirmed" && runner.faulty) {
+          // A runner that does not name its work keeps renewing the lease while it is silent.
+          runner.faultedAttempts++;
+          runner.faulty = false;
           continue;
         }
         if (fault === "outage" && runner.faulty) {
@@ -549,6 +656,7 @@ async function runRemoteFault(fault: Fault) {
       faultedAttempts: runner.faultedAttempts,
       deferredState: runner.deferredState,
       heldSlots: runner.heldSlots,
+      lostBeforeLease: runner.lostBeforeLease,
       detail: JSON.stringify({
         state: getWorkItem(db, item.id)?.state,
         runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),

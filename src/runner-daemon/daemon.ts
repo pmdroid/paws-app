@@ -344,12 +344,14 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
      * `skills` is what this runner has installed; sending it asks Paws for the skill manifest.
      * `runtimes` is what mise installed for tasks on this runner, sent once there is any.
      * `agents` is the coding agent versions the installer manages; sending it asks Paws for the
-     * versions chosen on the Runners page.
+     * versions chosen on the Runners page. `live` is the work this runner still runs; Paws renews
+     * only those leases and fences acknowledged work the runner no longer reports.
      */
     async heartbeat(
       skills?: readonly RunnerInstalledSkill[],
       runtimes?: readonly RunnerInstalledRuntime[],
       agents?: readonly RunnerInstalledAgent[],
+      live?: readonly { runId: string; generation: number }[],
     ) {
       const body = {
         ...options.sampleHost?.(),
@@ -365,8 +367,17 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         installed === undefined ? withSkills : { ...withSkills, runtimes: installed };
       // A Paws release without agents, runtimes or skills refuses the unknown field with 403.
       // Drop the newest fields one at a time so the leases still renew.
+      const withAgents = coding === undefined ? withRuntimes : { ...withRuntimes, agents: coding };
       const attempts: unknown[] = [
-        coding === undefined ? withRuntimes : { ...withRuntimes, agents: coding },
+        ...(live === undefined
+          ? []
+          : [
+              {
+                ...withAgents,
+                live: live.map(({ runId, generation }) => ({ runId, generation })),
+              },
+            ]),
+        withAgents,
         ...(coding === undefined ? [] : [withRuntimes]),
         ...(installed === undefined ? [] : [withSkills]),
         ...(reported?.some((skill) => skill.waiting)
