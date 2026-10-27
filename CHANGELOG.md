@@ -2,11 +2,21 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-10-27: "When main moved before the merge" has its three choices again
+
+### Changed
+
+- **`[merge] main_moved` accepts `"ci"`, `"overlap"` and `"closeout"` again, and a missing key means `"ci"`.** `config.toml` with `"ci"` or `"overlap"` starts Paws again, and Settings › Merging saves all three choices. Items that already started keep the value they resolved when they started.
+  - `"ci"`: after a rebase, the new head merges once its CI is green. Closeout does not run again; the new head carries the acceptance of the head the lane rebased.
+  - `"overlap"`: when main's new commits touch none of the pull request's files or package roots, the pull request merges without a rebase. When they do, or GitHub requires branches to be up to date, the branch is updated and waits for CI.
+  - `"closeout"`: every rebased head goes back through Closeout, as on 2026-10-26.
+- The merge lane still squashes only when `mergeable(S)` holds, with GitHub's expected-head guard set to S. A changed Closeout policy sends a carried head back through Closeout.
+
 ## 2026-10-26: One way back to the agent, one way to ask, one merge predicate
 
 ### Breaking
 
-- **`[merge] main_moved = "ci"` is rejected.** Paws no longer starts with it, in `[merge]`, `[merge.projects.*]` or `[[merge.rules]]`. The setting merged a rebased head that Closeout never saw. Set the key to `"closeout"` or remove it; every rebased head now goes through Closeout before it can merge. `"overlap"` is rejected the same way.
+- **`[merge] main_moved = "ci"` is rejected.** Paws no longer starts with it, in `[merge]`, `[merge.projects.*]` or `[[merge.rules]]`. The setting merged a rebased head that Closeout never saw. Set the key to `"closeout"` or remove it; every rebased head now goes through Closeout before it can merge. `"overlap"` is rejected the same way. Reverted on 2026-10-27.
 - **`exhausted` and `awaiting_signoff` are no longer work-item states.** A migration moves `exhausted` rows to `failed`; nothing wrote `awaiting_signoff`. `GET /api/status` no longer returns either state. A spent budget is now an open question in `awaiting_input`.
 - **`[merge] ci_fix_attempts` no longer sets a CI budget.** Red CI is a fix round and counts against the Closeout policy's `retry.fix_rounds_per_item`.
 - **The rebase budget no longer refills when main advances.** Three returns in a row on a known main, six in any rolling hour; only a person's reply in the item's session refills it.
