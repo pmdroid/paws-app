@@ -160,6 +160,8 @@ import {
   type GitHubIntegration,
   teamMemberDenial,
   teamRepositoryDenial,
+  riskGateOn,
+  RISK_GATE_NEEDS_PUBLIC_URL,
 } from "./loop";
 import { handleLinkAskAnswer } from "./questions";
 import {
@@ -945,6 +947,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             token: async (candidate) =>
               (await authProvider(runtime, candidate, "read", resolveApp)?.token()) ?? null,
           }),
+        riskGate: riskGateOn(runtime.publicUrl)
+          ? { on: true }
+          : { on: false, reason: RISK_GATE_NEEDS_PUBLIC_URL },
         upToDateRules: (signal: AbortSignal) =>
           repositoriesRequiringUpToDate({
             repositories,

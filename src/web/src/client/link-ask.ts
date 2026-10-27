@@ -1,4 +1,10 @@
-import type { LinkAskKind, StatusBypassAsk, StatusQuestion, StatusReviewRounds } from "../contract";
+import type {
+  LinkAskKind,
+  StatusBypassAsk,
+  StatusQuestion,
+  StatusReviewRounds,
+  StatusRiskAsk,
+} from "../contract";
 import { esc } from "./format";
 
 /** The Needs you button for each kind. */
@@ -39,7 +45,7 @@ const NOTE_LABELS: Record<LinkAskKind, string> = {
 const LINEAR_REPLY: Record<LinkAskKind, string> = {
   bypass: "A reply in Linear only sends the agent guidance.",
   screenshots: "A reply in Linear only sends the agent guidance.",
-  risk: "A reply in Linear only sends the agent guidance.",
+  risk: "A reply in Linear only requests changes and never approves.",
   question: "A reply in Linear only sends the agent guidance.",
   rounds: "A reply in Linear counts as Rethink the approach, with the reply as the note.",
 };
@@ -68,6 +74,7 @@ export function linkAskCard(question: StatusQuestion): string {
   const ask = question.linkAsk;
   if (!ask) return "";
   if (ask.kind === "bypass" && ask.bypass) return bypassCard(question, ask.bypass);
+  if (ask.kind === "risk" && ask.risk) return riskCard(question, ask.risk);
   const id = question.id;
   const busy = pending.has(id);
   const disabled = busy ? ' disabled=""' : "";
@@ -132,6 +139,32 @@ function bypassCard(question: StatusQuestion, bypass: StatusBypassAsk): string {
     ? `<p class="row wrap"><span class="tag passed">Passed</span> <span>${esc(bypass.passed.join(", "))}</span></p>`
     : "";
   return `<section id="closeout" class="card link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><div class="row wrap"><span class="tag now">Needs you</span><h2 id="link-ask-${esc(id)}">Closeout needs your help</h2></div>${ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}<form class="link-ask-form" data-link-ask="${esc(id)}" data-bypass="${esc(ask.head)}">${checks}${passed}<label class="field"><span>Guidance for the agent instead</span><textarea name="note" rows="2" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><p class="muted">${LINK_ASK_ANSWERERS} A reply in Linear never bypasses a check.</p><div class="row wrap"><button class="btn primary" type="submit" name="decision" value="approve" data-bypass-submit=""${busy || (chosen.size === 0 ? ' disabled=""' : "")}>${esc(bypassLabel(chosen.size, ask.head))}</button><button class="btn" type="submit" name="decision" value="changes"${busy}>Send guidance instead</button><details><summary class="btn">Stop</summary><p>Stop this item and keep its branch?</p><button class="btn" type="button" data-link-ask-stop="${esc(question.itemId)}"${busy}>Confirm stop</button></details></div><p class="muted">The bypass covers commit <span class="mono">${esc(head)}</span> and policy <span class="mono">${esc(shortDigest(bypass.policyDigest))}</span> only. A new commit runs every check again.</p><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
+}
+
+/** "Approve 7f65200". */
+export function riskApproveLabel(head: string): string {
+  return `Approve ${head.slice(0, 7)}`;
+}
+
+/**
+ * The Risk card: the high-risk paths the head changes, Closeout's summary and the review
+ * findings; approve the head, request changes with a note, or stop with the pull request open.
+ */
+function riskCard(question: StatusQuestion, risk: StatusRiskAsk): string {
+  const ask = question.linkAsk!;
+  const id = question.id;
+  const busy = pending.has(id) ? ' disabled=""' : "";
+  const head = ask.head.slice(0, 7);
+  const paths = risk.paths.length
+    ? `<p>High-risk paths changed:</p><ul class="risk-paths">${risk.paths.map((path) => `<li class="mono">${esc(path)}</li>`).join("")}</ul>`
+    : ask.detail
+      ? `<p>${esc(ask.detail)}</p>`
+      : "";
+  const summary = risk.summary.trim() ? `<h3>Closeout</h3><p>${esc(risk.summary.trim())}</p>` : "";
+  const findings = risk.findings.length
+    ? `<h3>Review findings</h3>${risk.findings.map((entry) => `<div class="bypass-finding"><b>${esc(entry.id)}</b> ${esc(entry.finding)}</div>`).join("")}`
+    : "";
+  return `<section id="risk" class="card link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><div class="row wrap"><span class="tag now">Needs you</span><h2 id="link-ask-${esc(id)}">Risk</h2></div><p><b>${esc(ask.title)}</b></p>${paths}${summary}${findings}<form class="link-ask-form" data-link-ask="${esc(id)}"><label class="field"><span>${NOTE_LABELS.risk}</span><span class="muted">Required to request changes; the agent gets it.</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><p class="muted">${LINK_ASK_ANSWERERS} A reply in Linear only requests changes and never approves.</p><div class="row wrap"><button class="btn primary" type="submit" name="decision" value="approve"${busy}>${esc(riskApproveLabel(ask.head))}</button><button class="btn" type="submit" name="decision" value="changes"${busy}>Request changes</button><details><summary class="btn">Stop</summary><p>Stop this item? The pull request stays open.</p><button class="btn" type="submit" name="decision" value="stop"${busy}>Confirm stop</button></details></div><p class="muted">The approval covers commit <span class="mono">${esc(head)}</span>. A new commit asks again, unless it only rebased onto main with the same patch.</p><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
 }
 
 function shortDigest(digest: string): string {

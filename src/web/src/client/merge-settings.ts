@@ -156,11 +156,21 @@ export function renderMergeSettings(view: View): string {
           : '<p class="sub">No issue rules.</p>'
       }
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
+      ${riskGateSection(data.riskGate)}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
 
 /** The saved body: the page's settings without the Linear choices. */
+/** Whether high-risk pull requests wait for an approval in Paws, and why not. */
+function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
+  if (!gate) return "";
+  const body = gate.on
+    ? '<p class="sub">A pull request that changes a high-risk path waits for an approval on its issue page in Paws before it joins the merge queue.</p>'
+    : `<p class="settings-message" role="status">${esc(gate.reason ?? "The risk gate is off.")}</p>`;
+  return `<section class="settings-section" id="merge-risk-gate"><div class="settings-label"><h2>High-risk approval</h2><p class="sub">The person who delegated the issue or the project lead approves each high-risk head.</p></div><div class="col">${body}</div></section>`;
+}
+
 export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
   return { default: data.default, projects: data.projects, rules: data.rules };
 }
@@ -329,7 +339,7 @@ export function createMergeSettings(invalidate: () => void): {
     const started = generation;
     const choices = view.data.choices;
     const choicesError = view.data.choicesError;
-    const { githubQueue, githubQueueError, upToDateRule } = view.data;
+    const { githubQueue, githubQueueError, upToDateRule, riskGate } = view.data;
     void request("Saving merging settings…", async () => {
       const data = await mergeSettingsRequest(
         engine!,
@@ -345,6 +355,7 @@ export function createMergeSettings(invalidate: () => void): {
         ...(githubQueue === undefined ? {} : { githubQueue }),
         ...(githubQueueError ? { githubQueueError } : {}),
         ...(upToDateRule ? { upToDateRule } : {}),
+        ...(riskGate ? { riskGate } : {}),
       };
       view.saved = true;
     });

@@ -34,6 +34,11 @@ export type MergeSettingsOptions = {
    */
   githubQueues?: (signal: AbortSignal) => Promise<string[]>;
   upToDateRules?: (signal: AbortSignal) => Promise<string[]>;
+  /**
+   * Whether a high-risk pull request waits for an approval in Paws, and why not. The gate needs
+   * a dashboard link a person can open, so a Paws without an https public URL keeps it off.
+   */
+  riskGate?: { on: boolean; reason?: string };
 };
 
 export const MERGE_SETTINGS_PATH = "/api/settings/merging";
@@ -78,6 +83,7 @@ export async function handleMergeSettingsRequest(
     return json({
       ...view(policy),
       highRiskPaths: highRiskPathsView(policy),
+      ...(options.riskGate ? { riskGate: options.riskGate } : {}),
       choices,
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),

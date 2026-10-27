@@ -106,6 +106,8 @@ export type ServerOptions = {
     /** Configured repositories whose main has a GitHub merge queue, for Settings → Merging. */
     githubQueues?: (signal: AbortSignal) => Promise<string[]>;
     upToDateRules?: (signal: AbortSignal) => Promise<string[]>;
+    /** Whether high-risk pull requests wait for an approval in Paws, for Settings → Merging. */
+    riskGate?: { on: boolean; reason?: string };
     /** Files and Closeout check paths of a repository's local mirror, for Repository checkout. */
     checkoutFacts?: (repo: string) => Promise<RepositoryCheckoutFacts | null>;
   };
@@ -450,7 +452,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const { mergeChoices, githubQueues, upToDateRules, checkoutFacts, ...agentSettings } =
+    const { mergeChoices, githubQueues, upToDateRules, riskGate, checkoutFacts, ...agentSettings } =
       secrets.agentSettings;
     const shared = {
       ...agentSettings,
@@ -489,6 +491,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),
+        ...(riskGate ? { riskGate } : {}),
       }));
     if (settings !== null) return settings;
   }

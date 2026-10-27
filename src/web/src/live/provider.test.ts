@@ -29,6 +29,7 @@ import {
   startCloseoutRound,
   upsertCloseoutStep,
   type CloseoutStepWrite,
+  saveCandidateRisk,
 } from "../../../db";
 import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
@@ -583,6 +584,51 @@ describe("live status provider", () => {
       checks: [
         { id: "test", kind: "command", state: "exhausted", attempt: 3, finding: "exited 1" },
       ],
+    });
+  });
+
+  test("a risk link ask carries the head's high-risk paths for the Risk card", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const head = "7f65200aa1b2c3d4";
+    const item = insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
+    beginImplementRun(db, item.id, now);
+    applyWorkItemEvent(db, item.id, "blocking_question");
+    db.run(
+      "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
+      [item.id, now],
+    );
+    insertLinkAsk(db, {
+      questionId: "q-risk",
+      itemId: item.id,
+      kind: "risk",
+      headCommit: head,
+      link: "https://paws.example/status/issues/ENG-6#risk",
+      title: "High-risk changes in 7f65200 need your approval.",
+      detail: "High-risk paths changed: `src/auth/session.ts`.",
+      answerers: ["delegator"],
+      createdAt: now,
+    });
+    saveCandidateRisk(db, {
+      itemId: item.id,
+      head,
+      base: "base",
+      tier: "high",
+      paths: ["src/auth/session.ts"],
+      classifiedAt: now,
+    });
+    const snapshot = createLiveStatusProvider(db).snapshot();
+    expect(snapshot.questions[0]?.linkAsk?.risk).toEqual({
+      paths: ["src/auth/session.ts"],
+      summary: "",
+      findings: [],
+    });
+    // The snapshot still passes the contract the client reads.
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    expect(parsed.ok && parsed.snapshot.questions[0]?.linkAsk?.risk).toEqual({
+      paths: ["src/auth/session.ts"],
+      summary: "",
+      findings: [],
     });
   });
 
