@@ -23,6 +23,7 @@ const question = z.strictObject({
   type: z.literal("question"),
   requestId: z.uuid(),
   question: z.string().min(1).max(16_384),
+  context: z.string().min(1).max(16_384).optional(),
   options: z
     .array(
       z.union([
@@ -180,7 +181,12 @@ export function openExecutionJournal(root: string) {
             event = { type: "artifact", artifact: publication.data.artifact };
             requestId = publication.data.requestId;
           } else if (q.success) {
-            event = { type: "question", text: q.data.question, options: q.data.options };
+            event = {
+              type: "question",
+              text: q.data.question,
+              ...(q.data.context === undefined ? {} : { context: q.data.context }),
+              options: q.data.options,
+            };
             requestId = q.data.requestId;
           } else {
             if (raw && typeof raw === "object" && "type" in raw && raw.type === "plan") {

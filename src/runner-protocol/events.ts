@@ -96,6 +96,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("question"),
     text: z.string().min(1).max(16384),
+    context: z.string().min(1).max(16384).optional(),
     options: z
       .array(
         z.union([
