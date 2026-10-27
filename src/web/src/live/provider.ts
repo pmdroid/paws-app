@@ -1004,6 +1004,16 @@ function questionsFor(
               title: linkAsk.title,
               detail: linkAsk.detail,
               link: linkAsk.link,
+              ...(linkAsk.rounds === null
+                ? {}
+                : {
+                    rounds: {
+                      rounds: linkAsk.rounds.rounds,
+                      open: linkAsk.rounds.open,
+                      bugClass: linkAsk.rounds.bugClass,
+                      limit: linkAsk.rounds.limit,
+                    },
+                  }),
             },
           }
         : {}),

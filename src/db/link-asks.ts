@@ -1,15 +1,53 @@
 import type { Database } from "bun:sqlite";
 
 /** What a link ask wants a signed-in person to decide on the item page. */
-export type LinkAskKind = "bypass" | "screenshots" | "risk" | "question";
+export type LinkAskKind = "bypass" | "screenshots" | "risk" | "question" | "rounds";
 
-export const LINK_ASK_KINDS: readonly LinkAskKind[] = ["bypass", "screenshots", "risk", "question"];
+export const LINK_ASK_KINDS: readonly LinkAskKind[] = [
+  "bypass",
+  "screenshots",
+  "risk",
+  "question",
+  "rounds",
+];
 
 /**
  * `approve` bypasses, accepts or approves; `changes` sends the item back with a note;
- * `answer` answers a question kind. A Linear reply is never one of them.
+ * `answer` answers a question kind. `rethink`, `continue` and `stop` answer the
+ * `rounds` kind once review attempts ran out. A Linear reply is none of the first
+ * three; on a `rounds` ask it is `rethink` with the reply as the note.
  */
-export type LinkAskDecision = "approve" | "changes" | "answer";
+export type LinkAskDecision = "approve" | "changes" | "answer" | "rethink" | "continue" | "stop";
+
+/** The decisions each kind takes on the item page. */
+export const LINK_ASK_DECISIONS: Record<LinkAskKind, readonly LinkAskDecision[]> = {
+  bypass: ["approve", "changes"],
+  screenshots: ["approve", "changes"],
+  risk: ["approve", "changes"],
+  question: ["answer"],
+  rounds: ["rethink", "continue", "stop"],
+};
+
+/** Decisions that need a note: what to change, or the answer. */
+export const LINK_ASK_NOTE_REQUIRED: ReadonlySet<LinkAskDecision> = new Set(["changes", "answer"]);
+
+/** One failed review round: the commit reviewed and how many findings it got. */
+export type ReviewRound = { head: string; findings: number };
+
+/** A finding the last round still reported, with the class of bug its explanation starts with. */
+export type OpenReviewFinding = { severity: string; location: string; bugClass: string };
+
+/** What a `rounds` ask shows: each round, the open findings, and the class that recurs most. */
+export type LinkAskRounds = {
+  rounds: ReviewRound[];
+  open: OpenReviewFinding[];
+  /** The bug class reported most often across the rounds. Null when no finding named one. */
+  bugClass: string | null;
+  /** Rounds a Keep going grants: the policy's `maxFailedReviewAttempts`. Null when unknown. */
+  limit: number | null;
+  /** The findings as the fixer gets them, for the restart. */
+  handoff: string;
+};
 
 export type LinkAskClosed = "decided" | "guidance" | "head_moved" | "cancelled";
 
@@ -31,6 +69,8 @@ export type LinkAsk = {
   decidedAt: number | null;
   closedReason: LinkAskClosed | null;
   closedAt: number | null;
+  /** Set on the `rounds` kind only. */
+  rounds: LinkAskRounds | null;
 };
 
 type LinkAskRow = {
@@ -49,18 +89,19 @@ type LinkAskRow = {
   decided_at: number | null;
   closed_reason: LinkAskClosed | null;
   closed_at: number | null;
+  rounds: string | null;
 };
 
 export function insertLinkAsk(
   db: Database,
   input: Omit<
     LinkAsk,
-    "decision" | "note" | "decidedBy" | "decidedAt" | "closedReason" | "closedAt"
-  >,
+    "decision" | "note" | "decidedBy" | "decidedAt" | "closedReason" | "closedAt" | "rounds"
+  > & { rounds?: LinkAskRounds },
 ): LinkAsk {
   db.run(
-    `INSERT INTO link_ask (question_id, item_id, kind, head_commit, link, title, detail, answerers, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO link_ask (question_id, item_id, kind, head_commit, link, title, detail, answerers, created_at, rounds)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.questionId,
       input.itemId,
@@ -71,6 +112,7 @@ export function insertLinkAsk(
       input.detail,
       JSON.stringify(input.answerers),
       input.createdAt,
+      input.rounds === undefined ? null : JSON.stringify(input.rounds),
     ],
   );
   return getLinkAsk(db, input.questionId)!;
@@ -152,5 +194,6 @@ function mapLinkAsk(row: LinkAskRow): LinkAsk {
     decidedAt: row.decided_at,
     closedReason: row.closed_reason,
     closedAt: row.closed_at,
+    rounds: row.rounds === null ? null : (JSON.parse(row.rounds) as LinkAskRounds),
   };
 }

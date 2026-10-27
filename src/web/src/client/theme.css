@@ -409,6 +409,20 @@ a.evidence-thumb:focus-visible {
   padding: 1rem;
   background: var(--secondary-background);
 }
+.link-ask :is(.review-rounds, .review-open) {
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+.link-ask .review-rounds {
+  padding-left: 0;
+  list-style: none;
+}
+.link-ask :is(.review-rounds, .review-open) > li {
+  margin: 0.15rem 0;
+  padding: 0;
+  font-size: 0.875rem;
+}
 .result-icon {
   padding: 0.5rem 0.75rem;
   border: 2px solid var(--border);

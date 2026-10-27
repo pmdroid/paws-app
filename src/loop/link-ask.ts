@@ -10,11 +10,14 @@ import {
   delegatedLinearUserId,
   enqueueJobOnce,
   enqueueOutboxOnce,
+  failWorkItem,
   getLinkAsk,
   getWorkItem,
   immediate,
   listCloseoutBypassChecks,
   listCloseoutRecoveries,
+  LINK_ASK_DECISIONS,
+  LINK_ASK_NOTE_REQUIRED,
   openLinkAsks,
   recordLinkAskDecision,
   saveCheckpoint,
@@ -22,6 +25,7 @@ import {
   type LinkAskDecision,
   type LinkAskKind,
   type VisualReviewMark,
+  type LinkAskRounds,
   type WorkItemRecord,
 } from "../db";
 import {
@@ -41,6 +45,7 @@ import {
 } from "../questions";
 import { projectLeadId } from "../scheduler";
 import { BYPASS_REPLY } from "./closeout-recovery";
+import { worktreeBranch } from "./sources";
 import { decideVisualReview, postNote, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
 
 /** A Paws that only listens on localhost has no link a person can open, so it cannot ask this way. */
@@ -49,6 +54,10 @@ export const LINK_ASK_NEEDS_PUBLIC_URL =
 
 export const LINK_ASK_GUIDANCE_NOTE =
   "Sent your reply to the agent as guidance. A reply in Linear decides nothing; Paws asks again on the next commit.";
+
+/** What Paws posts when a reply in Linear answers a rounds ask. */
+export const REVIEW_ROUNDS_REPLY_NOTE =
+  "Sent your reply to the agent: it rethinks the approach with the open findings and a new round budget.";
 
 const ENDED = new Set(["cancelled", "merged", "failed", "completed"]);
 
@@ -83,6 +92,7 @@ export function askWithLink(
     pending?: boolean;
     /** The item version the ask was decided on; a newer item makes the ask stale. */
     version?: number;
+    rounds?: LinkAskRounds;
   },
 ): { question: StoredQuestion; linkAsk: LinkAsk } {
   if (!linkAskAvailable(input.publicUrl)) throw new Error(LINK_ASK_NEEDS_PUBLIC_URL);
@@ -110,6 +120,7 @@ export function askWithLink(
       ...(input.title === undefined ? {} : { title: input.title }),
       detail: input.detail,
       answerers,
+      ...(input.rounds === undefined ? {} : { rounds: input.rounds }),
       now: input.now,
     });
     enqueueJobOnce(db, {
@@ -198,8 +209,8 @@ export function decideLinkAsk(
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return "rejected";
     if (!canAnswer({ kind: "link", allowedIds: linkAsk.answerers }, { id: input.answeredBy }))
       return "forbidden";
-    if ((input.decision === "answer") !== (linkAsk.kind === "question")) return "rejected";
-    if (input.decision !== "approve" && !input.note) return "rejected";
+    if (!LINK_ASK_DECISIONS[linkAsk.kind].includes(input.decision)) return "rejected";
+    if (LINK_ASK_NOTE_REQUIRED.has(input.decision) && !input.note) return "rejected";
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
     const bypasses = bypassing ? validBypasses(db, linkAsk, input.bypasses ?? []) : null;
     if (bypassing && bypasses === null) return "rejected";
@@ -252,7 +263,7 @@ export function decideLinkAsk(
     );
     if (
       linkAsk.kind === "screenshots" &&
-      input.decision !== "answer" &&
+      (input.decision === "approve" || input.decision === "changes") &&
       decideVisualReview(db, {
         linkAsk,
         decision: input.decision,
@@ -266,6 +277,10 @@ export function decideLinkAsk(
     const current = getWorkItem(db, item.id)!;
     if (input.decision === "approve" && effects[linkAsk.kind]?.(linkAsk, current, now))
       return "answered";
+    if (input.decision === "stop") {
+      stopAfterRounds(db, current, linkAsk, input.actor.name, now);
+      return "answered";
+    }
     handBack(db, current, question, linkAskHandoff(linkAsk, { ...input, note }), now);
     return "answered";
   });
@@ -348,19 +363,29 @@ export function guideLinkAsk(
     if (linkAsk === null || linkAsk.closedAt !== null || question?.status !== "open") return false;
     const item = getWorkItem(db, linkAsk.itemId);
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return false;
+    // On a rounds ask the reply is Rethink the approach, with the reply as the note.
+    const rethink = linkAsk.kind === "rounds";
     const answered = answerQuestion(db, question.id, {
-      answer: `guidance: ${input.body}`,
+      answer: `${rethink ? "rethink" : "guidance"}: ${input.body}`,
       answeredBy: input.answeredBy,
       eventKey: input.eventKey,
       now,
     });
     if (answered === null) return false;
-    closeLinkAsk(db, linkAsk.questionId, {
-      reason: "guidance",
-      note: input.body,
-      by: input.answeredBy,
-      now,
-    });
+    if (rethink)
+      recordLinkAskDecision(db, linkAsk.questionId, {
+        decision: "rethink",
+        note: input.body,
+        decidedBy: input.answeredBy,
+        now,
+      });
+    else
+      closeLinkAsk(db, linkAsk.questionId, {
+        reason: "guidance",
+        note: input.body,
+        by: input.answeredBy,
+        now,
+      });
     removeLinkAskUrl(db, linkAsk.questionId, now);
     if (item.sessionKey === question.sessionId)
       applyLinearTurns(db, question.sessionId, [input.eventKey], item.id);
@@ -377,11 +402,13 @@ export function guideLinkAsk(
       db,
       question.sessionId,
       item,
-      changes
-        ? VISUAL_REVIEW_REPLY_NOTE
-        : linkAsk.kind === "bypass" && BYPASS_REPLY.test(input.body)
-          ? `${BYPASS_REPLY_NOTE} ${linkAsk.link}`
-          : LINK_ASK_GUIDANCE_NOTE,
+      rethink
+        ? REVIEW_ROUNDS_REPLY_NOTE
+        : changes
+          ? VISUAL_REVIEW_REPLY_NOTE
+          : linkAsk.kind === "bypass" && BYPASS_REPLY.test(input.body)
+            ? `${BYPASS_REPLY_NOTE} ${linkAsk.link}`
+            : LINK_ASK_GUIDANCE_NOTE,
       `link-ask-guidance:${linkAsk.questionId}`,
       now,
     );
@@ -433,6 +460,26 @@ export function closeLinkAsksOnHead(
     }
     return moved.length;
   });
+}
+
+/** Stop on a rounds ask: the item fails as asked, and the branch keeps the work. */
+function stopAfterRounds(
+  db: Database,
+  item: WorkItemRecord,
+  linkAsk: LinkAsk,
+  by: string,
+  now: number,
+): void {
+  const resumed =
+    item.state === "awaiting_input" ? applyWorkItemEvent(db, item.id, "answer_received") : item;
+  const rounds = linkAsk.rounds?.rounds.length ?? 0;
+  failWorkItem(
+    db,
+    resumed,
+    "closeout:review_rounds",
+    `Stopped after ${rounds} failed review ${rounds === 1 ? "round" : "rounds"}, as ${by} asked in Paws. The work is on branch \`${resumed.branchName || worktreeBranch(resumed)}\`.`,
+    now,
+  );
 }
 
 function handBack(

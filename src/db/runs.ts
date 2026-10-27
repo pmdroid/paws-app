@@ -81,6 +81,26 @@ export function markRun(db: Database, id: string, status: RunStatus, now: number
   db.run("UPDATE run SET status = ?, updated_at = ? WHERE id = ?", [status, now, id]);
 }
 
+/** How many review rounds the item needed by the time this run verified it. */
+export function recordReviewRounds(db: Database, id: string, rounds: number): void {
+  db.run(
+    `INSERT INTO run_review_rounds (run_id, rounds) VALUES (?, ?)
+     ON CONFLICT (run_id) DO UPDATE SET rounds = excluded.rounds`,
+    [id, rounds],
+  );
+}
+
+/** The review rounds recorded on the run, or null when it never verified a review. */
+export function reviewRoundsOf(db: Database, id: string): number | null {
+  return (
+    db
+      .query<{ rounds: number | null }, [string]>(
+        "SELECT rounds FROM run_review_rounds WHERE run_id = ?",
+      )
+      .get(id)?.rounds ?? null
+  );
+}
+
 export function releaseRunCapacity(db: Database, runId: string, now: number): void {
   const run = getRun(db, runId);
   if (run && (run.status === "active" || run.status === "provisioning"))

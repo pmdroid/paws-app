@@ -103,3 +103,51 @@ test("with several failed checks none starts selected and the bypass button wait
   expect(html).toContain("Out of attempts");
   expect(bypassLabel(2, "7f65200aa1")).toBe("Bypass 2 checks for 7f65200 and re-verify");
 });
+
+function withRounds() {
+  const snapshot = withLinkAsk();
+  snapshot.questions[0]!.linkAsk = {
+    kind: "rounds",
+    head: "4b317d5aa1",
+    title: "Review rounds ran out on 4b317d5.",
+    detail:
+      'The independent review failed 4 rounds and 2 findings are still open. The class of bug that keeps coming back is "unchecked null" (1 of 2 open findings). Rethink the approach, keep going, or stop.',
+    link: "https://paws.example/status/issues/ENG-103#review-rounds",
+    rounds: {
+      rounds: [
+        { head: "1111111aaa", findings: 3 },
+        { head: "4b317d5aa1", findings: 2 },
+      ],
+      open: [
+        { severity: "P1", location: "src/auth/session.ts:42", bugClass: "unchecked null" },
+        { severity: "P2", location: "src/auth/token.ts:9", bugClass: "missing await" },
+      ],
+      bugClass: "unchecked null",
+      limit: 4,
+    },
+  };
+  return snapshot;
+}
+
+test("Needs you shows a rounds ask with Answer question, linking to the rounds card", () => {
+  const html = render(model({ snapshot: withRounds() })).content;
+  expect(html).toContain('href="/issues/ENG-103#review-rounds"');
+  expect(html).toContain("Answer question</a>");
+  expect(html).toContain("unchecked null");
+});
+
+test("the item page shows each round, the open findings and the three choices", () => {
+  const page = render(
+    model({ snapshot: withRounds(), route: { view: "issues", id: "ENG-103" } }),
+  ).content;
+  expect(page).toContain('id="review-rounds"');
+  expect(page).toContain('Round 1: <span class="mono">1111111</span>, 3 findings');
+  expect(page).toContain('Round 2: <span class="mono">4b317d5</span>, 2 findings');
+  expect(page).toContain('<span class="mono">src/auth/session.ts:42</span>: unchecked null');
+  expect(page).toContain('value="rethink"');
+  expect(page).toContain('value="continue"');
+  expect(page).toContain('value="stop"');
+  expect(page).not.toContain('value="approve"');
+  expect(page).toContain("<b>Keep going</b> allows 4 more rounds.");
+  expect(page).toContain("A reply in Linear counts as Rethink the approach");
+});

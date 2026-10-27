@@ -6,6 +6,7 @@ import {
   type LinkAsk,
   type LinkAskDecision,
   type LinkAskKind,
+  type LinkAskRounds,
 } from "../db";
 import { ask as askQuestion, type QuestionAsker } from "./lifecycle";
 import type { StoredQuestion } from "./store";
@@ -16,6 +17,7 @@ export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
   screenshots: "Review screenshots",
   risk: "Review risk",
   question: "Answer question",
+  rounds: "Answer question",
 };
 
 /** The card on the item page each kind opens: `/status/issues/PAS-633#closeout`. */
@@ -24,6 +26,7 @@ export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
   screenshots: "visual-review",
   risk: "risk",
   question: "question",
+  rounds: "review-rounds",
 };
 
 /** The last line of the Linear message: what a reply does, and what it never does. */
@@ -34,6 +37,8 @@ export const LINK_ASK_REPLY: Record<LinkAskKind, string> = {
   risk: "Reply here to send the agent guidance instead. A reply here cannot approve the risk.",
   question:
     "Reply here to send the agent guidance instead. A reply here does not answer the question.",
+  rounds:
+    "A reply here asks the agent to rethink the approach, with your reply as the note and the open findings.",
 };
 
 /** Paws reminds once after this long without a decision. There is no timeout. */
@@ -50,6 +55,8 @@ export function linkAskTitle(kind: LinkAskKind, head: string): string {
       return `High-risk changes in ${commit} need your approval.`;
     case "question":
       return `Paws needs your answer on ${commit}.`;
+    case "rounds":
+      return `Review rounds ran out on ${commit}.`;
   }
 }
 
@@ -80,11 +87,15 @@ function decided(ask: LinkAsk, decision: LinkAskDecision): string {
   const commit = shortCommit(ask.headCommit);
   if (decision === "answer") return "answered in Paws";
   if (decision === "changes") return `requested changes to ${commit} in Paws`;
+  if (decision === "rethink") return "asked the agent to rethink the approach in Paws";
+  if (decision === "continue") return `allowed ${moreRounds(ask)} in Paws`;
+  if (decision === "stop") return `stopped the work at ${commit} in Paws`;
   return {
     bypass: `bypassed the failed checks on ${commit} in Paws`,
     screenshots: `accepted the screens of ${commit} in Paws`,
     risk: `approved the high-risk changes in ${commit} in Paws`,
     question: "answered in Paws",
+    rounds: "answered in Paws",
   }[ask.kind];
 }
 
@@ -99,12 +110,20 @@ export function linkAskDecidedNote(
   return note ? `${what}: ${note}` : `${what}.`;
 }
 
+/** "4 more review rounds", or "more review rounds" when the policy limit is unknown. */
+function moreRounds(ask: LinkAsk): string {
+  const limit = ask.rounds?.limit ?? null;
+  return limit === null ? "more review rounds" : `${limit} more review rounds`;
+}
+
 /** The handoff the agent gets when a decision or a guidance reply sends the item back. */
 export function linkAskHandoff(
   ask: LinkAsk,
   input: { decision: LinkAskDecision | "guidance"; note: string | null },
 ): string {
   const note = input.note?.trim() ?? "";
+  // A reply in Linear on a rounds ask is Rethink the approach with the reply as the note.
+  if (ask.kind === "rounds") return roundsHandoff(ask, input.decision, note);
   const lead =
     input.decision === "guidance"
       ? `A person replied in Linear while Paws waited for a decision on ${shortCommit(ask.headCommit)} (${LINK_ASK_ACTIONS[ask.kind].toLowerCase()}). The reply is guidance and approves nothing:`
@@ -112,6 +131,35 @@ export function linkAskHandoff(
         ? `A person answered in Paws: ${ask.title}`
         : `A person ${decided(ask, input.decision)}${note ? ":" : "."}`;
   return ["Handoff from the previous session.", lead, ...(note ? [note] : [])].join("\n");
+}
+
+function roundsHandoff(ask: LinkAsk, decision: LinkAskDecision | "guidance", note: string): string {
+  const count = ask.rounds?.rounds.length ?? 0;
+  const lead =
+    decision === "continue"
+      ? `The independent review failed ${count} rounds in a row. A person allowed ${moreRounds(ask)}: fix the open findings.`
+      : `The independent review failed ${count} rounds in a row and the fixes kept missing. A person asked you to rethink the approach: step back from patching each finding, find what the findings have in common${ask.rounds?.bugClass ? ` (most are ${ask.rounds.bugClass})` : ""}, and change the design so that class of bug cannot occur.`;
+  return [
+    "Handoff from the previous session.",
+    lead,
+    ...(note ? [`Note from the person: ${note}`] : []),
+    ...(ask.rounds?.handoff ? [ask.rounds.handoff] : []),
+  ].join("\n");
+}
+
+/** The detail of a rounds ask: how many rounds failed and the class of bug that keeps coming back. */
+export function reviewRoundsDetail(rounds: LinkAskRounds): string {
+  const count = rounds.rounds.length;
+  const open = rounds.open.length;
+  const recurring =
+    rounds.bugClass === null
+      ? ""
+      : ` The class of bug that keeps coming back is "${rounds.bugClass}"${
+          open > 0
+            ? ` (${rounds.open.filter((finding) => finding.bugClass === rounds.bugClass).length} of ${open} open findings)`
+            : ""
+        }.`;
+  return `The independent review failed ${count} ${count === 1 ? "round" : "rounds"} and ${open} ${open === 1 ? "finding is" : "findings are"} still open.${recurring} Rethink the approach, keep going, or stop.`;
 }
 
 export function shortCommit(head: string): string {
@@ -133,6 +181,7 @@ export function openLinkAsk(
     title?: string;
     detail: string;
     answerers: readonly string[];
+    rounds?: LinkAskRounds;
     now: number;
   },
 ): { question: StoredQuestion; linkAsk: LinkAsk } {
@@ -158,6 +207,7 @@ export function openLinkAsk(
     detail: input.detail,
     answerers: [...new Set(input.answerers.filter((id) => id.trim() !== ""))],
     createdAt: input.now,
+    ...(input.rounds === undefined ? {} : { rounds: input.rounds }),
   });
   return { question, linkAsk };
 }
