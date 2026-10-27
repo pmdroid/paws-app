@@ -263,7 +263,7 @@ export function decideLinkAsk(
     );
     if (
       linkAsk.kind === "screenshots" &&
-      input.decision !== "answer" &&
+      (input.decision === "approve" || input.decision === "changes") &&
       decideVisualReview(db, {
         linkAsk,
         decision: input.decision,
