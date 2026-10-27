@@ -91,5 +91,5 @@ function findingItem(
       : finding.preExisting
         ? "pre-existing"
         : "open";
-  return `<li class="review-finding ${state}"><div class="row wrap"><span class="pill ${severity}">${esc(finding.severity)}</span><code class="review-location">${esc(finding.location)}</code>${marks}</div><p class="review-explanation">${esc(finding.explanation)}</p><p class="review-evidence"><span class="muted">Evidence</span> ${esc(finding.evidence)}</p></li>`;
+  return `<li class="review-finding finding-${state}"><div class="row wrap"><span class="pill ${severity}">${esc(finding.severity)}</span><code class="review-location">${esc(finding.location)}</code>${marks}</div><p class="review-explanation">${esc(finding.explanation)}</p><p class="review-evidence"><strong>Evidence:</strong> ${esc(finding.evidence)}</p></li>`;
 }
