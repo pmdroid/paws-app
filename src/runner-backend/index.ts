@@ -544,6 +544,11 @@ export function createRemoteAgentRunner(options: {
       ): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
+        // A handover outlives this call: after a restart the run still avoids the runner it left.
+        if (!move.from && !input.prepareOnly && input.role === "implementer") {
+          const left = handedOverFrom(db, itemId);
+          if (left) Object.assign(move, left);
+        }
         const mode = getTaskMode(db, itemId);
         const responseTask = isResponseTaskMode(mode);
         if (
@@ -1603,8 +1608,13 @@ export function createRemoteAgentRunner(options: {
               );
           }
           // The runner stopped the session at a safe point and Paws holds its WIP commit: another
-          // runner continues it there with its session. A run that asked keeps its question.
-          if (complete.handedOver && assigned.type === "run" && !asked) {
+          // runner continues it there with its session. A run still waiting on its question keeps
+          // it; one whose question was answered moves like any other.
+          if (
+            complete.handedOver &&
+            assigned.type === "run" &&
+            !(asked && waitsOnQuestion(db, selected.runId))
+          ) {
             work.finish(assigned.runId, assigned.generation);
             command = undefined;
             move.from = selected.id;
@@ -1723,6 +1733,50 @@ const HANDOVER_FAILURE_STEP = {
 
 /** A run's handover within one failover call: the runner it left, and whether Linear heard why it waits. */
 type HandoverMove = { from?: string; repository?: string; waiting?: boolean };
+
+/**
+ * Whether the run still waits on a question it asked. A question asked outside the question
+ * store, as in a fake, counts as waiting; a stored one counts until it is answered or cancelled.
+ */
+function waitsOnQuestion(db: Database, runId: string): boolean {
+  const row = db
+    .query<{ stored: number; open: number }, [string]>(
+      `SELECT COUNT(*) AS stored, COALESCE(SUM(status IN ('open','queued') AND cancelled_at IS NULL),0)
+       AS open FROM question WHERE run_id=?`,
+    )
+    .get(runId);
+  return !row || row.stored === 0 || row.open > 0;
+}
+
+/**
+ * The runner the item's last implementer turn handed its session over from, read from that
+ * turn's stored result so a restart keeps the move. Null once a later turn ran anywhere.
+ */
+function handedOverFrom(db: Database, itemId: string): HandoverMove | null {
+  const row = db
+    .query<{ runnerId: string; envelope: string; payload: string }, [string]>(
+      `SELECT c.runner_id AS runnerId, c.envelope, rr.payload FROM runner_result rr
+       JOIN runner_command c ON c.id=rr.command_id
+       JOIN run ON run.id=rr.run_id
+       WHERE run.item_id=? AND c.kind='run'
+       ORDER BY rr.received_at DESC, rr.generation DESC LIMIT 1`,
+    )
+    .get(itemId);
+  if (!row || (JSON.parse(row.payload) as { handedOver?: boolean }).handedOver !== true)
+    return null;
+  const command = JSON.parse(
+    Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(
+      "utf8",
+    ),
+  ) as { repository?: { owner?: string; repo?: string } };
+  const repository = command.repository;
+  return {
+    from: row.runnerId,
+    ...(repository?.owner && repository.repo
+      ? { repository: `${repository.owner}/${repository.repo}` }
+      : {}),
+  };
+}
 
 /** Why no runner can take a handed-over run yet, posted once while it waits. */
 function handoverWaitNotice(
