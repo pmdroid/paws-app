@@ -182,6 +182,22 @@ test.each([
   expect(ran.output).toContain("src/github/send-back.ts:");
 });
 
+test.each([
+  ["a call", "export const again = (db: unknown) => rawAsk(db, owner, input);"],
+  ["a value use", "export const deps = { ask: rawAsk };"],
+])("%s through an opener import already on the base fails", (_, line) => {
+  const harness = MERGE["src/merge/harness.ts"];
+  const ran = probe(
+    "restart-and-ask-from-loop",
+    candidate(MERGE, {
+      "src/merge/harness.ts": `${harness}export type Ask = typeof rawAsk;\n${line}\n`,
+    }),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain(`src/merge/harness.ts:4 uses ask from "../questions": ${line}`);
+  expect(ran.output).not.toContain("harness.ts:3");
+});
+
 test("src/loop, src/core, tests, type imports and lines already on the base pass", () => {
   const ran = probe(
     "restart-and-ask-from-loop",
