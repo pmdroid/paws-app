@@ -93,3 +93,11 @@ export {
   type LinkAskEffects,
 } from "./link-ask";
 export { VISUAL_REVIEW_NEEDS_LINK, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
+export {
+  askRiskApproval,
+  riskApprovalFor,
+  riskGateOn,
+  RISK_ANSWERERS,
+  RISK_GATE_NEEDS_PUBLIC_URL,
+  RISK_REPLY_NOTE,
+} from "./risk-approval";

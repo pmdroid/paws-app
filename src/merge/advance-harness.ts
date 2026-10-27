@@ -29,6 +29,7 @@ import {
   type GitHubResponse,
 } from "../github";
 import { advanceMerge, type MergeCapabilities } from "./advance";
+import type { RiskApproval } from "./mergeable";
 import type { MergeStep } from "./step";
 
 const exec = promisify(execFile);
@@ -125,6 +126,10 @@ export async function mergeHarness(
     /** GitHub's "Require branches to be up to date before merging" on main. */
     upToDateRule: false,
     packages: [] as string[],
+    /** The risk approval the lane reads for head S; normal tier unless a test says otherwise. */
+    risk: (_head: string): RiskApproval => "not_required",
+    /** Heads the lane asked a person to approve. */
+    riskAsked: [] as string[],
   };
   let jobId = 0;
 
@@ -305,6 +310,11 @@ export async function mergeHarness(
       policyDigest: () => state.policyDigest,
       packages: () => state.packages,
       assertReady: async () => {},
+      riskApproval: async (_, published) => state.risk(published.head),
+      askRiskApproval: async (_, published) => {
+        state.riskAsked.push(published.head);
+        return { kind: "asked" };
+      },
       completed: () => completed.push(id),
     };
   }

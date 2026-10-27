@@ -132,6 +132,23 @@ function withRounds() {
   return snapshot;
 }
 
+function withRisk() {
+  const snapshot = withLinkAsk();
+  snapshot.questions[0]!.linkAsk = {
+    kind: "risk",
+    head: "7f65200aa1",
+    title: "High-risk changes in 7f65200 need your approval.",
+    detail: "High-risk paths changed: `src/auth/session.ts`.",
+    link: "https://paws.example/status/issues/ENG-103#risk",
+    risk: {
+      paths: ["src/auth/session.ts"],
+      summary: "Closeout accepted 7f65200: 8 checks passed.",
+      findings: [{ id: "independent-review", finding: "P3: the old token stays valid 60s." }],
+    },
+  };
+  return snapshot;
+}
+
 test("Needs you shows a rounds ask with Answer question, linking to the rounds card", () => {
   const html = render(model({ snapshot: withRounds() })).content;
   expect(html).toContain('href="/issues/ENG-103#review-rounds"');
@@ -153,4 +170,26 @@ test("the item page shows each round, the open findings and the three choices", 
   expect(page).not.toContain('value="approve"');
   expect(page).toContain("<b>Keep going</b> allows 4 more rounds.");
   expect(page).toContain("A reply in Linear counts as Rethink the approach");
+});
+
+test("Needs you shows a high-risk item with a Review risk button", () => {
+  const html = render(model({ snapshot: withRisk() })).content;
+  expect(html).toContain('href="/issues/ENG-103#risk"');
+  expect(html).toContain("Review risk</a>");
+});
+
+test("the Risk card shows the paths, Closeout and findings, and three decisions", () => {
+  const html = render(
+    model({ snapshot: withRisk(), route: { view: "issues", id: "ENG-103" } }),
+  ).content;
+  expect(html).toContain('id="risk"');
+  expect(html).toContain("src/auth/session.ts");
+  expect(html).toContain("Closeout accepted 7f65200: 8 checks passed.");
+  expect(html).toContain("P3: the old token stays valid 60s.");
+  expect(html).toContain('value="approve"');
+  expect(html).toContain("Approve 7f65200</button>");
+  expect(html).toContain('value="changes"');
+  expect(html).toContain('value="stop"');
+  expect(html).toContain("The pull request stays open.");
+  expect(html).toContain("never approves");
 });

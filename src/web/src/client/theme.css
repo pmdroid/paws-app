@@ -777,6 +777,17 @@ dialog.review-draw {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* The high-risk paths the head changes, on the Risk card. */
+.risk-paths {
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 1.25rem;
+}
+.risk-paths > li {
+  margin: 0;
+  padding: 0;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
 .bypass-check {
   display: flex;
   flex-direction: column;

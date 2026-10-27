@@ -293,6 +293,18 @@ export interface StatusLinkAsk {
   bypass?: StatusBypassAsk;
   /** On the `rounds` kind: the failed review rounds and the findings still open. */
   rounds?: StatusReviewRounds;
+  /** For a `risk` ask: what the Risk card shows beside Approve, Request changes and Stop. */
+  risk?: StatusRiskAsk;
+}
+
+/** The high-risk paths of the head, and what Closeout and its reviewers said about it. */
+export interface StatusRiskAsk {
+  /** Changed paths a high-risk glob matched. Empty when Paws could not classify the head. */
+  paths: string[];
+  /** Closeout's summary for the head. */
+  summary: string;
+  /** Findings of the head's review checks, by check id. */
+  findings: { id: string; finding: string }[];
 }
 
 /** What the "Closeout needs your help" card shows and binds a bypass to. */
@@ -1343,6 +1355,20 @@ function readLinkAsk(input: unknown, path: string): StatusLinkAsk {
     ...(body.rounds === undefined
       ? {}
       : { rounds: readReviewRounds(body.rounds, `${path}.rounds`) }),
+    ...(body.risk === undefined ? {} : { risk: readRiskAsk(body.risk, `${path}.risk`) }),
+  };
+}
+
+function readRiskAsk(input: unknown, path: string): StatusRiskAsk {
+  const body = object(input, path);
+  return {
+    paths: stringArray(body, "paths", path),
+    summary: string(body, "summary", path),
+    findings: array(body, "findings", path).map((entry, index) => {
+      const at = `${path}.findings[${index}]`;
+      const finding = object(entry, at);
+      return { id: text(finding, "id", at), finding: string(finding, "finding", at) };
+    }),
   };
 }
 

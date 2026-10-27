@@ -279,6 +279,16 @@ describe("Merging settings API", () => {
     expect(body.upToDateRule).toEqual(["acme/platform"]);
   });
 
+  test("GET says whether high-risk pull requests wait for an approval in Paws", async () => {
+    const { options } = fixture();
+    const reason = "The risk gate is off: set PAWS_PUBLIC_URL.";
+    const body = (await (await handleMergeSettingsRequest(request(), {
+      ...options,
+      riskGate: { on: false, reason },
+    }))!.json()) as { riskGate?: unknown };
+    expect(body.riskGate).toEqual({ on: false, reason });
+  });
+
   test("PUT saves to config.toml, keeps other settings and audits each change", async () => {
     const { options, audits } = fixture();
     writeFileSync(

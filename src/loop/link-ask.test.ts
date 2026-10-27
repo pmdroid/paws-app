@@ -117,7 +117,7 @@ test("an answer from someone who did not delegate and does not lead the project 
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
 });
 
-test("the project lead decides on the item page: audit row, decided note, back to the agent", () => {
+test("the project lead decides on the item page: audit row, decided note, back to the merge queue", () => {
   const { db, itemId, question } = asked("https://paws.example/", "risk");
   expect(
     decideLinkAsk(db, {
@@ -143,9 +143,13 @@ test("the project lead decides on the item page: audit row, decided note, back t
       subject: "PAS-633 · 7f65200 · Flaky reviewer finding, docs only.",
     },
   ]);
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-decided:"));
-  expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
-    "Lea approved the high-risk changes in 7f65200 in Paws: Flaky reviewer finding, docs only.",
+  // A risk approval comes after the pull request response, so it is a response, not a thought.
+  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("risk-approval:"));
+  expect(notes.map((row) => row.payload as { kind: string; body: string })).toMatchObject([
+    {
+      kind: "response",
+      body: "Lea approved the high-risk changes in 7f65200 in Paws. The pull request joins the merge queue.\n\nFlaky reviewer finding, docs only.",
+    },
   ]);
   expect(
     listOutbox(db).some(
@@ -154,7 +158,8 @@ test("the project lead decides on the item page: audit row, decided note, back t
         JSON.stringify(row.payload).includes('"removedExternalUrls"'),
     ),
   ).toBe(true);
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  // The approval binds to the head and never goes to the agent: Closeout completes S again.
+  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
   // A second decision finds nothing open.
   expect(
     decideLinkAsk(db, {

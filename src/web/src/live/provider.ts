@@ -41,6 +41,7 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  getCandidateRisk,
   getCloseoutRecovery,
   getLinkAsk,
   listCloseoutBypassChecks,
@@ -518,7 +519,7 @@ function readScopedSnapshot(
     dead: deadFor(db, records),
   };
   snapshot.questions = questionsFor(db, records, rows, runs, openQuestions).map((question) =>
-    withBypassChecks(db, question, snapshot.verdicts, env),
+    withRiskDetail(db, withBypassChecks(db, question, snapshot.verdicts, env), snapshot.verdicts),
   );
   const blocks =
     only === undefined
@@ -1019,6 +1020,39 @@ function withBypassChecks(
               "",
           };
         }),
+      },
+    },
+  };
+}
+
+/**
+ * A risk ask carries what the Risk card shows: the head's high-risk paths, Closeout's summary of
+ * the head and the findings of its review checks.
+ */
+function withRiskDetail(
+  db: Database,
+  question: StatusQuestion,
+  verdicts: readonly StatusVerdict[],
+): StatusQuestion {
+  const ask = question.linkAsk;
+  if (ask?.kind !== "risk") return question;
+  const itemId = getLinkAsk(db, question.id)?.itemId;
+  const risk = itemId ? getCandidateRisk(db, itemId, ask.head) : null;
+  const verdict = verdicts.findLast(
+    (entry) => entry.itemId === question.itemId && entry.headSha === ask.head,
+  );
+  return {
+    ...question,
+    linkAsk: {
+      ...ask,
+      risk: {
+        paths: risk?.paths ?? [],
+        summary: verdict?.summary ?? "",
+        findings: (verdict?.checks ?? []).flatMap((check) =>
+          check.kind === "review" && check.findings?.trim()
+            ? [{ id: check.id, finding: check.findings.trim() }]
+            : [],
+        ),
       },
     },
   };

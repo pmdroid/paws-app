@@ -5,6 +5,7 @@ export {
   type MergeBlock,
   type MergeFacts,
   type Mergeable,
+  type RiskApproval,
 } from "./mergeable";
 export {
   REBASE_CONFLICT_INSTRUCTION,
