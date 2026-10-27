@@ -164,7 +164,11 @@ function approval(db: ReturnType<typeof openDatabase>, head: string) {
 const HIGH_RISK = ["session.ts", "src/auth/**"];
 
 /** `riskApprovalFor` as the orchestrator wires it: the fix's own files, classified. */
-function approvalWithFixes(db: ReturnType<typeof openDatabase>, head: string) {
+function approvalWithFixes(
+  db: ReturnType<typeof openDatabase>,
+  head: string,
+  globs: readonly string[] = HIGH_RISK,
+) {
   return riskApprovalFor(db, {
     itemId: "ENG-106",
     head,
@@ -177,7 +181,7 @@ function approvalWithFixes(db: ReturnType<typeof openDatabase>, head: string) {
         git: async (args) => git(...args),
         base,
         changed,
-        settingsGlobs: HIGH_RISK,
+        settingsGlobs: globs,
       });
       return { changed, paths: risk.paths };
     },
@@ -565,4 +569,25 @@ test("without an approval, or when the fix cannot be read, a fix asks", async ()
       fixRisk: async () => null,
     }),
   ).toBe("missing");
+});
+
+test("a carried-over approval is checked again against the high-risk paths in force now", async () => {
+  const { db, itemId } = riskApproved();
+  fixAccepted(db, heads.ciFix, heads.base);
+  expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
+  // Settings now lists the tests too: the same fix no longer keeps the approval.
+  expect(await approvalWithFixes(db, heads.ciFix, [...HIGH_RISK, "test/**"])).toBe("missing");
+  expect(getRiskFix(db, itemId, heads.ciFix)?.paths).toEqual(["test/x.test.ts"]);
+  // A fix Paws can no longer read forgets the earlier carry-over instead of trusting it.
+  expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
+  expect(
+    await riskApprovalFor(db, {
+      itemId: "ENG-106",
+      head: heads.ciFix,
+      publicUrl: PUBLIC_URL,
+      samePatch: async () => false,
+      fixRisk: async () => null,
+    }),
+  ).toBe("missing");
+  expect(getRiskFix(db, itemId, heads.ciFix)).toBeNull();
 });
