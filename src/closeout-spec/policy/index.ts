@@ -26,4 +26,4 @@ export {
   type RootFilesLoad,
 } from "./load";
 export { anyPathMatches, pathsMatch } from "./paths";
-export { PUBLIC_POLICY_PATH } from "./resolve";
+export { POLICY_MAX_BYTES, PUBLIC_POLICY_PATH } from "./resolve";
