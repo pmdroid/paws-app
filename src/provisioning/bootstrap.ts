@@ -566,7 +566,7 @@ function detachedPaths(name: DetachedStep) {
 
 /**
  * Stop an earlier run of the step that is still going, then start `script` as root in its own
- * session, with its output in `<step>.log` and its status written to `<step>.exit` when it ends.
+ * session (so `kill -TERM "-<pid>"` ends its whole process group; dash's `kill` takes no `--`), with its output in `<step>.log` and its status written to `<step>.exit` when it ends.
  * Prints the process id. Nothing waits for the script, so the call returns at once.
  */
 function detachCommand(name: DetachedStep, script: string): string {
@@ -579,7 +579,7 @@ function detachCommand(name: DetachedStep, script: string): string {
   return `sudo sh -c ${shellQuote(
     [
       `install -d -o root -g root -m 0700 ${BOOTSTRAP_LOG_DIR} || exit 1`,
-      `if [ -s ${pid} ] && [ ! -e ${exit} ]; then kill -TERM -- "-$(cat ${pid})" 2>/dev/null || true; fi`,
+      `if [ -s ${pid} ] && [ ! -e ${exit} ]; then kill -TERM "-$(cat ${pid})" 2>/dev/null || true; fi`,
       `rm -f ${log} ${exit} ${exit}.tmp ${pid}`,
       `setsid nohup sh -c ${shellQuote(run)} > ${log} 2>&1 < /dev/null & echo $! > ${pid}`,
       `cat ${pid}`,
@@ -588,15 +588,16 @@ function detachCommand(name: DetachedStep, script: string): string {
 }
 
 /**
- * Print `exited <status>`, `running`, or `lost` when the process is gone without a status; once
- * it is no longer running, follow that line with the end of the log.
+ * Print `exited <status>`, `running`, or `lost` when the process is gone without a status (a
+ * zombie leader counts as gone, which `kill -0` would not see); once it is no longer running,
+ * follow that line with the end of the log.
  */
 function pollCommand(name: DetachedStep): string {
   const { log, exit, pid } = detachedPaths(name);
   return `sudo sh -c ${shellQuote(
     [
       `if [ -s ${exit} ]; then printf 'exited %s\\n' "$(cat ${exit})"`,
-      `elif [ -s ${pid} ] && kill -0 "$(cat ${pid})" 2>/dev/null; then echo running; exit 0`,
+      `elif [ -s ${pid} ] && ps -o stat= -p "$(cat ${pid})" 2>/dev/null | grep -q '^[^Z]'; then echo running; exit 0`,
       "else echo lost; fi",
       `tail -c ${LOG_TAIL_BYTES} ${log} 2>/dev/null || true`,
     ].join("; "),
@@ -608,7 +609,7 @@ function stopCommand(name: DetachedStep): string {
   const { log, pid } = detachedPaths(name);
   return `sudo sh -c ${shellQuote(
     [
-      `if [ -s ${pid} ]; then kill -TERM -- "-$(cat ${pid})" 2>/dev/null || true; fi`,
+      `if [ -s ${pid} ]; then kill -TERM "-$(cat ${pid})" 2>/dev/null || true; fi`,
       `tail -c 2000 ${log} 2>/dev/null || true`,
     ].join("; "),
   )}`;

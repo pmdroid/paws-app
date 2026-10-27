@@ -703,34 +703,57 @@ test("a detached step past its budget is stopped, and one that vanished says so"
   );
 });
 
-test("a detached step runs in the background on a real shell and its poll reads the status", async () => {
+/** The shells a guest's `sh` may be: dash on Debian and Ubuntu, bash elsewhere. */
+const GUEST_SHELLS = ["dash", "bash"].filter((name) => Bun.which(name) !== null);
+
+/** A scratch root whose `sh` is `shell`, with stand-ins for `sudo` and `install`. */
+function detachedVm(shell: string) {
   const root = mkdtempSync(join(tmpdir(), "paws-detached-"));
   const bin = join(root, "bin");
   mkdirSync(bin);
-  writeFileSync(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n');
-  chmodSync(join(bin, "sudo"), 0o755);
-  writeFileSync(join(bin, "install"), '#!/bin/sh\nfor a; do last=$a; done\nmkdir -p "$last"\n');
-  chmodSync(join(bin, "install"), 0o755);
+  const executable = (name: string, body: string) => {
+    writeFileSync(join(bin, name), body);
+    chmodSync(join(bin, name), 0o755);
+  };
+  executable("sh", `#!/bin/sh\nexec ${Bun.which(shell)} "$@"\n`);
+  executable("sudo", '#!/bin/sh\nexec "$@"\n');
+  executable("install", '#!/bin/sh\nfor a; do last=$a; done\nmkdir -p "$last"\n');
   const logs = join(root, "log");
   const run = (command: string) => {
     const result = Bun.spawnSync(
-      ["/bin/sh", "-c", command.replaceAll("/var/log/paws-bootstrap", logs)],
-      { env: { PATH: `${bin}:/usr/bin:/bin` } },
+      ["sh", "-c", command.replaceAll("/var/log/paws-bootstrap", logs)],
+      {
+        env: { PATH: `${bin}:/usr/bin:/bin` },
+      },
     );
     return { exitCode: result.exitCode, stdout: result.stdout.toString() };
   };
+  /** Live (not zombie) processes in the step's process group. */
+  const live = (pid: string) =>
+    Bun.spawnSync(["ps", "-o", "stat=", "-g", pid.trim()])
+      .stdout.toString()
+      .split("\n")
+      .filter((stat) => stat.trim() !== "" && !stat.startsWith("Z")).length;
+  return { run, live };
+}
 
-  const started = Date.now();
-  const start = run(detachCommand("enroll", "echo out; sleep 0.3; echo err >&2; exit 3"));
-  expect(Date.now() - started).toBeLessThan(250);
-  expect(start).toEqual({ exitCode: 0, stdout: expect.stringMatching(/^[1-9][0-9]*\n$/) });
-  expect(run(pollCommand("enroll")).stdout).toBe("running\n");
-  let polled = "";
-  for (let i = 0; i < 100 && !polled.startsWith("exited"); i++) {
-    await Bun.sleep(50);
-    polled = run(pollCommand("enroll")).stdout;
+async function until(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 100 && !check(); i++) await Bun.sleep(50);
+}
+
+test("a detached step runs in the background on a real shell and its poll reads the status", async () => {
+  expect(GUEST_SHELLS).toContain("dash");
+  for (const shell of GUEST_SHELLS) {
+    const vm = detachedVm(shell);
+    const started = Date.now();
+    const start = vm.run(detachCommand("enroll", "echo out; sleep 0.3; echo err >&2; exit 3"));
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(start).toEqual({ exitCode: 0, stdout: expect.stringMatching(/^[1-9][0-9]*\n$/) });
+    expect(vm.run(pollCommand("enroll")).stdout).toBe("running\n");
+    let polled = "";
+    await until(() => (polled = vm.run(pollCommand("enroll")).stdout).startsWith("exited"));
+    expect(polled).toBe("exited 3\nout\nerr\n");
   }
-  expect(polled).toBe("exited 3\nout\nerr\n");
 
   for (const command of [
     detachCommand("enroll", ENROLL),
@@ -738,4 +761,30 @@ test("a detached step runs in the background on a real shell and its poll reads 
     stopCommand("enroll"),
   ])
     expect(Bun.spawnSync(["/bin/sh", "-n", "-c", command]).exitCode).toBe(0);
+});
+
+test("stopping a detached step, or starting it again, ends its whole process group", async () => {
+  const long = "sleep 30 & sleep 30; echo late";
+  for (const shell of GUEST_SHELLS) {
+    const vm = detachedVm(shell);
+    const first = vm.run(detachCommand("tailnet-join", long)).stdout;
+    await until(() => vm.live(first) >= 3);
+    expect(vm.live(first)).toBeGreaterThanOrEqual(3);
+    expect(vm.run(stopCommand("tailnet-join")).exitCode).toBe(0);
+    await until(() => vm.live(first) === 0);
+    expect(vm.live(first)).toBe(0);
+    expect(vm.run(pollCommand("tailnet-join")).stdout).toBe("lost\n");
+
+    // A retry while an earlier run still goes stops that run before starting its own.
+    const earlier = vm.run(detachCommand("tailnet-join", long)).stdout;
+    await until(() => vm.live(earlier) >= 3);
+    expect(vm.live(earlier)).toBeGreaterThanOrEqual(3);
+    const retry = vm.run(detachCommand("tailnet-join", "echo again")).stdout;
+    expect(retry).not.toBe(earlier);
+    await until(() => vm.live(earlier) === 0);
+    expect(vm.live(earlier)).toBe(0);
+    let polled = "";
+    await until(() => (polled = vm.run(pollCommand("tailnet-join")).stdout).startsWith("exited"));
+    expect(polled).toBe("exited 0\nagain\n");
+  }
 });
