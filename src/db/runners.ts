@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
+import type { RunnerSessionMove } from "./runner-session-moves";
 import { listSkills, runnerSkillStates, type RunnerSkillView } from "./skills";
 import { listRunnerRuntimes, type RunnerRuntimeStatus } from "./runner-runtimes";
 import { listRunnerAgents, type RunnerAgentView } from "./runner-agents";
@@ -106,6 +107,10 @@ export type RunnerSession = {
   title: string;
   phase: RunnerSessionPhase;
   startedAt: number;
+  /** The runner can hand it over now: its work lease is live, not only its Closeout slot. */
+  movable: boolean;
+  /** Its move off this runner; null once it lands on another runner. */
+  move: RunnerSessionMove | null;
 };
 
 function listRunnerSessions(
@@ -114,7 +119,15 @@ function listRunnerSessions(
   now: number,
 ): Map<string, RunnerSession[]> {
   const rows = db
-    .query<RunnerSession & { runnerId: string }, [number, string]>(
+    .query<
+      Omit<RunnerSession, "movable" | "move"> & {
+        runnerId: string;
+        movable: number;
+        moveStatus: RunnerSessionMove["status"] | null;
+        moveReason: string | null;
+      },
+      [number, number, string]
+    >(
       `SELECT w.runner_id AS runnerId,w.run_id AS runId,i.linear_identifier AS identifier,i.title,
     CASE
       WHEN i.state='verifying' OR json_extract(i.checkpoint,'$.phase')='verifying' THEN 'closeout'
@@ -123,16 +136,25 @@ function listRunnerSessions(
         ORDER BY p.updated_at DESC,p.rowid DESC LIMIT 1)='rejected' THEN 'fixing'
       ELSE 'working'
     END AS phase,
-    r.created_at AS startedAt
+    r.created_at AS startedAt,(w.ended_at IS NULL AND w.lease_until>?) AS movable,
+    m.status AS moveStatus,m.reason AS moveReason
     FROM runner_work w JOIN run r ON r.id=w.run_id JOIN work_item i ON i.id=r.item_id
+    LEFT JOIN runner_session_move m ON m.run_id=w.run_id AND m.runner_id=w.runner_id
     WHERE ((w.ended_at IS NULL AND w.lease_until>?) OR r.status IN ('active','provisioning'))
     AND w.workspace_id=?
     ORDER BY r.created_at,w.run_id`,
     )
-    .all(runnerLeaseCutoff(now), workspaceId);
+    .all(runnerLeaseCutoff(now), runnerLeaseCutoff(now), workspaceId);
   const sessions = new Map<string, RunnerSession[]>();
-  for (const { runnerId, ...session } of rows)
-    sessions.set(runnerId, [...(sessions.get(runnerId) ?? []), session]);
+  for (const { runnerId, movable, moveStatus, moveReason, ...session } of rows)
+    sessions.set(runnerId, [
+      ...(sessions.get(runnerId) ?? []),
+      {
+        ...session,
+        movable: movable === 1,
+        move: moveStatus ? { status: moveStatus, reason: moveReason } : null,
+      },
+    ]);
   return sessions;
 }
 

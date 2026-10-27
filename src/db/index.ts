@@ -252,6 +252,14 @@ export {
 } from "./linear-project";
 export { immediate } from "./tx";
 export {
+  clearRunnerSessionMove,
+  noteRunnerSessionMove,
+  requestRunnerSessionMove,
+  runnerSessionMove,
+  type RunnerSessionMove,
+  type RunnerSessionMoveStatus,
+} from "./runner-session-moves";
+export {
   createRunnerEnrollment,
   enrollRunner,
   findRunnerEnrollment,
