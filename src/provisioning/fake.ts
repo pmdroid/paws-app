@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { assertCommand, assertVmName } from "./names";
+import { assertCommand, assertVmName, newVmCommand } from "./names";
 import {
   ProvisioningError,
   type ExeDev,
@@ -11,7 +11,8 @@ import {
 } from "./types";
 
 export type FakeExeDevCall =
-  | { operation: "createVm"; vm: string }
+  /** `command` is the `new` line the real client would send. */
+  | { operation: "createVm"; vm: string; command: string | null }
   | { operation: "deleteVm"; vm: string }
   | { operation: "getVm"; vm: string }
   | { operation: "execVm"; vm: string; command: string; timeoutMs: number | null };
@@ -111,9 +112,15 @@ export function createFakeExeDev(): FakeExeDev {
       rules.push({ ...failure, operation, code, times: failure.times ?? 1 });
     },
 
-    async createVm(name): Promise<ExeDevCreatedVm> {
-      calls.push({ operation: "createVm", vm: String(name) });
+    async createVm(name, size): Promise<ExeDevCreatedVm> {
+      const call: Extract<FakeExeDevCall, { operation: "createVm" }> = {
+        operation: "createVm",
+        vm: String(name),
+        command: null,
+      };
+      calls.push(call);
       const vm = assertVmName("createVm", name);
+      call.command = newVmCommand(vm, size);
       failIfScripted("createVm", vm);
       if (vms.has(vm)) {
         throw new ProvisioningError("createVm", "conflict", `fake exe.dev createVm: ${vm} exists.`);

@@ -44,13 +44,30 @@ test("the fake creates, lists and records every call", async () => {
   expect(await code(exe.getVm("bob-paws"))).toBe("missing");
   expect(await code(exe.getVm("Bob"))).toBe("invalid_name");
   expect(exe.calls).toEqual([
-    { operation: "createVm", vm: "ada-paws" },
-    { operation: "createVm", vm: "ada-paws" },
+    { operation: "createVm", vm: "ada-paws", command: "new --name=ada-paws" },
+    { operation: "createVm", vm: "ada-paws", command: "new --name=ada-paws" },
     { operation: "getVm", vm: "ada-paws" },
     { operation: "getVm", vm: "ada-paws" },
     { operation: "getVm", vm: "bob-paws" },
     { operation: "getVm", vm: "Bob" },
   ]);
+});
+
+test("configured sizes become `new` flags, and no size is a bare `new`", async () => {
+  const exe = createFakeExeDev();
+  await exe.createVm("ada-paws");
+  await exe.createVm("bob-paws", {});
+  await exe.createVm("cy-paws", { cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" });
+  await exe.createVm("dee-paws", { cpu: 4 });
+  expect(exe.calls.map((call) => (call.operation === "createVm" ? call.command : null))).toEqual([
+    "new --name=ada-paws",
+    "new --name=bob-paws",
+    "new --name=cy-paws --cpu=8 --disk=100GB --image=ubuntu:24.04 --memory=16GB",
+    "new --name=dee-paws --cpu=4",
+  ]);
+  for (const size of [{ cpu: 0 }, { memoryGb: -4 }, { diskGb: 1.5 }, { image: "a b; rm -rf /" }])
+    expect(await code(exe.createVm("eve-paws", size))).toBe("invalid_command");
+  expect(exe.vms.has("eve-paws")).toBe(false);
 });
 
 test("the fake deletes a VM, answers missing for an unknown one, and fails when told to", async () => {
