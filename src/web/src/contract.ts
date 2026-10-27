@@ -58,7 +58,13 @@ export const CHECK_STATES = [
   "exhausted",
   "stopped",
 ] as const;
-export const CHECK_KINDS = ["setup", "command", "review", "evidence"] as const;
+/** A `rule` is a repository rule's probe from the Closeout policy, shown apart from the checks. */
+export const CHECK_KINDS = ["setup", "command", "review", "evidence", "rule"] as const;
+/**
+ * A failed rule a person decides on: `waiting` for Approve or Send back, `approved` (a rule set
+ * to `onFail: approve` whose break was accepted) or `bypassed` for one commit.
+ */
+export const RULE_APPROVAL_STATES = ["waiting", "approved", "bypassed"] as const;
 export const STEP_STATES = ["done", "run", "wait"] as const;
 export const ACTIVITY_KINDS = [
   "thought",
@@ -80,6 +86,7 @@ export type Urgency = (typeof URGENCIES)[number];
 export type VerdictDecision = (typeof VERDICT_DECISIONS)[number];
 export type CheckState = (typeof CHECK_STATES)[number];
 export type CheckKind = (typeof CHECK_KINDS)[number];
+export type RuleApprovalState = (typeof RULE_APPROVAL_STATES)[number];
 export type StepState = (typeof STEP_STATES)[number];
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 export type ItemEventKind = (typeof ITEM_EVENT_KINDS)[number];
@@ -375,6 +382,23 @@ export interface StatusCheck {
   evidencePath?: string | null;
   active?: boolean;
   tokens?: number | null;
+  /** On a `rule`: SHA-256 of the probe that ran, from its result. Only in the item detail. */
+  probeSha256?: string | null;
+  /** On a failed `rule`: the decision a person made or is asked to make. */
+  approval?: StatusRuleApproval;
+}
+
+/** Who decided a failed rule, why, and the commit the decision covers. */
+export interface StatusRuleApproval {
+  state: RuleApprovalState;
+  /** For `waiting`: the open question the Approve and Send back buttons answer. */
+  questionId: string | null;
+  /** The head commit the decision is bound to. */
+  head: string;
+  /** Display name of the person who approved or bypassed it. */
+  by: string | null;
+  reason: string | null;
+  at: string | null;
 }
 
 export interface StatusVerdict {
@@ -396,6 +420,8 @@ export interface StatusVerdict {
   attempts?: StatusCloseoutAttempt[];
   /** Each review item's rounds with their findings. Only the item detail endpoint sends them. */
   reviews?: StatusReview[];
+  /** Rules whose paths matched none of the change, by id. */
+  skippedRules?: string[];
 }
 
 export const REVIEW_SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
@@ -448,6 +474,8 @@ export interface StatusCloseoutAttempt {
   headSha: string | null;
   policyDigest: string | null;
   checks: StatusCheck[];
+  /** Rules whose paths matched none of the change, by id. */
+  skippedRules?: string[];
 }
 
 /** The list's Closeout of an item: the latest verdict, with each check's kind and state only. */
@@ -1541,6 +1569,9 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
             readReview(entry, `${path}.reviews[${review}]`),
           ),
         }),
+    ...(body.skippedRules === undefined
+      ? {}
+      : { skippedRules: stringArray(body, "skippedRules", path) }),
   };
 }
 
@@ -1627,6 +1658,9 @@ function readAttempt(input: unknown, path: string): StatusCloseoutAttempt {
     checks: array(body, "checks", path).map((entry, check) =>
       readCheck(entry, `${path}.checks[${check}]`),
     ),
+    ...(body.skippedRules === undefined
+      ? {}
+      : { skippedRules: stringArray(body, "skippedRules", path) }),
   };
 }
 
@@ -1656,6 +1690,22 @@ function readCheck(input: unknown, path: string): StatusCheck {
     evidencePath: optionalText(body, "evidencePath"),
     active: optionalBoolean(body, "active"),
     tokens: optionalCount(body, "tokens", path),
+    ...(body.probeSha256 === undefined ? {} : { probeSha256: optionalText(body, "probeSha256") }),
+    ...(body.approval === undefined
+      ? {}
+      : { approval: readRuleApproval(body.approval, `${path}.approval`) }),
+  };
+}
+
+function readRuleApproval(input: unknown, path: string): StatusRuleApproval {
+  const body = object(input, path);
+  return {
+    state: oneOf(string(body, "state", path), RULE_APPROVAL_STATES, `${path}.state`),
+    questionId: nullableText(body, "questionId", path),
+    head: text(body, "head", path),
+    by: nullableText(body, "by", path),
+    reason: nullableText(body, "reason", path),
+    at: nullableDate(body, "at", path),
   };
 }
 

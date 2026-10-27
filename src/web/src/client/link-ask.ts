@@ -204,6 +204,11 @@ export function setBypassReason(questionId: string, checkId: string, reason: str
   else drafts.set(`${questionId}:${checkId}`, reason);
 }
 
+/** The reason a person typed for one check, kept across repaints. */
+export function bypassReason(questionId: string, checkId: string): string {
+  return drafts.get(`${questionId}:${checkId}`) ?? "";
+}
+
 /** Keeps what a person typed across repaints. */
 export function setLinkAskDraft(questionId: string, note: string | null): void {
   if (note === null) {

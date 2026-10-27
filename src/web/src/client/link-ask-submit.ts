@@ -64,8 +64,27 @@ export function submitLinkAsk(event: SubmitEvent, reload: () => Promise<void>): 
   const decision = event.submitter instanceof HTMLButtonElement ? event.submitter.value : "approve";
   const note = form.querySelector<HTMLTextAreaElement>('textarea[name="note"]')?.value ?? "";
   const status = form.querySelector("[role=status]");
-  const bypassing = form.dataset["bypass"] !== undefined && decision === "approve";
-  const bypasses = bypassing ? chosenBypasses(form) : [];
+  // A rule row's form has one reason: Approve bypasses the rule with it, Send back sends it.
+  const rule = form.dataset["rule"];
+  const ruleReason =
+    rule === undefined
+      ? ""
+      : (form.querySelector<HTMLTextAreaElement>('textarea[name="reason"]')?.value.trim() ?? "");
+  if (rule !== undefined && ruleReason === "") {
+    const message =
+      decision === "approve" ? "Write why this rule may break." : "Write what to change.";
+    setLinkAskStatus(questionId, message, false);
+    if (status) status.textContent = message;
+    return true;
+  }
+  const bypassing =
+    (form.dataset["bypass"] !== undefined || rule !== undefined) && decision === "approve";
+  const bypasses =
+    rule !== undefined
+      ? [{ checkId: rule, reason: ruleReason }]
+      : bypassing
+        ? chosenBypasses(form)
+        : [];
   if (bypassing && (bypasses.length === 0 || bypasses.some((entry) => entry.reason === ""))) {
     const message =
       bypasses.length === 0
@@ -85,7 +104,7 @@ export function submitLinkAsk(event: SubmitEvent, reload: () => Promise<void>): 
         body: JSON.stringify({
           questionId,
           decision,
-          note: bypassing ? "" : note,
+          note: bypassing ? "" : rule !== undefined ? ruleReason : note,
           ...(bypassing ? { bypasses } : {}),
         }),
       });
