@@ -116,6 +116,7 @@ import {
   type StatusHeld,
   type StatusItem,
   type StatusItemDetail,
+  type StatusItemRisk,
   type StatusItemEvent,
   type StatusMergeQueue,
   type StatusMergeEntry,
@@ -293,12 +294,13 @@ function readItemDetail(
   id: string,
   options: LiveStatusOptions,
 ): StatusItemDetail | null {
-  const { snapshot, blocks, records } = readScopedSnapshot(db, options, id);
-  if (snapshot.items.length === 0) return null;
+  const { snapshot, blocks, records, current } = readScopedSnapshot(db, options, id);
+  if (snapshot.items.length === 0 || current === null) return null;
+  const risk = itemRisk(db, current);
   const detail = withoutOutputs(snapshot);
   const env = options.env ?? process.env;
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
-  if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks };
+  if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks, risk };
   const progress = listCloseoutProgress(db);
   return {
     ...detail,
@@ -314,6 +316,40 @@ function readItemDetail(
     }),
     id,
     blocks,
+    risk,
+  };
+}
+
+/** Closeout's check id for the security review of high-risk paths. */
+const SECURITY_REVIEW_CHECK = "security-review";
+
+/**
+ * The Risk card of the newest session: the tier of its latest classified head with the paths
+ * and lists that matched, and the `security-review` step of its latest Closeout run. The step
+ * comes from Closeout's progress because the verdict leaves out skipped checks.
+ */
+function itemRisk(db: Database, current: CurrentItem): StatusItemRisk | null {
+  const stored = latestCandidateRisk(db, current.record.id);
+  const step = current.progress?.steps.find((entry) => entry.id === SECURITY_REVIEW_CHECK);
+  const check = current.verdict?.checks.find((entry) => entry.id === SECURITY_REVIEW_CHECK);
+  const securityReview: StatusItemRisk["securityReview"] = step
+    ? {
+        state: checkState(step.state),
+        detail: step.detail?.trim() || null,
+        head: blank(current.progress!.head),
+      }
+    : check
+      ? { state: check.state, detail: check.detail?.trim() || null, head: current.verdict!.headSha }
+      : null;
+  if (stored === null && securityReview === null) return null;
+  const lists = new Map((stored?.matches ?? []).map((match) => [match.path, match.lists]));
+  return {
+    tier: stored?.tier ?? null,
+    head: stored?.head ?? null,
+    base: stored?.base ?? null,
+    classifiedAt: stored === null ? null : new Date(stored.classifiedAt).toISOString(),
+    paths: (stored?.paths ?? []).map((path) => ({ path, lists: lists.get(path) ?? [] })),
+    securityReview,
   };
 }
 
@@ -454,6 +490,20 @@ function readIntake(
   };
 }
 
+type ScopedSnapshot = {
+  snapshot: FullSnapshot;
+  blocks: string[];
+  records: WorkItemRecord[];
+  /** The newest of the scoped items, with its Closeout verdict and its latest Closeout run. */
+  current: CurrentItem | null;
+};
+
+type CurrentItem = {
+  record: WorkItemRecord;
+  verdict: StatusVerdict | undefined;
+  progress: CloseoutProgressRecord | null;
+};
+
 function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnapshot {
   return toList(readScopedSnapshot(db, options).snapshot);
 }
@@ -467,7 +517,7 @@ function readScopedSnapshot(
   db: Database,
   options: LiveStatusOptions,
   only?: string,
-): { snapshot: FullSnapshot; blocks: string[]; records: WorkItemRecord[] } {
+): ScopedSnapshot {
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
   const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
@@ -487,6 +537,7 @@ function readScopedSnapshot(
       snapshot: { ...emptyBase(now, options.project), verdicts: [] },
       blocks: [],
       records: [],
+      current: null,
     };
   const rows = listOutbox(db).filter(
     (row) =>
@@ -550,6 +601,21 @@ function readScopedSnapshot(
     repo: options.project?.repo,
   });
   const listed = new Set(items.map((item) => item.id));
+  const recordVerdicts = new Map(
+    records.map((record) => {
+      const runId = storedRuns.get(record.id)?.[0]?.id;
+      return [
+        record.id,
+        verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((found) => {
+          const verdict = runId === undefined ? found : { ...found, runId };
+          // Only the item detail reads each rule's evidence record and bypass decisions.
+          return only === undefined
+            ? verdict
+            : withRuleDetail(db, record.id, verdict, progress, evidenceRoot(options, env));
+        }),
+      ];
+    }),
+  );
   const snapshot: FullSnapshot = {
     version: STATUS_API_VERSION,
     source: "live",
@@ -558,16 +624,7 @@ function readScopedSnapshot(
     items,
     runs,
     questions: [],
-    verdicts: records.flatMap((record) => {
-      const runId = storedRuns.get(record.id)?.[0]?.id;
-      return verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((found) => {
-        const verdict = runId === undefined ? found : { ...found, runId };
-        // Only the item detail reads each rule's evidence record and bypass decisions.
-        return only === undefined
-          ? verdict
-          : withRuleDetail(db, record.id, verdict, progress, evidenceRoot(options, env));
-      });
-    }),
+    verdicts: records.flatMap((record) => recordVerdicts.get(record.id) ?? []),
     mergeQueue: merge.mergeQueue.filter((entry) => listed.has(entry.itemId)),
     ...(merge.mergeHistory === undefined
       ? {}
@@ -593,7 +650,17 @@ function readScopedSnapshot(
               .map(publicId),
           ),
         ];
-  return { snapshot, blocks, records };
+  const current = records[0]!;
+  return {
+    snapshot,
+    blocks,
+    records,
+    current: {
+      record: current,
+      verdict: recordVerdicts.get(current.id)?.[0],
+      progress: progressFor(current, progress),
+    },
+  };
 }
 
 /** Dead outbox rows and dead jobs of the visible items, so none blocks a session unseen. */
