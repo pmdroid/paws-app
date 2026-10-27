@@ -210,7 +210,8 @@ async function runCommand(input: CommandInput): Promise<ReviewCommandOutcome> {
   );
   if (!second.ok) return second;
   const secondParsed = parseFindings(second.reply.text);
-  if (!secondParsed.ok) return { ok: false, producer: second.producer, reason: secondParsed.reason };
+  if (!secondParsed.ok)
+    return { ok: false, producer: second.producer, reason: secondParsed.reason };
   return { ok: true, producer: second.producer, findings: secondParsed.findings };
 }
 

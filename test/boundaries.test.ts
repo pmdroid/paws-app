@@ -178,6 +178,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-worker": [
     "journal",
+    "closeout-spec",
     "runner-login-worker",
     "worktree-checkout",
     "acp",

@@ -2,6 +2,7 @@ import { journalCaught } from "../journal";
 import { runProviderLogin } from "../runner-login-worker";
 import type { RunnerLoginUpdate } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
+import { createReviewCommandRunner, runReviewCommand } from "../closeout-spec";
 import {
   closeSync,
   chmodSync,
@@ -494,6 +495,54 @@ function resumedSession(directory: string): string | undefined {
     }
   }
   return sessionId;
+}
+
+/**
+ * A reviewer turn as the agent's own review command of `base..HEAD`, run in the run's checkout
+ * with the runner's login: `codex exec review --base` or Claude `/code-review`. The command's
+ * read-only review is the sandbox. The parsed findings are the review text.
+ */
+async function reviewCommandTurn(input: {
+  agent: "claude" | "codex";
+  model: string;
+  base: string;
+  head: string;
+  worktree: string;
+  executable: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  onText: (text: string) => void;
+}): Promise<RunAgentResult> {
+  const outcome = await runReviewCommand(
+    createReviewCommandRunner({
+      env: input.env,
+      timeoutMs: input.timeoutMs,
+      ...(input.signal ? { signal: input.signal } : {}),
+    }),
+    {
+      agent: input.agent,
+      model: input.model,
+      command: input.executable,
+      base: input.base,
+      head: input.head,
+      cwd: input.worktree,
+    },
+  );
+  const cancelled = input.signal?.aborted === true;
+  const ended = {
+    role: "reviewer" as const,
+    identity: outcome.producer,
+    ...(outcome.producer.session ? { sessionId: outcome.producer.session } : {}),
+    timedOut: false,
+    cancelled,
+    authRequired: false,
+    agentExited: true,
+  };
+  if (cancelled) return { ...ended, stopReason: "cancelled", errorMessage: "Review cancelled" };
+  if (!outcome.ok) return { ...ended, stopReason: "error", errorMessage: outcome.reason };
+  input.onText(JSON.stringify(outcome.findings));
+  return { ...ended, stopReason: "end_turn" };
 }
 
 export async function executeRunnerCommand(
@@ -1116,7 +1165,56 @@ export async function executeRunnerCommand(
                   }),
                 ),
             })
-        : runAgent;
+        : command.type === "review" && command.reviewCommand
+          ? async (input: RunAgentOptions): Promise<RunAgentResult> => {
+              const base = command.reviewCommand!.base;
+              const known = await invokeGit([
+                "-C",
+                worktree,
+                "cat-file",
+                "-e",
+                `${base}^{commit}`,
+              ]).then(
+                () => true,
+                (caughtError) => {
+                  journalCaught(caughtError, "runner-worker.reviewCommand.base", command.itemId);
+                  return false;
+                },
+              );
+              if (!known)
+                return {
+                  role: "reviewer",
+                  stopReason: "error",
+                  errorMessage: `The review base ${base} is not in the run's checkout`,
+                  timedOut: false,
+                  cancelled: false,
+                  authRequired: false,
+                  agentExited: true,
+                };
+              const agentName = command.profile.agent === "codex" ? "codex" : "claude";
+              emit({
+                type: "progress",
+                text:
+                  agentName === "codex"
+                    ? `Running codex exec review --base ${base.slice(0, 7)}.`
+                    : `Running Claude /code-review ${base.slice(0, 7)}..${command.repository.baseSha.slice(0, 7)}.`,
+              });
+              return reviewCommandTurn({
+                agent: agentName,
+                model: command.profile.model!,
+                base,
+                head: command.repository.baseSha,
+                worktree,
+                executable: providerCli(agentName),
+                env: input.env ?? agentEnv,
+                timeoutMs: Math.max(1, command.expiresAt - Date.now()),
+                ...(input.signal ? { signal: input.signal } : {}),
+                onText: (text) => {
+                  reviewText = text;
+                },
+              });
+            }
+          : runAgent;
     const runCommand = command.type === "run" ? command : undefined;
     const stepTimeout = options.handoverStepTimeoutMs ?? HANDOVER_STEP_TIMEOUT_MS;
     /** A step after the interrupt, cut off after its own timeout rather than the deadline. */
