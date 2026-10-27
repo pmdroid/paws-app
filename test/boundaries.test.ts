@@ -34,6 +34,7 @@ const MODULES = [
   "loop",
   "doctor",
   "install",
+  "install-host",
   "deployment",
   "auth",
   "runner-protocol",
@@ -152,6 +153,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "closeout-spec",
   ],
   install: ["journal", "acp", "config"],
+  "install-host": ["config"],
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   auth: ["journal", "config", "github", "credentials", "core"],

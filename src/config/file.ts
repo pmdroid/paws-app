@@ -270,6 +270,62 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
   return true;
 }
 
+export type ConfigKeyValue = string | readonly string[] | null;
+
+/**
+ * Set keys in one `[section]` of `config.toml` text, keeping every other line,
+ * section and comment. A null value removes the key. A missing section is appended.
+ */
+export function setConfigKeys(
+  current: string,
+  section: string,
+  values: Record<string, ConfigKeyValue>,
+): string {
+  const pending = new Map(Object.entries(values));
+  const render = (key: string, value: string | readonly string[]) =>
+    `${key} = ${typeof value === "string" ? tomlString(value) : tomlStringArray(value)}`;
+  const out: string[] = [];
+  let state: "before" | "in" | "after" = "before";
+  let insertAt = -1;
+  for (const line of current.length === 0 ? [] : current.split(/\r?\n/)) {
+    const trimmed = stripComment(line).trim();
+    const heading = /^\[\s*([^[\]]+?)\s*\]$/.exec(trimmed);
+    if (heading?.[1] || trimmed.startsWith("[[")) {
+      if (state === "in") state = "after";
+      if (state === "before" && heading?.[1]?.toLowerCase() === section) state = "in";
+      out.push(line);
+      if (state === "in") insertAt = out.length;
+      continue;
+    }
+    if (state === "in") {
+      const eq = trimmed.indexOf("=");
+      const key = eq > 0 ? trimmed.slice(0, eq).trim().toLowerCase() : "";
+      if (pending.has(key)) {
+        const value = pending.get(key)!;
+        pending.delete(key);
+        if (value !== null) {
+          out.push(render(key, value));
+          insertAt = out.length;
+        }
+        continue;
+      }
+      if (trimmed.length > 0) insertAt = out.length + 1;
+    }
+    out.push(line);
+  }
+  const added = [...pending].flatMap(([key, value]) =>
+    value === null ? [] : [render(key, value)],
+  );
+  if (insertAt >= 0) out.splice(insertAt, 0, ...added);
+  else if (added.length > 0) {
+    while (out.length > 0 && out[out.length - 1]!.trim() === "") out.pop();
+    if (out.length > 0) out.push("");
+    out.push(`[${section}]`, ...added);
+  }
+  const text = out.join("\n");
+  return text.endsWith("\n") || text.length === 0 ? text : `${text}\n`;
+}
+
 function tomlStringArray(values: readonly string[]): string {
   return `[${values.map((value) => tomlString(value)).join(", ")}]`;
 }
