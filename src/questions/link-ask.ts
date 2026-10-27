@@ -18,6 +18,7 @@ export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
   risk: "Review risk",
   question: "Answer question",
   rounds: "Answer question",
+  rule: "Review rule",
 };
 
 /** The card on the item page each kind opens: `/status/issues/PAS-633#closeout`. */
@@ -27,6 +28,7 @@ export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
   risk: "risk",
   question: "question",
   rounds: "review-rounds",
+  rule: "rule",
 };
 
 /** The last line of the Linear message: what a reply does, and what it never does. */
@@ -39,6 +41,7 @@ export const LINK_ASK_REPLY: Record<LinkAskKind, string> = {
     "Reply here to send the agent guidance instead. A reply here does not answer the question.",
   rounds:
     "A reply here asks the agent to rethink the approach, with your reply as the note and the open findings.",
+  rule: "Reply here to send the finding back to the agent instead. A reply here cannot approve the break.",
 };
 
 /** Paws reminds once after this long without a decision. There is no timeout. */
@@ -57,6 +60,8 @@ export function linkAskTitle(kind: LinkAskKind, head: string): string {
       return `Paws needs your answer on ${commit}.`;
     case "rounds":
       return `Review rounds ran out on ${commit}.`;
+    case "rule":
+      return `A rule broke on ${commit} and needs your decision.`;
   }
 }
 
@@ -86,7 +91,10 @@ export function linkAskReminderBody(ask: LinkAsk): string {
 function decided(ask: LinkAsk, decision: LinkAskDecision): string {
   const commit = shortCommit(ask.headCommit);
   if (decision === "answer") return "answered in Paws";
-  if (decision === "changes") return `requested changes to ${commit} in Paws`;
+  if (decision === "changes")
+    return ask.kind === "rule"
+      ? `sent the rule finding on ${commit} back to the agent in Paws`
+      : `requested changes to ${commit} in Paws`;
   if (decision === "rethink") return "asked the agent to rethink the approach in Paws";
   if (decision === "continue") return `allowed ${moreRounds(ask)} in Paws`;
   if (decision === "stop") return `stopped the work at ${commit} in Paws`;
@@ -96,6 +104,7 @@ function decided(ask: LinkAsk, decision: LinkAskDecision): string {
     risk: `approved the high-risk changes in ${commit} in Paws`,
     question: "answered in Paws",
     rounds: "answered in Paws",
+    rule: `approved the rule break on ${commit} in Paws`,
   }[ask.kind];
 }
 
@@ -119,7 +128,12 @@ function moreRounds(ask: LinkAsk): string {
 /** The handoff the agent gets when a decision or a guidance reply sends the item back. */
 export function linkAskHandoff(
   ask: LinkAsk,
-  input: { decision: LinkAskDecision | "guidance"; note: string | null },
+  input: {
+    decision: LinkAskDecision | "guidance";
+    note: string | null;
+    /** On a `rule` ask: the rule findings the agent fixes, as `onFail: fix` would hand them over. */
+    findings?: string;
+  },
 ): string {
   const note = input.note?.trim() ?? "";
   // A reply in Linear on a rounds ask is Rethink the approach with the reply as the note.
@@ -130,7 +144,18 @@ export function linkAskHandoff(
       : input.decision === "answer"
         ? `A person answered in Paws: ${ask.title}`
         : `A person ${decided(ask, input.decision)}${note ? ":" : "."}`;
-  return ["Handoff from the previous session.", lead, ...(note ? [note] : [])].join("\n");
+  const findings = input.findings?.trim() ?? "";
+  return [
+    "Handoff from the previous session.",
+    lead,
+    ...(note ? [note] : []),
+    ...(findings
+      ? [
+          "The rule below is set to onFail: approve, and nobody approved the break. Fix the finding:",
+          findings,
+        ]
+      : []),
+  ].join("\n");
 }
 
 function roundsHandoff(ask: LinkAsk, decision: LinkAskDecision | "guidance", note: string): string {

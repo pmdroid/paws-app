@@ -186,6 +186,9 @@ export type LinkAskBypass = { checkId: string; reason: string };
 export const BYPASS_REPLY_NOTE =
   "A reply in Linear cannot bypass a Closeout check. I sent it to the agent as guidance. Bypass a check with a reason on the item page in Paws:";
 
+export const RULE_REPLY_NOTE =
+  "A reply in Linear cannot approve a rule break. I sent the finding back to the agent with your reply. Approve a break with a reason on the item page in Paws:";
+
 /**
  * A signed-in person decided on the item page. Checks `canAnswer` against the
  * delegator and the project lead, writes the Audit history row, closes the
@@ -223,12 +226,22 @@ export function decideLinkAsk(
     if (input.decision === "stop" && linkAsk.kind === "risk")
       return stopRiskAsk(db, linkAsk, item, input);
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
-    const bypasses = bypassing ? validBypasses(db, linkAsk, input.bypasses ?? []) : null;
-    if (bypassing && bypasses === null) return "rejected";
+    // Approving a rule break needs a reason; it covers every rule the ask holds.
+    const approvingRule = linkAsk.kind === "rule" && input.decision === "approve";
+    if (approvingRule && !input.note?.trim()) return "rejected";
+    const bypasses = bypassing
+      ? validBypasses(db, linkAsk, input.bypasses ?? [])
+      : approvingRule
+        ? heldRules(db, linkAsk).map((checkId) => ({ checkId, reason: input.note!.trim() }))
+        : null;
+    if ((bypassing || approvingRule) && !bypasses?.length) return "rejected";
     // The reasons are the note of a bypass: Audit history, the session note and the handoff carry them.
-    const note = bypasses
-      ? bypasses.map((entry) => `${entry.checkId}: ${entry.reason}`).join("; ")
-      : input.note;
+    const note =
+      bypasses && bypassing
+        ? bypasses.map((entry) => `${entry.checkId}: ${entry.reason}`).join("; ")
+        : approvingRule
+          ? input.note!.trim()
+          : input.note;
     const answered = answerQuestion(db, question.id, {
       answer: note ? `${input.decision}: ${note}` : input.decision,
       answeredBy: input.answeredBy,
@@ -312,12 +325,29 @@ export function decideLinkAsk(
       db,
       current,
       question,
-      linkAskHandoff(linkAsk, { ...input, note }),
+      linkAskHandoff(linkAsk, { ...input, note, ...ruleFindings(db, linkAsk) }),
       now,
       linkAsk.kind === "risk" ? "review" : "answer",
     );
     return "answered";
   });
+}
+
+/** The rules a `rule` ask holds that nobody approved yet. */
+function heldRules(db: Database, linkAsk: LinkAsk): string[] {
+  return listCloseoutBypassChecks(db, linkAsk.questionId)
+    .filter((check) => check.approvedAt === null)
+    .map((check) => check.checkId);
+}
+
+/** On a `rule` ask, the findings a send back or a reply in Linear hands the agent. */
+function ruleFindings(db: Database, linkAsk: LinkAsk): { findings?: string } {
+  if (linkAsk.kind !== "rule") return {};
+  const findings = listCloseoutBypassChecks(db, linkAsk.questionId)
+    .map((check) => check.message.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  return findings ? { findings } : {};
 }
 
 /**
@@ -509,7 +539,9 @@ export function guideLinkAsk(
           ? VISUAL_REVIEW_REPLY_NOTE
           : linkAsk.kind === "bypass" && BYPASS_REPLY.test(input.body)
             ? `${BYPASS_REPLY_NOTE} ${linkAsk.link}`
-            : LINK_ASK_GUIDANCE_NOTE,
+            : linkAsk.kind === "rule"
+              ? `${RULE_REPLY_NOTE} ${linkAsk.link}`
+              : LINK_ASK_GUIDANCE_NOTE,
       `link-ask-guidance:${linkAsk.questionId}`,
       now,
     );
@@ -518,7 +550,11 @@ export function guideLinkAsk(
       db,
       getWorkItem(db, item.id)!,
       question,
-      linkAskHandoff(linkAsk, { decision: "guidance", note: input.body }),
+      linkAskHandoff(linkAsk, {
+        decision: "guidance",
+        note: input.body,
+        ...ruleFindings(db, linkAsk),
+      }),
       now,
     );
     return true;

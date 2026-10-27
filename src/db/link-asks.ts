@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 
 /** What a link ask wants a signed-in person to decide on the item page. */
-export type LinkAskKind = "bypass" | "screenshots" | "risk" | "question" | "rounds";
+export type LinkAskKind = "bypass" | "screenshots" | "risk" | "question" | "rounds" | "rule";
 
 export const LINK_ASK_KINDS: readonly LinkAskKind[] = [
   "bypass",
@@ -9,10 +9,12 @@ export const LINK_ASK_KINDS: readonly LinkAskKind[] = [
   "risk",
   "question",
   "rounds",
+  "rule",
 ];
 
 /**
- * `approve` bypasses, accepts or approves; `changes` sends the item back with a note;
+ * `approve` bypasses, accepts or approves (on `rule`, the break of a rule set to
+ * `onFail: approve`, with a reason); `changes` sends the item back with a note;
  * `answer` answers a question kind. `rethink`, `continue` and `stop` answer the
  * `rounds` kind once review attempts ran out; `stop` also stops a `risk` ask with its pull
  * request left open. A Linear reply is none of the first three; on a `rounds` ask it is
@@ -27,6 +29,7 @@ export const LINK_ASK_DECISIONS: Record<LinkAskKind, readonly LinkAskDecision[]>
   risk: ["approve", "changes", "stop"],
   question: ["answer"],
   rounds: ["rethink", "continue", "stop"],
+  rule: ["approve", "changes"],
 };
 
 /** Decisions that need a note: what to change, or the answer. */
