@@ -1,0 +1,365 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-27T03:54:44.310Z",
+  "config": {
+    "id": "independent-review",
+    "skill": ".agents/skills/review-paws/SKILL.md",
+    "failOn": "P1",
+    "scope": "diff",
+    "skillDigest": "3fb91d9be4d28967778a3780b26b37bbae100b0e939be9f41538f6b11d6406b2",
+    "model": "gpt-6.1-sol",
+    "effort": "medium",
+    "tolerance": 5
+  },
+  "results": [
+    {
+      "id": "579-655",
+      "kind": "escape",
+      "pr": 579,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 27757,
+      "usage": {
+        "input": 28992,
+        "cached": 12288,
+        "output": 1515
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "673-678",
+      "kind": "escape",
+      "pr": 673,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 28445,
+      "usage": {
+        "input": 31382,
+        "cached": 12288,
+        "output": 1227
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "707-791",
+      "kind": "escape",
+      "pr": 707,
+      "confidence": "confirmed",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 10741,
+      "usage": {
+        "input": 23179,
+        "cached": 12288,
+        "output": 313
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "709-779",
+      "kind": "escape",
+      "pr": 709,
+      "confidence": "confirmed",
+      "diff": "candidate",
+      "outcome": "elsewhere",
+      "durationMs": 82639,
+      "usage": {
+        "input": 43489,
+        "cached": 12288,
+        "output": 4220
+      },
+      "blocking": [
+        {
+          "severity": "P1",
+          "location": "src/web/src/client/skills.ts:43",
+          "explanation": "Missing runner integration: the UI says registered skills are installed before every run, but the change only stores bundles and database pins and exposes settings operations. No execution or runner path receives those pins or bundles. Adding, updating, re-scoping, or removing a skill therefore does not change what agents load. The removal notices in src/settings/skills.ts and src/web/src/client/skills.ts also promise an uninstall that is not implemented.",
+          "evidence": "The supplied diff wires skillSettings into the HTTP server, while all new registry calls serve settings operations. It adds no runner synchronization, bundle delivery, installation, or removal consumer for the new agent_skill table."
+        }
+      ],
+      "findings": 4,
+      "nearSeverity": "P2"
+    },
+    {
+      "id": "724-781",
+      "kind": "escape",
+      "pr": 724,
+      "confidence": "confirmed",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 32506,
+      "usage": {
+        "input": 61354,
+        "cached": 42624,
+        "output": 1182
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "735-877",
+      "kind": "escape",
+      "pr": 735,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "elsewhere",
+      "durationMs": 68410,
+      "usage": {
+        "input": 32284,
+        "cached": 12288,
+        "output": 3502
+      },
+      "blocking": [
+        {
+          "severity": "P1",
+          "location": "src/runner-execution/skills.ts:174",
+          "explanation": "Symlink traversal: removeFolder renames and recursively deletes a target without checking its parent directories. The agent owns the home’s skill directories and can replace .claude/skills, .codex/skills, or .grok/skills with a symlink to another directory. When Paws removes a previously installed skill or removes an agent from its configuration, the privileged daemon can then delete a directory outside the agent home.",
+          "evidence": "ownedDirectory checks parents during installation, but removal paths in applyHome call removeFolder directly. removeFolder uses lstatSync on the final target, which follows intermediate symlinks, then renameSync and rmSync. For example, redirecting .claude/skills to /etc before removing a registered skill named nginx targets /etc/nginx."
+        }
+      ],
+      "findings": 3
+    },
+    {
+      "id": "927-929",
+      "kind": "escape",
+      "pr": 927,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 63251,
+      "usage": {
+        "input": 58037,
+        "cached": 12288,
+        "output": 4925
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "941-955",
+      "kind": "escape",
+      "pr": 941,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 25810,
+      "usage": {
+        "input": 33187,
+        "cached": 12288,
+        "output": 1039
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "973-983",
+      "kind": "escape",
+      "pr": 973,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 18825,
+      "usage": {
+        "input": 24944,
+        "cached": 12288,
+        "output": 661
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "978-982",
+      "kind": "escape",
+      "pr": 978,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 16160,
+      "usage": {
+        "input": 29063,
+        "cached": 12288,
+        "output": 541
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "985-989",
+      "kind": "escape",
+      "pr": 985,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "elsewhere",
+      "durationMs": 75495,
+      "usage": {
+        "input": 140637,
+        "cached": 82304,
+        "output": 3439
+      },
+      "blocking": [
+        {
+          "severity": "P1",
+          "location": "src/loop/orchestrator.ts:1674",
+          "explanation": "Missing execution authorization check: removing admission.canStart from the execution path allows a queued task to launch after execution permission is revoked. A scheduler reservation can already exist when permission changes, and the new claim gate checks only the reservation, item state, cancellation flag, and live runs. Revalidate execution permission before launching the task so an existing reservation cannot bypass a subsequent restriction.",
+          "evidence": "The reachable sequence is dispatch while execution is allowed, revoke permission, then claim the reserved job before another reconciliation. The candidate removes the check that previously rejected this sequence. In test/local/execution-lifecycle.ts, the permission-revocation probe now adds guard.reconcileExecution() between allowed = false and guardJobs.tick(), so it verifies reservation cleanup before claiming rather than rejection at execution."
+        }
+      ],
+      "findings": 1
+    },
+    {
+      "id": "990-994",
+      "kind": "escape",
+      "pr": 990,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 54215,
+      "usage": {
+        "input": 69089,
+        "cached": 46464,
+        "output": 2451
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "732-834",
+      "kind": "escape",
+      "pr": 732,
+      "confidence": "confirmed",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 24971,
+      "usage": {
+        "input": 27149,
+        "cached": 12288,
+        "output": 929
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "1006-1015",
+      "kind": "escape",
+      "pr": 1006,
+      "confidence": "confirmed",
+      "diff": "squash",
+      "outcome": "elsewhere",
+      "durationMs": 39639,
+      "usage": {
+        "input": 81465,
+        "cached": 52864,
+        "output": 1685
+      },
+      "blocking": [
+        {
+          "severity": "P1",
+          "location": "src/runner-backend/index.ts:843",
+          "explanation": "Incorrect conditional precedence prevents restoration on a capable target runner. The restore session ID is selected only when the existing session-resume condition is false. When that condition is true, earlierSession instead searches the target runner, which may have no prior session for this run. The command then includes restoreSession with an undefined or different resumeSessionId, violating the newly added RunnerCommandSchema refinement and preventing dispatch. Prefer the eligible restore session ID before consulting earlierSession.",
+          "evidence": "The changed expression selects earlierSession(db, itemId, selected.id, profile.agent) before considering restorePlan.eligible, while the command independently includes restoreSession whenever that plan is eligible. The added schema requires resumeSessionId === restoreSession.sessionId. The new runner-session-move test explicitly exercises a move from A to B with no earlier session on B and expects both fields to identify A's saved session."
+        }
+      ],
+      "findings": 1
+    },
+    {
+      "id": "783-974",
+      "kind": "escape",
+      "pr": 783,
+      "confidence": "likely",
+      "diff": "candidate",
+      "outcome": "missed",
+      "durationMs": 49694,
+      "usage": {
+        "input": 27536,
+        "cached": 12288,
+        "output": 2019
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "715-851",
+      "kind": "escape",
+      "pr": 715,
+      "confidence": "likely",
+      "diff": "squash",
+      "outcome": "missed",
+      "durationMs": 37755,
+      "usage": {
+        "input": 25326,
+        "cached": 12288,
+        "output": 1496
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "clean-544",
+      "kind": "clean",
+      "pr": 544,
+      "quietDays": 7,
+      "diff": "squash",
+      "outcome": "passed",
+      "durationMs": 16141,
+      "usage": {
+        "input": 20057,
+        "cached": 12288,
+        "output": 355
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-549",
+      "kind": "clean",
+      "pr": 549,
+      "quietDays": 7,
+      "diff": "squash",
+      "outcome": "passed",
+      "durationMs": 39478,
+      "usage": {
+        "input": 26192,
+        "cached": 12288,
+        "output": 1531
+      },
+      "blocking": [],
+      "findings": 1
+    },
+    {
+      "id": "clean-552",
+      "kind": "clean",
+      "pr": 552,
+      "quietDays": 7,
+      "diff": "squash",
+      "outcome": "passed",
+      "durationMs": 35569,
+      "usage": {
+        "input": 20164,
+        "cached": 12288,
+        "output": 1501
+      },
+      "blocking": [],
+      "findings": 0
+    },
+    {
+      "id": "clean-560",
+      "kind": "clean",
+      "pr": 560,
+      "quietDays": 7,
+      "diff": "squash",
+      "outcome": "passed",
+      "durationMs": 36762,
+      "usage": {
+        "input": 34827,
+        "cached": 12288,
+        "output": 1600
+      },
+      "blocking": [],
+      "findings": 1
+    }
+  ]
+}
