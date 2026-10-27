@@ -84,7 +84,6 @@ describe("status HTTP stub", () => {
     expect(etag).toMatch(/^W\/".+"$/);
     expect(sliced.headers.get("paws-generated-at")).toBe(generatedAt);
 
-    // A newer read of the same list is a 304 that carries the new time.
     generatedAt = "2026-10-27T10:00:05.000Z";
     const unchanged = await get("/api/status?slices=items,mergeQueue", etag);
     expect(unchanged.status).toBe(304);
@@ -92,14 +91,12 @@ describe("status HTTP stub", () => {
     expect(unchanged.headers.get("etag")).toBe(etag);
     expect(unchanged.headers.get("paws-generated-at")).toBe(generatedAt);
 
-    // Another slice set, or a change inside the slices, is a new body.
     expect((await get("/api/status?slices=items", etag)).status).toBe(200);
     full = { ...full, mergeQueue: [] };
     const changed = await get("/api/status?slices=items,mergeQueue", etag);
     expect(changed.status).toBe(200);
     expect(changed.headers.get("etag")).not.toBe(etag);
 
-    // The whole list still answers without the query, and an unknown slice is refused.
     const whole = (await (await get("/api/status")).json()) as Record<string, unknown>;
     expect(whole.slices).toBeUndefined();
     expect(whole.questions).toBeDefined();
