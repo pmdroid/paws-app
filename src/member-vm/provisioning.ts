@@ -7,6 +7,7 @@ import {
   type ExeDev,
   type ExeDevBootstrap,
   type ExeDevTokenReader,
+  type ExeDevVmSize,
 } from "../provisioning";
 import type { MemberVmProvisioning, MintEnrollment } from "./job";
 
@@ -26,6 +27,8 @@ export type MemberVmProvisioningSource = {
   latestRelease: () => Promise<string | null>;
   /** Reads `~/.paws/secrets/tailscale-authkey`. Absent or null: the VM joins no tailnet. */
   tailscaleAuthKey?: () => string | null;
+  /** Reads `[member_vm]` from config.toml for each Create VM step. */
+  size?: () => ExeDevVmSize;
   exeDev?: ExeDev;
   /** Replaces the bootstrap built from the release and installer. Tests pass the fake. */
   bootstrap?: ExeDevBootstrap;
@@ -45,8 +48,9 @@ export function createMemberVmProvisioning(
       );
     const control = await source.runnerControl();
     if (!control) throw new Error("Create VM needs runner control to be configured.");
+    const size = source.size?.() ?? {};
     if (source.bootstrap)
-      return { exeDev, bootstrap: source.bootstrap, mintEnrollment: control.mintEnrollment };
+      return { exeDev, bootstrap: source.bootstrap, mintEnrollment: control.mintEnrollment, size };
     const runnerVersion = control.serverVersion ?? (await source.latestRelease());
     if (runnerVersion === null)
       throw new Error(
@@ -68,6 +72,6 @@ export function createMemberVmProvisioning(
       allowedRepositories: source.repositories().slice(0, 256),
       tailnet: { authKey, release: PINNED_TAILSCALE.amd64 },
     });
-    return { exeDev, bootstrap, mintEnrollment: control.mintEnrollment };
+    return { exeDev, bootstrap, mintEnrollment: control.mintEnrollment, size };
   };
 }
