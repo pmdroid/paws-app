@@ -811,6 +811,13 @@ export function createRemoteAgentRunner(options: {
             networkGit: (args: string[]) => Promise<string>,
           ) => {
             const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+            // A first run starts from the mirror's commit, which came from GitHub.
+            if (
+              !checkpoint?.baseSha ||
+              (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim() ===
+                checkpoint.baseSha
+            )
+              return undefined;
             const start = await ensureStartOnRemote({
               worktree: input.worktreePath,
               branch: scoped.item.branchName,

@@ -140,6 +140,9 @@ export async function probeRunnerBackend(
     assert.equal(code, 0, err);
     return out.trim();
   }
+  // GitHub, served from the source repository, so no run reaches the network.
+  const networkGit = (args: string[]) =>
+    git(args.map((arg) => (arg === "https://github.com/fixture/repository.git" ? source : arg)));
   await git(["init", "-b", "main", source]);
   writeFileSync(join(source, "result.txt"), "base");
   await git(["-C", source, "add", "."]);
@@ -168,7 +171,7 @@ export async function probeRunnerBackend(
     pollIntervalMs: 1,
     async fetchCandidate(candidate) {
       assert.equal(candidate.remoteUrl, "https://github.com/fixture/repository.git");
-      assert.equal(candidate.networkGit, git);
+      assert.equal(candidate.networkGit, networkGit);
       assert.equal(candidate.branch, getWorkItem(db, candidate.itemId)?.branchName);
       assert.equal(candidate.baseSha, base);
       assert.equal(candidate.candidateSha, head);
@@ -242,7 +245,7 @@ export async function probeRunnerBackend(
       prompt: "Implement fixture",
       worktreePath: source,
       pawsRoot: root,
-      networkGit: git,
+      networkGit,
       ...overrides,
     };
   }
