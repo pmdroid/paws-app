@@ -636,14 +636,38 @@ export function pageData(
   };
 }
 
-/** A status provider over `full`: the list, and each issue's detail for its page. */
+/** A status provider over `full`: the list, each issue's detail for its page, and check logs. */
 export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
   snapshot(): StatusSnapshot;
   item(id: string): StatusItemDetail | null;
+  checkLog(request: {
+    itemId: string;
+    attempt: number;
+    checkId: string;
+    run: string | null;
+  }): { stdout: string; stderr: string } | null;
 } {
   const read = typeof full === "function" ? full : () => full;
   return {
     snapshot: () => statusList(read()),
     item: (id) => (read().items.some((entry) => entry.id === id) ? itemDetail(read(), id) : null),
+    checkLog: ({ itemId, attempt, checkId, run }) => {
+      const status = read();
+      // A verdict without recorded attempts is one attempt, as the issue page shows it.
+      const attempts =
+        run === null
+          ? status.verdicts
+              .filter((verdict) => verdict.itemId === itemId)
+              .flatMap((verdict) =>
+                verdict.attempts?.length
+                  ? verdict.attempts
+                  : [{ number: Math.max(verdict.attempt, 1), checks: verdict.checks }],
+              )
+          : (status.agentCloseout?.find((entry) => entry.runId === run)?.attempts ?? []);
+      const found = attempts
+        .find((entry) => entry.number === attempt)
+        ?.checks.find((entry) => entry.id === checkId);
+      return found ? { stdout: found.stdout ?? "", stderr: found.stderr ?? "" } : null;
+    },
   };
 }
