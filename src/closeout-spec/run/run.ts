@@ -521,7 +521,9 @@ async function runRule(
     input.policy.source === "none" ? undefined : input.policy.probeFiles?.get(rule.probe);
   let ran: Awaited<ReturnType<ProbeRunner["runProbe"]>>;
   let reason =
-    bytes === undefined ? "the policy carries no bytes for it" : "the probe runner returned nothing";
+    bytes === undefined
+      ? "the policy carries no bytes for it"
+      : "the probe runner returned nothing";
   try {
     ran = await probes.runProbe({
       rule,
