@@ -398,6 +398,12 @@ import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./p
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
 import { classifyCandidateRisk } from "./candidate-risk";
+import {
+  askRiskApproval,
+  postRiskActivity,
+  riskApprovalFor,
+  RISK_ANSWERERS,
+} from "./risk-approval";
 import { sweepWorktrees } from "./worktree-sweep";
 import {
   KEEP_WAITING,
@@ -3493,6 +3499,25 @@ export class Orchestrator {
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
+        riskApproval: (item, published) =>
+          riskApprovalFor(this.db, {
+            itemId: item.id,
+            head: published.head,
+            publicUrl: this.options.publicUrl,
+            samePatch: (approved, base) =>
+              samePatch(published.worktree, approved, published.head, base),
+          }),
+        askRiskApproval: async (item, published) => {
+          const asked = askRiskApproval(this.db, {
+            item,
+            head: published.head,
+            publicUrl: this.options.publicUrl ?? null,
+            now: this.now(),
+          });
+          if (asked !== "asked") return { kind: "obsolete" };
+          await this.flush(published.signal);
+          return { kind: "asked" };
+        },
         completed: () => this.dispatch(),
       },
     );
@@ -4131,22 +4156,33 @@ export class Orchestrator {
     }
     // A reply never decides a link ask: it goes to the agent as guidance.
     if (open.kind === "link") {
-      // On a visual review the reply requests changes, so only the delegator or the lead may send it.
+      // On a visual review or a risk approval the reply requests changes, so only the delegator
+      // or the lead may send it.
       const linkAsk = getLinkAsk(this.db, open.id);
       const item = getWorkItem(this.db, open.itemId);
       if (
-        linkAsk?.kind === "screenshots" &&
+        (linkAsk?.kind === "screenshots" || linkAsk?.kind === "risk") &&
         item !== null &&
         !canAnswer({ kind: "link", allowedIds: linkAsk.answerers }, { id: answeredBy })
       ) {
-        postNote(
-          this.db,
-          sessionId,
-          item,
-          VISUAL_REVIEW_ANSWERERS,
-          `visual-review-refused:${event.dedupeKey}`,
-          this.now(),
-        );
+        if (linkAsk.kind === "risk")
+          postRiskActivity(this.db, {
+            sessionId,
+            item,
+            kind: "thought",
+            body: RISK_ANSWERERS,
+            key: `refused:${event.dedupeKey}`,
+            now: this.now(),
+          });
+        else
+          postNote(
+            this.db,
+            sessionId,
+            item,
+            VISUAL_REVIEW_ANSWERERS,
+            `visual-review-refused:${event.dedupeKey}`,
+            this.now(),
+          );
         await this.flush();
         return "rejected";
       }

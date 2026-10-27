@@ -46,6 +46,14 @@ import {
 import { projectLeadId } from "../scheduler";
 import { BYPASS_REPLY } from "./closeout-recovery";
 import { worktreeBranch } from "./sources";
+import {
+  approveRisk,
+  postRiskActivity,
+  riskDecidedNote,
+  riskReplyHandoff,
+  RISK_REPLY_NOTE,
+  stopForRisk,
+} from "./risk-approval";
 import { decideVisualReview, postNote, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
 
 /** A Paws that only listens on localhost has no link a person can open, so it cannot ask this way. */
@@ -181,7 +189,8 @@ export const BYPASS_REPLY_NOTE =
 /**
  * A signed-in person decided on the item page. Checks `canAnswer` against the
  * delegator and the project lead, writes the Audit history row, closes the
- * ask, posts what was decided, and hands the item on.
+ * ask, posts what was decided, and hands the item on. `stop` is Stop on the
+ * Risk card: the item stops and its pull request stays open.
  */
 export function decideLinkAsk(
   db: Database,
@@ -211,6 +220,8 @@ export function decideLinkAsk(
       return "forbidden";
     if (!LINK_ASK_DECISIONS[linkAsk.kind].includes(input.decision)) return "rejected";
     if (LINK_ASK_NOTE_REQUIRED.has(input.decision) && !input.note) return "rejected";
+    if (input.decision === "stop" && linkAsk.kind === "risk")
+      return stopRiskAsk(db, linkAsk, item, input);
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
     const bypasses = bypassing ? validBypasses(db, linkAsk, input.bypasses ?? []) : null;
     if (bypassing && bypasses === null) return "rejected";
@@ -253,14 +264,25 @@ export function decideLinkAsk(
       now,
     });
     removeLinkAskUrl(db, linkAsk.questionId, now);
-    postNote(
-      db,
-      question.sessionId,
-      item,
-      linkAskDecidedNote(linkAsk, input.decision, input.actor.name, note),
-      `link-ask-decided:${linkAsk.questionId}`,
-      now,
-    );
+    // A risk ask comes after the pull request response, so it posts through the risk gate's keys.
+    if (linkAsk.kind === "risk" && (input.decision === "approve" || input.decision === "changes"))
+      postRiskActivity(db, {
+        sessionId: question.sessionId,
+        item,
+        kind: input.decision === "approve" ? "response" : "thought",
+        body: riskDecidedNote(linkAsk, input.decision, input.actor.name, note),
+        key: `decided:${linkAsk.questionId}`,
+        now,
+      });
+    else
+      postNote(
+        db,
+        question.sessionId,
+        item,
+        linkAskDecidedNote(linkAsk, input.decision, input.actor.name, note),
+        `link-ask-decided:${linkAsk.questionId}`,
+        now,
+      );
     if (
       linkAsk.kind === "screenshots" &&
       (input.decision === "approve" || input.decision === "changes") &&
@@ -275,15 +297,74 @@ export function decideLinkAsk(
     )
       return "answered";
     const current = getWorkItem(db, item.id)!;
+    // The approval binds to the ask's head; it never goes to the agent.
+    if (input.decision === "approve" && linkAsk.kind === "risk") {
+      approveRisk(db, linkAsk, current, now);
+      return "answered";
+    }
     if (input.decision === "approve" && effects[linkAsk.kind]?.(linkAsk, current, now))
       return "answered";
     if (input.decision === "stop") {
       stopAfterRounds(db, current, linkAsk, input.actor.name, now);
       return "answered";
     }
-    handBack(db, current, question, linkAskHandoff(linkAsk, { ...input, note }), now);
+    handBack(
+      db,
+      current,
+      question,
+      linkAskHandoff(linkAsk, { ...input, note }),
+      now,
+      linkAsk.kind === "risk" ? "review" : "answer",
+    );
     return "answered";
   });
+}
+
+/**
+ * Stop on the Risk card, inside the decision's transaction: answers and closes the ask, writes
+ * the Audit history row and stops the item with its pull request left open.
+ */
+function stopRiskAsk(
+  db: Database,
+  linkAsk: LinkAsk,
+  item: WorkItemRecord,
+  input: {
+    questionId: string;
+    note: string | null;
+    answeredBy: string;
+    actor: { workspaceId: string; userId: string; name: string };
+    now: number;
+  },
+): "answered" | "rejected" {
+  const { now } = input;
+  const answered = answerQuestion(db, linkAsk.questionId, {
+    answer: input.note ? `stop: ${input.note}` : "stop",
+    answeredBy: input.answeredBy,
+    eventKey: `dashboard:${crypto.randomUUID()}`,
+    now,
+  });
+  if (answered === null) return "rejected";
+  closeLinkAsk(db, linkAsk.questionId, {
+    reason: "cancelled",
+    ...(input.note ? { note: input.note } : {}),
+    by: input.answeredBy,
+    now,
+  });
+  auditWorkspaceAccess(db, {
+    workspaceId: input.actor.workspaceId,
+    userId: input.actor.userId,
+    action: "decision.risk.stop",
+    subject: [
+      item.linearIdentifier ?? item.id,
+      shortCommit(linkAsk.headCommit),
+      ...(input.note ? [input.note] : []),
+    ].join(" · "),
+    now,
+  });
+  removeLinkAskUrl(db, linkAsk.questionId, now);
+  if (!stopForRisk(db, linkAsk, getWorkItem(db, item.id)!, input.actor.name, now))
+    throw new Error("The item changed before Stop committed");
+  return "answered";
 }
 
 /**
@@ -350,7 +431,8 @@ export function reverifyBypassed(
  * A reply in Linear while a link ask is open. It is guidance for the agent and
  * never approves, bypasses or answers the ask, whatever it says: the ask
  * closes undecided and the item goes back to the agent with the reply. On a
- * visual review the reply is the change request, as Request changes on the page.
+ * visual review or a risk approval the reply is the change request, as
+ * Request changes on the page.
  */
 export function guideLinkAsk(
   db: Database,
@@ -389,6 +471,25 @@ export function guideLinkAsk(
     removeLinkAskUrl(db, linkAsk.questionId, now);
     if (item.sessionKey === question.sessionId)
       applyLinearTurns(db, question.sessionId, [input.eventKey], item.id);
+    if (linkAsk.kind === "risk") {
+      postRiskActivity(db, {
+        sessionId: question.sessionId,
+        item,
+        kind: "thought",
+        body: RISK_REPLY_NOTE,
+        key: `reply:${linkAsk.questionId}`,
+        now,
+      });
+      handBack(
+        db,
+        getWorkItem(db, item.id)!,
+        question,
+        riskReplyHandoff(linkAsk, input.body),
+        now,
+        "review",
+      );
+      return true;
+    }
     const changes =
       linkAsk.kind === "screenshots" &&
       decideVisualReview(db, {
@@ -488,9 +589,11 @@ function handBack(
   question: StoredQuestion,
   body: string,
   now: number,
+  /** A risk change request restarts the item as a changes-requested review does. */
+  reason: "answer" | "review" = "answer",
 ): void {
   const jobId = restart(db, item, {
-    reason: "answer",
+    reason,
     body,
     jobKey: `resume:link-ask:${question.id}`,
     now,

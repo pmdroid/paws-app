@@ -44,6 +44,8 @@ export function applyLinearCommand(
   now = command.requestedAt,
   /** Replaces the default "Stopped." or "Cancelled from Linear." lead of the response. */
   response?: string,
+  /** `keepPullRequest`: the stop leaves the item's pull request open, as Stop on the Risk card does. */
+  options: { keepPullRequest?: boolean } = {},
 ): { applied: boolean } {
   return immediate(db, () => {
     const item = getWorkItem(db, command.itemId);
@@ -65,12 +67,13 @@ export function applyLinearCommand(
     );
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
     const closing =
-      item.state === "merge_queue" ||
-      db
-        .query(
-          "SELECT 1 FROM job WHERE (queue=? OR queue LIKE ?) AND json_extract(payload,'$.itemId')=? LIMIT 1",
-        )
-        .get(JOB_KIND.merge, `${JOB_KIND.merge}.%`, item.id) !== null;
+      options.keepPullRequest !== true &&
+      (item.state === "merge_queue" ||
+        db
+          .query(
+            "SELECT 1 FROM job WHERE (queue=? OR queue LIKE ?) AND json_extract(payload,'$.itemId')=? LIMIT 1",
+          )
+          .get(JOB_KIND.merge, `${JOB_KIND.merge}.%`, item.id) !== null);
     if (closing)
       enqueueJobOnce(db, {
         queue: JOB_KIND.closeStoppedPull,
