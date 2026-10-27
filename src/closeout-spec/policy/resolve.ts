@@ -40,6 +40,8 @@ type PolicyTree = {
 
 export type TreePolicy = {
   skillFiles: ReadonlyMap<string, Uint8Array>;
+  /** Each rule's probe bytes by probe path. Their hashes are already in `files`. */
+  probeFiles: ReadonlyMap<string, Uint8Array>;
   entryPath: string;
   digest: string;
   setup: ResolvedSetup[];
@@ -76,6 +78,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     files: [],
     seenFiles: new Set<string>(),
     skillFiles: new Map(),
+    probeFiles: new Map(),
     ids: new Set<string>(),
   };
   const walked = walk(state, PUBLIC_POLICY_PATH, "", []);
@@ -92,6 +95,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
   });
   const policy: TreePolicy = {
     skillFiles: state.skillFiles,
+    probeFiles: state.probeFiles,
     entryPath: PUBLIC_POLICY_PATH,
     digest: `sha256:${sha256Text(canonical)}`,
     setup: state.setup,
@@ -105,6 +109,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
 
 type WalkState = {
   skillFiles: Map<string, Uint8Array>;
+  probeFiles: Map<string, Uint8Array>;
   tree: PolicyTree;
   retry: RetryPolicy | undefined;
   setup: ResolvedSetup[];
@@ -260,6 +265,7 @@ function resolveRule(state: WalkState, raw: PolicyRule): ResolvedRule | string {
   const paths = checkPathPatterns(raw.paths ?? []);
   if (!paths.ok) return paths.message;
   const sha256 = sha256Hex(read.bytes);
+  state.probeFiles.set(probe, read.bytes);
   if (!state.seenFiles.has(probe)) {
     state.seenFiles.add(probe);
     state.files.push({ path: probe, sha256 });
