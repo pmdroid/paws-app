@@ -28,6 +28,7 @@ import {
   type VisualReviewChanges,
 } from "../evidence";
 import {
+  CHECKOUT_SETTINGS_PATH,
   HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
   handleAgentSettingsRequest,
@@ -41,7 +42,13 @@ import {
   type RepositoryCheckoutFacts,
 } from "../settings";
 import type { SkillResolver, SkillUpdates } from "../skills";
-import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
+import {
+  auditWorkspaceAccess,
+  getArtifact,
+  getWorkItem,
+  listWorkspaceRepositoryNames,
+  workspaceSessionIds,
+} from "../db";
 import {
   handleWorkspaceGitHubIntegration,
   requestWorkspaceSession,
@@ -466,6 +473,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       (await handleAgentSettingsRequest(request, shared)) ??
       (await handleCheckoutSettingsRequest(request, {
         ...shared,
+        ...(path === CHECKOUT_SETTINGS_PATH && secrets.db
+          ? {
+              // The stored GitHub connection and team mappings, not a GitHub call.
+              repos: [
+                ...(shared.repos ?? []),
+                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
+              ],
+            }
+          : {}),
         ...(checkoutFacts ? { inspect: checkoutFacts } : {}),
       })) ??
       (await handleMergeSettingsRequest(request, {
