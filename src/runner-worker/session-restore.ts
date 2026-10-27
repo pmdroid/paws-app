@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { Readable } from "node:stream";
 import { createGunzip } from "node:zlib";
+import { codexRolloutSession } from "./session-snapshot";
 
 /** The bundle's checksum or size is not the one the signed command names. */
 export class SessionIntegrityError extends Error {}
@@ -31,7 +32,7 @@ const HEADER_LIMIT = 8_192;
 const DATA_MARKER = ',"data":"';
 const SEGMENT = /^[A-Za-z0-9._-]{1,255}$/;
 
-export type RestoredClaudeSession = {
+export type RestoredAgentSession = {
   /** Files written, relative to the agent home. */
   files: string[];
   /** Directories created, deepest last. */
@@ -42,18 +43,29 @@ function refuse(message: string): never {
   throw new SessionUnpackError(message);
 }
 
+/** The bundle path's parts, and whether it is the session file the bundle must hold. */
+type AllowedPath = (path: string) => { parts: string[]; session: boolean };
+
+function pathParts(path: string): string[] {
+  const parts = path.split("/");
+  if (
+    path.startsWith("/") ||
+    parts.some((part) => part === "" || part === "." || part === ".." || !SEGMENT.test(part))
+  )
+    refuse("The session bundle holds a path outside the session folder");
+  return parts;
+}
+
 /**
  * The bundle path's parts when it is the session's `.jsonl` or a file in its sidecar folder,
  * under the project folder for `cwd`. Anything else, `..`, absolute paths and credential
  * files are refused.
  */
-function allowedPath(path: string, cwd: string, sessionId: string): string[] {
-  const parts = path.split("/");
+function claudePath(path: string, cwd: string, sessionId: string): string[] {
+  const parts = pathParts(path);
   const sanitized = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   const project = parts[2] ?? "";
   if (
-    path.startsWith("/") ||
-    parts.some((part) => part === "" || part === "." || part === ".." || !SEGMENT.test(part)) ||
     parts[0] !== ".claude" ||
     parts[1] !== "projects" ||
     !(sanitized.length <= CLAUDE_PROJECT_NAME_LIMIT
@@ -69,7 +81,26 @@ function allowedPath(path: string, cwd: string, sessionId: string): string[] {
   return parts;
 }
 
-/** Hashes the whole bundle file and checks it against the signed size and sha256. */
+/**
+ * The bundle path's parts when it is the rollout for `sessionId` in a date folder under
+ * `.codex/sessions`. Anything else, including `auth.json`, `config.toml` and other rollouts,
+ * is refused.
+ */
+function codexPath(path: string, sessionId: string): string[] {
+  const parts = pathParts(path);
+  if (
+    parts.length !== 6 ||
+    parts[0] !== ".codex" ||
+    parts[1] !== "sessions" ||
+    !/^\d{4}$/.test(parts[2]!) ||
+    !/^\d{2}$/.test(parts[3]!) ||
+    !/^\d{2}$/.test(parts[4]!) ||
+    codexRolloutSession(parts[5]!) !== sessionId
+  )
+    refuse("The session bundle holds a path outside the session folder");
+  return parts;
+}
+
 /**
  * The bundle's bytes, read in step with the consumer. Each read is synchronous, so none is in flight
  * when an early exit destroys the stream and closes the descriptor.
@@ -85,6 +116,7 @@ function* bundleChunks(fd: number): Generator<Buffer> {
   }
 }
 
+/** Hashes the whole bundle file and checks it against the signed size and sha256. */
 function verifyBundle(fd: number, sizeBytes: number, sha256: string): void {
   const info = fstatSync(fd);
   if (!info.isFile() || info.size !== sizeBytes)
@@ -102,22 +134,45 @@ function verifyBundle(fd: number, sizeBytes: number, sha256: string): void {
     throw new SessionIntegrityError("The session bundle does not match its checksum");
 }
 
+type BundleSource = { bundle: string; home: string; sizeBytes: number; sha256: string };
+
+/** Unpacks a Claude session bundle from `writeClaudeSessionBundle`, as `restoreSessionBundle`. */
+export function restoreClaudeSessionBundle(
+  options: BundleSource & { cwd: string; sessionId: string },
+): Promise<RestoredAgentSession> {
+  return restoreSessionBundle(options, (path) => {
+    const parts = claudePath(path, options.cwd, options.sessionId);
+    return { parts, session: parts.length === 4 };
+  });
+}
+
 /**
- * Unpacks a Claude session bundle from `writeClaudeSessionBundle` into `home`, at the same paths
- * it was saved from. The whole file is checked against `sha256` first, then each entry is streamed
- * without holding the file in memory. Directories are opened without following links, an existing
+ * Unpacks a Codex bundle from `writeCodexSessionBundle`, as `restoreSessionBundle`: the one
+ * rollout, in the date folder it was saved from. A second entry is refused.
+ */
+export function restoreCodexSessionBundle(
+  options: BundleSource & { sessionId: string },
+): Promise<RestoredAgentSession> {
+  let seen = false;
+  return restoreSessionBundle(options, (path) => {
+    if (seen) refuse("The session bundle holds more than the Codex rollout");
+    seen = true;
+    return { parts: codexPath(path, options.sessionId), session: true };
+  });
+}
+
+/**
+ * Unpacks a session bundle into `home`, at the same paths it was saved from. The whole file is
+ * checked against `sha256` first, then each entry is streamed without holding the file in memory.
+ * Each path must pass `allowed`. Directories are opened without following links, an existing
  * link or non-file at a target path is refused, and files are written with mode 0600 through a
  * staging name. On any failure everything written is removed before the error is thrown.
  */
-export async function restoreClaudeSessionBundle(options: {
-  bundle: string;
-  home: string;
-  cwd: string;
-  sessionId: string;
-  sizeBytes: number;
-  sha256: string;
-}): Promise<RestoredClaudeSession> {
-  const restored: RestoredClaudeSession = { files: [], directories: [] };
+async function restoreSessionBundle(
+  options: BundleSource,
+  allowed: AllowedPath,
+): Promise<RestoredAgentSession> {
+  const restored: RestoredAgentSession = { files: [], directories: [] };
   const source = openSync(options.bundle, constants.O_RDONLY | constants.O_NOFOLLOW);
   let input: Readable | undefined;
   try {
@@ -159,8 +214,8 @@ export async function restoreClaudeSessionBundle(options: {
       }
       if (typeof parsed.path !== "string" || typeof parsed.mode !== "number")
         refuse("The session bundle entry is malformed");
-      const parts = allowedPath(parsed.path, options.cwd, options.sessionId);
-      if (parts.length === 4) sawSession = true;
+      const { parts, session } = allowed(parsed.path);
+      if (session) sawSession = true;
       const parent = directory(parts.slice(0, -1));
       const target = `${parent}/${parts.at(-1)}`;
       try {
@@ -269,7 +324,7 @@ export async function restoreClaudeSessionBundle(options: {
 }
 
 /** Removes restored files and the folders the restore created, never following a link. */
-export function removeRestoredSession(home: string, restored: RestoredClaudeSession): void {
+export function removeRestoredSession(home: string, restored: RestoredAgentSession): void {
   const base = home.replace(/\/+$/, "");
   for (const path of restored.files) {
     try {

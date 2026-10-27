@@ -17,16 +17,27 @@ import { createGzip } from "node:zlib";
 export const SESSION_BUNDLE_FILE = "session.ndjson.gz";
 export const SESSION_METADATA_FILE = "session.json";
 export const CLAUDE_SESSION_TOO_LARGE = "The Claude session is too large to save for a move.";
+export const CODEX_SESSION_TOO_LARGE = "The Codex session is too large to save for a move.";
 
 /** Claude keys a session directory by its cwd and shortens names over 200 characters. */
 const CLAUDE_PROJECT_NAME_LIMIT = 200;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+/** A Codex thread id is a UUID; anything else never names a rollout file. */
+const CODEX_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** `rollout-2026-10-27T00-38-23-<thread id>.jsonl`, as Codex names a session's rollout. */
+const CODEX_ROLLOUT =
+  /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.jsonl$/;
 /** A multiple of 3, so each piece but the last encodes to base64 without padding. */
 const READ_BYTES = 196_608;
 
 export class SessionTooLargeError extends Error {}
 
-export type ClaudeSessionBundle = {
+/** The thread id a Codex rollout file name holds, or undefined for any other name. */
+export function codexRolloutSession(name: string): string | undefined {
+  return CODEX_ROLLOUT.exec(name)?.[1];
+}
+
+export type SessionBundle = {
   /** Relative to the agent home, as written in the bundle. */
   files: string[];
   /** Files next to the session that the allowlist refused. */
@@ -62,6 +73,75 @@ function regular(directory: number, name: string): { fd: number; info: Stats } |
   return null;
 }
 
+type SessionFile = { fd: number; info: Stats };
+
+/**
+ * A gzipped NDJSON bundle written to `output` as entries are added. Each line is
+ * `{path, mode, data}` with `data` in base64; files are read in pieces, never whole.
+ */
+function bundleWriter(output: number, maxBytes: number) {
+  const gzip = createGzip();
+  const digest = createHash("sha256");
+  let size = 0;
+  let tooLarge = false;
+  // Gzip emits data outside any await, so a write failure ends the stream with that error
+  // and the next push, drain or finish rejects with it instead of escaping the worker.
+  let failure: Error | undefined;
+  gzip.on("error", (error: Error) => {
+    failure ??= error;
+  });
+  gzip.on("data", (chunk: Buffer) => {
+    if (tooLarge || failure) return;
+    size += chunk.length;
+    if (size > maxBytes) {
+      tooLarge = true;
+      return;
+    }
+    digest.update(chunk);
+    try {
+      for (let written = 0; written < chunk.length;) written += writeSync(output, chunk, written);
+    } catch (error) {
+      gzip.destroy(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+  const push = async (data: string | Buffer) => {
+    if (failure) throw failure;
+    if (tooLarge) throw new SessionTooLargeError();
+    if (!gzip.write(data)) await once(gzip, "drain");
+  };
+  const files: string[] = [];
+  const buffer = Buffer.alloc(READ_BYTES);
+  return {
+    files,
+    async add(file: SessionFile, path: string) {
+      files.push(path);
+      await push(`{"path":${JSON.stringify(path)},"mode":${file.info.mode & 0o777},"data":"`);
+      while (true) {
+        let filled = 0;
+        while (filled < buffer.length) {
+          const count = readSync(file.fd, buffer, filled, buffer.length - filled, null);
+          if (count === 0) break;
+          filled += count;
+        }
+        if (filled) await push(buffer.subarray(0, filled).toString("base64"));
+        if (filled < buffer.length) break;
+      }
+      await push('"}\n');
+    },
+    async finish(): Promise<{ sizeBytes: number; sha256: string }> {
+      if (failure) throw failure;
+      gzip.end();
+      await finished(gzip);
+      if (failure) throw failure;
+      if (tooLarge) throw new SessionTooLargeError();
+      return { sizeBytes: size, sha256: digest.digest("hex") };
+    },
+    destroy() {
+      gzip.destroy();
+    },
+  };
+}
+
 /**
  * Writes Claude's native files for `sessionId` as gzipped NDJSON to `output`: the session's
  * `<sessionId>.jsonl` under `projects/<sanitized cwd>/` and its `<sessionId>/` sidecar folder.
@@ -76,7 +156,7 @@ export async function writeClaudeSessionBundle(options: {
   sessionId: string;
   output: number;
   maxBytes: number;
-}): Promise<ClaudeSessionBundle | null> {
+}): Promise<SessionBundle | null> {
   if (!SESSION_ID.test(options.sessionId)) throw new Error("Invalid Claude session id");
   const sanitized = options.cwd.replace(/[^a-zA-Z0-9]/g, "-");
   const opened: number[] = [];
@@ -85,7 +165,7 @@ export async function writeClaudeSessionBundle(options: {
     opened.push(fd);
     return fd;
   };
-  const gzip = createGzip();
+  const writer = bundleWriter(options.output, options.maxBytes);
   try {
     const home = openSync(options.home, constants.O_RDONLY | constants.O_DIRECTORY);
     opened.push(home);
@@ -104,7 +184,7 @@ export async function writeClaudeSessionBundle(options: {
             name.startsWith(`${sanitized.slice(0, CLAUDE_PROJECT_NAME_LIMIT)}-`),
           );
     let project: { name: string; fd: number } | undefined;
-    let session: { fd: number; info: Stats } | null = null;
+    let session: SessionFile | null = null;
     for (const name of names) {
       let fd: number;
       try {
@@ -125,56 +205,10 @@ export async function writeClaudeSessionBundle(options: {
     }
     if (!project || !session) return null;
 
-    const digest = createHash("sha256");
-    let size = 0;
-    let tooLarge = false;
-    // Gzip emits data outside any await, so a write failure ends the stream with that error
-    // and the next push, drain or finish rejects with it instead of escaping the worker.
-    let failure: Error | undefined;
-    gzip.on("error", (error: Error) => {
-      failure ??= error;
-    });
-    gzip.on("data", (chunk: Buffer) => {
-      if (tooLarge || failure) return;
-      size += chunk.length;
-      if (size > options.maxBytes) {
-        tooLarge = true;
-        return;
-      }
-      digest.update(chunk);
-      try {
-        for (let written = 0; written < chunk.length;)
-          written += writeSync(options.output, chunk, written);
-      } catch (error) {
-        gzip.destroy(error instanceof Error ? error : new Error(String(error)));
-      }
-    });
-    const push = async (data: string | Buffer) => {
-      if (failure) throw failure;
-      if (tooLarge) throw new SessionTooLargeError();
-      if (!gzip.write(data)) await once(gzip, "drain");
-    };
-    const files: string[] = [];
     let refused = 0;
-    const buffer = Buffer.alloc(READ_BYTES);
-    const add = async (file: { fd: number; info: Stats }, path: string) => {
-      files.push(path);
-      await push(`{"path":${JSON.stringify(path)},"mode":${file.info.mode & 0o777},"data":"`);
-      while (true) {
-        let filled = 0;
-        while (filled < buffer.length) {
-          const count = readSync(file.fd, buffer, filled, buffer.length - filled, null);
-          if (count === 0) break;
-          filled += count;
-        }
-        if (filled) await push(buffer.subarray(0, filled).toString("base64"));
-        if (filled < buffer.length) break;
-      }
-      await push('"}\n');
-    };
     const base = `.claude/projects/${project.name}`;
     try {
-      await add(session, `${base}/${options.sessionId}.jsonl`);
+      await writer.add(session, `${base}/${options.sessionId}.jsonl`);
     } finally {
       closeSync(session.fd);
     }
@@ -194,7 +228,7 @@ export async function writeClaudeSessionBundle(options: {
           continue;
         }
         try {
-          await add(file, `${path}/${entry.name}`);
+          await writer.add(file, `${path}/${entry.name}`);
         } finally {
           closeSync(file.fd);
         }
@@ -209,14 +243,75 @@ export async function writeClaudeSessionBundle(options: {
       else if (code !== "ENOENT") throw error;
     }
     if (sidecar !== undefined) await walk(sidecar, `${base}/${options.sessionId}`);
-    if (failure) throw failure;
-    gzip.end();
-    await finished(gzip);
-    if (failure) throw failure;
-    if (tooLarge) throw new SessionTooLargeError();
-    return { files, refused, sizeBytes: size, sha256: digest.digest("hex") };
+    return { files: writer.files, refused, ...(await writer.finish()) };
   } finally {
-    gzip.destroy();
+    writer.destroy();
+    for (const fd of opened) closeSync(fd);
+  }
+}
+
+/**
+ * Writes Codex's rollout for `sessionId` (its thread id) as a one-entry bundle to `output`, at
+ * `.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`. Codex finds a rollout by
+ * thread id in any date folder, so the newest match wins. Nothing else under `.codex` is read:
+ * not `auth.json`, `config.toml`, Codex's databases or other rollouts. A rollout that is a link
+ * or has more than one link is refused. Returns null when the session has no rollout.
+ * Throws `SessionTooLargeError` once the gzipped bundle passes `maxBytes`.
+ */
+export async function writeCodexSessionBundle(options: {
+  home: string;
+  sessionId: string;
+  output: number;
+  maxBytes: number;
+}): Promise<SessionBundle | null> {
+  if (!CODEX_SESSION_ID.test(options.sessionId)) throw new Error("Invalid Codex session id");
+  const opened: number[] = [];
+  const directory = (parent: number, name: string) => {
+    const fd = child(parent, name, constants.O_DIRECTORY);
+    opened.push(fd);
+    return fd;
+  };
+  const folders = (parent: number, pattern: RegExp) =>
+    readdirSync(`/proc/self/fd/${parent}`, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && pattern.test(entry.name))
+      .map((entry) => entry.name)
+      .sort()
+      .reverse();
+  const writer = bundleWriter(options.output, options.maxBytes);
+  try {
+    const home = openSync(options.home, constants.O_RDONLY | constants.O_DIRECTORY);
+    opened.push(home);
+    let sessions: number;
+    try {
+      sessions = directory(directory(home, ".codex"), "sessions");
+    } catch (error) {
+      if (missing(error)) return null;
+      throw error;
+    }
+    for (const year of folders(sessions, /^\d{4}$/)) {
+      const yearFd = directory(sessions, year);
+      for (const month of folders(yearFd, /^\d{2}$/)) {
+        const monthFd = directory(yearFd, month);
+        for (const day of folders(monthFd, /^\d{2}$/)) {
+          const dayFd = directory(monthFd, day);
+          const name = readdirSync(`/proc/self/fd/${dayFd}`).find(
+            (entry) => codexRolloutSession(entry) === options.sessionId,
+          );
+          if (!name) continue;
+          const rollout = regular(dayFd, name);
+          if (!rollout) throw new Error("The Codex rollout is not a regular file");
+          try {
+            await writer.add(rollout, `.codex/sessions/${year}/${month}/${day}/${name}`);
+          } finally {
+            closeSync(rollout.fd);
+          }
+          return { files: writer.files, refused: 0, ...(await writer.finish()) };
+        }
+      }
+    }
+    return null;
+  } finally {
+    writer.destroy();
     for (const fd of opened) closeSync(fd);
   }
 }

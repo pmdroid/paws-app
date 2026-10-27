@@ -150,6 +150,7 @@ async function fixture(agent: "claude" | "codex" = "claude") {
   }
   return {
     root,
+    home,
     output,
     checkout,
     baseSha,
@@ -221,11 +222,17 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  "an agent without session snapshots hands over with the WIP commit only",
+  "a Codex handover publishes the WIP commit and the session's rollout",
   async () => {
     const context = await fixture("codex");
+    const rollout = `.codex/sessions/2026/10/27/rollout-2026-10-27T00-38-23-${SESSION}.jsonl`;
     const result = await context.execute(
       [
+        {
+          type: "write_file",
+          path: join(context.home, rollout),
+          content: '{"type":"session_meta"}\n',
+        },
         { type: "write_file", path: join(context.checkout, "work.txt"), content: "work\n" },
         context.toolCall("in_progress", 100),
         context.toolCall("completed"),
@@ -234,10 +241,22 @@ test.skipIf(!linux)(
       { handover: context.requestWhen('"toolCallId":"tool-1"') },
     );
     expect(result.run.handedOver).toBe(true);
+    const metadata = JSON.parse(readFileSync(join(context.output, "session.json"), "utf8"));
+    expect(metadata).toMatchObject({
+      agent: "codex",
+      sessionId: SESSION,
+      commitSha: result.candidateSha,
+      turn: 4,
+    });
+    const bundle = gunzipSync(readFileSync(join(context.output, "session.ndjson.gz")))
+      .toString("utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { path: string });
+    expect(bundle.map((entry) => entry.path)).toEqual([rollout]);
     const clone = await context.published(result.candidateSha!);
     expect(readFileSync(join(clone, "work.txt"), "utf8")).toBe("work\n");
-    expect(existsSync(join(context.output, "session.json"))).toBe(false);
-    expect(existsSync(join(context.output, "session.ndjson.gz"))).toBe(false);
+    expect(context.events()).toContain('{"type":"handover","handedOver":true}');
   },
 );
 
