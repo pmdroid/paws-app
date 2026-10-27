@@ -29,7 +29,7 @@ Configure the [HTTPS workspace access](workspace-access.md) environment and call
 ```sh
 bun install
 bun run build:status
-bun run paws --no-tunnel
+bun run paws
 ```
 
 Open the HTTPS dashboard. Sign in as a Linear workspace admin and authorize Paws in the same workspace. In Integrations, connect GitHub, choose the sandbox repository and map it to the sandbox Linear team. Commit the repository's Closeout policy before delegating work. Enroll a runner and connect its coding-agent accounts through Runners.
@@ -44,12 +44,12 @@ Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` from the
 bun run paws login slack
 ```
 
-Open the printed authorization URL and approve the sandbox workspace. The temporary listener uses port `8787`, reached through the HTTPS tunnel. It exits after printing **Slack connected**. Run this command while the Paws server is stopped.
+Open the printed authorization URL and approve the sandbox workspace. The temporary listener uses port `8787`, reached through `PAWS_PUBLIC_URL`. It exits after printing **Slack connected**. Run this command while the Paws server is stopped.
 
 ## 4. Start and check, about two minutes
 
 ```sh
-bun run paws --no-tunnel
+bun run paws
 ```
 
 Open your configured HTTPS dashboard. Confirm the configured repository and connected GitHub account. In Linear, mention or delegate a sandbox issue to Paws and confirm its first activity appears. Check the Linear application's webhook delivery status. In the GitHub App settings, use **Advanced > Redeliver** on its ping and confirm HTTP 200.
