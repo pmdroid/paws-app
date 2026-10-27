@@ -18,7 +18,7 @@ export {
   delegationSnapshotsComplete,
 } from "./dependencies";
 export type { DependencyReadiness, DependencyReads } from "./dependencies";
-export { delegationReadiness, itemReadiness } from "./readiness";
+export { blockingIssues, delegationReadiness, itemReadiness } from "./readiness";
 export type { ReadinessHold, ReadinessPhase } from "./readiness";
 export { createItemReconciler, RELATIONS_POLL_MS, SWEEP_FULL_REFRESH_MS } from "./reconciliation";
 export type { IntakeReads, ItemChanges } from "./reconciliation";

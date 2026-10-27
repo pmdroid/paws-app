@@ -1,10 +1,12 @@
 import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { setJournalSink } from "../src/journal";
 import { listItemHolds, migrate, migrations, openDatabase, saveItemHolds } from "../src/db";
-import { createAdmission, dispatch } from "../src/scheduler";
+import { recordItemDependencies } from "../src/intake";
+import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 import { createLiveStatusProvider } from "../src/web";
-import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
+import { joinFakeWorkspace, workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { tempDb } from "./helpers";
 
 function item(db: Database, id: string, state = "queued", position = 0) {
@@ -60,6 +62,72 @@ test("a blocked item names its blocker once in the journal and once more when it
     expect(listItemHolds(db)).toEqual([]);
     expect(lines).toEqual(["item PAS-368 held: blocked by PAS-367", "item PAS-368 no longer held"]);
   } finally {
+    db.close();
+  }
+});
+
+function externalBlocker(db: Database, state: string) {
+  item(db, "PAS-840");
+  joinFakeWorkspace(db, "delegation");
+  const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
+  const generation =
+    db
+      .query<{ generation: number }, [string]>(
+        "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
+      )
+      .get("PAS-840")?.generation ?? 0;
+  recordItemDependencies(
+    db,
+    { itemId: "PAS-840", workspaceId, expectedGeneration: generation },
+    {
+      edges: [{ blockerLinearIssueId: "issue-OPS-12", blockedLinearIssueId: "issue-PAS-840" }],
+      states: new Map([["issue-OPS-12", state]]),
+      identifiers: new Map([["issue-OPS-12", "OPS-12"]]),
+    },
+  );
+}
+
+for (const state of ["started", "canceled"])
+  test(`an item blocked by a ${state} issue Paws does not run names that issue`, () => {
+    const db = tempDb();
+    const journaled: string[] = [];
+    const restore = setJournalSink((line) => journaled.push(line));
+    try {
+      externalBlocker(db, state);
+      const { lines, log } = journal();
+      expect(dispatch(db, { now: 1, log, admission: createAdmission({ db }) })).toEqual([]);
+      expect(listItemHolds(db)).toEqual([
+        { itemId: "PAS-840", reason: "blocked", blockers: ["OPS-12"] },
+      ]);
+      expect(lines).toEqual(["item PAS-840 held: blocked by OPS-12"]);
+      expect(journaled).toEqual([]);
+    } finally {
+      restore();
+      db.close();
+    }
+  });
+
+test("a blocked hold without an open blocker is journaled as an inconsistency", () => {
+  const db = tempDb();
+  const journaled: string[] = [];
+  const restore = setJournalSink((line) => journaled.push(line));
+  try {
+    item(db, "PAS-841");
+    const blocked: ItemAdmission = {
+      canDispatchDelegation: () => true,
+      canStart: () => ({ ok: false, held: "blocked" }),
+      canMerge: () => ({ ok: false, held: "blocked" }),
+    };
+    const { lines, log } = journal();
+    expect(dispatch(db, { now: 1, log, admission: blocked })).toEqual([]);
+    expect(dispatch(db, { now: 2, log, admission: blocked })).toEqual([]);
+    expect(listItemHolds(db)).toEqual([{ itemId: "PAS-841", reason: "blocked", blockers: [] }]);
+    expect(lines).toEqual(["item PAS-841 held: blocked by another issue"]);
+    expect(journaled).toEqual([
+      "scheduler inconsistency: item PAS-841 is held as blocked but has no open blocker",
+    ]);
+  } finally {
+    restore();
     db.close();
   }
 });

@@ -3942,8 +3942,7 @@ export class Orchestrator {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
         const admitted = this.admission.canMerge(id);
         if (admitted.ok || admitted.held !== "blocked") return null;
-        const issueId = getWorkItem(this.db, id)?.linearIssueId;
-        return issueId ? openBlockers(this.db, issueId) : [];
+        return openBlockers(this.db, id);
       },
       voice: {
         thought: (item, body, key) => this.post(item, "thought", body, key),
