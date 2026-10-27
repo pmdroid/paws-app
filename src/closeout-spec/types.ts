@@ -135,6 +135,28 @@ export type PolicyEvidence = {
   paths?: PolicyPaths;
 };
 
+/** Paws extension to draft 0.1. What happens when a rule's probe fails. */
+export type RuleOnFail = "fix" | "approve";
+
+/**
+ * Paws extension to draft 0.1. An engineering rule checked by a probe: a
+ * script that looks at the base and the candidate and exits 0 or 1. The probe
+ * is read from the policy commit, not the candidate worktree.
+ */
+export type PolicyRule = {
+  id: string;
+  /** Path from the policy root. A regular file, not a symlink. */
+  probe: string;
+  /** Argv prefix the probe path follows. Defaults to `["bun"]`. */
+  exec?: string[];
+  /** One line shown to the agent by `get_closeout`. 1 to 200 characters. */
+  summary: string;
+  paths?: PolicyPaths;
+  failOn: Severity;
+  /** Defaults to `fix`. */
+  onFail?: RuleOnFail;
+};
+
 /** Unknown kinds are not in `policy.schema.json`. See `ResolvedUnsupported`. */
 export type PolicyItem = PolicyCommand | PolicyReview | PolicyEvidence;
 
@@ -168,6 +190,8 @@ export type PolicyDocument = {
   /** At most 128 items. */
   items?: PolicyItem[];
   setup?: PolicySetupStep[];
+  /** Entry policy only. */
+  rules?: PolicyRule[];
 };
 
 /** One file that contributes to the policy digest. `sha256` is 64 lowercase hex characters. */
@@ -274,6 +298,19 @@ export type ResolvedSetup = {
   paths?: string[];
 };
 
+/** A rule with its defaults applied and the SHA-256 of its probe's bytes. */
+export type ResolvedRule = {
+  id: string;
+  probe: string;
+  /** Lowercase hex SHA-256 of the probe file, also listed in `files`. */
+  probeSha256: string;
+  exec: string[];
+  summary: string;
+  paths?: string[];
+  failOn: Severity;
+  onFail: RuleOnFail;
+};
+
 /**
  * Canonical form of a kind other than `command`, `review`, or `setup`:
  * `{ id, kind, gate, supported: false }`, plus `paths` when present.
@@ -332,8 +369,13 @@ export type ResolvedPolicyPresent = {
   setup: ResolvedSetup[];
   /** In execution order, after depth-first import. */
   items: ResolvedRequirement[];
+  /** In file order. Empty or omitted when the entry has no `rules`. */
+  rules?: ResolvedRule[];
   retry?: RetryPolicy;
-  /** Each policy file that was read, and every regular file under each referenced skill, once. */
+  /**
+   * Each policy file that was read, every regular file under each referenced skill, and each
+   * rule's probe, once.
+   */
   files: PolicyFile[];
 };
 
@@ -359,6 +401,8 @@ export type PolicyIdentity = {
   files: PolicyFile[];
   items: ResolvedRequirement[];
   setup?: ResolvedSetup[];
+  /** Omitted when there are no rules, so a policy without rules keeps its digest. */
+  rules?: ResolvedRule[];
   retry?: RetryPolicy;
 };
 
