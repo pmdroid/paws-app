@@ -10,6 +10,8 @@ export const RUNNER_HANDOVER_LIMIT_MS = 120_000;
  */
 export const RUNNER_HANDOVER_FAILURES = ["commit", "snapshot", "publication"] as const;
 export type RunnerHandoverFailure = (typeof RUNNER_HANDOVER_FAILURES)[number];
+/** A checkpoint before a stop has this long to commit and publish the worktree. */
+export const RUNNER_CHECKPOINT_LIMIT_MS = 90_000;
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -221,6 +223,8 @@ export const RunnerCommandSchema = z
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
     /** Stop the run's agent at a safe point and publish what another runner needs to continue. */
     z.strictObject({ ...common, type: z.literal("handover"), runId: id, generation }),
+    /** Publish the run's worktree as a WIP commit now, without stopping its agent. */
+    z.strictObject({ ...common, type: z.literal("checkpoint"), runId: id, generation }),
     z.strictObject({
       ...common,
       type: z.literal("upgrade"),
