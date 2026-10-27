@@ -16,6 +16,7 @@ import { ask, restart } from "./operations";
 import {
   REVIEW_FIX_INSTRUCTION,
   clip,
+  closeoutFindingsNote,
   itemForBranch,
   threadLines,
   type PullReviewCapabilities,
@@ -197,6 +198,7 @@ export async function handlePullComments(
   }
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
   const threads = await caps.threads(item, pullNumber);
+  const findings = await caps.closeoutFindings(item);
   const step = immediate(db, (): PullReviewStep => {
     const current = getWorkItem(db, item.id);
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
@@ -216,7 +218,9 @@ export async function handlePullComments(
       const first = batch[0]!;
       const jobId = restart(db, current, {
         reason: "review",
-        body: `${digest}\n\n${COMMENT_FIX_INSTRUCTION}`,
+        body: [digest, closeoutFindingsNote(findings, batch), COMMENT_FIX_INSTRUCTION]
+          .filter((part) => part !== "")
+          .join("\n\n"),
         jobKey: `review:${current.id}:${first.source}:${first.commentId}`,
         now,
       });
