@@ -147,11 +147,16 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
 
 const ORPHAN_GRACE_MS = 5 * 60_000;
 
+/**
+ * Queue work again for an in-flight item nothing is moving: no pending or running job, no live
+ * runner work, and no job finished within the grace period. A merge in progress fails closed into
+ * a re-verify, as on startup, so Closeout checks the head before the merge job is queued again.
+ */
 export function requeueOrphanedWork(db: Database, now: number): string[] {
   const orphans = db
     .query<{ id: string }, [number, number]>(
       `SELECT i.id FROM work_item i
-       WHERE i.state IN ('running','verifying','recovering') AND i.cancel_requested = 0
+       WHERE i.state IN ('running','verifying','recovering','merge_queue') AND i.cancel_requested = 0
        AND NOT EXISTS (SELECT 1 FROM job j WHERE j.status IN ('pending','running')
          AND json_extract(j.payload,'$.itemId') = i.id)
        AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id = i.current_run_id
@@ -161,8 +166,10 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
     .all(runnerLeaseCutoff(now), now - ORPHAN_GRACE_MS);
   const requeued: string[] = [];
   for (const { id } of orphans) {
-    const item = getWorkItem(db, id);
-    if (!item) continue;
+    const found = getWorkItem(db, id);
+    if (!found) continue;
+    if (found.state === "merge_queue") applyWorkItemEvent(db, found.id, "lease_expired");
+    const item = getWorkItem(db, id) ?? found;
     const key = `orphan:${item.id}:${now}`;
     enqueueJobOnce(db, {
       queue: item.state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume,
