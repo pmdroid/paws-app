@@ -20,7 +20,7 @@ export function detachCommand(name: string, script: string): string {
   return `sudo sh -c ${quote(
     [
       `install -d -o root -g root -m 0700 ${BOOTSTRAP_LOG_DIR} || exit 1`,
-      `if [ -s ${base}.pid ] && [ ! -e ${base}.exit ]; then kill -TERM -- "-$(cat ${base}.pid)" 2>/dev/null || true; fi`,
+      `if [ -s ${base}.pid ] && [ ! -e ${base}.exit ]; then kill -TERM "-$(cat ${base}.pid)" 2>/dev/null || true; fi`,
       `rm -f ${base}.log ${base}.exit ${base}.exit.tmp ${base}.pid`,
       `setsid nohup sh -c ${quote(run)} > ${base}.log 2>&1 < /dev/null & echo $! > ${base}.pid`,
       `cat ${base}.pid`,
@@ -34,7 +34,7 @@ export function pollCommand(name: string): string {
   return `sudo sh -c ${quote(
     [
       `if [ -s ${base}.exit ]; then printf 'exited %s\\n' "$(cat ${base}.exit)"`,
-      `elif [ -s ${base}.pid ] && kill -0 "$(cat ${base}.pid)" 2>/dev/null; then echo running; exit 0`,
+      `elif [ -s ${base}.pid ] && ps -o stat= -p "$(cat ${base}.pid)" 2>/dev/null | grep -q '^[^Z]'; then echo running; exit 0`,
       "else echo lost; fi",
       `tail -c 16384 ${base}.log 2>/dev/null || true`,
     ].join("; "),
@@ -46,7 +46,7 @@ export function stopCommand(name: string): string {
   const base = `${BOOTSTRAP_LOG_DIR}/${name}`;
   return `sudo sh -c ${quote(
     [
-      `if [ -s ${base}.pid ]; then kill -TERM -- "-$(cat ${base}.pid)" 2>/dev/null || true`,
+      `if [ -s ${base}.pid ]; then kill -TERM "-$(cat ${base}.pid)" 2>/dev/null || true`,
       "fi",
       `tail -c 2000 ${base}.log 2>/dev/null || true`,
     ].join("; "),
