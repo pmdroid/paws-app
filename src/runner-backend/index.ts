@@ -98,6 +98,12 @@ export class RemotePreparationTimeout extends Error {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 250;
+/** Above the longest silent tool call seen; a run this quiet must be confirmed by its runner. */
+const DEFAULT_SILENT_RUN_MS = 20 * 60_000;
+/** A confirmation older than this no longer counts: runners heartbeat every 15 seconds. */
+const RUN_CONFIRMATION_MS = 60_000;
+const RUN_LOST_THOUGHT = "The runner lost this run after it restarted; continuing from the branch.";
+const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
@@ -228,12 +234,17 @@ export function createRemoteAgentRunner(options: {
   ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
   now?: () => number;
   pollIntervalMs?: number;
+  /** How long a run may go without a runner event before Paws asks whether the runner has it. */
+  silentRunMs?: number;
   placement?: RunnerPlacement;
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const reservations = new Map<string, string>();
+  /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
+  const toldLost = new Set<string>();
   function usageLimitReset(agent: string, sessionId: string | null): number | null {
     const runnerInScope = `r.status='active' AND r.revoked_at IS NULL AND r.workspace_id IN
       (SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id WHERE s.session_id=?2)`;
@@ -1060,6 +1071,30 @@ export function createRemoteAgentRunner(options: {
           let cursor = attached?.cursor ?? 0;
           let complete: RunnerResult | null = null;
           let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
+          let heardAt = now();
+          const liveness = () =>
+            db
+              .query<{ confirmedAt: number | null; lostAt: number | null }, [string, number]>(
+                "SELECT confirmed_at AS confirmedAt,lost_at AS lostAt FROM runner_work WHERE run_id=? AND generation=?",
+              )
+              .get(assigned.runId, assigned.generation);
+          const lostRun = async (how: string) => {
+            journal(
+              `item ${itemId} run ${assigned.runId} generation ${assigned.generation} lost on runner ${selected.id}: ${how}`,
+            );
+            if (!toldLost.has(itemId)) {
+              toldLost.add(itemId);
+              await emit({ type: "progress", text: `${RUN_LOST_THOUGHT}\n` });
+            }
+            return new RetryableRunnerError(
+              selected.id,
+              RUN_LOST_MESSAGE,
+              transcript,
+              publishedEffects,
+              undefined,
+              true,
+            );
+          };
           while (now() < deadline) {
             signal.throwIfAborted();
             try {
@@ -1067,6 +1102,20 @@ export function createRemoteAgentRunner(options: {
             } catch (error) {
               if (!(error instanceof RunnerWorkFencedError) || !options.placement) throw error;
               signal.throwIfAborted();
+              // The runner's heartbeat no longer names this work, so it is gone, not just quiet.
+              if (liveness()?.lostAt != null) {
+                const recovered = immediate(db, () =>
+                  options.placement?.finished({
+                    commandId: assigned.id,
+                    runnerId: selected.id,
+                    profile,
+                    failure: "heartbeat_lost",
+                    finishedAt: now(),
+                  }),
+                );
+                if (!recovered?.retryable) throw error;
+                throw await lostRun("the runner no longer reports the command");
+              }
               const interrupted = immediate(db, () =>
                 options.placement?.finished({
                   commandId: assigned.id,
@@ -1319,10 +1368,37 @@ export function createRemoteAgentRunner(options: {
                 assigned.generation,
               ]);
             }
+            if (pendingEvents.length) heardAt = now();
             if (complete && pendingEvents.length < 64) break;
             if (pendingEvents.length === 64) continue;
             if (!complete && results.read(assigned.runId, assigned.generation, assigned.id))
               continue;
+            // A long silence is checked against the runner. A question waits on a person, and a
+            // runner that still names the command in its heartbeat keeps a quiet tool call.
+            if (options.placement && !question && now() - heardAt >= silentRunMs) {
+              const confirmedAt = liveness()?.confirmedAt ?? null;
+              if (confirmedAt === null || confirmedAt <= now() - RUN_CONFIRMATION_MS) {
+                const at = now();
+                const recovered = immediate(db, () => {
+                  db.run(
+                    "UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=? AND generation=? AND ended_at IS NULL",
+                    [at, at, assigned.runId, assigned.generation],
+                  );
+                  db.run("DELETE FROM runner_work_grant WHERE run_id=?", [assigned.runId]);
+                  return options.placement?.finished({
+                    commandId: assigned.id,
+                    runnerId: selected.id,
+                    profile,
+                    failure: "heartbeat_lost",
+                    finishedAt: at,
+                  });
+                });
+                if (!recovered?.retryable) throw new Error(RUN_LOST_MESSAGE);
+                throw await lostRun(
+                  `no runner event for ${Math.round((at - heardAt) / 60_000)} minutes and the runner does not confirm the command`,
+                );
+              }
+            }
             if (
               options.placement &&
               (db
