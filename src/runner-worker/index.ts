@@ -1126,7 +1126,7 @@ export async function executeRunnerCommand(
         return false;
       });
     /**
-     * The interrupted turn's WIP commit and, for Claude, its session snapshot. Both always run
+     * The interrupted turn's WIP commit and, for Claude and Codex, its session snapshot. Both always run
      * once the agent stopped; a step that fails or runs out of time names the failure.
      */
     const prepareHandover = async (turn: RunAgentResult): Promise<RunnerHandoverFailure | null> => {
@@ -1158,8 +1158,8 @@ export async function executeRunnerCommand(
       }
       for (const name of [SESSION_METADATA_FILE, SESSION_BUNDLE_FILE])
         rmSync(join(options.outputDirectory, name), { force: true });
-      const agent = runCommand!.profile.agent;
-      if (agent !== "claude" && agent !== "codex") return null;
+      const sessionAgent = runCommand!.profile.agent;
+      if (sessionAgent !== "claude" && sessionAgent !== "codex") return null;
       try {
         if (!turn.sessionId) throw new Error("The agent reported no session to save");
         const sessionId = turn.sessionId;
@@ -1167,7 +1167,7 @@ export async function executeRunnerCommand(
           snapshotAgentSession(
             options,
             job.executionId,
-            agent,
+            sessionAgent,
             {
               sessionId,
               workspacePath: worktree,
