@@ -13,10 +13,31 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  test:
+    name: test (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun test --parallel=4 --timeout=20000 $(bun scripts/test-shard.ts ${{ matrix.shard }} 4)
+
   check:
     name: lint, format, types, test, dashboard build
     runs-on: ubuntu-latest
+    needs: test
+    if: always()
     steps:
+      - if: needs.test.result != 'success'
+        run: |
+          echo "A test shard failed: ${{ needs.test.result }}"
+          exit 1
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
@@ -25,5 +46,4 @@ jobs:
       - run: bun run lint
       - run: bun run fmt:check
       - run: bun run typecheck
-      - run: bun run test
       - run: bun run build:status
