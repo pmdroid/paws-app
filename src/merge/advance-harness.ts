@@ -256,7 +256,7 @@ export async function mergeHarness(
       body: {
         state: "open",
         mergeable: merges,
-        mergeable_state: merges ? "behind" : "dirty",
+        mergeable_state: merges ? (state.upToDateRule ? "behind" : "clean") : "dirty",
         head: { sha: head },
       },
     };
