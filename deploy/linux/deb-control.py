@@ -19,12 +19,22 @@ RESTART = installer.STATE / "debian-services.json"
 def active_services():
     active = []
     for unit in UNITS:
-        result = subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", unit], env=installer.release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
-        if result.returncode == 0:
+        result = subprocess.run(["/usr/bin/systemctl", "is-active", unit], env=installer.release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        # A daemon waiting out RestartSec after a crash is "activating" and exits 3; it is meant to run.
+        if result.returncode == 0 or result.stdout.strip() == b"activating":
             active.append(unit)
         elif result.returncode not in (3, 4):
             raise ValueError("Cannot determine runner service state")
     return active
+
+
+def enabled_services():
+    enabled = []
+    for unit in UNITS:
+        result = subprocess.run(["/usr/bin/systemctl", "is-enabled", unit], env=installer.release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        if result.returncode == 0 and result.stdout.strip() in (b"enabled", b"enabled-runtime"):
+            enabled.append(unit)
+    return enabled
 
 
 def stop(next_version):
@@ -64,7 +74,9 @@ def restore():
         active = []
     if not isinstance(active, list) or any(unit not in {*UNITS, *RETIRED} for unit in active):
         raise ValueError("Invalid runner restart state")
-    start = [unit for unit in active if unit in UNITS]
+    # Enrollment ends with `systemctl enable --now`, so an enabled runner always starts again,
+    # whatever state the upgrade found it in.
+    start = [unit for unit in UNITS if unit in active or unit in enabled_services()]
     if start:
         installer.release.command(["/usr/bin/systemctl", "start", "--", *start])
     RESTART.unlink(missing_ok=True)
