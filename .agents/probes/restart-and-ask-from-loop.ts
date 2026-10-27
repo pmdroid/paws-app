@@ -4,8 +4,8 @@
  * Only `src/loop` sends an item back to the agent or asks a person, through
  * `restart()` and `ask()`; `src/core` owns the edge table. Outside those two,
  * source must not name the `ejected`, `closeout_rejected` or
- * `blocking_question` events, and must not import a question opener from
- * `src/questions`.
+ * `blocking_question` events, and must not import or use a question opener
+ * from `src/questions`.
  *
  * Only what the branch adds counts: a changed file fails when it has such a
  * line that its base version did not have. Tests are not checked.
@@ -94,25 +94,46 @@ function hits(source: string): Hit[] {
   const found: Hit[] = [];
   const add = (offset: number, what: string) => found.push({ ...lineAt(source, offset), what });
   for (const match of source.matchAll(EVENTS)) add(match.index, `names the ${match[2]} event`);
+  // Each use of an imported opener is a hit too, so a new call through an import the base
+  // already had still counts. `typeof` and the import statements themselves are not uses.
+  const statements: [number, number][] = [];
+  const uses: { local: string; imported: string; module: string }[] = [];
   for (const match of source.matchAll(NAMED_IMPORT)) {
+    statements.push([match.index, match.index + match[0].length]);
     if (match[1] || !QUESTIONS_MODULE.test(match[4]!)) continue;
     for (const specifier of match[2]!.split(",")) {
       const name = specifier.trim();
       if (name.startsWith("type ")) continue;
-      const imported = name.split(/\s+as\s+/)[0]!.trim();
-      if (OPENERS.has(imported)) add(match.index, `imports ${imported} from "${match[4]}"`);
+      const [imported, local = imported] = name.split(/\s+as\s+/).map((part) => part.trim());
+      if (!imported || !OPENERS.has(imported)) continue;
+      add(match.index, `imports ${imported} from "${match[4]}"`);
+      if (match[0].startsWith("import")) uses.push({ local: local!, imported, module: match[4]! });
     }
+  }
+  const inStatement = (offset: number) =>
+    statements.some(([start, end]) => offset >= start && offset < end);
+  for (const { local, imported, module } of uses) {
+    const reference = new RegExp(`(?<![\\w$.])${escape(local)}(?![\\w$])`, "g");
+    for (const used of source.matchAll(reference))
+      if (
+        !inStatement(used.index) &&
+        !/\btypeof\s+$/.test(source.slice(Math.max(0, used.index - 16), used.index))
+      )
+        add(used.index, `uses ${imported} from "${module}"`);
   }
   for (const match of source.matchAll(NAMESPACE_IMPORT)) {
     if (!QUESTIONS_MODULE.test(match[3]!)) continue;
-    const namespace = match[1]!.replace(/\$/g, "\\$");
-    const call = new RegExp(`\\b${namespace}\\s*\\.\\s*([\\w$]+)\\s*\\(`, "g");
-    for (const used of source.matchAll(call))
-      if (OPENERS.has(used[1]!)) add(used.index, `calls ${used[1]} from "${match[3]}"`);
+    const member = new RegExp(`(?<![\\w$.])${escape(match[1]!)}\\s*\\.\\s*([\\w$]+)`, "g");
+    for (const used of source.matchAll(member))
+      if (OPENERS.has(used[1]!)) add(used.index, `uses ${used[1]} from "${match[3]}"`);
   }
   for (const match of source.matchAll(DYNAMIC_IMPORT))
     if (QUESTIONS_MODULE.test(match[2]!)) add(match.index, `loads "${match[2]}" at run time`);
   return found;
+}
+
+function escape(identifier: string): string {
+  return identifier.replace(/\$/g, "\\$");
 }
 
 function blob(rev: string, path: string): string {
