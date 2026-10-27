@@ -10,7 +10,20 @@ import {
   type GitHubResponse,
 } from "./types";
 
-const ALLOWED_PERMISSIONS = new Set(["contents", "pull_requests", "checks", "issues", "metadata"]);
+const ALLOWED_PERMISSIONS = new Set([
+  "contents",
+  "pull_requests",
+  "checks",
+  "issues",
+  "metadata",
+  "workflows",
+]);
+
+/**
+ * Installations that refused `workflows` on a write token. Their write tokens are minted without
+ * it for the rest of the process, so an App without the permission costs one extra request.
+ */
+const installationsWithoutWorkflows = new Set<string>();
 
 export type MintedToken = {
   token: string;
@@ -38,18 +51,38 @@ export async function mintInstallationToken(input: {
   assertName(input.repo, "repo");
   const now = input.now ?? new Date();
   const jwt = signAppJwt(input.appId, input.privateKeyPem, now);
-  const response = await input.client.request({
-    method: "POST",
-    path: `/app/installations/${input.installationId}/access_tokens`,
-    token: jwt,
-    body: {
-      repositories: [input.repo],
-      permissions:
-        input.access === "read" ? { contents: "read", metadata: "read" } : INSTALLATION_PERMISSIONS,
-    },
-  });
+  const request = (permissions: Record<string, string>) =>
+    input.client.request({
+      method: "POST",
+      path: `/app/installations/${input.installationId}/access_tokens`,
+      token: jwt,
+      body: { repositories: [input.repo], permissions },
+    });
+  let response: GitHubResponse;
+  if (input.access === "read") {
+    response = await request({ contents: "read", metadata: "read" });
+  } else if (installationsWithoutWorkflows.has(input.installationId)) {
+    response = await request(INSTALLATION_PERMISSIONS);
+  } else {
+    response = await request({ ...INSTALLATION_PERMISSIONS, workflows: "write" });
+    if (refusesPermission(response)) {
+      response = await request(INSTALLATION_PERMISSIONS);
+      if (response.status === 201) installationsWithoutWorkflows.add(input.installationId);
+    }
+  }
   if (response.status !== 201) throw mintFailure(response);
   return assertScopedToken(response.body, input.owner, input.repo, now, input.access);
+}
+
+/**
+ * GitHub answers 422 (or 403 naming the permission) when the installation lacks a requested
+ * permission. The caller retries without `workflows` and remembers it only if that succeeds.
+ */
+function refusesPermission(response: GitHubResponse): boolean {
+  if (response.status === 422) return true;
+  if (response.status !== 403 || isTransient(mintFailure(response))) return false;
+  const message = isRecord(response.body) ? response.body.message : undefined;
+  return typeof message === "string" && /permission/i.test(message);
 }
 
 function mintFailure(response: GitHubResponse): GitHubTokenError {
@@ -98,6 +131,9 @@ export function assertScopedToken(
     }
     if (key === "metadata" && value !== "read") {
       throw new GitHubTokenError("metadata permission must be read");
+    }
+    if (key === "workflows" && value !== "read" && value !== "write") {
+      throw new GitHubTokenError("workflows permission must be read or write");
     }
   }
   if (access === "read") {

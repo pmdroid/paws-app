@@ -16,6 +16,7 @@ import {
   type DoctorProbe,
   type GitHubDoctorFacts,
   type ProbeFacts,
+  workflowsGrant,
 } from "../src/doctor";
 import { LINEAR_WEBHOOK_FIX } from "../src/db";
 import { grokLoginStatus } from "../src/install";
@@ -465,6 +466,29 @@ test("a GitHub App without the comment and review events is reported", () => {
   const events = doctorChecks(missing).find((item) => item.name === "github-app-events");
   expect(events?.ok).toBe(false);
   expect(events?.fix).toContain("Pull request review comment, Issue comment");
+});
+
+test("the installation check reports whether it grants workflows without failing", () => {
+  expect(workflowsGrant({ contents: "write", workflows: "write" })).toBe("grants workflows write");
+  expect(workflowsGrant({ contents: "write" })).toContain("does not grant workflows write");
+  expect(workflowsGrant(undefined)).toContain("does not grant workflows write");
+
+  const without = probe(true);
+  without.facts = {
+    ...without.facts,
+    githubDoctor: {
+      ...githubReady(),
+      installation: {
+        ok: true,
+        detail: `installation 22 on pmdroid/paws-demo; ${workflowsGrant({ contents: "write" })}`,
+      },
+    },
+  };
+  const installation = doctorChecks(without).find(
+    (item) => item.name === "github-app-installation",
+  );
+  expect(installation?.ok).toBe(true);
+  expect(installation?.detail).toContain("cannot change .github/workflows");
 });
 
 test("doctor fails with one actionable line when grok has no auth method", async () => {

@@ -87,7 +87,7 @@ describe("GitHub operation tokens", () => {
     expect(seen[0]?.path).toBe("/app/installations/7/access_tokens");
     expect(seen[0]?.body).toEqual({
       repositories: ["paws-demo"],
-      permissions: INSTALLATION_PERMISSIONS,
+      permissions: { ...INSTALLATION_PERMISSIONS, workflows: "write" },
     });
     await fake.cleanup();
   });

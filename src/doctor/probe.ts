@@ -362,7 +362,10 @@ async function githubDoctorFact(
       };
       return facts;
     }
-    facts.installation = { ok: true, detail: `installation ${installationId} on ${name}` };
+    facts.installation = {
+      ok: true,
+      detail: `installation ${installationId} on ${name}; ${workflowsGrant(body["permissions"])}`,
+    };
     facts.push = { ok: false, detail: `no push access to ${name}` };
     const minted = await mintInstallationToken({
       client,
@@ -390,6 +393,17 @@ async function githubDoctorFact(
     else if (!facts.push.ok) facts.push = { ok: false, detail: `${facts.push.detail}: ${message}` };
   }
   return facts;
+}
+
+/**
+ * Whether the installation grants `workflows`. Information only: without it Paws pushes as
+ * before but cannot change `.github/workflows`.
+ */
+export function workflowsGrant(permissions: unknown): string {
+  const level = isRecord(permissions) ? permissions["workflows"] : undefined;
+  return level === "write"
+    ? "grants workflows write"
+    : "does not grant workflows write, so pushes cannot change .github/workflows";
 }
 
 /** Which of `GITHUB_APP_EVENTS` the App's `GET /app` body does not subscribe to. */
