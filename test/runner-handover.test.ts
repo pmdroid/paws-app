@@ -14,6 +14,7 @@ import {
   consumeWorkspaceBootstrap,
   getWorkItem,
   insertQueuedItem,
+  saveCheckpoint,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -312,6 +313,7 @@ async function setup() {
     return wip;
   }
   return {
+    root,
     db,
     git,
     paws,
@@ -637,4 +639,27 @@ test("a runner release that cannot checkpoint is cancelled at once", async () =>
       .query("SELECT 1 FROM runner_command WHERE kind='checkpoint' AND run_id=?")
       .get(record.runId),
   ).toBeNull();
+});
+
+test("a restarted turn whose saved work cannot be fetched fails instead of starting from an older head", async () => {
+  const { db } = context;
+  const record = context.item();
+  // A checkpoint the runner published that Paws no longer can fetch.
+  const lost = "f".repeat(40);
+  saveCheckpoint(db, record.id, { phase: "running", baseSha: context.base, wipCommit: lost });
+  const running = context.backend.forItem(record.id)({
+    profile: { agent: "claude", model: "model" },
+    role: "implementer",
+    itemId: `display-${record.id}`,
+    runId: record.runId,
+    prompt: "Implement fixture",
+    worktreePath: context.paws,
+    pawsRoot: context.root,
+    networkGit: async () => "",
+  });
+  await expect(running).rejects.toThrow(`could not restore the saved work at ${lost.slice(0, 7)}`);
+  expect(
+    db.query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='run'").get(record.runId),
+  ).toBeNull();
+  expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(lost);
 });

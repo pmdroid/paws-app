@@ -301,3 +301,31 @@ test.skipIf(!linux)(
     expect(existsSync(join(clone, "draft.ts"))).toBe(false);
   },
 );
+
+test.skipIf(!linux)(
+  "an interval checkpoint the runner did not publish is tried again until it is",
+  async () => {
+    const context = await fixture();
+    const stop = new AbortController();
+    let pushed: string | null = null;
+    const running = context.execute({
+      signal: stop.signal,
+      checkpointIntervalMs: 100,
+      // The runtime acknowledges a push; until it does, the push failed or is still out.
+      checkpointPublished: (sequence) => (sequence === 1 ? pushed : null),
+    });
+    await context.until(() => context.events().includes(WORKING));
+    const commit = await context.commit("contract.ts", "export type Finding = {};\n");
+    // Nothing changes, yet the unpublished checkpoint goes out again.
+    await context.until(() => context.checkpoints().length >= 3);
+    pushed = commit;
+    await delay(150);
+    const settled = context.checkpoints().length;
+    await delay(450);
+    stop.abort();
+    await running;
+    // Once published, an unchanged worktree publishes nothing more.
+    expect(context.checkpoints().length).toBe(settled);
+    expect(new Set(context.checkpoints().map((event) => event.sha))).toEqual(new Set([commit]));
+  },
+);
