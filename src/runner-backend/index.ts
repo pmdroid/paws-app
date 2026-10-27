@@ -850,10 +850,18 @@ export function createRemoteAgentRunner(options: {
                 );
                 return undefined;
               }
-              const tip = (
-                await git(["-C", input.worktreePath, "rev-parse", "--verify", `${ref}^{commit}`])
-              ).trim();
-              if (tip === head || (await contains(tip, head))) return undefined;
+              const tip = await git([
+                "-C",
+                input.worktreePath,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                `${ref}^{commit}`,
+              ]).then(
+                (value) => value.trim(),
+                () => "",
+              );
+              if (!tip || tip === head || (await contains(tip, head))) return undefined;
               if (!(await contains(head, tip)))
                 return `The branch ${scoped.item.branchName} on GitHub is at ${tip.slice(0, 7)}, which does not descend from the checkpoint ${head.slice(0, 7)}, so this turn starts from the checkpoint.`;
               await git(["-C", input.worktreePath, "reset", "--hard", tip]);

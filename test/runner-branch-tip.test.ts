@@ -198,10 +198,10 @@ async function scenario(input: {
   });
 
   let assignedBase: string | undefined;
-  let stopped = false;
+  const sim = { stopped: false };
   const handled = new Set<string>();
   const runner = (async () => {
-    while (!stopped) {
+    while (!sim.stopped) {
       work.heartbeat(runnerId);
       for (const envelope of work.commands(runnerId)) {
         const command = JSON.parse(
@@ -294,7 +294,7 @@ async function scenario(input: {
       checkpoint: getWorkItem(db, item.id)?.checkpoint,
     };
   } finally {
-    stopped = true;
+    sim.stopped = true;
     await runner;
     db.close();
     rmSync(root, { recursive: true, force: true });
