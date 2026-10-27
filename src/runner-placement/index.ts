@@ -74,6 +74,12 @@ export type PlacementRequest = {
   pinnedRunnerId?: string;
   /** The runner holding the item's last agent session, for implementer work. */
   session?: { runnerId: string };
+  /**
+   * For implementer work leaving its pinned runner: whether `runnerId` may restore the run's
+   * sealed session snapshot, and whether it runs the agent version that wrote it. Null when it
+   * may not, or there is no snapshot.
+   */
+  restore?: (runnerId: string) => { sameVersion: boolean } | null;
   /** Slots the caller holds per runner for runs it placed but has not assigned yet. */
   reserved?: ReadonlyMap<string, number>;
   /** Reports policy and ranking rejections for this selection, without credentials. */
@@ -107,6 +113,9 @@ export type RunnerPlacement = {
     finishedAt: number;
   }): { retryable: boolean; usageLimit?: { resetsAt: number | null } };
 };
+
+/** Why placement ranked a runner ahead of the others, recorded with its usage. */
+export type PlacementReason = "session_restore";
 
 export {
   createRunnerPlacement,

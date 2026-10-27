@@ -10,6 +10,11 @@ const policyInput = z.strictObject({
   sharing: z.boolean(),
 });
 
+/** Why placement ranked the runner first, in the words the runner list shows. */
+const PREFERRED_BECAUSE: Record<string, string> = {
+  session_restore: "can continue the agent's session",
+};
+
 export function createRunnerPlacementBrowser(options: { db: Database; now?: () => number }) {
   const { db } = options;
   const now = options.now ?? Date.now;
@@ -74,12 +79,18 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
         return json({
           usage: db
             .query<
-              { runnerId: string; agent: string | null; resolvedModel: string | null },
+              {
+                runnerId: string;
+                agent: string | null;
+                resolvedModel: string | null;
+                placementReason: string | null;
+              },
               [string, number, string, string, string]
             >(`SELECT u.command_id AS commandId,u.runner_id AS runnerId,r.name AS runnerName,
           u.owner_user_id AS ownerUserId,u.item_id AS itemId,u.run_id AS runId,u.agent,u.model,
           u.resolved_model AS resolvedModel,u.role,u.purpose,
           u.started_at AS startedAt,u.ended_at AS endedAt,u.outcome,u.output_bytes AS outputBytes,
+          u.placement_reason AS placementReason,
           w.linear_identifier AS identifier,w.title
           FROM runner_execution_usage u JOIN runner r ON r.id=u.runner_id
           LEFT JOIN work_item w ON w.id=u.item_id WHERE r.workspace_id=?
@@ -89,6 +100,9 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
             .map((row) => ({
               ...row,
               modelLabel: modelLabel(row.runnerId, row.agent, row.resolvedModel),
+              preferredBecause: row.placementReason
+                ? (PREFERRED_BECAUSE[row.placementReason] ?? null)
+                : null,
             })),
         });
       }

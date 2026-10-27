@@ -15,6 +15,7 @@ import {
 } from "../src/db";
 import {
   createRunnerPlacement,
+  createRunnerPlacementBrowser,
   LOAD_HISTORY_MS,
   SESSION_GRACE_MS,
   type PlacementRequest,
@@ -113,6 +114,7 @@ async function placeItem(bindTask = true) {
   return {
     root,
     db,
+    placement,
     workspaceId: workspace.id,
     owner,
     now: () => clock,
@@ -554,6 +556,148 @@ test("placement reports every rejected runner and capacity waits include their r
     const error = new RunnerCapacityWait([], undefined, rejected);
     expect(error.message).toContain("own: agent quota cooldown");
     expect(error.message).toContain("second: revoked");
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+/** A run pinned to `gone`, an owner's runner that went offline, so the run must move. */
+async function movingRun() {
+  const placed = await placeItem();
+  placed.db.run(
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('gone',?,?,'gone','active',0,0)",
+    [placed.workspaceId, placed.owner],
+  );
+  placed.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('gone','codex',1)");
+  const run = insertRun(placed.db, { itemId: "item", now: placed.now(), status: "active" });
+  placed.db.run("UPDATE work_item SET current_run_id=? WHERE id='item'", [run.id]);
+  const asked: string[] = [];
+  /** A fake restore check: the listed runners may restore, `same` with the snapshot's version. */
+  const restore =
+    (eligible: Record<string, "same" | "other">) =>
+    (runnerId: string): { sameVersion: boolean } | null => {
+      asked.push(runnerId);
+      return eligible[runnerId] ? { sameVersion: eligible[runnerId] === "same" } : null;
+    };
+  return { ...placed, run, asked, restore, pinnedRunnerId: "gone" };
+}
+
+test("a moved run goes to the idle runner that can continue its agent session", async () => {
+  const placed = await movingRun();
+  try {
+    const { pinnedRunnerId } = placed;
+    expect(await placed.ids({ pinnedRunnerId })).toEqual(["own", "second"]);
+    const restore = placed.restore({ second: "same" });
+    expect(await placed.ids({ pinnedRunnerId, restore })).toEqual(["second", "own"]);
+    expect(placed.asked.toSorted()).toEqual(["own", "second"]);
+    // Both may restore: the runner on the snapshot's agent version goes first.
+    expect(
+      await placed.ids({
+        pinnedRunnerId,
+        restore: placed.restore({ own: "other", second: "same" }),
+      }),
+    ).toEqual(["second", "own"]);
+    expect(
+      await placed.ids({
+        pinnedRunnerId,
+        restore: placed.restore({ own: "same", second: "same" }),
+      }),
+    ).toEqual(["own", "second"]);
+
+    // The usage receipt and the runner history say why the runner was preferred.
+    const profile = { agent: "codex" as const, model: "implementation-model" };
+    await placed.placement.candidates({
+      itemId: "item",
+      profile,
+      role: "implementer",
+      purpose: "work",
+      pinnedRunnerId,
+      restore,
+    });
+    for (const runnerId of ["second", "own"])
+      placed.placement.started({
+        commandId: `command-${runnerId}`,
+        runnerId,
+        itemId: "item",
+        runId: placed.run.id,
+        profile,
+        role: "implementer",
+        purpose: "work",
+        startedAt: placed.now(),
+      });
+    const response = await createRunnerPlacementBrowser({ db: placed.db })(
+      new Request("http://127.0.0.1/api/runners/usage"),
+      {
+        workspaceId: placed.workspaceId,
+        userId: placed.owner,
+        role: "owner",
+        authenticatedAt: placed.now(),
+        teamIds: [],
+      },
+    );
+    const body = (await response!.json()) as {
+      usage: Array<{ runnerId: string; preferredBecause: string | null }>;
+    };
+    expect(
+      body.usage
+        .map(({ runnerId, preferredBecause }) => ({ runnerId, preferredBecause }))
+        .toSorted((a, b) => a.runnerId.localeCompare(b.runnerId)),
+    ).toEqual([
+      { runnerId: "own", preferredBecause: null },
+      { runnerId: "second", preferredBecause: "can continue the agent's session" },
+    ]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a moved run whose restoring runner is busy goes to another runner at once", async () => {
+  const placed = await movingRun();
+  try {
+    const { pinnedRunnerId } = placed;
+    const other = insertRun(placed.db, { itemId: "item", now: placed.now(), status: "active" });
+    placed.db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
+      [other.id, placed.workspaceId, placed.now() + 60 * 60_000],
+    );
+    const restore = placed.restore({ second: "same" });
+    // No wait for the busy runner, now or after the old session grace period.
+    expect(await placed.ids({ pinnedRunnerId, restore })).toEqual(["own", "second"]);
+    placed.tick(SESSION_GRACE_MS);
+    placed.db.run("UPDATE runner SET last_seen_at=0 WHERE id='gone'");
+    expect(await placed.ids({ pinnedRunnerId, restore })).toEqual(["own", "second"]);
+    // Once it is free it goes first again; slots the caller reserved count as busy.
+    placed.db.run("DELETE FROM runner_work WHERE run_id=?", [other.id]);
+    expect(await placed.ids({ pinnedRunnerId, restore })).toEqual(["second", "own"]);
+    expect(
+      await placed.ids({ pinnedRunnerId, restore, reserved: new Map([["second", 1]]) }),
+    ).toEqual(["own", "second"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("new runs, runs on their online pin and reviews rank as before a session restore", async () => {
+  const placed = await movingRun();
+  try {
+    const restore = placed.restore({ second: "same" });
+    // A new run has no pin to move from.
+    expect(await placed.ids({ restore })).toEqual(["own", "second"]);
+    // A run whose pinned runner is online stays there.
+    expect(await placed.ids({ pinnedRunnerId: "own", restore })).toEqual(["own"]);
+    // Only implementer work restores a session.
+    expect(await placed.ids({ pinnedRunnerId: "gone", restore, role: "reviewer" })).toEqual([
+      "own",
+      "second",
+    ]);
+    expect(await placed.ids({ pinnedRunnerId: "gone", restore, purpose: "prepare" })).toEqual([
+      "own",
+      "second",
+    ]);
+    expect(placed.asked).toEqual([]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });

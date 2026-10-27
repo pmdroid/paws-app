@@ -12,7 +12,7 @@ import {
   delegatedLinearUserId,
   workspaceMember,
 } from "../db";
-import type { PlacementRequest, RunnerPlacement } from "./index";
+import type { PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
 import { eligibleRunners, runnerSetupNeed, RUNNER_ONLINE_MS } from "./eligible";
 import { quotaSignal } from "./quota";
 
@@ -44,6 +44,7 @@ export function createRunnerPlacement(options: {
       request: PlacementRequest;
       scope: string;
       policy: string;
+      reason: PlacementReason | null;
       expiresAt: number;
     }
   >();
@@ -313,6 +314,32 @@ export function createRunnerPlacement(options: {
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
         return [{ runner, rank: reviewRank * 10 + (own ? 0 : 1) }];
       });
+      // A run leaving its pinned runner goes first to a free runner that can restore its saved
+      // agent session, the agent version that wrote it ahead of other versions. It never waits
+      // for a busy one: the others follow, and the restore falls back there with its reason.
+      const restore =
+        pinnedRunnerId && !pinnedOnline && input.role === "implementer" && input.purpose === "work"
+          ? input.restore
+          : undefined;
+      const restorers = new Set<string>();
+      if (restore) {
+        const runId = current.item?.currentRunId ?? "";
+        for (const entry of ranked) {
+          const id = entry.runner.id;
+          const target = restore(id);
+          const free =
+            target &&
+            runnerHasCapacity(
+              db,
+              id,
+              at,
+              runId,
+              (input.reserved?.get(id) ?? 0) + runnerSlotsHeldBetweenCommands(db, id, at, runId),
+            );
+          entry.rank += !free ? 200 : target.sameVersion ? 0 : 100;
+          if (free) restorers.add(id);
+        }
+      }
       const session =
         !pinnedRunnerId &&
         input.role === "implementer" &&
@@ -359,6 +386,7 @@ export function createRunnerPlacement(options: {
           request: input,
           scope: binding,
           policy: policy(runner.id, input.profile?.agent),
+          reason: restorers.has(runner.id) ? "session_restore" : null,
           expiresAt: at + 15_000,
         });
       return ranked.map(({ runner }) => ({ id: runner.id, workspaceId: runner.workspaceId }));
@@ -405,8 +433,8 @@ export function createRunnerPlacement(options: {
           );
         }
         db.run(
-          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,role,purpose,started_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,role,purpose,started_at,placement_reason)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
           [
             input.commandId,
             input.runnerId,
@@ -418,6 +446,7 @@ export function createRunnerPlacement(options: {
             input.role,
             input.purpose,
             input.startedAt,
+            admission.reason,
           ],
         );
         admissions.delete(admissionKey(input.runnerId, input));
