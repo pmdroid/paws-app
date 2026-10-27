@@ -973,3 +973,23 @@ a.visual-review-frame:focus-visible {
 .visual-review-stop[open] > p {
   margin: 0.5rem 0;
 }
+
+/* The Risk card on the item page (src/web/src/client/risk.ts). */
+.risk-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.risk-paths > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  min-width: 0;
+}
+.risk-paths code {
+  overflow-wrap: anywhere;
+}
