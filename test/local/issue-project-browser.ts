@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
 // Captures an issue page showing its Linear project and the Issues page filtered by project,
 // at desktop and 390 px, for visual proof.
 // Usage: bun run build:status && bun --no-env-file test/local/issue-project-browser.ts <evidence-directory>
@@ -10,7 +10,7 @@ import { handleStatusRequest } from "../../src/web";
 const directory = resolve(process.argv[2] ?? "issue-project-evidence");
 await mkdir(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const runtimes = { id: "linear-runtimes", name: "Paws runner runtimes with mise" };
 for (const item of snapshot.items) if (item.id === "ENG-101") item.project = runtimes;
@@ -31,7 +31,7 @@ const server = Bun.serve({
       });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "issue-project-fixture",
       })) ?? new Response(null, { status: 404 })
     );

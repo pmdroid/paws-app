@@ -11,6 +11,7 @@ import type {
   StatusSnapshot,
   StatusUsagePause,
   StatusVerdict,
+  StatusVerdictSummary,
 } from "../contract";
 import {
   agentChip,
@@ -127,19 +128,9 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "overview":
       return viewOverview(snapshot);
     case "issues":
-      return viewIssues(
-        snapshot,
-        model.route.id,
-        model.closeout ?? emptyCloseoutView(),
-        model.engineUrl,
-      );
+      return viewIssues(snapshot, model.route.id);
     case "runs":
-      return viewRuns(
-        snapshot,
-        model.route.id,
-        model.closeout ?? emptyCloseoutView(),
-        model.engineUrl,
-      );
+      return viewRuns(snapshot, model.route.id);
     case "mergeQueue":
       return `${pageHeading("mergeQueue")}${renderMergeQueue(snapshot)}`;
     case "questions":
@@ -274,12 +265,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
 
 const EMPTY_ISSUES = "No issues yet. Delegate an issue to Paws in Linear.";
 
-function viewIssues(
-  snapshot: StatusSnapshot,
-  id: string | null,
-  closeout: CloseoutView,
-  engineUrl: string | null,
-): string {
+function viewIssues(snapshot: StatusSnapshot, id: string | null): string {
   const selected = id ? findItem(snapshot, id) : undefined;
   if (id && !selected)
     return `${pageHeading("issues")}<div class="empty">Issue not found. Choose an issue from the list.</div>${entityPicker(
@@ -290,7 +276,8 @@ function viewIssues(
       })),
       "",
     )}`;
-  if (selected) return issuePage(snapshot, selected.id, closeout, engineUrl);
+  // The issue page renders from its own detail; the list does not carry its Closeout attempts.
+  if (selected) return issuePending();
   if (!snapshot.items.length)
     return `${pageHeading("issues")}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   return `${pageHeading("issues")}
@@ -303,6 +290,10 @@ function viewIssues(
     ${projectFilter(snapshot.items)}
     <ul class="issue-list" role="list">${snapshot.items.map((item) => issueRow(snapshot, item)).join("")}</ul>
     <p class="empty issue-filter-empty" hidden>No issues match this filter.</p>`;
+}
+
+function issuePending(): string {
+  return `${pageHeading("issues")}<div class="empty" role="status">Loading issue…</div>`;
 }
 
 /** The value the project filter uses for issues without a Linear project. */
@@ -359,16 +350,10 @@ function relatedIssues(ids: readonly string[]): string {
   return `<div class="row wrap">${ids.map((id) => `<a href="${routeHref({ view: "issues", id })}">${esc(id)}</a>`).join("")}</div>`;
 }
 
-function viewRuns(
-  snapshot: StatusSnapshot,
-  id: string | null,
-  closeout: CloseoutView,
-  engineUrl: string | null,
-): string {
+function viewRuns(snapshot: StatusSnapshot, id: string | null): string {
   const run = id === null ? undefined : snapshot.runs.find((entry) => inRun(entry, id));
-  if (run && findItem(snapshot, run.itemId))
-    return issuePage(snapshot, run.itemId, closeout, engineUrl);
-  return viewIssues(snapshot, id, closeout, engineUrl);
+  if (run && findItem(snapshot, run.itemId)) return issuePending();
+  return viewIssues(snapshot, id);
 }
 
 /**
@@ -376,7 +361,7 @@ function viewRuns(
  * questions, fix rounds, the pull request and merge, and earlier Linear sessions further down.
  */
 function issuePage(
-  snapshot: StatusSnapshot,
+  snapshot: StatusItemDetail,
   id: string,
   closeout: CloseoutView,
   engineUrl: string | null,
@@ -403,12 +388,7 @@ function issuePage(
       : engine === null
         ? transcriptPath
         : new URL(transcriptPath, engine).href;
-  const blocked =
-    "blocks" in snapshot
-      ? (snapshot as StatusItemDetail).blocks
-      : snapshot.items
-          .filter((entry) => entry.id !== item.id && entry.blockers.includes(item.id))
-          .map((entry) => entry.id);
+  const blocked = snapshot.blocks;
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
     <header class="run-heading"><div class="row wrap">${run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
@@ -456,7 +436,7 @@ function issuePage(
 
 /** State, project, runner and agent, and the Linear session it belongs to. */
 function issueFacts(
-  snapshot: StatusSnapshot,
+  snapshot: StatusItemDetail,
   item: StatusItem,
   run: StatusRun | undefined,
 ): string {
@@ -517,7 +497,7 @@ function itemTimelineEntry(entry: StatusItemEvent): string {
 }
 
 /** The pull request and where its merge stands. */
-function pullRequestSection(snapshot: StatusSnapshot, item: StatusItem): string {
+function pullRequestSection(snapshot: StatusItemDetail, item: StatusItem): string {
   const entry = snapshot.mergeQueue.find((candidate) => candidate.itemId === item.id);
   const outcome = snapshot.mergeHistory?.findLast((candidate) => candidate.itemId === item.id);
   const state =
@@ -544,7 +524,11 @@ function pullRequestSection(snapshot: StatusSnapshot, item: StatusItem): string 
 }
 
 /** CI reads that failed on the pull request, and what Paws did next. */
-function fixRounds(snapshot: StatusSnapshot, item: StatusItem, run: StatusRun | undefined): string {
+function fixRounds(
+  snapshot: StatusItemDetail,
+  item: StatusItem,
+  run: StatusRun | undefined,
+): string {
   const rounds = (snapshot.ciRounds ?? []).filter(
     (round) =>
       round.itemId === item.id &&
@@ -567,7 +551,7 @@ function fixRounds(snapshot: StatusSnapshot, item: StatusItem, run: StatusRun | 
 
 /** A Linear session on this issue that a newer one replaced (re-delegation). */
 function earlierAttempt(
-  snapshot: StatusSnapshot,
+  snapshot: StatusItemDetail,
   item: StatusItem,
   index: number,
   attempts: readonly StatusItem[],
@@ -602,7 +586,7 @@ function activityLog(key: string, run: StatusRun): string {
 
 /** The run of this attempt. An issue delegated twice has one run per Linear session. */
 function itemRun(
-  snapshot: StatusSnapshot,
+  snapshot: StatusItemDetail,
   item: StatusItem,
   others: readonly StatusItem[],
 ): StatusRun | undefined {
@@ -617,7 +601,7 @@ function itemRun(
 }
 
 function attemptVerdict(
-  snapshot: StatusSnapshot,
+  snapshot: StatusItemDetail,
   item: StatusItem,
   run: StatusRun | undefined,
 ): StatusVerdict | undefined {
@@ -807,7 +791,11 @@ function phaseStrip(
   return `<ol class="run-stepper${review ? " with-review" : ""}" aria-label="Run progress" title="${esc(waiting ? "Waiting for a visual review. The item is not complete." : phase.detail)}">${marks}</ol>`;
 }
 
-function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: StatusVerdict): string {
+function phasePill(
+  item: StatusItem | undefined,
+  run: StatusRun,
+  verdict?: StatusVerdictSummary,
+): string {
   const recheck =
     verdict?.decision === "running" &&
     item?.state !== "running" &&
@@ -831,7 +819,7 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   return statePill(run.state, runLabel(run.state));
 }
 
-function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdict | undefined {
+function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdictSummary | undefined {
   return snapshot.verdicts.find((entry) => entry.itemId === itemId);
 }
 

@@ -14,7 +14,7 @@ import {
   setCurrentRun,
 } from "../src/db";
 import { createLiveStatusProvider } from "../src/web/src/live/provider";
-import { parseStatusSnapshot } from "../src/web/src/contract";
+import { parseStatusItemDetail, parseStatusSnapshot } from "../src/web/src/contract";
 import { tempDb, tempHome } from "./helpers";
 
 const homes: string[] = [];
@@ -117,9 +117,21 @@ if (!text.includes("fixed")) {
   ]);
 
   const provider = createLiveStatusProvider(db, { now: () => new Date(clock) });
-  const snapshot = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
-  if (!snapshot.ok) throw new Error(snapshot.error);
-  const agent = snapshot.snapshot.agentCloseout?.find((entry) => entry.runId === run.id);
+  const list = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
+  if (!list.ok) throw new Error(list.error);
+  expect(list.snapshot.agentCloseout?.find((entry) => entry.runId === run.id)).toEqual({
+    itemId: "ENG-7",
+    runId: run.id,
+    decision: "accepted",
+    headSha: head,
+    blocked: null,
+    updatedAt: expect.any(String),
+  });
+  const body = JSON.stringify(provider.item("ENG-7"));
+  expect(body).not.toContain(TOKEN);
+  const detail = parseStatusItemDetail(JSON.parse(body));
+  if (!detail.ok) throw new Error(detail.error);
+  const agent = detail.detail.agentCloseout?.find((entry) => entry.runId === run.id);
   expect(agent).toBeDefined();
   expect(agent!.itemId).toBe("ENG-7");
   expect(agent!.maxAttempts).toBe(3);
@@ -139,7 +151,8 @@ if (!text.includes("fixed")) {
   const [first, second] = agent!.attempts;
   const failed = first!.checks.find((check) => check.id === "test")!;
   expect(failed).toMatchObject({ state: "failed", attempt: 1, exitCode: 1 });
-  expect(failed.stdout).toBeNull();
+  expect(failed.stdout ?? null).toBeNull();
+  expect(failed.stderr ?? null).toBeNull();
   const log = provider.checkLog({
     itemId: "ENG-7",
     attempt: first!.number,
@@ -170,7 +183,7 @@ test("a running check reports how long it has run and a later stale report sends
   };
   recordAgentCloseout(db, run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
   const running = createLiveStatusProvider(db, { now: () => new Date(25_000) })
-    .snapshot()
+    .item("ENG-8")!
     .agentCloseout!.find((entry) => entry.runId === run.id)!;
   expect(running.attempts.at(-1)!.checks[0]).toMatchObject({
     state: "running",
@@ -216,7 +229,7 @@ test("a running check reports how long it has run and a later stale report sends
     27_000,
   );
   const stale = createLiveStatusProvider(db)
-    .snapshot()
+    .item("ENG-8")!
     .agentCloseout!.find((entry) => entry.runId === run.id)!;
   expect(stale.attempts.at(-1)!.checks[0]!.state).toBe("pending");
   const stored = listAgentCloseout(db, [run.id])[1]!.progress;
@@ -261,13 +274,15 @@ test("a check still running when its run ended stops at the run's end and points
     },
     610_000,
   );
-  const parsed = parseStatusSnapshot(
+  const parsed = parseStatusItemDetail(
     JSON.parse(
-      JSON.stringify(createLiveStatusProvider(db, { now: () => new Date(3_600_000) }).snapshot()),
+      JSON.stringify(
+        createLiveStatusProvider(db, { now: () => new Date(3_600_000) }).item("ENG-10"),
+      ),
     ),
   );
   if (!parsed.ok) throw new Error(parsed.error);
-  const ended = parsed.snapshot.agentCloseout!.find((entry) => entry.runId === run.id)!;
+  const ended = parsed.detail.agentCloseout!.find((entry) => entry.runId === run.id)!;
   expect(ended.endedAt).toBe(new Date(575_000).toISOString());
   expect(ended.continuesIn).toBe(next.id);
   expect(ended.attempts.at(-1)!.checks[0]).toMatchObject({
@@ -276,7 +291,7 @@ test("a check still running when its run ended stops at the run's end and points
     active: false,
     detail: "Stopped: the run ended before this check finished.",
   });
-  const current = parsed.snapshot.agentCloseout!.find((entry) => entry.runId === next.id)!;
+  const current = parsed.detail.agentCloseout!.find((entry) => entry.runId === next.id)!;
   expect(current.endedAt).toBeUndefined();
   expect(current.continuesIn).toBeUndefined();
   expect(current.attempts.at(-1)!.checks[0]).toMatchObject({
@@ -341,11 +356,11 @@ test("an evidence check takes its state from the report and lets the round finis
     12_000,
   );
   const attemptOf = () => {
-    const parsed = parseStatusSnapshot(
-      JSON.parse(JSON.stringify(createLiveStatusProvider(db).snapshot())),
+    const parsed = parseStatusItemDetail(
+      JSON.parse(JSON.stringify(createLiveStatusProvider(db).item("ENG-9"))),
     );
     if (!parsed.ok) throw new Error(parsed.error);
-    return parsed.snapshot.agentCloseout!.find((entry) => entry.runId === run.id)!.attempts.at(-1)!;
+    return parsed.detail.agentCloseout!.find((entry) => entry.runId === run.id)!.attempts.at(-1)!;
   };
   expect(attemptOf().checks.find((check) => check.id === "visual-proof")).toMatchObject({
     kind: "evidence",

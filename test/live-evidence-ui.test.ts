@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { insertQueuedItem, insertRun, migrate, openDatabase, saveEvidence } from "../src/db";
 import type { EvidenceMediaType } from "../src/db";
 import { handleStatusRequest } from "../src/web";
-import { parseStatusSnapshot, type StatusSnapshot } from "../src/web/src/contract";
+import {
+  parseStatusSnapshot,
+  type StatusItemDetail,
+  type StatusSnapshot,
+} from "../src/web/src/contract";
 import { createLiveStatusProvider } from "../src/web/src/live/provider";
 import { render, type RenderModel } from "../src/web/src/client/render";
 import { filterEvidence, mediaSummary, sizeLabel, timeLabel } from "../src/web/src/client/evidence";
@@ -59,11 +63,29 @@ function snapshotFor(db: ReturnType<typeof seeded>["db"]): StatusSnapshot {
   return parsed.snapshot;
 }
 
-function page(snapshot: StatusSnapshot, route: RenderModel["route"]): string {
+/** A run's issue page, rendered from that issue's detail as the dashboard loads it. */
+function runPage(db: ReturnType<typeof seeded>["db"], runId: string): string {
+  const provider = createLiveStatusProvider(db, {
+    sessionIds: ["visible"],
+    now: () => new Date(1_700_000_010_000),
+  });
+  const snapshot = snapshotFor(db);
+  const itemId = snapshot.runs.find(
+    (run) => run.id === runId || run.attempts?.includes(runId),
+  )!.itemId;
+  return page(snapshot, { view: "issues", id: itemId }, provider.item(itemId));
+}
+
+function page(
+  snapshot: StatusSnapshot,
+  route: RenderModel["route"],
+  detail: StatusItemDetail | null = null,
+): string {
   return render({
     route,
     phase: "ready",
     snapshot,
+    detail,
     error: null,
     engineUrl: null,
     mediaInfo: new Map([
@@ -91,15 +113,12 @@ describe("live evidence", () => {
   test("the run page has an Evidence slot only when the run has evidence", () => {
     const { db, run, later } = seeded();
     const snapshot = snapshotFor(db);
-    expect(page(snapshot, { view: "runs", id: run.id })).toContain(
-      `<div id="evidence-gallery" data-run="${run.id}"></div>`,
-    );
+    expect(runPage(db, run.id)).toContain(`<div id="evidence-gallery" data-run="${run.id}"></div>`);
     expect(filterEvidence(snapshot.evidence!, "video").map((entry) => entry.id)).toEqual([VIDEO]);
+    expect(runPage(db, later.id)).toContain("evidence-gallery");
     insertQueuedItem(db, { id: "bare-item", title: "No evidence", sessionKey: "visible", now: 3 });
     const bare = insertRun(db, { itemId: "bare-item", now: 40, agent: "claude" });
-    const html = page(snapshotFor(db), { view: "runs", id: bare.id });
-    expect(html).not.toContain("evidence-gallery");
-    expect(page(snapshot, { view: "runs", id: later.id })).toContain("evidence-gallery");
+    expect(runPage(db, bare.id)).not.toContain("evidence-gallery");
   });
 
   test("the evidence page shows the file details and the rest of the run", () => {

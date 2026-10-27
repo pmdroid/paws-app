@@ -1,10 +1,10 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { bypassLabel } from "./link-ask";
 import { render, type RenderModel } from "./render";
 
-function withLinkAsk() {
-  const snapshot = statusFixture();
+function withLinkAsk(): FullStatus {
+  const snapshot = fullStatusFixture();
   snapshot.questions[0]!.linkAsk = {
     kind: "bypass",
     head: "7f65200aa1",
@@ -15,14 +15,17 @@ function withLinkAsk() {
   return snapshot;
 }
 
-function model(patch: Partial<RenderModel>): RenderModel {
+/** `snapshot` is the full fixture; the model gets its list and, on an issue page, its detail. */
+function model(
+  patch: Omit<Partial<RenderModel>, "snapshot"> & { snapshot?: FullStatus } = {},
+): RenderModel {
+  const { snapshot = withLinkAsk(), route = { view: "overview" }, ...rest } = patch;
   return {
-    route: { view: "overview" },
     phase: "ready",
-    snapshot: withLinkAsk(),
     error: null,
     engineUrl: null,
-    ...patch,
+    ...rest,
+    ...pageData(snapshot, route),
   };
 }
 

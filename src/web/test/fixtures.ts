@@ -1,11 +1,24 @@
 // Test data for dashboard rendering. Never imported by production code.
-import type { StatusItemEvent, StatusSnapshot } from "../src/contract";
+import {
+  STATUS_API_VERSION,
+  agentCloseoutSummary,
+  verdictSummary,
+  type StatusAgentCloseout,
+  type StatusCheck,
+  type StatusItemDetail,
+  type StatusItemEvent,
+  type StatusSnapshot,
+} from "../src/contract";
+import type { Route } from "../src/client/route";
+
+/** Every field of the fixture items, as the provider reads them before the list trims them. */
+export type FullStatus = Omit<StatusItemDetail, "id" | "blocks">;
 
 const AT = "2026-10-09T22:15:00.000Z";
 const AUDIT = { id: "linear-audit", name: "Audit log export" };
 
-const FIXTURE: StatusSnapshot = {
-  version: 1,
+const FIXTURE: FullStatus = {
+  version: STATUS_API_VERSION,
   source: "live",
   generatedAt: AT,
   project: {
@@ -348,23 +361,9 @@ const FIXTURE: StatusSnapshot = {
       settings: { order: "queue", mainMoved: "ci", rule: null },
     },
   ],
-  events: [
-    {
-      at: "2026-10-09T21:10:00.000Z",
-      level: "warn",
-      text: "Q-40 is still open. DRI Jonas was pinged.",
-    },
-    {
-      at: "2026-10-09T21:05:00.000Z",
-      level: "ok",
-      text: "ENG-101 accepted by Closeout and entered the merge queue.",
-    },
-    { at: "2026-10-09T22:01:00.000Z", level: "warn", text: "ENG-103 asked the team Q-41." },
-    { at: "2026-10-09T20:15:00.000Z", level: "ok", text: "ENG-99 merged (PR #474)." },
-  ],
 };
 
-function agentCloseout(): NonNullable<StatusSnapshot["agentCloseout"]>[number] {
+function agentCloseout(): StatusAgentCloseout {
   const passed = (
     id: string,
     kind: "setup" | "command",
@@ -472,8 +471,57 @@ function agentCloseout(): NonNullable<StatusSnapshot["agentCloseout"]>[number] {
   };
 }
 
+/** The fixture as `GET /api/status` lists it. */
 export function statusFixture(): StatusSnapshot {
+  return statusList(fullStatusFixture());
+}
+
+/** The fixture with every Closeout attempt, check and finding, before the list trims them. */
+export function fullStatusFixture(): FullStatus {
   return structuredClone(FIXTURE);
+}
+
+/** What `GET /api/status` carries of `full`: one Closeout summary per item and run. */
+export function statusList(full: FullStatus): StatusSnapshot {
+  const { verdicts, agentCloseout: agents, ...rest } = full;
+  return {
+    ...rest,
+    verdicts: verdicts.map(verdictSummary),
+    ...(agents ? { agentCloseout: agents.map(agentCloseoutSummary) } : {}),
+  };
+}
+
+/** What `GET /api/status/items/<id>` carries of `full` for the issue `id`. */
+export function itemDetail(full: FullStatus, id: string): StatusItemDetail {
+  const mine = <T extends { itemId: string }>(entries: readonly T[] | undefined): T[] =>
+    (entries ?? []).filter((entry) => entry.itemId === id);
+  const {
+    intake: _intake,
+    linearBudget: _budget,
+    linearWebhook: _webhook,
+    ...rest
+  } = structuredClone(full);
+  return {
+    ...rest,
+    id,
+    blocks: [
+      ...new Set(
+        full.items
+          .filter((entry) => entry.id !== id && entry.blockers.includes(id))
+          .map((entry) => entry.id),
+      ),
+    ],
+    items: rest.items.filter((entry) => entry.id === id),
+    runs: mine(rest.runs),
+    questions: mine(rest.questions),
+    verdicts: mine(rest.verdicts),
+    mergeQueue: mine(rest.mergeQueue),
+    ...(rest.mergeHistory ? { mergeHistory: mine(rest.mergeHistory) } : {}),
+    ...(rest.evidence ? { evidence: mine(rest.evidence) } : {}),
+    ...(rest.agentCloseout ? { agentCloseout: mine(rest.agentCloseout) } : {}),
+    ...(rest.ciRounds ? { ciRounds: mine(rest.ciRounds) } : {}),
+    ...(rest.dead ? { dead: mine(rest.dead) } : {}),
+  };
 }
 
 function item(input: {
@@ -520,7 +568,7 @@ function step(at: string, from: string, to: string, event: string): StatusItemEv
   return { at, kind: "transition", from, to, event, reason: null, actor: null };
 }
 
-type DemoCheck = StatusSnapshot["verdicts"][number]["checks"][number];
+type DemoCheck = StatusCheck;
 
 function ran(base: DemoCheck, result: Partial<DemoCheck>): DemoCheck {
   return { ...base, attempt: 1, ...result };
@@ -557,10 +605,69 @@ function retentionChecks(attempt: number): DemoCheck[] {
 
 function check(
   id: string,
-  kind: StatusSnapshot["verdicts"][number]["checks"][number]["kind"],
-  state: StatusSnapshot["verdicts"][number]["checks"][number]["state"],
+  kind: StatusCheck["kind"],
+  state: StatusCheck["state"],
   command: string,
   detail: string | null,
-): StatusSnapshot["verdicts"][number]["checks"][number] {
+): StatusCheck {
   return { id, kind, state, command, detail };
+}
+
+/**
+ * The data the dashboard has on `route`: the list of `full`, and on an issue page that issue's
+ * detail. A run link opens its issue's page, as the dashboard redirects it.
+ */
+export function pageData(
+  full: FullStatus,
+  route: Route,
+): { route: Route; snapshot: StatusSnapshot; detail: StatusItemDetail | null } {
+  const issue =
+    route.view === "runs" && route.id !== null
+      ? full.runs.find((run) => run.id === route.id || run.attempts?.includes(route.id!))?.itemId
+      : route.view === "issues" && route.id !== null
+        ? route.id
+        : undefined;
+  const shown: Route = issue === undefined ? route : { view: "issues", id: issue };
+  const known = issue !== undefined && full.items.some((entry) => entry.id === issue);
+  return {
+    route: shown,
+    snapshot: statusList(full),
+    detail: known ? itemDetail(full, issue) : null,
+  };
+}
+
+/** A status provider over `full`: the list, each issue's detail for its page, and check logs. */
+export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
+  snapshot(): StatusSnapshot;
+  item(id: string): StatusItemDetail | null;
+  checkLog(request: {
+    itemId: string;
+    attempt: number;
+    checkId: string;
+    run: string | null;
+  }): { stdout: string; stderr: string } | null;
+} {
+  const read = typeof full === "function" ? full : () => full;
+  return {
+    snapshot: () => statusList(read()),
+    item: (id) => (read().items.some((entry) => entry.id === id) ? itemDetail(read(), id) : null),
+    checkLog: ({ itemId, attempt, checkId, run }) => {
+      const status = read();
+      // A verdict without recorded attempts is one attempt, as the issue page shows it.
+      const attempts =
+        run === null
+          ? status.verdicts
+              .filter((verdict) => verdict.itemId === itemId)
+              .flatMap((verdict) =>
+                verdict.attempts?.length
+                  ? verdict.attempts
+                  : [{ number: Math.max(verdict.attempt, 1), checks: verdict.checks }],
+              )
+          : (status.agentCloseout?.find((entry) => entry.runId === run)?.attempts ?? []);
+      const found = attempts
+        .find((entry) => entry.number === attempt)
+        ?.checks.find((entry) => entry.id === checkId);
+      return found ? { stdout: found.stdout ?? "", stderr: found.stderr ?? "" } : null;
+    },
+  };
 }

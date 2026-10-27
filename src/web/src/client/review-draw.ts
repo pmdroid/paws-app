@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import type { StatusSnapshot } from "../contract";
+import type { StatusSnapshotBase } from "../contract";
 import { evidenceFileUrl } from "./evidence";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
@@ -32,7 +32,7 @@ export function drawStrokes(
 }
 
 export function reviewShots(
-  snapshot: StatusSnapshot,
+  snapshot: StatusSnapshotBase,
   questionId: string,
   engineUrl: string | null,
 ): ReviewShot[] {
@@ -237,7 +237,7 @@ export function createReviewDraw(reload: () => Promise<void>) {
   return {
     mount(
       element: HTMLElement,
-      snapshot: StatusSnapshot | null,
+      snapshot: StatusSnapshotBase | null,
       engineUrl: string | null,
       source: string | undefined,
     ) {
