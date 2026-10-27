@@ -8,6 +8,7 @@ import {
   getWorkItem,
   immediate,
   recordReviewEscape,
+  keepMergeQueuePlace,
   type WorkItemRecord,
 } from "../db";
 import type { ask } from "../questions";
@@ -54,6 +55,8 @@ export function returnToAgent(
     admit: (returns: number) => boolean;
     handoff: string;
     now: number;
+    /** Keep the item's merge queue place for when Closeout accepts its rebased head. */
+    keepPlace?: boolean;
     record: (jobId: number, attempt: number) => void;
     announce: (running: WorkItemRecord, attempt: number, key: string) => void;
     /** The failed checks of a `ci-failed` return, kept as a candidate review escape. */
@@ -70,6 +73,7 @@ export function returnToAgent(
     const round = `${latestUserTurn(db, current.id)}:${returns}`;
     input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
     const jobKey = `${input.reason}:${current.id}:${round}`;
+    if (input.keepPlace) keepMergeQueuePlace(db, current.id);
     const jobId = restart(db, current, {
       reason: input.reason === "rebase-conflict" ? "conflict" : "ci",
       body: input.handoff,
