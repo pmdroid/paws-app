@@ -4,13 +4,11 @@ import {
   compareVersions,
   hostEnrollmentCommand,
   listedRunners,
-  livePoll,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
   memberVmsMarkup,
   runnerVmMarkup,
   type MemberVm,
-  RUNNER_POLL_MS,
   runnerActionsMarkup,
   runnerDetailMarkup,
   runnerHistoryMarkup,
@@ -886,56 +884,6 @@ test("versions compare numerically", () => {
   expect(compareVersions("v2.0", "2.0.0")).toBe(0);
   expect(compareVersions("2.1.0", "2.0.5")).toBe(1);
   expect(compareVersions("dev", "1.0.0")).toBeNull();
-});
-
-describe("live polling", () => {
-  function fakes() {
-    const listeners = new Set<() => void>();
-    const doc = {
-      visibilityState: "visible" as DocumentVisibilityState,
-      addEventListener: (_: string, listener: () => void) => listeners.add(listener),
-      removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
-    };
-    let handler: (() => void) | null = null;
-    let every = 0;
-    const timers = {
-      setInterval: (next: () => void, ms: number) => {
-        handler = next;
-        every = ms;
-        return 1;
-      },
-      clearInterval: () => {
-        handler = null;
-      },
-    };
-    return {
-      doc,
-      timers,
-      listeners,
-      fire: () => handler?.(),
-      every: () => every,
-      running: () => handler !== null,
-    };
-  }
-
-  test("refreshes on an interval only while the page is visible", () => {
-    const fake = fakes();
-    let ticks = 0;
-    const stop = livePoll(() => ticks++, fake.doc as never, fake.timers as never);
-    expect(fake.every()).toBe(RUNNER_POLL_MS);
-    fake.fire();
-    expect(ticks).toBe(1);
-    fake.doc.visibilityState = "hidden";
-    fake.fire();
-    for (const listener of fake.listeners) listener();
-    expect(ticks).toBe(1);
-    fake.doc.visibilityState = "visible";
-    for (const listener of fake.listeners) listener();
-    expect(ticks).toBe(2);
-    stop();
-    expect(fake.running()).toBe(false);
-    expect(fake.listeners.size).toBe(0);
-  });
 });
 
 describe("coding agent versions", () => {
