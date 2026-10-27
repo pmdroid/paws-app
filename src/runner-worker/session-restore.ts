@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { Readable } from "node:stream";
 import { createGunzip } from "node:zlib";
-import { codexRolloutSession } from "./session-snapshot";
+import { codexRolloutSession, GROK_EXCLUDED_FILES, grokCwdFolder } from "./session-snapshot";
 
 /** The bundle's checksum or size is not the one the signed command names. */
 export class SessionIntegrityError extends Error {}
@@ -102,6 +102,29 @@ function codexPath(path: string, sessionId: string): string[] {
 }
 
 /**
+ * The bundle path's parts when it is a file in the folder for `sessionId` under
+ * `.grok/sessions/<encoded cwd>`. Anything else, including `auth.json`, `config.toml`,
+ * `mcp_credentials.json`, the cwd folder's own files and other sessions, is refused.
+ */
+function grokPath(path: string, cwd: string, sessionId: string): string[] {
+  const folder = grokCwdFolder(cwd);
+  const parts = path.split("/");
+  // The encoded cwd holds `%`, which no other segment may; it must be this cwd's exactly.
+  pathParts([...parts.slice(0, 2), ...parts.slice(3)].join("/"));
+  if (
+    !folder ||
+    parts.length < 5 ||
+    parts[0] !== ".grok" ||
+    parts[1] !== "sessions" ||
+    parts[2] !== folder ||
+    parts[3] !== sessionId ||
+    GROK_EXCLUDED_FILES.has(parts.at(-1)!)
+  )
+    refuse("The session bundle holds a path outside the session folder");
+  return parts;
+}
+
+/**
  * The bundle's bytes, read in step with the consumer. Each read is synchronous, so none is in flight
  * when an early exit destroys the stream and closes the descriptor.
  */
@@ -158,6 +181,19 @@ export function restoreCodexSessionBundle(
     if (seen) refuse("The session bundle holds more than the Codex rollout");
     seen = true;
     return { parts: codexPath(path, options.sessionId), session: true };
+  });
+}
+
+/**
+ * Unpacks a Grok bundle from `writeGrokSessionBundle`, as `restoreSessionBundle`: the session
+ * folder, under the same encoded cwd it was saved from. The bundle must hold `updates.jsonl`.
+ */
+export function restoreGrokSessionBundle(
+  options: BundleSource & { cwd: string; sessionId: string },
+): Promise<RestoredAgentSession> {
+  return restoreSessionBundle(options, (path) => {
+    const parts = grokPath(path, options.cwd, options.sessionId);
+    return { parts, session: parts.length === 5 && parts[4] === "updates.jsonl" };
   });
 }
 
