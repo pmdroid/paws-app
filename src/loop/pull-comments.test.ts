@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { StoredReviewFinding } from "../closeout";
 import { DEFAULT_IGNORED_COMMENT_BOTS } from "../config";
 import { JOB_KIND } from "../core";
 import {
@@ -32,7 +33,11 @@ import {
   handlePullComments,
   type PullCommentFilter,
 } from "./pull-comments";
-import { handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
+import {
+  CONTRADICTION_INSTRUCTION,
+  handlePullReview,
+  type PullReviewCapabilities,
+} from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 
 const THREADS: FakeReviewThread[] = [
@@ -52,6 +57,25 @@ const THREADS: FakeReviewThread[] = [
     ],
   },
   { resolved: true, path: "src/old.ts", comments: [{ author: "rev", body: "Done already." }] },
+];
+
+const CLOSEOUT_FINDINGS: StoredReviewFinding[] = [
+  {
+    reviewId: "independent-review",
+    severity: "P3",
+    location: "src/rank.ts:30",
+    path: "src/rank.ts",
+    explanation: "The comparator name is unclear.",
+    status: "open",
+  },
+  {
+    reviewId: "independent-review",
+    severity: "P1",
+    location: "src/cache.ts:41",
+    path: "src/cache.ts",
+    explanation: "The cache key ignores the tenant, so tenants read each other's entries.",
+    status: "fixed",
+  },
 ];
 
 const FILTER: PullCommentFilter = {
@@ -82,6 +106,7 @@ function setup(threads = THREADS) {
   let busy = false;
   let limit = 3;
   let clock = 1_000;
+  let findings: StoredReviewFinding[] = [];
   const caps: PullReviewCapabilities = {
     now: () => clock,
     busy: () => busy,
@@ -102,6 +127,7 @@ function setup(threads = THREADS) {
         tokenProvider,
       }),
     fixRoundLimit: () => limit,
+    closeoutFindings: async () => findings,
     session: (item) => item.sessionKey,
     flush: async () => {},
   };
@@ -183,6 +209,7 @@ function setup(threads = THREADS) {
     conversation,
     setBusy: (value: boolean) => (busy = value),
     setLimit: (value: number) => (limit = value),
+    setFindings: (value: StoredReviewFinding[]) => (findings = value),
     tick: (ms: number) => (clock += ms),
   };
 }
@@ -242,6 +269,66 @@ describe("pull request comments restart the item", () => {
     expect(resumeJobs(db)).toHaveLength(1);
     expect(handoff(db)?.handoff).toContain("@cursor[bot]: Bug: the cache key ignores the tenant.");
     expect(handoff(db)?.handoff).toContain("`src/cache.ts:40`");
+  });
+
+  test("a Bugbot comment against a fixed Closeout finding quotes both and asks the team", async () => {
+    const { db, caps, inline, setFindings } = setup();
+    setFindings(CLOSEOUT_FINDINGS);
+    inline({
+      id: 9102,
+      review: 702,
+      author: "cursor[bot]",
+      body: "Drop the tenant from the cache key; it splits the cache for no reason.",
+      path: "src/cache.ts",
+    });
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(findOpenQuestion(db, "eng-1")).toBeNull();
+    const text = handoff(db)!.handoff;
+    expect(text).toContain("Closeout's independent review reported these findings");
+    expect(text).toContain(
+      "- fixed, P1 at `src/cache.ts:41`: The cache key ignores the tenant, so tenants read each other's entries.",
+    );
+    expect(text).toContain("- open, P3 at `src/rank.ts:30`: The comparator name is unclear.");
+    expect(text).toContain("These comments are on a file a Closeout finding names.");
+    expect(text).toContain(
+      '- @cursor[bot] at `src/cache.ts:12`: "Drop the tenant from the cache key; it splits the cache for no reason."',
+    );
+    expect(text).toContain(
+      '  Closeout (fixed) at `src/cache.ts:41`: "The cache key ignores the tenant, so tenants read each other\'s entries."',
+    );
+    expect(text).not.toContain("Closeout (open)");
+    expect(text).toContain(CONTRADICTION_INSTRUCTION);
+    expect(CONTRADICTION_INSTRUCTION).toContain("do not change the code");
+    expect(CONTRADICTION_INSTRUCTION).toContain("ask_team");
+    expect(text).toEndWith(COMMENT_FIX_INSTRUCTION);
+  });
+
+  test("an unrelated Bugbot comment gets Closeout's findings as context only", async () => {
+    const { db, caps, inline, setFindings } = setup();
+    setFindings(CLOSEOUT_FINDINGS);
+    inline({
+      id: 9103,
+      review: 703,
+      author: "cursor[bot]",
+      body: "Bug: the README example uses the old flag.",
+      path: "README.md",
+    });
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(findOpenQuestion(db, "eng-1")).toBeNull();
+    const text = handoff(db)!.handoff;
+    expect(text).toContain("Bug: the README example uses the old flag.");
+    expect(text).toContain("- fixed, P1 at `src/cache.ts:41`");
+    expect(text).not.toContain("These comments are on a file a Closeout finding names.");
+    expect(text).toContain("Comments that do not touch a finding are handled as usual.");
+    expect(text).toEndWith(COMMENT_FIX_INSTRUCTION);
+  });
+
+  test("without stored Closeout findings the handoff has no findings note", async () => {
+    const { db, caps, conversation } = setup();
+    conversation({ id: 3002, author: "pascal", body: "Please also fix the README." });
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(handoff(db)!.handoff).not.toContain("Closeout's independent review");
+    expect(handoff(db)!.handoff).not.toContain(CONTRADICTION_INSTRUCTION);
   });
 
   test("a conversation comment from a person restarts once with its text", async () => {

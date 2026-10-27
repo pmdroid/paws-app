@@ -310,6 +310,17 @@ export function closeoutPolicyDigest(db: Database, itemId: string, head: string)
   );
 }
 
+/** When Closeout first evaluated each head of the item, by head. */
+export function closeoutHeadsStarted(db: Database, itemId: string): Map<string, number> {
+  const rows = db
+    .query<{ head: string; startedAt: number }, [string]>(
+      `SELECT head, MIN(started_at) AS startedAt FROM closeout_progress
+       WHERE item_id = ? GROUP BY head`,
+    )
+    .all(itemId);
+  return new Map(rows.map((row) => [row.head, row.startedAt]));
+}
+
 export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
   const runs = db
     .query<ProgressSql, []>("SELECT * FROM closeout_progress ORDER BY updated_at, id")

@@ -71,6 +71,7 @@ import {
   bypassable,
   readReviewRounds,
   snapshotRetryBaseline,
+  storedReviewFindings,
   loggedSessionCloseout,
   loggedSessionProbe,
   readSessionCloseout,
@@ -177,6 +178,7 @@ import {
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
+  closeoutHeadsStarted,
   getLinkAsk,
   getPullRequestDraft,
   savePullRequestDraft,
@@ -1522,6 +1524,25 @@ export class Orchestrator {
         });
       },
       fixRoundLimit: (item) => this.fixRoundLimit(item),
+      closeoutFindings: async (item) => {
+        const started = closeoutHeadsStarted(this.db, item.id);
+        try {
+          return await storedReviewFindings(
+            itemPathId(item),
+            (head) => started.get(head) ?? 0,
+            this.options.pawsRoot,
+          );
+        } catch (error) {
+          journalCaught(
+            error,
+            "orchestrator.pullFeedbackCapabilities.closeoutFindings",
+            item.id,
+            "the handoff leaves out Closeout's findings",
+            this.options.journal,
+          );
+          return [];
+        }
+      },
       session: (item) => this.activitySession(item),
       flush: () => this.flush(),
     };

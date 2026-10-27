@@ -11,6 +11,7 @@ import {
   type PullReviewState,
   type WorkItemRecord,
 } from "../db";
+import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
 import { ask, restart } from "./operations";
 import { worktreeBranch } from "./sources";
@@ -116,6 +117,8 @@ export type PullReviewCapabilities = {
   /** Unresolved review threads on the pull request. Throws when GitHub cannot be read. */
   threads(item: WorkItemRecord, pullNumber: number): Promise<ReviewThread[]>;
   fixRoundLimit(item: WorkItemRecord): number;
+  /** The item's stored Closeout review findings. Empty when none can be read. */
+  closeoutFindings(item: WorkItemRecord): Promise<readonly StoredReviewFinding[]>;
   session(item: WorkItemRecord): string | null;
   flush(): Promise<void>;
 };
@@ -154,6 +157,7 @@ export async function handlePullReview(
   }
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
   const threads = await caps.threads(item, review.pullNumber);
+  const findings = await caps.closeoutFindings(item);
   const step = immediate(db, (): PullReviewStep => {
     const current = getWorkItem(db, item.id);
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
@@ -164,7 +168,21 @@ export async function handlePullReview(
     if (rounds < limit) {
       const jobId = restart(db, current, {
         reason: "review",
-        body: `${digest}\n\n${REVIEW_FIX_INSTRUCTION}`,
+        body: [
+          digest,
+          closeoutFindingsNote(
+            findings,
+            threads.map((thread) => ({
+              path: thread.path,
+              line: thread.line,
+              author: thread.comments[0]?.author ?? null,
+              body: thread.comments[0]?.body ?? "",
+            })),
+          ),
+          REVIEW_FIX_INSTRUCTION,
+        ]
+          .filter((part) => part !== "")
+          .join("\n\n"),
         jobKey: `review:${current.id}:${review.reviewId}`,
         now: caps.now(),
       });
@@ -205,6 +223,60 @@ export function reviewDigest(review: PullReviewRecord, threads: readonly ReviewT
     threads.forEach((thread, index) => lines.push(threadLines(thread, index + 1)));
   }
   return clip(lines.join("\n"), DIGEST_CHARS);
+}
+
+/** A pull request comment that may contradict a Closeout finding. */
+export type HandoffComment = {
+  path: string | null;
+  line: number | null;
+  author: string | null;
+  body: string;
+};
+
+/**
+ * Closeout's stored review findings and what the agent does when a comment contradicts one, as
+ * the restart handoff for a pull request comment or review reads them. A comment on a file a
+ * finding names is quoted next to that finding. Empty without findings.
+ */
+export function closeoutFindingsNote(
+  findings: readonly StoredReviewFinding[],
+  comments: readonly HandoffComment[],
+): string {
+  if (findings.length === 0) return "";
+  const lines = [
+    "Closeout's independent review reported these findings before the pull request opened. A fixed finding was changed because of the review; an open one was reported by the latest review round and left as it is.",
+    ...findings.map(
+      (finding) =>
+        `- ${finding.status}, ${finding.severity} at \`${finding.location}\`: ${finding.explanation}`,
+    ),
+  ];
+  const overlaps = comments.flatMap((comment) =>
+    findings
+      .filter((finding) => samePath(comment.path, finding.path))
+      .map((finding) => ({ comment, finding })),
+  );
+  if (overlaps.length > 0) {
+    lines.push("", "These comments are on a file a Closeout finding names. Compare both sides:");
+    for (const { comment, finding } of overlaps)
+      lines.push(
+        `- ${comment.author ? `@${comment.author}` : "Someone"} at \`${comment.path}${comment.line === null ? "" : `:${comment.line}`}\`: ${quote(comment.body)}`,
+        `  Closeout (${finding.status}) at \`${finding.location}\`: ${quote(finding.explanation)}`,
+      );
+  }
+  lines.push("", CONTRADICTION_INSTRUCTION);
+  return lines.join("\n");
+}
+
+export const CONTRADICTION_INSTRUCTION =
+  "If a comment asks to undo or contradict a fix made for a Closeout finding, or contradicts an open finding, do not change the code for it. Ask the team with ask_team in this session, quote the comment and the finding, and wait for the answer. A comment from a person wins once that person confirms it in the session. Comments that do not touch a finding are handled as usual.";
+
+function samePath(comment: string | null, finding: string | null): boolean {
+  if (!comment || !finding) return false;
+  return comment === finding || comment.endsWith(`/${finding}`) || finding.endsWith(`/${comment}`);
+}
+
+function quote(text: string): string {
+  return `"${clip(text.replace(/\s+/g, " ").trim(), 400)}"`;
 }
 
 export function threadLines(thread: ReviewThread, index: number): string {
