@@ -77,6 +77,18 @@ export function riskLine(risk: RiskClassification | null): string {
   return `Risk: high — ${listed}${more > 0 ? ` and ${more} more` : ""}`;
 }
 
+/**
+ * Why a person's approval of `approvedHead` carried over to a later head: "The approval of
+ * 4b317d5 carried over: none of the files the fix changed since then is a high-risk path
+ * (`test/x.test.ts`)."
+ */
+export function riskCarryOverReason(approvedHead: string, changed: readonly string[]): string {
+  const files = changed.length
+    ? ` (${riskLine({ tier: "high", paths: [...changed] }).replace(/^Risk: high — /, "")})`
+    : "";
+  return `The approval of ${approvedHead.slice(0, 7)} carried over: none of the files the fix changed since then is a high-risk path${files}.`;
+}
+
 function codeSpan(path: string): string {
   const longest = Math.max(0, ...(path.match(/`+/g) ?? []).map((run) => run.length));
   const fence = "`".repeat(longest + 1);

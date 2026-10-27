@@ -26,8 +26,21 @@ export async function classifyCandidateRisk(input: {
   )
     .split("\0")
     .filter((path) => path !== "");
+  return classifyPathsRisk({ ...input, changed });
+}
+
+/**
+ * The tier of a list of changed paths, such as the files a fix changed since an approved head,
+ * against the settings globs and the `.paws/high-risk-paths` file at `base`.
+ */
+export async function classifyPathsRisk(input: {
+  git: RiskGit;
+  base: string;
+  changed: readonly string[];
+  settingsGlobs: readonly string[];
+}): Promise<RiskClassification> {
   const fileGlobs = await baseFileGlobs(input.git, input.base);
-  return classifyRisk(changed, [...input.settingsGlobs, ...fileGlobs]);
+  return classifyRisk(input.changed, [...input.settingsGlobs, ...fileGlobs]);
 }
 
 async function baseFileGlobs(git: RiskGit, base: string): Promise<string[]> {

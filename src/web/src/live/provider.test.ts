@@ -31,6 +31,7 @@ import {
   upsertCloseoutStep,
   type CloseoutStepWrite,
   saveCandidateRisk,
+  saveRiskFix,
 } from "../../../db";
 import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
@@ -632,6 +633,95 @@ describe("live status provider", () => {
       summary: "",
       findings: [],
     });
+  });
+
+  test("a risk ask after an approval lists only the fix's high-risk paths", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const head = "9c1d2e3ff0a1b2c3";
+    const item = insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
+    beginImplementRun(db, item.id, now);
+    applyWorkItemEvent(db, item.id, "blocking_question");
+    db.run(
+      "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
+      [item.id, now],
+    );
+    insertLinkAsk(db, {
+      questionId: "q-risk",
+      itemId: item.id,
+      kind: "risk",
+      headCommit: head,
+      link: "https://paws.example/status/issues/ENG-6#risk",
+      title: "High-risk changes in 9c1d2e3 need your approval.",
+      detail: "High-risk paths the fix changed since the approved 4b317d5: `src/auth/session.ts`.",
+      answerers: ["delegator"],
+      createdAt: now,
+    });
+    saveCandidateRisk(db, {
+      itemId: item.id,
+      head,
+      base: "base",
+      tier: "high",
+      paths: ["src/auth/session.ts", "src/auth/token.ts"],
+      classifiedAt: now,
+    });
+    saveRiskFix(db, {
+      itemId: item.id,
+      head,
+      approvedHead: "4b317d5cc2",
+      approvedQuestionId: "q-approved",
+      changed: ["src/auth/session.ts", "test/x.test.ts"],
+      paths: ["src/auth/session.ts"],
+      recordedAt: now,
+    });
+    const snapshot = createLiveStatusProvider(db).snapshot();
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    expect(parsed.ok && parsed.snapshot.questions[0]?.linkAsk?.risk).toEqual({
+      paths: ["src/auth/session.ts"],
+      since: "4b317d5cc2",
+      summary: "",
+      findings: [],
+    });
+    expect(snapshot.items[0]?.riskCarryOver).toBeUndefined();
+  });
+
+  test("an item whose latest head kept the approval carries it, with the approved head", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const item = insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now });
+    const risk = (head: string, at: number) =>
+      saveCandidateRisk(db, {
+        itemId: item.id,
+        head,
+        base: "base",
+        tier: "high",
+        paths: ["src/auth/session.ts"],
+        classifiedAt: at,
+      });
+    risk("9c1d2e3ff0", now);
+    saveRiskFix(db, {
+      itemId: item.id,
+      head: "9c1d2e3ff0",
+      approvedHead: "4b317d5cc2",
+      approvedQuestionId: "q-approved",
+      changed: ["test/x.test.ts"],
+      paths: [],
+      recordedAt: now,
+    });
+    const carried = {
+      head: "9c1d2e3ff0",
+      approvedHead: "4b317d5cc2",
+      changed: ["test/x.test.ts"],
+      reason:
+        "The approval of 4b317d5 carried over: none of the files the fix changed since then is a high-risk path (`test/x.test.ts`).",
+    };
+    const parsed = parseStatusSnapshot(
+      JSON.parse(JSON.stringify(createLiveStatusProvider(db).snapshot())),
+    );
+    expect(parsed.ok && parsed.snapshot.items[0]?.riskCarryOver).toEqual(carried);
+    // A newer head has not been compared yet, so the old carry-over no longer shows.
+    risk("aaaa111122", now + 1);
+    expect(createLiveStatusProvider(db).snapshot().items[0]?.riskCarryOver).toBeUndefined();
   });
 
   test("the merge queue lists each repository's tasks in order, with what each waits for", () => {

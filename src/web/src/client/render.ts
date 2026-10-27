@@ -46,7 +46,7 @@ import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
-import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard } from "./link-ask";
+import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
 
 export interface RenderModel {
   route: Route;
@@ -414,6 +414,7 @@ function issuePage(
           : `<section class="closeout-result blocked"><div class="min-w-0"><h2>${esc(question.title)}</h2><p>${esc(plainTask(question.body))}</p><div class="row wrap">${linkList(question.links)}</div></div></section>`,
       )
       .join("")}
+    ${riskCarryOverSection(snapshot, item)}
     ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
     ${verdict ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>` : ""}
     ${verdict ? reviewFindingsSection(verdict, closeout) : ""}
@@ -434,6 +435,15 @@ function issuePage(
     <section class="issue-relations" aria-label="Related issues"><h2>Blocked by</h2>${relatedIssues(item.blockers)}<h2>Blocks</h2>${relatedIssues(blocked)}</section>
     ${earlier.map((entry, index) => earlierAttempt(snapshot, entry, index, attempts)).join("")}
   </article>`;
+}
+
+/** The kept approval, unless a risk ask on the item is open again. */
+function riskCarryOverSection(snapshot: StatusItemDetail, item: StatusItem): string {
+  if (!item.riskCarryOver) return "";
+  const asking = snapshot.questions.some(
+    (question) => question.itemId === item.id && question.linkAsk?.kind === "risk",
+  );
+  return asking ? "" : riskCarryOverCard(item.riskCarryOver);
 }
 
 /** State, project, runner and agent, and the Linear session it belongs to. */

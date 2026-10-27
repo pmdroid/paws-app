@@ -42,6 +42,9 @@ import type {
 } from "../../../db";
 import {
   getCandidateRisk,
+  getRiskFix,
+  latestCandidateRisk,
+  latestRiskFix,
   getCloseoutRecovery,
   getLinkAsk,
   listCloseoutBypassChecks,
@@ -84,7 +87,7 @@ import {
   type CloseoutRound,
   type CloseoutStepRecord,
 } from "../../../db";
-import { isTerminalWorkItemState } from "../../../core";
+import { isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
 import { reviewsOf } from "./reviews";
@@ -122,6 +125,7 @@ import {
   type StatusSnapshotBase,
   type StatusVerdict,
   type StatusVisualReview,
+  type StatusRiskCarryOver,
   type VerdictDecision,
 } from "../contract";
 
@@ -760,6 +764,28 @@ function toItem(
     ...(mergeQueue ? { mergeQueue } : {}),
     ...(githubQueue ? { githubQueue } : {}),
     ...visualReviewsOf(db, record),
+    ...riskCarryOverOf(db, record),
+  };
+}
+
+/**
+ * The approval a fix kept: the item's latest classified head carried over a person's approval of
+ * an earlier head because the fix changed no high-risk path.
+ */
+function riskCarryOverOf(
+  db: Database,
+  record: WorkItemRecord,
+): { riskCarryOver?: StatusRiskCarryOver } {
+  const fix = latestRiskFix(db, record.id);
+  if (fix === null || fix.paths.length > 0) return {};
+  if (latestCandidateRisk(db, record.id)?.head !== fix.head) return {};
+  return {
+    riskCarryOver: {
+      head: fix.head,
+      approvedHead: fix.approvedHead,
+      changed: fix.changed,
+      reason: riskCarryOverReason(fix.approvedHead, fix.changed),
+    },
   };
 }
 
@@ -1063,6 +1089,9 @@ function withRiskDetail(
   if (ask?.kind !== "risk") return question;
   const itemId = getLinkAsk(db, question.id)?.itemId;
   const risk = itemId ? getCandidateRisk(db, itemId, ask.head) : null;
+  // After an approval the ask lists only what the fix changed since the approved head.
+  const fix = itemId ? getRiskFix(db, itemId, ask.head) : null;
+  const since = fix !== null && fix.paths.length > 0 ? fix : null;
   const verdict = verdicts.findLast(
     (entry) => entry.itemId === question.itemId && entry.headSha === ask.head,
   );
@@ -1071,7 +1100,8 @@ function withRiskDetail(
     linkAsk: {
       ...ask,
       risk: {
-        paths: risk?.paths ?? [],
+        paths: since?.paths ?? risk?.paths ?? [],
+        ...(since ? { since: since.approvedHead } : {}),
         summary: verdict?.summary ?? "",
         findings: (verdict?.checks ?? []).flatMap((check) =>
           check.kind === "review" && check.findings?.trim()

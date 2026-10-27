@@ -160,6 +160,7 @@ export {
   classifyRisk,
   highRiskGlobError,
   parseHighRiskPathsFile,
+  riskCarryOverReason,
   riskLine,
   type RiskClassification,
   type RiskTier,

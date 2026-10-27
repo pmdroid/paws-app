@@ -5,6 +5,7 @@ export {
   policyFixBudget,
   policyCheckPaths,
   approvalsAtHead,
+  fixChangedPaths,
   samePatch,
   reviewRequirements,
   trustedPolicyFiles,
