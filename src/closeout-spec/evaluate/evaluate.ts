@@ -584,6 +584,9 @@ function judgeRule(
   const judged = applyExec(item, record.exec, false, attempt);
   if (judged.state !== "failed") return judged;
   const message = judged.message.replace(/^command /, "probe ");
+  // A probe that never finished judged nothing, so its failure is not a finding.
+  if (record.exec.timedOut || record.exec.exitCode === null)
+    return row(item, "failed", `${message}; the rule was not judged: ${item.summary}`, attempt);
   return row(item, "failed", `${message}; ${item.failOn} finding: ${item.summary}`, attempt);
 }
 
