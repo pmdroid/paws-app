@@ -7,6 +7,7 @@ const LABELS: Record<string, string> = {
   pause: "Pause item",
   resume: "Resume item",
   resume_now: "Resume now",
+  clear_stuck_agent: "Clear stuck agent",
 };
 
 export function createExecutionControls(reload: () => Promise<void>) {
@@ -16,20 +17,21 @@ export function createExecutionControls(reload: () => Promise<void>) {
   let actions: string[] = [];
   let pending = "";
   let message = "";
+  let notice = "";
   let confirming = false;
   let painted = "";
   function paint() {
     if (!root) return;
-    root.hidden = actions.length === 0;
+    root.hidden = actions.length === 0 && !notice;
     const html = `<div class="row wrap" aria-label="Item execution controls" aria-busy="${Boolean(pending)}">${actions
       .filter((action) => action !== "stop")
       .map(
         (action) =>
-          `<button class="btn sm" type="button" data-control="${action}"${pending ? ' disabled=""' : ""}>${pending === action ? `${action === "pause" ? "Pausing" : "Resuming"}…` : LABELS[action]}</button>`,
+          `<button class="btn sm" type="button" data-control="${action}"${pending ? ' disabled=""' : ""}>${pending === action ? `${action === "pause" ? "Pausing" : action === "clear_stuck_agent" ? "Clearing" : "Resuming"}…` : LABELS[action]}</button>`,
       )
       .join(
         "",
-      )}${actions.includes("stop") ? `<details${confirming ? ' open=""' : ""}><summary class="btn sm">${actions.includes("resume_now") ? "Stop" : "Stop this item"}</summary><p>Stop this item and keep its branch?</p><button class="btn sm" type="button" data-control="stop"${pending ? ' disabled=""' : ""}>${pending === "stop" ? "Stopping…" : "Confirm stop"}</button></details>` : ""}</div><p class="muted" role="status">${esc(message)}</p>`;
+      )}${actions.includes("stop") ? `<details${confirming ? ' open=""' : ""}><summary class="btn sm">${actions.includes("resume_now") ? "Stop" : "Stop this item"}</summary><p>Stop this item and keep its branch?</p><button class="btn sm" type="button" data-control="stop"${pending ? ' disabled=""' : ""}>${pending === "stop" ? "Stopping…" : "Confirm stop"}</button></details>` : ""}</div>${notice ? `<p class="muted">${esc(notice)}</p>` : ""}<p class="muted" role="status">${esc(message)}</p>`;
     if (painted === html) return;
     painted = html;
     renderMarkup(root, html);
@@ -67,8 +69,11 @@ export function createExecutionControls(reload: () => Promise<void>) {
               ? "Item paused."
               : action === "resume_now"
                 ? "Paws is trying the agent again."
-                : "Item resumed.";
+                : action === "clear_stuck_agent"
+                  ? "Paws will continue with the waiting replies."
+                  : "Item resumed.";
         actions = [];
+        notice = "";
       }
       pending = "";
       await reload();
@@ -92,6 +97,7 @@ export function createExecutionControls(reload: () => Promise<void>) {
         generation += 1;
         actions = [];
         message = "";
+        notice = "";
         confirming = false;
         itemId = local ? selected : "";
       }
@@ -113,9 +119,16 @@ export function createExecutionControls(reload: () => Promise<void>) {
             "actions" in body &&
             Array.isArray(body.actions)
               ? body.actions.filter((action): action is string =>
-                  ["stop", "pause", "resume", "resume_now"].includes(action),
+                  ["stop", "pause", "resume", "resume_now", "clear_stuck_agent"].includes(action),
                 )
               : [];
+          notice =
+            typeof body === "object" &&
+            body !== null &&
+            "notice" in body &&
+            typeof body.notice === "string"
+              ? body.notice
+              : "";
           paint();
         })
         .catch((caughtError1) => {
