@@ -348,6 +348,7 @@ export {
 export {
   countRebaseReturns,
   listRebaseReturns,
+  rebaseReturnedFor,
   recordRebaseReturn,
   type RebaseReturn,
   type RebaseReturnRecord,
@@ -574,10 +575,13 @@ export type { TaskMergeSettings } from "./merge-settings";
 export {
   inMergeQueue,
   joinMergeQueue,
+  keepMergeQueuePlace,
   leaveMergeQueue,
   listMergeQueues,
   markMergeQueueNotified,
   mergeQueuePosition,
+  releaseMergeQueuePlace,
+  returnToMergeQueue,
   restartedFromMergeQueue,
 } from "./merge-queue";
 export type { MergeQueuePosition } from "./merge-queue";
