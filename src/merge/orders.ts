@@ -107,6 +107,8 @@ export function sendBack(
   report: {
     thought: (attempt: number) => string;
     record: (jobId: number, attempt: number) => void;
+    failedChecks?: readonly FailedCiCheck[];
+    pullNumber?: number | null;
   },
 ): boolean {
   return returnToAgent(db, {
@@ -116,6 +118,8 @@ export function sendBack(
     handoff,
     now: caps.now(),
     record: report.record,
+    ...(report.failedChecks ? { failedChecks: report.failedChecks } : {}),
+    ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
     announce: (running, attempt, key) => {
       if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
       else caps.voice.thought(running, report.thought(attempt), key);
@@ -291,7 +295,7 @@ export async function mergeThroughGitHubQueue(
       });
       return { kind: "merged" };
     case "ci_failed":
-      return githubQueueCiFailed(merge, head, result.failedChecks, pull.url, CI_FIX_SOURCE.pull);
+      return githubQueueCiFailed(merge, head, result.failedChecks, pull, CI_FIX_SOURCE.pull);
     case "removed": {
       const { removal } = result;
       const why = removal.reason ? ` (${removal.reason})` : "";
@@ -300,7 +304,7 @@ export async function mergeThroughGitHubQueue(
           merge,
           head,
           [{ name: removal.reason || "merge queue checks", url: pull.url }],
-          pull.url,
+          pull,
           CI_FIX_SOURCE.queue,
         );
       if (removal.cause === "conflict") {
@@ -366,7 +370,7 @@ async function githubQueueCiFailed(
   merge: MergeContext,
   head: string,
   checks: readonly FailedCiCheck[],
-  pullUrl: string | null,
+  pull: { number: number; url: string | null },
   source: string,
 ): Promise<MergeStep> {
   const limit = merge.caps.ciFixAttempts(merge.item);
@@ -383,10 +387,12 @@ async function githubQueueCiFailed(
     sendBack(merge, "ci-failed", (fixes) => fixes < limit, `${source}\n\n${ciFixHandoff(checks)}`, {
       thought: (attempt) => ciFixRoundLine(checks, attempt, limit),
       record: (_, attempt) => ciRound(merge, head, failed, "agent", limit, attempt),
+      failedChecks: checks,
+      pullNumber: pull.number,
     })
   )
     return { kind: "returned" };
-  if (askHelp(merge, ciFixQuestion(checks, limit, pullUrl), "budget_spent")) {
+  if (askHelp(merge, ciFixQuestion(checks, limit, pull.url), "budget_spent")) {
     await merge.caps.voice.flush();
     return { kind: "asked" };
   }

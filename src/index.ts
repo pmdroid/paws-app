@@ -82,6 +82,7 @@ import {
   getTaskMode,
   taskRequiresRepository,
   listWorkItems,
+  listReviewEscapes,
   clearUsagePauses,
   countLinearRequest,
   migrate,
@@ -163,6 +164,12 @@ import {
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
 } from "./loop";
+import {
+  formatReviewScore,
+  readReviewEscapesFile,
+  REVIEW_ESCAPES_FILE,
+  scoreReview,
+} from "./review-score";
 import { handleLinkAskAnswer } from "./questions";
 import {
   createItemReconciler,
@@ -1746,6 +1753,7 @@ const CLI_HELP = `usage: paws [--no-tunnel]
 Commands:
   paws                          start Paws on 127.0.0.1:8787
   paws doctor                   check prerequisites, including the GitHub App
+  paws review-score [--since D] count review escapes, found after merge and after the PR
   paws login slack              connect Slack
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
@@ -1757,6 +1765,33 @@ async function doctorMain(): Promise<number> {
   const checks = doctorChecks(await realProbe(process.env));
   console.log(formatDoctor(checks));
   return checks.every((item) => item.ok) ? 0 : 1;
+}
+
+/** `paws review-score [--since YYYY-MM-DD] [--escapes path]`: the independent reviewer's escapes. */
+function reviewScoreMain(args: string[]): number {
+  let since = 0;
+  let escapesFile = REVIEW_ESCAPES_FILE;
+  for (let index = 0; index < args.length; index += 2) {
+    const value = args[index + 1];
+    if (args[index] === "--since" && value && !Number.isNaN(Date.parse(value)))
+      since = Date.parse(value);
+    else if (args[index] === "--escapes" && value) escapesFile = value;
+    else {
+      console.error("usage: paws review-score [--since YYYY-MM-DD] [--escapes path]");
+      return 1;
+    }
+  }
+  const paths = pawsPaths(loadEnv(process.env).home);
+  ensureLayout(paths);
+  const db = openDatabase(paths.db);
+  try {
+    migrate(db);
+    const score = scoreReview(listReviewEscapes(db, since), readReviewEscapesFile(escapesFile));
+    console.log(formatReviewScore(score));
+    return 0;
+  } finally {
+    db.close();
+  }
 }
 
 if (import.meta.main) {
@@ -1798,6 +1833,7 @@ if (import.meta.main) {
   if (command === "doctor") {
     process.exit(await doctorMain());
   }
+  if (command === "review-score") process.exit(reviewScoreMain(argv.slice(1)));
   if (command === "login" && argv[1] === "slack") {
     try {
       if (argv.length !== 2) throw new Error("usage: paws login slack");

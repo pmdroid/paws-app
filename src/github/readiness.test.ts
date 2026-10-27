@@ -188,7 +188,7 @@ test("reads every check context page past the first 100 on the head and the base
   });
   expect(result.outcome).toBe("ci_failed");
   expect(result.failedChecks).toEqual([
-    { name: "check-100", url: "https://ci.example/check-100", logTail: null },
+    { name: "check-100", url: "https://ci.example/check-100", logTail: null, failsOnBase: false },
   ]);
   expect(result.checks).toHaveLength(101);
   expect(seen.map((v) => [v.checksCursor, v.baseChecksCursor, v.readThreads])).toEqual([
@@ -233,7 +233,9 @@ test("a failing check fails CI with its name, even while others still run", asyn
     expect(result).toEqual({
       outcome: "ci_failed",
       message: "CI failed on the candidate commit",
-      failedChecks: [{ name: "build", url: "https://ci.example/build", logTail: null }],
+      failedChecks: [
+        { name: "build", url: "https://ci.example/build", logTail: null, failsOnBase: false },
+      ],
       checks: [ci("build", "failed"), ci("lint", "running"), ci("legacy", "passed")],
     });
   }
@@ -241,7 +243,20 @@ test("a failing check fails CI with its name, even while others still run", asyn
     withChecks([{ context: "legacy", state: "ERROR", targetUrl: "https://ci.example/legacy" }]),
   );
   expect(status.failedChecks).toEqual([
-    { name: "legacy", url: "https://ci.example/legacy", logTail: null },
+    { name: "legacy", url: "https://ci.example/legacy", logTail: null, failsOnBase: false },
+  ]);
+});
+
+test("a failing check that also fails on the base head is marked so", async () => {
+  const result = await readOnce(() =>
+    withChecks(
+      [run("build", "FAILURE"), run("lint", "FAILURE")],
+      [run("build", "FAILURE"), run("lint", "SUCCESS")],
+    ),
+  );
+  expect(result.failedChecks?.map((check) => [check.name, check.failsOnBase])).toEqual([
+    ["build", true],
+    ["lint", false],
   ]);
 });
 
@@ -487,11 +502,17 @@ test("a failing Actions check carries the tail of its job log; another falls bac
     "##[error]Process completed with exit code 1.",
   ].join("\n");
   expect(result.failedChecks).toEqual([
-    { name: "check / test", url: "https://ci.example/check / test", logTail: tail },
+    {
+      name: "check / test",
+      url: "https://ci.example/check / test",
+      logTail: tail,
+      failsOnBase: false,
+    },
     {
       name: "external",
       url: "https://ci.example/external",
       logTail: "Deploy preview failed: build exited 1",
+      failsOnBase: false,
     },
   ]);
   expect(result.checks?.map((check) => [check.name, check.state, check.logSource])).toEqual([

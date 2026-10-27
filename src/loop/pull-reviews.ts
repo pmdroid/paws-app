@@ -6,6 +6,7 @@ import {
   getWorkItem,
   immediate,
   recordPullReview,
+  recordReviewEscape,
   settlePullReview,
   type PullReviewRecord,
   type PullReviewState,
@@ -166,6 +167,7 @@ export async function handlePullReview(
     const limit = caps.fixRoundLimit(current);
     const digest = reviewDigest(review, threads);
     if (rounds < limit) {
+      const jobKey = `review:${current.id}:${review.reviewId}`;
       const jobId = restart(db, current, {
         reason: "review",
         body: [
@@ -183,10 +185,22 @@ export async function handlePullReview(
         ]
           .filter((part) => part !== "")
           .join("\n\n"),
-        jobKey: `review:${current.id}:${review.reviewId}`,
+        jobKey,
         now: caps.now(),
       });
       if (jobId === null) return "wait";
+      if (current.acceptedHead !== null)
+        recordReviewEscape(db, {
+          triggerKey: jobKey,
+          itemId: current.id,
+          trigger: "review",
+          acceptedHead: current.acceptedHead,
+          pullNumber: review.pullNumber,
+          detail: {
+            comments: [{ id: review.reviewId, author: review.reviewer, body: review.body }],
+          },
+          recordedAt: caps.now(),
+        });
       settlePullReview(db, reviewId, "restarted", caps.now());
       return "restarted";
     }
