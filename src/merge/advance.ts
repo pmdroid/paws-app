@@ -105,6 +105,8 @@ export async function advanceMerge(
   }
   const held = reviewHold(db, item.id, caps.now());
   if (held) return held;
+  const waiting = dependencyWait(item, caps);
+  if (waiting) return waiting;
   const published = await caps.publish(item);
   if ("kind" in published) return published;
   const merge: MergeContext = { db, item, caps };
@@ -292,6 +294,20 @@ export async function advanceMerge(
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
   return { kind: "failed", reason: "merge", message };
+}
+
+/**
+ * A task whose Linear dependencies have not merged makes no lane attempt: it neither publishes nor
+ * takes a place in the queue, so the blocker queued behind it merges first. Its merge job parks
+ * without a deadline and wakes when a task merges.
+ */
+function dependencyWait(item: WorkItemRecord, caps: MergeCapabilities): MergeStep | null {
+  const blockers = caps.dependencyHold(item.id);
+  if (blockers === null) return null;
+  const what = blockers.length ? blockers.join(", ") : "a blocking issue";
+  const message = `${item.linearIdentifier}: waiting for ${what}`;
+  caps.voice.status(item, message, `${item.id}:merge-dependencies:${what}`);
+  return { kind: "wait", message, queued: true, reason: "dependencies" };
 }
 
 /**

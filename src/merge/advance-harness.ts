@@ -11,6 +11,7 @@ import {
   beginImplementRun,
   enterMergeQueue,
   finishCloseoutProgress,
+  getConfirmedRemoteMerge,
   getWorkItem,
   insertQueuedItem,
   markCloseoutAccepted,
@@ -130,7 +131,11 @@ export async function mergeHarness(
     risk: (_head: string): RiskApproval => "not_required",
     /** Heads the lane asked a person to approve. */
     riskAsked: [] as string[],
+    /** Each task's Linear blockers; a blocker releases it once its merge is confirmed. */
+    blockedBy: new Map<string, string[]>(),
   };
+  /** Tasks the lane published, in order: every lane attempt past the dependency check. */
+  const published: string[] = [];
   let jobId = 0;
 
   const client: GitHubClient = {
@@ -278,30 +283,39 @@ export async function mergeHarness(
         return git(item.worktree, "rev-parse", "refs/paws/upstream-main");
       },
       ciFixAttempts: () => state.ciFixAttempts,
+      dependencyHold: (itemId) => {
+        const open = (state.blockedBy.get(itemId) ?? []).filter(
+          (blocker) => getConfirmedRemoteMerge(db, blocker) === null,
+        );
+        return open.length ? open : null;
+      },
       voice: {
         thought: (_, body, key) => say("thought", body, key),
         status: (_, body, key) => say("status", body, key),
         afterPullRequest: (_, body, key) => say("afterPullRequest", body, key),
         flush: async () => {},
       },
-      publish: async (current) => ({
-        github: {
-          appId: "1",
-          installationId: "2",
-          privateKeyPem: "unused",
-          client,
-          tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
-          gitExec: defaultGitExec(),
-        },
-        repository: { owner: "acme", repo: "app", remoteUrl: bare },
-        pull: { number: item.pull, url: `https://github.com/acme/app/pull/${item.pull}` },
-        head: current.checkpoint?.wipCommit ?? item.accepted,
-        signal: new AbortController().signal,
-        worktree: item.worktree,
-        branchKey: id,
-        summary: "Closeout accepted.",
-        commit: { title: `${id} change` },
-      }),
+      publish: async (current) => {
+        published.push(current.id);
+        return {
+          github: {
+            appId: "1",
+            installationId: "2",
+            privateKeyPem: "unused",
+            client,
+            tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
+            gitExec: defaultGitExec(),
+          },
+          repository: { owner: "acme", repo: "app", remoteUrl: bare },
+          pull: { number: item.pull, url: `https://github.com/acme/app/pull/${item.pull}` },
+          head: current.checkpoint?.wipCommit ?? item.accepted,
+          signal: new AbortController().signal,
+          worktree: item.worktree,
+          branchKey: id,
+          summary: "Closeout accepted.",
+          commit: { title: `${id} change` },
+        };
+      },
       settings: async () => ({
         ...settings,
         order: state.orders.get(id) ?? settings.order,
@@ -351,6 +365,7 @@ export async function mergeHarness(
     lines,
     verified,
     completed,
+    published,
     addItem,
     requeue,
     closeout,
