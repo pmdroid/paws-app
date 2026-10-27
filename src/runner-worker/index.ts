@@ -167,7 +167,7 @@ export interface RunnerWorkerOptions {
   handover?: (sequence: number, signal: AbortSignal) => Promise<{ deadline: number }>;
   /** How long each step after a handover's interrupt may take. Tests lower it. */
   handoverStepTimeoutMs?: number;
-  /** Resolves once Paws asks for the `sequence`th checkpoint of this run, before it stops it. */
+  /** Resolves once Paws asks for the `sequence`th checkpoint of this run; the first stops it. */
   checkpoint?: (sequence: number, signal: AbortSignal) => Promise<void>;
   /** How often a running turn publishes a WIP commit when its worktree changed. Tests lower it. */
   checkpointIntervalMs?: number;
@@ -1293,8 +1293,12 @@ export async function executeRunnerCommand(
     };
     const checkpoint = (reason: "stop" | "interval") =>
       (checkpointing = checkpointing.then(() => checkpointWorktree(reason)));
-    /** The interval checkpoints, and the ones Paws asks for before it stops the run. */
-    const watchCheckpoints = (watch: AbortSignal) =>
+    /**
+     * The interval checkpoints, taken while the agent works, and the ones Paws asks for before it
+     * stops the run. A stop halts the agent first and snapshots once its turn ended, so nothing it
+     * does while the commit is published can miss the checkpoint.
+     */
+    const watchCheckpoints = (watch: AbortSignal, halt: AbortController, turnDone: Promise<void>) =>
       Promise.allSettled([
         (async () => {
           for (;;) {
@@ -1305,10 +1309,12 @@ export async function executeRunnerCommand(
           }
         })(),
         (async () => {
-          for (let sequence = 1; options.checkpoint; sequence++) {
-            await options.checkpoint(sequence, watch);
-            await checkpoint("stop");
-          }
+          if (!options.checkpoint) return;
+          await options.checkpoint(1, watch);
+          // The same interrupt a follow-up uses: the agent stops, its session stays intact.
+          halt.abort(FOLLOW_UP_INTERRUPTION);
+          await turnDone;
+          await checkpoint("stop");
         })(),
       ]);
     const interrupt = new AbortController();
@@ -1317,16 +1323,24 @@ export async function executeRunnerCommand(
       runCommand && options.handover && installFailure === undefined
         ? watchHandover(interrupt, watch.signal)
         : undefined;
+    const halt = new AbortController();
+    let endTurn!: () => void;
+    const turnDone = new Promise<void>((resolve) => (endTurn = resolve));
     const checkpoints =
       runCommand && runCommand.checkpoint !== false && installFailure === undefined
-        ? watchCheckpoints(watch.signal)
+        ? watchCheckpoints(watch.signal, halt, turnDone)
         : undefined;
-    const current: RunAgentOptions = handover
-      ? {
-          ...agent,
-          signal: AbortSignal.any([interrupt.signal, ...(options.signal ? [options.signal] : [])]),
-        }
-      : agent;
+    const current: RunAgentOptions =
+      handover || checkpoints
+        ? {
+            ...agent,
+            signal: AbortSignal.any([
+              ...(handover ? [interrupt.signal] : []),
+              ...(checkpoints ? [halt.signal] : []),
+              ...(options.signal ? [options.signal] : []),
+            ]),
+          }
+        : agent;
     let run: RunAgentResult =
       installFailure !== undefined
         ? {
@@ -1339,8 +1353,11 @@ export async function executeRunnerCommand(
             agentExited: false,
           }
         : runCommand && options.followUp
-          ? await runWithFollowUps(current, options.followUp, runner)
-          : await runner(current);
+          ? await runWithFollowUps(current, options.followUp, runner).finally(endTurn)
+          : await runner(current).finally(endTurn);
+    endTurn();
+    // A turn halted for a stop leaves its work in the stop checkpoint, never in a candidate.
+    if (halt.signal.aborted) run = { ...run, cancelled: true, interrupted: false };
     watch.abort();
     const interrupted = (await handover) === true;
     // A checkpoint in progress finishes before the turn's own commit and result.
