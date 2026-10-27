@@ -8,6 +8,8 @@ export function createRepositoryGit(input: {
   assert: () => Promise<void>;
   onCleanupFailure: () => void;
   env?: NodeJS.ProcessEnv;
+  /** Allows a fast-forward push of one commit to a branch, for a token with write access. */
+  push?: boolean;
 }) {
   const local = isAbsolute(input.remoteUrl);
   if (!local) {
@@ -16,9 +18,22 @@ export function createRepositoryGit(input: {
       throw new Error("Repository reads require an HTTPS URL without credentials.");
   }
   return async (args: string[]): Promise<string> => {
-    const operation = args.findIndex((arg) => arg === "clone" || arg === "fetch");
+    const operation = args.findIndex(
+      (arg) => arg === "clone" || arg === "fetch" || (input.push === true && arg === "push"),
+    );
     if (operation < 0 || !args.slice(operation + 1).includes(input.remoteUrl))
       throw new Error("Repository reads require the bound clone or fetch destination.");
+    if (args[operation] === "push") {
+      const [separator, remote, refspec, ...rest] = args.slice(operation + 1);
+      if (
+        separator !== "--" ||
+        remote !== input.remoteUrl ||
+        rest.length ||
+        !refspec ||
+        !/^[a-f0-9]{40}:refs\/heads\/[^:+\s]+$/.test(refspec)
+      )
+        throw new Error("Repository pushes take one commit to one branch without force.");
+    }
     input.signal.throwIfAborted();
     await input.assert();
     input.signal.throwIfAborted();

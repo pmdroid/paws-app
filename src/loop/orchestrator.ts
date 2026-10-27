@@ -5210,6 +5210,7 @@ export class Orchestrator {
     return createRepositoryGit({
       remoteUrl: repository.remoteUrl,
       signal,
+      push: access === "write",
       token: (ownedSignal) => this.options.repositoryToken!(item, repository, ownedSignal, access),
       onCleanupFailure: () => this.blockConversation(item.id),
       assert: async () => {
