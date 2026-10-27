@@ -180,6 +180,92 @@ export async function commitCheckpoint(
   }
 }
 
+export interface WorktreeSnapshot {
+  /** The branch commit the snapshot is made on. */
+  head: string;
+  /** The tree of the worktree as it is, uncommitted changes included. */
+  tree: string;
+  /** `head` when nothing is uncommitted, otherwise a new commit of `tree` on `head`. */
+  sha: string;
+}
+
+/**
+ * The worktree as one commit, for a checkpoint while its agent keeps working. Unlike
+ * `commitCheckpoint` it leaves the branch, the index and the files as they are.
+ */
+export async function snapshotWorktree(
+  tree: string,
+  message: string,
+  environment?: NodeJS.ProcessEnv,
+  excludePaths: readonly string[] = [],
+  identity: GitCommitIdentity = DEFAULT_IDENTITY,
+): Promise<WorktreeSnapshot> {
+  const baseEnv = environment ?? process.env;
+  const index = (
+    await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"], {
+      env: baseEnv,
+    })
+  ).trim();
+  const temporary = await mkdtemp(join(dirname(index), "paws-snapshot-"));
+  try {
+    const head = (await git(["-C", tree, "rev-parse", "HEAD"], { env: baseEnv })).trim();
+    const privateIndex = join(temporary, "index");
+    const env = { ...baseEnv, ...commitIdentityEnv(identity), GIT_INDEX_FILE: privateIndex };
+    if (existsSync(index)) writeFileSync(privateIndex, readFileSync(index));
+    else await git(["-C", tree, "read-tree", head], { env });
+    await git(
+      [
+        "-C",
+        tree,
+        "add",
+        "-A",
+        "--",
+        ".",
+        ...excludePaths.map((path) => `:(exclude,literal)${path}`),
+      ],
+      { env },
+    );
+    if (excludePaths.length)
+      await git(
+        [
+          "-C",
+          tree,
+          "rm",
+          "-r",
+          "--cached",
+          "--ignore-unmatch",
+          "--quiet",
+          "--",
+          ...excludePaths.map((path) => `:(literal)${path}`),
+        ],
+        { env },
+      );
+    const snapshot = (await git(["-C", tree, "write-tree"], { env })).trim();
+    if (snapshot === (await git(["-C", tree, "rev-parse", `${head}^{tree}`], { env })).trim())
+      return { head, tree: snapshot, sha: head };
+    const sha = (
+      await git(
+        [
+          "-C",
+          tree,
+          "-c",
+          "commit.gpgsign=false",
+          "commit-tree",
+          snapshot,
+          "-p",
+          head,
+          "-m",
+          message,
+        ],
+        { env },
+      )
+    ).trim();
+    return { head, tree: snapshot, sha };
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
 /**
  * Same commit as `commitCheckpoint`, run synchronously so SIGTERM can finish
  * it before exit. A missing worktree records nothing.
