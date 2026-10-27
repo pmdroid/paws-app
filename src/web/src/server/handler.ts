@@ -1,11 +1,15 @@
 import { journalCaught } from "../journal";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   CHECK_LOG_TAIL_BYTES,
+  GENERATED_AT_HEADER,
   parseStatusItemDetail,
+  parseStatusSlices,
   parseStatusSnapshot,
+  selectStatusSlices,
   statusCheckLogPath,
   STATUS_API_PATH,
   STATUS_ITEM_API_PATH,
@@ -81,7 +85,8 @@ export function fakeStatusProvider(): StatusProvider {
 const CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Access-Control-Allow-Headers": "Accept, Content-Type, ngrok-skip-browser-warning",
+  "Access-Control-Allow-Headers": "Accept, Content-Type, If-None-Match, ngrok-skip-browser-warning",
+  "Access-Control-Expose-Headers": `ETag, ${GENERATED_AT_HEADER}`,
   "Access-Control-Max-Age": "86400",
 };
 
@@ -251,11 +256,19 @@ async function apiResponse(
   if (request.method !== "GET" && request.method !== "HEAD") {
     return json({ error: "Method not allowed" }, 405);
   }
+  const slices = parseStatusSlices(new URL(request.url).searchParams.get("slices"));
+  if (!slices.ok) return json({ error: slices.error }, 400);
   try {
     const snapshot = await provider.snapshot();
     const parsed = parseStatusSnapshot(snapshot);
     if (!parsed.ok) return json({ error: parsed.error }, 500);
-    return served(sizes, request, parsed.snapshot);
+    const body =
+      slices.slices === null ? parsed.snapshot : selectStatusSlices(parsed.snapshot, slices.slices);
+    const etag = statusEtag(body);
+    const headers = { ETag: etag, [GENERATED_AT_HEADER]: body.generatedAt };
+    if (etagMatches(request.headers.get("If-None-Match"), etag))
+      return new Response(null, { status: 304, headers: { ...CORS, ...JSON_HEADERS, ...headers } });
+    return served(sizes, request, body, headers);
   } catch (caughtError1) {
     journalCaught(caughtError1, "handler.apiResponse.snapshot", null);
     return json({ error: "status unavailable" }, 500);
@@ -447,26 +460,47 @@ function defaultStaticDir(): string | null {
   return existsSync(join(dir, "index.html")) ? dir : null;
 }
 
+/**
+ * A weak ETag over the body without `generatedAt`, which changes on every read. An unchanged
+ * list answers a request carrying it with 304.
+ */
+function statusEtag(snapshot: StatusSnapshot): string {
+  const { generatedAt: _generatedAt, ...rest } = snapshot;
+  return `W/"${createHash("sha256").update(JSON.stringify(rest)).digest("base64url").slice(0, 32)}"`;
+}
+
+function etagMatches(header: string | null, etag: string): boolean {
+  if (header === null) return false;
+  const opaque = (tag: string) => tag.trim().replace(/^W\//, "");
+  return header.split(",").some((tag) => tag.trim() === "*" || opaque(tag) === opaque(etag));
+}
+
+const JSON_HEADERS: Record<string, string> = {
+  "Content-Type": "application/json; charset=utf-8",
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+};
+
 /** A 200 JSON body whose size counts toward the minute's largest response. */
-function served(sizes: ResponseSizeJournal, request: Request, body: unknown): Response {
+function served(
+  sizes: ResponseSizeJournal,
+  request: Request,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
   const encoded = JSON.stringify(body);
   sizes.record(new URL(request.url).pathname, Buffer.byteLength(encoded));
-  return jsonText(encoded, 200);
+  return jsonText(encoded, 200, headers);
 }
 
 function json(body: unknown, status: number): Response {
   return jsonText(JSON.stringify(body), status);
 }
 
-function jsonText(body: string, status: number): Response {
+function jsonText(body: string, status: number, headers: Record<string, string> = {}): Response {
   return new Response(body, {
     status,
-    headers: {
-      ...CORS,
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Content-Type-Options": "nosniff",
-    },
+    headers: { ...CORS, ...JSON_HEADERS, ...headers },
   });
 }
 
