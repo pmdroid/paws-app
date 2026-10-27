@@ -4,6 +4,7 @@ import {
   enqueueJobOnce,
   getItemPullRequest,
   getWorkItem,
+  immediate,
   listMergeQueues,
   rebaseReturnedFor,
   recordRebaseReturn,
@@ -70,23 +71,14 @@ export async function returnQueuedConflicts(
     if (read === null || !read.open || read.merges !== "conflict") continue;
     if (rebaseReturnedFor(db, item.id, read.head)) continue;
     const conflict: RebaseConflict = { base: sweep.main, files: null };
-    if (returnConflict(db, item, read.head, conflict, caps)) {
+    // The read awaited GitHub: the item may have reached the front, or its merge may have started.
+    // Judge that again in the transaction that sends it back or asks.
+    const owned = () => behindFront(db, sweep.repository).includes(item.id);
+    if (returnConflict(db, item, read.head, conflict, caps, owned)) {
       handled.push(item.id);
       continue;
     }
-    const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
-    if (
-      !budget.allowed &&
-      askMergeHelp(db, {
-        itemId: item.id,
-        body: `${budget.message} Reply with guidance to continue, or stop the task.`,
-        reason: "rebase_budget_spent",
-        now: caps.now(),
-        session: caps.session,
-        ask: caps.ask,
-      })
-    )
-      handled.push(item.id);
+    if (askSpentBudget(db, item, conflict, caps, owned)) handled.push(item.id);
   }
   if (handled.length > 0) await caps.voice.flush();
   return handled;
@@ -98,11 +90,12 @@ function returnConflict(
   head: string,
   conflict: RebaseConflict,
   caps: QueueConflictCapabilities,
+  owned: () => boolean,
 ): boolean {
   return returnToAgent(db, {
     itemId: item.id,
     reason: "rebase-conflict",
-    admit: () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+    admit: () => owned() && rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
     handoff: REBASE_CONFLICT_INSTRUCTION,
     now: caps.now(),
     keepPlace: true,
@@ -116,6 +109,30 @@ function returnConflict(
         ...conflict,
         recordedAt: caps.now(),
       }),
+  });
+}
+
+function askSpentBudget(
+  db: Database,
+  item: WorkItemRecord,
+  conflict: RebaseConflict,
+  caps: QueueConflictCapabilities,
+  owned: () => boolean,
+): boolean {
+  return immediate(db, () => {
+    if (!owned()) return false;
+    const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
+    return (
+      !budget.allowed &&
+      askMergeHelp(db, {
+        itemId: item.id,
+        body: `${budget.message} Reply with guidance to continue, or stop the task.`,
+        reason: "rebase_budget_spent",
+        now: caps.now(),
+        session: caps.session,
+        ask: caps.ask,
+      })
+    );
   });
 }
 

@@ -149,6 +149,8 @@ export async function mergeHarness(
     lazyMergeable: new Map<number, number>(),
     /** Pull request reads, by number. */
     pullReads: new Map<number, number>(),
+    /** Runs during each pull request read, as if other work went on while GitHub answered. */
+    onPullRead: (_number: number): void => {},
     /** Held open while a squash is in flight; the squash goes on when it settles. */
     squashGate: null as Promise<void> | null,
     squashing: false,
@@ -226,6 +228,7 @@ export async function mergeHarness(
   /** GitHub's pull request read: `mergeable` from whether the branch merges into main. */
   async function readPull(number: number): Promise<GitHubResponse> {
     state.pullReads.set(number, (state.pullReads.get(number) ?? 0) + 1);
+    state.onPullRead(number);
     const id = [...items.values()].find((item) => item.pull === number)?.id;
     if (id === undefined) return { status: 404, body: {} };
     const head = await git(bare, "rev-parse", `refs/heads/paws/${id}`);
