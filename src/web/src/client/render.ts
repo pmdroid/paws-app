@@ -55,6 +55,7 @@ import { renderPushOutages } from "./push-outage";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
+import { riskCard } from "./risk";
 
 export interface RenderModel {
   route: Route;
@@ -423,6 +424,7 @@ function issuePage(
       .join("")}
     ${riskCarryOverSection(snapshot, item)}
     ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
+    ${"risk" in snapshot ? riskCard((snapshot as StatusItemDetail).risk) : ""}
     ${verdict ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>` : ""}
     ${verdict ? reviewFindingsSection(verdict, closeout) : ""}
     ${verdict ? renderRuleResults(verdict, closeout, engineUrl) : ""}
