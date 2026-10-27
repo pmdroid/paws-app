@@ -50,7 +50,7 @@ function git(args: string[], cwd: string) {
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-function fixture(options: { claudeVersion?: string } = {}) {
+function fixture(options: { claudeVersion?: string; codexVersion?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-session-"));
   const now = Date.now();
   const source = join(root, "source");
@@ -125,9 +125,14 @@ function fixture(options: { claudeVersion?: string } = {}) {
   const errors: string[] = [];
   const agents = {
     installed: () =>
-      options.claudeVersion === undefined
-        ? []
-        : [{ agent: "claude", version: options.claudeVersion, status: "current" }],
+      (
+        [
+          ["claude", options.claudeVersion],
+          ["codex", options.codexVersion],
+        ] as const
+      ).flatMap(([agent, version]) =>
+        version === undefined ? [] : [{ agent, version, status: "current" }],
+      ),
     apply() {},
   } as unknown as RunnerAgents;
   function open() {
@@ -246,8 +251,13 @@ function fixture(options: { claudeVersion?: string } = {}) {
     writeFileSync(join(directory, name), body);
     chmodSync(join(directory, name), 0o640);
   }
-  /** What the worker leaves when a Claude turn ends: a bundle, its description and a result. */
-  function finishWorker(id: string, bundle: Buffer | null, run: Partial<RunnerResult> = {}) {
+  /** What the worker leaves when a turn ends: a bundle, its description and a result. */
+  function finishWorker(
+    id: string,
+    bundle: Buffer | null,
+    run: Partial<RunnerResult> = {},
+    agent: "claude" | "codex" = "claude",
+  ) {
     const directory = outputDirectory(id);
     write(directory, "events.jsonl", "");
     if (bundle) {
@@ -256,7 +266,7 @@ function fixture(options: { claudeVersion?: string } = {}) {
         directory,
         "session.json",
         JSON.stringify({
-          agent: "claude",
+          agent,
           sessionId: "claude-session",
           workspacePath: "/var/lib/paws-agent/work/run",
           commitSha: baseSha,
@@ -327,6 +337,29 @@ function fixture(options: { claudeVersion?: string } = {}) {
     },
   };
 }
+
+test.skipIf(!linux)("a Codex rollout seals with the runner's Codex version", async () => {
+  const context = fixture({ claudeVersion: "2.1.7", codexVersion: "2.1.1" });
+  const runtime = await context.open();
+  try {
+    await context.drive(runtime, () => context.started() !== "");
+    const bundle = randomBytes(600_000);
+    context.finishWorker(context.started(), bundle, {}, "codex");
+    await context.drive(runtime, () => context.posted.length > 0);
+    expect(context.finishes).toMatchObject([
+      { generation: 3, agent: "codex", agentVersion: "2.1.1", sha256: sha(bundle) },
+    ]);
+    expect(context.sessions.snapshot("run", 3)).toMatchObject({
+      status: "sealed",
+      agent: "codex",
+      agentVersion: "2.1.1",
+    });
+    expect((await context.read(3)).equals(bundle)).toBe(true);
+  } finally {
+    await runtime.stop();
+    context.cleanup();
+  }
+});
 
 test.skipIf(!linux)(
   "the session uploads in 512 KiB chunks and seals with the version, session, commit and turn before the result",
