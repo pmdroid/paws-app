@@ -25,5 +25,12 @@ export { FINDING_FORMAT, findingsJsonSchema, parseFindings, reaskPrompt } from "
 export type { ParsedFindings } from "./findings";
 export { loadReviewMaterial, renderReviewPrompt } from "./prompt";
 export type { ReviewMaterial } from "./prompt";
-export { createReviewer } from "./reviewer";
-export type { InvalidReview, RecordedReview, ReviewerOptions, ReviewRunResult } from "./reviewer";
+export { createReviewer, runReviewCommand } from "./reviewer";
+export type {
+  InvalidReview,
+  RecordedReview,
+  ReviewCommandOptions,
+  ReviewCommandOutcome,
+  ReviewerOptions,
+  ReviewRunResult,
+} from "./reviewer";
