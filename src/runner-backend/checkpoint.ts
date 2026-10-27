@@ -121,6 +121,13 @@ export function createRemoteCheckpoint(options: {
         ).toString("utf8"),
       ) as RunnerCommand;
       if (command.type !== "run" || command.checkpoint === false) return null;
+      // A handover publishes its own WIP commit; a stop of the same run keeps that checkpoint.
+      if (
+        db
+          .query("SELECT 1 FROM runner_command WHERE run_id=? AND generation=? AND kind='handover'")
+          .get(runId, row.generation)
+      )
+        return null;
       // A runner that is gone or too old never answers; the stop does not wait for it.
       if ((row.lastSeen ?? 0) <= now() - RUNNER_ONLINE_MS) return null;
       if (!versionAtLeast(row.version, CHECKPOINT_RUNNER_VERSION)) return null;

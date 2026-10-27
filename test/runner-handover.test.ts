@@ -190,10 +190,11 @@ async function setup() {
     drive: (command: RunCommand) => Promise<void>,
     askTeam?: (question: string, context: AskTeamContext) => Promise<{ answer: string }>,
     signal?: AbortSignal,
+    /** A turn Paws stops ends as cancelled or with the abort, like the orchestrator sees it. */
+    stopped = false,
   ) {
     const notices: string[] = [];
     const running = backend.forItem(record.id)({
-      ...(signal ? { signal } : {}),
       profile: { agent: "claude", model: "model" },
       role: "implementer",
       itemId: `display-${record.id}`,
@@ -210,13 +211,13 @@ async function setup() {
         if (event.type === "progress") notices.push(event.text);
       },
     });
-    // A stopped turn may end as cancelled or with the abort, like the orchestrator sees it.
-    const settled = signal
-      ? running.catch((error: unknown) => {
-          if (!signal.aborted) throw error;
-          return null;
-        })
-      : running;
+    const settled =
+      signal && stopped
+        ? running.catch((error: unknown) => {
+            if (!signal.aborted) throw error;
+            return null;
+          })
+        : running;
     const command = (await next()) as RunCommand;
     await drive(command);
     return { result: (await settled)!, notices, command };
@@ -580,6 +581,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
       },
       undefined,
       stop.signal,
+      true,
     );
     expect(result?.stopReason ?? "cancelled").toBe("cancelled");
     expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(snapshot);
@@ -632,6 +634,7 @@ test("a runner release that cannot checkpoint is cancelled at once", async () =>
     },
     undefined,
     stop.signal,
+    true,
   );
   expect(result?.stopReason ?? "cancelled").toBe("cancelled");
   expect(
@@ -662,4 +665,35 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
     db.query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='run'").get(record.runId),
   ).toBeNull();
   expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(lost);
+});
+
+test("a stop while a handover is under way is cancelled at once, leaving the checkpoint to the handover", async () => {
+  const { db } = context;
+  const record = context.item();
+  context.release("0.1.46");
+  try {
+    const stop = new AbortController();
+    const { result } = await context.turn(
+      record,
+      async (command) => {
+        // The handover waits for a result that never comes; the stop ends the turn first.
+        void context.backend.handOverItem(record.id).catch(() => undefined);
+        expect(await context.next()).toMatchObject({ type: "handover", runId: command.runId });
+        // The handover publishes the WIP commit; a stop checkpoint would race it.
+        stop.abort();
+        expect(await context.next()).toMatchObject({ type: "cancel", runId: command.runId });
+      },
+      undefined,
+      stop.signal,
+      true,
+    );
+    expect(result?.stopReason ?? "cancelled").toBe("cancelled");
+    expect(
+      db
+        .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='checkpoint'")
+        .get(record.runId),
+    ).toBeNull();
+  } finally {
+    context.release("0.1.44");
+  }
 });

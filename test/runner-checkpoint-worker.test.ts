@@ -81,6 +81,15 @@ async function fixture() {
       .filter(Boolean)
       .map((line) => JSON.parse(line) as { type: string; reason?: string; sha?: string })
       .filter((event) => event.type === "checkpoint");
+  /**
+   * The checkpoints from the first one of `sha` on. An interval can fire between the write and
+   * the `git commit` of a helper commit, and that dirty snapshot is a checkpoint of its own.
+   */
+  const since = (sha: string) => {
+    const all = checkpoints();
+    const first = all.findIndex((event) => event.sha === sha);
+    return first < 0 ? [] : all.slice(first);
+  };
   const until = async (ready: () => boolean) => {
     for (let index = 0; index < 1000 && !ready(); index++) await delay(10);
     expect(ready()).toBe(true);
@@ -136,6 +145,7 @@ async function fixture() {
     output,
     events,
     checkpoints,
+    since,
     until,
     execute,
     commit,
@@ -232,13 +242,13 @@ test.skipIf(!linux)(
     await delay(450);
     expect(context.checkpoints()).toEqual([]);
     const commit = await context.commit("contract.ts", "export type Finding = {};\n");
-    await context.until(() => context.checkpoints().length === 1);
+    await context.until(() => context.since(commit).length === 1);
     // More intervals with no change publish nothing more.
     await delay(450);
     stop.abort();
     await running;
     // A clean worktree's checkpoint is the agent's own commit.
-    expect(context.checkpoints()).toEqual([
+    expect(context.since(commit)).toEqual([
       { type: "checkpoint", reason: "interval", sha: commit },
     ]);
     const clone = await context.published(commit);
@@ -263,10 +273,10 @@ test.skipIf(!linux)(
     });
     await context.until(() => context.events().includes(WORKING));
     const commit = await context.commit("contract.ts", "export type Finding = {};\n");
-    await context.until(() => context.checkpoints().length === 1);
+    await context.until(() => context.since(commit).length === 1);
     ask();
     await running;
-    expect(context.checkpoints()).toEqual([
+    expect(context.since(commit)).toEqual([
       { type: "checkpoint", reason: "interval", sha: commit },
       { type: "checkpoint", reason: "stop", sha: commit },
     ]);
@@ -317,15 +327,15 @@ test.skipIf(!linux)(
     await context.until(() => context.events().includes(WORKING));
     const commit = await context.commit("contract.ts", "export type Finding = {};\n");
     // Nothing changes, yet the unpublished checkpoint goes out again.
-    await context.until(() => context.checkpoints().length >= 3);
+    await context.until(() => context.since(commit).length >= 3);
     pushed = commit;
     await delay(150);
-    const settled = context.checkpoints().length;
+    const settled = context.since(commit).length;
     await delay(450);
     stop.abort();
     await running;
     // Once published, an unchanged worktree publishes nothing more.
-    expect(context.checkpoints().length).toBe(settled);
-    expect(new Set(context.checkpoints().map((event) => event.sha))).toEqual(new Set([commit]));
+    expect(context.since(commit).length).toBe(settled);
+    expect(new Set(context.since(commit).map((event) => event.sha))).toEqual(new Set([commit]));
   },
 );
