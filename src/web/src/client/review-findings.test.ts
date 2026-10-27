@@ -1,12 +1,12 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, itemDetail, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  parseStatusSnapshot,
+  parseStatusItemDetail,
+  type StatusItemDetail,
   type StatusReview,
   type StatusReviewFinding,
-  type StatusSnapshot,
 } from "../contract";
 import { emptyCloseoutView, type CloseoutView } from "./closeout";
 import { render } from "./render";
@@ -68,8 +68,8 @@ const REVIEW: StatusReview = {
   ],
 };
 
-function withReviews(): StatusSnapshot {
-  const snapshot = statusFixture();
+function withReviews(): StatusItemDetail {
+  const snapshot = fullStatusFixture();
   const verdict = snapshot.verdicts.find((entry) => entry.itemId === "ENG-100")!;
   verdict.reviews = [
     REVIEW,
@@ -87,16 +87,22 @@ function withReviews(): StatusSnapshot {
       ],
     },
   ];
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
-  if (!parsed.ok) throw new Error(parsed.error);
-  return parsed.snapshot;
+  return detailOf(snapshot);
 }
 
-function page(snapshot: StatusSnapshot, closeout: CloseoutView = emptyCloseoutView()): string {
+/** The issue page's data as `GET /api/status/items/ENG-100` serves it. */
+function detailOf(full: FullStatus): StatusItemDetail {
+  const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(itemDetail(full, "ENG-100"))));
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.detail;
+}
+
+function page(detail: StatusItemDetail, closeout: CloseoutView = emptyCloseoutView()): string {
   return render({
     route: { view: "issues", id: "ENG-100" },
     phase: "ready",
-    snapshot,
+    snapshot: null,
+    detail,
     error: null,
     engineUrl: null,
     closeout,
@@ -157,7 +163,7 @@ describe("review findings on the issue page", () => {
   });
 
   test("an item without stored reviews has no findings section", () => {
-    expect(page(parseOk(statusFixture()))).not.toContain("Review findings");
+    expect(page(detailOf(fullStatusFixture()))).not.toContain("Review findings");
   });
 
   test("390 px: long locations and evidence wrap instead of widening the page", () => {
@@ -170,9 +176,3 @@ describe("review findings on the issue page", () => {
     expect(html).not.toMatch(/class="[^"]*review-finding[^"]*whitespace-nowrap/);
   });
 });
-
-function parseOk(snapshot: StatusSnapshot): StatusSnapshot {
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
-  if (!parsed.ok) throw new Error(parsed.error);
-  return parsed.snapshot;
-}
