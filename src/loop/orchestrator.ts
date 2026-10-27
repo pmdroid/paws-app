@@ -62,6 +62,7 @@ import {
   approvalsAtHead,
   awaitsVisualReview,
   createCloseoutGate,
+  fixChangedPaths,
   samePatch,
   PolicyFetchError,
   reviewRequirements,
@@ -398,11 +399,12 @@ import { classifyTask } from "./task-classifier";
 import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./plan-proposal";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
-import { classifyCandidateRisk } from "./candidate-risk";
+import { classifyCandidateRisk, classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
   postRiskActivity,
   riskApprovalFor,
+  type FixRisk,
   RISK_ANSWERERS,
 } from "./risk-approval";
 import { sweepWorktrees } from "./worktree-sweep";
@@ -3507,6 +3509,8 @@ export class Orchestrator {
             publicUrl: this.options.publicUrl,
             samePatch: (approved, base) =>
               samePatch(published.worktree, approved, published.head, base),
+            fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),
+            now: this.now(),
           }),
         askRiskApproval: async (item, published) => {
           const asked = askRiskApproval(this.db, {
@@ -3744,6 +3748,39 @@ export class Orchestrator {
     });
     saveCandidateRisk(this.db, { itemId: item.id, head, base, ...risk, classifiedAt: this.now() });
     return risk;
+  }
+
+  /**
+   * The files the fix from the approved head to the published head changed, and which of them
+   * are high-risk against the repository's settings globs and `.paws/high-risk-paths` at main's
+   * `base`. Null when git cannot read them, so the head asks again rather than carrying over.
+   */
+  private async fixRisk(
+    item: WorkItemRecord,
+    published: MergePublication,
+    approved: string,
+    base: string,
+  ): Promise<FixRisk | null> {
+    try {
+      const changed = await fixChangedPaths(published.worktree, approved, published.head, base);
+      if (changed === null) return null;
+      const { owner, repo } = published.repository;
+      const risk = await classifyPathsRisk({
+        git: (args) => git(["-C", published.worktree, ...args]),
+        base,
+        changed,
+        settingsGlobs: highRiskPaths(
+          readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+          `${owner}/${repo}`,
+        ),
+      });
+      return { changed, paths: risk.paths };
+    } catch (error) {
+      published.signal.throwIfAborted();
+      if (isTransient(error)) throw error;
+      journalCaught(error, "orchestrator.fixRisk", item.id, undefined, this.options.journal);
+      return null;
+    }
   }
 
   private async upstreamMainRef(worktree: string, itemId: string): Promise<string> {

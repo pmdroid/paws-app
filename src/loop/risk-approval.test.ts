@@ -1,16 +1,17 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { samePatch } from "../closeout";
-import { JOB_KIND } from "../core";
+import { fixChangedPaths, samePatch } from "../closeout";
+import { JOB_KIND, riskCarryOverReason } from "../core";
 import {
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
   enqueueOutboxOnce,
   getLinkAsk,
+  getRiskFix,
   getWorkItem,
   insertQueuedItem,
   listJobs,
@@ -25,6 +26,8 @@ import { saveSchedulingContext } from "../scheduler";
 import { createFakeTracker } from "../linear";
 import { deliverLinearOutbox } from "./dispatch";
 import { decideLinkAsk, guideLinkAsk } from "./link-ask";
+import { mergeable } from "../merge";
+import { classifyPathsRisk } from "./candidate-risk";
 import { askRiskApproval, riskApprovalFor, RISK_REPLY_NOTE, riskApprovals } from "./risk-approval";
 
 const NOW = 1_700_000_000_000;
@@ -33,13 +36,23 @@ const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea" };
 
 /** A repository with head S, the same patch rebased onto a newer main, and a changed patch. */
 let repo = "";
-const heads = { base: "", s: "", rebased: "", newMain: "", changed: "" };
+const heads = {
+  base: "",
+  s: "",
+  rebased: "",
+  newMain: "",
+  changed: "",
+  ciFix: "",
+  authFix: "",
+  rebasedCiFix: "",
+};
 
 function git(...args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
 function commit(file: string, content: string, message: string): string {
+  mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
   writeFileSync(path.join(repo, file), content);
   git("add", ".");
   git("commit", "-qm", message);
@@ -61,6 +74,15 @@ beforeAll(() => {
   git("cherry-pick", heads.s);
   heads.rebased = git("rev-parse", "HEAD");
   heads.changed = commit("session.ts", "export const ttl = 5;\n", "shorter ttl");
+  // Fixes Paws made on S after the approval: one for CI that only changes a test, one that
+  // changes auth code, and the CI fix again on the newer main.
+  git("checkout", "-qb", "ci-fix", heads.s);
+  heads.ciFix = commit("test/x.test.ts", "test('ttl', () => {});\n", "fix the flaky test");
+  git("checkout", "-qb", "auth-fix", heads.s);
+  heads.authFix = commit("src/auth/session.ts", "export const rotate = true;\n", "rotate on read");
+  git("checkout", "-qb", "rebased-ci-fix", heads.rebased);
+  git("cherry-pick", heads.ciFix);
+  heads.rebasedCiFix = git("rev-parse", "HEAD");
 });
 
 afterAll(() => rmSync(repo, { recursive: true, force: true }));
@@ -135,6 +157,60 @@ function approval(db: ReturnType<typeof openDatabase>, head: string) {
     head,
     publicUrl: PUBLIC_URL,
     samePatch: (approved, base) => samePatch(repo, approved, head, base),
+  });
+}
+
+/** The repository's high-risk globs in Settings › Merging. */
+const HIGH_RISK = ["session.ts", "src/auth/**"];
+
+/** `riskApprovalFor` as the orchestrator wires it: the fix's own files, classified. */
+function approvalWithFixes(db: ReturnType<typeof openDatabase>, head: string) {
+  return riskApprovalFor(db, {
+    itemId: "ENG-106",
+    head,
+    publicUrl: PUBLIC_URL,
+    samePatch: (approved, base) => samePatch(repo, approved, head, base),
+    fixRisk: async (approvedHead, base) => {
+      const changed = await fixChangedPaths(repo, approvedHead, head, base);
+      if (changed === null) return null;
+      const risk = await classifyPathsRisk({
+        git: async (args) => git(...args),
+        base,
+        changed,
+        settingsGlobs: HIGH_RISK,
+      });
+      return { changed, paths: risk.paths };
+    },
+    now: NOW + 500,
+  });
+}
+
+/** A person approved S on the Risk card. */
+function riskApproved() {
+  const fixture = asked();
+  decideLinkAsk(fixture.db, {
+    questionId: fixture.question.id,
+    decision: "approve",
+    note: null,
+    answeredBy: "delegator",
+    actor,
+    now: NOW + 100,
+  });
+  return fixture;
+}
+
+/** The fix at `head` passed Closeout and the lane holds it again. */
+function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, base: string) {
+  if (getWorkItem(db, "ENG-106")?.state === "verifying")
+    applyWorkItemEvent(db, "ENG-106", "closeout_accepted");
+  saveCheckpoint(db, "ENG-106", { phase: "merge_queue", baseSha: base, wipCommit: head });
+  saveCandidateRisk(db, {
+    itemId: "ENG-106",
+    head,
+    base,
+    tier: "high",
+    paths: ["session.ts"],
+    classifiedAt: NOW + 400,
   });
 }
 
@@ -403,4 +479,90 @@ test("the ask, its link and the decision reach Linear after the pull request res
   const bodies = tracker.progress.map((update) => update.body);
   expect(bodies.some((body) => body?.includes("requested changes to"))).toBe(true);
   expect(bodies).not.toContain("Reading.");
+});
+
+test("a CI fix that only changes a test keeps the approval and merges without a new ask", async () => {
+  const { db, itemId } = riskApproved();
+  fixAccepted(db, heads.ciFix, heads.base);
+  const kept = await approvalWithFixes(db, heads.ciFix);
+  expect(kept).toBe("approved");
+  expect(
+    mergeable({
+      head: heads.ciFix,
+      headMoved: false,
+      accept: { head: heads.ciFix, policyDigest: "" },
+      policyDigest: "",
+      containsMain: true,
+      ci: "green",
+      unresolvedThreads: 0,
+      protection: "satisfied",
+      riskApproval: kept,
+    }),
+  ).toEqual({ ok: true });
+  // The carry-over names the approved head and why.
+  expect(getRiskFix(db, itemId, heads.ciFix)).toMatchObject({
+    approvedHead: heads.s,
+    changed: ["test/x.test.ts"],
+    paths: [],
+  });
+  expect(riskCarryOverReason(heads.s, ["test/x.test.ts"])).toBe(
+    `The approval of ${heads.s.slice(0, 7)} carried over: none of the files the fix changed since then is a high-risk path (\`test/x.test.ts\`).`,
+  );
+  // Nobody is asked again.
+  expect(listOutbox(db).filter((row) => row.op === "elicitation")).toHaveLength(1);
+  expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
+});
+
+test("a fix that changes a high-risk path asks again and lists only that change", async () => {
+  const { db, itemId } = riskApproved();
+  fixAccepted(db, heads.authFix, heads.base);
+  expect(await approvalWithFixes(db, heads.authFix)).toBe("missing");
+  expect(
+    askRiskApproval(db, {
+      item: getWorkItem(db, itemId)!,
+      head: heads.authFix,
+      publicUrl: PUBLIC_URL,
+      now: NOW + 600,
+    }),
+  ).toBe("asked");
+  const ask = findOpenQuestion(db, "ses_1")!;
+  const detail = `High-risk paths the fix changed since the approved ${heads.s.slice(0, 7)}: \`src/auth/session.ts\`.`;
+  expect(getLinkAsk(db, ask.id)).toMatchObject({
+    kind: "risk",
+    headCommit: heads.authFix,
+    detail,
+  });
+  // The whole pull request also changes `session.ts`; the ask leaves it out.
+  expect(getLinkAsk(db, ask.id)?.detail).not.toContain("`session.ts`");
+  const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
+  expect(elicitations).toHaveLength(2);
+  expect((elicitations[1]!.payload as { body: string }).body).toContain(detail);
+});
+
+test("a CI fix on a rebased head counts only the fix's own files, not main's", async () => {
+  const { db, itemId } = riskApproved();
+  fixAccepted(db, heads.rebasedCiFix, heads.newMain);
+  expect(await approvalWithFixes(db, heads.rebasedCiFix)).toBe("approved");
+  expect(getRiskFix(db, itemId, heads.rebasedCiFix)?.changed).toEqual(["test/x.test.ts"]);
+  // A rebase alone still follows samePatch and records no fix.
+  fixAccepted(db, heads.rebased, heads.newMain);
+  expect(await approvalWithFixes(db, heads.rebased)).toBe("approved");
+  expect(getRiskFix(db, itemId, heads.rebased)).toBeNull();
+});
+
+test("without an approval, or when the fix cannot be read, a fix asks", async () => {
+  const { db } = asked();
+  fixAccepted(db, heads.ciFix, heads.base);
+  expect(await approvalWithFixes(db, heads.ciFix)).toBe("missing");
+  const fixture = riskApproved();
+  fixAccepted(fixture.db, heads.ciFix, heads.base);
+  expect(
+    await riskApprovalFor(fixture.db, {
+      itemId: "ENG-106",
+      head: heads.ciFix,
+      publicUrl: PUBLIC_URL,
+      samePatch: async () => false,
+      fixRisk: async () => null,
+    }),
+  ).toBe("missing");
 });
