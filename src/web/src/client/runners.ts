@@ -104,6 +104,10 @@ export type RunningSession = {
   title: string;
   phase: "working" | "closeout" | "fixing" | "merging";
   startedAt: number;
+  /** The runner can hand it over now; older Paws releases do not say. */
+  movable?: boolean;
+  /** Its move off this runner, with the reason it waits or stayed. */
+  move?: { status: "moving" | "waiting" | "stayed"; reason: string | null } | null;
 };
 export type HostPolicy = {
   ownerUserId: string;
@@ -702,11 +706,35 @@ function elapsedLabel(ms: number): string {
   return `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
 }
 
-/** One row per busy slot with the session it holds, then one row for the free slots. */
+/** How a session's move stands, and Move to another runner for owners and admins. */
+function sessionMoveMarkup(
+  session: RunningSession,
+  move: { runnerId: string; busy: boolean } | undefined,
+): string {
+  const runId = esc(session.runId);
+  const status = session.move?.status;
+  const note =
+    status === "moving" || status === "waiting"
+      ? `<p class="slot-note" role="status"><b>Moving to another runner</b>${status === "waiting" && session.move?.reason ? ` · ${esc(session.move.reason)}` : ""}</p>`
+      : status === "stayed"
+        ? `<p class="runner-skill-error" role="note">Not moved. ${esc(session.move?.reason ?? "The runner kept the session.")}</p>`
+        : "";
+  const button =
+    move && session.movable && status !== "moving" && status !== "waiting"
+      ? `<button class="btn" data-session-move="${runId}" data-runner="${esc(move.runnerId)}" data-focus="move:${runId}"${move.busy ? " disabled" : ""}>Move to another runner</button>`
+      : "";
+  return note || button ? `<div class="slot-move">${note}${button}</div>` : "";
+}
+
+/**
+ * One row per busy slot with the session it holds, then one row for the free slots. With
+ * `move`, a running session's row offers Move to another runner.
+ */
 export function runnerRunningMarkup(
   sessions: readonly RunningSession[],
   now: number,
   slots?: { used: number; total: number },
+  move?: { runnerId: string; busy: boolean },
 ): string {
   const total = Math.max(slots?.total ?? 0, sessions.length);
   const free = total - Math.max(slots?.used ?? 0, sessions.length);
@@ -715,7 +743,7 @@ export function runnerRunningMarkup(
   const rows = sessions
     .map((session) => {
       const [tone, phase] = PHASES[session.phase] ?? PHASES.working;
-      return `<li class="slot-row" data-running-run="${esc(session.runId)}"><span class="slot-mark used${full ? " high" : ""}" aria-hidden="true"></span>${issueLink(session.identifier, session.title)}<span class="slot-facts">${statePill(tone, phase)}<span class="muted" title="Started ${esc(new Date(session.startedAt).toLocaleString())}">${esc(elapsedLabel(now - session.startedAt))}</span></span></li>`;
+      return `<li class="slot-row" data-running-run="${esc(session.runId)}"><span class="slot-mark used${full ? " high" : ""}" aria-hidden="true"></span>${issueLink(session.identifier, session.title)}<span class="slot-facts">${statePill(tone, phase)}<span class="muted" title="Started ${esc(new Date(session.startedAt).toLocaleString())}">${esc(elapsedLabel(now - session.startedAt))}</span></span>${sessionMoveMarkup(session, move)}</li>`;
     })
     .join("");
   const other = Math.max(0, (slots?.used ?? 0) - sessions.length);
@@ -989,7 +1017,12 @@ export function runnerDetailMarkup(
           "slots",
           "Running issues",
           capacity,
-          runnerRunningMarkup(runner.running ?? [], view.now, slots),
+          runnerRunningMarkup(
+            runner.running ?? [],
+            view.now,
+            slots,
+            manages ? { runnerId: runner.id, busy: view.busy } : undefined,
+          ),
         )
   }${
     revoked
@@ -1588,6 +1621,19 @@ export function createRunners() {
             : "Every runner already runs or is installing the newest eligible versions.";
         }),
     );
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-session-move]"))
+      button.addEventListener(
+        "click",
+        () =>
+          void change(async () => {
+            await api(
+              `/api/runners/${encodeURIComponent(button.dataset.runner!)}/sessions/${encodeURIComponent(button.dataset.sessionMove!)}/move`,
+              {},
+            );
+            feedback =
+              "Asked the runner to hand the session over. It moves at the agent's next safe point.";
+          }),
+      );
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-status]"))
       button.addEventListener(
         "click",

@@ -242,6 +242,79 @@ describe("what a runner is running now", () => {
     expect(labels[0]).toContain(">under a minute</span>");
   });
 
+  test("owners and admins can move a running session; members and observers see no button", () => {
+    const busy = {
+      ...runner,
+      idle: false,
+      slots: { used: 2, total: 3 },
+      running: [
+        { ...working, movable: true, move: null },
+        { ...closeout, movable: false, move: null },
+      ],
+    };
+    const slotsOf = (role: string) =>
+      /<section class="runner-block" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
+        runnerDetailMarkup(busy, { ...view, userId: "someone", role }),
+      )?.[0] ?? "";
+    for (const role of ["owner", "admin"]) {
+      const slots = slotsOf(role);
+      // Only the session with a live lease can be handed over now.
+      expect(slots.match(/data-session-move=/g)).toHaveLength(1);
+      expect(slots).toContain(
+        `<button class="btn" data-session-move="run-1" data-runner="${runner.id}" data-focus="move:run-1">Move to another runner</button>`,
+      );
+    }
+    for (const role of ["member", "observer"]) {
+      const slots = slotsOf(role);
+      expect(slots).not.toContain("<button");
+      expect(slots).not.toContain("Move to another runner");
+    }
+  });
+
+  test("a moving session says so, with the reason while no runner is eligible", () => {
+    const moving = runnerRunningMarkup(
+      [{ ...working, movable: true, move: { status: "moving", reason: null } }],
+      now,
+      undefined,
+      { runnerId: runner.id, busy: false },
+    );
+    expect(moving).toContain(
+      '<p class="slot-note" role="status"><b>Moving to another runner</b></p>',
+    );
+    expect(moving).not.toContain("<button");
+    const waiting = runnerRunningMarkup(
+      [
+        {
+          ...working,
+          movable: false,
+          move: { status: "waiting", reason: "Sign in to Claude on another runner." },
+        },
+      ],
+      now,
+      undefined,
+      { runnerId: runner.id, busy: false },
+    );
+    expect(waiting).toContain(
+      "<b>Moving to another runner</b> · Sign in to Claude on another runner.</p>",
+    );
+    expect(waiting).not.toContain("<button");
+    const stayed = runnerRunningMarkup(
+      [
+        {
+          ...working,
+          movable: true,
+          move: { status: "stayed", reason: "The runner did not answer in time." },
+        },
+      ],
+      now,
+      undefined,
+      { runnerId: runner.id, busy: true },
+    );
+    expect(stayed).toContain("Not moved. The runner did not answer in time.");
+    // It can be asked again, but not while another change is in flight.
+    expect(stayed).toContain('data-focus="move:run-1" disabled>Move to another runner</button>');
+  });
+
   test("the runner card lists every session to members and observers alike", () => {
     const busy = {
       ...runner,

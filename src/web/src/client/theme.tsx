@@ -345,7 +345,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (has("slot-row"))
     return styled(
-      "col-span-full grid min-w-0 grid-cols-subgrid items-start gap-y-1 sm:items-center [&>.slot-facts]:col-start-3 sm:[&>.slot-facts]:col-start-auto [&>.lin-id]:justify-self-start [&>a.work-title]:col-span-2 [&>a.work-title]:min-w-0 [&>a.work-title]:break-words [&>span.muted]:col-span-2 sm:[&>span.muted]:col-span-3",
+      "col-span-full grid min-w-0 grid-cols-subgrid items-start gap-y-1 sm:items-center [&>.slot-facts]:col-start-3 sm:[&>.slot-facts]:col-start-auto [&>.lin-id]:justify-self-start [&>a.work-title]:col-span-2 [&>a.work-title]:min-w-0 [&>a.work-title]:break-words [&>span.muted]:col-span-2 sm:[&>span.muted]:col-span-3 [&>.slot-move]:col-span-2 [&>.slot-move]:col-start-2 sm:[&>.slot-move]:col-span-3",
     );
   if (has("slot-mark"))
     return styled(
@@ -359,6 +359,11 @@ function replace(node: DOMNode): ReactElement | undefined {
       ),
     );
   if (has("slot-facts")) return styled("flex items-center gap-2 text-sm");
+  if (has("slot-move"))
+    return styled(
+      "flex min-w-0 flex-wrap items-center gap-2 [&>p]:m-0 [&>p]:min-w-0 [&>p]:break-words",
+    );
+  if (has("slot-note")) return styled("text-sm");
   if (has("runner-status"))
     return styled(
       "flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-semibold [&>span:not(.tag,:last-child)]:after:ml-3 [&>span:not(.tag,:last-child)]:after:content-['·']",
