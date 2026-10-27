@@ -55,6 +55,7 @@ import {
   listVisualReviews,
   getTaskMergeSettings,
   getTaskMode,
+  getWorkItemRepository,
   getRun,
   listAgentCloseout,
   listCloseoutProgress,
@@ -1479,11 +1480,18 @@ function mergeQueueFor(
   const { records, jobs, generatedAt } = input;
   const items = new Map(input.items.map((item) => [item.id, item]));
   const places = new Map(input.queues.map((entry) => [entry.itemId, entry]));
-  const repositoryOf = (record: WorkItemRecord): string =>
-    places.get(record.id)?.repository ??
-    pullRepository(items.get(publicId(record))?.pr?.url) ??
-    input.repo ??
-    "unknown";
+  // The repository Paws bound the item to names it. `config.repo` only names items from before
+  // repository binding, and an item with none of these is under "Repository not known".
+  const repositoryOf = (record: WorkItemRecord): string | null => {
+    const bound = getWorkItemRepository(db, record.id);
+    return (
+      (bound ? `${bound.owner}/${bound.repo}` : null) ??
+      places.get(record.id)?.repository ??
+      pullRepository(items.get(publicId(record))?.pr?.url) ??
+      input.repo ??
+      null
+    );
+  };
   const waiting = records
     .filter(
       (record) =>
@@ -1525,7 +1533,7 @@ function mergeQueueFor(
     })
     .sort(
       (left, right) =>
-        left.repository.localeCompare(right.repository) ||
+        compareRepositories(left.repository, right.repository) ||
         (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER) ||
         left.acceptedAt.localeCompare(right.acceptedAt) ||
         left.itemId.localeCompare(right.itemId),
@@ -1560,6 +1568,14 @@ function mergeQueueFor(
   }
   history.sort((left, right) => right.at.localeCompare(left.at));
   return { mergeQueue: waiting, mergeHistory: history };
+}
+
+/** By name, with entries whose repository is not known last. */
+function compareRepositories(left: string | null, right: string | null): number {
+  if (left === right) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left.localeCompare(right);
 }
 
 function aheadLabel(record: WorkItemRecord, items: ReadonlyMap<string, StatusItem>): string {
