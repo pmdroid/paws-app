@@ -270,10 +270,12 @@ export function listPulls(git: Git, options: Options): MergedPull[] {
   return parseGhPulls(result.stdout);
 }
 
+/** `isOriginal` picks the pull requests whose lines are blamed; Paws squashes by default. */
 export function findCandidates(
   git: Git,
   pulls: readonly MergedPull[],
   options: Options,
+  isOriginal: (pull: MergedPull) => boolean = (pull) => isAppAuthor(pull.author, options.app),
 ): Candidate[] {
   const ordered = [...pulls].sort((a, b) => a.mergedAt.localeCompare(b.mergedAt));
   const present = ordered.filter((pull) => {
@@ -285,11 +287,7 @@ export function findCandidates(
       return false;
     }
   });
-  const paws = new Map(
-    present
-      .filter((pull) => isAppAuthor(pull.author, options.app))
-      .map((pull) => [pull.mergeCommit, pull]),
-  );
+  const paws = new Map(present.filter(isOriginal).map((pull) => [pull.mergeCommit, pull]));
   const found = new Map<string, Candidate>();
   for (const pull of present) {
     const parent = `${pull.mergeCommit}^1`;
