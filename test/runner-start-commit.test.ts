@@ -60,6 +60,8 @@ test("a head whose push keeps failing starts from the PR branch head and names t
   // The item keeps going: its checkpoint now names the commit GitHub holds.
   expect(result.state, result.detail).not.toBe("cancelled");
   expect(result.wipCommit, result.detail).toBe(result.prHead);
+  // The dispatched command carried the handoff, so the checkpoint no longer holds it.
+  expect(result.pendingAfter, result.detail).toBeUndefined();
 });
 
 test("an item branch never pushed to a repository whose default branch is master is still pushed", async () => {
@@ -96,12 +98,30 @@ test("a start Paws cannot establish on GitHub dispatches nothing and retries lat
   expect(result.head, result.detail).toBe(result.localHead);
 });
 
+test("a fallback whose dispatch fails still hands the lost commits to the next attempt", async () => {
+  const result = await startScenario({
+    local: ["Lost one", "Lost two"],
+    push: "fails",
+    failFirstDispatch: true,
+  });
+  const note = `Your commits after ${result.prHead.slice(0, 8)} didn't reach GitHub: Lost two; Lost one. Redo them.`;
+  // The first attempt saved the handoff before it failed; the retry finds HEAD already on GitHub.
+  expect(result.pendingBetween, result.detail).toBe(note);
+  expect(result.error, result.detail).toBeUndefined();
+  expect(result.baseSha, result.detail).toBe(result.prHead);
+  expect(result.prompt, result.detail).toBe(`${note}\n\nWrite output`);
+  expect(result.pendingAfter, result.detail).toBeUndefined();
+  expect(result.thoughts, result.detail).toHaveLength(1);
+});
+
 async function startScenario(input: {
   local: string[];
   push: "works" | "fails";
   fetch?: "fails";
   defaultBranch?: string;
   prBranch?: false;
+  /** The first attempt fails after the fallback, before any runner gets the command. */
+  failFirstDispatch?: true;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
   const source = join(root, "source");
@@ -273,25 +293,40 @@ async function startScenario(input: {
 
   const thoughts: string[] = [];
   let error: unknown;
+  let retried = false;
+  let pendingBetween: string | undefined;
   try {
-    await backend
-      .forItem(item.id)({
-        role: "implementer",
-        itemId: item.id,
-        runId: run.id,
-        prompt: "Write output",
-        worktreePath: worktree,
-        pawsRoot: root,
-        profile: { agent: "claude", model: null },
-        networkGit,
-        signal: new AbortController().signal,
-        onEvent(event: AcpEvent) {
-          if (event.type === "progress" && event.text.includes("GitHub")) thoughts.push(event.text);
-        },
-      })
-      .catch((caught: unknown) => {
-        error = caught;
-      });
+    for (let attempt = 0; attempt < (input.failFirstDispatch ? 2 : 1); attempt++) {
+      if (attempt) pendingBetween = getWorkItem(db, item.id)?.checkpoint?.lostCommits;
+      error = undefined;
+      await backend
+        .forItem(item.id)({
+          ...(input.failFirstDispatch && !retried
+            ? {
+                async prepareInputFiles() {
+                  retried = true;
+                  throw new Error("Paws stopped before dispatch");
+                },
+              }
+            : {}),
+          role: "implementer",
+          itemId: item.id,
+          runId: run.id,
+          prompt: "Write output",
+          worktreePath: worktree,
+          pawsRoot: root,
+          profile: { agent: "claude", model: null },
+          networkGit,
+          signal: new AbortController().signal,
+          onEvent(event: AcpEvent) {
+            if (event.type === "progress" && event.text.includes("GitHub"))
+              thoughts.push(event.text);
+          },
+        })
+        .catch((caught: unknown) => {
+          error = caught;
+        });
+    }
     const stored = getWorkItem(db, item.id);
     return {
       error,
@@ -308,6 +343,8 @@ async function startScenario(input: {
       ),
       state: stored?.state,
       wipCommit: stored?.checkpoint?.wipCommit,
+      pendingBetween,
+      pendingAfter: stored?.checkpoint?.lostCommits,
       detail: JSON.stringify({
         prHead,
         localHead,

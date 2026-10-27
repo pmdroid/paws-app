@@ -811,13 +811,15 @@ export function createRemoteAgentRunner(options: {
             networkGit: (args: string[]) => Promise<string>,
           ) => {
             const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+            // A handoff saved by an earlier fallback still goes out until a runner receives it.
+            const pending = checkpoint?.lostCommits;
             // A first run starts from the mirror's commit, which came from GitHub.
             if (
               !checkpoint?.baseSha ||
               (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim() ===
                 checkpoint.baseSha
             )
-              return undefined;
+              return pending;
             const start = await ensureStartOnRemote({
               worktree: input.worktreePath,
               branch: scoped.item.branchName,
@@ -832,21 +834,26 @@ export function createRemoteAgentRunner(options: {
                 journal(`item ${itemId}: ${error.message}`);
               throw error;
             });
-            if (start.status === "remote") return undefined;
+            if (start.status === "remote") return pending;
             if (start.status === "pushed") {
               journal(`item ${itemId} pushed ${start.head} to GitHub before the run`);
-              return undefined;
+              return pending;
             }
             journal(
               `item ${itemId} starts from ${start.start} because ${start.head} is not on GitHub and its push failed: ${start.error}`,
             );
-            if (checkpoint?.wipCommit === start.head)
-              saveCheckpoint(db, itemId, { ...checkpoint, wipCommit: start.start });
+            const note = lostCommitsNote(start.start, start.lost);
+            const lostCommits = pending ? `${pending}\n${note}` : note;
+            saveCheckpoint(db, itemId, {
+              ...checkpoint,
+              ...(checkpoint.wipCommit === start.head ? { wipCommit: start.start } : {}),
+              lostCommits,
+            });
             await emit({
               type: "progress",
               text: `Commit ${start.head.slice(0, 8)} never reached GitHub, so this run continues from ${start.start.slice(0, 8)} and the agent redoes the rest.\n`,
             });
-            return lostCommitsNote(start.start, start.lost);
+            return lostCommits;
           };
           const placed =
             attached ??
@@ -1207,6 +1214,12 @@ export function createRemoteAgentRunner(options: {
                     true,
                   );
                 work.assign(assigned);
+                // The command now carries the lost-commit handoff, so it is no longer pending.
+                const delivered = lostNote ? getWorkItem(db, itemId)?.checkpoint : undefined;
+                if (delivered?.lostCommits) {
+                  const { lostCommits: _sent, ...rest } = delivered;
+                  saveCheckpoint(db, itemId, rest);
+                }
                 options.placement?.started({
                   commandId: assigned.id,
                   runnerId: selected.id,
