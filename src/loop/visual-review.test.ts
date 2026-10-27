@@ -16,50 +16,65 @@ import {
   findOpenQuestion,
   getQuestion,
   getVisualReview,
+  openVisualReview,
   visualReviewContinueQuestion,
   VISUAL_REVIEW_CONTINUE_OPTIONS,
-  VISUAL_REVIEW_OPTIONS,
-  VISUAL_REVIEW_QUESTION,
   VISUAL_REVIEW_ROUNDS,
 } from "../questions";
-import { awaitQuestion } from "./operations";
+import { ask as askQuestion } from "./operations";
 import { questionEffects } from "./question-effects";
-import { askForVisualReview } from "./visual-review";
+import { askForVisualReview, VISUAL_REVIEW_NEEDS_LINK } from "./visual-review";
 
 const NOW = 1_700_000_000_000;
 
-function reviewing() {
+function verifying() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Hint" });
   const { run } = beginImplementRun(db, item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "turn_ended");
-  const asked = askForVisualReview(db, {
-    item: getWorkItem(db, item.id)!,
-    runId: run.id,
+  return { db, itemId: item.id, runId: run.id };
+}
+
+test("a Paws without an https dashboard link asks nothing in Linear and says why once", () => {
+  const { db, itemId, runId } = verifying();
+  const input = {
+    item: getWorkItem(db, itemId)!,
+    runId,
     sessionId: "ses_1",
     checkId: "visual-proof",
-    evidenceIds: ["ev-1", "ev-2", "ev-3"],
+    evidenceIds: ["ev-1"],
     base: "base",
     head: "head",
-    publicUrl: "https://paws.example/",
+    publicUrl: "http://127.0.0.1:8787/",
     now: NOW,
-    carried: [
-      {
-        evidenceId: "ev-3",
-        fromEvidenceId: "ev-0",
-        approvalId: "q-0",
-        approvedBy: "lead",
-        approvedAt: NOW - 100,
-        match: "identical",
-      },
-    ],
-    approved: new Map([["ev-2", "ev-9"]]),
+  };
+  expect(askForVisualReview(db, input)).toBe(false);
+  expect(askForVisualReview(db, { ...input, now: NOW + 1 })).toBe(false);
+  expect(findOpenQuestion(db, "ses_1")).toBeNull();
+  expect(listOutbox(db).filter((row) => row.op === "elicitation")).toEqual([]);
+  const notes = listOutbox(db).filter((row) => row.op === "activity");
+  expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
+    VISUAL_REVIEW_NEEDS_LINK,
+  ]);
+  // The check stays unapproved; the item keeps verifying.
+  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+});
+
+/** A review question Linear asked with options before the link ask, still open. */
+function askedBefore() {
+  const { db, itemId, runId } = verifying();
+  const { question } = openVisualReview(db, {
+    ask: (store, asker, ...rest) => askQuestion(store, { ...asker, pending: true }, ...rest),
+    itemId,
+    runId,
+    sessionId: "ses_1",
+    checkId: "visual-proof",
+    evidenceIds: ["ev-1", "ev-2"],
+    headCommit: "head",
+    now: NOW,
   });
-  expect(asked).toBe(true);
-  // A pending-human check: the commands and the review run while it waits.
-  expect(getWorkItem(db, item.id)?.state).toBe("verifying");
-  return { db, itemId: item.id, question: findOpenQuestion(db, "ses_1")! };
+  return { db, itemId, question };
 }
 
 const reply = (body: string) => ({
@@ -70,81 +85,32 @@ const reply = (body: string) => ({
   now: NOW + 100,
 });
 
-test("a visual review is asked as its own kind and shows its files in Linear", () => {
-  const { db, question } = reviewing();
-  expect(question).toMatchObject({ kind: "visual-review", body: VISUAL_REVIEW_QUESTION });
-  const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
-  expect(elicitations).toHaveLength(1);
-  expect(elicitations[0]!.payload).toEqual({
-    id: question.id,
-    sessionId: "ses_1",
-    questionId: question.id,
-    body: VISUAL_REVIEW_QUESTION,
-    options: [...VISUAL_REVIEW_OPTIONS],
-    evidence: [
-      { id: "ev-1", link: "https://paws.example/evidence/ev-1" },
-      {
-        id: "ev-2",
-        link: "https://paws.example/evidence/ev-2",
-        approved: { id: "ev-9", link: "https://paws.example/evidence/ev-9" },
-      },
-    ],
-    carried: ["ev-3"],
-  });
-});
-
-test("Accept while the other checks run passes the check and leaves the evaluation to them", () => {
-  const { db, itemId, question } = reviewing();
+test("Accept on a question asked before the link ask requests changes and never approves", () => {
+  const { db, itemId, question } = askedBefore();
   const outcome = answer(db, reply("Accept"), questionEffects(db, { now: NOW + 100 }));
   expect(outcome.status).toBe("answered");
   expect(getVisualReview(db, question.id)).toMatchObject({
-    outcome: "accepted",
-    answeredBy: "lead",
-    headCommit: "head",
+    outcome: "changes_requested",
+    feedback: "Accept",
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
-  expect(listJobs(db).filter((job) => job.queue !== JOB_KIND.visualReviewReminder)).toEqual([]);
-});
-
-test("Accept after the other checks finished completes the evaluation of the same head", () => {
-  const { db, itemId, question } = reviewing();
-  awaitQuestion(db, getWorkItem(db, itemId)!, question, NOW + 50);
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-
-  answer(db, reply("Accept"), questionEffects(db, { now: NOW + 100 }));
-
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
-  expect(
-    listJobs(db)
-      .filter((job) => job.queue !== JOB_KIND.visualReviewReminder)
-      .map((job) => [job.queue, job.jobKey, job.payload]),
-  ).toEqual([
-    [JOB_KIND.reverify, `visual-review-accepted:${question.id}`, { itemId, decide: true }],
-  ]);
+  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+  expect(resume).toMatchObject({ jobKey: `resume:answer:${question.id}` });
+  expect((resume!.payload as { reason: string }).reason).toBe("review");
+  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
 });
 
 test("Request changes restarts the item for review with the feedback", () => {
-  const { db, itemId, question } = reviewing();
+  const { db, itemId, question } = askedBefore();
   answer(db, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 }));
-
   expect(getVisualReview(db, question.id)?.outcome).toBe("changes_requested");
-  const item = getWorkItem(db, itemId)!;
-  expect(item.state).toBe("queued");
-  expect(item.currentRunId).not.toBeNull();
-  const restarted = db
-    .query<{ reason: string }, [string]>(
-      "SELECT reason FROM work_item_event WHERE item_id = ? AND kind = 'restart'",
-    )
-    .all(itemId);
-  expect(restarted).toEqual([{ reason: "review" }]);
+  expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
-  expect(resume).toMatchObject({ jobKey: `resume:answer:${question.id}` });
   expect((resume!.payload as { handoff: string }).handoff).toContain("Make the hint shorter");
-  expect((resume!.payload as { reason: string }).reason).toBe("review");
 });
 
 test("the round-limit question waits behind a sibling's queued question", () => {
-  const { db, itemId, question } = reviewing();
+  const { db, itemId, question } = askedBefore();
   for (let round = 1; round < VISUAL_REVIEW_ROUNDS; round += 1)
     db.run(
       `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, outcome)

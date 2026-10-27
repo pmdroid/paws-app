@@ -162,6 +162,7 @@ import {
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
+  getLinkAsk,
   getPullRequestDraft,
   savePullRequestDraft,
   recordAgentCloseout,
@@ -299,6 +300,7 @@ import {
 } from "../questions";
 import {
   askForVisualReview,
+  cancelVisualReviewQuestion,
   carryVisualReview,
   dueVisualReview,
   pendingVisualReview,
@@ -2656,7 +2658,16 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     options: { decide?: boolean; reverifyJobId?: number } = {},
   ): Promise<void> {
-    if (closeLinkAsksOnHead(this.db, item.id, head, this.now()) > 0) await this.flush();
+    if (
+      closeLinkAsksOnHead(
+        this.db,
+        item.id,
+        head,
+        this.now(),
+        await this.samePatchVisualReview(item, worktree, base, head),
+      ) > 0
+    )
+      await this.flush();
     if (!options.decide && (await this.openVisualReviewCheck(item, worktree, base, head)))
       await this.flush();
     let decide = options.decide ?? false;
@@ -3903,6 +3914,25 @@ export class Orchestrator {
     }
     // A reply never decides a link ask: it goes to the agent as guidance.
     if (open.kind === "link") {
+      // On a visual review the reply requests changes, so only the delegator or the lead may send it.
+      const linkAsk = getLinkAsk(this.db, open.id);
+      const item = getWorkItem(this.db, open.itemId);
+      if (
+        linkAsk?.kind === "screenshots" &&
+        item !== null &&
+        !canAnswer({ kind: "link", allowedIds: linkAsk.answerers }, { id: answeredBy })
+      ) {
+        postNote(
+          this.db,
+          sessionId,
+          item,
+          VISUAL_REVIEW_ANSWERERS,
+          `visual-review-refused:${event.dedupeKey}`,
+          this.now(),
+        );
+        await this.flush();
+        return "rejected";
+      }
       const guided = guideLinkAsk(this.db, {
         questionId: open.id,
         eventKey: event.dedupeKey,
@@ -5430,7 +5460,7 @@ export class Orchestrator {
     if (pending) {
       const reviewed = pending.review.headCommit;
       if (reviewed && (await samePatch(worktree, reviewed, head, base))) return true;
-      cancelQuestion(this.db, pending.question.id, this.now());
+      cancelVisualReviewQuestion(this.db, pending.question.id, "head_moved", this.now());
     }
     const approvals = await approvalsAtHead(
       worktree,
@@ -5488,7 +5518,6 @@ export class Orchestrator {
             checkId: now.requirement.id,
             evidenceIds: now.evidenceIds,
             carried,
-            approved: plan.approved,
             base,
             head,
             publicUrl: evidence.publicUrl,
@@ -5545,8 +5574,24 @@ export class Orchestrator {
    */
   private cancelVisualReview(item: WorkItemRecord): boolean {
     const pending = pendingVisualReview(this.db, item);
-    if (pending) cancelQuestion(this.db, pending.question.id, this.now());
+    if (pending) cancelVisualReviewQuestion(this.db, pending.question.id, "cancelled", this.now());
     return pending !== null;
+  }
+
+  /**
+   * The open visual review link ask stays open on head S when the commit it
+   * asks about has the same patch against main, as after a rebase.
+   */
+  private async samePatchVisualReview(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+  ): Promise<string[]> {
+    const pending = pendingVisualReview(this.db, item);
+    const reviewed = pending?.review.headCommit;
+    if (pending?.question.kind !== "link" || !reviewed || reviewed === head) return [];
+    return (await samePatch(worktree, reviewed, head, base)) ? [pending.question.id] : [];
   }
 
   /** A decision made on the item page. `effects` are what an approval does per kind. */
@@ -5576,10 +5621,23 @@ export class Orchestrator {
     answeredBy: string;
     note: string;
     marks: readonly VisualReviewMark[];
+    actor?: { workspaceId: string; userId: string; name: string };
   }): Promise<"answered" | "forbidden" | "rejected"> {
     const open = getQuestion(this.db, input.questionId);
     const review = open ? getVisualReview(this.db, open.id) : null;
     if (open?.status !== "open" || review?.kind !== "review") return "rejected";
+    // A visual review asked with a link is decided like every link ask, with the marks.
+    if (open.kind === "link")
+      return input.actor
+        ? this.decideLinkAsk({
+            questionId: open.id,
+            decision: "changes",
+            note: input.note,
+            answeredBy: input.answeredBy,
+            actor: input.actor,
+            marks: input.marks,
+          })
+        : "rejected";
     const item = getWorkItem(this.db, open.itemId);
     if (item === null) return "rejected";
     if (!this.canAnswerVisualReview(item, input.answeredBy)) return "forbidden";

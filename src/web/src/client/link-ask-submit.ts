@@ -12,6 +12,13 @@ import {
 /** Keeps what a person typed or ticked in a link ask card across repaints. */
 export function rememberLinkAskDraft(target: EventTarget | null): void {
   if (!(target instanceof HTMLTextAreaElement) && !(target instanceof HTMLInputElement)) return;
+  const review = target.closest<HTMLElement>("[data-visual-review-ask]")?.dataset[
+    "visualReviewAsk"
+  ];
+  if (review && target instanceof HTMLTextAreaElement) {
+    setLinkAskDraft(review, target.value);
+    return;
+  }
   const form = target.closest<HTMLFormElement>("[data-link-ask]");
   const id = form?.dataset["linkAsk"];
   if (!form || !id) return;

@@ -8,7 +8,14 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import { FakeClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listWorkItems, migrate, openDatabase } from "../src/db";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  listWorkItems,
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+} from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeGitHub, fakeMergeReadiness } from "../src/github";
 import {
@@ -443,7 +450,26 @@ async function runTask(input: {
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
       while (outbox.tick().length > 0) await outbox.idle();
       const open = findOpenQuestion(db, "session");
-      if (open !== null && !asked.includes(open.kind)) {
+      if (open !== null && open.kind === "link" && !asked.includes("visual-review")) {
+        // The screens are approved on the item page; a Linear reply never approves them.
+        asked.push("visual-review");
+        const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
+        const userId = putWorkspaceUser(db, {
+          id: "user-pascal",
+          linearUserId: "pascal",
+          name: "Pascal",
+          email: "pascal@example.invalid",
+        });
+        expect(
+          await orchestrator.decideLinkAsk({
+            questionId: open.id,
+            decision: "approve",
+            note: null,
+            answeredBy: "pascal",
+            actor: { workspaceId, userId, name: "Pascal" },
+          }),
+        ).toBe("answered");
+      } else if (open !== null && !asked.includes(open.kind)) {
         asked.push(open.kind);
         await deliver(
           {
@@ -455,7 +481,7 @@ async function runTask(input: {
               id: `answer-${asked.length}`,
               content: {
                 type: "prompt",
-                body: open.kind === "visual-review" ? "Accept" : "Yes, end it with a newline.",
+                body: "Yes, end it with a newline.",
               },
               userId: "pascal",
               createdAt: new Date(clock.now() + 1_000).toISOString(),
@@ -530,7 +556,8 @@ test("Linear requests for a long Closeout with an agent question and a visual re
   expect(result.asked).toEqual(["agent", "visual-review"]);
   expect(result.perCaller, result.operations).toEqual({
     context: 1,
-    outbox: 12,
+    // Two of them put the visual review link on the session and take it off again.
+    outbox: 14,
     "session-read": 1,
     "task-access": 7,
   });

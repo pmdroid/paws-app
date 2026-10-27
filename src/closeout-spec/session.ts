@@ -351,7 +351,7 @@ function statusOf(state: ItemMemory | undefined, max: number | null): string {
 }
 
 /**
- * `pending` means the files are published and a visual review in Linear comes
+ * `pending` means the files are published and a visual review in Paws comes
  * after this turn, so the check does not hold the agent back. The session has
  * no approvals; Paws Closeout judges them.
  */

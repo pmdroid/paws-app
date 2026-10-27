@@ -770,3 +770,89 @@ dialog.review-draw {
   padding-bottom: 1rem;
   border-bottom: 2px solid var(--border);
 }
+
+/* The Visual review card on the item page (src/web/src/client/visual-review.ts). */
+.visual-review-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.visual-review-ask h2 {
+  margin: 0;
+}
+.visual-review-shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.visual-review-shots > li {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+a.visual-review-frame {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-base, 5px);
+  background: var(--background);
+  cursor: crosshair;
+}
+a.visual-review-frame:not([data-review-draw]) {
+  cursor: pointer;
+}
+a.visual-review-frame {
+  text-align: center;
+}
+.visual-review-media {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+a.visual-review-frame :is(img, video) {
+  display: block;
+  max-width: 100%;
+  max-height: 32rem;
+  width: auto;
+  height: auto;
+  margin: 0 auto;
+}
+a.visual-review-frame:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+}
+.review-marks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.review-marks polyline {
+  fill: none;
+  stroke: #e5484d;
+  stroke-width: 3px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.visual-review-earlier {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.visual-review-stop {
+  position: relative;
+}
+.visual-review-stop[open] > p {
+  margin: 0.5rem 0;
+}

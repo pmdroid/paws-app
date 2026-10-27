@@ -446,7 +446,7 @@ function judgeEvidence(
   if (item.approval !== "human") return row(item, "passed", `${counted} published`);
   const approval = approvalFor(item, published, approvals, task);
   if (approval === undefined) {
-    return row(item, "missing", `${counted} published, waiting for a visual review in Linear`);
+    return row(item, "missing", `${counted} published, waiting for a visual review in Paws`);
   }
   return row(
     item,
@@ -492,8 +492,7 @@ export function approvalFor(
 }
 
 /** Shown with an `approval: human` requirement. */
-export const VISUAL_REVIEW_HINT =
-  "Publish the screenshots, then Paws asks for a visual review in Linear.";
+export const VISUAL_REVIEW_HINT = "Publish the screenshots, then a person reviews them in Paws.";
 
 /** What the agent does to satisfy an evidence requirement. */
 export function evidenceRequest(item: ResolvedEvidence): string {
