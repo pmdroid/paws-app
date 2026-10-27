@@ -20,7 +20,12 @@ def main():
         raise RuntimeError("Use a fresh disposable root namespace")
     source.provision_tools()
     fixture = ROOT / "systemctl-fixture.py"
-    fixture.write_text(fixture.read_text().replace('elif args[0] not in ("list-units","stop","daemon-reload","enable"): sys.exit(1)', '''elif args[0]=="is-active":
+    original_fixture = fixture.read_text()
+    fixture.write_text(original_fixture.replace('elif args[0] not in ("list-units","stop","daemon-reload","enable","disable"): sys.exit(1)', '''elif args[0]=="is-enabled":
+ enabled=pathlib.Path("/proof/enabled-services.json")
+ if not enabled.exists() or args[-1] not in json.loads(enabled.read_text()): sys.exit(1)
+ print("enabled")
+elif args[0]=="is-active":
  services=json.loads(pathlib.Path("/proof/active-services.json").read_text())
  sys.exit(0 if args[-1] in services else 3)
 elif args[0] in ("start","stop"):
@@ -31,6 +36,7 @@ elif args[0] in ("start","stop"):
  path.write_text(json.dumps(sorted(services)))
 elif args[0]=="daemon-reload" and pathlib.Path("/proof/reload-unavailable").exists(): sys.exit(1)
 elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(1)'''))
+    assert fixture.read_text() != original_fixture, "the proof's systemctl states replace the fixture's catch-all"
     services = ROOT / "active-services.json"
     services.write_text("[]")
     observations = []
@@ -112,6 +118,17 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
         assert all(path.read_text() == "preserved local identity state" for path in markers)
         assert config.read_text() == "{}"
         observations.append({"name": "upgrade restarts previously active services and preserves configuration and agent state", "passed": True})
+        enabled = ROOT / "enabled-services.json"
+        enabled.write_text(json.dumps(active))
+        services.write_text("[]")
+        install(second)
+        assert set(json.loads(services.read_text())) == set(active)
+        enabled.unlink()
+        services.write_text("[]")
+        install(second)
+        assert json.loads(services.read_text()) == []
+        services.write_text(json.dumps(active))
+        observations.append({"name": "reinstall starts an enabled runner that was stopped and leaves a disabled stopped runner alone", "passed": True})
         install(first, False)
         assert pathlib.Path("/opt/paws-runner/current").resolve().name == "0.1.2"
         assert set(json.loads(services.read_text())) == set(active)
