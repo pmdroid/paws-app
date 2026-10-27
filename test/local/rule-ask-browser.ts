@@ -99,7 +99,7 @@ try {
       await expect(card.getByRole("button", { name: "Approve", exact: true })).toBeEnabled();
       await expect(card.getByRole("button", { name: "Send back" })).toBeEnabled();
       await expect
-        .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+        .poll(() => page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
         .toBe(true);
       await card.screenshot({ path: join(directory, `rule-break-${scheme}-${width}.png`) });
       await page.close();
