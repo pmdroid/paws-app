@@ -89,6 +89,84 @@ export async function samePatch(
   return sameOwnChanges(repo, before, after, base, undefined, env);
 }
 
+/**
+ * The files a fix changed between `approved` and `head`, given main's `base`: the fix's own
+ * changes, never main's. When both forked from main at the same commit this is the diff between
+ * them. After a rebase it is every file whose own changes against its fork differ between the
+ * two, so a file only main touched is left out. Null when git cannot read either commit.
+ */
+export async function fixChangedPaths(
+  repo: string,
+  approved: string,
+  head: string,
+  base: string,
+  env: Record<string, string> = scrubCommandEnv(),
+): Promise<string[] | null> {
+  if (approved === head) return [];
+  if (!COMMIT.test(approved) || !COMMIT.test(head)) return null;
+  const approvedFork = await forkPoint(repo, approved, base, env);
+  const headFork = await forkPoint(repo, head, base, env);
+  if (approvedFork === null || headFork === null) return null;
+  if (approvedFork === headFork) return changedPaths(repo, approved, head, env);
+  const before = await changedPaths(repo, approvedFork, approved, env);
+  const after = await changedPaths(repo, headFork, head, env);
+  if (before === null || after === null) return null;
+  const changed: string[] = [];
+  for (const path of [...new Set([...before, ...after])].sort()) {
+    const was = await ownFileChanges(repo, approvedFork, approved, path, env);
+    const now = await ownFileChanges(repo, headFork, head, path, env);
+    if (was === null || now === null) return null;
+    if (was !== now) changed.push(path);
+  }
+  return changed;
+}
+
+async function forkPoint(
+  repo: string,
+  tip: string,
+  base: string,
+  env: Record<string, string>,
+): Promise<string | null> {
+  const fork = await git(repo, ["merge-base", tip, base], env);
+  return fork.ok ? fork.stdout.toString("utf8").trim() : null;
+}
+
+/** One file's own changes from `from` to `tip`, normalized as `ownChanges` does. */
+async function ownFileChanges(
+  repo: string,
+  from: string,
+  tip: string,
+  path: string,
+  env: Record<string, string>,
+): Promise<string | null> {
+  const diff = await git(
+    repo,
+    [
+      "diff",
+      "--no-renames",
+      "--no-color",
+      "--no-ext-diff",
+      "--unified=0",
+      "--binary",
+      from,
+      tip,
+      "--",
+      `:(literal)${path}`,
+    ],
+    env,
+  );
+  if (!diff.ok) return null;
+  return normalizedDiff(diff.stdout.toString("utf8"));
+}
+
+function normalizedDiff(diff: string): string {
+  return diff
+    .split("\n")
+    .filter((line) => !line.startsWith("index "))
+    .map((line) => (line.startsWith("@@") ? "@@" : line))
+    .join("\n");
+}
+
 async function sameOwnChanges(
   repo: string,
   approved: string,
@@ -143,12 +221,7 @@ async function ownChanges(
     env,
   );
   if (!diff.ok) return null;
-  return diff.stdout
-    .toString("utf8")
-    .split("\n")
-    .filter((line) => !line.startsWith("index "))
-    .map((line) => (line.startsWith("@@") ? "@@" : line))
-    .join("\n");
+  return normalizedDiff(diff.stdout.toString("utf8"));
 }
 
 async function untouchedSince(
