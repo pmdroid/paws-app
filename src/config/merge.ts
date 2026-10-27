@@ -10,12 +10,11 @@ export const MAX_CI_FIX_ATTEMPTS = 10;
 /** `queue`: one pull request at a time per repository. `ci-green`: each merges on its own green CI. */
 export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
 /**
- * What happens when main moved before the merge. `closeout` is the only behaviour: the lane
- * rebases and Closeout verifies the new head before it can merge. The key is deprecated.
+ * What happens when main moved before the merge. `ci` (default): rebase, and the new head merges
+ * once its CI is green. `overlap`: merge without a rebase when main changed none of the pull
+ * request's files or packages. `closeout`: rebase and run Closeout again on the new head.
  */
-export const MAIN_MOVED = ["closeout"] as const;
-/** Values `main_moved` had before every rebased head went through Closeout. */
-const RETIRED_MAIN_MOVED = ["ci", "overlap"];
+export const MAIN_MOVED = ["overlap", "ci", "closeout"] as const;
 
 export type MergeOrder = (typeof MERGE_ORDERS)[number];
 export type MainMoved = (typeof MAIN_MOVED)[number];
@@ -56,7 +55,7 @@ export type ResolvedMergeSettings = MergeChoice & {
   rule?: { project?: string; label: string };
 };
 
-export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "closeout" };
+export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "ci" };
 
 /**
  * Bots that comment on pull requests with status, not findings: deploy previews, coverage
@@ -86,21 +85,9 @@ const highRiskGlobs = z
   .max(HIGH_RISK_GLOBS_MAX)
   .refine((list) => new Set(list).size === list.length, { message: "lists a path twice" });
 
-/**
- * `main_moved` other than `"closeout"` merged heads Closeout never saw, so it is refused rather
- * than read as `"closeout"`. The message names the value to use.
- */
-export function mainMovedError(value: unknown): string {
-  const why = RETIRED_MAIN_MOVED.includes(value as string)
-    ? `${JSON.stringify(value)} is no longer supported: Paws runs Closeout on every rebased head before it merges`
-    : `must be "closeout"`;
-  return `${why}. Set it to "closeout" or remove the key.`;
-}
-
-const closeoutOnly = () => z.literal("closeout", { error: (issue) => mainMovedError(issue.input) });
 const override = {
   order: z.enum(MERGE_ORDERS).optional(),
-  mainMoved: closeoutOnly().optional(),
+  mainMoved: z.enum(MAIN_MOVED).optional(),
 };
 const projectId = z.string().regex(PROJECT_ID, "must be a Linear project id");
 const label = z
@@ -113,7 +100,7 @@ const label = z
     "has a control character",
   );
 const policySchema = z.strictObject({
-  default: z.strictObject({ order: z.enum(MERGE_ORDERS), mainMoved: closeoutOnly() }),
+  default: z.strictObject({ order: z.enum(MERGE_ORDERS), mainMoved: z.enum(MAIN_MOVED) }),
   projects: z
     .array(z.strictObject({ id: projectId, ...override }))
     .max(500)
@@ -136,7 +123,7 @@ const tomlSchema = z.object({
       projects: z
         .record(
           projectId,
-          z.strictObject({ order: override.order, main_moved: closeoutOnly().optional() }),
+          z.strictObject({ order: override.order, main_moved: override.mainMoved }),
         )
         .optional(),
       repositories: z
@@ -166,7 +153,7 @@ const tomlSchema = z.object({
             project: projectId.optional(),
             label,
             order: override.order,
-            main_moved: closeoutOnly().optional(),
+            main_moved: override.mainMoved,
           }),
         )
         .optional(),
