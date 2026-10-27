@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunnerCommand } from "../src/runner-protocol";
+import { openExecutionJournal } from "../src/runner-journal";
 import { executeRunnerCommand } from "../src/runner-worker";
 
 const executionId = "0".repeat(26);
@@ -254,6 +255,82 @@ test("a 21st publish_artifact is a tool error and the run still finishes", async
       "Published what fits.",
     );
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ask_team context reaches the runner journal's question event", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-task-worker-context-"));
+  mkdirSync(join(root, "journal"), { mode: 0o700 });
+  const journal = openExecutionJournal(join(root, "journal"));
+  try {
+    const workRoot = join(root, "work");
+    const outputDirectory = join(root, "output");
+    const home = join(root, "home");
+    for (const path of [join(workRoot, executionId), outputDirectory, home])
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    const script = join(root, "script.json");
+    const recorded = join(root, "agent.json");
+    const context = "1. escape-a\n2. escape-b\n16. escape-p";
+    writeFileSync(
+      script,
+      JSON.stringify({
+        model: "fixture-model",
+        steps: [
+          { type: "ask_team", question: "Too much?", context: "x".repeat(16_385) },
+          {
+            type: "ask_team",
+            question: "Which of these 16 candidate review escapes are confirmed?",
+            options: ["All", "None"],
+            context,
+          },
+          { type: "end" },
+        ],
+      }),
+    );
+    const input = command("answer");
+    const answered: string[] = [];
+    const result = await executeRunnerCommand({
+      job: { executionId, command: input },
+      outputDirectory,
+      workRoot,
+      home,
+      resultsGid: process.getgid!(),
+      launch: {
+        command: process.execPath,
+        args: [
+          "--no-env-file",
+          fileURLToPath(new URL("../src/acp/testing/fake-agent.ts", import.meta.url)),
+          recorded,
+          script,
+        ],
+        env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
+      },
+      async answer(requestId) {
+        answered.push(requestId);
+        return { answer: "All" };
+      },
+    });
+    expect(result.run.stopReason).toBe("end_turn");
+    expect(answered).toHaveLength(1);
+    expect(JSON.parse(readFileSync(recorded, "utf8")).askTeam.ok).toBe(true);
+    const execution = journal.admit(input, Date.now())!;
+    journal.ingest(execution.id, readFileSync(join(outputDirectory, "events.jsonl")));
+    expect(
+      journal
+        .pending(execution.id)
+        .map((entry) => entry.event)
+        .filter((event) => event.type === "question"),
+    ).toEqual([
+      {
+        type: "question",
+        text: "Which of these 16 candidate review escapes are confirmed?",
+        context,
+        options: ["All", "None"],
+      },
+    ]);
+  } finally {
+    journal.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

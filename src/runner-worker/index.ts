@@ -195,7 +195,13 @@ export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
   | { type: "closeout_policy"; requestId: string }
   | { type: "acp"; event: AcpEvent }
-  | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
+  | {
+      type: "question";
+      requestId: string;
+      question: string;
+      context?: string;
+      options: readonly unknown[];
+    }
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
   | Extract<
       RunnerEvent,
@@ -966,11 +972,16 @@ export async function executeRunnerCommand(
           : {
               async ask(request, context) {
                 if (!options.answer) throw new Error("Runner question channel is unavailable");
+                if (request.context && request.context.length > 16_384)
+                  throw new Error(
+                    "ask_team context must be at most 16384 characters. Shorten it and ask again.",
+                  );
                 const requestId = randomUUID();
                 emit({
                   type: "question",
                   requestId,
                   question: request.question,
+                  ...(request.context ? { context: request.context } : {}),
                   options: request.options ?? [],
                 });
                 return options.answer(requestId, context.signal);

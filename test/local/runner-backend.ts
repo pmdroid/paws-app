@@ -52,7 +52,7 @@ import {
   createFakeRunnerTranscriptObjects,
   RUNNER_TRANSCRIPT_CHUNK_BYTES,
 } from "../../src/runner-transcripts";
-import { openQuestion, answerQuestion } from "../../src/questions";
+import { openQuestion, answerQuestion, ask as askQuestion } from "../../src/questions";
 import { applyWorkItemEvent } from "../../src/db";
 import { PawsShutdown, RunnerCapacityWait } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
@@ -1583,13 +1583,36 @@ export async function probeRunnerBackend(
     await git(["-C", source, "reset", "--hard", base]);
     const asked = item();
     let opened = false;
+    let contextBody: string | undefined;
     const questioning = backend.forItem(asked.id)(
       input(asked, {
         askTeam: {
           async ask(request, context) {
+            assert.equal(context.runId, asked.run.id);
+            if (request.question === "Which rows count as archived?") {
+              const asked2 = askQuestion(
+                db,
+                { itemId: asked.id, runId: asked.run.id, sessionId: `session-${sequence}` },
+                "agent",
+                request.question,
+                {
+                  ...(request.options ? { options: request.options } : {}),
+                  ...(request.context ? { context: request.context } : {}),
+                  now,
+                },
+              );
+              assert.equal(asked2.question.context, "Rows 1-16 are listed in report.md.");
+              contextBody = db
+                .query<{ body: string }, [string]>(
+                  "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE op='elicitation' AND idempotency_key=?",
+                )
+                .get(`question:${asked2.question.id}`)?.body;
+              answerQuestion(db, asked2.question.id, { answer: "all", answeredBy: "owner", now });
+              return { answer: "all" };
+            }
             assert.equal(request.question, "Include archived rows?");
             assert.deepEqual(request.options, [{ label: "Include", value: "yes" }]);
-            assert.equal(context.runId, asked.run.id);
+            assert.equal(request.context, undefined);
             applyWorkItemEvent(db, asked.id, "blocking_question");
             const question = openQuestion(db, {
               itemId: asked.id,
@@ -1645,6 +1668,35 @@ export async function probeRunnerBackend(
       await delay(1);
     }
     assert(opened && answered);
+    work.event({
+      runnerId,
+      runId: questionCommand.runId,
+      generation: questionCommand.generation,
+      token: questionGrant.token,
+      sequence: 2,
+      event: {
+        type: "question",
+        text: "Which rows count as archived?",
+        context: "Rows 1-16 are listed in report.md.",
+        options: [],
+      },
+    });
+    let contextAnswered = false;
+    for (let i = 0; i < 500 && !contextAnswered; i++) {
+      contextAnswered =
+        results.answers({
+          runnerId,
+          runId: questionCommand.runId,
+          generation: questionCommand.generation,
+          token: questionGrant.token,
+          after: 1,
+        }).length > 0;
+      if (!contextAnswered) await delay(1);
+    }
+    assert(contextAnswered);
+    const shown = contextBody ?? "";
+    assert(shown.includes("Rows 1-16 are listed in report.md."));
+    assert(shown.includes("Which rows count as archived?"));
     results.submit({
       runnerId,
       runId: questionCommand.runId,
@@ -1657,6 +1709,16 @@ export async function probeRunnerBackend(
       "remote questions use the existing Linear question channel and immutable answer sequence",
       true,
       { opened, answered, canonicalState: getWorkItem(db, asked.id)?.state },
+    );
+    observe(
+      "a remote question without context, as an older runner sends it, is still accepted",
+      opened && answered,
+      { opened, answered },
+    );
+    observe(
+      "a remote question's context is stored and shown in the Linear elicitation body",
+      true,
+      { contextBody },
     );
     const unpushed = item();
     const pushQuestions: string[] = [];
