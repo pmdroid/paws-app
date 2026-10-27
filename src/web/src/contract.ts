@@ -513,8 +513,8 @@ export interface StatusMergeEntry {
   /** Place in its repository's queue, 1 moves. Null when the task holds no place. */
   position: number | null;
   itemId: string;
-  /** `owner/repo`. */
-  repository: string;
+  /** `owner/repo`. Null when Paws knows no repository for the task. */
+  repository: string | null;
   enqueuedAt: string;
   /** When Closeout accepted the current change. */
   acceptedAt: string;
@@ -527,7 +527,8 @@ export interface StatusMergeEntry {
 /** A pull request that merged, or a task that left the queue for the agent, in the last 24 hours. */
 export interface StatusMergeOutcome {
   itemId: string;
-  repository: string;
+  /** `owner/repo`. Null when Paws knows no repository for the task. */
+  repository: string | null;
   outcome: "merged" | "back_with_agent";
   /** For `back_with_agent`: CI failed or the branch update conflicted. */
   reason: "ci_failed" | "conflict" | null;
@@ -1544,7 +1545,7 @@ function readMerge(input: unknown, index: number, repo: string): StatusMergeEntr
   return {
     position,
     itemId: text(body, "itemId", path),
-    repository: body.repository === undefined ? repo : text(body, "repository", path),
+    repository: body.repository === undefined ? repo : nullableText(body, "repository", path),
     enqueuedAt,
     acceptedAt: body.acceptedAt === undefined ? enqueuedAt : dateString(body, "acceptedAt", path),
     waitingFor:
@@ -1578,7 +1579,7 @@ function readMergeOutcome(input: unknown, path: string, repo: string): StatusMer
     throw new StatusContractError(`${path}.reason must be ci_failed, conflict or null`);
   return {
     itemId: text(body, "itemId", path),
-    repository: body.repository === undefined ? repo : text(body, "repository", path),
+    repository: body.repository === undefined ? repo : nullableText(body, "repository", path),
     outcome: oneOf(
       string(body, "outcome", path),
       ["merged", "back_with_agent"] as const,
