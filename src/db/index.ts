@@ -424,7 +424,14 @@ export {
   type VisualReviewRecord,
 } from "./visual-reviews";
 export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
-export { getConversation, saveConversation } from "./acp-conversations";
+export {
+  CLEANUP_BLOCKED_NOTICE,
+  blockConversation,
+  clearConversationBlock,
+  getConversation,
+  listBlockedConversations,
+  saveConversation,
+} from "./acp-conversations";
 export {
   getConfirmedRemoteMerge,
   recordConfirmedRemoteMerge,
