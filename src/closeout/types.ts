@@ -115,4 +115,21 @@ export type GateResult = {
   fixesLeft?: number;
   reportPath?: string;
   bypasses?: readonly import("./bypass").CloseoutBypass[];
+  /**
+   * Failed rules with `onFail: approve` that no approval covers. They are not in {@link handoff}
+   * and use no fix attempt: a person approves the break or sends it back.
+   */
+  ruleApprovals?: RuleApproval[];
+};
+
+/** A failed `onFail: approve` rule waiting for a person, with what the agent gets if it is sent back. */
+export type RuleApproval = {
+  id: string;
+  /** The rule's one-line summary from the policy. */
+  summary: string;
+  /** Closeout's message for the failed rule, such as `probe exited 1; P1 finding`. */
+  message: string;
+  attempt?: number;
+  /** The finding and the end of the probe output, as a fix round would hand it to the agent. */
+  feedback: string;
 };

@@ -64,6 +64,7 @@ export type {
   Finding,
   GateOutcome,
   GateResult,
+  RuleApproval,
   ReviewFindings,
   StoredReviewFinding,
 } from "./types";
