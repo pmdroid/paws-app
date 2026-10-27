@@ -27,7 +27,7 @@ sha256sum --check paws-runner_X.Y.Z_arm64.deb.sha256
 sudo apt install ./paws-runner_X.Y.Z_arm64.deb
 ```
 
-The Debian package verifies its embedded signed manifest and runtime archive before installation. Reinstalling the same exact release preserves the verified runtime and host identity. Upgrades refuse active executions, preserve configuration and agent login data, and restart the services that were running before the upgrade. Aborted upgrades and removals restore the previously active services. Removal stops and disables the runner services and removes the runtime. Purging also removes `/etc/paws-runner/config.json`; enrollment and agent login data remain in their service accounts' state directories.
+The Debian package verifies its embedded signed manifest and runtime archive before installation. Reinstalling the same exact release preserves the verified runtime and host identity. Upgrades refuse active executions, preserve configuration and agent login data, and start the runner service again if it was running, waiting to restart after a crash, or is enabled. Aborted upgrades and removals restore the same services. Removal stops and disables the runner services and removes the runtime. Purging also removes `/etc/paws-runner/config.json`; enrollment and agent login data remain in their service accounts' state directories.
 
 The [release workflow](../../.github/workflows/runner-release.yml) builds on GitHub's native AMD64 and ARM64 runners when a release is published. It attaches both packages and their SHA-256 files after both builds succeed. The `PAWS_RUNNER_RELEASE_KEY` repository secret holds the Ed25519 private key matching `deploy/linux/release.pub`.
 
