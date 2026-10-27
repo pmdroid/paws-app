@@ -527,10 +527,15 @@ export async function openRunnerRuntime(options: {
         journalCaught(error, "runner-runtime.pulse.installed", null);
         report(error);
       }
+      // Paws renews only the work named here, so a restart that lost a command fences it.
       const response = await options.daemon.heartbeat(
         options.skills?.installed(),
         runtimes.installed(),
         agents,
+        [...active.values()].map(({ execution }) => ({
+          runId: execution.command.runId,
+          generation: execution.command.generation,
+        })),
       );
       if (closed) return;
       if (response.agents && options.agents)
