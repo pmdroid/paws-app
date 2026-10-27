@@ -306,8 +306,9 @@ test("Stop stops the item and leaves the pull request open", () => {
   });
   expect(listJobs(db).filter((job) => job.queue === JOB_KIND.closeStoppedPull)).toEqual([]);
   const stopped = listOutbox(db).find((row) => row.idempotencyKey.startsWith("command:stop:"));
-  expect((stopped?.payload as { kind: string; body: string }).kind).toBe("response");
-  expect((stopped?.payload as { body: string }).body).toContain("The pull request stays open.");
+  const payload = stopped?.payload as { kind: string; body: string } | undefined;
+  expect(payload?.kind).toBe("response");
+  expect(payload?.body).toContain("The pull request stays open.");
 });
 
 test("someone who is neither the delegator nor the lead cannot answer", async () => {

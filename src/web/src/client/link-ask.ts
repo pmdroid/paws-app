@@ -156,7 +156,7 @@ function riskCard(question: StatusQuestion, risk: StatusRiskAsk): string {
   const busy = pending.has(id) ? ' disabled=""' : "";
   const head = ask.head.slice(0, 7);
   const paths = risk.paths.length
-    ? `<p>High-risk paths changed:</p><ul class="risk-paths">${risk.paths.map((path) => `<li class="mono">${esc(path)}</li>`).join("")}</ul>`
+    ? `<p>High-risk paths changed:</p><ul class="risk-paths">${risk.paths.map((path) => `<li>${esc(path)}</li>`).join("")}</ul>`
     : ask.detail
       ? `<p>${esc(ask.detail)}</p>`
       : "";
