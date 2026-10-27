@@ -12,7 +12,7 @@ export const VISUAL_REVIEW_OPTIONS = ["Accept", "Request changes"] as const;
 export const VISUAL_REVIEW_REMINDER_MS = 24 * 60 * 60 * 1000;
 
 export const VISUAL_REVIEW_REMINDER =
-  "Still waiting for a visual review. Accept the screenshots, or describe the changes you want.";
+  "Still waiting for a visual review. Reply with the changes you want. A reply in Linear never approves the screens.";
 
 export const VISUAL_REVIEW_ANSWERERS =
   "Only the person who delegated this issue or the Linear project's lead can answer this visual review. The task keeps waiting.";
@@ -115,10 +115,30 @@ export function openVisualReview(
       now: input.now,
     },
   );
+  return { question, review: insertVisualReview(db, { ...input, questionId: question.id }) };
+}
+
+/**
+ * Records the files a review question asks about, bound to `headCommit`. The
+ * question is a link ask answered on the item page, or an older Linear
+ * question with options. Call inside a transaction.
+ */
+export function insertVisualReview(
+  db: Database,
+  input: {
+    questionId: string;
+    itemId: string;
+    checkId: string;
+    evidenceIds: readonly string[];
+    headCommit: string;
+    now: number;
+    carried?: readonly VisualReviewCarry[];
+  },
+): StoredVisualReview {
   db.run(
     "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, head_commit, carried) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [
-      question.id,
+      input.questionId,
       input.itemId,
       input.checkId,
       JSON.stringify(input.evidenceIds),
@@ -127,7 +147,25 @@ export function openVisualReview(
       input.carried?.length ? JSON.stringify(input.carried) : null,
     ],
   );
-  return { question, review: getVisualReview(db, question.id)! };
+  return getVisualReview(db, input.questionId)!;
+}
+
+/**
+ * The detail of the visual review link ask: how many screens changed and
+ * which. Linear can't show them; the item page does.
+ */
+export function visualReviewLinkDetail(
+  checkId: string,
+  screens: readonly string[],
+  carried: readonly string[] = [],
+): string {
+  const count = screens.length === 1 ? "1 changed screen" : `${screens.length} changed screens`;
+  return [
+    `${count} for ${checkId}${screens.length ? `: ${screens.join(", ")}` : ""}.`,
+    ...(carried.length
+      ? [`Unchanged since your approval, so not asked again: ${carried.join(", ")}.`]
+      : []),
+  ].join(" ");
 }
 
 /**
@@ -342,7 +380,7 @@ export function parseVisualReviewAnswer(answer: string): VisualReviewAnswer {
 export function visualReviewAcceptedHandoff(checkId: string): string {
   return [
     "Handoff from the previous session.",
-    `The visual review of check ${checkId} was accepted in Linear. The check passes for the files it covered.`,
+    `The visual review of check ${checkId} was accepted. The check passes for the files it covered.`,
     "Finish Closeout and open the pull request. Do not change files under the check's paths unless you have to; a change there needs another visual review.",
   ].join("\n");
 }

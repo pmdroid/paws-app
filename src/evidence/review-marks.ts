@@ -24,6 +24,8 @@ export type VisualReviewChanges = (input: {
   answeredBy: string;
   note: string;
   marks: readonly VisualReviewMark[];
+  /** The Paws account for the Audit history row. */
+  actor: { workspaceId: string; userId: string; name: string };
 }) => Promise<"answered" | "forbidden" | "rejected">;
 
 export type VisualReviewChangesOptions = {
@@ -113,6 +115,7 @@ export async function handleVisualReviewChanges(
       answeredBy: member.linearUserId,
       note: note.trim() || NO_NOTE,
       marks,
+      actor: { workspaceId: principal.workspaceId, userId: principal.userId, name: member.name },
     });
     if (result === "answered") return Response.json({ ok: true, marks: marks.length });
     await removeMarks(options.root, marks);

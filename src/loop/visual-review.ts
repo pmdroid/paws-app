@@ -1,4 +1,5 @@
-import { ask } from "./operations";
+import { ask, restart } from "./operations";
+import { askWithLink, linkAskAvailable } from "./link-ask";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -7,16 +8,23 @@ import path from "node:path";
 import type { EvidenceApproval, ResolvedEvidence } from "../closeout";
 import { JOB_KIND } from "../core";
 import {
+  type LinkAsk,
   type WorkItemRecord,
+  applyWorkItemEvent,
+  closeLinkAsk,
   enqueueJobOnce,
   enqueueOutboxOnce,
   getEvidence,
+  getLinkAsk,
   getWorkItem,
   linearConversationUrl,
   latestEvidence,
   listEvidence,
   listVisualReviewMarks,
   listVisualReviews,
+  saveCheckpoint,
+  saveVisualReviewMarks,
+  type VisualReviewMark,
 } from "../db";
 import { reviewMarkPath } from "./input-files";
 import { compareScreenshots } from "./screenshot-diff";
@@ -28,24 +36,26 @@ import {
   recordCarriedVisualReview,
   visualReviewCarriedNote,
   type VisualReviewCarry,
+  cancelQuestion,
   findOpenQuestion,
   getQuestion,
   getVisualReview,
+  insertVisualReview,
   lastVisualReviewFeedback,
-  openVisualReview,
   openVisualReviewContinue,
   parseVisualReviewAnswer,
   recordVisualReviewAnswer,
   rejectedEvidenceIds,
+  removeLinkAskUrl,
+  shortCommit,
   visualReviewAcceptedHandoff,
   visualReviewChangesHandoff,
+  visualReviewLinkDetail,
   visualReviewRounds,
   VISUAL_REVIEW_ROUNDS,
   type StoredQuestion,
   type StoredVisualReview,
-  VISUAL_REVIEW_OPTIONS,
   VISUAL_REVIEW_REMINDER,
-  VISUAL_REVIEW_REMINDER_MS,
 } from "../questions";
 
 export function dueVisualReview(
@@ -177,16 +187,33 @@ export function carryVisualReview(
   return review;
 }
 
-/** The open review question of the item's pending-human check. */
+/**
+ * The open review question of the item's pending-human check: a link ask
+ * answered on the item page, or an older Linear question with options.
+ */
 export function pendingVisualReview(
   db: Database,
   item: WorkItemRecord,
 ): { question: StoredQuestion; review: StoredVisualReview } | null {
   if (item.sessionKey === null) return null;
   const question = findOpenQuestion(db, item.sessionKey);
-  if (question?.itemId !== item.id || question.kind !== "visual-review") return null;
+  if (question?.itemId !== item.id) return null;
+  if (question.kind !== "visual-review" && question.kind !== "link") return null;
   const review = getVisualReview(db, question.id);
   return review?.kind === "review" ? { question, review } : null;
+}
+
+/** Cancels the open review question, and closes its link ask and takes the link off the session. */
+export function cancelVisualReviewQuestion(
+  db: Database,
+  questionId: string,
+  reason: "head_moved" | "cancelled",
+  now: number,
+): void {
+  cancelQuestion(db, questionId, now);
+  if (getLinkAsk(db, questionId)?.closedAt !== null) return;
+  closeLinkAsk(db, questionId, { reason, now });
+  removeLinkAskUrl(db, questionId, now);
 }
 
 /** A pending-human check opens while the item is verifying head S. */
@@ -194,6 +221,13 @@ export function reviewable(item: WorkItemRecord | null): item is WorkItemRecord 
   return item?.state === "verifying" && !item.cancelRequested;
 }
 
+/**
+ * Asks the delegator or the project lead to approve the screens on the item
+ * page, where they are in view: the screenshots link ask. A Linear reply only
+ * ever requests changes. Without an https dashboard link nobody could see the
+ * screens, so Paws does not ask and the check stays unapproved; it says so once.
+ * Returns whether it asked.
+ */
 export function askForVisualReview(
   db: Database,
   input: {
@@ -208,8 +242,6 @@ export function askForVisualReview(
     now: number;
     /** Files among `evidenceIds` that carried an approval over and are not asked about. */
     carried?: readonly VisualReviewCarry[];
-    /** For a changed file, the approved file to show beside it. */
-    approved?: ReadonlyMap<string, string>;
   },
 ): boolean {
   const { item, sessionId } = input;
@@ -217,44 +249,49 @@ export function askForVisualReview(
   const current = getWorkItem(db, item.id);
   if (!reviewable(current)) return false;
   if (findOpenQuestion(db, sessionId) !== null) return false;
-  const base = input.publicUrl.replace(/\/+$/, "");
-  const link = (id: string) => `${base}/evidence/${encodeURIComponent(id)}`;
+  if (!linkAskAvailable(input.publicUrl) || current.sessionKey !== sessionId) {
+    postNote(
+      db,
+      sessionId,
+      current,
+      VISUAL_REVIEW_NEEDS_LINK,
+      `visual-review-needs-link:${item.id}:${input.head}`,
+      input.now,
+    );
+    return false;
+  }
   const skipped = new Set(carried.map((entry) => entry.evidenceId));
-  const evidence = input.evidenceIds
-    .filter((id) => !skipped.has(id))
-    .map((id) => {
-      const approved = input.approved?.get(id);
-      return {
-        id,
-        link: link(id),
-        ...(approved ? { approved: { id: approved, link: link(approved) } } : {}),
-      };
-    });
-  const { question } = openVisualReview(db, {
-    // Asked beside the command checks and the review; the item stays verifying.
-    ask: (store, asker, ...rest) => ask(store, { ...asker, pending: true }, ...rest),
-    itemId: item.id,
+  const name = (id: string) => getEvidence(db, id)?.displayName ?? id;
+  const { question } = askWithLink(db, {
+    item: current,
     runId: input.runId,
-    sessionId,
+    kind: "screenshots",
+    head: input.head,
+    detail: visualReviewLinkDetail(
+      input.checkId,
+      input.evidenceIds.filter((id) => !skipped.has(id)).map(name),
+      carried.map((entry) => name(entry.evidenceId)),
+    ),
+    publicUrl: input.publicUrl,
+    now: input.now,
+    // Asked beside the command checks and the review; the item stays verifying.
+    pending: true,
+  });
+  insertVisualReview(db, {
+    questionId: question.id,
+    itemId: item.id,
     checkId: input.checkId,
     evidenceIds: input.evidenceIds,
     headCommit: input.head,
     now: input.now,
     carried,
-    shown: {
-      evidence,
-      ...(carried.length ? { carried: carried.map((entry) => entry.evidenceId) } : {}),
-    },
-  });
-  enqueueJobOnce(db, {
-    queue: JOB_KIND.visualReviewReminder,
-    jobKey: `visual-review-reminder:${question.id}`,
-    payload: { questionId: question.id },
-    runAt: input.now + VISUAL_REVIEW_REMINDER_MS,
-    now: input.now,
   });
   return true;
 }
+
+/** Why a localhost-only Paws leaves a human visual review unapproved. */
+export const VISUAL_REVIEW_NEEDS_LINK =
+  "Visual review needs a dashboard link a person can open, so the screens can be approved where they are in view. Set PAWS_PUBLIC_URL to an https address; a reply in Linear cannot approve screens.";
 
 /** Posts the one reminder while the review is still open and the task still waits on it. */
 export function remindVisualReview(db: Database, questionId: string, now: number): boolean {
@@ -273,7 +310,7 @@ export function remindVisualReview(db: Database, questionId: string, now: number
       sessionId: question.sessionId,
       questionId,
       body: VISUAL_REVIEW_REMINDER,
-      options: [...VISUAL_REVIEW_OPTIONS],
+      options: [],
     },
     now,
   });
@@ -308,15 +345,17 @@ export function postNote(
 }
 
 /**
- * Records the answer. Accept passes the check; changes, or Keep going after
- * the round limit, go back to the agent. Moves no state: the caller does.
+ * Records a Linear answer to a review question asked before the link ask.
+ * A reply in Linear never approves screens: every answer, "Accept" included,
+ * is a change request, and Keep going after the round limit goes back to the
+ * agent. Moves no state: the caller does.
  */
 export function recordVisualReviewOutcome(
   db: Database,
   question: StoredQuestion,
   review: StoredVisualReview,
   now: number,
-): "accepted" | "changes" | "asked" {
+): "changes" | "asked" {
   const answer = question.answer ?? "";
   const answeredBy = question.answeredBy ?? "";
   if (review.kind === "continue") {
@@ -330,16 +369,6 @@ export function recordVisualReviewOutcome(
     return "changes";
   }
   const parsed = parseVisualReviewAnswer(answer);
-  if (parsed.kind === "accept") {
-    const headCommit = review.headCommit ?? reviewedHead(db, question.itemId, review);
-    recordVisualReviewAnswer(db, question.id, {
-      outcome: "accepted",
-      answeredBy,
-      now,
-      ...(headCommit ? { headCommit } : {}),
-    });
-    return "accepted";
-  }
   recordVisualReviewAnswer(db, question.id, {
     outcome: "changes_requested",
     answeredBy,
@@ -357,6 +386,89 @@ export function recordVisualReviewOutcome(
     now,
   });
   return "asked";
+}
+
+/** What Paws posts when a Linear reply on the screenshots link ask became a change request. */
+export const VISUAL_REVIEW_REPLY_NOTE =
+  "Sent your reply to the agent as the changes you want. A reply in Linear never approves the screens; approve them in Paws.";
+
+/**
+ * A decision on the screenshots link ask, inside its transaction, after the
+ * question is answered. `approve` comes only from the item page and passes
+ * the check for the ask's head and files. `changes` comes from the page, with
+ * the drawn marks, or from a Linear reply. Returns false when the ask has no
+ * visual review, so the caller hands the decision back as usual.
+ */
+export function decideVisualReview(
+  db: Database,
+  input: {
+    linkAsk: LinkAsk;
+    decision: "approve" | "changes";
+    feedback: string;
+    answeredBy: string;
+    marks?: readonly VisualReviewMark[];
+    now: number;
+  },
+): boolean {
+  const { linkAsk, now } = input;
+  const review = getVisualReview(db, linkAsk.questionId);
+  const question = getQuestion(db, linkAsk.questionId);
+  if (review?.kind !== "review" || question === null) return false;
+  if (input.decision === "approve") {
+    recordVisualReviewAnswer(db, review.questionId, {
+      outcome: "accepted",
+      answeredBy: input.answeredBy,
+      headCommit: linkAsk.headCommit,
+      now,
+    });
+    const item = getWorkItem(db, review.itemId);
+    // While the other checks still run on S, that evaluation picks the approval up.
+    if (item?.state !== "awaiting_input" || findOpenQuestion(db, question.sessionId) !== null)
+      return true;
+    applyWorkItemEvent(db, item.id, "answer_received");
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.reverify,
+      jobKey: `visual-review-accepted:${review.questionId}`,
+      payload: { itemId: item.id, decide: true },
+      now,
+    });
+    return true;
+  }
+  if (input.marks?.length) saveVisualReviewMarks(db, input.marks);
+  recordVisualReviewAnswer(db, review.questionId, {
+    outcome: "changes_requested",
+    answeredBy: input.answeredBy,
+    feedback: input.feedback,
+    headCommit: linkAsk.headCommit,
+    now,
+  });
+  if (visualReviewRounds(db, review.itemId, review.checkId) >= VISUAL_REVIEW_ROUNDS) {
+    openVisualReviewContinue(db, {
+      ask,
+      itemId: review.itemId,
+      runId: question.runId,
+      sessionId: question.sessionId,
+      checkId: review.checkId,
+      now,
+    });
+    return true;
+  }
+  const item = getWorkItem(db, review.itemId);
+  if (item === null) return true;
+  const jobId = restart(db, item, {
+    reason: "review",
+    body: visualReviewHandoff(db, review.questionId) ?? "",
+    jobKey: `resume:answer:${review.questionId}`,
+    now,
+  });
+  if (jobId !== null)
+    db.run("UPDATE question SET handoff_version = ? WHERE id = ?", [
+      getWorkItem(db, item.id)!.version,
+      review.questionId,
+    ]);
+  return true;
 }
 
 export function visualReviewHandoff(db: Database, questionId: string): string | null {
@@ -441,7 +553,9 @@ export function visualReviewPullRequestNote(
         ...(full
           ? []
           : [
-              `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in [Linear](<${question}>).`,
+              getLinkAsk(db, review.questionId) === null
+                ? `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in [Linear](<${question}>).`
+                : `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in Paws for ${shortCommit(review.headCommit ?? "")}.`,
             ]),
         ...carried,
         ...latestEvidence(evidence.filter((row) => review.evidenceIds.includes(row.id))).flatMap(
@@ -458,10 +572,4 @@ export function visualReviewPullRequestNote(
       ].join("\n\n");
     })
     .join("\n\n");
-}
-
-function reviewedHead(db: Database, itemId: string, review: StoredVisualReview): string | null {
-  const shown = new Set(review.evidenceIds);
-  const rows = listEvidence(db, itemId).filter((row) => shown.has(row.id));
-  return rows.at(-1)?.headCommit ?? null;
 }

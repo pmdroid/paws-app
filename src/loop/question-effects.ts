@@ -14,7 +14,6 @@ import {
   getWorkItem,
   listCloseoutRecoveries,
   savePlanProposal,
-  saveCheckpoint,
   saveVisualReviewMarks,
   type VisualReviewMark,
 } from "../db";
@@ -132,10 +131,9 @@ export function questionEffects(
     );
   };
   /**
-   * Accept passes the pending-human check. While the other checks still run
-   * on head S the item stays verifying and that evaluation picks the approval
-   * up; once they are done, the evaluation of S completes from their results.
-   * Request changes restarts the item with the feedback.
+   * A Linear answer to a review question asked before the link ask. It never
+   * approves: it restarts the item with the feedback, or asks whether to keep
+   * going after the round limit. Screens are approved only on the item page.
    */
   const visualReview = (question: StoredQuestion) => {
     const review = getVisualReview(db, question.id);
@@ -145,24 +143,10 @@ export function questionEffects(
     if (!input.marks) consumeTurn(question);
     const item = getWorkItem(db, question.itemId);
     if (outcome === "asked" || !item) return;
-    if (outcome === "changes") {
-      restart(db, item, {
-        reason: "review",
-        body: visualReviewHandoff(db, question.id) ?? "",
-        jobKey: `resume:answer:${question.id}`,
-        now: input.now,
-      });
-      return;
-    }
-    if (item.state !== "awaiting_input" || findOpenQuestion(db, question.sessionId) !== null)
-      return;
-    applyWorkItemEvent(db, item.id, "answer_received");
-    applyWorkItemEvent(db, item.id, "turn_ended");
-    if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
-    enqueueJobOnce(db, {
-      queue: JOB_KIND.reverify,
-      jobKey: `visual-review-accepted:${question.id}`,
-      payload: { itemId: item.id, decide: true },
+    restart(db, item, {
+      reason: "review",
+      body: visualReviewHandoff(db, question.id) ?? "",
+      jobKey: `resume:answer:${question.id}`,
       now: input.now,
     });
   };

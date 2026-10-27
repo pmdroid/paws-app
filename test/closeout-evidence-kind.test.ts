@@ -161,7 +161,7 @@ test("approval: human is pending in get_closeout and in Paws Closeout until a re
     commit: head,
   };
   const hint =
-    'Screenshot each changed screen at desktop width and at 390 px. Call publish_artifact with checkId "visual-proof" for each file. Publish the screenshots, then Paws asks for a visual review in Linear.';
+    'Screenshot each changed screen at desktop width and at 390 px. Call publish_artifact with checkId "visual-proof" for each file. Publish the screenshots, then a person reviews them in Paws.';
 
   const before = await f.report([]);
   expect(before.required.find((item) => item.id === "visual-proof")).toMatchObject({
@@ -176,9 +176,9 @@ test("approval: human is pending in get_closeout and in Paws Closeout until a re
     hint,
   });
   expect(published.pending).toEqual(["lint"]);
-  expect(await f.session([shot]).run("visual-proof")).toContain("asks for a visual review");
+  expect(await f.session([shot]).run("visual-proof")).toContain("a person reviews them in Paws");
   expect(await f.judge([shot])).toEqual({ decision: "blocked", state: "missing" });
-  expect(f.message).toContain("waiting for a visual review in Linear");
+  expect(f.message).toContain("waiting for a visual review in Paws");
 
   const approval: EvidenceApproval = {
     task: "task",

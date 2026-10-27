@@ -79,7 +79,7 @@ describe("judging an approval: human check", () => {
   test("evidence without an approval is pending, which blocks without a fix round", () => {
     expect(judge(item("human"), [first], [])).toEqual({ decision: "blocked", state: "missing" });
     expect(messageOf(item("human"), [first], [])).toBe(
-      "1 screenshot or video published, waiting for a visual review in Linear",
+      "1 screenshot or video published, waiting for a visual review in Paws",
     );
   });
 
@@ -121,7 +121,7 @@ describe("judging an approval: human check", () => {
   test("too few files still fail, with the visual review hint", () => {
     expect(judge(item("human"), [], [approval])).toEqual({ decision: "rejected", state: "failed" });
     expect(messageOf(item("human"), [], [])).toContain(
-      "Publish the screenshots, then Paws asks for a visual review in Linear.",
+      "Publish the screenshots, then a person reviews them in Paws.",
     );
   });
 });

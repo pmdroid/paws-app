@@ -85,12 +85,15 @@ Paws Closeout counts the same files. With too few, the check fails, and a fix ro
 
 The setting is optional. Without it, published files are enough, as above.
 
-With it, `get_closeout` adds "Publish the screenshots, then Paws asks for a visual review in Linear." to the hint. Once enough files are published, it lists the check as `pending` and leaves it out of the pending ids, so the agent can finish its turn.
+With it, `get_closeout` adds "Publish the screenshots, then a person reviews them in Paws." to the hint. Once enough files are published, it lists the check as `pending` and leaves it out of the pending ids, so the agent can finish its turn.
 
-The review is a pending-human check inside the Closeout evaluation of the candidate commit. When the turn ends, the item moves to `verifying`, and Paws asks for the review in Linear with every file the check counts while the command checks and the independent review run on the same commit. It posts nothing else in the session until the review is answered, so Linear keeps showing the Accept and Request changes buttons. The files are not posted on their own. When the other checks pass first, the item waits in `awaiting_input` and gives its runner back.
+The review is a pending-human check inside the Closeout evaluation of the candidate commit. When the turn ends, the item moves to `verifying`, and Paws asks with a link: one Linear elicitation without options that names the changed screens and links to the Visual review card on the item page, where the screenshots are in view. The command checks and the independent review run on the same commit meanwhile. The delegator or the project lead decides on the card; Paws reminds once after 24 hours, and the item is listed under Needs you. When the other checks pass first, the item waits in `awaiting_input` and gives its runner back.
 
-- **Accept** passes the check. If the other checks are still running, the evaluation finishes when they do. If they are done, Paws completes the evaluation from their recorded results, without running them again, and the commit is accepted.
-- **Request changes** restarts the item with the feedback (restart reason `review`). The agent's next turn ends in a new evaluation of its new commit. After three rounds of changes Paws asks whether to keep going.
+- **Approve <commit>** passes the check for that commit and those files. If the other checks are still running, the evaluation finishes when they do. If they are done, Paws completes the evaluation from their recorded results, without running them again, and the commit is accepted.
+- **Request changes** restarts the item with the note and any marks drawn on the screenshots (restart reason `review`). The agent's next turn ends in a new evaluation of its new commit. After three rounds of changes Paws asks whether to keep going.
+- **Stop** stops the item and keeps its branch.
+- A reply in Linear is a change request with its text. It never approves the screens, whatever it says.
+- A Paws without an https dashboard link (`PAWS_PUBLIC_URL`) cannot show the screens, so it does not ask: the check stays unapproved and Paws says why once.
 - If another check fails, the pending review is cancelled: a fix round replaces the commit.
 
 The review and its approval belong to the candidate commit they were asked at, and to the files the reviewer saw. When the commit changes, Paws compares the task's patch against main. A rebase that leaves the patch the same keeps an open review open and carries an accepted one to the new commit, so the reviewer is not asked again for the same diff. A different patch cancels an open review and asks again with the latest files. If files were published after an accepted review, Paws asks a new round with all of them.

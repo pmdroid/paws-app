@@ -21,6 +21,7 @@ import {
   type LinkAsk,
   type LinkAskDecision,
   type LinkAskKind,
+  type VisualReviewMark,
   type WorkItemRecord,
 } from "../db";
 import {
@@ -40,7 +41,7 @@ import {
 } from "../questions";
 import { projectLeadId } from "../scheduler";
 import { BYPASS_REPLY } from "./closeout-recovery";
-import { postNote } from "./visual-review";
+import { decideVisualReview, postNote, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
 
 /** A Paws that only listens on localhost has no link a person can open, so it cannot ask this way. */
 export const LINK_ASK_NEEDS_PUBLIC_URL =
@@ -181,6 +182,8 @@ export function decideLinkAsk(
     bypasses?: readonly LinkAskBypass[];
     answeredBy: string;
     actor: { workspaceId: string; userId: string; name: string };
+    /** Screenshots a person drew on to request changes on a visual review. */
+    marks?: readonly VisualReviewMark[];
     now: number;
   },
   effects: LinkAskEffects = {},
@@ -247,6 +250,19 @@ export function decideLinkAsk(
       `link-ask-decided:${linkAsk.questionId}`,
       now,
     );
+    if (
+      linkAsk.kind === "screenshots" &&
+      input.decision !== "answer" &&
+      decideVisualReview(db, {
+        linkAsk,
+        decision: input.decision,
+        feedback: input.note ?? "",
+        answeredBy: input.answeredBy,
+        ...(input.marks ? { marks: input.marks } : {}),
+        now,
+      })
+    )
+      return "answered";
     const current = getWorkItem(db, item.id)!;
     if (input.decision === "approve" && effects[linkAsk.kind]?.(linkAsk, current, now))
       return "answered";
@@ -318,7 +334,8 @@ export function reverifyBypassed(
 /**
  * A reply in Linear while a link ask is open. It is guidance for the agent and
  * never approves, bypasses or answers the ask, whatever it says: the ask
- * closes undecided and the item goes back to the agent with the reply.
+ * closes undecided and the item goes back to the agent with the reply. On a
+ * visual review the reply is the change request, as Request changes on the page.
  */
 export function guideLinkAsk(
   db: Database,
@@ -347,16 +364,28 @@ export function guideLinkAsk(
     removeLinkAskUrl(db, linkAsk.questionId, now);
     if (item.sessionKey === question.sessionId)
       applyLinearTurns(db, question.sessionId, [input.eventKey], item.id);
+    const changes =
+      linkAsk.kind === "screenshots" &&
+      decideVisualReview(db, {
+        linkAsk,
+        decision: "changes",
+        feedback: input.body,
+        answeredBy: input.answeredBy,
+        now,
+      });
     postNote(
       db,
       question.sessionId,
       item,
-      linkAsk.kind === "bypass" && BYPASS_REPLY.test(input.body)
-        ? `${BYPASS_REPLY_NOTE} ${linkAsk.link}`
-        : LINK_ASK_GUIDANCE_NOTE,
+      changes
+        ? VISUAL_REVIEW_REPLY_NOTE
+        : linkAsk.kind === "bypass" && BYPASS_REPLY.test(input.body)
+          ? `${BYPASS_REPLY_NOTE} ${linkAsk.link}`
+          : LINK_ASK_GUIDANCE_NOTE,
       `link-ask-guidance:${linkAsk.questionId}`,
       now,
     );
+    if (changes) return true;
     handBack(
       db,
       getWorkItem(db, item.id)!,
@@ -371,16 +400,20 @@ export function guideLinkAsk(
 /**
  * Head `head` is the item's candidate now. Every open link ask bound to
  * another commit closes undecided; the next one is asked about `head`.
- * Returns how many closed.
+ * `keep` names asks whose commit has the same patch as `head`, which stay
+ * open. Returns how many closed.
  */
 export function closeLinkAsksOnHead(
   db: Database,
   itemId: string,
   head: string,
   now: number,
+  keep: readonly string[] = [],
 ): number {
   return immediate(db, () => {
-    const moved = openLinkAsks(db, itemId).filter((entry) => entry.headCommit !== head);
+    const moved = openLinkAsks(db, itemId).filter(
+      (entry) => entry.headCommit !== head && !keep.includes(entry.questionId),
+    );
     const item = getWorkItem(db, itemId);
     for (const linkAsk of moved) {
       closeLinkAsk(db, linkAsk.questionId, { reason: "head_moved", now });

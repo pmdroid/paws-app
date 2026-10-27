@@ -46,6 +46,7 @@ import { createRunners } from "./runners";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
 import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
+import { clickVisualReviewAsk, submitVisualReviewAsk } from "./visual-review-ask";
 import { createDeadDeliveryRetry } from "./dead-delivery-retry";
 import { createReviewDraw } from "./review-draw";
 import { createEvidenceMedia } from "./evidence-media";
@@ -96,7 +97,9 @@ let issueFilter: "all" | "active" | "needs" | "done" = "all";
 let issueProject = "";
 
 document.addEventListener("click", onClick);
-document.addEventListener("submit", (event) => void submitLinkAsk(event, reload));
+document.addEventListener("submit", (event) => {
+  if (!submitVisualReviewAsk(event, reload)) submitLinkAsk(event, reload);
+});
 document.addEventListener("input", (event) => rememberLinkAskDraft(event.target));
 document.addEventListener("change", (event) => rememberLinkAskDraft(event.target));
 router.subscribe((state) => {
@@ -327,6 +330,11 @@ function paint(): void {
   if (loadOpenLogs()) paint();
 }
 
+/** Screenshots from this origin can have marks drawn into them. */
+function drawsLocally(): boolean {
+  return new URL(currentEngine()).origin === location.origin && source() === "live";
+}
+
 function currentRoute(): Route {
   const pathname = router.state.location.pathname;
   return parseRoute(pathname.slice(routerBase(pathname).length), snapshot);
@@ -498,6 +506,7 @@ function findHeld(root: Element, held: HeldFocus): Element | null {
 function onClick(event: MouseEvent): void {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  if (clickVisualReviewAsk(event, drawsLocally(), reload)) return;
   followLink(event, target);
   if (stopFromLinkAsk(event, reload)) return;
   const action = target.closest("[data-action]")?.getAttribute("data-action");
