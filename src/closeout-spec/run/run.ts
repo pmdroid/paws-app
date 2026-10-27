@@ -145,8 +145,9 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     const commands = input.policy.items.filter(isCommand).filter((item) => item.gate === gate);
     const reviews = input.policy.items.filter(isReview).filter((item) => item.gate === gate);
     const actions = [
-      ...classifyAll(steps, commands, changed, input, base, head, records),
+      // Rules first, so the probes see the pristine checkout and not files a setup step left.
       ...classifyRules(gate, changed, input, base, head, records),
+      ...classifyAll(steps, commands, changed, input, base, head, records),
     ];
     const identity = progressIdentity(input, base, head);
     publishPlan(input.progress, identity, actions, reviews);

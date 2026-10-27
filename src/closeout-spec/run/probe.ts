@@ -6,8 +6,9 @@
  * `exec` + that path + `--base <sha> --head <sha> --repo <checkout>`, with a
  * disposable `HOME` and `TMPDIR` in that scratch directory. The probe's working
  * directory is the scratch directory too, so a `bunfig.toml` or similar file in
- * the candidate does not configure it. The checkout's status and `HEAD` are
- * read before and after, as for a command.
+ * the candidate does not configure it. The checkout must be clean before and
+ * after the probe, and `HEAD` must not move: a probe judges the committed
+ * candidate, so uncommitted changes in the checkout fail the rule.
  */
 
 import { createHash } from "node:crypto";
@@ -16,7 +17,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { CommandRunResult, ResolvedRule } from "../types";
 import { credentialSecrets, scrubCommandEnv } from "./env";
-import { newDirt, porcelain, readHead, spawnArgv } from "./exec";
+import { porcelain, readHead, spawnArgv } from "./exec";
 import type { CloseoutOutputStream } from "./progress";
 import { scrubText } from "./scrub";
 import { probeArgv } from "../rule-result";
@@ -85,7 +86,7 @@ export async function executeProbe(input: {
       argv: probeArgv(input.rule, input.base, input.head),
       exitCode: spawned.exitCode,
       timedOut: spawned.timedOut,
-      dirty: newDirt(before, after),
+      dirty: !clean(before) || !clean(after),
       headMoved: head === null || head !== input.head.toLowerCase(),
       durationMs,
       truncated: spawned.truncated,
@@ -97,6 +98,11 @@ export async function executeProbe(input: {
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/** An empty, readable `git status`. Unreadable status counts as dirt. */
+function clean(status: Buffer | null): boolean {
+  return status !== null && status.length === 0;
 }
 
 function probeEnv(
