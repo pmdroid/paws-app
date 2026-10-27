@@ -78,8 +78,9 @@ export function isOpen(
   return view.open[checkKey(itemId, attempt, check.id)] ?? startsOpen(check);
 }
 
-/** Failed and running checks start open so their output is in view. */
+/** Failed and running checks start open so their output is in view, unless a person let them pass. */
 function startsOpen(check: StatusCheck): boolean {
+  if (check.approval?.state === "approved" || check.approval?.state === "bypassed") return false;
   return (
     check.state === "failed" ||
     check.state === "blocked" ||
