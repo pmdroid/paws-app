@@ -43,7 +43,7 @@ items:
     failOn: P1
 `;
 
-test("linear intake delivers a persisted body-only requirement to real implementation, fix and review prompts", async () => {
+test("linear intake delivers a persisted body-only requirement to implementation and fix prompts, and not to the review command", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-brief-"));
   const seed = join(root, "seed");
   const bare = join(root, "origin.git");
@@ -195,21 +195,19 @@ test("linear intake delivers a persisted body-only requirement to real implement
       expect(prompt).toContain(snapshot.linearIssueId);
       expect(prompt).toContain(snapshot.subIssues[0]!.linearIssueId);
     }
+    // The review runs the agent's own review command: no brief, skill or finding format.
     for (const { prompt } of prompts.filter((entry) => entry.purpose === "review")) {
-      for (const requirement of [
+      expect(prompt).toMatch(
+        /^Review [a-f0-9]{40}\.\.[a-f0-9]{40} with the agent's review command\.$/,
+      );
+      for (const absent of [
         "Initial mention request",
-        "Comment instruction",
-        "Earlier discussion",
-        "Team instruction",
-        "Immutable user followup",
-        "API source thread request",
-        "API issue snapshot",
+        childDescription,
+        snapshot.linearIssueId,
+        "Reply with a JSON array of findings",
+        "Review the change against the supplied task brief.",
       ])
-        expect(prompt).toContain(requirement);
-      expect(prompt).toContain(childDescription);
-      expect(prompt).toContain(parentDescription);
-      expect(prompt).toContain(snapshot.linearIssueId);
-      expect(prompt).toContain(snapshot.subIssues[0]!.linearIssueId);
+        expect(prompt).not.toContain(absent);
     }
     expect(item?.state, JSON.stringify(prompts)).toBe("merge_queue");
     expect(prompts.map((entry) => entry.purpose)).toEqual(["implement", "review", "fix", "review"]);

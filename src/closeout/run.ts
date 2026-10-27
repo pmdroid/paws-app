@@ -28,8 +28,6 @@ import {
   fixesLeft as readFixesLeft,
   policyFixBudget,
   preExistingFindings,
-  loadReviewMaterial,
-  renderReviewPrompt,
   retryBaseline as readRetryBaseline,
   reviewRecordsSince,
   parseLocation,
@@ -755,21 +753,10 @@ async function addReviewEvidence(
         reviewer: {
           async review(request) {
             const result = await reviewWithRetries(input, async () =>
+              // The reviewer runs the agent's own review command. The policy skill and the
+              // diff stay out of it; the policy digest still records the skill.
               input.reviewer.review({
                 worktree: request.worktree,
-                prompt: renderReviewPrompt(
-                  await loadReviewMaterial({
-                    repo: request.worktree,
-                    skill: request.item.skill,
-                    skillFiles: request.skillFiles,
-                    base: request.base,
-                    head: request.head,
-                  }),
-                  request.base,
-                  request.head,
-                  request.item.scope,
-                  request.earlier,
-                ),
                 taskId: input.taskId,
                 itemId: request.item.id,
                 base: request.base,

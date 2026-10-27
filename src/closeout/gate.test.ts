@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { createCloseoutGate } from "./gate";
 import type { FixRunner } from "./fixer";
 import { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run";
-import type { CodexReviewer } from "./reviewer";
+import type { CodexReviewer, ReviewRequest } from "./reviewer";
 import { reviewRequirements } from "./index";
 import { addReview, type CloseoutProgressStep, type PublishedEvidence } from "../closeout-spec";
 
@@ -113,10 +113,8 @@ describe("closeout gate", () => {
         reviewer: {
           async review(request) {
             reviews += 1;
-            expect(request.prompt).toContain("Trusted local review skill");
-            expect(request.prompt).toContain("Trusted local reference");
-            expect(request.prompt).toContain("asset.png");
-            expect(request.prompt).toContain("Binary resource, SHA-256");
+            // The trusted skill decides the review item; the review command gets no prompt.
+            expect(request.prompt).toBeUndefined();
             return { session: "reviewer", model: "review-model", provider: "codex", findings: [] };
           },
         },
@@ -503,9 +501,7 @@ describe("closeout gate", () => {
       reviewer: {
         async review(request) {
           reviews.push(request.itemId);
-          expect(request.prompt).toContain(
-            "Report findings. An empty list means the change is fine.",
-          );
+          expect(request.prompt).toBeUndefined();
           return {
             session: "codex-session",
             model: "codex",
@@ -1271,8 +1267,8 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
-  test("a diff-scoped review tells the reviewer to stay inside the diff and its files", async () => {
-    const prompts: string[] = [];
+  test("the reviewer gets base and head, and no rendered skill, diff or scope prompt", async () => {
+    const requests: ReviewRequest[] = [];
     for (const extra of [[], ["scope: diff"]]) {
       const repo = await originRepo({
         ".agents/closeout.yaml": policy([{ ...reviewItem("review"), extra }]),
@@ -1289,20 +1285,22 @@ describe("closeout gate", () => {
           pawsHome: repo.pawsHome,
           reviewer: {
             async review(request) {
-              prompts.push(request.prompt ?? "");
+              requests.push(request);
               return { session: "codex-session", model: "codex", provider: "openai", findings: [] };
             },
           },
         });
         expect(evaluation.outcome).toBe("accepted");
+        expect(requests.at(-1)).toMatchObject({ base: repo.head, head: repo.head });
       } finally {
         await repo.cleanup();
       }
     }
-    expect(prompts[0]).not.toContain("Review only the diff");
-    expect(prompts[1]).toContain(
-      "Review only the diff below and the changed files it lists. Open a changed file only for context the diff lacks. Do not read unchanged files, search the repository, or run commands or tests.",
-    );
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.prompt).toBeUndefined();
+      expect(JSON.stringify(request)).not.toContain(SKILL);
+    }
   });
 
   test("a review setting the policy schema does not know blocks the policy", async () => {

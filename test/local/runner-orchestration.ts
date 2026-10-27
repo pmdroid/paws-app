@@ -447,6 +447,10 @@ export async function probeRunnerOrchestration(
                 [...(options.checkoutExclusions ?? [])],
                 [...verificationExclusions],
               );
+              // The live gate's review is the agent's review command on this runner.
+              assert.match(options.reviewCommand?.base ?? "", /^[a-f0-9]{40}$/);
+              assert.equal(options.readOnly, true);
+              assert(!options.prompt.includes("Reply with a JSON array of findings"));
             }
             if (reverifying) laterDispatches++;
             const item = getWorkItem(db, itemId)!;
