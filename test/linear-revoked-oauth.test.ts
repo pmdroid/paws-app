@@ -130,8 +130,6 @@ test("a revoked installation leaves webhook dispatch available but starts no cat
     db: f.db,
     secretsDir: join(f.home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-    publicUrl: null,
-    noTunnel: true,
     isAuthorized: f.allowed,
     fetch: async () => {
       requests++;
@@ -140,7 +138,7 @@ test("a revoked installation leaves webhook dispatch available but starts no cat
   });
   expect(opened.tracker).not.toBeNull();
   expect(opened.webhook.onEvent).toBeDefined();
-  const running = opened.start(0);
+  const running = opened.start();
   cleanup.push(() => running.stop());
   await running.catchUp();
   expect(requests).toBe(0);

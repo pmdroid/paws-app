@@ -143,7 +143,6 @@ test("production explicit session intake stays pending when follow-up fails and 
     db,
     secretsDir,
     env: { LINEAR_ACCESS_TOKEN: "host-only-token" },
-    publicUrl: null,
     fetch: fetchImpl,
     async followUp() {
       attempts.push("failed");
@@ -159,13 +158,12 @@ test("production explicit session intake stays pending when follow-up fails and 
     db,
     secretsDir,
     env: { LINEAR_ACCESS_TOKEN: "host-only-token" },
-    publicUrl: null,
     fetch: fetchImpl,
     async followUp() {
       attempts.push("recovered");
     },
   });
-  const running = second.start(8787);
+  const running = second.start();
   await running.catchUp();
   for (let attempt = 0; attempt < 50 && reopened.listUnhandled().length > 0; attempt++)
     await Bun.sleep(1);

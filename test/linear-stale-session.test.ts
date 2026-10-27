@@ -118,7 +118,6 @@ async function fixture() {
       db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-      publicUrl: null,
       isAuthorized: () => false,
       fetch: async () => {
         throw new Error("Unexpected provider");
@@ -237,7 +236,7 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
         f.fake.progress.filter((update) => update.sessionId === "new").map((update) => update.kind),
       ).toEqual(["thought", "thought"]);
     } finally {
-      await linear.start(0).stop();
+      await linear.start().stop();
       await f.close();
     }
   },

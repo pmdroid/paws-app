@@ -70,7 +70,6 @@ describe("Linear webhook acknowledgement", () => {
       db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
-      publicUrl: null,
       followUp: async () => {
         await stall.promise;
       },

@@ -73,8 +73,6 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
       db,
       secretsDir: join(root, "secrets"),
       env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-      publicUrl: null,
-      noTunnel: true,
       isAuthorized: () => !isLinearAppRevoked(db, scope),
       beforeEvent: async (event) => {
         if (

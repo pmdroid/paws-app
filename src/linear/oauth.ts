@@ -20,8 +20,6 @@ export type LinearEnv = {
   clientSecret: string | null;
   accessToken: string | null;
   refreshToken: string | null;
-  ngrokAuthtoken: string | null;
-  noTunnel: boolean;
   /** `linear.webhooks`. Off unless `LINEAR_WEBHOOKS` is `1` or `true`. */
   webhooks: boolean;
   /** Team id or key. `LINEAR_TEAM_ID`, then `LINEAR_TEAM`. */
@@ -53,7 +51,7 @@ export type FetchLike = (input: string | URL | Request, init?: RequestInit) => P
  * Intake is polling. Webhooks are optional (`LINEAR_WEBHOOKS=true`).
  */
 
-/** Doctor (QM-20) skips webhook, public URL, and ngrok checks while this is false. */
+/** Doctor (QM-20) skips webhook and public URL checks while this is false. */
 export function webhookChecksNeeded(source: EnvSource = process.env): boolean {
   return readLinearEnv(source).webhooks;
 }
@@ -80,14 +78,11 @@ export function linearAuthorizeUrl(input: {
 }
 
 export function readLinearEnv(source: EnvSource): LinearEnv {
-  const noTunnel = source["PAWS_NO_TUNNEL"];
   return {
     clientId: optional(source, "LINEAR_CLIENT_ID"),
     clientSecret: optional(source, "LINEAR_CLIENT_SECRET"),
     accessToken: optional(source, "LINEAR_ACCESS_TOKEN"),
     refreshToken: optional(source, "LINEAR_REFRESH_TOKEN"),
-    ngrokAuthtoken: optional(source, "NGROK_AUTHTOKEN"),
-    noTunnel: noTunnel === "1" || noTunnel === "true",
     webhooks: flag(source, "LINEAR_WEBHOOKS"),
     teamId: optional(source, "LINEAR_TEAM_ID") ?? optional(source, "LINEAR_TEAM"),
     appUserId: optional(source, "LINEAR_APP_USER_ID"),

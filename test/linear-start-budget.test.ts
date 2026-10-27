@@ -184,7 +184,6 @@ test("a delegated task spends at most five Linear requests before the agent's fi
     db,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
-    publicUrl: null,
     fetch: server.fetch,
     beforeEvent: (event, request) => gate!.accept(event, request),
     followUp: (event) => orchestrator!.onLinearEvent(event),

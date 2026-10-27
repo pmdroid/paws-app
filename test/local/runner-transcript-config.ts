@@ -271,7 +271,6 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   const started = startPaws({
     PAWS_HOME: join(root, "startup-control"),
     PAWS_PORT: "0",
-    PAWS_NO_TUNNEL: "1",
   });
   try {
     await started.ready;
@@ -285,7 +284,6 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
         {
           PAWS_HOME: join(root, "startup-injected"),
           PAWS_PORT: "0",
-          PAWS_NO_TUNNEL: "1",
           PAWS_EXECUTION: "remote",
         },
         { runnerTranscriptObjects: createFakeRunnerTranscriptObjects() },

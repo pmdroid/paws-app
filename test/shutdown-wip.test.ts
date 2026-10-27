@@ -34,7 +34,6 @@ describe("shutdown WIP", () => {
       PAWS_HOME: home,
       PAWS_PORT: "0",
       PAWS_HOST: "127.0.0.1",
-      PAWS_NO_TUNNEL: "1",
     });
     insertQueuedItem(paws.db, {
       id: "ENG-21",
@@ -168,7 +167,6 @@ describe("shutdown WIP", () => {
       PAWS_HOME: home,
       PAWS_PORT: "0",
       PAWS_HOST: "127.0.0.1",
-      PAWS_NO_TUNNEL: "1",
       LINEAR_CLIENT_ID: "client",
       LINEAR_CLIENT_SECRET: "synthetic-client-secret",
       LINEAR_APP_USER_ID: "app",
@@ -228,7 +226,7 @@ describe("shutdown WIP", () => {
     await seedWorktree(home, "ENG-21");
     await writeFile(join(worktreePath(home, "ENG-21"), "notes.txt"), "dirty\n");
     const env = childEnv(home);
-    const proc = Bun.spawn(["bun", "src/index.ts", "--no-tunnel"], {
+    const proc = Bun.spawn(["bun", "src/index.ts"], {
       cwd: new URL("..", import.meta.url).pathname,
       env,
       stdout: "pipe",
@@ -295,7 +293,6 @@ function childEnv(home: string): Record<string, string | undefined> {
     PAWS_HOME: home,
     PAWS_PORT: "0",
     PAWS_HOST: "127.0.0.1",
-    PAWS_NO_TUNNEL: "1",
   };
   for (const key of [
     "PAWS_EXECUTION",
@@ -304,7 +301,6 @@ function childEnv(home: string): Record<string, string | undefined> {
     "LINEAR_CLIENT_ID",
     "LINEAR_CLIENT_SECRET",
     "LINEAR_WEBHOOK_SECRET",
-    "NGROK_AUTHTOKEN",
     "PAWS_PUBLIC_URL",
     "GITHUB_APP_ID",
     "GITHUB_APP_INSTALLATION_ID",

@@ -65,7 +65,7 @@ for (const state of [
     const clock = new FakeClock(Date.now());
     const options: StartOptions = { hostClock: clock };
     const paws = startPaws(
-      { PAWS_HOME: pawsHome, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1", PAWS_NO_TUNNEL: "1" },
+      { PAWS_HOME: pawsHome, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" },
       options,
     );
     try {

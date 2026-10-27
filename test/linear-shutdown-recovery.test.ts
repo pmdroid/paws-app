@@ -68,7 +68,6 @@ for (const shutdown of ["application", "linear"] as const) {
         db,
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-        publicUrl: null,
         signal: controller.signal,
         isAuthorized: () => false,
         fetch: async () => {
@@ -82,7 +81,7 @@ for (const shutdown of ["application", "linear"] as const) {
           if (outcome === "false") return false;
         },
       });
-      const running = linear.start(0);
+      const running = linear.start();
       let store = createInboxStore(db);
       store.commit(event);
       const delivery = Promise.resolve(linear.webhook.onEvent!(event)).then(() =>
@@ -121,7 +120,6 @@ for (const shutdown of ["application", "linear"] as const) {
         db,
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-        publicUrl: null,
         isAuthorized: () => false,
         fetch: async () => {
           throw new Error("unexpected provider request");
@@ -144,7 +142,7 @@ for (const shutdown of ["application", "linear"] as const) {
         ).toHaveLength(1);
         expect(listOutbox(db).filter((entry) => entry.status === "dropped")).toHaveLength(0);
       } finally {
-        await recovered.start(0).stop();
+        await recovered.start().stop();
         await orchestrator.shutdown();
         db.close();
       }
