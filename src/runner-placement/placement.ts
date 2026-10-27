@@ -246,13 +246,14 @@ export function createRunnerPlacement(options: {
       // of its Linear project leads.
       // Preparation probes identities without moving a checkout or resuming an agent session.
       const pinnedRunnerId = input.purpose === "prepare" ? undefined : input.pinnedRunnerId;
-      const pinnedOnline = pinnedRunnerId
-        ? db
-            .query(
-              "SELECT 1 FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>?",
-            )
-            .get(pinnedRunnerId, at - RUNNER_ONLINE_MS) !== null
-        : false;
+      const pinnedOnline =
+        pinnedRunnerId && pinnedRunnerId !== input.handedOverFrom
+          ? db
+              .query(
+                "SELECT 1 FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>?",
+              )
+              .get(pinnedRunnerId, at - RUNNER_ONLINE_MS) !== null
+          : false;
       const rows = eligibleRunners(db, {
         ...eligibility(current),
         agent: input.profile.agent,
@@ -293,6 +294,7 @@ export function createRunnerPlacement(options: {
             .get(runner.id, at)
         )
           return reject("helper already running");
+        if (runner.id === input.handedOverFrom) return reject("handed the session over");
         // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
         // session on its pinned host instead of moving its checkout and held slot.
         if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)
