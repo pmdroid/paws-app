@@ -77,6 +77,11 @@ export type OrderCapabilities = {
   /** Fetch main into the item's worktree. Main's commit, or null without a worktree. */
   fetchMain(item: WorkItemRecord): Promise<string | null>;
   ciFixAttempts(item: WorkItemRecord): number;
+  /**
+   * Null when the task's Linear dependencies let it merge. Otherwise the identifiers of the
+   * blockers it waits for, empty when none can be named. A held task takes no place in the queue.
+   */
+  dependencyHold(itemId: string): readonly string[] | null;
   voice: MergeVoice;
 };
 
@@ -161,6 +166,7 @@ export async function mergeQueueTurn(
 ): Promise<MergeWait | undefined> {
   const prNumber = pull.number;
   const name = `${repository.owner}/${repository.repo}`;
+  const held = (itemId: string) => caps.dependencyHold(itemId) !== null;
   const review = await readPullReview({
     client: github.client,
     owner: repository.owner,
@@ -169,7 +175,7 @@ export async function mergeQueueTurn(
     ...credentials(github),
   });
   if (caps.stopped()) return undefined;
-  if (review === "unreadable" && mergeQueuePosition(db, item.id) === null)
+  if (review === "unreadable" && mergeQueuePosition(db, item.id, held) === null)
     return {
       message: "Could not read the pull request's reviews.",
       queued: true,
@@ -185,7 +191,7 @@ export async function mergeQueueTurn(
     return { message: body, queued: true, reason: "review" };
   }
   joinMergeQueue(db, { itemId: item.id, repository: name, now: caps.now() });
-  const place = mergeQueuePosition(db, item.id);
+  const place = mergeQueuePosition(db, item.id, held);
   if (place === null) return undefined;
   if (
     place.notifiedPosition !== place.position &&

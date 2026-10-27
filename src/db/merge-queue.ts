@@ -40,8 +40,15 @@ export function markMergeQueueNotified(db: Database, itemId: string, position: n
   db.run("UPDATE merge_queue_entry SET notified_position=? WHERE item_id=?", [position, itemId]);
 }
 
-/** Every queue, each in merge order. */
-export function listMergeQueues(db: Database): MergeQueuePosition[] {
+/**
+ * Every queue, each in merge order. A task `held` says may not merge yet, such as one waiting for
+ * its Linear dependencies, keeps its row and its `ready_at` but takes no place, so it blocks
+ * nobody and returns to its place once released.
+ */
+export function listMergeQueues(
+  db: Database,
+  held: (itemId: string) => boolean = () => false,
+): MergeQueuePosition[] {
   const rows = db
     .query<
       {
@@ -60,7 +67,7 @@ export function listMergeQueues(db: Database): MergeQueuePosition[] {
     )
     .all();
   const byRepository = new Map<string, typeof rows>();
-  for (const row of rows)
+  for (const row of rows.filter((entry) => !held(entry.itemId)))
     byRepository.set(row.repository, [...(byRepository.get(row.repository) ?? []), row]);
   return [...byRepository.values()].flatMap((queue) =>
     queue.map((row, index) => ({
@@ -72,6 +79,10 @@ export function listMergeQueues(db: Database): MergeQueuePosition[] {
   );
 }
 
-export function mergeQueuePosition(db: Database, itemId: string): MergeQueuePosition | null {
-  return listMergeQueues(db).find((entry) => entry.itemId === itemId) ?? null;
+export function mergeQueuePosition(
+  db: Database,
+  itemId: string,
+  held?: (itemId: string) => boolean,
+): MergeQueuePosition | null {
+  return listMergeQueues(db, held).find((entry) => entry.itemId === itemId) ?? null;
 }

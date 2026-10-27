@@ -99,7 +99,8 @@ function holdLine(hold: ItemHold): string {
     : HOLD_LINES[hold.reason];
 }
 
-function openBlockers(db: Database, item: Item): string[] {
+/** Identifiers of the Linear issues that block `issueId` and have not merged or finished. */
+export function openBlockers(db: Database, issueId: string): string[] {
   return db
     .query<{ id: string; identifier: string; state: WorkItemState }, [string]>(
       `SELECT i.id,i.linear_identifier AS identifier,i.state FROM task_block b
@@ -107,7 +108,7 @@ function openBlockers(db: Database, item: Item): string[] {
          ORDER BY c.created_at DESC,c.id DESC LIMIT 1)
        WHERE b.blocked_linear_issue_id=? AND i.linear_identifier IS NOT NULL ORDER BY i.position,i.id`,
     )
-    .all(item.issueId)
+    .all(issueId)
     .filter(
       (blocker) =>
         !isBlockerSatisfied({
@@ -634,7 +635,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
               {
                 itemId: item.id,
                 reason: start.held,
-                blockers: start.held === "blocked" ? openBlockers(db, item) : [],
+                blockers: start.held === "blocked" ? openBlockers(db, item.issueId) : [],
               },
             ],
       ),
