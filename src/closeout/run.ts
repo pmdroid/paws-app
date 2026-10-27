@@ -1086,7 +1086,8 @@ async function fixesLeft(
   }
 }
 
-function evidencePath(taskId: string, pawsHome: string | undefined): string {
+/** Where Closeout stores a task's evidence records. */
+export function evidencePath(taskId: string, pawsHome: string | undefined): string {
   const safe = taskId.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 200);
   return path.join(pawsHome ?? tmpdir(), "closeout", "evidence", safe);
 }

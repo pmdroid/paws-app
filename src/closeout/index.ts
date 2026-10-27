@@ -25,6 +25,7 @@ export type { CodexReviewer, ReviewRequest, ReviewResult } from "./reviewer";
 export {
   evaluateCandidate,
   evidenceOnly,
+  evidencePath,
   PolicyFetchError,
   readReviewRounds,
   runCloseoutGate,
