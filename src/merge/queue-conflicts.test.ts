@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { JOB_KIND } from "../core";
+import { JOB_KIND, MERGE_LANE } from "../core";
 import {
+  enqueueJob,
   getWorkItem,
   listJobs,
   listMergeQueues,
@@ -147,6 +148,39 @@ describe("queued pull requests that conflict with main", () => {
     h.db.run("UPDATE work_item SET state = 'verifying' WHERE id = 'ENG-3'");
     returnToMergeQueue(h.db, "ENG-3");
     expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
+  });
+
+  test("a task whose merge starts while its pull request is read is left to the lane", async () => {
+    const h = await start();
+    await threeQueued(h);
+    for (let round = 1; round <= MAX_REBASE_RETURNS; round++)
+      recordRebaseReturn(h.db, {
+        itemId: "ENG-2",
+        jobId: 900 + round,
+        candidate: `old-${round}`,
+        reason: "merge",
+        base: `main-${round}`,
+        files: ["ok.txt"],
+        recordedAt: h.clock.now() - 2 * 60 * 60 * 1000,
+      });
+    await h.moveMain("ok.txt", "main moved\n");
+    await h.git(h.bare, "update-ref", "refs/heads/paws/ENG-2", "refs/heads/paws/ENG-3");
+    h.state.onPullRead = (number) => {
+      const itemId = `ENG-${number}`;
+      const id = enqueueJob(h.db, {
+        queue: JOB_KIND.merge,
+        lane: MERGE_LANE,
+        payload: { itemId },
+        now: h.clock.now(),
+      });
+      h.db.run("UPDATE job SET status = 'running' WHERE id = ?", [id]);
+    };
+    expect(await h.sweep(null)).toEqual([]);
+    expect(restarts(h)).toEqual([]);
+    expect(findOpenQuestion(h.db, "ses-ENG-2")).toBeNull();
+    expect(getWorkItem(h.db, "ENG-2")?.state).toBe("merge_queue");
+    expect(getWorkItem(h.db, "ENG-3")?.state).toBe("merge_queue");
+    expect(h.bodies("thought")).toEqual([]);
   });
 
   test("a spent rebase budget asks instead of sending the task back", async () => {
