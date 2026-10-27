@@ -106,7 +106,11 @@ const DEFAULT_POLL_INTERVAL_MS = 250;
 const DEFAULT_SILENT_RUN_MS = 20 * 60_000;
 /** A confirmation older than this no longer counts: runners heartbeat every 15 seconds. */
 const RUN_CONFIRMATION_MS = 60_000;
+/** A run this quiet is hung even when its runner still confirms it: the agent is stopped. */
+const DEFAULT_HUNG_RUN_MS = 45 * 60_000;
 const RUN_LOST_THOUGHT = "The runner lost this run after it restarted; continuing from the branch.";
+const RUN_HUNG_THOUGHT = (minutes: number) =>
+  `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
@@ -242,12 +246,15 @@ export function createRemoteAgentRunner(options: {
   pollIntervalMs?: number;
   /** How long a run may go without a runner event before Paws asks whether the runner has it. */
   silentRunMs?: number;
+  /** How long a run may go without a runner event before Paws stops it, confirmed or not. */
+  hungRunMs?: number;
   placement?: RunnerPlacement;
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
+  const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const reservations = new Map<string, string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
@@ -1241,13 +1248,13 @@ export function createRemoteAgentRunner(options: {
                 "SELECT confirmed_at AS confirmedAt,lost_at AS lostAt FROM runner_work WHERE run_id=? AND generation=?",
               )
               .get(assigned.runId, assigned.generation);
-          const lostRun = async (how: string) => {
+          const lostRun = async (how: string, thought = RUN_LOST_THOUGHT) => {
             journal(
               `item ${itemId} run ${assigned.runId} generation ${assigned.generation} lost on runner ${selected.id}: ${how}`,
             );
             if (!toldLost.has(itemId)) {
               toldLost.add(itemId);
-              await emit({ type: "progress", text: `${RUN_LOST_THOUGHT}\n` });
+              await emit({ type: "progress", text: `${thought}\n` });
             }
             return new RetryableRunnerError(
               selected.id,
@@ -1545,12 +1552,17 @@ export function createRemoteAgentRunner(options: {
             if (pendingEvents.length === 64) continue;
             if (!complete && results.read(assigned.runId, assigned.generation, assigned.id))
               continue;
-            // A long silence is checked against the runner. A question waits on a person, and a
-            // runner that still names the command in its heartbeat keeps a quiet tool call.
-            if (options.placement && !question && now() - heardAt >= silentRunMs) {
+            // A long silence is checked against the runner. A question waits on a person, so its
+            // wait is not silence. A runner that still names the command in its heartbeat keeps a
+            // quiet tool call until the hung bound, where the agent is stopped all the same.
+            if (question) heardAt = now();
+            if (options.placement && now() - heardAt >= silentRunMs) {
               const confirmedAt = liveness()?.confirmedAt ?? null;
-              if (confirmedAt === null || confirmedAt <= now() - RUN_CONFIRMATION_MS) {
+              const unconfirmed =
+                confirmedAt === null || confirmedAt <= now() - RUN_CONFIRMATION_MS;
+              if (unconfirmed || now() - heardAt >= hungRunMs) {
                 const at = now();
+                const minutes = Math.round((at - heardAt) / 60_000);
                 const recovered = immediate(db, () => {
                   db.run(
                     "UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=? AND generation=? AND ended_at IS NULL",
@@ -1567,7 +1579,10 @@ export function createRemoteAgentRunner(options: {
                 });
                 if (!recovered?.retryable) throw new Error(RUN_LOST_MESSAGE);
                 throw await lostRun(
-                  `no runner event for ${Math.round((at - heardAt) / 60_000)} minutes and the runner does not confirm the command`,
+                  unconfirmed
+                    ? `no runner event for ${minutes} minutes and the runner does not confirm the command`
+                    : `no runner event for ${minutes} minutes although the runner confirms the command, so the agent is hung`,
+                  unconfirmed ? RUN_LOST_THOUGHT : RUN_HUNG_THOUGHT(minutes),
                 );
               }
             }
