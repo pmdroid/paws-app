@@ -249,8 +249,8 @@ test("a Paws without a public link asks in Linear when review attempts run out",
   }
 }, 90_000);
 
-/** `api-contract`, a rule set to `onFail: approve`, broke at `head`; `test` passed or failed. */
-function ruleBroke(head: string, test: "passed" | "failed" = "passed"): CloseoutVerdict {
+/** `api-contract`, a rule set to `onFail: approve`, broke at `head`; the `test` check passed or failed. */
+function ruleBroke(head: string, check: "passed" | "failed" = "passed"): CloseoutVerdict {
   const verdict = fixFailed(head);
   const summary = "Closeout: exhausted\napi-contract: failed";
   return {
@@ -262,7 +262,7 @@ function ruleBroke(head: string, test: "passed" | "failed" = "passed"): Closeout
       outcome: "exhausted",
       fixAttempts: 0,
       summary,
-      handoff: test === "failed" ? "- test (command): failed — exited 1" : "Closeout rejected.",
+      handoff: check === "failed" ? "- test (command): failed — exited 1" : "Closeout rejected.",
       ruleApprovals: [
         {
           id: "api-contract",
@@ -275,7 +275,7 @@ function ruleBroke(head: string, test: "passed" | "failed" = "passed"): Closeout
       decision: {
         ...verdict.result!.decision!,
         items: [
-          { id: "test", kind: "command", state: test, attempt: 1, message: "exited 1" },
+          { id: "test", kind: "command", state: check, attempt: 1, message: "exited 1" },
           {
             id: "api-contract",
             kind: "rule",
