@@ -15,7 +15,7 @@ import {
   recordLinearInstallation,
   saveCheckpoint,
 } from "../src/db";
-import { createRemoteAgentRunner } from "../src/runner-backend";
+import { createRemoteAgentRunner, fetchRunnerBranchTip } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -188,6 +188,7 @@ async function scenario(input: {
     health: createRunnerHealth({ db, work }),
     pollIntervalMs: 5,
     placement: createRunnerPlacement({ db }),
+    fetchBranchTip: fetchRunnerBranchTip,
     async fetchCandidate(candidate) {
       await git(["-C", candidate.worktree, "fetch", origin, candidate.candidateSha]);
       await git(["-C", candidate.worktree, "reset", "--hard", candidate.candidateSha]);

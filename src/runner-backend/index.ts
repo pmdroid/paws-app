@@ -235,6 +235,17 @@ export function createRemoteAgentRunner(options: {
     networkGit: (args: string[]) => Promise<string>;
     signal: AbortSignal;
   }): Promise<void>;
+  /**
+   * Reads the item's branch tip on GitHub into the worktree's objects, or undefined when the
+   * branch is not there. Without it, a run starts from its checkpoint.
+   */
+  fetchBranchTip?(input: {
+    worktree: string;
+    branch: string;
+    remoteUrl: string;
+    networkGit: (args: string[]) => Promise<string>;
+    signal: AbortSignal;
+  }): Promise<string | undefined>;
   checkpointBot?: (
     repository: string,
   ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
@@ -813,9 +824,8 @@ export function createRemoteAgentRunner(options: {
             networkGit: (args: string[]) => Promise<string>,
           ): Promise<string | undefined> => {
             const scoped = work.scope(selected.runId, selected.workspaceId);
-            if (!scoped.repository) return undefined;
+            if (!scoped.repository || !options.fetchBranchTip) return undefined;
             const head = (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
-            const ref = `refs/paws/branch-tip/${randomUUID()}`;
             const contains = (ancestor: string, descendant: string) =>
               git([
                 "-C",
@@ -828,54 +838,26 @@ export function createRemoteAgentRunner(options: {
                 () => true,
                 () => false,
               );
-            try {
-              try {
-                await networkGit([
-                  "-C",
-                  input.worktreePath,
-                  "fetch",
-                  "--no-tags",
-                  "--no-write-fetch-head",
-                  "--",
-                  scoped.repository.remoteUrl,
-                  `+refs/heads/${scoped.item.branchName}:${ref}`,
-                ]);
-              } catch (error) {
-                // A first turn has no branch yet; any failure starts from the checkpoint as before.
-                journalCaught(
-                  error,
-                  "runner-backend.forItem.adoptBranchTip",
-                  itemId,
-                  "the branch may not exist on GitHub yet",
-                );
+            const tip = await options
+              .fetchBranchTip({
+                worktree: input.worktreePath,
+                branch: scoped.item.branchName,
+                remoteUrl: scoped.repository.remoteUrl,
+                networkGit,
+                signal,
+              })
+              .catch((error: unknown) => {
+                // Any failure starts from the checkpoint as before.
+                journalCaught(error, "runner-backend.forItem.adoptBranchTip", itemId);
                 return undefined;
-              }
-              const tip = await git([
-                "-C",
-                input.worktreePath,
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                `${ref}^{commit}`,
-              ]).then(
-                (value) => value.trim(),
-                () => "",
-              );
-              if (!tip || tip === head || (await contains(tip, head))) return undefined;
-              if (!(await contains(head, tip)))
-                return `The branch ${scoped.item.branchName} on GitHub is at ${tip.slice(0, 7)}, which does not descend from the checkpoint ${head.slice(0, 7)}, so this turn starts from the checkpoint.`;
-              await git(["-C", input.worktreePath, "reset", "--hard", tip]);
-              const checkpoint = getWorkItem(db, itemId)?.checkpoint;
-              if (checkpoint) saveCheckpoint(db, itemId, { ...checkpoint, wipCommit: tip });
-              return undefined;
-            } finally {
-              await git(["-C", input.worktreePath, "update-ref", "-d", ref]).catch(
-                (caughtError) => {
-                  journalCaught(caughtError, "runner-backend.forItem.adoptBranchTip.ref", itemId);
-                  return "";
-                },
-              );
-            }
+              });
+            if (!tip || tip === head || (await contains(tip, head))) return undefined;
+            if (!(await contains(head, tip)))
+              return `The branch ${scoped.item.branchName} on GitHub is at ${tip.slice(0, 7)}, which does not descend from the checkpoint ${head.slice(0, 7)}, so this turn starts from the checkpoint.`;
+            await git(["-C", input.worktreePath, "reset", "--hard", tip]);
+            const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+            if (checkpoint) saveCheckpoint(db, itemId, { ...checkpoint, wipCommit: tip });
+            return undefined;
           };
           const placed =
             attached ??
@@ -1941,7 +1923,7 @@ export function createRemoteAgentRunner(options: {
 
 export { createRemoteSessionAgentRunner } from "./helpers";
 
-export { fetchRunnerCandidate } from "./candidate";
+export { fetchRunnerBranchTip, fetchRunnerCandidate } from "./candidate";
 
 export { CHECKPOINT_RUNNER_VERSION, createRemoteCheckpoint } from "./checkpoint";
 

@@ -222,6 +222,7 @@ import {
 import {
   createRemoteAgentRunner,
   createRemoteSessionAgentRunner,
+  fetchRunnerBranchTip,
   fetchRunnerCandidate,
 } from "./runner-backend";
 
@@ -777,6 +778,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             db,
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
+            fetchBranchTip: fetchRunnerBranchTip,
             checkpointBot: repositoryAccess?.checkpointBot,
             placement,
           }),
