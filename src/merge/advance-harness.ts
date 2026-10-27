@@ -135,7 +135,7 @@ export async function mergeHarness(
     blockedBy: new Map<string, string[]>(),
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
-  const published: string[] = [];
+  const publishedIds: string[] = [];
   let jobId = 0;
 
   const client: GitHubClient = {
@@ -296,7 +296,7 @@ export async function mergeHarness(
         flush: async () => {},
       },
       publish: async (current) => {
-        published.push(current.id);
+        publishedIds.push(current.id);
         return {
           github: {
             appId: "1",
@@ -365,7 +365,7 @@ export async function mergeHarness(
     lines,
     verified,
     completed,
-    published,
+    published: publishedIds,
     addItem,
     requeue,
     closeout,
