@@ -58,6 +58,7 @@ import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
+import { ensureStartOnRemote, lostCommitsNote } from "./start-commit";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -804,11 +805,57 @@ export function createRemoteAgentRunner(options: {
               );
             }
           };
+          /** Pushes a head GitHub lacks, else falls back; returns the handoff for lost commits. */
+          const remoteStart = async (
+            scoped: { item: { branchName: string }; repository?: { remoteUrl: string } },
+            networkGit: (args: string[]) => Promise<string>,
+          ) => {
+            const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+            const start = await ensureStartOnRemote({
+              worktree: input.worktreePath,
+              branch: scoped.item.branchName,
+              remoteUrl: scoped.repository!.remoteUrl,
+              networkGit,
+              ...(checkpoint?.wipCommit ? { wipCommit: checkpoint.wipCommit } : {}),
+              ...(checkpoint?.baseSha ? { baseSha: checkpoint.baseSha } : {}),
+              signal,
+            });
+            if (start.status === "remote") return undefined;
+            if (start.status === "unknown") {
+              journal(
+                `item ${itemId} could not confirm that ${start.head} is on GitHub: ${start.error}`,
+              );
+              return undefined;
+            }
+            if (start.status === "pushed") {
+              journal(`item ${itemId} pushed ${start.head} to GitHub before the run`);
+              return undefined;
+            }
+            journal(
+              `item ${itemId} starts from ${start.start} because ${start.head} is not on GitHub and its push failed: ${start.error}`,
+            );
+            if (checkpoint?.wipCommit === start.head)
+              saveCheckpoint(db, itemId, { ...checkpoint, wipCommit: start.start });
+            await emit({
+              type: "progress",
+              text: `Commit ${start.head.slice(0, 8)} never reached GitHub, so this run continues from ${start.start.slice(0, 8)} and the agent redoes the rest.\n`,
+            });
+            return lostCommitsNote(start.start, start.lost);
+          };
           const placed =
             attached ??
             (await (async () => {
+              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
+              // A runner's saved WIP comes first; then the head it gives must be on GitHub.
+              if (!taskScope && input.role === "implementer" && input.networkGit)
+                await importCheckpoint(input.networkGit);
+              const lostNote =
+                !taskScope && input.role === "implementer" && input.networkGit
+                  ? await remoteStart(scoped, input.networkGit)
+                  : undefined;
               // A runner command does not carry the caller's session, so a resume replays.
-              const prompt = input.resume?.replayPrompt ?? input.prompt;
+              const replayed = input.resume?.replayPrompt ?? input.prompt;
+              const prompt = lostNote ? `${lostNote}\n\n${replayed}` : replayed;
               const prepared = input.prepareInputFiles
                 ? await input.prepareInputFiles({
                     workspace: input.worktreePath,
@@ -816,7 +863,6 @@ export function createRemoteAgentRunner(options: {
                     signal,
                   })
                 : { prompt, inputFiles: [] };
-              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
               const files = snapshotAgentInputs(input.worktreePath, [
                 ...suppliedInputs,
                 ...prepared.inputFiles,
@@ -868,8 +914,6 @@ export function createRemoteAgentRunner(options: {
                       targetRunnerId: selected.id,
                     })
                   : undefined;
-              if (!taskScope && input.role === "implementer" && input.networkGit)
-                await importCheckpoint(input.networkGit);
               const head = taskScope
                 ? undefined
                 : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
