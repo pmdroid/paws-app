@@ -91,6 +91,7 @@ import { isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
 import { reviewsOf } from "./reviews";
+import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
 import {
   STATUS_API_VERSION,
   agentCloseoutSummary,
@@ -534,9 +535,13 @@ function readScopedSnapshot(
     questions: [],
     verdicts: records.flatMap((record) => {
       const runId = storedRuns.get(record.id)?.[0]?.id;
-      return verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((verdict) =>
-        runId === undefined ? verdict : { ...verdict, runId },
-      );
+      return verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((found) => {
+        const verdict = runId === undefined ? found : { ...found, runId };
+        // Only the item detail reads each rule's evidence record and bypass decisions.
+        return only === undefined
+          ? verdict
+          : withRuleDetail(db, record.id, verdict, progress, evidenceRoot(options, env));
+      });
     }),
     mergeQueue: merge.mergeQueue.filter((entry) => listed.has(entry.itemId)),
     ...(merge.mergeHistory === undefined
@@ -1273,8 +1278,19 @@ function attemptsFor(
         ? verdict.checks
         : row.steps
             .filter((step) => step.state !== "skipped")
-            .map((step) => toLiveCheck(step, nowMs, env)),
+            .map((step) => toLiveCheck(step, nowMs, env, row)),
+    ...withSkippedRules(row === live ? (verdict.skippedRules ?? []) : skippedRules(row)),
   }));
+}
+
+function withSkippedRules(skipped: string[]): { skippedRules?: string[] } {
+  return skipped.length > 0 ? { skippedRules: skipped } : {};
+}
+
+/** Where Closeout keeps each task's evidence records, as the artifact route reads them. */
+function evidenceRoot(options: LiveStatusOptions, env: NodeJS.ProcessEnv): string | null {
+  const home = options.pawsHome ?? env.PAWS_HOME;
+  return home ? join(home, "closeout", "evidence") : null;
 }
 
 function progressFor(
@@ -1331,7 +1347,8 @@ function withProgress(
 ): StatusVerdict {
   const checks = live.steps
     .filter((step) => step.state !== "skipped")
-    .map((step) => toLiveCheck(step, nowMs, env));
+    .map((step) => toLiveCheck(step, nowMs, env, live));
+  const skipped = skippedRules(live);
   const failing = checks.find(
     (check) => check.state === "failed" || check.state === "blocked" || check.state === "exhausted",
   );
@@ -1354,6 +1371,7 @@ function withProgress(
       decision === "accepted" ? null : (failing?.id ?? (attached ? verdict.failingCheck : null)),
     policyDigest: blank(live.policyDigest),
     policyPath: live.policyPath,
+    ...(skipped.length > 0 ? { skippedRules: skipped } : {}),
   };
 }
 
@@ -1365,11 +1383,16 @@ function liveSummary(decision: VerdictDecision | null): string {
   return "Closeout is running.";
 }
 
-function toLiveCheck(step: CloseoutStepRecord, nowMs: number, env: NodeJS.ProcessEnv): StatusCheck {
+function toLiveCheck(
+  step: CloseoutStepRecord,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+  row: CloseoutProgressRecord,
+): StatusCheck {
   const end = step.finishedAt ?? nowMs;
   return {
     id: step.id,
-    kind: step.kind,
+    kind: isRuleStep(step, row) ? "rule" : step.kind,
     state: step.state,
     command: step.command,
     detail: step.detail,
@@ -2008,6 +2031,7 @@ function checkKind(kind: string): CheckKind {
   if (value === "review") return "review";
   if (value === "setup") return "setup";
   if (value === "evidence") return "evidence";
+  if (value === "rule") return "rule";
   return "command";
 }
 
