@@ -64,6 +64,7 @@ import {
   type GitCommitPolicy,
   type AppBotIdentity,
   type Clock,
+  isTransient,
   policyCoauthors,
 } from "./core";
 import {
@@ -636,6 +637,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         memberships: linear.memberships,
         verifyTeam: (id, signal) => linear.access!.team(id, { signal }),
         readTeams: (signal) => linear.access!.teams!({ signal }),
+        retryable: isTransient,
         onError: () => console.error("Paws workspace access refresh failed."),
       });
     } catch (error) {

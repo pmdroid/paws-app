@@ -1,5 +1,4 @@
 import { journalCaught, journalRejection } from "../journal";
-import { isTransient, retryBackoffMs } from "../core";
 import type { Database } from "bun:sqlite";
 import { MEMBERSHIP_BACKSTOP_MS } from "../db";
 import type { WorkspaceAssignments } from "./assignments";
@@ -36,6 +35,8 @@ export function startWorkspaceAccess(
   options: Parameters<typeof createWorkspaceAccessFromLinear>[0] & {
     refreshIntervalMs?: number;
     accessRetryBaseMs?: number;
+    /** Whether a failed startup read is worth retrying; the composition passes `isTransient`. */
+    retryable?: (error: unknown) => boolean;
     onError: () => void;
   },
 ) {
@@ -43,8 +44,8 @@ export function startWorkspaceAccess(
   const stopped = new AbortController();
   /**
    * A slow or failing Linear read at startup must not exit Paws: the server answers 503 until
-   * access resolves, so a transient failure retries with backoff until it succeeds or Paws stops.
-   * A permanent failure, such as a missing app installation, still rejects.
+   * access resolves, so a retryable failure retries with backoff until it succeeds or Paws stops.
+   * Any other failure, such as a missing app installation, still rejects.
    */
   async function resolveAccess() {
     for (let attempt = 1; ; attempt++) {
@@ -52,12 +53,11 @@ export function startWorkspaceAccess(
         return await createWorkspaceAccessFromLinear({ ...options, signal: stopped.signal });
       } catch (error) {
         if (stopping) throw new Error("Workspace access is stopping.", { cause: error });
-        if (!isTransient(error)) throw error;
+        if (!options.retryable?.(error)) throw error;
         journalCaught(error, "workspace/runtime.startWorkspaceAccess.retry", null, "retrying");
-        const delay = retryBackoffMs(
-          attempt,
-          options.accessRetryBaseMs ?? ACCESS_RETRY_BASE_MS,
+        const delay = Math.min(
           ACCESS_RETRY_CAP_MS,
+          (options.accessRetryBaseMs ?? ACCESS_RETRY_BASE_MS) * 2 ** Math.min(20, attempt - 1),
         );
         await new Promise<void>((resolve) => {
           const timer = setTimeout(done, delay);

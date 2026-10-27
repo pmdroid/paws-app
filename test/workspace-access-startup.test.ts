@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isTransient } from "../src/core";
 import { migrate, openDatabase } from "../src/db";
 import { startWorkspaceAccess } from "../src/workspace";
 
@@ -22,6 +23,7 @@ async function withRuntime(
     publicUrl: "https://paws.example",
     clientId: "client",
     accessRetryBaseMs: 5,
+    retryable: isTransient,
     onError: () => errors++,
     memberships: {
       installation,
