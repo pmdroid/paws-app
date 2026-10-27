@@ -264,6 +264,7 @@ import {
   projectLeadId,
   type ItemAdmission,
   type ItemWait,
+  openBlockers,
   type SchedulerOptions,
 } from "../scheduler";
 import type {
@@ -3810,6 +3811,13 @@ export class Orchestrator {
       session: (item) => this.activitySession(item),
       fetchMain: (item) => this.fetchUpstreamMain(item),
       ciFixAttempts: (item) => this.fixRoundLimit(item),
+      dependencyHold: (id) => {
+        // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
+        const admitted = this.admission.canMerge(id);
+        if (admitted.ok || admitted.held !== "blocked") return null;
+        const issueId = getWorkItem(this.db, id)?.linearIssueId;
+        return issueId ? openBlockers(this.db, issueId) : [];
+      },
       voice: {
         thought: (item, body, key) => this.post(item, "thought", body, key),
         status: (item, body) => this.statusAfterPullRequest(item, body),

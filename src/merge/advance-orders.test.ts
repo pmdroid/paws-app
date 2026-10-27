@@ -5,6 +5,7 @@ import {
   getConfirmedRemoteMerge,
   getJob,
   getWorkItem,
+  joinMergeQueue,
   listCiRounds,
   listJobs,
   listMergeQueues,
@@ -152,6 +153,55 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(await h.pass("ENG-123")).toEqual({ kind: "merged" });
     expect(await h.pass("ENG-121")).toEqual({ kind: "merged" });
     expect(mergedOrder(h, ids)).toEqual(["ENG-122", "ENG-123", "ENG-121"]);
+  });
+
+  test("a task blocked by the one behind it holds no place: the blocker merges first, then it", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const ids = ["ENG-131", "ENG-132"];
+    for (const id of ids) await h.addItem(id);
+    h.state.blockedBy.set("ENG-131", ["ENG-132"]);
+    // ENG-131 joined before Linear's `blocks` relation reached Paws, and keeps its place.
+    joinMergeQueue(h.db, { itemId: "ENG-131", repository: "acme/app", now: h.clock.now() });
+    h.clock.advance(1_000);
+    const waiting = enqueueJob(h.db, {
+      queue: JOB_KIND.merge,
+      lane: MERGE_LANE,
+      payload: { itemId: "ENG-131", mergeWait: { reason: "dependencies" } },
+      runAt: h.clock.now() + 300_000,
+      now: h.clock.now(),
+    });
+
+    expect(await h.pass("ENG-131")).toEqual({
+      kind: "wait",
+      reason: "dependencies",
+      queued: true,
+      message: "ENG-131: waiting for ENG-132",
+    });
+    expect(h.bodies("status")).toEqual(["ENG-131: waiting for ENG-132"]);
+    expect(await h.pass("ENG-132")).toEqual({ kind: "merged" });
+    expect(h.published).toEqual(["ENG-132"]);
+    expect(getJob(h.db, waiting)?.runAt).toBe(h.clock.now());
+
+    expect(queued(h)).toEqual(["ENG-131"]);
+    expect(await h.pass("ENG-131")).toEqual({ kind: "merged" });
+    expect(mergedOrder(h, ids)).toEqual(["ENG-132", "ENG-131"]);
+  });
+
+  test("a task with no dependencies behind a blocked one merges without waiting", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const ids = ["ENG-141", "ENG-142"];
+    for (const id of ids) await h.addItem(id);
+    h.state.blockedBy.set("ENG-141", ["ENG-140"]);
+    joinMergeQueue(h.db, { itemId: "ENG-141", repository: "acme/app", now: h.clock.now() });
+    h.clock.advance(1_000);
+
+    expect(await h.pass("ENG-141")).toMatchObject({ kind: "wait", reason: "dependencies" });
+    expect(await h.pass("ENG-142")).toEqual({ kind: "merged" });
+    expect(await h.pass("ENG-141")).toMatchObject({ kind: "wait", reason: "dependencies" });
+    expect(h.published).toEqual(["ENG-142"]);
+    expect(mergedOrder(h, ids)).toEqual(["ENG-142"]);
+    // ENG-141 keeps its row, so its place comes back when ENG-140 merges.
+    expect(queued(h)).toEqual(["ENG-141"]);
   });
 });
 

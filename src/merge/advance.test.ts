@@ -40,6 +40,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     session: () => "s-1",
     fetchMain: unused("fetchMain"),
     ciFixAttempts: () => 3,
+    dependencyHold: () => null,
     completed: () => calls.push("completed"),
     voice: {
       thought: unused("thought"),
