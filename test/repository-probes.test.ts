@@ -198,6 +198,53 @@ test.each([
   expect(ran.output).not.toContain("harness.ts:3");
 });
 
+test.each([
+  [
+    "destructured from a namespace import",
+    'import * as questions from "../questions";\nconst { ask } = questions;\n',
+  ],
+  [
+    "destructured and renamed from a dynamic import",
+    'const { ask: askTeam } = await import("../questions");\n',
+  ],
+  [
+    "reached through a rest binding",
+    'import * as questions from "../questions";\nconst { getQuestion, ...rest } = questions;\nconst ask = rest.ask;\n',
+  ],
+])("a new call to an opener %s fails, even when the binding is on the base", (_, binding) => {
+  const call = binding.includes("askTeam")
+    ? "askTeam(db, owner, input);"
+    : "ask(db, owner, input);";
+  const base = { ...MERGE, "src/merge/send-back.ts": binding };
+  const ran = probe(
+    "restart-and-ask-from-loop",
+    candidate(base, { "src/merge/send-back.ts": `${binding}${call}\n` }),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain(`uses ask from "../questions": ${call}`);
+  const added = probe(
+    "restart-and-ask-from-loop",
+    candidate(MERGE, { "src/merge/send-back.ts": `${binding}${call}\n` }),
+  );
+  expect(added.exitCode).toBe(1);
+});
+
+test("a namespace used only for members that open nothing passes", () => {
+  const ran = probe(
+    "restart-and-ask-from-loop",
+    candidate(MERGE, {
+      "src/merge/lookup.ts": [
+        'import * as questions from "../questions";',
+        "export type Questions = typeof questions;",
+        "export const open = (db: unknown) => questions.findOpenQuestion(db);",
+        "",
+      ].join("\n"),
+    }),
+  );
+  expect(ran.output).toContain("none sends work back or opens a question");
+  expect(ran.exitCode).toBe(0);
+});
+
 test("src/loop, src/core, tests, type imports and lines already on the base pass", () => {
   const ran = probe(
     "restart-and-ask-from-loop",
