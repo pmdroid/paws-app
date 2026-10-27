@@ -199,6 +199,8 @@ export async function snapshotWorktree(
   environment?: NodeJS.ProcessEnv,
   excludePaths: readonly string[] = [],
   identity: GitCommitIdentity = DEFAULT_IDENTITY,
+  /** Make a new commit even when nothing is uncommitted, so the snapshot is not `head` itself. */
+  always = false,
 ): Promise<WorktreeSnapshot> {
   const baseEnv = environment ?? process.env;
   const index = (
@@ -241,7 +243,10 @@ export async function snapshotWorktree(
         { env },
       );
     const snapshot = (await git(["-C", tree, "write-tree"], { env })).trim();
-    if (snapshot === (await git(["-C", tree, "rev-parse", `${head}^{tree}`], { env })).trim())
+    if (
+      !always &&
+      snapshot === (await git(["-C", tree, "rev-parse", `${head}^{tree}`], { env })).trim()
+    )
       return { head, tree: snapshot, sha: head };
     const sha = (
       await git(

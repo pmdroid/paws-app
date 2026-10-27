@@ -1230,62 +1230,77 @@ export async function executeRunnerCommand(
     const checkpointWorktree = async (reason: "stop" | "interval") => {
       const run = runCommand!;
       try {
-        const snapshot = await snapshotWorktree(
-          worktree,
-          run.commitPolicy
-            ? commitPolicyMessage(CHECKPOINT_COMMIT_MESSAGE, run.commitPolicy)
-            : CHECKPOINT_COMMIT_MESSAGE,
-          env,
-          inputFiles.map((file) => file.path),
-          run.commitPolicy
-            ? appBotCommitIdentity(run.commitPolicy.bot)
-            : run.checkpointBot
-              ? appBotCommitIdentity(run.checkpointBot)
-              : undefined,
-        );
-        const key = `${snapshot.head}:${snapshot.tree}`;
-        if (snapshot.sha === run.repository.baseSha || key === checkpointed) {
-          if (reason === "stop") emit({ type: "checkpoint", reason });
-          return;
+        const snapshot = (always: boolean) =>
+          snapshotWorktree(
+            worktree,
+            run.commitPolicy
+              ? commitPolicyMessage(CHECKPOINT_COMMIT_MESSAGE, run.commitPolicy)
+              : CHECKPOINT_COMMIT_MESSAGE,
+            env,
+            inputFiles.map((file) => file.path),
+            run.commitPolicy
+              ? appBotCommitIdentity(run.commitPolicy.bot)
+              : run.checkpointBot
+                ? appBotCommitIdentity(run.checkpointBot)
+                : undefined,
+            always,
+          );
+        let saved = await snapshot(false);
+        const key = `${saved.head}:${saved.tree}`;
+        // Only an interval skips what this turn already emitted: its push may have failed, so a
+        // stop always publishes the worktree as it is.
+        if (reason === "interval" && key === checkpointed) return;
+        if (saved.sha === run.repository.baseSha) {
+          // The base is already the item's checkpoint, unless this turn saved work since.
+          if (checkpointed === undefined) {
+            if (reason === "stop") emit({ type: "checkpoint", reason });
+            return;
+          }
+          // A worktree back at the base replaces the earlier checkpoint with a WIP commit of it,
+          // so a restart does not bring back what the agent discarded.
+          saved = await snapshot(true);
         }
-        const name = `checkpoint-${snapshot.sha}.bundle`;
+        const name = `checkpoint-${saved.sha}.bundle` as const;
         const path = join(options.outputDirectory, name);
         const ref = `refs/paws/checkpoint-${randomUUID()}`;
-        await invokeGit(["-C", worktree, "update-ref", ref, snapshot.sha]);
-        try {
-          closeSync(outputFile(options.outputDirectory, name, options.resultsGid));
-          const bases = [
-            run.repository.baseSha,
-            ...(run.repository.mainSha ? [run.repository.mainSha] : []),
-          ];
-          await invokeGit([
-            "-C",
-            worktree,
-            "bundle",
-            "create",
-            path,
-            ref,
-            ...bases.map((base) => `^${base}`),
-          ]);
-          const bundle = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        // A stop that republishes an unchanged clean head reuses its bundle.
+        if (!existsSync(path)) {
+          await invokeGit(["-C", worktree, "update-ref", ref, saved.sha]);
           try {
-            const info = fstatSync(bundle);
-            if (!info.isFile() || info.size > 536_870_912)
-              throw new Error("Runner checkpoint exceeds size limit");
-            fchownSync(bundle, process.getuid!(), options.resultsGid);
-            fchmodSync(bundle, 0o640);
-            fsyncSync(bundle);
+            closeSync(outputFile(options.outputDirectory, name, options.resultsGid));
+            const bases = [
+              run.repository.baseSha,
+              ...(run.repository.mainSha ? [run.repository.mainSha] : []),
+            ];
+            await invokeGit([
+              "-C",
+              worktree,
+              "bundle",
+              "create",
+              path,
+              ref,
+              ...bases.map((base) => `^${base}`),
+            ]);
+            const bundle = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+            try {
+              const info = fstatSync(bundle);
+              if (!info.isFile() || info.size > 536_870_912)
+                throw new Error("Runner checkpoint exceeds size limit");
+              fchownSync(bundle, process.getuid!(), options.resultsGid);
+              fchmodSync(bundle, 0o640);
+              fsyncSync(bundle);
+            } finally {
+              closeSync(bundle);
+            }
+          } catch (error) {
+            rmSync(path, { force: true });
+            throw error;
           } finally {
-            closeSync(bundle);
+            await invokeGit(["-C", worktree, "update-ref", "-d", ref]);
           }
-        } catch (error) {
-          rmSync(path, { force: true });
-          throw error;
-        } finally {
-          await invokeGit(["-C", worktree, "update-ref", "-d", ref]);
         }
         checkpointed = key;
-        emit({ type: "checkpoint", reason, sha: snapshot.sha });
+        emit({ type: "checkpoint", reason, sha: saved.sha });
       } catch (error) {
         journalCaught(error, "runner-worker.executeRunnerCommand.checkpoint", run.itemId);
         if (reason === "stop") emit({ type: "checkpoint", reason });
