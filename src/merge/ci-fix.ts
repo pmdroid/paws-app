@@ -1,6 +1,12 @@
 /** Messages for a CI fix round: the agent handoff, the Linear line, and the question when attempts run out. */
 
-export type FailedCiCheck = { name: string; url: string | null; logTail?: string | null };
+export type FailedCiCheck = {
+  name: string;
+  url: string | null;
+  logTail?: string | null;
+  /** The same check also failed on main. */
+  failsOnBase?: boolean;
+};
 
 export function ciFixHandoff(checks: readonly FailedCiCheck[]): string {
   return [

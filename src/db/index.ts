@@ -36,6 +36,16 @@ export {
   type PullCommentSource,
 } from "./pull-comments";
 export {
+  listReviewEscapes,
+  openReviewEscapes,
+  recordReviewEscape,
+  settleReviewEscape,
+  type NotEscapeReason,
+  type ReviewEscapeDetail,
+  type ReviewEscapeRecord,
+  type ReviewEscapeTrigger,
+} from "./review-escapes";
+export {
   recordRunnerCapacity,
   runnerHasCapacity,
   runnerOccupancy,

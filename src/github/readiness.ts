@@ -105,7 +105,13 @@ fragment Contexts on StatusCheckRollupContextConnection {
   }
 }`;
 
-export type FailedCheck = { name: string; url: string | null; logTail?: string | null };
+export type FailedCheck = {
+  name: string;
+  url: string | null;
+  logTail?: string | null;
+  /** The check with this name also failed on the base branch's head. */
+  failsOnBase?: boolean;
+};
 
 export type Readiness = {
   outcome: "ready" | "pending" | "blocked" | "sha_moved" | "ci_failed";
@@ -323,10 +329,17 @@ function toChecks(nodes: z.infer<typeof contextsSchema>["nodes"]): Check[] {
 function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>): Readiness {
   const failed = checks.filter((check) => FAILED.has(check.result ?? ""));
   if (failed.length > 0) {
+    const failedOnBase = new Set(
+      baseChecks.filter((check) => FAILED.has(check.result ?? "")).map((check) => check.name),
+    );
     return {
       outcome: "ci_failed",
       message: "CI failed on the candidate commit",
-      failedChecks: failed.map((check) => ({ name: check.name, url: check.url })),
+      failedChecks: failed.map((check) => ({
+        name: check.name,
+        url: check.url,
+        failsOnBase: failedOnBase.has(check.name),
+      })),
     };
   }
   const skippedOnBase = new Set(
