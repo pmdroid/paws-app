@@ -209,7 +209,7 @@ async function setup() {
     });
     const command = (await next()) as RunCommand;
     await drive(command);
-    return { result: await running.catch((error: unknown) => error), notices, command };
+    return { result: await running, notices, command };
   }
   function grant(command: RunCommand) {
     return work.issueGrant({
@@ -337,7 +337,7 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
   let wip = "";
   let outcome: unknown;
   const stop = new AbortController();
-  const { result } = await context.turn(
+  const turn = context.turn(
     record,
     async (command) => {
       const handing = context.backend.handOverItem(record.id);
@@ -349,7 +349,7 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
     undefined,
     stop.signal,
   );
-  expect(result).toBeInstanceOf(Error);
+  await expect(turn).rejects.toThrow();
   expect(outcome).toEqual({ status: "handed_over", wipCommit: wip });
   // Paws' worktree holds the runner's worktree exactly.
   expect(git(["-C", paws, "rev-parse", "HEAD"])).toBe(wip);
