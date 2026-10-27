@@ -29,6 +29,7 @@ import {
   type MergeRepositories,
   type MergeRule,
 } from "./merge";
+import { assignMemberVmKey, renderMemberVmSettings, type MemberVmSize } from "./member-vm";
 import { renderQueueSettings } from "./queue";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
 
@@ -103,6 +104,8 @@ export type PawsConfigFile = {
   queueMaxRunningPerOwner?: number;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
+  /** `[member_vm]`: the exe.dev size Create VM asks for. Missing means exe.dev's default. */
+  memberVm?: MemberVmSize;
 };
 
 /**
@@ -164,7 +167,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|checkout|caps|agents|server)$/.test(
+        !/^(linear|github|tracker|closeout|merge|queue|checkout|caps|agents|server|member_vm)$/.test(
           section,
         ) &&
         !/^(closeout|merge|checkout|agents|skills)\./.test(section) &&
@@ -253,7 +256,8 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     renderQueueSettings({
       startTimeoutHours: parseConfigToml(current).queueStartTimeoutHours,
       maxRunningPerOwner: parseConfigToml(current).queueMaxRunningPerOwner,
-    });
+    }) +
+    renderMemberVmSettings(parseConfigToml(current).memberVm);
   const next =
     profiles === null
       ? rendered
@@ -501,6 +505,10 @@ function assignConfig(
   if (section === "queue") {
     if (key === "start_timeout_hours") config.queueStartTimeoutHours = asInt(value, line);
     if (key === "max_running_per_owner") config.queueMaxRunningPerOwner = asInt(value, line);
+    return;
+  }
+  if (section === "member_vm") {
+    assignMemberVmKey((config.memberVm ??= {}), key, value, line);
     return;
   }
   if (section === "checkout") {
