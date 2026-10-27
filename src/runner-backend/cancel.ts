@@ -10,7 +10,7 @@ export function createRemoteCancellation(options: {
   now?: () => number;
   pollIntervalMs?: number;
   /** Publishes a running run's work as a WIP commit before the cancel stops it. */
-  checkpoint?: (runId: string) => Promise<unknown>;
+  checkpoint?: (runId: string) => Promise<unknown> | null;
 }) {
   const { db, work } = options;
   const now = options.now ?? Date.now;
@@ -22,7 +22,8 @@ export function createRemoteCancellation(options: {
            WHERE r.item_id=? AND w.ended_at IS NULL`,
         )
         .all(itemId);
-      await Promise.all(running.map((row) => options.checkpoint!(row.runId)));
+      const waiting = running.map((row) => options.checkpoint!(row.runId)).filter(Boolean);
+      if (waiting.length) await Promise.all(waiting);
     }
     const requests = immediate(db, () => {
       const rows = db

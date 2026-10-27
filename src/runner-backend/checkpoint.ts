@@ -90,8 +90,9 @@ export function createRemoteCheckpoint(options: {
   const { db, work } = options;
   const now = options.now ?? Date.now;
   const pending = new Map<string, Promise<string | null>>();
-  async function checkpoint(runId: string): Promise<string | null> {
-    const request = immediate(db, () => {
+  /** Sends the checkpoint command, or returns null when the run cannot answer one. */
+  function ask(runId: string) {
+    return immediate(db, () => {
       const row = db
         .query<
           {
@@ -145,7 +146,11 @@ export function createRemoteCheckpoint(options: {
         deadline: at + RUNNER_CHECKPOINT_LIMIT_MS + DELIVERY_GRACE_MS,
       };
     });
-    if (!request) return null;
+  }
+  async function wait(
+    runId: string,
+    request: NonNullable<ReturnType<typeof ask>>,
+  ): Promise<string | null> {
     const { command } = request;
     let cursor = request.after;
     while (now() < request.deadline) {
@@ -180,17 +185,25 @@ export function createRemoteCheckpoint(options: {
     }
     return null;
   }
-  return function checkpointBeforeStop(runId: string): Promise<string | null> {
-    let running = pending.get(runId);
-    if (!running) {
-      running = checkpoint(runId)
-        .catch((error: unknown) => {
-          journalCaught(error, "runner-backend.checkpointBeforeStop", null);
-          return null;
-        })
-        .finally(() => pending.delete(runId));
-      pending.set(runId, running);
+  /** Null, at once, when nothing was asked of the runner; the stop need not wait then. */
+  return function checkpointBeforeStop(runId: string): Promise<string | null> | null {
+    const running = pending.get(runId);
+    if (running) return running;
+    let request: ReturnType<typeof ask>;
+    try {
+      request = ask(runId);
+    } catch (error) {
+      journalCaught(error, "runner-backend.checkpointBeforeStop", null);
+      return null;
     }
-    return running;
+    if (!request) return null;
+    const waiting = wait(runId, request)
+      .catch((error: unknown) => {
+        journalCaught(error, "runner-backend.checkpointBeforeStop", null);
+        return null;
+      })
+      .finally(() => pending.delete(runId));
+    pending.set(runId, waiting);
+    return waiting;
   };
 }

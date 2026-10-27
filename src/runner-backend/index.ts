@@ -1755,14 +1755,15 @@ export function createRemoteAgentRunner(options: {
             getWorkItem(db, itemId)?.state === "running";
           // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
           // first, and the next turn starts from it.
-          if (
+          const saving =
             command?.type === "run" &&
             command.checkpoint !== false &&
             !detached &&
             signal.aborted &&
             !(signal.reason instanceof PawsShutdown)
-          )
-            await checkpointBeforeStop(command.runId);
+              ? checkpointBeforeStop(command.runId)
+              : null;
+          if (saving) await saving;
           if (command && !detached) {
             try {
               const issuedAt = now();
