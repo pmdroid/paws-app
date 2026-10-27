@@ -7,6 +7,7 @@ import {
   livePoll,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
+  memberVmSizeMarkup,
   memberVmsMarkup,
   runnerVmMarkup,
   type MemberVm,
@@ -999,6 +1000,17 @@ describe("hostEnrollmentCommand", () => {
       "printf '%s\\n' 'tok_en-123' | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token",
     ]);
   });
+});
+
+test("Create VM names the size it asks exe.dev for", () => {
+  expect(memberVmSizeMarkup(undefined)).toBe("");
+  expect(memberVmSizeMarkup({})).toContain("Create VM uses exe.dev&#39;s default size.");
+  expect(
+    memberVmSizeMarkup({ cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" }),
+  ).toContain("Create VM uses 8 CPUs · 16 GB memory · 100 GB disk · image ubuntu:24.04.");
+  expect(memberVmSizeMarkup({ cpu: 1 })).toContain(
+    "Create VM uses 1 CPU · default memory · default disk.",
+  );
 });
 
 describe("member VM", () => {
