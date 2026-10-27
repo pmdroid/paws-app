@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { setJournalSink } from "../src/journal";
 import {
   createExeDev,
+  DEFAULT_TIMEOUT_MS,
   EXE_DEV_ENDPOINT,
+  EXE_DEV_EXEC_LIMIT_MS,
   ProvisioningError,
   type ExeDevFetch,
   type ProvisioningErrorCode,
@@ -378,6 +381,83 @@ describe("execVm", () => {
     }
     const { exe } = client(() => new Response("{not json}\n"));
     expectCode(await failure(exe.execVm("ada-paws", "true")), "execVm", "invalid_response");
+  });
+
+  test("each unexpected stream says what was wrong and journals only its shape", async () => {
+    const secret = b64("SECRET-OUTPUT-0123456789");
+    const cases: [Response, RegExp, RegExp][] = [
+      [
+        ndjson([{ stdout: secret }, { stderr: secret }]),
+        /cut off before the exit status, after 2 lines/,
+        /status=200 content_type=application\/x-ndjson lines=2 shape=\[stdout\] \[stderr\]$/,
+      ],
+      [
+        new Response(
+          `{"stdout":"${secret}"}\n<html>Bad Gateway tok_ABCDEFGHIJKLMNOPQRSTUV</html>\n`,
+          {
+            headers: { "content-type": "text/html" },
+          },
+        ),
+        /line 2 of 2 is not JSON/,
+        /content_type=text\/html lines=2 shape=\[stdout\] \[text length=51 head="<html>Bad Gateway \[redacted\]<\/html>"\]$/,
+      ],
+      [
+        ndjson([{ stdout: secret, exit_code: 0 }]),
+        /line 1 of 1 has 2 keys \(stdout, exit_code\) instead of one/,
+        /lines=1 shape=\[stdout, exit_code\]$/,
+      ],
+    ];
+    for (const [response, message, shape] of cases) {
+      const lines: string[] = [];
+      const restore = setJournalSink((line) => lines.push(line));
+      try {
+        const { exe } = client(() => response);
+        const error = await failure(exe.execVm("ada-paws", "true"));
+        expectCode(error, "execVm", "invalid_response");
+        expect(error.message).toMatch(message);
+      } finally {
+        restore();
+      }
+      const journaled = lines.filter((line) => line.startsWith("exe.dev execVm unexpected"));
+      expect(journaled).toHaveLength(1);
+      expect(journaled[0]).toMatch(shape);
+      expect(journaled[0]).toContain("vm=ada-paws");
+      for (const line of lines) {
+        expect(line).not.toContain(secret);
+        expect(line).not.toContain("SECRET-OUTPUT");
+        expect(line).not.toContain("tok_ABCDEFGHIJ");
+        expect(line).not.toContain(TOKEN);
+      }
+    }
+  });
+
+  test("a 504 is exe.dev's 30 s limit, not a malformed response", async () => {
+    const { exe } = client(() => new Response("upstream timed out", { status: 504 }));
+    const error = await failure(exe.execVm("ada-paws", "sleep 60"));
+    expectCode(error, "execVm", "timeout");
+    expect(error.status).toBe(504);
+    expect(error.message).toContain("still running on the VM or timed out");
+    expect(error.message).not.toContain("upstream");
+  });
+
+  test("a 422 is a command that ran and exited non-zero", async () => {
+    const { exe } = client(
+      () =>
+        new Response(
+          [{ stderr: b64("nope\n") }, { exit_code: 2 }].map((l) => JSON.stringify(l)).join("\n"),
+          { status: 422, headers: { "content-type": "application/x-ndjson" } },
+        ),
+    );
+    expect(await exe.execVm("ada-paws", "false")).toEqual({
+      exitCode: 2,
+      stdout: "",
+      stderr: "nope\n",
+    });
+  });
+
+  test("the default exec timeout waits just past exe.dev's limit", () => {
+    expect(DEFAULT_TIMEOUT_MS.execVm).toBeGreaterThan(EXE_DEV_EXEC_LIMIT_MS);
+    expect(DEFAULT_TIMEOUT_MS.execVm).toBeLessThanOrEqual(EXE_DEV_EXEC_LIMIT_MS + 10_000);
   });
 
   test("empty or NUL commands never leave Paws", async () => {

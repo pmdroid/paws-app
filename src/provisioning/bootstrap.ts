@@ -6,9 +6,13 @@ import { isProvisioningError, type ExeDev, type ExeDevExecResult } from "./types
 
 /**
  * The guest side of VM provisioning: install the Paws runner on an exe.dev VM, write its config,
- * enroll it with a member's single-use token and start the runner service. Every step is one
- * command through `execVm`, idempotent and safe to re-run after a Paws restart. The exe.dev token
- * stays in the client; nothing here sends it to the VM.
+ * enroll it with a member's single-use token and start the runner service. Every step is
+ * idempotent and safe to re-run after a Paws restart. The exe.dev token stays in the client;
+ * nothing here sends it to the VM.
+ *
+ * exe.dev ends an exec after 30 s (HTTP 504), so no call here waits longer than 25 s. A step that
+ * can take longer starts detached under `/var/log/paws-bootstrap`, writing `<step>.log`, and short
+ * calls poll it for its exit status. A failure carries the end of that log.
  *
  * The enrollment token never appears in a command line. exe.dev runs each command through SSH,
  * so the remote shell's argv holds the whole command and any process on the VM could read it.
@@ -92,6 +96,17 @@ export type ExeDevBootstrapOptions = {
   allowedRepositories?: readonly string[];
   /** Join the VM to the Paws tailnet before enrollment. Absent skips the `tailnet` step. */
   tailnet?: ExeDevBootstrapTailnet;
+  /** How long to wait between polls of a detached step. Defaults to two seconds. */
+  pollIntervalMs?: number;
+  /** Time for detached step deadlines and the wait between polls; tests pass a fake. */
+  clock?: BootstrapClock;
+};
+
+export type BootstrapClock = { now(): number; sleep(ms: number): Promise<void> };
+
+const SYSTEM_CLOCK: BootstrapClock = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
 export type InstallStatus = "running" | "succeeded" | "failed";
@@ -133,6 +148,7 @@ export const RUNNER_CONFIG_PATH = "/etc/paws-runner/config.json";
 export const BOOTSTRAP_MISE_PATH = "/usr/local/bin/mise";
 export const BOOTSTRAP_TAILNET_KEY = `${BOOTSTRAP_STAGE_DIR}/tailnet-key.pem`;
 export const BOOTSTRAP_AUTHKEY_FILE = `${BOOTSTRAP_STAGE_DIR}/tailscale-authkey`;
+export const BOOTSTRAP_LOG_DIR = "/var/log/paws-bootstrap";
 const TAILSCALE_BINARY = "/usr/bin/tailscale";
 const TAILSCALED_BINARY = "/usr/sbin/tailscaled";
 const TAILSCALED_SERVICE = "tailscaled.service";
@@ -151,8 +167,11 @@ const MAX_INSTALLER_BYTES = 48 * 1024;
 const MAX_CA_BYTES = 32768;
 const MIN_TOKEN_KEY_BITS = 3072;
 
-const PROBE_TIMEOUT_MS = 30_000;
-const STAGE_TIMEOUT_MS = 60_000;
+/** Every exec call, under exe.dev's 30 s limit. */
+export const BOOTSTRAP_EXEC_TIMEOUT_MS = 25_000;
+const POLL_INTERVAL_MS = 2_000;
+/** What a poll returns of a finished step's log; enough for `tailscale status --json`. */
+const LOG_TAIL_BYTES = 16 * 1024;
 const ENROLL_TIMEOUT_MS = 120_000;
 const START_TIMEOUT_MS = 60_000;
 const RESET_TIMEOUT_MS = 60_000;
@@ -171,15 +190,12 @@ const Enrolled = z.strictObject({
 export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBootstrap {
   const pinned = validate(options);
   const { exeDev } = options;
+  const clock = options.clock ?? SYSTEM_CLOCK;
+  const interval = options.pollIntervalMs ?? POLL_INTERVAL_MS;
 
-  async function exec(
-    step: BootstrapStep,
-    vm: string,
-    command: string,
-    timeoutMs: number,
-  ): Promise<ExeDevExecResult> {
+  async function exec(step: BootstrapStep, vm: string, command: string): Promise<ExeDevExecResult> {
     try {
-      return await exeDev.execVm(vm, command, { timeoutMs });
+      return await exeDev.execVm(vm, command, { timeoutMs: BOOTSTRAP_EXEC_TIMEOUT_MS });
     } catch (error) {
       if (isProvisioningError(error))
         throw new BootstrapError(step, `${vm}: ${error.message}`, { cause: error });
@@ -187,18 +203,66 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
     }
   }
 
+  /**
+   * Start `script` detached as root, then poll until it exits or `budgetMs` runs out. The result
+   * carries the exit status and the end of the step's log as both stdout and stderr. `secret`
+   * is redacted from any log this throws with.
+   */
+  async function detached(
+    step: BootstrapStep,
+    name: DetachedStep,
+    vm: string,
+    script: string,
+    budgetMs: number,
+    secret?: string,
+  ): Promise<ExeDevExecResult> {
+    const ended = (what: string, log: string) => {
+      const detail = logTail(log, secret);
+      return new BootstrapError(step, `${vm}: ${name} ${what}${detail ? `: ${detail}` : "."}`);
+    };
+    const deadline = clock.now() + budgetMs;
+    const started = await exec(step, vm, detachCommand(name, script));
+    const pid = started.stdout.trim();
+    if (started.exitCode !== 0 || !/^[1-9][0-9]{0,9}$/.test(pid))
+      throw failure(step, vm, `could not start ${name}`, started);
+    while (true) {
+      await clock.sleep(interval);
+      const polled = await exec(step, vm, pollCommand(name));
+      if (polled.exitCode !== 0) throw failure(step, vm, `could not read ${name}`, polled);
+      const newline = polled.stdout.indexOf("\n");
+      const state = newline === -1 ? polled.stdout : polled.stdout.slice(0, newline);
+      const log = newline === -1 ? "" : polled.stdout.slice(newline + 1);
+      const exited = /^exited ([0-9]{1,3})$/.exec(state.trim());
+      if (exited) {
+        const exitCode = Number(exited[1]);
+        return { exitCode, stdout: log, stderr: log };
+      }
+      if (state.trim() === "lost") throw ended("stopped without an exit status", log);
+      if (clock.now() >= deadline) {
+        const stopped = await exec(step, vm, stopCommand(name)).catch((error: unknown) => {
+          journalCaught(error, "bootstrap.detached.stop", null);
+          return null;
+        });
+        throw ended(
+          `did not finish within ${Math.round(budgetMs / 1000)} s and was stopped`,
+          stopped?.stdout ?? "",
+        );
+      }
+    }
+  }
+
   async function probe(step: BootstrapStep, vm: string): Promise<InstallStatus> {
-    const result = await exec(step, vm, PROBE_COMMAND, PROBE_TIMEOUT_MS);
+    const result = await exec(step, vm, PROBE_COMMAND);
     if (result.exitCode !== 0) throw failure(step, vm, "could not read the install state", result);
     return classify(parseProbe(result.stdout), pinned);
   }
 
   /** Make the VM's token key, encrypt `token` to it, and have the VM decrypt it into its file. */
   async function stageToken(vm: string, token: string): Promise<void> {
-    const key = await exec("token", vm, TOKEN_KEY_COMMAND, STAGE_TIMEOUT_MS);
+    const key = await exec("token", vm, TOKEN_KEY_COMMAND);
     if (key.exitCode !== 0) throw failure("token", vm, "could not create the token key", key);
     const ciphertext = encryptSecret("token", vm, key.stdout, token);
-    const staged = await exec("token", vm, tokenCommand(ciphertext), STAGE_TIMEOUT_MS);
+    const staged = await exec("token", vm, tokenCommand(ciphertext));
     if (staged.exitCode !== 0) throw failure("token", vm, "could not stage the token", staged);
   }
 
@@ -225,15 +289,17 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
 
   /** Send the auth key encrypted to a fresh VM key and run `tailscale up`; the VM drops the file. */
   async function join(vm: string, authKey: string): Promise<void> {
-    const key = await exec("tailnet", vm, TAILNET_KEY_COMMAND, STAGE_TIMEOUT_MS);
+    const key = await exec("tailnet", vm, TAILNET_KEY_COMMAND);
     if (key.exitCode !== 0)
       throw failure("tailnet", vm, "tailnet: could not create the auth key key", key);
     const ciphertext = encryptSecret("tailnet", vm, key.stdout, authKey);
-    const joined = await exec(
+    const joined = await detached(
       "tailnet",
+      "tailnet-join",
       vm,
       joinCommand(vm, ciphertext),
       TAILSCALE_JOIN_TIMEOUT_MS,
+      authKey,
     );
     if (joined.exitCode !== 0)
       throw failure("tailnet", vm, "tailnet: tailscale up failed", joined, authKey);
@@ -245,10 +311,10 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
       checkToken("install", token);
       const status = await probe("install", vm);
       if (status !== "failed") return status;
-      const stage = await exec("install", vm, stageCommand(pinned), STAGE_TIMEOUT_MS);
+      const stage = await exec("install", vm, stageCommand(pinned));
       if (stage.exitCode !== 0) throw failure("install", vm, "could not stage the install", stage);
       await stageToken(vm, token);
-      const start = await exec("install", vm, START_INSTALL_COMMAND, STAGE_TIMEOUT_MS);
+      const start = await exec("install", vm, START_INSTALL_COMMAND);
       if (start.exitCode !== 0) throw failure("install", vm, "could not start the install", start);
       return "started";
     },
@@ -270,13 +336,14 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
       if (tailnet === undefined || pinned.tailscale === null) return "skipped";
       const authKey = await readAuthKey(tailnet);
       if (authKey === null) return "skipped";
-      const probed = await exec("tailnet", vm, TAILNET_PROBE_COMMAND, PROBE_TIMEOUT_MS);
+      const probed = await exec("tailnet", vm, TAILNET_PROBE_COMMAND);
       if (probed.exitCode !== 0)
         throw failure("tailnet", vm, "tailnet: could not read the Tailscale state", probed);
       const state = parseTailnetProbe(probed.stdout);
       if (state.version !== pinned.tailscale.version) {
-        const installed = await exec(
+        const installed = await detached(
           "tailnet",
+          "tailscale-install",
           vm,
           tailscaleInstallCommand(pinned.tailscale),
           TAILSCALE_INSTALL_TIMEOUT_MS,
@@ -288,11 +355,13 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
       if (state.backend !== "Running") {
         // A matching version skips the install, which is what starts tailscaled. On a retry, after a
         // reboot, or with a stopped daemon, start it here and wait for its socket before the join.
-        const started = await exec(
+        const started = await detached(
           "tailnet",
+          "tailscaled-start",
           vm,
           TAILSCALED_START_COMMAND,
           TAILSCALED_START_TIMEOUT_MS,
+          authKey,
         );
         if (started.exitCode !== 0)
           throw failure("tailnet", vm, "tailnet: tailscaled did not start", started, authKey);
@@ -302,8 +371,9 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
           result = "joined";
         }
       }
-      const reached = await exec(
+      const reached = await detached(
         "tailnet",
+        "tailnet-reach",
         vm,
         reachCommand(pinned.controlPlaneUrl, pinned.serverCa),
         TAILNET_REACH_TIMEOUT_MS,
@@ -315,9 +385,14 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
 
     async enroll(vm) {
       checkVm("enroll", vm);
-      const result = await exec("enroll", vm, enrollCommand(vm), ENROLL_TIMEOUT_MS);
+      const result = await detached("enroll", "enroll", vm, enrollCommand(vm), ENROLL_TIMEOUT_MS);
       if (result.exitCode !== 0) throw failure("enroll", vm, "enrollment failed", result);
-      const line = result.stdout.trim().split("\n").at(-1) ?? "";
+      // The log holds stdout and stderr together; the paired runner is the last JSON line.
+      const line =
+        result.stdout
+          .trim()
+          .split("\n")
+          .findLast((entry) => entry.trimStart().startsWith("{")) ?? "";
       let parsed: z.infer<typeof Enrolled>;
       try {
         parsed = Enrolled.parse(JSON.parse(line));
@@ -331,14 +406,26 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
 
     async startRunner(vm) {
       checkVm("start", vm);
-      const result = await exec("start", vm, START_RUNNER_COMMAND, START_TIMEOUT_MS);
+      const result = await detached(
+        "start",
+        "runner-start",
+        vm,
+        START_RUNNER_COMMAND,
+        START_TIMEOUT_MS,
+      );
       if (result.exitCode !== 0)
         throw failure("start", vm, "could not start the runner service", result);
     },
 
     async resetIdentity(vm) {
       checkVm("reset", vm);
-      const result = await exec("reset", vm, RESET_IDENTITY_COMMAND, RESET_TIMEOUT_MS);
+      const result = await detached(
+        "reset",
+        "runner-reset",
+        vm,
+        RESET_IDENTITY_COMMAND,
+        RESET_TIMEOUT_MS,
+      );
       if (result.exitCode !== 0)
         throw failure("reset", vm, "could not remove the runner identity", result);
     },
@@ -456,12 +543,81 @@ function failure(
   result: ExeDevExecResult,
   secret?: string,
 ): BootstrapError {
-  const stderr = secret ? result.stderr.replaceAll(secret, "[redacted]") : result.stderr;
-  const detail = stderr.trim().slice(-300);
+  const detail = logTail(result.stderr, secret);
   return new BootstrapError(
     step,
     `${vm}: ${what} (exit ${result.exitCode})${detail ? `: ${detail}` : "."}`,
   );
+}
+
+type DetachedStep =
+  | "tailscale-install"
+  | "tailscaled-start"
+  | "tailnet-join"
+  | "tailnet-reach"
+  | "enroll"
+  | "runner-start"
+  | "runner-reset";
+
+function detachedPaths(name: DetachedStep) {
+  const base = `${BOOTSTRAP_LOG_DIR}/${name}`;
+  return { log: `${base}.log`, exit: `${base}.exit`, pid: `${base}.pid` };
+}
+
+/**
+ * Stop an earlier run of the step that is still going, then start `script` as root in its own
+ * session (so `kill -TERM "-<pid>"` ends its whole process group; dash's `kill` takes no `--`), with its output in `<step>.log` and its status written to `<step>.exit` when it ends.
+ * Prints the process id. Nothing waits for the script, so the call returns at once.
+ */
+function detachCommand(name: DetachedStep, script: string): string {
+  const { log, exit, pid } = detachedPaths(name);
+  const run = [
+    `sh -c ${shellQuote(script)}`,
+    "code=$?",
+    `printf '%s\\n' "$code" > ${exit}.tmp && mv ${exit}.tmp ${exit}`,
+  ].join("; ");
+  return `sudo sh -c ${shellQuote(
+    [
+      `install -d -o root -g root -m 0700 ${BOOTSTRAP_LOG_DIR} || exit 1`,
+      `if [ -s ${pid} ] && [ ! -e ${exit} ]; then kill -TERM "-$(cat ${pid})" 2>/dev/null || true; fi`,
+      `rm -f ${log} ${exit} ${exit}.tmp ${pid}`,
+      `setsid nohup sh -c ${shellQuote(run)} > ${log} 2>&1 < /dev/null & echo $! > ${pid}`,
+      `cat ${pid}`,
+    ].join("; "),
+  )}`;
+}
+
+/**
+ * Print `exited <status>`, `running`, or `lost` when the process is gone without a status (a
+ * zombie leader counts as gone, which `kill -0` would not see); once it is no longer running,
+ * follow that line with the end of the log.
+ */
+function pollCommand(name: DetachedStep): string {
+  const { log, exit, pid } = detachedPaths(name);
+  return `sudo sh -c ${shellQuote(
+    [
+      `if [ -s ${exit} ]; then printf 'exited %s\\n' "$(cat ${exit})"`,
+      `elif [ -s ${pid} ] && ps -o stat= -p "$(cat ${pid})" 2>/dev/null | grep -q '^[^Z]'; then echo running; exit 0`,
+      "else echo lost; fi",
+      `tail -c ${LOG_TAIL_BYTES} ${log} 2>/dev/null || true`,
+    ].join("; "),
+  )}`;
+}
+
+/** Stop a step that ran past its budget and print the end of its log. */
+function stopCommand(name: DetachedStep): string {
+  const { log, pid } = detachedPaths(name);
+  return `sudo sh -c ${shellQuote(
+    [
+      `if [ -s ${pid} ]; then kill -TERM "-$(cat ${pid})" 2>/dev/null || true; fi`,
+      `tail -c 2000 ${log} 2>/dev/null || true`,
+    ].join("; "),
+  )}`;
+}
+
+/** The last 300 characters of a step's output, without `secret`. */
+function logTail(output: string, secret?: string): string {
+  return (secret ? output.replaceAll(secret, "[redacted]") : output).trim().slice(-300);
 }
 
 const PROBE_COMMAND = `sudo sh -c ${shellQuote(
