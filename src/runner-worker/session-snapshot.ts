@@ -18,6 +18,7 @@ export const SESSION_BUNDLE_FILE = "session.ndjson.gz";
 export const SESSION_METADATA_FILE = "session.json";
 export const CLAUDE_SESSION_TOO_LARGE = "The Claude session is too large to save for a move.";
 export const CODEX_SESSION_TOO_LARGE = "The Codex session is too large to save for a move.";
+export const GROK_SESSION_TOO_LARGE = "The Grok session is too large to save for a move.";
 
 /** Claude keys a session directory by its cwd and shortens names over 200 characters. */
 const CLAUDE_PROJECT_NAME_LIMIT = 200;
@@ -27,6 +28,21 @@ const CODEX_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 /** `rollout-2026-10-27T00-38-23-<thread id>.jsonl`, as Codex names a session's rollout. */
 const CODEX_ROLLOUT =
   /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.jsonl$/;
+/** A Grok session id is a UUIDv7 unless the client names one. */
+const GROK_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** Grok gives a longer encoded cwd a slug and hash; that folder is not keyed by the path alone. */
+const GROK_CWD_NAME_LIMIT = 255;
+/** Grok's credential and settings files; never part of a bundle, at any depth. */
+export const GROK_EXCLUDED_FILES: ReadonlySet<string> = new Set([
+  "auth.json",
+  "config.toml",
+  "mcp_credentials.json",
+  "managed_config.toml",
+  "requirements.toml",
+  "permission.toml",
+]);
+/** A file or folder name the restore accepts. */
+const BUNDLE_NAME = /^[A-Za-z0-9._-]{1,255}$/;
 /** A multiple of 3, so each piece but the last encodes to base64 without padding. */
 const READ_BYTES = 196_608;
 
@@ -35,6 +51,20 @@ export class SessionTooLargeError extends Error {}
 /** The thread id a Codex rollout file name holds, or undefined for any other name. */
 export function codexRolloutSession(name: string): string | undefined {
   return CODEX_ROLLOUT.exec(name)?.[1];
+}
+
+/**
+ * The folder Grok groups a cwd's sessions under: the cwd URL-encoded with uppercase hex, so
+ * `/var/lib/paws-agent/work/01J…` is `%2Fvar%2Flib%2Fpaws-agent%2Fwork%2F01J…`. Undefined when
+ * the name passes 255 bytes and Grok would use a slug and hash instead.
+ */
+export function grokCwdFolder(cwd: string): string | undefined {
+  let name = "";
+  for (const byte of Buffer.from(cwd, "utf8"))
+    name += /[A-Za-z0-9._~-]/.test(String.fromCharCode(byte))
+      ? String.fromCharCode(byte)
+      : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  return name.length <= GROK_CWD_NAME_LIMIT && name !== "." && name !== ".." ? name : undefined;
 }
 
 export type SessionBundle = {
@@ -310,6 +340,93 @@ export async function writeCodexSessionBundle(options: {
       }
     }
     return null;
+  } finally {
+    writer.destroy();
+    for (const fd of opened) closeSync(fd);
+  }
+}
+
+/**
+ * Writes Grok's session folder for `sessionId` as a bundle to `output`: every file under
+ * `.grok/sessions/<encoded cwd>/<sessionId>/`, subfolders included. Nothing else under `.grok`
+ * is read: not `auth.json`, `config.toml`, `mcp_credentials.json`, the cwd folder's
+ * `permission.toml`, the search index or other sessions. Links, files with more than one link,
+ * other file types and credential names are refused. Returns null when the session has no
+ * `updates.jsonl`, the log Grok's `session/load` reads.
+ * Throws `SessionTooLargeError` once the gzipped bundle passes `maxBytes`.
+ */
+export async function writeGrokSessionBundle(options: {
+  home: string;
+  cwd: string;
+  sessionId: string;
+  output: number;
+  maxBytes: number;
+}): Promise<SessionBundle | null> {
+  if (!GROK_SESSION_ID.test(options.sessionId)) throw new Error("Invalid Grok session id");
+  const folder = grokCwdFolder(options.cwd);
+  if (!folder) return null;
+  const opened: number[] = [];
+  const directory = (parent: number, name: string) => {
+    const fd = child(parent, name, constants.O_DIRECTORY);
+    opened.push(fd);
+    return fd;
+  };
+  const writer = bundleWriter(options.output, options.maxBytes);
+  try {
+    const home = openSync(options.home, constants.O_RDONLY | constants.O_DIRECTORY);
+    opened.push(home);
+    let session: number;
+    try {
+      session = directory(
+        directory(directory(directory(home, ".grok"), "sessions"), folder),
+        options.sessionId,
+      );
+    } catch (error) {
+      if (missing(error)) return null;
+      throw error;
+    }
+    let log: SessionFile | null;
+    try {
+      log = regular(session, "updates.jsonl");
+    } catch (error) {
+      if (missing(error)) return null;
+      throw error;
+    }
+    if (!log) throw new Error("The Grok session log is not a regular file");
+    closeSync(log.fd);
+
+    let refused = 0;
+    const walk = async (parent: number, path: string) => {
+      const entries = readdirSync(`/proc/self/fd/${parent}`, { withFileTypes: true }).sort(
+        (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+      );
+      for (const entry of entries) {
+        // A name the restore would refuse is left out rather than spoiling the whole bundle.
+        if (!BUNDLE_NAME.test(entry.name)) {
+          refused++;
+          continue;
+        }
+        if (entry.isDirectory()) {
+          await walk(directory(parent, entry.name), `${path}/${entry.name}`);
+          continue;
+        }
+        const file =
+          entry.isFile() && !GROK_EXCLUDED_FILES.has(entry.name)
+            ? regular(parent, entry.name)
+            : null;
+        if (!file) {
+          refused++;
+          continue;
+        }
+        try {
+          await writer.add(file, `${path}/${entry.name}`);
+        } finally {
+          closeSync(file.fd);
+        }
+      }
+    };
+    await walk(session, `.grok/sessions/${folder}/${options.sessionId}`);
+    return { files: writer.files, refused, ...(await writer.finish()) };
   } finally {
     writer.destroy();
     for (const fd of opened) closeSync(fd);
