@@ -12,12 +12,14 @@ import {
   parseLocation,
   preExistingFindings,
   renderReviewPrompt,
+  reviewRoundFindings,
   type Finding,
   type ResolvedPolicyPresent,
   type ReviewMaterial,
   type ReviewRecord,
 } from "../src/closeout-spec";
 import { evaluate } from "../src/closeout-spec/evaluate";
+import { createEvidenceStore } from "../src/closeout-spec/evidence/store";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION } from "../src/closeout-spec/evaluate";
 
 const exec = promisify(execFile);
@@ -245,6 +247,23 @@ describe("second review round", () => {
         status: "fixed",
       },
     ]);
+  });
+
+  test("stored rounds read back with the latest round open and older ones fixed", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paws-review-rounds-"));
+    try {
+      const store = createEvidenceStore({ root });
+      for (const stored of records.slice(0, 2)) await store.add(stored);
+      expect(await reviewRoundFindings(root, order)).toEqual(
+        earlierFindings(records, scope, order).map((finding) => ({
+          ...finding,
+          itemId: "adversarial-review",
+        })),
+      );
+      expect(await reviewRoundFindings(path.join(root, "missing"), order)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("the first round has no earlier findings", () => {

@@ -28,6 +28,7 @@ export {
   readReviewRounds,
   runCloseoutGate,
   snapshotRetryBaseline,
+  storedReviewFindings,
 } from "./run";
 export { bugClass, summarizeReviewRounds, UNCLASSIFIED } from "./rounds";
 export type { OpenFinding, ReviewRoundSummary, ReviewRounds } from "./rounds";
@@ -63,6 +64,7 @@ export type {
   GateOutcome,
   GateResult,
   ReviewFindings,
+  StoredReviewFinding,
 } from "./types";
 
 export { bypassable, bypassSummary } from "./bypass";

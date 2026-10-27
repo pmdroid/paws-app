@@ -406,6 +406,42 @@ export async function reviewRecordsSince(
 }
 
 /**
+ * Findings of every review item's stored rounds in `evidenceDir`, as {@link earlierFindings}
+ * lists them for that item's latest policy and task: the latest round's are `open`, an older one
+ * not reported again is `fixed`. `order` places a head in history; a larger number is later.
+ * Empty when the evidence cannot be read.
+ */
+export async function reviewRoundFindings(
+  evidenceDir: string,
+  order: (head: string) => number,
+): Promise<Array<EarlierFinding & { itemId: string }>> {
+  const snapshot = await createEvidenceStore({ root: evidenceDir }).load();
+  const latest = new Map<string, ReviewRecord>();
+  for (const record of snapshot.records) {
+    if (record.recordType !== "review") continue;
+    const seen = latest.get(record.itemId);
+    if (
+      seen === undefined ||
+      order(record.head) - order(seen.head) > 0 ||
+      (order(record.head) === order(seen.head) && record.attempt > seen.attempt)
+    )
+      latest.set(record.itemId, record);
+  }
+  return [...latest.values()].flatMap((record) =>
+    earlierFindings(
+      snapshot.records,
+      {
+        itemId: record.itemId,
+        policyDigest: record.policyDigest,
+        base: record.base,
+        ...(record.task !== undefined ? { task: record.task } : {}),
+      },
+      order,
+    ).map((finding) => ({ ...finding, itemId: record.itemId })),
+  );
+}
+
+/**
  * SHA-256 identity of the policy files currently in the repository directory.
  * A newline added to a referenced skill file changes this digest.
  */
