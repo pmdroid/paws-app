@@ -165,19 +165,16 @@ globalThis.fetch = Object.assign(
   },
   { preconnect: () => undefined },
 );
-const paws = startPaws(
-  {
-    HOME: home,
-    PAWS_HOME: home,
-    PAWS_PORT: "0",
-    LINEAR_MODE: "agent-session",
-    LINEAR_CLIENT_ID: "client",
-    LINEAR_CLIENT_SECRET: "fake-secret",
-    LINEAR_WEBHOOKS: "true",
-    LINEAR_WEBHOOK_SECRET: "fake-webhook-secret",
-  },
-  { noTunnel: true },
-);
+const paws = startPaws({
+  HOME: home,
+  PAWS_HOME: home,
+  PAWS_PORT: "0",
+  LINEAR_MODE: "agent-session",
+  LINEAR_CLIENT_ID: "client",
+  LINEAR_CLIENT_SECRET: "fake-secret",
+  LINEAR_WEBHOOKS: "true",
+  LINEAR_WEBHOOK_SECRET: "fake-webhook-secret",
+});
 const statuses: number[] = [];
 const deliveries = contextMode
   ? ["first", "retry", "duplicate"]

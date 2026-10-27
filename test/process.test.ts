@@ -38,9 +38,7 @@ describe("process", () => {
       "LINEAR_CLIENT_ID",
       "LINEAR_CLIENT_SECRET",
       "LINEAR_WEBHOOK_SECRET",
-      "NGROK_AUTHTOKEN",
       "PAWS_PUBLIC_URL",
-      "PAWS_NO_TUNNEL",
     ]) {
       delete env[key];
     }
@@ -82,8 +80,6 @@ describe("process", () => {
     });
     try {
       expect(paws.server.hostname).toBe("127.0.0.1");
-      expect(paws.tunnelRequested).toBe(false);
-      expect(paws.tunnelUrl).toBeNull();
       const base = `http://${paws.server.hostname}:${paws.server.port}`;
       const health = await fetch(`${base}/health`);
       expect(health.status).toBe(200);

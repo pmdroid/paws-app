@@ -141,7 +141,6 @@ export function startCatchUpPoller(options: {
   intake?: IntakeQueue;
   submitCommand?: (command: LinearCommand) => void;
   db?: Database;
-  beforeDelay?: () => Promise<void>;
   sleeper?: Sleeper;
   now?: () => number;
   mono?: () => number;
@@ -343,8 +342,6 @@ export function startCatchUpPoller(options: {
       }
       const previousWallMs = now();
       const previousMonoMs = mono();
-      await options.beforeDelay?.();
-      if (control.stopped) return;
       await sleeper.wait(delay);
       if (control.stopped) return;
       const gap = sleepGapMs({

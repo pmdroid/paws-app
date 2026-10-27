@@ -45,7 +45,7 @@ export async function loginSlack(input: {
   const publicUrl = input.env.PAWS_PUBLIC_URL;
   if (!publicUrl)
     throw new Error(
-      "Set PAWS_PUBLIC_URL to the HTTPS tunnel forwarding to Paws before paws login slack.",
+      "Set PAWS_PUBLIC_URL to the public HTTPS origin of Paws before paws login slack.",
     );
   const token = await authorizeSlack({
     clientId: app.clientId,

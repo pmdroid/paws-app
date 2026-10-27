@@ -24,7 +24,6 @@ import {
 } from "./poller";
 import { createLinearTracker } from "./tracker";
 import { createSessionStarter } from "./start-session";
-import { downTunnel, startNgrokTunnel, type SpawnFn, type Tunnel } from "./tunnel";
 import type { LinearWebhookDeps } from "./webhook";
 import { createLinearAccessReads, type LinearAccessReads } from "./access";
 import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-lifecycle";
@@ -33,9 +32,6 @@ import { createLinearMembershipReads, type LinearMembershipReads } from "./membe
 
 export type LinearRunning = {
   catchUp: () => Promise<void>;
-  tunnelUp: () => boolean;
-  tunnelRequested: boolean;
-  tunnelUrl: string | null;
   stop: () => Promise<void>;
 };
 
@@ -48,7 +44,7 @@ export type OpenLinear = {
   access: LinearAccessReads | null;
   issueLifecycle: LinearIssueLifecycle | null;
   usage(): LinearUsage;
-  start(port: number): LinearRunning;
+  start(): LinearRunning;
 };
 
 export function linearTokenPath(secretsDir: string): string {
@@ -56,19 +52,14 @@ export function linearTokenPath(secretsDir: string): string {
 }
 
 /**
- * Build the inbox and tracker. Call `start` with the bound port to poll Linear.
- * The ngrok child starts only when `webhooks` is on (env `LINEAR_WEBHOOKS`).
+ * Build the inbox and tracker. Call `start` to poll Linear.
  */
 export function openLinear(options: {
   db: Database;
   secretsDir: string;
   env: EnvSource;
-  publicUrl: string | null;
-  noTunnel?: boolean;
   signal?: AbortSignal;
   isAuthorized?: () => boolean;
-  /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
-  webhooks?: boolean;
   followUp?: (
     event: AcceptedLinearEvent,
     tracker: TrackerAdapter | null,
@@ -79,7 +70,6 @@ export function openLinear(options: {
   submitCommand?: (command: LinearCommand) => void;
   countItemRequest?: (itemId: string, caller: string) => void;
   fetch?: FetchLike;
-  spawn?: SpawnFn;
 }): OpenLinear {
   const stopping = new AbortController();
   const signal = options.signal
@@ -149,24 +139,14 @@ export function openLinear(options: {
         : createLinearAccessReads(callerClient(client, "task-access"), settings.clientId),
     issueLifecycle: client === null ? null : createLinearIssueLifecycle(client, starts),
     usage: () => ({ ...ledger.usage(), lastCatchUpMs: store.getCursor(CATCH_UP_CURSOR) }),
-    start(port) {
+    start() {
       if (running !== null) return running;
-      const webhooks = options.webhooks ?? settings.webhooks;
-      const tunnel = openTunnel({
-        port,
-        publicUrl: options.publicUrl,
-        webhooks,
-        noTunnel: options.noTunnel === true || settings.noTunnel,
-        authtoken: settings.ngrokAuthtoken,
-        spawn: options.spawn,
-      });
       const poller = accessAllowed()
         ? startPoller({
             auth,
             onEvent,
             intake: intake?.queue,
             store,
-            tunnel,
             fetchImpl: options.fetch,
             ledger,
             db: options.db,
@@ -183,14 +163,10 @@ export function openLinear(options: {
           intake?.queue.wake();
           await intake?.queue.idle();
         },
-        tunnelUp: () => tunnel.isUp(),
-        tunnelRequested: tunnel.requested,
-        tunnelUrl: tunnel.url,
         async stop() {
           stopping.abort();
           const polling = poller?.stop();
           const queued = intake?.queue.stop();
-          tunnel.stop();
           await Promise.all([polling, queued]);
           await onEvent?.close();
         },
@@ -200,30 +176,11 @@ export function openLinear(options: {
   };
 }
 
-function openTunnel(options: {
-  port: number;
-  publicUrl: string | null;
-  webhooks: boolean;
-  noTunnel: boolean;
-  authtoken: string | null;
-  spawn: SpawnFn | undefined;
-}): Tunnel {
-  if (!options.webhooks || options.noTunnel) return downTunnel();
-  if (options.publicUrl === null || !options.publicUrl.startsWith("https://")) return downTunnel();
-  return startNgrokTunnel({
-    port: options.port,
-    url: options.publicUrl,
-    authtoken: options.authtoken,
-    spawn: options.spawn,
-  });
-}
-
 function startPoller(options: {
   auth: LinearAuth;
   onEvent: ((event: AcceptedLinearEvent) => Promise<void | boolean>) | undefined;
   intake: IntakeQueue | undefined;
   store: ReturnType<typeof createInboxStore>;
-  tunnel: Tunnel;
   fetchImpl: FetchLike | undefined;
   ledger: LinearLedger;
   db: Database;
@@ -247,7 +204,6 @@ function startPoller(options: {
     intake: options.intake,
     db: options.db,
     submitCommand: options.submitCommand,
-    beforeDelay: () => options.tunnel.refresh(),
   });
 }
 

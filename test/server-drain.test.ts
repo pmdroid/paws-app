@@ -89,7 +89,6 @@ test("Paws shutdown joins an accepted HTTP operation before closing SQLite", asy
   const paws = startPaws({
     PAWS_HOME: home,
     PAWS_PORT: "0",
-    PAWS_NO_TUNNEL: "1",
     LINEAR_ACCESS_TOKEN: "offline-token",
   });
   const origin = `http://127.0.0.1:${paws.server.port}`;
