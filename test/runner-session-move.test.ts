@@ -195,7 +195,10 @@ async function setup() {
     });
     return { id, runId: started.id };
   }
-  /** Both runners online, restore-capable, signed in to Claude 2.1.7, owned by the delegator. */
+  /**
+   * Both runners online, restore-capable for Claude and Codex, signed in to Claude 2.1.7 and
+   * Codex 2.1.1, owned by the delegator.
+   */
   function reset() {
     for (const runnerId of Object.values(runners)) {
       db.run("UPDATE runner SET status='active',revoked_at=NULL,owner_user_id=? WHERE id=?", [
@@ -204,20 +207,25 @@ async function setup() {
       ]);
       work.heartbeat(runnerId);
       db.run(
-        `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.43',?)
+        `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.45',?)
          ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
         [runnerId, now],
       );
       db.run("DELETE FROM runner_agent_policy WHERE runner_id=?", [runnerId]);
-      db.run(
-        "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',1,0)",
-        [runnerId],
-      );
       db.run("DELETE FROM runner_agent WHERE runner_id=?", [runnerId]);
-      db.run(
-        "INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(?,'claude','2.1.7','current',?)",
-        [runnerId, now],
-      );
+      for (const [agent, version] of [
+        ["claude", "2.1.7"],
+        ["codex", "2.1.1"],
+      ]) {
+        db.run(
+          "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,?,1,0)",
+          [runnerId, agent!],
+        );
+        db.run(
+          "INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(?,?,?,'current',?)",
+          [runnerId, agent!, version!, now],
+        );
+      }
     }
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 1, runners.b]);
   }
@@ -260,7 +268,7 @@ async function setup() {
     });
   }
   /** Runner A seals a snapshot of its turn through the store, as the runner uploads it. */
-  async function seal(command: RunCommand) {
+  async function seal(command: RunCommand, agent: "claude" | "codex") {
     const grant = work.issueGrant({
       runnerId: runners.a,
       runId: command.runId,
@@ -282,8 +290,8 @@ async function setup() {
       generation: command.generation,
       sizeBytes: bundle.length,
       sha256: createHash("sha256").update(bundle).digest("hex"),
-      agent: "claude",
-      agentVersion: "2.1.7",
+      agent,
+      agentVersion: agent === "codex" ? "2.1.1" : "2.1.7",
       sessionId: "claude-session",
       workspacePath: `/var/lib/paws-agent/work/${command.runId}`,
       commitSha: head,
@@ -296,6 +304,8 @@ async function setup() {
    * `change` runs before the next turn, which `turnOnB` drives on B.
    */
   async function move(options: {
+    /** The run's agent; Claude when unset. */
+    agent?: "claude" | "codex";
     snapshot?: boolean;
     change?: () => void;
     events?: RunnerEvent[];
@@ -312,7 +322,7 @@ async function setup() {
     const notices: string[] = [];
     const turn = () =>
       backend.forItem(record.id)({
-        profile: { agent: "claude", model: "model" },
+        profile: { agent: options.agent ?? "claude", model: "model" },
         role: "implementer",
         itemId: `display-${record.id}`,
         runId: record.runId,
@@ -330,7 +340,8 @@ async function setup() {
     const first = turn();
     const onA = (await next(runners.a)) as RunCommand;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
-    const sealed = options.snapshot === false ? undefined : await seal(onA);
+    const sealed =
+      options.snapshot === false ? undefined : await seal(onA, options.agent ?? "claude");
     finish(onA, runners.a);
     await first;
     expect(onA.restoreSession).toBeUndefined();
@@ -502,4 +513,54 @@ test("a run that stays on its runner never sends restoreSession", async () => {
   expect(onB.restoreSession).toBeUndefined();
   expect(onB.resumeSessionId).toBe("claude-session");
   expect(notices.some((notice) => notice.startsWith("Moved this run"))).toBe(false);
+});
+
+test("a moved Codex run restores its rollout on a runner from 0.1.45", async () => {
+  const { onB, sealed, notices } = await context.move({
+    agent: "codex",
+    events: [{ type: "session_restore", restored: true }],
+  });
+  expect(onB.profile.agent).toBe("codex");
+  expect(onB.restoreSession).toEqual({
+    generation: sealed!.generation,
+    agent: "codex",
+    agentVersion: "2.1.1",
+    sessionId: "claude-session",
+    sha256: createHash("sha256").update(sealed!.bundle).digest("hex"),
+    sizeBytes: sealed!.bundle.length,
+  });
+  expect(onB.resumeSessionId).toBe("claude-session");
+  expect(notices).toEqual([
+    `Moved this run to B because A is offline. Continuing the agent's session from turn ${sealed!.generation}.\n`,
+  ]);
+});
+
+test("a Codex run never restores on a runner that only restores Claude", async () => {
+  const { db, runners } = context;
+  const { onB, notices } = await context.move({
+    agent: "codex",
+    change: () =>
+      db.run("UPDATE runner_host_status SET runner_version='0.1.44' WHERE runner_id=?", [
+        runners.b,
+      ]),
+  });
+  expect(onB.restoreSession).toBeUndefined();
+  expect(onB.resumeSessionId).toBeUndefined();
+  expect(notices).toEqual([`${FALLBACK} (B's runner is too old).\n`]);
+});
+
+test("another Codex version still restores, and a failed load names both versions", async () => {
+  const { db, runners } = context;
+  const { onB, notices } = await context.move({
+    agent: "codex",
+    change: () =>
+      db.run("UPDATE runner_agent SET version='2.2.2' WHERE runner_id=? AND agent='codex'", [
+        runners.b,
+      ]),
+    events: [{ type: "session_restore", restored: false, reason: "load" }],
+  });
+  expect(onB.restoreSession?.agentVersion).toBe("2.1.1");
+  expect(notices).toEqual([
+    `${FALLBACK} (the saved session didn't load: Codex 2.1.1 on A, 2.2.2 on B).\n`,
+  ]);
 });
