@@ -114,6 +114,8 @@ const REBASE_RUNNER_VERSION = [0, 1, 23];
 const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
 /** First runner release whose command schema accepts `runtimes`. Older runners reject the field. */
 export const RUNTIMES_RUNNER_VERSION = [0, 1, 26];
+/** First runner release that runs the agent's own review command for a `review` command. */
+export const REVIEW_COMMAND_RUNNER_VERSION = [0, 1, 47];
 /** First runner release that snapshots a run's Claude session when a turn ends. */
 export const CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION = [0, 1, 42];
 
@@ -576,6 +578,15 @@ export function createRemoteAgentRunner(options: {
           throw new Error("Remote response task transcript is unavailable");
         if (!responseTask && !input.prepareOnly && input.readOnly && input.role !== "reviewer")
           throw new Error("Read-only remote work requires the reviewer role");
+        if (
+          input.reviewCommand &&
+          (responseTask || input.prepareOnly || input.role !== "reviewer" || !input.readOnly)
+        )
+          throw new Error("A review command runs only as read-only reviewer work");
+        if (input.reviewCommand && (input.profile.agent === "grok" || !input.profile.model))
+          throw new Error(
+            "The reviewer profile needs a Claude or Codex model to run the agent's review command",
+          );
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
         const holder =
@@ -1049,6 +1060,20 @@ export function createRemoteAgentRunner(options: {
               );
               const runtimes =
                 runtimeList?.runtimes.length && acceptsRuntimes ? runtimeList.runtimes : undefined;
+              if (
+                input.reviewCommand &&
+                !versionAtLeast(
+                  db
+                    .query<{ version: string | null }, [string]>(
+                      "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                    )
+                    .get(selected.id)?.version,
+                  REVIEW_COMMAND_RUNNER_VERSION,
+                )
+              )
+                throw new Error(
+                  `Runner ${selected.id} needs runner ${REVIEW_COMMAND_RUNNER_VERSION.join(".")} or later to run the agent's review command. Upgrade the runner, then review again.`,
+                );
               const runtimeNotices = [
                 ...(runtimeList?.notices ?? []),
                 ...(runtimeList?.runtimes.length && !acceptsRuntimes
@@ -1092,6 +1117,9 @@ export function createRemoteAgentRunner(options: {
                     }
                   : {
                       type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
+                      ...(input.role === "reviewer" && input.reviewCommand
+                        ? { reviewCommand: { base: input.reviewCommand.base } }
+                        : {}),
                       ...(skillsInputId !== undefined ? { skillsInputId } : {}),
                       ...(input.role === "reviewer" ? {} : runHooks(profile.agent)),
                       repository: {
