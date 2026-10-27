@@ -1017,6 +1017,72 @@ describe("closeout gate", () => {
     }
   });
 
+  test("fix attempts name the limit that stops the loop first", async () => {
+    // note.txt appears with the first fix: `before` fails only until then, `after` from then on.
+    const before = {
+      ...alwaysFail("before"),
+      exec: ["bun", "-e", "process.exit(require('fs').existsSync('note.txt') ? 0 : 1)"],
+    };
+    const after = {
+      ...alwaysFail("after"),
+      exec: ["bun", "-e", "process.exit(require('fs').existsSync('note.txt') ? 1 : 0)"],
+    };
+    for (const [retry, items, fixed, expected] of [
+      [
+        { maxFailedAttemptsPerItem: 3, fix_rounds_per_item: 35 },
+        [alwaysFail("test")],
+        [1, 2],
+        [2, 2],
+      ],
+      [
+        { maxFailedAttemptsPerItem: 5, fix_rounds_per_item: 2 },
+        [alwaysFail("test")],
+        [1, 2],
+        [2, 2],
+      ],
+      // `after` starts failing at the second evaluation, so it allows one more fix than `before`.
+      [
+        { maxFailedAttemptsPerItem: 3, fix_rounds_per_item: 35 },
+        [before, after],
+        [1, 2, 3],
+        [2, 3, 3],
+      ],
+    ] as const) {
+      const repo = await originRepo({
+        ".agents/closeout.yaml": JSON.stringify({
+          specVersion: "0.1",
+          retry: { ...retry, scope: "task" },
+          items,
+        }),
+      });
+      try {
+        const fixes: number[] = [];
+        const limits: number[] = [];
+        const fixer = committingFixer(repo.dir, fixes);
+        const result = await runCloseoutGate({
+          worktree: repo.dir,
+          taskId: TASK,
+          base: repo.head,
+          candidate: candidate(),
+          home: repo.home,
+          pawsHome: repo.pawsHome,
+          reviewer: throwingReviewer(),
+          fixer: {
+            applyFix(request) {
+              limits.push(request.maxFixAttempts);
+              return fixer.applyFix(request);
+            },
+          },
+        });
+        expect(result.outcome).toBe("exhausted");
+        expect(fixes).toEqual([...fixed]);
+        expect(limits).toEqual([...expected]);
+      } finally {
+        await repo.cleanup();
+      }
+    }
+  });
+
   test("bypassing setup cannot approve commands that never ran", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": JSON.stringify({

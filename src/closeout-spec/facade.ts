@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { evaluate, type EvaluateRequest } from "./evaluate/evaluate";
+import { attemptsLeft, evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
@@ -325,6 +325,65 @@ export function policyFixBudget(repo: string, home?: string, policyRoot?: string
   const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return null;
   return loaded.policy.source === "none" ? 3 : (loaded.policy.retry?.fix_rounds_per_item ?? 3);
+}
+
+/**
+ * Fix attempts the checks in `failed` still allow before the first of them is exhausted, if each
+ * keeps failing: a check exhausts on the evaluation that spends its last failed attempt, so the
+ * count equals the failed attempts it has left. Read from the same evidence and retry policy as
+ * {@link decision}. `null` when none of them has a limit or the evidence cannot be read.
+ */
+export async function fixesLeft(
+  input: DecisionInput,
+  failed: readonly string[],
+): Promise<number | null> {
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  if (!loaded.ok || loaded.policy.source === "none") return null;
+  const policy = loaded.policy;
+  const items = policy.items.filter((item) => item.kind !== "evidence" && failed.includes(item.id));
+  if (items.length === 0) return null;
+  const resolved = await resolvePair(
+    input.repo,
+    input.base,
+    input.head,
+    scrubCommandEnv(input.env),
+  );
+  if (!resolved.ok) return null;
+  const snapshot = await createEvidenceStore({
+    root: input.evidenceDir ?? join(input.repo, ".closeout"),
+  }).load();
+  if (snapshot.invalid !== undefined) return null;
+  // Pre-existing review findings do not spend a review's attempts, as in decision().
+  const lineRanges = items.some((item) => item.kind === "review")
+    ? await reviewLineRanges(input, policy, snapshot.records, resolved.base, resolved.head)
+    : undefined;
+  const request = requestOf(input, input.candidate ?? blankCandidate(), {
+    base: resolved.base,
+    head: resolved.head,
+    ...(lineRanges !== undefined ? { changedLineRanges: lineRanges } : {}),
+  });
+  let least: number | null = null;
+  for (const item of items) {
+    const left = attemptsLeft(
+      item,
+      policy.retry,
+      policy.digest ?? "",
+      snapshot.records,
+      request,
+      input.trust,
+    );
+    if (left !== null) least = least === null ? left : Math.min(least, left);
+  }
+  return least;
+}
+
+/**
+ * The limit a fix-attempt line names for fix attempt `attempt`: whichever stops the item first,
+ * the fix rounds or a failed check spending its attempts. `left` is {@link fixesLeft} from the
+ * evaluation this fix answers, so the last fix a failing check allows is `attempt - 1 + left`.
+ */
+export function fixAttemptLimit(fixRounds: number, attempt: number, left: number | null): number {
+  return left === null ? fixRounds : Math.min(fixRounds, attempt - 1 + left);
 }
 
 export async function retryBaseline(evidenceDir: string): Promise<string[]> {

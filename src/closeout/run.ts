@@ -22,6 +22,8 @@ import { isSha, readHead } from "./worktree";
 import {
   addReview,
   credentialSecrets,
+  fixAttemptLimit,
+  fixesLeft as readFixesLeft,
   policyFixBudget,
   preExistingFindings,
   loadReviewMaterial,
@@ -387,6 +389,9 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
+    // Failed fixes retry without a new evaluation, so every retry answers the same findings.
+    const left = await fixesLeft(input, head, evaluation.decision);
+    const first = fixAttempts + 1;
 
     const feedback = await repairFeedback(input, evaluation);
     const failures: string[] = [];
@@ -409,7 +414,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
         worktree: input.worktree,
         taskId: input.taskId,
         fixAttempt: fixAttempts,
-        maxFixAttempts,
+        maxFixAttempts: fixAttemptLimit(maxFixAttempts, first, left),
         base: input.base,
         head,
         items: evaluation.decision?.items ?? [],
@@ -1011,6 +1016,37 @@ function exitOf(name: DecisionDocument["decision"]): 0 | 1 | 3 {
   return 3;
 }
 
+/** {@link readFixesLeft} for the checks `decision` failed, from this task's evidence. */
+async function fixesLeft(
+  input: GateInput,
+  head: string,
+  decision: DecisionDocument | null,
+): Promise<number | null> {
+  const failed = (decision?.items ?? []).filter((item) => item.state === "failed");
+  if (failed.length === 0) return null;
+  try {
+    return await readFixesLeft(
+      {
+        checkoutExclusions: input.checkoutExclusions,
+        repo: input.worktree,
+        base: input.base,
+        head,
+        gate: CLOSEOUT_GATE,
+        task: input.taskId,
+        candidate: input.candidate,
+        evidenceDir: evidencePath(input.taskId, input.pawsHome),
+        ...(input.home !== undefined ? { home: input.home } : {}),
+        ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
+        ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+      },
+      failed.map((item) => item.id),
+    );
+  } catch (error) {
+    journalCaught(error, "run.fixesLeft", input.taskId);
+    return null;
+  }
+}
+
 function evidencePath(taskId: string, pawsHome: string | undefined): string {
   const safe = taskId.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 200);
   return path.join(pawsHome ?? tmpdir(), "closeout", "evidence", safe);
@@ -1070,8 +1106,10 @@ async function finalResult(
     input.maxFixAttempts === 0 && evaluation?.decision?.decision === "rejected"
       ? await repairFeedback(input, evaluation)
       : undefined;
+  const left = handoff === undefined ? null : await fixesLeft(input, head, decision);
   const result: GateResult = {
     ...(handoff ? { handoff } : {}),
+    ...(left !== null ? { fixesLeft: left } : {}),
     outcome,
     taskId: input.taskId,
     base: input.base,
