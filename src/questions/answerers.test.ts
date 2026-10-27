@@ -7,7 +7,7 @@ test("nobody without a Linear identity answers any kind of question", () => {
   for (const id of strangers) {
     expect(answerer(id)).toBeNull();
     expect(canAnswer({ kind: "agent" }, { id })).toBe(false);
-    expect(canAnswer({ kind: "closeout-bypass" }, { id })).toBe(false);
+    expect(canAnswer({ kind: "closeout-help" }, { id })).toBe(false);
     expect(canAnswer({ kind: "visual-review", delegatorId: id, leadId: id }, { id })).toBe(false);
     expect(canAnswer({ kind: "github-auth", actorId: id }, { id })).toBe(false);
   }
@@ -16,7 +16,7 @@ test("nobody without a Linear identity answers any kind of question", () => {
 test("any identified Linear user answers an agent question or a Closeout bypass", () => {
   expect(answerer("user-1")).toEqual({ id: "user-1" });
   expect(canAnswer({ kind: "agent" }, { id: "user-1" })).toBe(true);
-  expect(canAnswer({ kind: "closeout-bypass" }, { id: "user-1" })).toBe(true);
+  expect(canAnswer({ kind: "closeout-help" }, { id: "user-1" })).toBe(true);
 });
 
 test("only the delegator or the project lead answers a visual review", () => {
