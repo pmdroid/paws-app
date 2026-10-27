@@ -26,6 +26,7 @@ import {
 } from "./closeout";
 import { captureLogs, restoreLogs } from "./log-scroll";
 import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
+import { earlierRoundsKey } from "./review-findings";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
 import {
   issueRedirect,
@@ -548,6 +549,11 @@ function onClick(event: MouseEvent): void {
   }
   if (!checkId) return;
   const key = checkKey(itemId, attempt, checkId);
+  if (action === "review-rounds-toggle") {
+    const rounds = earlierRoundsKey(itemId, checkId);
+    closeout.open[rounds] = closeout.open[rounds] !== true;
+    paint();
+  }
   if (action === "toggle-check") {
     const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
     if (check) closeout.open[key] = !isOpen(closeout, itemId, attempt, check);
