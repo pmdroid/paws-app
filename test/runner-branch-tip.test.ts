@@ -98,3 +98,37 @@ test("a checkout already at the branch tip stays where it is", async () => {
   expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBeNull();
   expect(await f.head()).toBe(before);
 });
+
+async function localCommit(f: Awaited<ReturnType<typeof fixture>>, text: string) {
+  writeFileSync(join(f.worktree, "result.txt"), text);
+  await f.run(["-C", f.worktree, "commit", "-qam", text]);
+  return (await f.run(["-C", f.worktree, "rev-parse", "HEAD"])).trim();
+}
+
+async function rebasedUpstream(f: Awaited<ReturnType<typeof fixture>>, text: string) {
+  writeFileSync(join(f.publisher, "other.txt"), "main moved");
+  await f.run(["-C", f.publisher, "add", "."]);
+  await f.run(["-C", f.publisher, "commit", "-qm", "main moved"]);
+  return f.commit(text);
+}
+
+test("a branch tip that rebased the checkout's commits onto a newer main is adopted", async () => {
+  const f = await fixture();
+  await localCommit(f, "the item's work");
+  const rebased = await rebasedUpstream(f, "the item's work");
+  await f.push("paws/task");
+
+  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBe(rebased);
+  expect(await f.head()).toBe(rebased);
+});
+
+test("a rebased branch tip is not adopted when the checkout has work it lacks", async () => {
+  const f = await fixture();
+  await localCommit(f, "the item's work");
+  const unpushed = await localCommit(f, "work only this checkout has");
+  await rebasedUpstream(f, "the item's work");
+  await f.push("paws/task");
+
+  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBeNull();
+  expect(await f.head()).toBe(unpushed);
+});
