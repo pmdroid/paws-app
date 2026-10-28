@@ -496,7 +496,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("checkout-add")) return styled("flex min-w-0 flex-col gap-2");
   if (has("checkout-add-row"))
     return styled("grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]");
-  if (has("checkout-error"))
+  if (has("checkout-error", "review-file-error"))
     return styled(
       "rounded-base border-2 border-border bg-red-200 px-3 py-2 text-sm leading-relaxed text-black",
     );

@@ -39,6 +39,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/doctor`                                             | Local prerequisites, agent profiles and external access probes        |
 | `src/evidence`                                           | Evidence storage, media, review marks and HTTP routes                 |
 | `src/execution-controls`                                 | Pause, resume, stop and take-over controls                            |
+| `src/finding-issues`                                     | Linear issues filed from pre-existing review findings                 |
 | `src/github`                                             | GitHub App API, repository access, pull requests and Git operations   |
 | `src/host`                                               | Sleep, wake and process supervision                                   |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
