@@ -374,6 +374,111 @@ test("a task retried after failing moves its Linear issue to started again", asy
   }
 }, 30_000);
 
+test("a retried run starts with the main that moved while it was failed", async () => {
+  const layout = await repoLayout("paws-e2e-");
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "moved",
+      identifier: "ENG-304",
+      title: "Retry after main moved",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const client = githubClient(layout.bare, createFakeGitHub());
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  let launches = 0;
+  const entered = (launch: number) => path.join(layout.root, `moved-entered-${launch}`);
+  const release = path.join(layout.root, "moved-release");
+  const upstreamAtLaunch: string[] = [];
+  const orchestrator = attachOrchestrator({
+    db,
+    admission: workspaceAdmission(db),
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client,
+    }),
+    launch(input) {
+      const launch = input.purpose === "implement" ? ++launches : 0;
+      if (launch > 0) {
+        const upstream = Bun.spawnSync([
+          "git",
+          "-C",
+          input.worktree,
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          "refs/paws/upstream-main",
+        ]);
+        upstreamAtLaunch.push(upstream.stdout.toString().trim());
+      }
+      const scriptPath = path.join(layout.root, `moved-${input.purpose}-${launch}.json`);
+      const script: FakeScript = {
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+        steps:
+          input.purpose === "review"
+            ? emptyReview().steps
+            : [
+                {
+                  type: "terminal",
+                  command: "bun",
+                  args: [
+                    "-e",
+                    `await Bun.write(${JSON.stringify(entered(launch))}, "ready"); while (!(await Bun.file(${JSON.stringify(release)}).exists())) await Bun.sleep(10);`,
+                  ],
+                },
+                writeOk(input.worktree),
+                { type: "end" },
+              ],
+      };
+      writeFileSync(scriptPath, JSON.stringify(script));
+      return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+    },
+  });
+  const waitFor = async (file: string) => {
+    for (let i = 0; i < 1_000 && !existsSync(file); i++) await Bun.sleep(10);
+    expect(existsSync(file), debug(layout, db)).toBe(true);
+  };
+  let running: Promise<unknown> | undefined;
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "moved"));
+    running = tickWithRestarts(jobs, orchestrator, db);
+    await waitFor(entered(1));
+    const item = listWorkItems(db)[0]!;
+    configureWorkItem(db, item.id, { maxAwakeMs: 1_000 });
+    accrueAwake(db, item.id, 0);
+    accrueAwake(db, item.id, 1_000);
+    expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    await commitOnMain(layout.bare, "merged by hand\n", "hand.txt");
+    const movedMain = (
+      await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
+    ).stdout.trim();
+    await orchestrator.onLinearEvent(linearEvent("prompted", "Try again", null));
+    await running;
+    running = tickWithRestarts(jobs, orchestrator, db);
+    await waitFor(entered(2));
+    expect(upstreamAtLaunch.at(-1), debug(layout, db)).toBe(movedMain);
+  } finally {
+    writeFileSync(release, "go");
+    await running;
+    await orchestrator.shutdown();
+    db.close();
+    await layout.cleanup();
+  }
+}, 30_000);
+
 test("a frontend change without visual proof gets a fix round, publishes a screenshot, and Closeout accepts", async () => {
   const layout = await repoLayout("paws-e2e-");
   const seed = path.join(layout.root, "seed");
