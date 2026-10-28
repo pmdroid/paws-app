@@ -128,7 +128,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     const request = listJobs(db).find((job) => job.queue === "item.ask")?.payload;
     expect(request).toMatchObject({
       kind: "time-limit",
-      options: ["Continue", "Stop"],
+      options: ["Merge the accepted work", "Continue", "Stop"],
       body: expect.stringContaining("Time limit reached"),
     });
     expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
