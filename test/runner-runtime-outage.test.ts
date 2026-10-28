@@ -13,6 +13,7 @@ async function fixture() {
   let down = false;
   let fenced = false;
   let finished = false;
+  let refusal = { status: 0, times: 0, sent: 0 };
   const spool = {
     root: join(root, "spool"),
     runnerUid: process.getuid!(),
@@ -106,6 +107,10 @@ async function fixture() {
       },
       async answers() {
         reachable();
+        if (refusal.times > refusal.sent) {
+          refusal.sent += 1;
+          throw new RunnerRequestError(refusal.status, "POST", "/v1/runs/run/answers", 9_000);
+        }
         return { answers: [] };
       },
       async postResult(_runId, _generation, result) {
@@ -148,6 +153,9 @@ async function fixture() {
     goDown: () => (down = true),
     comeBack: () => (down = false),
     fence: () => (fenced = true),
+    /** Paws answers the run's next `times` answer polls with `status`. */
+    refuse: (status: number, times: number) => (refusal = { status, times, sent: 0 }),
+    refused: () => refusal.sent,
     advance: (ms: number) => (clock += ms),
     finish() {
       writeFileSync(
@@ -218,6 +226,41 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       await Bun.sleep(100);
       expect(f.errors.join("\n")).toContain("fenced by Paws");
       expect(f.posted.map((result) => result.stopReason)).not.toContain("end_turn");
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a run whose request Paws answers 503 retries it and continues",
+  async () => {
+    const f = await fixture();
+    try {
+      f.refuse(503, 3);
+      await f.tickUntil(() => f.refused() === 3);
+      f.finish();
+      await f.tickUntil(() => f.posted.length > 0);
+      expect(f.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
+      expect(f.errors.join("\n")).toContain(
+        "Runner request POST /v1/runs/run/answers failed with HTTP 503 after 9000 ms.",
+      );
+      expect(f.errors.join("\n")).not.toContain("Runner interrupted");
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a run whose request Paws refuses with 403 stops",
+  async () => {
+    const f = await fixture();
+    try {
+      f.refuse(403, 1);
+      await f.tickUntil(() => f.posted.length > 0);
+      expect(f.posted.map((result) => result.stopReason)).toEqual(["error"]);
+      expect(f.errors.join("\n")).toContain("Runner interrupted");
     } finally {
       await f.cleanup();
     }
