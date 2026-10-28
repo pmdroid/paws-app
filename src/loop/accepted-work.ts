@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, MERGE_LANE, type WorkItemEvent, type WorkItemState } from "../core";
+import { JOB_KIND, type WorkItemEvent, type WorkItemState } from "../core";
 import {
   applyWorkItemEvent,
   enqueueJobOnce,
@@ -90,7 +90,6 @@ export function mergeAcceptedWork(
         .get(JOB_KIND.merge, itemId)?.summary ?? "Closeout accepted.";
     enqueueJobOnce(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       jobKey: `merge:${itemId}:${head}:accepted:${queued.version}`,
       payload: { itemId, summary, head },
       now: input.now,
