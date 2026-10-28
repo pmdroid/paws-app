@@ -55,3 +55,25 @@ export function recordConfirmedRemoteMerge(
     return saved;
   });
 }
+
+/**
+ * Marks the GitHub merge call for the item's head as in flight, just before the lane makes it.
+ * A marker left when Paws stops means the call may have reached GitHub, so the next start asks
+ * GitHub before the item merges or re-verifies.
+ */
+export function beginMergeCall(db: Database, itemId: string, head: string, now: number): void {
+  db.run(
+    `INSERT INTO merge_call(item_id, head_sha, started_at) VALUES (?, ?, ?)
+     ON CONFLICT (item_id) DO UPDATE SET head_sha = excluded.head_sha, started_at = excluded.started_at`,
+    [itemId, head, now],
+  );
+}
+
+/** The merge call returned, or its outcome was read from GitHub after a restart. */
+export function endMergeCall(db: Database, itemId: string): void {
+  db.run("DELETE FROM merge_call WHERE item_id = ?", [itemId]);
+}
+
+export function mergeCallInFlight(db: Database, itemId: string): boolean {
+  return db.query("SELECT 1 FROM merge_call WHERE item_id = ?").get(itemId) !== null;
+}

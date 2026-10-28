@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
   formatPauseNote,
   JOB_KIND,
+  MERGE_LANE,
   OUTBOX_ACTIVITY,
   type Checkpoint,
   type StartupDecision,
@@ -56,6 +57,9 @@ export function applyDecision(
       return;
     case "reverify":
       applyReverify(db, item, now, stamp);
+      return;
+    case "keep_place":
+      applyKeepPlace(db, item, decision.mergeCallInFlight, now);
       return;
     case "ask_restart":
       applyAskRestart(db, item, now);
@@ -232,6 +236,49 @@ function applyReverify(db: Database, item: WorkItemRecord, now: number, stamp?: 
       recheckHead: true,
       failClosed: true,
     },
+    now,
+  });
+}
+
+/**
+ * The item stays in `merge_queue` with its place, and its merge job picks it up again. A job the
+ * shutdown ended is queued again from its last payload. After a merge call that may have reached
+ * GitHub, the job runs now and asks GitHub first: merged records the merge, anything else re-verifies.
+ */
+function applyKeepPlace(
+  db: Database,
+  item: WorkItemRecord,
+  mergeCallInFlight: boolean,
+  now: number,
+): void {
+  const open = db
+    .query<{ id: number }, [string, string]>(
+      `SELECT id FROM job WHERE queue = ? AND status IN ('pending', 'running')
+       AND json_extract(payload, '$.itemId') = ?`,
+    )
+    .all(JOB_KIND.merge, item.id);
+  if (open.length > 0) {
+    if (mergeCallInFlight)
+      for (const { id } of open)
+        db.run(
+          `UPDATE job SET payload = json_set(payload, '$.mergeCallInFlight', json('true')),
+             run_at = MIN(run_at, ?) WHERE id = ?`,
+          [now, id],
+        );
+    return;
+  }
+  const last = db
+    .query<{ payload: string }, [string, string]>(
+      `SELECT payload FROM job WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(JOB_KIND.merge, item.id);
+  const payload = last === null ? { itemId: item.id } : (JSON.parse(last.payload) as object);
+  enqueueJobOnce(db, {
+    queue: JOB_KIND.merge,
+    lane: MERGE_LANE,
+    jobKey: `merge:startup:${item.id}:${now}`,
+    payload: mergeCallInFlight ? { ...payload, mergeCallInFlight: true } : payload,
     now,
   });
 }
