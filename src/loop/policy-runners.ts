@@ -2,13 +2,12 @@ import type { Database } from "bun:sqlite";
 import { policyKeys } from "../closeout";
 import {
   clearPolicyRunnerWarning,
-  onlineRunnerVersions,
+  policyKeysLowestRunnerLacks,
   savePolicyRunnerWarning,
   type PolicyRunnerWarning,
 } from "../db";
 import { journal } from "../journal";
-import { RUNNER_ONLINE_MS } from "../runner-placement";
-import { policyKeysAbove, runnerVersionAtLeast } from "../runner-protocol";
+import { RUNNER_OFFLINE_MS } from "./runner-wait";
 
 /**
  * Before Paws hands a runner the repository's Closeout policy, checks its keys against the lowest
@@ -25,9 +24,13 @@ export function checkPolicyRunners(
     now: number;
   },
 ): PolicyRunnerWarning | null {
-  const lowest = lowestVersion(onlineRunnerVersions(db, input.now - RUNNER_ONLINE_MS));
-  if (lowest === null) return null;
-  const keys = policyKeysAbove(policyKeys(input.files), lowest);
+  const lacks = policyKeysLowestRunnerLacks(
+    db,
+    policyKeys(input.files),
+    input.now - RUNNER_OFFLINE_MS,
+  );
+  if (lacks === null) return null;
+  const { runnerVersion, keys } = lacks;
   if (keys.length === 0) {
     if (clearPolicyRunnerWarning(db, input.repository))
       journal(
@@ -38,7 +41,7 @@ export function checkPolicyRunners(
   const warning: PolicyRunnerWarning = {
     repository: input.repository,
     policyDigest: input.digest,
-    runnerVersion: lowest,
+    runnerVersion,
     keys,
     checkedAt: input.now,
   };
@@ -46,23 +49,7 @@ export function checkPolicyRunners(
     journal(
       `closeout policy ${input.digest} for ${input.repository} uses ${keys
         .map((entry) => `${entry.key} (runner ${entry.needs})`)
-        .join(", ")}; the lowest online runner is ${lowest} and leaves them out`,
+        .join(", ")}; the lowest online runner is ${runnerVersion} and leaves them out`,
     );
   return warning;
-}
-
-/** The lowest `major.minor.patch` release of `versions`; one that is not a release is skipped. */
-function lowestVersion(versions: readonly string[]): string | null {
-  let lowest: { version: string; parts: [number, number, number] } | null = null;
-  for (const version of versions) {
-    const parts = version
-      .match(/^(\d+)\.(\d+)\.(\d+)/)
-      ?.slice(1)
-      .map(Number);
-    if (parts === undefined) continue;
-    const tuple: [number, number, number] = [parts[0]!, parts[1]!, parts[2]!];
-    if (lowest === null || !runnerVersionAtLeast(version, lowest.parts))
-      lowest = { version, parts: tuple };
-  }
-  return lowest?.version ?? null;
 }

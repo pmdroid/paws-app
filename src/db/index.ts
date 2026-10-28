@@ -194,7 +194,7 @@ export {
 export {
   clearPolicyRunnerWarning,
   listPolicyRunnerWarnings,
-  onlineRunnerVersions,
+  policyKeysLowestRunnerLacks,
   savePolicyRunnerWarning,
   type PolicyRunnerWarning,
 } from "./policy-runner-warning";

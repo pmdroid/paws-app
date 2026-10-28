@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { policyKeysAbove, runnerVersionAtLeast, type PolicyKeyNeed } from "../runner-protocol";
 
 /**
  * A repository's Closeout policy uses keys the lowest online runner is too old to know. That
@@ -11,7 +12,7 @@ export type PolicyRunnerWarning = {
   /** The lowest runner release online when Paws checked. */
   runnerVersion: string;
   /** Each key that runner does not know, with the first release that does. */
-  keys: Array<{ key: string; needs: string }>;
+  keys: PolicyKeyNeed[];
   checkedAt: number;
 };
 
@@ -71,10 +72,39 @@ export function listPolicyRunnerWarnings(db: Database): PolicyRunnerWarning[] {
 }
 
 /**
- * The release of each runner not revoked and seen since `onlineSince` that reported one, for the lowest
- * of them. A runner that has not reported its release is left out.
+ * The lowest release among runners online since `onlineSince`, with the policy `keys` it does not
+ * know and the first release that does. Null when no online runner reported a release.
  */
-export function onlineRunnerVersions(db: Database, onlineSince: number): string[] {
+export function policyKeysLowestRunnerLacks(
+  db: Database,
+  keys: readonly string[],
+  onlineSince: number,
+): { runnerVersion: string; keys: PolicyKeyNeed[] } | null {
+  const lowest = lowestVersion(onlineRunnerVersions(db, onlineSince));
+  return lowest === null ? null : { runnerVersion: lowest, keys: policyKeysAbove(keys, lowest) };
+}
+
+/** The lowest `major.minor.patch` release of `versions`; one that is not a release is skipped. */
+function lowestVersion(versions: readonly string[]): string | null {
+  let lowest: { version: string; parts: [number, number, number] } | null = null;
+  for (const version of versions) {
+    const parts = version
+      .match(/^(\d+)\.(\d+)\.(\d+)/)
+      ?.slice(1)
+      .map(Number);
+    if (parts === undefined) continue;
+    const tuple: [number, number, number] = [parts[0]!, parts[1]!, parts[2]!];
+    if (lowest === null || !runnerVersionAtLeast(version, lowest.parts))
+      lowest = { version, parts: tuple };
+  }
+  return lowest?.version ?? null;
+}
+
+/**
+ * The release of each runner not revoked and seen since `onlineSince` that reported one. A runner
+ * that has not reported its release is left out.
+ */
+function onlineRunnerVersions(db: Database, onlineSince: number): string[] {
   return db
     .query<{ version: string }, [number]>(
       `SELECT h.runner_version AS version FROM runner r

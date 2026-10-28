@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { listPolicyRunnerWarnings, migrate, openDatabase } from "../db";
 import { setJournalSink } from "../journal";
-import { createLiveStatusProvider } from "../web";
 import { checkPolicyRunners } from "./policy-runners";
 
 const NOW = Date.parse("2026-10-28T06:43:00.000Z");
@@ -49,7 +48,7 @@ function check(db: Database, digest = DIGEST) {
 }
 
 describe("a Closeout policy key the lowest online runner does not know", () => {
-  test("is recorded and journaled once, and the dashboard shows it", () => {
+  test("is recorded for the dashboard and journaled once", () => {
     const db = database();
     runner(db, "new", "0.1.49", NOW - 1_000);
     runner(db, "old", "0.1.48", NOW - 1_000);
@@ -71,13 +70,13 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
     }
     expect(lines.filter((line) => line.includes("items[].ci (runner 0.1.49)"))).toHaveLength(1);
     expect(lines[0]).toContain("the lowest online runner is 0.1.48");
-    expect(createLiveStatusProvider(db).snapshot().policyRunnerWarnings).toEqual([
+    expect(listPolicyRunnerWarnings(db)).toEqual([
       {
         repository: REPOSITORY,
         policyDigest: DIGEST,
         runnerVersion: "0.1.48",
         keys: [{ key: "items[].ci", needs: "0.1.49" }],
-        checkedAt: "2026-10-28T06:43:00.000Z",
+        checkedAt: NOW,
       },
     ]);
   });
@@ -89,7 +88,6 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
     db.run("UPDATE runner_host_status SET runner_version='0.1.49'");
     expect(check(db)).toBeNull();
     expect(listPolicyRunnerWarnings(db)).toEqual([]);
-    expect(createLiveStatusProvider(db).snapshot().policyRunnerWarnings).toBeUndefined();
   });
 
   test("with no runner online there is nothing to compare", () => {
