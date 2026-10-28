@@ -139,6 +139,8 @@ export async function mergeHarness(
     handMerged: new Map<number, string>(),
     /** Lane reads of GitHub's merge state for the task's pull request before it reports one. */
     handMergeSeenAfter: 0,
+    /** GitHub merges the pull request, but its answer to the merge call never arrives. */
+    dropMergeResponse: false,
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
   const publishedIds: string[] = [];
@@ -196,6 +198,10 @@ export async function mergeHarness(
           number,
           expectedHeadSha: body.sha,
         });
+        if (state.dropMergeResponse) {
+          state.handMerged.set(number, result.sha);
+          throw new Error("The connection closed before GitHub answered.");
+        }
         return { status: 200, body: { sha: result.sha, merged: true } };
       }
       return { status: 404, body: {} };
@@ -365,9 +371,10 @@ export async function mergeHarness(
     lines.push({ kind, body });
   }
 
-  async function pass(id: string): Promise<MergeStep> {
+  /** One lane turn, with the harness's payload for the task or the merge job's own. */
+  async function pass(id: string, jobPayload?: Record<string, unknown>): Promise<MergeStep> {
     jobId += 1;
-    const payload = payloads.get(id)!;
+    const payload = jobPayload ?? payloads.get(id)!;
     const step = await advanceMerge(db, { itemId: id, payload, jobId }, capabilities(id));
     if (step.kind === "wait")
       payloads.set(id, {
