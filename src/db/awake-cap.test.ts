@@ -67,6 +67,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("re-verification after a restart doesn't add awake time", () => {
     const { clock, db, item } = acceptedItem(3 * 60 * MINUTE);
     expect(getWorkItem(db, item.id)?.awakeMs).toBe(15 * MINUTE);
+    applyWorkItemEvent(db, item.id, "reverify_requested");
 
     expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "reverify" }]);
     const restarted = getWorkItem(db, item.id);
@@ -93,6 +94,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(false);
     expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
 
+    applyWorkItemEvent(db, item.id, "reverify_requested");
     recoverOnStartup(db, clock.now());
     clock.advance(60 * MINUTE);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(false);
@@ -226,6 +228,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
 
     migrate(db);
     expect(getWorkItem(db, item.id)?.acceptedHead).toBe("accepted");
+    applyWorkItemEvent(db, item.id, "reverify_requested");
     recoverOnStartup(db, clock.now());
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
     accrueAwake(db, item.id, clock.mono(), clock.now());
@@ -263,6 +266,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     applyWorkItemEvent(db, fresh.id, "turn_ended");
     saveCheckpoint(db, fresh.id, { phase: "verifying", baseSha: "base", wipCommit: "unchecked" });
     db.run("UPDATE work_item SET accepted_head = NULL");
+    applyWorkItemEvent(db, accepted.id, "reverify_requested");
     recoverOnStartup(db, clock.now());
     expect(getWorkItem(db, accepted.id)).toMatchObject({
       state: "verifying",

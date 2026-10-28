@@ -14,6 +14,7 @@ import { enqueueOutboxOnce } from "./outbox";
 import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
 import { runnerLeaseCutoff } from "./runner-lease";
+import { mergeCallInFlight } from "./remote-merges";
 import { markRun, releaseRunCapacity } from "./runs";
 import { getTaskMode } from "./tasks";
 import { immediate } from "./tx";
@@ -31,7 +32,10 @@ const STARTUP_STATES = [
 
 const STARTUP_RESUME_SPACING_MS = 5_000;
 
-/** On process start, resume a live run once or ask whether to start it again. Merges fail closed. */
+/**
+ * On process start, resume a live run once or ask whether to start it again. An item in the merge
+ * queue keeps its place; one whose merge call may have been in flight asks GitHub before it moves.
+ */
 export function recoverOnStartup(db: Database, now = Date.now()): StartupDecision[] {
   return immediate(db, () => {
     const items = listWorkItemsByStates(db, STARTUP_STATES);
@@ -46,6 +50,7 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
         recoveryAttempts: item.recoveryAttempts,
         checkpoint: item.checkpoint,
         runnerHoldsWork: runnerHoldsWork(db, item, now),
+        mergeCallInFlight: mergeCallInFlight(db, item.id),
         ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
       });
       const followed =
@@ -96,8 +101,8 @@ function hasPendingResume(db: Database, itemId: string, reason: string): boolean
 
 /**
  * SIGINT / SIGTERM. Commit WIP on each in-flight item branch, then move running
- * work to recovering without using the one resume attempt. A merge in progress
- * is left for a re-verify.
+ * work to recovering without using the one resume attempt. An item in the merge
+ * queue keeps its state and its place for the next start to pick up.
  */
 export function prepareShutdown(
   db: Database,
@@ -118,11 +123,6 @@ export function prepareShutdown(
     const running = listWorkItemsByStates(db, ["running", "verifying"]);
     for (const item of running) {
       if (runnerHoldsWork(db, item, now)) continue;
-      if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-      applyWorkItemEvent(db, item.id, "lease_expired");
-    }
-    const merging = listWorkItemsByStates(db, ["merge_queue"]);
-    for (const item of merging) {
       if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
       applyWorkItemEvent(db, item.id, "lease_expired");
     }
