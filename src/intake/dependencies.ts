@@ -40,6 +40,7 @@ type Snapshot = {
   generation: number;
   scope: string;
   linearStates: string;
+  linearIdentifiers: string;
   workspaceId: string;
 };
 type Scope = {
@@ -164,8 +165,8 @@ function scope(db: Database, target: Target): Scope | null {
 function snapshot(db: Database, target: Target): Snapshot | null {
   const saved = db
     .query<Snapshot, [string]>(
-      `SELECT generation,scope,linear_states AS linearStates,workspace_id AS workspaceId
-       FROM item_dependency_snapshot WHERE item_id=?`,
+      `SELECT generation,scope,linear_states AS linearStates,linear_identifiers AS linearIdentifiers,
+       workspace_id AS workspaceId FROM item_dependency_snapshot WHERE item_id=?`,
     )
     .get(target.itemId);
   if (saved && saved.workspaceId !== target.workspaceId)
@@ -247,24 +248,7 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
   const cycleHeld = new Set(
     ordered.ok ? [] : ordered.remaining.map((entry) => entry.linearIssueId),
   );
-  const states = new Map<string, string>(JSON.parse(saved.linearStates));
-  const byId = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
-  const satisfied = (id: string): boolean => {
-    if (states.get(id) === "canceled") return false;
-    const blocker = byId.get(id);
-    // A blocker outside the delegation follows its Paws work, or its Linear state without any.
-    if (!blocker)
-      return (
-        managedBlockerSatisfied(db, { itemId: item.id, workspaceId: target.workspaceId }, id) ??
-        states.get(id) === "completed"
-      );
-    if (blocker.cancelRequested || blocker.state === "cancelled") return false;
-    if (blocker.state === "manual") return states.get(id) === "completed";
-    return isBlockerSatisfied({
-      ...blocker,
-      mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
-    });
-  };
+  const satisfied = blockerSatisfied(db, target, current, saved);
   const blocking = blocks.filter((edge) => edge.blockedLinearIssueId === item.linearIssueId);
   const ready =
     candidate &&
@@ -275,6 +259,60 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
     readyItemIds: ready ? [item.id] : [],
     heldItemIds: candidate && !ready ? [item.id] : [],
     cycleHeldItemIds: cycleHeld.has(item.linearIssueId) ? [item.id] : [],
+  };
+}
+
+/**
+ * Identifiers of the issues that block `itemId` and that readiness counts as unmet, by the same
+ * rules as `readyItems`. Empty without a dependency snapshot.
+ */
+export function itemBlockers(db: Database, target: Target): string[] {
+  return db
+    .transaction(() => {
+      const current = scope(db, target);
+      const saved = snapshot(db, target);
+      if (!current || !saved) return [];
+      const satisfied = blockerSatisfied(db, target, current, saved);
+      const identifiers = new Map<string, string>(JSON.parse(saved.linearIdentifiers));
+      const siblings = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
+      const named = (id: string): string =>
+        siblings.get(id)?.identifier ??
+        identifiers.get(id) ??
+        db
+          .query<{ identifier: string }, [string]>(
+            `SELECT linear_identifier AS identifier FROM work_item
+             WHERE linear_issue_id=? AND linear_identifier IS NOT NULL
+             ORDER BY created_at DESC,id DESC LIMIT 1`,
+          )
+          .get(id)?.identifier ??
+        id;
+      return blocksFor(db, [current.item.linearIssueId])
+        .map((edge) => edge.blockerLinearIssueId)
+        .filter((id) => !satisfied(id))
+        .map(named);
+    })
+    .deferred();
+}
+
+function blockerSatisfied(
+  db: Database,
+  target: Target,
+  current: Scope,
+  saved: Snapshot,
+): (id: string) => boolean {
+  const states = new Map<string, string>(JSON.parse(saved.linearStates));
+  const byId = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
+  return (id: string): boolean => {
+    if (states.get(id) === "canceled") return false;
+    const blocker = byId.get(id);
+    // A blocker outside the delegation follows its Paws work, or its Linear state without any.
+    if (!blocker) return managedBlockerSatisfied(db, target, id) ?? states.get(id) === "completed";
+    if (blocker.cancelRequested || blocker.state === "cancelled") return false;
+    if (blocker.state === "manual") return states.get(id) === "completed";
+    return isBlockerSatisfied({
+      ...blocker,
+      mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
+    });
   };
 }
 
@@ -375,10 +413,10 @@ function writeItemDependencies(
         throw new Error("Dependency snapshot changed");
       saveTaskBlocks(db, [current.item.linearIssueId], edges);
       db.run(
-        `INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,external_evidence)
-         VALUES(?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
+        `INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,linear_identifiers,external_evidence)
+         VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
          generation=excluded.generation,scope=excluded.scope,linear_states=excluded.linear_states,
-         external_evidence=excluded.external_evidence
+         linear_identifiers=excluded.linear_identifiers,external_evidence=excluded.external_evidence
          WHERE item_dependency_snapshot.workspace_id=excluded.workspace_id`,
         [
           itemId,
@@ -386,6 +424,7 @@ function writeItemDependencies(
           expectedGeneration + 1,
           current.token,
           JSON.stringify([...states]),
+          JSON.stringify([...identifiers]),
           "{}",
         ],
       );
