@@ -110,6 +110,18 @@ export function checkAnchor(attempt: number, checkId: string, itemId = ""): stri
   return `${agent}check-${attempt}-${checkId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
 }
 
+export function sectionToggle(key: string, open: boolean, title: string, detail: string): string {
+  return `<button class="chk section-toggle${open ? " on" : ""}" type="button" data-action="section-toggle" data-item="${esc(key)}" data-attempt="1" data-open="${open}" aria-expanded="${open}">${title}<span class="muted">${esc(detail)}</span><span class="check-chevron" aria-hidden="true">${open ? "⌄" : "›"}</span></button>`;
+}
+
+export function sectionOpen(view: CloseoutView, key: string, fallback: boolean): boolean {
+  return view.open[`section\n${key}`] ?? fallback;
+}
+
+export function checkListKey(itemId: string, attempt: number): string {
+  return `checks:${itemId}:${attempt}`;
+}
+
 export interface CloseoutChecksOptions {
   heading?: string | null;
   result?: { title: string; description: string; icon: string };
@@ -194,7 +206,22 @@ export function renderCloseoutChecks(
       : options.heading === null
         ? "<span></span>"
         : `<h2>${esc(options.heading)}</h2>`;
-  return `<div class="between closeout-toolbar">${heading}<div class="row">${switcher}${toggleAll}</div></div><div class="closeout-result ${esc(decision)}"><span class="result-icon" aria-hidden="true">${result.icon}</span><div><h3>${result.title}</h3><p>${result.description}</p></div></div><div class="check-list">${rows}</div>`;
+  const listKey = checkListKey(verdict.itemId, attempt.number);
+  const folds = accepted && checks.length > 0;
+  const listOpen = sectionOpen(
+    view,
+    listKey,
+    !folds || checks.some((check) => isOpen(view, verdict.itemId, attempt.number, check)),
+  );
+  const fold = folds
+    ? sectionToggle(
+        listKey,
+        listOpen,
+        `<b>${checks.length} checks</b>`,
+        checks.map((check) => check.id).join(" · "),
+      )
+    : "";
+  return `<div class="between closeout-toolbar">${heading}<div class="row">${switcher}${toggleAll}</div></div><div class="closeout-result ${esc(decision)}"><span class="result-icon" aria-hidden="true">${result.icon}</span><div><h3>${result.title}</h3><p>${result.description}</p></div></div>${fold}${listOpen ? `<div class="check-list">${rows}</div>` : ""}`;
 }
 
 /** The attempt's number within its retry-budget round. */

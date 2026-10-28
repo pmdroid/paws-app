@@ -445,7 +445,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (has("run-setup"))
     return styled(
-      "grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 [overflow-wrap:anywhere] sm:grid-cols-[10rem_minmax(0,1fr)] [&>h2]:col-span-full [&>h3]:text-sm [&>h3]:font-semibold",
+      "grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 [overflow-wrap:anywhere] sm:grid-cols-[10rem_minmax(0,1fr)] [&>h3]:col-span-full [&>h4]:text-sm [&>h4]:font-semibold",
     );
   if (has("runner-settings")) return styled("flex min-w-0 flex-col gap-5");
   if (has("runner-setting"))

@@ -270,7 +270,15 @@ describe("one page per issue", () => {
       reason: "follow_up",
       actor: "Jonas Berg",
     });
-    const html = issuePage(snapshotOf(db));
+    const html = render({
+      route: { view: "issues", id: "PAS-367" },
+      phase: "ready",
+      snapshot: snapshotOf(db),
+      detail: snapshotOf(db).details.get("PAS-367") ?? null,
+      error: null,
+      engineUrl: null,
+      closeout: { ...emptyCloseoutView(), open: { "section\ndetails:PAS-367": true } },
+    }).content;
     expect(html).toContain("Back to the agent for a follow-up in Linear.");
     expect(html).toContain("by Jonas Berg");
   });
