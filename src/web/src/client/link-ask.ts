@@ -15,6 +15,7 @@ export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
   risk: "Review risk",
   question: "Answer question",
   rounds: "Answer question",
+  rule: "Review rule",
 };
 
 /** The card's id on the item page; Linear links to `/status/issues/<id>#<anchor>`. */
@@ -24,6 +25,7 @@ export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
   risk: "risk",
   question: "question",
   rounds: "review-rounds",
+  rule: "rule",
 };
 
 const HEADINGS: Record<LinkAskKind, string> = {
@@ -32,6 +34,7 @@ const HEADINGS: Record<LinkAskKind, string> = {
   risk: "Risk",
   question: "Question",
   rounds: "Review rounds",
+  rule: "Rule break",
 };
 
 const NOTE_LABELS: Record<LinkAskKind, string> = {
@@ -40,6 +43,7 @@ const NOTE_LABELS: Record<LinkAskKind, string> = {
   risk: "Note, or what to change",
   question: "Your answer",
   rounds: "Note for the agent (optional)",
+  rule: "Reason: why the rule may break, or what the agent should change",
 };
 
 /** What a reply in Linear does for each kind, under the card. */
@@ -49,12 +53,14 @@ const LINEAR_REPLY: Record<LinkAskKind, string> = {
   risk: "A reply in Linear only requests changes and never approves.",
   question: "A reply in Linear only sends the agent guidance.",
   rounds: "A reply in Linear counts as Rethink the approach, with the reply as the note.",
+  rule: "A reply in Linear sends the finding back to the agent and never approves the break.",
 };
 
 const APPROVE: Record<Exclude<LinkAskKind, "question" | "rounds">, string> = {
   bypass: "Bypass",
   screenshots: "Accept screens",
   risk: "Approve",
+  rule: "Approve",
 };
 
 export const LINK_ASK_ANSWERERS =
@@ -76,6 +82,7 @@ export function linkAskCard(question: StatusQuestion): string {
   if (!ask) return "";
   if (ask.kind === "bypass" && ask.bypass) return bypassCard(question, ask.bypass);
   if (ask.kind === "risk" && ask.risk) return riskCard(question, ask.risk);
+  if (ask.kind === "rule" && ask.bypass) return ruleCard(question, ask.bypass);
   const id = question.id;
   const busy = pending.has(id);
   const disabled = busy ? ' disabled=""' : "";
@@ -84,8 +91,26 @@ export function linkAskCard(question: StatusQuestion): string {
       ? `<button class="btn primary" type="submit" name="decision" value="answer"${disabled}>Send answer</button>`
       : ask.kind === "rounds"
         ? `<button class="btn primary" type="submit" name="decision" value="rethink"${disabled}>Rethink the approach</button><button class="btn" type="submit" name="decision" value="continue"${disabled}>Keep going</button><button class="btn" type="submit" name="decision" value="stop"${disabled}>Stop</button>`
-        : `<button class="btn primary" type="submit" name="decision" value="approve"${disabled}>${APPROVE[ask.kind]}</button><button class="btn" type="submit" name="decision" value="changes"${disabled}>${ask.kind === "bypass" ? "Send guidance" : "Request changes"}</button>`;
+        : `<button class="btn primary" type="submit" name="decision" value="approve"${disabled}>${APPROVE[ask.kind]}</button><button class="btn" type="submit" name="decision" value="changes"${disabled}>${ask.kind === "bypass" ? "Send guidance" : ask.kind === "rule" ? "Send back" : "Request changes"}</button>`;
   return `<section id="${LINK_ASK_ANCHORS[ask.kind]}" class="closeout-result blocked link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><h2 id="link-ask-${esc(id)}">${HEADINGS[ask.kind]}</h2><p><b>${esc(ask.title)}</b></p>${ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}${ask.rounds ? reviewRounds(ask.rounds) : ""}<p class="muted">Commit <span class="mono">${esc(ask.head.slice(0, 7))}</span>. ${LINK_ASK_ANSWERERS} ${LINEAR_REPLY[ask.kind]}</p><form class="link-ask-form" data-link-ask="${esc(id)}"><label class="field"><span>${NOTE_LABELS[ask.kind]}</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><div class="row wrap">${buttons}</div><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
+}
+
+/**
+ * The "Rule break" card: each broken rule with its finding, one reason field,
+ * Approve for this commit and policy, and Send back to the agent.
+ */
+function ruleCard(question: StatusQuestion, rules: StatusBypassAsk): string {
+  const ask = question.linkAsk!;
+  const id = question.id;
+  const busy = pending.has(id) ? ' disabled=""' : "";
+  const head = ask.head.slice(0, 7);
+  const list = rules.checks
+    .map(
+      (rule) =>
+        `<div class="bypass-check"><p><b>${esc(rule.id)}</b> <span class="tag failed">Failed</span></p>${rule.finding ? `<div class="bypass-finding">${esc(rule.finding)}</div>` : ""}</div>`,
+    )
+    .join("");
+  return `<section id="${LINK_ASK_ANCHORS.rule}" class="card link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><div class="row wrap"><span class="tag now">Needs you</span><h2 id="link-ask-${esc(id)}">${HEADINGS.rule}</h2></div><p><b>${esc(ask.title)}</b></p>${ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}<form class="link-ask-form" data-link-ask="${esc(id)}">${list}<label class="field"><span>${NOTE_LABELS.rule}</span><span class="muted">Required. Saved with your name in Audit history and, on Approve, in the pull request body.</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><p class="muted">${LINK_ASK_ANSWERERS} ${LINEAR_REPLY.rule}</p><div class="row wrap"><button class="btn primary" type="submit" name="decision" value="approve"${busy}>${APPROVE.rule}</button><button class="btn" type="submit" name="decision" value="changes"${busy}>Send back</button></div><p class="muted"><b>Approve</b> accepts the break for commit <span class="mono">${esc(head)}</span> and policy <span class="mono">${esc(shortDigest(rules.policyDigest))}</span> only; the next commit checks the rule again. <b>Send back</b> hands the finding to the agent.</p><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
 }
 
 /** Each round with its commit and finding count, the findings still open, and what each choice does. */

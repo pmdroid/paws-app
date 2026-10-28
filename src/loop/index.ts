@@ -90,6 +90,7 @@ export {
   remindLinkAsk,
   reverifyBypassed,
   BYPASS_REPLY_NOTE,
+  RULE_REPLY_NOTE,
   type LinkAskBypass,
   type LinkAskEffects,
 } from "./link-ask";

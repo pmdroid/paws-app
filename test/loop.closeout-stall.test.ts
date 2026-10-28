@@ -249,6 +249,95 @@ test("a Paws without a public link asks in Linear when review attempts run out",
   }
 }, 90_000);
 
+/** `api-contract`, a rule set to `onFail: approve`, broke at `head`; the `test` check passed or failed. */
+function ruleBroke(head: string, check: "passed" | "failed" = "passed"): CloseoutVerdict {
+  const verdict = fixFailed(head);
+  const summary = "Closeout: exhausted\napi-contract: failed";
+  return {
+    decision: "rejected",
+    exhausted: true,
+    summary,
+    result: {
+      ...verdict.result!,
+      outcome: "exhausted",
+      fixAttempts: 0,
+      summary,
+      handoff: check === "failed" ? "- test (command): failed — exited 1" : "Closeout rejected.",
+      ruleApprovals: [
+        {
+          id: "api-contract",
+          summary: "No removed field or route.",
+          message: "probe exited 1; P1 finding",
+          attempt: 1,
+          feedback: "api-contract output:\nremoved field Task.title",
+        },
+      ],
+      decision: {
+        ...verdict.result!.decision!,
+        items: [
+          { id: "test", kind: "command", state: check, attempt: 1, message: "exited 1" },
+          {
+            id: "api-contract",
+            kind: "rule",
+            state: "failed",
+            attempt: 1,
+            message: "probe exited 1; P1 finding",
+          },
+        ],
+      },
+    },
+  };
+}
+
+test("a broken approve rule waits for a person on the item page and uses no fix round", async () => {
+  const f = await verifyingWithHeldGate({ publicUrl: "https://paws.example" });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    f.gate.next = ruleBroke(f.gate.runs[0]!.headSha);
+    f.release();
+    await f.turn;
+    await f.flush();
+
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(restartReasons(f.db, item.id)).toEqual([]);
+    const question = findOpenQuestion(f.db, "ses_1")!;
+    expect(getLinkAsk(f.db, question.id)).toMatchObject({
+      kind: "rule",
+      link: "https://paws.example/status/issues/ENG-7#rule",
+    });
+    expect(listCloseoutRecoveries(f.db, item.id)[0]?.failedChecks).toEqual(["api-contract"]);
+    const asked = f.tracker.questions.at(-1)!;
+    expect(asked.options ?? []).toEqual([]);
+    expect(asked.body).toContain("Rule api-contract broke: No removed field or route.");
+    expect(asked.body).toContain("Decide in Paws: https://paws.example/status/issues/ENG-7#rule");
+    expect(asked.body).not.toContain("removed field Task.title");
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
+test("a broken approve rule beside a failed check sends only the check to the agent", async () => {
+  const f = await verifyingWithHeldGate({ publicUrl: "https://paws.example" });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    f.gate.next = ruleBroke(f.gate.runs[0]!.headSha, "failed");
+    f.release();
+    await f.turn;
+    await f.flush();
+
+    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+    expect(restartReasons(f.db, item.id)).toEqual(["findings"]);
+    const resume = listJobs(f.db).find(
+      (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+    )!;
+    const handoff = (resume.payload as { handoff: string }).handoff;
+    expect(handoff).toContain("test (command): failed");
+    expect(handoff).not.toContain("removed field Task.title");
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
 function restartReasons(db: Database, itemId: string): string[] {
   return db
     .query<{ reason: string }, [string]>(
