@@ -10,6 +10,7 @@ import {
   SPEC_VERSION,
   type CandidateIdentity,
   type CommandExec,
+  type CiProvenance,
   type CommandRecord,
   type DecisionDocument,
   type DecisionItem,
@@ -554,7 +555,16 @@ function judgeCommand(
   if (!argvEquals(record.exec.argv, exec)) {
     return row(item, "invalid", "command evidence does not match the policy argv", attempt);
   }
-  return applyExec(item, record.exec, allowDirty, attempt);
+  const judged = applyExec(item, record.exec, allowDirty, attempt);
+  return record.ci && judged.state === "passed"
+    ? row(item, "passed", ciMessage(record.ci), attempt)
+    : judged;
+}
+
+/** How a result taken from CI reads: "from CI run <url>: `test (0/4)` success, …". */
+export function ciMessage(ci: CiProvenance): string {
+  const checks = ci.checks.map((check) => `\`${check.name}\` ${check.conclusion}`).join(", ");
+  return `from CI run ${ci.run ?? "(no link)"}: ${checks}`;
 }
 
 /**

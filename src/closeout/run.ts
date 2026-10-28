@@ -47,6 +47,7 @@ import {
   type DecisionDocument as SpecDecision,
   type EvidenceApproval,
   type PublishedEvidence,
+  type CiResult,
 } from "../closeout-spec";
 
 export type EvaluateInput = {
@@ -71,6 +72,8 @@ export type EvaluateInput = {
   published?: () => readonly PublishedEvidence[];
   /** Visual reviews of those files, read again for each evaluation. */
   approvals?: () => readonly EvidenceApproval[];
+  /** Command checks taken from green CI at `head` instead of running. */
+  fromCi?: readonly CiResult[];
 };
 
 export type Evaluation = {
@@ -108,6 +111,8 @@ export type GateInput = {
   reviewRetryDelaysMs?: readonly number[];
   published?: () => readonly PublishedEvidence[];
   approvals?: () => readonly EvidenceApproval[];
+  /** Command checks taken from green CI at the first head. A fixed head runs them again. */
+  fromCi?: readonly CiResult[];
 };
 
 /**
@@ -236,6 +241,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
       ...(progress !== undefined ? { progress } : {}),
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
+      ...(input.fromCi ? { fromCi: input.fromCi } : {}),
     });
   } catch (error) {
     await early?.done.catch((caughtError1) => {
@@ -367,10 +373,15 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
 
   let fixAttempts = 0;
   let evaluations = 0;
+  const firstHead = head;
 
   for (;;) {
     evaluations += 1;
-    const evaluation = await evaluateCandidate({ ...input, head });
+    const evaluation = await evaluateCandidate({
+      ...input,
+      head,
+      ...(head === firstHead ? {} : { fromCi: undefined }),
+    });
     if (input.reportDir) {
       await appendDecisionHistory(input.reportDir, {
         evaluation: evaluations,

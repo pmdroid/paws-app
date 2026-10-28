@@ -4,6 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type {
   CandidateIdentity,
+  CiResult,
   CommandExec,
   CommandRecord,
   EvidenceRecord,
@@ -15,7 +16,13 @@ import type {
   ResolvedRule,
   ResolvedSetup,
 } from "../types";
-import { evaluate, retryBlock, ruleRequirement, type RuleRequirement } from "../evaluate/evaluate";
+import {
+  ciMessage,
+  evaluate,
+  retryBlock,
+  ruleRequirement,
+  type RuleRequirement,
+} from "../evaluate/evaluate";
 import { SPEC_VERSION } from "../types";
 import {
   changedPaths,
@@ -91,6 +98,11 @@ export type CloseoutRunInput = {
    */
   commandRunner?: CloseoutCommandPort;
   retryBaseline?: readonly string[];
+  /**
+   * Command checks whose result comes from green CI at `head`. Each is recorded as passed with
+   * its CI run instead of running. Setup steps, rules and other commands run as usual.
+   */
+  fromCi?: readonly CiResult[];
 };
 
 type Runnable = ResolvedSetup | ResolvedCommand;
@@ -154,8 +166,28 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     ];
     const identity = progressIdentity(input, base, head);
     publishPlan(input.progress, identity, actions, reviews);
-    if (actions.every((action) => action.kind === "skip")) {
-      return { dispositions: skips(actions) };
+    const fromCi: CommandDisposition[] = [];
+    for (const action of actions) {
+      if (action.kind !== "ci") continue;
+      await recordFromCi(
+        input,
+        action.item,
+        action.ci,
+        base,
+        head,
+        records,
+        identity,
+        ordinalOf(actions, action.item.id),
+      );
+      fromCi.push({
+        id: action.item.id,
+        kind: action.item.kind,
+        state: "ran",
+        message: ciMessage(action.ci),
+      });
+    }
+    if (actions.every((action) => action.kind === "skip" || action.kind === "ci")) {
+      return { dispositions: [...skips(actions), ...fromCi] };
     }
 
     const tree = allocateWorktree(pawsHome(input.home));
@@ -178,7 +210,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     const probes: ProbeRunner = input.commandRunner?.runProbe
       ? { runProbe: input.commandRunner.runProbe.bind(input.commandRunner) }
       : createProbeRunner({ env: input.env });
-    const dispositions: CommandDisposition[] = [];
+    const dispositions: CommandDisposition[] = [...fromCi];
     const unjudged: string[] = [];
     let stop = false;
     try {
@@ -191,6 +223,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
         return { blocked, dispositions: [] };
       }
       for (const action of actions) {
+        if (action.kind === "ci") continue;
         if (action.kind === "skip") {
           dispositions.push(action.disposition);
           continue;
@@ -285,6 +318,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
 
 type Action =
   | { kind: "run"; item: Runnable }
+  | { kind: "ci"; item: Runnable; ci: CiResult }
   | { kind: "rule"; item: Runnable; rule: ResolvedRule }
   | { kind: "skip"; item: Runnable; disposition: CommandDisposition };
 
@@ -334,7 +368,12 @@ function classifyAll(
   let stop = false;
   for (const item of [...steps, ...commands]) {
     const decision = classify(item, changed, stop, input, base, head, records);
-    if (decision.kind === "run") actions.push({ kind: "run", item });
+    const ci =
+      item.kind === "command" && item.ci !== undefined
+        ? input.fromCi?.find((entry) => entry.id === item.id)
+        : undefined;
+    if (decision.kind === "run" && ci !== undefined) actions.push({ kind: "ci", item, ci });
+    else if (decision.kind === "run") actions.push({ kind: "run", item });
     else actions.push({ kind: "skip", item, disposition: decision.disposition });
     if (decision.stop) stop = true;
   }
@@ -486,6 +525,61 @@ async function runOne(
     evidencePath: evidenceRelative(digest, head, item.id, attempt),
   });
   return record.exec;
+}
+
+/**
+ * Store a passing command record for `item` taken from green CI at `head`: its argv is the
+ * policy's, nothing ran, and `ci` names the run and the checks it came from.
+ */
+async function recordFromCi(
+  input: CloseoutRunInput,
+  item: Runnable,
+  ci: CiResult,
+  base: string,
+  head: string,
+  records: EvidenceRecord[],
+  identity: CloseoutProgressIdentity,
+  ordinal: number,
+): Promise<void> {
+  const digest = input.policy.digest ?? "";
+  const attempt = nextAttempt(records, item.id, head, digest);
+  const task = input.candidate.task;
+  const record: CommandRecord = {
+    specVersion: SPEC_VERSION,
+    recordType: "command",
+    ...(task !== undefined && task.length > 0 ? { task } : {}),
+    itemId: item.id,
+    base,
+    head,
+    policyDigest: digest,
+    attempt,
+    evaluator: { name: PAWS_CLOSEOUT_PRODUCER.name, version: PAWS_CLOSEOUT_PRODUCER.version },
+    producer: { name: PAWS_CLOSEOUT_PRODUCER.name, version: PAWS_CLOSEOUT_PRODUCER.version },
+    exec: {
+      argv: item.exec,
+      exitCode: 0,
+      timedOut: false,
+      dirty: false,
+      headMoved: false,
+      durationMs: 0,
+      truncated: false,
+    },
+    artifacts: [],
+    ci: { run: ci.run, checks: ci.checks.map((check) => ({ ...check })) },
+  };
+  await input.evidence.add(record);
+  records.push(record);
+  const now = Date.now();
+  input.progress?.step(identity, {
+    ...blankStep(item, ordinal),
+    state: "passed",
+    detail: ciMessage(ci),
+    attempt,
+    startedAt: now,
+    finishedAt: now,
+    exitCode: 0,
+    evidencePath: evidenceRelative(digest, head, item.id, attempt),
+  });
 }
 
 /**
@@ -717,7 +811,7 @@ function blockPending(
 ): void {
   if (progress === undefined) return;
   for (const action of actions) {
-    if (action.kind === "skip") continue;
+    if (action.kind === "skip" || action.kind === "ci") continue;
     progress.step(identity, {
       ...blankStep(action.item, ordinalOf(actions, action.item.id)),
       state: "blocked",
