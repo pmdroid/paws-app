@@ -23,6 +23,12 @@ export interface RunFileObjects {
   delete(key: string): Promise<void>;
 }
 
+/** True when a store says the object is not there: a local file or an S3 key that is absent. */
+export function missingRunFileObject(error: unknown) {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "NoSuchKey";
+}
+
 function label(kind: RunFileKind) {
   const { noun } = RUN_FILE_KINDS[kind];
   return { noun, Noun: noun[0]!.toUpperCase() + noun.slice(1) };
@@ -199,7 +205,7 @@ export function createFakeRunFileObjects() {
     },
     async read(key: string) {
       const bytes = objects.get(key);
-      if (!bytes) throw new Error("Run file object missing");
+      if (!bytes) throw Object.assign(new Error("Run file object missing"), { code: "ENOENT" });
       return new Uint8Array(bytes);
     },
     async delete(key: string) {

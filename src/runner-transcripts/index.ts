@@ -15,7 +15,13 @@ export {
   type RunnerTranscriptChunk,
   type RunnerTranscriptFinish,
 } from "./schema";
-export { createRunnerTranscripts, type RunnerTranscripts } from "./store";
+export {
+  createRunnerTranscripts,
+  runnerTranscriptsEncrypted,
+  RUNNER_TRANSCRIPT_ENCRYPT_JOB,
+  type RunnerTranscripts,
+} from "./store";
+export { encryptRunnerTranscripts } from "./encrypt";
 export { createRunnerTranscriptsHttp } from "./http";
 export { withLocalRunFileFallback as withLocalRunnerTranscriptFallback } from "../run-files";
 
