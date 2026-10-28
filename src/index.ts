@@ -1432,7 +1432,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           stores: (transcriptStorage ?? loadRunnerTranscriptStores(runtime.env.home)).stores,
           key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
           signal: AbortSignal.any([context.signal, abort.signal]),
-        }).then(() => undefined),
+        }).then(({ converted, skipped }) =>
+          journal(
+            `runner transcripts encrypted: ${converted} chunks sealed, ${skipped} unreadable`,
+          ),
+        ),
       );
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
