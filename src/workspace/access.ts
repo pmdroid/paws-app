@@ -16,6 +16,7 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   workspaceForOrganization,
+  workspaceLinearMember,
   workspaceMember,
 } from "../db";
 import { linearItem, type LinearMembershipReads } from "../linear";
@@ -359,12 +360,32 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           : (options.assignments?.issueIdentifier(result.assignmentHash) ?? null);
       const identity = await (held === null ? read() : linearItem(held, read));
       if (
-        !identity.active ||
         identity.userId !== result.identity.userId ||
         identity.organizationId !== result.identity.organizationId
       )
         return json({ error: "Current Linear membership is required." }, 403);
-      if (identity.guest) return json({ error: LINEAR_GUEST_REFUSAL }, 403);
+      if (!identity.active || identity.guest) {
+        // A fresh read ends an existing membership and its sessions, as a membership refresh does.
+        const known = workspaceForOrganization(options.db, identity.organizationId);
+        const linked = known && workspaceLinearMember(options.db, known.id, identity.userId);
+        if (linked)
+          syncWorkspaceMember(options.db, {
+            workspaceId: known.id,
+            userId: linked.userId,
+            active: false,
+            role: "member",
+            teamIds: linked.teamIds,
+            now: observedAt,
+          });
+        return json(
+          {
+            error: identity.active
+              ? LINEAR_GUEST_REFUSAL
+              : "Current Linear membership is required.",
+          },
+          403,
+        );
+      }
       const userId = putWorkspaceUser(options.db, {
         id: workspaceId(now()),
         linearUserId: result.identity.userId,
