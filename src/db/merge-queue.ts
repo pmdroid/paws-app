@@ -17,7 +17,10 @@ export type MergeQueuePosition = {
   aheadItemId: string | null;
   /** Re-verifying: keeps its place, but does not hold the lane. */
   busy: boolean;
-  /** The first ready task in front of this one, which moves first. Null when none is. */
+  /**
+   * The nearest ready task in front of this one, which merges before it. Null when none is: then
+   * this task, if it is ready, is the one that moves.
+   */
   nextItemId: string | null;
   /** The position Linear was last told about, or null. */
   notifiedPosition: number | null;
@@ -133,7 +136,7 @@ export function listMergeQueues(
       aheadItemId: queue[index - 1]?.itemId ?? null,
       busy: state !== "merge_queue",
       nextItemId:
-        queue.slice(0, index).find((ahead) => ahead.state === "merge_queue")?.itemId ?? null,
+        queue.slice(0, index).findLast((ahead) => ahead.state === "merge_queue")?.itemId ?? null,
     })),
   );
 }

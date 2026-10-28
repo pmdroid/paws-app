@@ -86,7 +86,7 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(queued(h)).toEqual([]);
     expect(h.bodies("status").filter((body) => body.includes("acme/app queue"))).toEqual([
       "Second in the acme/app queue. ENG-103 merges first.",
-      "Third in the acme/app queue. ENG-103 merges first.",
+      "Third in the acme/app queue. ENG-101 merges first.",
       "First in the acme/app queue. Merging next.",
       "First in the acme/app queue. Merging next.",
     ]);
