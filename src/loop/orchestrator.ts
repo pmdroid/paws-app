@@ -159,6 +159,7 @@ import {
   enqueueJobOnce,
   recordRebaseReturn,
   enqueueOutboxOnce,
+  lastOutboxSequence,
   attachSessionUpdates,
   getOutbox,
   failWorkItem,
@@ -380,6 +381,7 @@ import {
   FIRST_ACTIVITY_MS,
   KEEPALIVE_MS,
   publicToolText,
+  type ActivityOrigin,
 } from "./activity";
 import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
@@ -621,7 +623,7 @@ export class Orchestrator {
   private readonly verifyingStops = new Map<string, string>();
   private readonly runtimeLists = new Map<string, { runId: string; list: RuntimeList }>();
   private shuttingDown = false;
-  private activitySeq = 0;
+  private readonly activitySeqs = new Map<string, number>();
   private waitFaces = new Map<string, string>();
   private readonly activityRequests = new Map<number, AbortSignal>();
   private readonly updates = createUpdateLimiter(() => this.now());
@@ -2201,7 +2203,7 @@ export class Orchestrator {
     const sessionProgress = this.sessionProgress(item, mode);
     sessionProgress?.phase("working");
     const activity = createAcpActivityReporter(
-      (update) => {
+      (update, origin) => {
         if (
           !controller.signal.aborted &&
           this.canReportProgress(item.id) &&
@@ -2211,7 +2213,7 @@ export class Orchestrator {
             item,
             update.kind,
             update.body,
-            `${run.id}:answer:${++this.activitySeq}`,
+            this.activityKey(`${run.id}:answer`, origin),
             update,
           );
       },
@@ -2445,7 +2447,7 @@ export class Orchestrator {
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
     const activity = createAcpActivityReporter(
-      (update) => {
+      (update, origin) => {
         if (
           controller.signal.aborted ||
           !this.canReportProgress(item.id) ||
@@ -2453,8 +2455,13 @@ export class Orchestrator {
         )
           return;
         posted = true;
-        this.activitySeq += 1;
-        this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`, update);
+        this.post(
+          item,
+          update.kind,
+          update.body,
+          this.activityKey(`${run.id}:acp`, origin),
+          update,
+        );
       },
       (steps) => {
         if (!controller.signal.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
@@ -3019,17 +3026,17 @@ export class Orchestrator {
     const report = (body: string) => {
       if (deps.signal?.aborted || !this.canReportProgress(item.id)) return;
       if (live) live.progress = body;
-      this.post(item, "thought", body, `${key}:${++this.activitySeq}`);
+      this.post(item, "thought", body, this.activityKey(key));
     };
     const activity = createAcpActivityReporter(
-      (update) => {
+      (update, origin) => {
         if (
           deps.signal?.aborted ||
           !this.canReportProgress(item.id) ||
           update.kind === "elicitation"
         )
           return;
-        this.post(item, update.kind, update.body, `${key}:acp:${++this.activitySeq}`, update);
+        this.post(item, update.kind, update.body, this.activityKey(`${key}:acp`, origin), update);
       },
       (steps) => {
         if (!deps.signal?.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
@@ -5142,14 +5149,17 @@ export class Orchestrator {
 
   private updateHook(item: WorkItemRecord): PostUpdateHook {
     return {
-      post: async (text) => {
+      post: async (text, origin) => {
         if (!this.canReportProgress(item.id))
           throw new Error("Progress updates are closed for this run");
         const allowed = this.updates.take(item.id);
         if (allowed.posted) {
           const line = publicToolText(text);
           for (const live of this.live.values()) if (live.itemId === item.id) live.progress = line;
-          this.post(item, "thought", line, `update:${item.id}:${this.now()}`);
+          const key = origin
+            ? `update:${item.id}:${origin.runId}:${origin.generation}:${origin.sequence}`
+            : `update:${item.id}:${this.now()}`;
+          this.post(item, "thought", line, key);
           await this.flush();
         }
         return allowed;
@@ -5170,6 +5180,19 @@ export class Orchestrator {
           mode,
           item.id,
         );
+  }
+
+  /**
+   * The outbox key for an agent update. An update read from a runner event is keyed by that event,
+   * so a replay after a restart finds its earlier row. Any other update takes the next number
+   * after the keys already stored, so a key from before a restart is not reused.
+   */
+  private activityKey(prefix: string, origin?: ActivityOrigin): string {
+    if (origin)
+      return `${prefix}:${origin.runId}:${origin.generation}:${origin.sequence}:${origin.part}`;
+    const next = (this.activitySeqs.get(prefix) ?? lastOutboxSequence(this.db, `${prefix}:`)) + 1;
+    this.activitySeqs.set(prefix, next);
+    return `${prefix}:${next}`;
   }
 
   private post(
@@ -5297,7 +5320,7 @@ export class Orchestrator {
       const result = await runner({
         ...options,
         profile,
-        onEvent: async (event) => {
+        onEvent: async (event, origin) => {
           if (
             !options.prepareOnly &&
             options.role === "implementer" &&
@@ -5305,7 +5328,7 @@ export class Orchestrator {
             event.type === "session_started"
           )
             this.reportSettingsSwitch(itemId, profile, event.identity?.model);
-          await options.onEvent?.(event);
+          await options.onEvent?.(event, origin);
         },
       });
       this.assertJobCurrent(itemId);

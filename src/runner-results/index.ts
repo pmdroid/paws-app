@@ -118,6 +118,19 @@ export function createRunnerResults(options: {
           event: RunnerEventSchema.parse(JSON.parse(row.payload)),
         }));
     },
+    /** The stored answer to a runner event, or null before Paws answered it. */
+    answered(runId: string, generation: number, sequence: number): string | null {
+      integer.parse(generation);
+      integer.parse(sequence);
+      current(runId, generation);
+      return (
+        db
+          .query<{ answer: string }, [string, number, number]>(
+            "SELECT answer FROM runner_question_answer WHERE run_id=? AND generation=? AND sequence=?",
+          )
+          .get(runId, generation, sequence)?.answer ?? null
+      );
+    },
     answer(input: { runId: string; generation: number; sequence: number; answer: string }) {
       integer.parse(input.generation);
       integer.parse(input.sequence);

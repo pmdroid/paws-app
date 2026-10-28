@@ -22,6 +22,8 @@ import {
   usagePause,
   runnerSlotsHeldBetweenCommands,
   runnerOccupancy,
+  enqueueOutbox,
+  listOutbox,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/web/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
@@ -773,6 +775,113 @@ export async function probeRunnerBackend(
         beforeEvents,
         afterEvents,
       },
+    );
+    await git(["-C", source, "reset", "--hard", base]);
+    const replayed = item();
+    let replayPublications = 0;
+    const origins: unknown[] = [];
+    const replayInput = (signal?: AbortSignal) =>
+      input(replayed, {
+        ...(signal ? { signal } : {}),
+        onEvent: (event, origin) => {
+          if (event.type === "progress" && !event.text.startsWith("Starting on "))
+            origins.push(origin);
+        },
+        publishArtifact: {
+          async publish() {
+            replayPublications++;
+            enqueueOutbox(db, {
+              target: "linear",
+              op: "activity",
+              orderingKey: `session-${replayed.id}`,
+              idempotencyKey: randomUUID(),
+              payload: { body: "Replayed evidence" },
+              now,
+            });
+            return { url: "https://linear.app/artifact/replayed" };
+          },
+        },
+      });
+    const replayShutdown = new AbortController();
+    const beforeReplay = backend.forItem(replayed.id)(replayInput(replayShutdown.signal));
+    void beforeReplay.catch(() => undefined);
+    const replayCommand = await next();
+    if (replayCommand.type !== "run") throw new Error("Expected an implementation run");
+    const replayGrant = work.issueGrant({
+      runnerId,
+      runId: replayCommand.runId,
+      commandId: replayCommand.id,
+      generation: replayCommand.generation,
+    });
+    const replayBytes = Buffer.from("Replayed evidence");
+    const replayArtifact = {
+      id: randomUUID(),
+      path: "reports/replayed.txt",
+      displayName: "Replayed",
+      mimeType: "text/plain",
+      sizeBytes: replayBytes.length,
+      sha256: createHash("sha256").update(replayBytes).digest("hex"),
+      attachToIssue: false,
+    };
+    artifacts.upload({
+      runnerId,
+      runId: replayCommand.runId,
+      token: replayGrant.token,
+      chunk: {
+        generation: replayCommand.generation,
+        artifact: replayArtifact,
+        index: 0,
+        data: replayBytes.toString("base64"),
+      },
+    });
+    for (const [sequence, event] of [
+      [1, { type: "artifact", artifact: replayArtifact }],
+      [2, { type: "progress", text: "Published the report" }],
+    ] as const)
+      work.event({
+        runnerId,
+        runId: replayCommand.runId,
+        generation: replayCommand.generation,
+        token: replayGrant.token,
+        sequence,
+        event,
+      });
+    for (let attempt = 0; attempt < 500 && origins.length === 0; attempt++) await delay(2);
+    replayShutdown.abort(new PawsShutdown());
+    await beforeReplay.catch(() => undefined);
+    // Paws stopped after the effects and before the cursor moved past them.
+    db.run("UPDATE runner_work SET consumed_sequence=0 WHERE run_id=?", [replayCommand.runId]);
+    const afterReplay = backend.forItem(replayed.id)(replayInput());
+    for (let attempt = 0; attempt < 500 && origins.length < 2; attempt++) await delay(2);
+    results.submit({
+      runnerId,
+      runId: replayCommand.runId,
+      generation: replayCommand.generation,
+      token: replayGrant.token,
+      result: { ...result(replayCommand), candidateSha: head },
+    });
+    const fetchedBeforeReplay = fetched;
+    const replayResult = await afterReplay;
+    fetched = fetchedBeforeReplay;
+    const replayRows = listOutbox(db, `session-${replayed.id}`).length;
+    const replayAnswer = db
+      .query<{ answer: string }, [string]>(
+        "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=1",
+      )
+      .get(replayCommand.runId)?.answer;
+    const sameOrigin = {
+      runId: replayCommand.runId,
+      generation: replayCommand.generation,
+      sequence: 2,
+    };
+    observe(
+      "a runner event replayed after a restart keeps its answer and its origin, so it is published once",
+      replayResult.stopReason === "end_turn" &&
+        replayPublications === 1 &&
+        replayRows === 1 &&
+        JSON.parse(replayAnswer ?? "{}").url === "https://linear.app/artifact/replayed" &&
+        JSON.stringify(origins) === JSON.stringify([sameOrigin, sameOrigin]),
+      { stopReason: replayResult.stopReason, replayPublications, replayRows, replayAnswer, origins },
     );
     await git(["-C", source, "reset", "--hard", base]);
     const accepted = item();
