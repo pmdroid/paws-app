@@ -23,7 +23,8 @@ function git(args: string[], cwd: string) {
   return child.stdout.toString().trim();
 }
 
-async function fixture(rejection: string) {
+/** `rejection` is GitHub's refusal of a push, or null once GitHub takes pushes again. */
+async function fixture(rejection: string | (() => string | null)) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-push-"));
   const now = Date.now();
   let clock = 0;
@@ -97,7 +98,9 @@ async function fixture(rejection: string) {
         git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
       else if (input.operation === "push") {
         pushes.push(clock);
-        throw new Error(rejection);
+        const refused = typeof rejection === "string" ? rejection : rejection();
+        if (refused !== null) throw new Error(refused);
+        git(["push", "-q", join(root, "origin.git"), input.refspec!], input.cwd);
       }
     },
     broker: {
@@ -189,6 +192,9 @@ async function fixture(rejection: string) {
   return {
     posted,
     pushes,
+    candidateSha,
+    remoteBranch: (branch: string) =>
+      git(["rev-parse", `refs/heads/${branch}`], join(root, "origin.git")),
     async run(minutes: number) {
       for (let step = 0; step <= minutes * 2; step++) {
         for (let index = 0; index < 5; index++) {
@@ -228,11 +234,38 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
   30_000,
 );
 
+const DENIED_TO_APP =
+  "remote: Permission to fixture/repository.git denied to paws-test[bot].\nfatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 403";
+
 test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
-  "a candidate push GitHub rejects for permission stops on the first try",
+  "a turn finished during a push outage keeps its commit and pushes it when the outage ends",
+  async () => {
+    let outage = true;
+    const f = await fixture(() => (outage ? DENIED_TO_APP : null));
+    try {
+      await f.run(20);
+      // One push, then 1, 2, 5 and 10 minutes apart; nothing is posted and nothing is asked.
+      expect(f.pushes).toEqual([0, 60_000, 180_000, 480_000, 1_080_000]);
+      expect(f.posted).toEqual([]);
+      outage = false;
+      await f.run(10);
+      expect(f.pushes.at(-1)).toBe(1_680_000);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.pushFailure).toBeUndefined();
+      expect(f.posted[0]!.candidateSha).toBe(f.candidateSha);
+      expect(f.remoteBranch("paws/fixture")).toBe(f.candidateSha);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a candidate push GitHub refuses for the workflows permission stops on the first try",
   async () => {
     const f = await fixture(
-      "remote: Permission to fixture/repository.git denied to paws-test[bot].\nfatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 403",
+      "To https://github.com/fixture/repository.git\n ! [remote rejected] abc -> paws/fixture (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)\nerror: failed to push some refs to 'https://github.com/fixture/repository.git'",
     );
     try {
       await f.run(2);
@@ -240,7 +273,7 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       expect(f.posted).toHaveLength(1);
       expect(f.posted[0]!.pushFailure).toEqual({
         branch: "paws/fixture",
-        error: expect.stringContaining("Permission to fixture/repository.git denied"),
+        error: expect.stringContaining("without `workflows` permission"),
       });
     } finally {
       await f.cleanup();

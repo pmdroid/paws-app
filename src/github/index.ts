@@ -107,6 +107,13 @@ export type {
 export type { GitHubWebhook } from "./webhook";
 export type { GitHubBinding } from "./binding";
 export { defaultGitExec } from "./git";
+export {
+  PUSH_OUTAGE_PROBE_MS,
+  PushOutageError,
+  isPushOutage,
+  pushOutageCause,
+  pushOutageProbeDelayMs,
+} from "./transport";
 
 export { closeStoppedPull } from "./stopped";
 export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";

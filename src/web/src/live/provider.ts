@@ -80,6 +80,7 @@ import {
   runAgentSetup,
   runRunnerName,
   usagePause,
+  listPushOutages,
   listTaskBlockers,
   listWorkItemFacts,
   listWorkItemsByStates,
@@ -201,7 +202,11 @@ export function createLiveStatusProvider(
 } {
   return {
     snapshot() {
-      return { ...readLiveSnapshot(db, options), ...readIntake(db, options) };
+      return {
+        ...readLiveSnapshot(db, options),
+        ...readIntake(db, options),
+        ...readPushOutages(db),
+      };
     },
     item(id) {
       return readItemDetail(db, id, options);
@@ -387,6 +392,21 @@ function emptyBase(now: Date, project: LiveStatusOptions["project"]): StatusSnap
     runs: [],
     questions: [],
     mergeQueue: [],
+  };
+}
+
+/** Repositories GitHub refuses pushes from the Paws App for (PAS-867). */
+function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages"> {
+  const outages = listPushOutages(db);
+  if (!outages.length) return {};
+  return {
+    pushOutages: outages.map((outage) => ({
+      repository: outage.repository,
+      since: iso(outage.startedAt),
+      lastError: outage.lastError,
+      nextProbeAt: iso(outage.nextProbeAt),
+      installationUrl: outage.installationUrl,
+    })),
   };
 }
 

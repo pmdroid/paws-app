@@ -51,6 +51,7 @@ import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
+import { renderPushOutages } from "./push-outage";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
@@ -140,7 +141,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "runs":
       return viewRuns(snapshot, model.route.id);
     case "mergeQueue":
-      return `${pageHeading("mergeQueue")}${renderMergeQueue(snapshot)}`;
+      return `${pageHeading("mergeQueue")}${renderPushOutages(snapshot)}${renderMergeQueue(snapshot)}`;
     case "questions":
       return viewQuestions(snapshot, model.route.id);
     case "evidence":
@@ -168,7 +169,7 @@ type NeedsYou = {
 };
 
 function viewOverview(snapshot: StatusSnapshot): string {
-  const intake = renderIntake(snapshot);
+  const intake = `${renderPushOutages(snapshot)}${renderIntake(snapshot)}`;
   if (!snapshot.items.length && !snapshot.questions.length)
     return `${pageHeading("overview")}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   const runs = new Map(snapshot.runs.map((run) => [run.id, run]));

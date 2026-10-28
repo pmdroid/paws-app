@@ -2,7 +2,7 @@ import { journalCaught, journalRejection } from "../journal";
 import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
-import { runGitHubGit } from "../github";
+import { isPushOutage, pushOutageProbeDelayMs, runGitHubGit } from "../github";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
@@ -108,6 +108,8 @@ type Active = {
   restarts?: number;
   pushTries?: number;
   pushAt?: number;
+  /** Candidate pushes GitHub refused in a push outage; they never count toward `pushTries`. */
+  outageTries?: number;
   /** Set once the worker's runtime install report is in the inventory. */
   runtimesRecorded?: boolean;
   sessionTries?: number;
@@ -1134,6 +1136,14 @@ export async function openRunnerRuntime(options: {
       } catch (error) {
         if (!(error instanceof GitHubFailure)) throw error;
         journalCaught(error, "runner-runtime.complete.publish", entry.execution.command.itemId);
+        // A push outage keeps the finished turn's candidate here and retries the push until
+        // GitHub takes it, so Paws never sees a candidate GitHub doesn't have (PAS-867).
+        if (isPushOutage(error.message)) {
+          const waited = entry.outageTries ?? 0;
+          entry.outageTries = waited + 1;
+          entry.pushAt = monotonic() + pushOutageProbeDelayMs(waited);
+          throw error;
+        }
         const tries = (entry.pushTries ?? 0) + 1;
         entry.pushTries = tries;
         const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
