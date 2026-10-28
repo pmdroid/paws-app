@@ -41,7 +41,7 @@ export async function recordAcceptedFindings(
   if (repository === null || accepted === null || accepted.reviews.length === 0)
     return { recorded: 0, gone: 0 };
   const records = await reviewRecordsAt(accepted.taskId, accepted.head, input.pawsRoot);
-  return record(db, {
+  return recordRun(db, {
     itemId: input.itemId,
     repository: `${repository.owner}/${repository.repo}`,
     head: accepted.head,
@@ -78,7 +78,7 @@ export async function backfillReviewFindings(options: {
       records = await read(run.taskId);
       byTask.set(run.taskId, records);
     }
-    const result = record(db, {
+    const result = recordRun(db, {
       itemId: run.itemId,
       repository: `${repository.owner}/${repository.repo}`,
       head: run.head,
@@ -94,7 +94,7 @@ export async function backfillReviewFindings(options: {
   return { runs, recorded, gone };
 }
 
-function record(
+function recordRun(
   db: Database,
   input: {
     itemId: string;
