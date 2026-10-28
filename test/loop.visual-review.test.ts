@@ -1,3 +1,5 @@
+import { runAgent } from "../src/acp";
+import { PreviewRequestSchema, createFakePreviewRuntime, runPreview } from "../src/live-preview";
 import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -98,6 +100,31 @@ function publishTwo(worktree: string, n: number): Step[] {
     writeFileSync(path.join(worktree, name), Buffer.concat([PNG, Buffer.from(name)]));
   return names.map((name) => ({ type: "publish_artifact", path: name, checkId: "visual-proof" }));
 }
+
+test("show_preview on the runner becomes ready, waits for Accept, then opens the pull request", async () => {
+  const f = await pausedForReview({ preview: true });
+  try {
+    await f.until(() => findOpenQuestion(f.db, "ses_1") !== null);
+    const question = findOpenQuestion(f.db, "ses_1")!;
+    expect(getLinkAsk(f.db, question.id)?.kind).toBe("preview");
+    expect(f.github.opened).toHaveLength(0);
+    expect(f.previewRuntime.stopped).toBe(false);
+    expect(await f.approve("someone-else")).toBe("forbidden");
+    expect(f.github.opened).toHaveLength(0);
+    expect(await f.approve()).toBe("answered");
+    await f.turn;
+    await f.driveUntil(() => f.github.opened.length === 1);
+    expect(f.previewRuntime.stopped).toBe(true);
+    expect(f.github.opened[0]!.title).toBe("Add the fixture screen");
+    expect(f.tracker.questions).toHaveLength(1);
+    expect(f.tracker.questions[0]!.body).toContain("[Review in Paws]");
+    expect(f.tracker.questions[0]!.body).toContain(
+      "[Open preview](https://paws-preview-1.test-tail.ts.net/)",
+    );
+  } finally {
+    await f.close();
+  }
+}, 90000);
 
 test("two screenshots published 10 s apart end the turn with one link ask that names both", async () => {
   const f = await pausedForReview();
@@ -1104,6 +1131,7 @@ function expectReviewOfSecondShot(question: { body: string; options?: readonly u
 async function pausedForReview(
   options: {
     paths?: string[];
+    preview?: boolean;
     implement?: (worktree: string, n: number, prompt: string) => Step[];
     /** The Closeout fake in place of the real gate. A held run returns before the turn ends. */
     gate?: FakeCloseoutGate;
@@ -1111,7 +1139,17 @@ async function pausedForReview(
     publicUrl?: string;
   } = {},
 ) {
-  const layout = await repoLayout(closeoutPolicy(options.paths));
+  const layout = await repoLayout(
+    options.preview
+      ? `specVersion: "0.1"
+items:
+  - id: live-preview
+    type: preview
+    approval: human
+`
+      : closeoutPolicy(options.paths),
+  );
+  const previewRuntime = createFakePreviewRuntime();
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -1232,6 +1270,75 @@ async function pausedForReview(
       client: githubClient(layout.bare, github),
     }),
     launch,
+    publicUrl: options.publicUrl ?? "https://paws.example",
+    ...(options.preview
+      ? {
+          remoteExecution: {
+            agentForSession: () => runAgent,
+            agentForItem: () => async (input) => {
+              const result = {
+                role: input.role,
+                sessionId: "preview-agent",
+                identity: { session: "preview-agent", model: "fixture-model", provider: "fixture" },
+                stopReason: "end_turn" as const,
+                cancelled: false,
+                timedOut: false,
+                authRequired: false,
+                agentExited: true,
+              };
+              if (input.prepareOnly) return result;
+              await exec("git", ["-C", input.worktreePath, "config", "user.name", "Paws Test"]);
+              await exec("git", [
+                "-C",
+                input.worktreePath,
+                "config",
+                "user.email",
+                "paws-test@example.invalid",
+              ]);
+              writeFileSync(path.join(input.worktreePath, "README.md"), "Try the live product\n");
+              await exec("git", [
+                "-C",
+                input.worktreePath,
+                "commit",
+                "-am",
+                "Add the fixture screen",
+              ]);
+              const head = (
+                await exec("git", ["-C", input.worktreePath, "rev-parse", "HEAD"])
+              ).stdout.trim();
+              const request = PreviewRequestSchema.parse({
+                command: ["bun", "run", "fixture"],
+                port: 3123,
+                checklist: ["Try the new screen"],
+              });
+              await runPreview({
+                request,
+                worktree: input.worktreePath,
+                head,
+                services: ["paws-preview-1"],
+                path: "/usr/bin",
+                lockRoot: path.join(layout.root, "preview-locks"),
+                signal: input.signal!,
+                runtime: previewRuntime.io,
+                ready: async (preview, signal) => {
+                  // A ready event replay after reconnect must reuse the same question.
+                  const replies = await Promise.all([
+                    input.reviewPreview!.review(preview, { signal }),
+                    input.reviewPreview!.review(preview, { signal }),
+                  ]);
+                  return replies[0]!;
+                },
+                stopped: (id) => input.reviewPreview?.stopped?.(id),
+              });
+              await input.pullRequest?.update({
+                title: "Add the fixture screen",
+                body: "Try the product before publishing.",
+              });
+              return result;
+            },
+          },
+        }
+      : {}),
     ...(options.gate ? { closeoutGate: () => options.gate! } : {}),
   });
   await orchestrator.onLinearEvent(created());
@@ -1243,20 +1350,28 @@ async function pausedForReview(
   });
   const running = jobs.tick();
   const runnerId = leaseActiveRun(db);
-  if (!options.gate?.held) {
+  if (!options.gate?.held && !options.preview) {
     await running;
     await outboxIdle(outbox);
     expect(listEvidence(db, listWorkItems(db)[0]!.id).length).toBeGreaterThanOrEqual(2);
   }
   return {
     db,
+    previewRuntime,
     turn: running,
     bare: layout.bare,
     root: layout.root,
     async until(done: () => boolean) {
       const deadline = Date.now() + 30_000;
       while (!done()) {
-        if (Date.now() > deadline) throw new Error("timed out");
+        if (Date.now() > deadline)
+          throw new Error(
+            JSON.stringify({
+              items: listWorkItems(db),
+              jobs: listJobs(db),
+              calls: previewRuntime.calls,
+            }),
+          );
         await outboxIdle(outbox);
         await Bun.sleep(20);
       }

@@ -35,6 +35,25 @@ test("implement and fix prompts tell the agent to call get_closeout", () => {
   ).toContain(text);
 });
 
+test("a preview check is pending human acceptance and is never run as a command", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    "  - id: live-preview",
+    "    type: preview",
+    "    approval: human",
+  ]);
+  writeFileSync(join(root, "src", "ui.ts"), "export const title = 'Fixture';\n");
+  const session = createCloseoutSession(root, local(root));
+  const report = JSON.parse(await session.report());
+  expect(report.required).toMatchObject([
+    { id: "live-preview", kind: "preview", status: "pending" },
+  ]);
+  expect(report.pending).not.toContain("live-preview");
+  expect(await session.run("live-preview")).toContain("Call show_preview");
+});
+
 test("get_closeout reports path matches and run_closeout runs the pending id", async () => {
   const root = initRepo();
   writePolicy(root, [

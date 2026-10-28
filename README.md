@@ -24,7 +24,7 @@ Read [CHANGELOG.md](CHANGELOG.md) before upgrading; breaking changes come first 
 
 Paws requires a configured Linear workspace. An existing install that runs from environment variables alone, without `PAWS_PUBLIC_DASHBOARD=1`, keeps serving the dashboard after the upgrade but starts no work and logs how to configure a workspace. Set up [Workspace access](docs/workspace-access.md), restart Paws, sign in as a Linear workspace admin, then run `bun run paws doctor` and check that `linear-workspace` is ok.
 
-Linear holds delegated work and questions. GitHub hosts repositories and pull requests. Paws checks the repository's Closeout policy before publication.
+Linear holds delegated work and questions. GitHub hosts repositories and pull requests. Paws checks the repository's Closeout policy before publication. [Live previews](docs/live-preview.md) let the delegator try the running product and accept the exact commit before the pull request opens.
 
 To start work, delegate an issue to the Paws app in Linear. Delegation is the approval. Delegate a parent issue to run its sub-issues in Linear `blocks` order, each in its own Linear session that opens once its blockers merge. A project is the Linear project the issue belongs to, and Paws has no project start of its own.
 
