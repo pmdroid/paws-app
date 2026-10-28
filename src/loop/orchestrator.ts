@@ -269,6 +269,8 @@ import {
   branchContains,
   readOpenPullHead,
   UPSTREAM_MAIN_REF,
+  pushOutageCause,
+  type GitExec,
   type GitHubBinding,
   type GitHubTokenProvider,
 } from "../github";
@@ -420,6 +422,14 @@ import { classifyTask } from "./task-classifier";
 import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./plan-proposal";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
+import {
+  askAboutPushOutage,
+  holdPush,
+  installationSettingsUrl,
+  parkForPushOutage,
+  pushRefused,
+  pushWorked,
+} from "./push-outage";
 import { classifyCandidateRisk, classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
@@ -560,6 +570,8 @@ export type OrchestratorOptions = {
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
   placementPollMs?: number;
+  /** Runs publication Git (push, fetch, rebase) in place of the owned Git. Tests pass a wrapper. */
+  publicationGitExec?: GitExec;
   /**
    * The page where a delegator without a usable runner creates a VM, adds a host or signs an
    * agent in. Missing means the local Runners page.
@@ -581,6 +593,7 @@ class LinearReconciliationPendingError extends Error {}
 
 type MergeRun = {
   payload: unknown;
+  jobId: number;
   publicationCandidate?: { sha: string; baseSha: string };
   signal?: AbortSignal;
 };
@@ -1459,6 +1472,8 @@ export class Orchestrator {
           waiting = wait;
         });
       } catch (error) {
+        if (!this.shuttingDown && context.isCurrent() && (await this.holdForPushOutage(job, error)))
+          return;
         if (this.shuttingDown || job.attempts >= job.maxAttempts || !context.isCurrent())
           throw error;
 
@@ -1984,6 +1999,49 @@ export class Orchestrator {
     return true;
   }
 
+  /**
+   * Parks a merge job whose push GitHub refused in a push outage, or that the outage held. The
+   * item keeps its state and its work, and the attempt is not spent. False for any other error.
+   */
+  private async holdForPushOutage(job: Job, error: unknown): Promise<boolean> {
+    const refused = pushOutageCause(error);
+    const itemId = readString(job.payload, "itemId");
+    const item = refused && itemId ? getWorkItem(this.db, itemId) : null;
+    const repository = item ? this.repositoryForItem(item) : null;
+    if (!refused || !item || !repository) return false;
+    const github = this.githubForRepository(repository);
+    const repositoryName = `${repository.owner}/${repository.repo}`;
+    const outage = pushRefused(this.db, {
+      repository: repositoryName,
+      error: refused,
+      jobId: job.id,
+      installationUrl: github ? installationSettingsUrl(github.installationId) : null,
+      now: this.now(),
+    });
+    // The outage ended between the hold and now: look again shortly.
+    if (outage === null) {
+      if (waitForMergeTurn(this.db, job, this.now()) === "lost") throw error;
+      return true;
+    }
+    if (!refused.held)
+      journalCaught(
+        error,
+        "orchestrator.holdForPushOutage",
+        item.id,
+        `push outage on ${repositoryName}; the push waits`,
+        this.options.journal,
+      );
+    const asked = askAboutPushOutage(this.db, repositoryName, this.now()) === "asked";
+    if (parkForPushOutage(this.db, job, outage, this.now()) === "lost") throw error;
+    if (asked) await this.flush();
+    return true;
+  }
+
+  private pushWorked(repository: string): void {
+    const ended = pushWorked(this.db, repository, this.now());
+    if (ended) this.options.journal?.(`push outage on ${repository} ended`);
+  }
+
   private async failOnLastAttempt(
     job: Job,
     context: JobContext,
@@ -1998,6 +2056,8 @@ export class Orchestrator {
       if (
         job.attempts >= job.maxAttempts &&
         item &&
+        // A push outage holds the item; it never fails it (PAS-867).
+        !pushOutageCause(error) &&
         !this.shuttingDown &&
         context.isCurrent() &&
         !this.jobContexts.has(item.id) &&
@@ -3663,7 +3723,7 @@ export class Orchestrator {
   private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
-    const run: MergeRun = { payload };
+    const run: MergeRun = { payload, jobId };
     return advanceMerge(
       this.db,
       { itemId, payload, jobId },
@@ -3780,10 +3840,17 @@ export class Orchestrator {
         ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
         : undefined;
     const freshReads = new Set<string>();
+    const repositoryName = `${repository.owner}/${repository.repo}`;
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
       signal: live.controller.signal,
+      ...(this.options.publicationGitExec ? { gitExec: this.options.publicationGitExec } : {}),
+      // During a push outage only the probe pushes; the first push that works ends it.
+      push: {
+        before: () => holdPush(this.db, repositoryName, run.jobId),
+        after: () => this.pushWorked(repositoryName),
+      },
       onCleanupFailure: () => this.blockConversation(item.id),
       isCurrent: () =>
         !this.stopped(item.id) &&
@@ -4582,6 +4649,15 @@ export class Orchestrator {
     if (open.kind === "github-auth") return "rejected";
     if (!canAnswer({ kind: open.kind === "closeout-help" ? "closeout-bypass" : open.kind }, user))
       return "rejected";
+    if (open.kind === "push-outage") {
+      const outcome = answerAsked(
+        this.db,
+        { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
+        questionEffects(this.db, { now: this.now() }),
+      );
+      await this.flush();
+      return outcome.status === "answered" ? "answered" : "rejected";
+    }
     if (open.kind === "runner-wait" || open.kind === "closeout-help") {
       const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
         (entry) => entry.questionId === open.id,

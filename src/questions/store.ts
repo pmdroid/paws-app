@@ -13,7 +13,8 @@ export type QuestionKind =
   | "visual-review"
   | "github-auth"
   | "plan-approval"
-  | "link";
+  | "link"
+  | "push-outage";
 
 export type StoredQuestion = {
   id: string;
