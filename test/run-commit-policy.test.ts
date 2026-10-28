@@ -42,11 +42,13 @@ test("a task keeps the commit policy it started with when credit changes mid-fli
     clock,
     pawsRoot: root,
     tracker: createFakeTracker(),
-    repository: {
-      owner: "pmdroid",
-      repo: "paws-app",
-      remoteUrl: "https://github.com/pmdroid/paws-app.git",
-    },
+    repositories: [
+      {
+        owner: "pmdroid",
+        repo: "paws-app",
+        remoteUrl: "https://github.com/pmdroid/paws-app.git",
+      },
+    ],
     async commitPolicyForItem() {
       resolutions += 1;
       return current;

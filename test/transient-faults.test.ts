@@ -283,7 +283,7 @@ async function runWithFault(fault: {
     tracker,
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     linearTaskModes: true,
     linearAccess: gate,
     retryBaseMs: 10,

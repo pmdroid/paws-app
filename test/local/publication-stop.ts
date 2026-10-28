@@ -106,8 +106,8 @@ export async function probePublicationStop(
       clock,
       pawsRoot: root,
       tracker: createFakeTracker(),
-      repository,
-      github,
+      repositories: [repository],
+      githubForRepository: () => github,
       admission: workspaceAdmission(db, {
         authority: (delegationId) => !pendingEpics.has(delegationId),
       }),

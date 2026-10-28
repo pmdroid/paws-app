@@ -188,7 +188,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     pawsRoot: root,
     home: root,
     tracker,
-    repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
+    repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     scheduling: () => ({}),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };

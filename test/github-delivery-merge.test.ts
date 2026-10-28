@@ -51,8 +51,8 @@ test("a green check_suite delivery for the pull request's head merges it before 
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: privateKey as string,
@@ -68,7 +68,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
           return { status: 200, body };
         },
       },
-    },
+    }),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `delivery-${sequence}.json`);
