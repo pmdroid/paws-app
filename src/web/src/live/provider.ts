@@ -900,12 +900,13 @@ function runsFor(
   for (const stored of listRuns(db))
     if (byItem.has(stored.itemId))
       attempts.set(stored.itemId, [...(attempts.get(stored.itemId) ?? []), stored]);
+  const activityRows = indexActivityRows(rows);
   const runs: StatusRun[] = [];
   for (const [itemId, stored] of attempts) {
     const record = byItem.get(itemId)!;
     const first = stored[0]!;
     const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
-    const activity = activityFor(db, record, stored, rows, generatedAt);
+    const activity = activityFor(db, record, stored, activityRows.for(record, stored), generatedAt);
     const recent = activity.at(-1);
     const pause = record.currentRunId === current.id ? usagePause(db, current.id) : null;
     const setup = runAgentSetup(db, current.id);
@@ -1796,6 +1797,34 @@ function mergeSteps(job: Job | undefined): StatusMergeEntry["steps"] {
     { name: MERGE_STEPS[1], state: "done", detail: null },
     { name: MERGE_STEPS[2], state: "run", detail: null },
   ];
+}
+
+function indexActivityRows(rows: readonly OutboxRow[]) {
+  const position = new Map<OutboxRow, number>();
+  const byKeyOwner = new Map<string, OutboxRow[]>();
+  const bySession = new Map<string, OutboxRow[]>();
+  const add = (index: Map<string, OutboxRow[]>, key: string, row: OutboxRow) => {
+    const list = index.get(key);
+    if (list) list.push(row);
+    else index.set(key, [row]);
+  };
+  rows.forEach((row, at) => {
+    if (row.op !== "activity" && row.op !== "elicitation") return;
+    position.set(row, at);
+    const parts = row.idempotencyKey.split(":");
+    add(byKeyOwner, (parts[0] === "cap" || parts[0] === "fail" ? parts[1] : parts[0]) ?? "", row);
+    if (row.orderingKey !== null) add(bySession, row.orderingKey, row);
+  });
+  return {
+    for(record: WorkItemRecord, stored: readonly StoredRun[]): OutboxRow[] {
+      const found = new Set<OutboxRow>([
+        ...(byKeyOwner.get(record.id) ?? []),
+        ...stored.flatMap((run) => byKeyOwner.get(run.id) ?? []),
+        ...(record.sessionKey === null ? [] : (bySession.get(record.sessionKey) ?? [])),
+      ]);
+      return [...found].sort((left, right) => position.get(left)! - position.get(right)!);
+    },
+  };
 }
 
 function activityFor(
