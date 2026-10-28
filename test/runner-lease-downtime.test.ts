@@ -15,6 +15,7 @@ import {
   markPawsAlive,
   openDatabase,
   prepareShutdown,
+  pawsAliveAt,
   putWorkspaceUser,
   recordLinearInstallation,
   recoverOnStartup,
@@ -303,3 +304,14 @@ test("a runner silent past the grace while Paws is up is still fenced", async ()
     f.close();
   }
 }, 30_000);
+
+test("alive marks recover after the wall clock moves backward", () => {
+  const db = migratedDatabase(":memory:");
+  try {
+    markPawsAlive(db, 4 * 60 * MINUTE);
+    markPawsAlive(db, 3 * 60 * MINUTE);
+    expect(pawsAliveAt(db)).toBe(3 * 60 * MINUTE);
+  } finally {
+    db.close();
+  }
+});

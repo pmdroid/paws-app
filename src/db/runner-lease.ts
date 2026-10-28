@@ -44,9 +44,10 @@ export const PAWS_ALIVE_INTERVAL_MS = 15_000;
 
 /** Record that Paws is alive at `now`. Startup reads it to tell how long Paws was down. */
 export function markPawsAlive(db: Database, now: number): void {
-  db.run("INSERT INTO paws_alive(id,at) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET at=MAX(at,?1)", [
-    now,
-  ]);
+  db.run(
+    "INSERT INTO paws_alive(id,at) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET at=excluded.at",
+    [now],
+  );
 }
 
 /** When Paws last recorded that it was alive, or null when it never has. */

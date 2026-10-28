@@ -367,16 +367,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
   recoverOnStartup(db);
   const abort = new AbortController();
-  // Startup reads the last mark to tell how long Paws was down (runner leases do not count it).
-  const aliveTimer = setInterval(() => {
-    try {
-      markPawsAlive(db, Date.now());
-    } catch (error) {
-      journalCaught(error, "index.startPaws.markPawsAlive", null);
-    }
-  }, PAWS_ALIVE_INTERVAL_MS);
-  aliveTimer.unref?.();
-  abort.signal.addEventListener("abort", () => clearInterval(aliveTimer));
   let orchestrator: Orchestrator | null = null;
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
@@ -1499,6 +1489,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     },
   });
 
+  // Startup reads the last mark to tell how long Paws was down (runner leases do not count it).
+  const aliveTimer = setInterval(() => {
+    try {
+      markPawsAlive(db, Date.now());
+    } catch (error) {
+      journalCaught(error, "index.startPaws.markPawsAlive", null);
+    }
+  }, PAWS_ALIVE_INTERVAL_MS);
+  aliveTimer.unref?.();
+
   let stopping: Promise<void> | undefined;
   return {
     env,
@@ -1543,7 +1543,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 policy,
               );
           }),
-        close: () => db.close(),
+        close: () => {
+          clearInterval(aliveTimer);
+          db.close();
+        },
       });
       return stopping;
     },
