@@ -138,6 +138,12 @@ export function createExecutionControls(input: {
         typeof itemId === "string"
           ? authorized(itemId, principal, sessionIds, { stoppedSession })
           : null;
+      // The dashboard asks for every item it shows; "none" is an answer, not a denial.
+      if (!item && request.method === "GET")
+        return Response.json(
+          { available: true, itemId, actions: [] },
+          { headers: { "Cache-Control": "no-store" } },
+        );
       if (!item) {
         auditWorkspaceAccess(input.db, {
           workspaceId: principal.workspaceId,

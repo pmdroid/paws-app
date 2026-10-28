@@ -20,9 +20,13 @@ export function createExecutionControls(reload: () => Promise<void>) {
   let notice = "";
   let confirming = false;
   let painted = "";
+  // Items that answered "no controls", with the version they had then.
+  const none = new Map<string, string>();
   function paint() {
     if (!root) return;
     root.hidden = actions.length === 0 && !notice;
+    // Hidden content is not seen; it renders when there is something to show.
+    if (root.hidden) return;
     const html = `<div class="row wrap" aria-label="Item execution controls" aria-busy="${Boolean(pending)}">${actions
       .filter((action) => action !== "stop")
       .map(
@@ -101,8 +105,15 @@ export function createExecutionControls(reload: () => Promise<void>) {
         confirming = false;
         itemId = local ? selected : "";
       }
+      if (local && itemId && !pending && element.dataset["noControls"] !== undefined) {
+        generation += 1;
+        actions = [];
+        notice = "";
+      }
       paint();
-      if (!local || !itemId || pending) return;
+      if (!local || !itemId || pending || element.dataset["noControls"] !== undefined) return;
+      const version = element.dataset["version"];
+      if (version !== undefined && none.get(itemId) === version) return;
       const target = itemId;
       const requestedGeneration = ++generation;
       void fetch(`/api/execution-controls?itemId=${encodeURIComponent(target)}`, {
@@ -129,6 +140,17 @@ export function createExecutionControls(reload: () => Promise<void>) {
             typeof body.notice === "string"
               ? body.notice
               : "";
+          if (
+            version !== undefined &&
+            actions.length === 0 &&
+            !notice &&
+            typeof body === "object" &&
+            body !== null &&
+            "available" in body &&
+            body.available === true
+          )
+            none.set(target, version);
+          else none.delete(target);
           paint();
         })
         .catch((caughtError1) => {

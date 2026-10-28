@@ -46,6 +46,7 @@ import {
   latestCandidateRisk,
   latestRiskFix,
   getCloseoutRecovery,
+  getConversation,
   getLinkAsk,
   listCloseoutBypassChecks,
   listDeadDeliveries,
@@ -726,6 +727,14 @@ function evidenceFor(db: Database, records: readonly WorkItemRecord[]): StatusEv
     );
 }
 
+/** Finished items offer no Pause, Stop or take over; only a stuck agent can still be cleared. */
+const NO_CONTROL_STATES: readonly WorkItemRecord["state"][] = [
+  "completed",
+  "merged",
+  "cancelled",
+  "failed",
+];
+
 function toItem(
   db: Database,
   record: WorkItemRecord,
@@ -760,6 +769,10 @@ function toItem(
     runId,
     pr,
     links: pr === null ? [] : [{ label: `PR #${pr.number}`, href: pr.url }],
+    version: record.version,
+    ...(NO_CONTROL_STATES.includes(record.state) && !getConversation(db, record.id).blocked
+      ? { noControls: true }
+      : {}),
     ...(waiting
       ? {
           queue: {

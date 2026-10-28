@@ -406,7 +406,7 @@ function issuePage(
     ${run ? phaseStrip(item, run, verdict, agent) : ""}
     ${queueNotice(item)}
     ${deadDeliveriesSection(snapshot, item.id)}
-    ${run ? (run.usagePause ? usagePauseSection(run, run.usagePause) : executionControls(run)) : ""}
+    ${run ? (run.usagePause ? usagePauseSection(item, run, run.usagePause) : executionControls(item, run)) : ""}
     ${snapshot.questions
       .filter(
         (question) =>
@@ -735,15 +735,16 @@ export function runSetupSection(setup: StatusRunSetup): string {
   return `<section class="run-setup" aria-labelledby="setup-heading"><h3 id="setup-heading">Skills and hooks</h3><h4>Skills</h4>${skills}<h4>Hooks</h4>${hooks}</section>`;
 }
 
-function executionControls(run: StatusRun): string {
-  return `<div id="execution-controls" data-item="${esc(run.itemId)}" hidden></div>`;
+/** The client asks which controls apply; `data-version` and `data-no-controls` spare that question. */
+function executionControls(item: StatusItem, run: StatusRun): string {
+  return `<div id="execution-controls" data-item="${esc(run.itemId)}"${item.version === undefined ? "" : ` data-version="${item.version}"`}${item.noControls ? ' data-no-controls=""' : ""} hidden></div>`;
 }
 
 /** The run waits for its agent's usage limit to reset. Resume now and Stop sit beside the heading. */
-function usagePauseSection(run: StatusRun, pause: StatusUsagePause): string {
+function usagePauseSection(item: StatusItem, run: StatusRun, pause: StatusUsagePause): string {
   const at = utcClock(pause.resumeAt);
   return `<section class="usage-pause" aria-labelledby="usage-pause-heading">
-    <div class="between"><h2 id="usage-pause-heading">Paused</h2>${executionControls(run)}</div>
+    <div class="between"><h2 id="usage-pause-heading">Paused</h2>${executionControls(item, run)}</div>
     <div class="closeout-result usage-pause-card"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><p><b>${esc(pause.agent)} reached its usage limit. Paws continues at ${esc(at)} UTC.</b></p><p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the item${run.runner ? ` on runner ${esc(run.runner)}` : ""}.</p></div></div>
   </section>`;
 }
