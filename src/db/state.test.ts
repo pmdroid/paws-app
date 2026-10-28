@@ -330,7 +330,6 @@ describe("restart recovery", () => {
     markRun(db, run.id, "ended", clock.now());
     enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       payload: { itemId: item.id, head: "abc", summary: "Closeout accepted." },
       now: clock.now(),
     });
