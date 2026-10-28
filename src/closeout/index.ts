@@ -1,4 +1,10 @@
-export { candidatePolicyDigest, FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
+export {
+  candidatePolicyDigest,
+  candidatePolicyInputs,
+  FINDING_FORMAT,
+  parseFindings,
+  scrubText,
+} from "../closeout-spec";
 export {
   ciMappings,
   fixAttemptLimit,

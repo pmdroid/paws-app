@@ -11,8 +11,8 @@ import { journalCaught } from "../journal";
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { lstatSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { attemptsLeft, evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
@@ -503,6 +503,36 @@ export function candidatePolicyDigest(
 ): string | null {
   const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
   return loaded.ok ? (loaded.policy.digest ?? "") : null;
+}
+
+/**
+ * The effective policy identity and its repository-relative inputs for automatic risk approval.
+ * Uses the same exclusion-aware loader as `decision`. Local/home inputs outside the repository
+ * cannot be edited by its candidate; inputs inside it are mapped from their policy root.
+ */
+export function candidatePolicyInputs(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+  checkoutExclusions: readonly string[] = [],
+): { digest: string; paths: string[] } | null {
+  const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
+  if (!loaded.ok) return null;
+  const policy = loaded.policy;
+  if (policy.source === "none") return { digest: "", paths: [] };
+  if (policy.source === "repo")
+    return { digest: policy.digest, paths: policy.files.map((file) => file.path) };
+  const root = policy.source === "local" ? policyRoot : (home ?? process.env.HOME);
+  if (!root) return null;
+  const repository = realpathSync(repo);
+  const tree = realpathSync(resolve(root));
+  const paths = policy.files.flatMap((file) => {
+    const path = relative(repository, resolve(tree, file.path));
+    return path && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)
+      ? [path.split(sep).join("/")]
+      : [];
+  });
+  return { digest: policy.digest, paths };
 }
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */

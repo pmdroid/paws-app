@@ -92,6 +92,7 @@ export {
   decision,
   digest,
   candidatePolicyDigest,
+  candidatePolicyInputs,
   policyCheckPaths,
   policyFixBudget,
   preExistingFindings,

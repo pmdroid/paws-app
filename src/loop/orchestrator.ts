@@ -90,6 +90,7 @@ import {
   type CandidateIdentity,
   type CiResult,
   candidatePolicyDigest,
+  candidatePolicyInputs,
   ciMappings,
 } from "../closeout";
 import {
@@ -3784,10 +3785,13 @@ export class Orchestrator {
                   .autoApproveHighRisk,
               policyPaths: async (digest) => {
                 const { home, policyRoot } = this.closeoutHome(item);
-                const load = trustedPolicyFiles(published.worktree, home, policyRoot);
-                return load.ok && !load.absent && load.digest === digest
-                  ? [...load.files.keys()]
-                  : null;
+                const policy = candidatePolicyInputs(
+                  published.worktree,
+                  home,
+                  policyRoot,
+                  this.runCheckout(item).checks,
+                );
+                return policy?.digest === digest ? policy.paths : null;
               },
               changedPaths: async (base) =>
                 (

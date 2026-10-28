@@ -49,11 +49,12 @@ export function riskGateOn(publicUrl: string | null | undefined): boolean {
 export type FixRisk = { changed: string[]; paths: string[] };
 
 /**
- * Automatic approval requires clean evidence on this exact head and never carries to a fix or rebase.
  * Whether head S may merge as far as its risk goes. A normal-tier head, or any head on a Paws
  * whose risk gate is off, needs nothing. A high-risk or unclassified head needs a person's
  * approval of S in Paws, or of an earlier head with the same patch against main (`samePatch`),
  * as after a rebase. A Linear reply never approves, so only `approve` decisions count.
+ * An exact manual approval takes precedence over automatic approval. Automatic approval needs
+ * clean evidence on this exact head and base, and never carries to a fix or rebase.
  *
  * A fix Paws made after the latest approval (CI, a review, a comment) keeps that approval when
  * none of the files the fix itself changed since the approved head is a high-risk path. A fix
@@ -165,6 +166,7 @@ async function cleanReviewEvidence(
   const run = listCloseoutProgress(db, risk.itemId, risk.head).at(-1);
   if (
     run?.decision !== "accepted" ||
+    run.base !== risk.base ||
     run.steps.some(
       (step) =>
         step.state !== "passed" &&

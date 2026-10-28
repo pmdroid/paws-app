@@ -875,3 +875,24 @@ test("a rule skipped because no paths matched still permits clean automatic appr
     db.close();
   }
 });
+
+test("reviews and the protected-path diff must cover the same base", async () => {
+  const { db, itemId } = held(heads.s, heads.newMain);
+  try {
+    // The accepted reviews cover heads.base, while risk classification used heads.newMain.
+    cleanReviews(db);
+    expect(await automatic(db)).toBe("missing");
+    expect(getAutomaticRiskApproval(db, itemId, heads.s)).toBeNull();
+    expect(
+      askRiskApproval(db, {
+        item: getWorkItem(db, itemId)!,
+        head: heads.s,
+        publicUrl: PUBLIC_URL,
+        now: NOW,
+      }),
+    ).toBe("asked");
+    expect(findOpenQuestion(db, "ses_1")).not.toBeNull();
+  } finally {
+    db.close();
+  }
+});
