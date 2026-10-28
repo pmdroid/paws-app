@@ -1,6 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  readFileSync,
+  readdirSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -44,13 +53,13 @@ function candidate(base: Record<string, string>, change: Record<string, string |
 }
 
 /** Run a probe the way Closeout does: from outside the checkout, against committed trees. */
-function probe(name: string, at: { repo: string; base: string; head: string }) {
+function probe(name: string, at: { repo: string; base: string; head: string }, env = process.env) {
   const scratch = mkdtempSync(join(tmpdir(), "paws-probe-run-"));
   roots.push(scratch);
   const ran = spawnSync(
     process.execPath,
     [join(PROBES, `${name}.ts`), "--base", at.base, "--head", at.head, "--repo", at.repo],
-    { cwd: scratch, encoding: "utf8" },
+    { cwd: scratch, encoding: "utf8", env },
   );
   return { exitCode: ran.status, output: `${ran.stdout}${ran.stderr}` };
 }
@@ -317,16 +326,18 @@ const SERVE = [
   "",
 ].join("\n");
 const API = {
+  "package.json": readFileSync(join(ROOT, "package.json"), "utf8"),
+  "bun.lock": readFileSync(join(ROOT, "bun.lock"), "utf8"),
   ".gitignore": "node_modules\n",
   "src/runner-protocol/index.ts": EVENTS,
   "src/web/src/contract.ts": STATUS,
   "src/server/serve.ts": SERVE,
 };
 
-/** Like `candidate`, with this checkout's dependencies installed for the probe to import zod. */
+/** The base supplies locked dependencies, never the candidate checkout. */
 function apiCandidate(change: Record<string, string | null>) {
   const at = candidate(API, change);
-  symlinkSync(join(ROOT, "node_modules"), join(at.repo, "node_modules"));
+
   return at;
 }
 
@@ -483,4 +494,216 @@ test("adding a route, or serving a route for any method, passes api-contract", (
   expect(ran.output).toContain("route\tPOST /v1/events\tadded");
   expect(ran.output).toContain("route\t* /api/status\tadded");
   expect(ran.exitCode).toBe(0);
+});
+
+function schemaChange(before: string, after: string) {
+  return candidate(
+    {
+      ...API,
+      "src/runner-protocol/index.ts": `import { z } from "zod";\nexport const SampleSchema = ${before};\n`,
+    },
+    {
+      "src/runner-protocol/index.ts": `import { z } from "zod";\nexport const SampleSchema = ${after};\n`,
+    },
+  );
+}
+
+test.each([
+  ['z.enum(["a", "b"])', 'z.literal("a")', '"b" removed'],
+  ['z.literal("a")', 'z.enum(["b", "c"])', '"a" removed'],
+  ["z.number().min(0).max(20)", "z.number().min(0).max(5)", "maximum decreased"],
+  ["z.number().min(0)", "z.number().min(1)", "minimum increased"],
+  ["z.string().max(20)", "z.string().max(3)", "maxLength decreased"],
+  ["z.array(z.string()).max(20)", "z.array(z.string()).max(3)", "maxItems decreased"],
+  ["z.string()", "z.string().regex(/^a$/)", "pattern changed"],
+  ["z.number()", "z.number().int()", "narrowed: number"],
+])("schema narrowing %s to %s fails", (before, after, message) => {
+  const ran = probe("api-contract", schemaChange(before, after));
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain(message);
+});
+
+test("transformed activity inputs remain visible without executing callbacks", () => {
+  const before =
+    'z.discriminatedUnion("sessionUpdate", [z.object({sessionUpdate: z.literal("plan"), text: z.string().transform(() => { throw new Error("executed"); })}), z.object({sessionUpdate: z.literal("tool"), id: z.string()})]).transform(() => { throw new Error("executed"); })';
+  const ran = probe(
+    "api-contract",
+    schemaChange(
+      before,
+      before.replace(
+        'text: z.string().transform(() => { throw new Error("executed"); })',
+        "other: z.string()",
+      ),
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("SampleSchema<sessionUpdate=plan>.text\tremoved");
+  expect(ran.output).not.toContain("error: executed");
+});
+
+test.each([
+  [
+    "z.union([z.object({id: z.string()}), z.string()])",
+    "z.union([z.object({id: z.string(), detail: z.string().optional()}), z.string()])",
+  ],
+  [
+    'z.discriminatedUnion("sessionUpdate", [z.object({sessionUpdate: z.literal("plan"), text: z.string()}), z.object({sessionUpdate: z.literal("tool")})])',
+    'z.discriminatedUnion("sessionUpdate", [z.object({sessionUpdate: z.literal("tool")}), z.object({sessionUpdate: z.literal("plan"), text: z.string(), detail: z.string().optional()})])',
+  ],
+])("optional fields do not replace union variants", (before, after) => {
+  const ran = probe("api-contract", schemaChange(before, after));
+  expect(ran.exitCode).toBe(0);
+  expect(ran.output).toContain("0 breaking changes");
+});
+
+test("new command fields protect the old strict reader", () => {
+  const ran = probe(
+    "api-contract",
+    apiCandidate(
+      edit(
+        "src/runner-protocol/index.ts",
+        "  resumeSessionId:",
+        "  extra: z.string().optional(),\n  resumeSessionId:",
+      ),
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain(
+    "RunnerCommandSchema.extra\tnew field rejected by old strict reader",
+  );
+});
+
+test("new command variants protect the old reader", () => {
+  const before =
+    'import { z } from "zod";\nexport const RunnerCommandSchema = z.discriminatedUnion("type", [z.strictObject({type:z.literal("run")})]);';
+  const at = candidate(
+    { ...API, "src/runner-protocol/index.ts": before },
+    {
+      "src/runner-protocol/index.ts": before.replace(
+        'z.strictObject({type:z.literal("run")})',
+        'z.strictObject({type:z.literal("run")}), z.strictObject({type:z.literal("stop")})',
+      ),
+    },
+  );
+  const ran = probe("api-contract", at);
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("new command variant rejected by old reader");
+});
+
+test("candidate modules, dependencies and Bun preloads cannot forge extraction", () => {
+  const at = apiCandidate({
+    ...edit("src/runner-protocol/index.ts", "  resumeSessionId: z.string().optional(),\n", ""),
+    "bunfig.toml": 'preload = ["./forge.ts"]\n',
+    "forge.ts": 'throw new Error("PRELOAD EXECUTED");',
+    "node_modules/zod/index.js": 'throw new Error("DEPENDENCY EXECUTED");',
+    "package.json": '{"scripts":{"postinstall":"exit 99"}}',
+  });
+  write(at.repo, {
+    "src/runner-protocol/index.ts":
+      EVENTS.replace("  resumeSessionId: z.string().optional(),\n", "") +
+      '\nconsole.log("FORGED"); process.exit(0);',
+  });
+  git(at.repo, "add", "-A");
+  git(at.repo, "commit", "-q", "-m", "side effect");
+  at.head = git(at.repo, "rev-parse", "HEAD");
+  const ran = probe("api-contract", at);
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("RunnerCommandSchema.resumeSessionId\tremoved");
+  expect(ran.output).not.toContain("EXECUTED");
+  expect(ran.output).not.toContain("FORGED");
+});
+
+test("unsupported schema expressions fail closed", () => {
+  const ran = probe("api-contract", schemaChange("z.string()", "(() => z.string())()"));
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("Unsupported contract expression");
+});
+
+test("a negated method guard detects a changed method outside src/server", () => {
+  const route =
+    'export function handle(request: Request, path: string): Response | null { if (path === "/auth/linear/callback") { if (request.method !== "GET") return new Response(null, {status:405}); return new Response(null); } return null; }';
+  const ran = probe(
+    "api-contract",
+    candidate(
+      { ...API, "src/workspace/access.ts": route },
+      {
+        "src/workspace/access.ts": route.replace('!== "GET"', '!== "POST"'),
+      },
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("GET /auth/linear/callback\tGET no longer served; now POST");
+});
+
+test("regex routes are compared and path classifiers are excluded", () => {
+  const route =
+    'export function handle(request: Request): Response | null { const path = new URL(request.url).pathname; const match = /^\\/api\\/runners\\/([A-Z0-9]+)\\/policy$/.exec(path); if (!match) return null; if (request.method !== "GET") return new Response(null,{status:405}); return new Response(null); }';
+  const noise =
+    'export function valid(url: URL) { return url.pathname === "/"; }\nexport function handle(request: Request) { const path = new URL(request.url).pathname; const privileged = path.startsWith("/api/settings/"); return privileged; }';
+  const at = candidate(
+    { ...API, "src/runner-placement/browser.ts": route, "src/server/classifier.ts": noise },
+    {
+      "src/runner-placement/browser.ts": null,
+      "src/server/classifier.ts": null,
+    },
+  );
+  const ran = probe("api-contract", at);
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("regex:/^\\/api\\/runners");
+  expect(ran.output).toContain("1 breaking changes");
+});
+
+test("the API rule covers every source route module", () => {
+  const policy = Bun.YAML.parse(readFileSync(join(ROOT, ".agents/closeout.yaml"), "utf8")) as {
+    rules: { id: string; paths: string[]; onFail: string }[];
+  };
+  const rule = policy.rules.find((entry) => entry.id === "api-contract")!;
+  expect(rule.paths).toEqual(["src/**"]);
+  expect(rule.onFail).toBe("approve");
+});
+
+test("export-ignore cannot conceal a removed contract field", () => {
+  const at = apiCandidate({
+    ...edit("src/runner-protocol/index.ts", "  resumeSessionId: z.string().optional(),\n", ""),
+    ".gitattributes": "src/runner-protocol/index.ts export-ignore\n",
+  });
+  const ran = probe("api-contract", at);
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("RunnerCommandSchema.resumeSessionId\tremoved");
+});
+
+test("symlinked source files fail closed without reading their targets", () => {
+  const at = apiCandidate({});
+  symlinkSync("/outside-contract.ts", join(at.repo, "src/runner-protocol/escape.ts"));
+  git(at.repo, "add", "-A");
+  git(at.repo, "commit", "-q", "-m", "symlink");
+  at.head = git(at.repo, "rev-parse", "HEAD");
+  const ran = probe("api-contract", at);
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("Contract tree requires regular files");
+});
+
+test("failed extraction removes its disposable trees", () => {
+  const temp = mkdtempSync(join(tmpdir(), "contract-cleanup-"));
+  roots.push(temp);
+  const at = apiCandidate({});
+  const ran = probe(
+    "api-contract",
+    { ...at, base: "0".repeat(40) },
+    { ...process.env, TMPDIR: temp },
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(readdirSync(temp)).toEqual([]);
+});
+
+test("literal union members are compared without overwriting one another", () => {
+  const ran = probe(
+    "api-contract",
+    schemaChange(
+      'z.union([z.literal("a"), z.literal("b"), z.literal("c")])',
+      'z.union([z.literal("a"), z.literal("c")])',
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain('const="b" removed');
 });
