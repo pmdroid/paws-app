@@ -834,7 +834,7 @@ export async function probeRunnerBackend(
         data: replayBytes.toString("base64"),
       },
     });
-    for (const [sequence, event] of [
+    for (const [at, event] of [
       [1, { type: "artifact", artifact: replayArtifact }],
       [2, { type: "progress", text: "Published the report" }],
     ] as const)
@@ -843,7 +843,7 @@ export async function probeRunnerBackend(
         runId: replayCommand.runId,
         generation: replayCommand.generation,
         token: replayGrant.token,
-        sequence,
+        sequence: at,
         event,
       });
     for (let attempt = 0; attempt < 500 && origins.length === 0; attempt++) await delay(2);
