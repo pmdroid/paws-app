@@ -126,7 +126,10 @@ async function runStep(
       const asked = row.createRequestedAt;
       update(db, row, { create_requested_at: asked ?? now() }, now());
       try {
-        await exeDev.createVm(vm, options.size);
+        await exeDev.createVm(
+          vm,
+          row.pool === null ? options.size : { ...options.size, pool: row.pool },
+        );
       } catch (error) {
         const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
         if (ours) journalCaught(error, "member-vm.createVm", null, "resuming our create request");
