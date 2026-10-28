@@ -952,7 +952,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         reviews: (itemId) => itemReviews(db, itemId, paths.home, envSource),
         // Linear is called only when someone files an issue, never when the page loads.
         file: linear?.tracker?.fileFindingIssue
-          ? (request, options) => linear.tracker!.fileFindingIssue!(request, options)
+          ? (request, fileOptions) => linear.tracker!.fileFindingIssue!(request, fileOptions)
           : undefined,
       }),
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),

@@ -14,7 +14,6 @@ import {
   finishCloseoutProgress,
   insertLinkAsk,
   insertQueuedItem,
-  bindWorkItemRepository,
   reviewFindingKey,
   saveReviewFindingIssue,
   LINEAR_WEBHOOK_FIX,

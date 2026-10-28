@@ -94,10 +94,10 @@ export function createLinearFindingIssueMethods(client: LinearClient) {
           nodes(dig(team, "states"))
             .filter(isRecord)
             .flatMap((state) => {
-              const stateId = readString(state, "id");
+              const workflowState = readString(state, "id");
               const type = readString(state, "type");
-              return stateId && type
-                ? [{ id: stateId, type, position: readNumber(state, "position") ?? 0 }]
+              return workflowState && type
+                ? [{ id: workflowState, type, position: readNumber(state, "position") ?? 0 }]
                 : [];
             }),
         );
@@ -159,7 +159,7 @@ export function createLinearFindingIssueMethods(client: LinearClient) {
       return { id, identifier, url: readString(issue, "url") };
 
       /** The team's or the workspace's `review finding` label, created in the team when missing. */
-      async function findingLabel(teamId: string): Promise<string> {
+      async function findingLabel(labelTeam: string): Promise<string> {
         const found = nodes(
           dig(await client.query(LABELS, { name: REVIEW_FINDING_LABEL }, options), "issueLabels"),
         )
@@ -170,13 +170,13 @@ export function createLinearFindingIssueMethods(client: LinearClient) {
             team: isRecord(label["team"]) ? readString(label["team"], "id") : null,
           }));
         const label =
-          found.find((entry) => entry.team === teamId) ??
+          found.find((entry) => entry.team === labelTeam) ??
           found.find((entry) => entry.team === null);
         if (label?.id) return label.id;
         const created = dig(
           await client.query(
             CREATE_LABEL,
-            { input: { name: REVIEW_FINDING_LABEL, teamId } },
+            { input: { name: REVIEW_FINDING_LABEL, teamId: labelTeam } },
             options,
           ),
           "issueLabelCreate",

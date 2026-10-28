@@ -213,25 +213,23 @@ describe("review findings on the issue page", () => {
 
   test("the issue a click filed shows at once, and Linear's error shows beside the button", () => {
     const detail = withReviews();
-    const finding = {
+    const legacy = {
       location: "src/retention/legacy.ts:7",
       explanation: "<script>alert(1)</script> in old code",
     };
-    const key = findingIssueKey("ENG-100", "independent-review", finding);
+    const key = findingIssueKey("ENG-100", "independent-review", legacy);
     const view = emptyCloseoutView();
     view.filing = { [key]: { state: "filed", identifier: "PAS-123", url: null } };
-    expect(findingHtml(page(detail, view), finding.location)).toContain("PAS-123 filed");
+    expect(findingHtml(page(detail, view), legacy.location)).toContain("PAS-123 filed");
 
     view.filing[key] = { state: "sending" };
-    expect(findingHtml(page(detail, view), finding.location)).toContain(
-      "disabled>Filing…</button>",
-    );
+    expect(findingHtml(page(detail, view), legacy.location)).toContain("disabled>Filing…</button>");
 
     view.filing[key] = {
       state: "failed",
       error: "Linear did not file the issue: <b>rate limited</b>",
     };
-    const failed = findingHtml(page(detail, view), finding.location);
+    const failed = findingHtml(page(detail, view), legacy.location);
     expect(failed).toContain(">File an issue</button>");
     expect(failed).toContain(
       'role="alert">Linear did not file the issue: &lt;b&gt;rate limited&lt;/b&gt;</span>',

@@ -296,9 +296,11 @@ async function fileFindingIssue(
         : undefined;
     const identifier = field("identifier");
     const url = field("url");
-    const error = field("error");
+    const problem = field("error");
     if (!response.ok || typeof identifier !== "string")
-      throw new Error(typeof error === "string" ? error : "The issue was not filed. Try again.");
+      throw new Error(
+        typeof problem === "string" ? problem : "The issue was not filed. Try again.",
+      );
     closeout.filing[key] = {
       state: "filed",
       identifier,
