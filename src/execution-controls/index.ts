@@ -176,11 +176,9 @@ export function createExecutionControls(input: {
       }
       const port = input.getPort(principal.workspaceId);
       const blocked = getConversation(input.db, item.id).blocked;
-      // Only an owner or admin may vouch that the old agent is gone: a wrong call runs two.
-      const vouches = () => {
-        const role = workspaceMember(input.db, principal.workspaceId, principal.userId)?.role;
-        return role === "owner" || role === "admin";
-      };
+      // Only an admin may vouch that the old agent is gone: a wrong call runs two.
+      const vouches = () =>
+        workspaceMember(input.db, principal.workspaceId, principal.userId)?.role === "admin";
       const actions = [
         ...((TERMINAL_WORK_ITEM_STATES as readonly string[]).includes(item.state)
           ? []
