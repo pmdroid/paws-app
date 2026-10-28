@@ -449,6 +449,7 @@ import {
 } from "./runner-wait";
 import { createRepositoryGit } from "./repository-git";
 import { readFixDiff, settleReviewEscapes } from "./review-escapes";
+import { recordAcceptedFindings } from "./review-findings";
 import {
   openFindings,
   openFindingsLine,
@@ -2941,6 +2942,16 @@ export class Orchestrator {
               this.options.journal,
             ),
           );
+        if (mergeJob !== null)
+          await this.recordFindings(item, worktree, base, acceptedHead).catch((error: unknown) =>
+            journalCaught(
+              error,
+              "orchestrator.evaluateHead.recordFindings",
+              item.id,
+              undefined,
+              this.options.journal,
+            ),
+          );
         return;
       }
       if (pass < 2 && awaitsVisualReview(verdict.result)) {
@@ -2963,6 +2974,31 @@ export class Orchestrator {
       await this.askCloseoutHelp(after, verdict.result, verdict.summary);
       return;
     }
+  }
+
+  /** Stores the accepted head's non-blocking findings for the Findings page. */
+  private async recordFindings(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+  ): Promise<void> {
+    const changed = await git([
+      "-C",
+      worktree,
+      "diff",
+      "--no-renames",
+      "--name-only",
+      "-z",
+      `${base}...${head}`,
+    ]);
+    await recordAcceptedFindings(this.db, {
+      itemId: item.id,
+      head,
+      pawsRoot: this.options.pawsRoot,
+      now: this.now(),
+      changedPaths: changed.split("\0").filter(Boolean),
+    });
   }
 
   private async runVerification(

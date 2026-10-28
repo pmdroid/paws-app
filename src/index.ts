@@ -176,6 +176,8 @@ import {
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
   highRiskPathsFileAt,
+  backfillReviewFindings,
+  REVIEW_FINDINGS_BACKFILL_JOB,
 } from "./loop";
 import {
   formatReviewScore,
@@ -1422,6 +1424,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         }).then(({ converted, skipped }) =>
           journal(
             `runner transcripts encrypted: ${converted} chunks sealed, ${skipped} unreadable`,
+          ),
+        ),
+      );
+      // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
+      // Closeout accepted before the page stored findings.
+      created.jobs.register(REVIEW_FINDINGS_BACKFILL_JOB, () =>
+        backfillReviewFindings({ db, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
+          journal(
+            `review findings backfilled: ${runs} accepted runs, ${recorded} findings, ${gone} gone`,
           ),
         ),
       );
