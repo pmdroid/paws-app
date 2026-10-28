@@ -50,7 +50,9 @@ test("two items that change a hot file do not run together; the second starts af
     item(db, "first", [PROVIDER, "src/a.ts"]);
     item(db, "second", [PROVIDER, "src/b.ts"], 2);
     const log: string[] = [];
-    expect(workspaceDispatch(db, { now: NOW, log: (line) => log.push(line) })).toEqual(["first"]);
+    expect(workspaceDispatch(db, { now: NOW, log: (line: string) => log.push(line) })).toEqual([
+      "first",
+    ]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "second", reason: "overlap", blockers: ["first"], files: [PROVIDER] },
     ]);
@@ -117,9 +119,12 @@ test("a held item is not counted in the runner line", () => {
     setState(db, "first", "running");
     item(db, "second", [PROVIDER], 2);
     const waiting: string[] = [];
-    expect(workspaceDispatch(db, { now: NOW, onWaiting: (ids) => waiting.push(...ids) })).toEqual(
-      [],
-    );
+    expect(
+      workspaceDispatch(db, {
+        now: NOW,
+        onWaiting: (ids: readonly string[]) => waiting.push(...ids),
+      }),
+    ).toEqual([]);
     expect(waiting).toEqual([]);
   } finally {
     db.close();
