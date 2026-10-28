@@ -11,6 +11,8 @@ export const REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 23];
 export const SESSION_RESUME_RUNNER_VERSION: RunnerVersion = [0, 1, 24];
 /** First runner release whose command schema accepts `runtimes`. Older runners reject the field. */
 export const RUNTIMES_RUNNER_VERSION: RunnerVersion = [0, 1, 26];
+/** First runner release whose command schema accepts any mise backend, not only core and `aqua:`. */
+export const ANY_MISE_BACKEND_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
 /** First runner release that snapshots a run's Claude session when a turn ends. */
 export const CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION: RunnerVersion = [0, 1, 42];
 /** First runner release that restores a Claude session snapshot before the agent starts. */

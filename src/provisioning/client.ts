@@ -431,6 +431,7 @@ function exeDevSaid(detail: string, token: string | null): string {
 }
 
 function codeFor(status: number, error: string | null): ProvisioningErrorCode {
+  if (error !== null && /\bvm name\b.*\bnot available\b/i.test(error)) return "name_unavailable";
   if (status === 401 || status === 403) return "unauthorized";
   if (status === 409) return "conflict";
   if (status === 404 || status === 410) return "missing";

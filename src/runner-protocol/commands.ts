@@ -118,17 +118,23 @@ export const RunnerHookSchema = z
 
 /**
  * A runtime from the task repository's mise config on origin/main, installed by the runner
- * before the agent starts. Only mise core tools and the `aqua:` backend are carried.
+ * before the agent starts. Any mise tool is carried: a registry short name or `backend:name`. It
+ * cannot start with `-` or hold characters mise would read as options.
  */
 export const RunnerRuntimeSchema = z.strictObject({
   tool: z
     .string()
     .max(256)
-    .regex(
-      /^(?:node|python|go|java|ruby|rust|bun|deno|aqua:[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,3})$/,
-    ),
+    .regex(/^(?:[a-z][a-z0-9-]{0,31}:)?[A-Za-z0-9@][A-Za-z0-9@._/+-]{0,199}$/),
   version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/),
 });
+
+/** A tool a runner before `ANY_MISE_BACKEND_RUNNER_VERSION` accepts: a mise core tool or `aqua:`. */
+export function legacyRuntimeTool(tool: string): boolean {
+  return /^(?:node|python|go|java|ruby|rust|bun|deno|aqua:[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,3})$/.test(
+    tool,
+  );
+}
 
 export const RunnerRuntimesSchema = z.array(RunnerRuntimeSchema).max(32);
 

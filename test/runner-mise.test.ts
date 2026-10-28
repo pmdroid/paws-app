@@ -36,7 +36,7 @@ pause=$(cat "$here/sleep" 2>/dev/null)
 spec="$2"
 tool="\${spec%@*}"
 version="\${spec#*@}"
-target="$MISE_DATA_DIR/installs/$tool/$version"
+target="$MISE_DATA_DIR/installs/$(echo "$tool" | tr ':/' '--')/$version"
 if [ "$1" = where ]; then
   echo "where $spec" >> "$log"
   [ -d "$target" ] || { echo "mise ERROR $spec is not installed" >&2; exit 1; }
@@ -44,6 +44,7 @@ if [ "$1" = where ]; then
   exit 0
 fi
 [ "$1" = install ] || { echo "unexpected $*" >&2; exit 2; }
+echo "$spec $PATH" >> "$here/path.log"
 echo "call $spec cwd=$PWD data=$MISE_DATA_DIR cache=$MISE_CACHE_DIR config=$MISE_CONFIG_DIR trusted=[$MISE_TRUSTED_CONFIG_PATHS]" >> "$log"
 if [ "$tool" = "$fail" ]; then echo "mise ERROR no version of $tool matches $version" >&2; exit 1; fi
 if [ -d "$target" ]; then echo "reuse $spec" >> "$log"; exit 0; fi
@@ -456,6 +457,26 @@ test("installRuntimes returns each runtime's pinned bin dir in order", async () 
   });
   expect(prependRuntimePath([], "/usr/bin:/bin")).toBe("/usr/bin:/bin");
   expect(prependRuntimePath(["/a/bin", "/b/bin"], "/usr/bin")).toBe("/a/bin:/b/bin:/usr/bin");
+});
+
+test("a later install finds the runtimes installed before it on PATH", async () => {
+  const result = await installRuntimes({
+    runtimes: [
+      { tool: "node", version: "22" },
+      { tool: "npm:prettier", version: "3" },
+    ],
+    home,
+    mise,
+  });
+  expect(result.ok).toBe(true);
+  const node = join(runnerMiseDirectories(home).dataDir, "installs", "node", "22", "bin");
+  const paths = readFileSync(join(dirname(mise), "path.log"), "utf8")
+    .trim()
+    .split("\n");
+  expect(paths).toEqual([
+    "node@22 /opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
+    `npm:prettier@3 ${node}:/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin`,
+  ]);
 });
 
 test("a runtime mise cannot locate fails the install with its name", async () => {

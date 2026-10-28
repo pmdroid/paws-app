@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createFakeGitReader, loadOriginMainRootFiles } from "../src/closeout-spec/policy";
-import { RunnerCommandSchema } from "../src/runner-protocol";
+import { legacyRuntimeTool, RunnerCommandSchema } from "../src/runner-protocol";
 import { RUNTIME_FILES, runtimeList } from "../src/runtimes";
 
 const encoder = new TextEncoder();
@@ -72,15 +72,21 @@ ruby = { version = "3.3", postinstall = "touch /tmp/owned" }
     expect(git.calls.slice(0, 2)).toEqual(["fetch /repo", "ls-remote /repo"]);
   });
 
-  test("a cargo: tool is refused with one line naming it, and the other tools stay", () => {
+  test("any mise backend and registry short name is carried, and a malformed name is refused", () => {
     const { list } = fromOrigin({
-      "mise.toml": '[tools]\nnode = "22"\n"cargo:ripgrep" = "14"\n"npm:prettier" = "3"\n',
+      "mise.toml":
+        '[tools]\nnode = "22"\n"cargo:ripgrep" = "14"\n"npm:@biomejs/biome" = "2"\n"--yes" = "1"\n',
+      ".tool-versions": "uv 0.9.1\ngolangci-lint 2.5.0\nbad;tool 1\n",
     });
-    expect(list.runtimes).toEqual([{ tool: "node", version: "22" }]);
-    expect(list.notices).toHaveLength(2);
-    expect(list.notices[0]).toContain("`cargo:ripgrep`");
-    expect(list.notices[0]).toContain("refused");
-    expect(list.notices[1]).toContain("`npm:prettier`");
+    expect(list.runtimes).toEqual([
+      { tool: "node", version: "22" },
+      { tool: "cargo:ripgrep", version: "14" },
+      { tool: "npm:@biomejs/biome", version: "2" },
+      { tool: "uv", version: "0.9.1" },
+      { tool: "golangci-lint", version: "2.5.0" },
+    ]);
+    expect(list.notices.map((line) => line.match(/`([^`]+)`/)?.[1])).toEqual(["--yes", "bad;tool"]);
+    expect(list.notices[0]).toContain("not a mise tool name");
   });
 
   test("templated or path versions are refused instead of passed to mise", () => {
@@ -158,6 +164,15 @@ describe("runner command runtimes", () => {
     runtimes,
   });
 
+  test("accepts any mise backend, and only core and aqua: tools are legacy", () => {
+    for (const tool of ["cargo:ripgrep", "npm:@biomejs/biome", "uv", "go:github.com/a/b/cmd/c"])
+      expect(RunnerCommandSchema.safeParse(command([{ tool, version: "1" }])).success).toBe(true);
+    expect(legacyRuntimeTool("node")).toBe(true);
+    expect(legacyRuntimeTool("aqua:cli/cli")).toBe(true);
+    expect(legacyRuntimeTool("uv")).toBe(false);
+    expect(legacyRuntimeTool("cargo:ripgrep")).toBe(false);
+  });
+
   test("accepts core tools and aqua: tools", () => {
     const parsed = RunnerCommandSchema.safeParse(
       command([
@@ -168,9 +183,10 @@ describe("runner command runtimes", () => {
     expect(parsed.success).toBe(true);
   });
 
-  test("rejects other backends, templates and extra fields", () => {
+  test("rejects option-like tool names, templates and extra fields", () => {
     for (const runtime of [
-      { tool: "cargo:ripgrep", version: "14" },
+      { tool: "--force", version: "14" },
+      { tool: "a b", version: "1" },
       { tool: "node", version: "{{ env.X }}" },
       { tool: "node", version: "22", postinstall: "id" },
     ])

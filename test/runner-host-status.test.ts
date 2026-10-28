@@ -649,7 +649,7 @@ test("a heartbeat with runtimes stores them and the runner list returns them", a
 test("a heartbeat with a malformed runtime is refused", async () => {
   const runner = await fixture();
   for (const runtime of [
-    { tool: "npm:left-pad", version: "1.0.0", status: "installed" },
+    { tool: "--force", version: "1.0.0", status: "installed" },
     { tool: "node", version: "../22", status: "installed" },
     { tool: "node", version: "22", status: "pending" },
     { tool: "node", version: "22", status: "failed", error: "x".repeat(501) },
