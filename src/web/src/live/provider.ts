@@ -1,5 +1,3 @@
-import { getAutomaticRiskApproval } from "../../../db";
-import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
  *
@@ -26,6 +24,7 @@ import { journalCaught } from "../journal";
  *   follows that job's status.
  */
 
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -43,6 +42,7 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  getAutomaticRiskApproval,
   getCandidateRisk,
   getRiskFix,
   latestCandidateRisk,

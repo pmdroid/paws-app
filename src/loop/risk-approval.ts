@@ -80,8 +80,8 @@ export async function riskApprovalFor(
   if (risk?.tier === "normal") return "not_required";
   const approvals = riskApprovals(db, input.itemId);
   if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
-  if (getAutomaticRiskApproval(db, input.itemId, input.head) !== null) return "approved";
-  if (risk?.tier === "high" && input.automatic?.enabled) {
+  if (risk?.tier === "high" && automaticEnabled(input.automatic, input.itemId)) {
+    if (getAutomaticRiskApproval(db, input.itemId, input.head) !== null) return "approved";
     const evidenceIds = await cleanReviewEvidence(db, risk, input.automatic);
     if (evidenceIds !== null) {
       const now = input.now ?? Date.now();
@@ -125,7 +125,10 @@ export async function riskApprovalFor(
 
 /** Inputs read from the candidate checkout and Closeout's structured evidence store. */
 export type AutomaticRiskChecks = {
-  enabled: boolean;
+  /** Read only for a classified high-risk head without a manual approval. */
+  enabled: () => boolean;
+  /** Trusted policy inputs, including skills and imports outside .agents. Null is unreadable. */
+  policyPaths: (digest: string) => Promise<readonly string[] | null>;
   changedPaths: (base: string) => Promise<string[]>;
   reviews: (
     taskId: string,
@@ -140,6 +143,19 @@ export type AutomaticRiskChecks = {
   >;
 };
 
+/** A missing or unreadable setting leaves the person gate in place. */
+function automaticEnabled(
+  checks: AutomaticRiskChecks | undefined,
+  itemId: string,
+): checks is AutomaticRiskChecks {
+  try {
+    return checks?.enabled() === true;
+  } catch (error) {
+    journalCaught(error, "risk-approval.automaticEnabled", itemId);
+    return false;
+  }
+}
+
 /** A bypass, skipped review, missing record or unreadable checkout always leaves the person gate. */
 async function cleanReviewEvidence(
   db: Database,
@@ -149,7 +165,16 @@ async function cleanReviewEvidence(
   const run = listCloseoutProgress(db, risk.itemId, risk.head).at(-1);
   if (
     run?.decision !== "accepted" ||
-    run.steps.some((step) => step.state !== "passed" && step.state !== "skipped")
+    run.steps.some(
+      (step) =>
+        step.state !== "passed" &&
+        !(
+          step.state === "skipped" &&
+          (step.detail === "no changed path matches" ||
+            (step.kind === "review" &&
+              /^\d+ changed lines, under minChangedLines \d+$/.test(step.detail ?? "")))
+        ),
+    )
   )
     return null;
   const reviews = ["security-review", "independent-review"].map((id) =>
@@ -172,10 +197,15 @@ async function cleanReviewEvidence(
     if (
       changed.some(
         (path) =>
-          path === ".paws/high-risk-paths" || path === ".agents" || path.startsWith(".agents/"),
+          path === ".paws" ||
+          path.startsWith(".paws/") ||
+          path === ".agents" ||
+          path.startsWith(".agents/"),
       )
     )
       return null;
+    const policyPaths = await checks.policyPaths(run.policyDigest);
+    if (policyPaths === null || changed.some((path) => policyPaths.includes(path))) return null;
     return reviews.map((step) => step!.evidencePath!);
   } catch (error) {
     journalCaught(error, "risk-approval.cleanReviewEvidence", risk.itemId);

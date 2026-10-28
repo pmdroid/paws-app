@@ -3779,8 +3779,16 @@ export class Orchestrator {
             head: published.head,
             publicUrl: this.options.publicUrl,
             automatic: {
-              enabled: readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-                .autoApproveHighRisk,
+              enabled: () =>
+                readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
+                  .autoApproveHighRisk,
+              policyPaths: async (digest) => {
+                const { home, policyRoot } = this.closeoutHome(item);
+                const load = trustedPolicyFiles(published.worktree, home, policyRoot);
+                return load.ok && !load.absent && load.digest === digest
+                  ? [...load.files.keys()]
+                  : null;
+              },
               changedPaths: async (base) =>
                 (
                   await git([

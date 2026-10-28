@@ -632,7 +632,7 @@ test("a rebase that changed the patch asks again, even when the change is only a
 function cleanReviews(
   db: ReturnType<typeof openDatabase>,
   head = heads.s,
-  options: { missing?: string; failedProbe?: boolean } = {},
+  options: { missing?: string; failedProbe?: boolean; skippedProbe?: string } = {},
 ) {
   const identity = {
     taskId: "risk-task",
@@ -651,9 +651,14 @@ function cleanReviews(
       {
         id,
         kind: id === "rule-probe" ? "command" : "review",
-        state: id === "rule-probe" && options.failedProbe ? "failed" : "passed",
+        state:
+          id === "rule-probe" && options.skippedProbe
+            ? "skipped"
+            : id === "rule-probe" && options.failedProbe
+              ? "failed"
+              : "passed",
         command: "",
-        detail: null,
+        detail: id === "rule-probe" ? (options.skippedProbe ?? null) : null,
         attempt: 1,
         timeoutSeconds: null,
         startedAt: NOW,
@@ -681,6 +686,7 @@ function automatic(
     severity?: string;
     missingRecord?: string;
     enabled?: boolean;
+    policyPaths?: readonly string[] | null;
   } = {},
 ) {
   return riskApprovalFor(db, {
@@ -690,7 +696,8 @@ function automatic(
     now: NOW,
     samePatch: async () => true,
     automatic: {
-      enabled: options.enabled ?? true,
+      enabled: () => options.enabled ?? true,
+      policyPaths: async () => (options.policyPaths === undefined ? [] : options.policyPaths),
       changedPaths: async () => options.paths ?? ["session.ts"],
       reviews: async () =>
         ["security-review", "independent-review"]
@@ -745,6 +752,15 @@ for (const scenario of [
   { name: "missing security result", missing: "security-review" },
   { name: "missing independent evidence", missingRecord: "independent-review" },
   { name: "failed probe", failedProbe: true },
+  { name: "probe skipped after setup failure", skippedProbe: "setup failed" },
+  { name: "unknown skipped probe reason", skippedProbe: "could not run" },
+  { name: "Paws policy changed", paths: ["session.ts", ".paws/reviewer.md"] },
+  {
+    name: "referenced skill outside .agents changed",
+    paths: ["session.ts", "review/security.md"],
+    policyPaths: ["review/security.md"],
+  },
+  { name: "unreadable trusted policy", policyPaths: null },
   { name: "risk list changed", paths: ["session.ts", ".paws/high-risk-paths"] },
   { name: "rules changed", paths: ["session.ts", ".agents/closeout.yaml"] },
   { name: "setting off", enabled: false },
@@ -779,6 +795,82 @@ test("automatic approval never carries to a new head, even with the same patch",
     cleanReviews(db, heads.rebased);
     expect(await automatic(db, { head: heads.rebased })).toBe("approved");
     expect(getAutomaticRiskApproval(db, itemId, heads.rebased)).not.toBeNull();
+  } finally {
+    db.close();
+  }
+});
+
+test("turning automatic approval off makes a queued approved head ask a person", async () => {
+  const { db, itemId } = held();
+  try {
+    cleanReviews(db);
+    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db, { enabled: false })).toBe("missing");
+    // Keep the audit record, but it no longer authorizes this head while the setting is off.
+    expect(getAutomaticRiskApproval(db, itemId, heads.s)).not.toBeNull();
+    expect(
+      askRiskApproval(db, {
+        item: getWorkItem(db, itemId)!,
+        head: heads.s,
+        publicUrl: PUBLIC_URL,
+        now: NOW,
+      }),
+    ).toBe("asked");
+    expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+    expect(findOpenQuestion(db, "ses_1")).not.toBeNull();
+  } finally {
+    db.close();
+  }
+});
+
+test("normal heads and a disabled risk gate never read the automatic approval setting", async () => {
+  const { db, itemId } = held();
+  let reads = 0;
+  const checks = {
+    enabled() {
+      reads++;
+      throw new Error("config.toml is malformed");
+    },
+    policyPaths: async () => [],
+    changedPaths: async () => [],
+    reviews: async () => [],
+  };
+  const read = (publicUrl: string | null) =>
+    riskApprovalFor(db, {
+      itemId,
+      head: heads.s,
+      publicUrl,
+      samePatch: async () => false,
+      automatic: checks,
+    });
+  try {
+    expect(await read(null)).toBe("not_required");
+    saveCandidateRisk(db, {
+      itemId,
+      head: heads.s,
+      base: heads.base,
+      tier: "normal",
+      paths: [],
+      classifiedAt: NOW,
+    });
+    expect(await read(PUBLIC_URL)).toBe("not_required");
+    expect(reads).toBe(0);
+    classify(db, heads.s, heads.base);
+    // Unreadable configuration fails closed for high-risk heads, including stored approvals.
+    cleanReviews(db);
+    expect(await automatic(db)).toBe("approved");
+    expect(await read(PUBLIC_URL)).toBe("missing");
+    expect(reads).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("a rule skipped because no paths matched still permits clean automatic approval", async () => {
+  const { db } = held();
+  try {
+    cleanReviews(db, heads.s, { skippedProbe: "no changed path matches" });
+    expect(await automatic(db)).toBe("approved");
   } finally {
     db.close();
   }
