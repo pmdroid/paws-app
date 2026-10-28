@@ -30,6 +30,7 @@ export {
   PolicyFetchError,
   readReviewRounds,
   reviewRecordsAt,
+  taskReviewRecords,
   runCloseoutGate,
   snapshotRetryBaseline,
   storedReviewFindings,

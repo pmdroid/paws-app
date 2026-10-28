@@ -359,7 +359,6 @@ import {
 } from "./link-ask";
 import {
   acceptCloseout,
-  payloadRecord,
   retryMergeLater,
   waitForMergeTurn,
   waitForRunnerSlot,
@@ -449,6 +448,7 @@ import {
 } from "./runner-wait";
 import { createRepositoryGit } from "./repository-git";
 import { readFixDiff, settleReviewEscapes } from "./review-escapes";
+import { recordAcceptedFindings } from "./review-findings";
 import {
   openFindings,
   openFindingsLine,
@@ -1432,7 +1432,6 @@ export class Orchestrator {
       if (owner !== null) this.checkRunnerSetup(owner);
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
-      if (this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
@@ -1761,7 +1760,14 @@ export class Orchestrator {
       }
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
-        this.waitForSlot(job, item, wait);
+        deferWorkItem(this.db, item, {
+          retry: retryCount(job.payload),
+          delayMs: this.runnerWaitMs(wait),
+          handoff: readString(job.payload, "handoff"),
+          message: null,
+          capacityWait: wait,
+          now: this.now(),
+        });
 
         journalCaught(
           error,
@@ -1971,63 +1977,6 @@ export class Orchestrator {
     };
   }
 
-  /**
-   * A wait for a runner slot is not a lease expiry: the item keeps its state and its run, and no
-   * new turn starts when the slot frees. Work Closeout accepted at the current head goes to the
-   * merge queue instead of waiting, a verifying item waits in a re-verify, and a running one
-   * parks its own job until the slot frees.
-   */
-  private waitForSlot(job: Job, item: WorkItemRecord, wait: RunnerCapacityWaitState): void {
-    const now = this.now();
-    // A verifying item re-checks its head, which may be the accepted one under a newer policy.
-    if (
-      item.state !== "verifying" &&
-      !acceptedResumeNeedsTurn({
-        acceptedHead: item.acceptedHead,
-        pullHead: item.checkpoint?.wipCommit ?? null,
-        reason: readString(job.payload, "reason"),
-      }) &&
-      mergeAcceptedWork(this.db, item.id, { now, exceptJobId: job.id })
-    )
-      return;
-    const delayMs = this.runnerWaitMs(wait);
-    if (item.state === "verifying") {
-      enqueueJobOnce(this.db, {
-        queue: JOB_KIND.reverify,
-        jobKey: `reverify:slot:${item.id}:${item.version}`,
-        runAt: now + delayMs,
-        payload: {
-          itemId: item.id,
-          runId: item.currentRunId,
-          reason: "runner_slot",
-          capacityWait: wait,
-        },
-        now,
-      });
-      return;
-    }
-    if (item.state === "running") {
-      // A start needs the scheduler's reservation for a queued item, so the wait goes on as a
-      // resume that keeps the job's reason and handoff.
-      enqueueJobOnce(this.db, {
-        queue: JOB_KIND.resume,
-        jobKey: `resume:slot:${item.id}:${job.id}`,
-        runAt: now + delayMs,
-        payload: { ...payloadRecord(job.payload), capacityWait: wait },
-        now,
-      });
-      return;
-    }
-    deferWorkItem(this.db, item, {
-      retry: retryCount(job.payload),
-      delayMs,
-      handoff: readString(job.payload, "handoff"),
-      message: null,
-      capacityWait: wait,
-      now,
-    });
-  }
-
   private runnerWaitMs(wait: RunnerCapacityWaitState): number {
     return placementWaitMs(wait.attempt, this.options.placementPollMs);
   }
@@ -2040,7 +1989,7 @@ export class Orchestrator {
       !waited ||
       !item ||
       item.cancelRequested ||
-      !["running", "recovering", "verifying", "merge_queue"].includes(item.state) ||
+      !["recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
@@ -2694,6 +2643,16 @@ export class Orchestrator {
         await this.askCloseoutHelp(item, undefined, summary);
         return;
       }
+      if (returned !== null)
+        await this.fetchUpstreamMain(item).catch((caughtError) =>
+          journalCaught(
+            caughtError,
+            "orchestrator.runItem.fetchUpstreamMain",
+            live.itemId,
+            undefined,
+            this.options.journal,
+          ),
+        );
       const launched = this.launchAgent({
         role: "implementer",
         profile: profiles.implementer,
@@ -2819,8 +2778,7 @@ export class Orchestrator {
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
         else if (isTransient(error)) {
-          // A slot wait keeps the run: the attempt after the wait continues it.
-          deferred = capacityWaitIn(error) === null;
+          deferred = true;
           throw error;
         } else this.fail(current, "run_error", message, error);
       }
@@ -2944,6 +2902,16 @@ export class Orchestrator {
               this.options.journal,
             ),
           );
+        if (mergeJob !== null)
+          await this.recordFindings(item, worktree, base, acceptedHead).catch((error: unknown) =>
+            journalCaught(
+              error,
+              "orchestrator.evaluateHead.recordFindings",
+              item.id,
+              undefined,
+              this.options.journal,
+            ),
+          );
         return;
       }
       if (pass < 2 && awaitsVisualReview(verdict.result)) {
@@ -2966,6 +2934,31 @@ export class Orchestrator {
       await this.askCloseoutHelp(after, verdict.result, verdict.summary);
       return;
     }
+  }
+
+  /** Stores the accepted head's non-blocking findings for the Findings page. */
+  private async recordFindings(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+  ): Promise<void> {
+    const changed = await git([
+      "-C",
+      worktree,
+      "diff",
+      "--no-renames",
+      "--name-only",
+      "-z",
+      `${base}...${head}`,
+    ]);
+    await recordAcceptedFindings(this.db, {
+      itemId: item.id,
+      head,
+      pawsRoot: this.options.pawsRoot,
+      now: this.now(),
+      changedPaths: changed.split("\0").filter(Boolean),
+    });
   }
 
   private async runVerification(

@@ -97,6 +97,7 @@ function settingsTags(settings: StatusMergeSettings): string {
 function recheck(settings: StatusMergeSettings): string {
   if (settings.mainMoved === "closeout") return "Closeout again";
   if (settings.mainMoved === "overlap") return "CI when files overlap";
+  if (settings.mainMoved === "green") return "none, merges on green CI";
   return "CI only";
 }
 

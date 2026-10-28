@@ -1,4 +1,5 @@
 import { journalCaught } from "../journal";
+import { readWebhookBody } from "../webhook-body";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type SignatureCheck =
@@ -39,7 +40,10 @@ export async function handleGitHubWebhook(
       { status: 401 },
     );
   }
-  const body = new Uint8Array(await request.arrayBuffer());
+  if (!/^sha256=[a-f0-9]{64}$/.test(signature))
+    return Response.json({ ok: false, reason: "invalid_signature" }, { status: 401 });
+  const body = await readWebhookBody(request, 25 * 1024 * 1024);
+  if (body instanceof Response) return body;
   const check = checkGitHubSignature({ signature, secret, body });
   if (!check.ok) return Response.json(check, { status: 401 });
   const deliveryId = request.headers.get("x-github-delivery");

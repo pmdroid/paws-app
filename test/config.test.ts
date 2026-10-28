@@ -86,6 +86,18 @@ describe("config", () => {
     );
   });
 
+  test("loads the operator's Linear organization binding from the environment", () => {
+    const home = tempHome();
+    expect(loadRuntime({ PAWS_HOME: home }).linearOrganizationId).toBeNull();
+    expect(
+      loadRuntime({ PAWS_HOME: home, LINEAR_ORGANIZATION_ID: "  org-operator  " })
+        .linearOrganizationId,
+    ).toBe("org-operator");
+    expect(
+      loadRuntime({ PAWS_HOME: home, LINEAR_ORGANIZATION_ID: "  " }).linearOrganizationId,
+    ).toBeNull();
+  });
+
   test("reads overrides and rejects a bad port", () => {
     const env = loadEnv({
       PAWS_HOME: "/tmp/paws-home",

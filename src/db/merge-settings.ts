@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 
 export type TaskMergeSettings = {
   order: "queue" | "ci-green" | "github-queue";
-  mainMoved: "overlap" | "ci" | "closeout";
+  mainMoved: "overlap" | "green" | "ci" | "closeout";
   /** Where each choice came from and the matched rule, as resolved when the task started. */
   resolved: Record<string, unknown>;
 };

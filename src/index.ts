@@ -176,6 +176,8 @@ import {
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
   highRiskPathsFileAt,
+  backfillReviewFindings,
+  REVIEW_FINDINGS_BACKFILL_JOB,
 } from "./loop";
 import {
   formatReviewScore,
@@ -352,6 +354,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         origin: runtime.publicUrl!,
         clientId: runtime.linearClientId,
         clientSecret: runtime.linearClientSecret,
+        expectedOrganizationId: runtime.linearOrganizationId,
         reconnect: true,
         installed() {},
       })
@@ -888,11 +891,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     server = startServer({
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
-      onboarding: async (request) =>
+      onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
         linearRevoked()
-          ? reconnectLinear(request)
+          ? reconnectLinear(request, client)
           : null,
       hostname: env.host,
       executionControls: async (...args) =>
@@ -1422,6 +1425,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         }).then(({ converted, skipped }) =>
           journal(
             `runner transcripts encrypted: ${converted} chunks sealed, ${skipped} unreadable`,
+          ),
+        ),
+      );
+      // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
+      // Closeout accepted before the page stored findings.
+      created.jobs.register(REVIEW_FINDINGS_BACKFILL_JOB, () =>
+        backfillReviewFindings({ db, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
+          journal(
+            `review findings backfilled: ${runs} accepted runs, ${recorded} findings, ${gone} gone`,
           ),
         ),
       );

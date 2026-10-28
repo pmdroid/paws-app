@@ -293,6 +293,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     if (path === "/auth/linear") {
       if (!["GET", "POST"].includes(request.method))
         return json({ error: "Method not allowed" }, 405);
+      const perIp = limits.startsPerIp.take(ip);
+      if (!perIp.allowed) return limited(limits.startsPerIp, perIp.retryAfterSeconds);
       let bootstrap: string | null = null;
       if (request.method === "POST") {
         if (request.headers.get("origin") !== origin) return json({ error: "Forbidden" }, 403);
