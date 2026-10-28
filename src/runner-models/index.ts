@@ -38,7 +38,7 @@ const eligible = `SELECT r.id AS runnerId,r.workspace_id AS workspaceId,r.owner_
  FROM runner r JOIN runner_agent_policy p ON p.runner_id=r.id
  JOIN workspace_member owner ON owner.workspace_id=r.workspace_id AND owner.user_id=r.owner_user_id
  WHERE r.status<>'revoked' AND r.revoked_at IS NULL AND p.ready=1 AND p.auth_expired=0 AND p.cooldown_until<=?
- AND owner.active=1 AND owner.role<>'observer'`;
+ AND owner.active=1`;
 
 export function createRunnerModels(options: {
   db: Database;

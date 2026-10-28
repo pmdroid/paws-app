@@ -169,7 +169,7 @@ export function changeDecision(
   return db
     .transaction(() => {
       const member = workspaceMember(db, actor.workspaceId, actor.userId);
-      if (!member?.active || member.role === "observer")
+      if (!member?.active)
         throw new Error("Current workspace membership is required.");
       const previous = input.id
         ? db.query<Row, [string]>(`${SELECT} WHERE d.id=?`).get(input.id)
@@ -331,7 +331,6 @@ export function confirmDecision(
       const source = decision ? scope(db, decision.questionId) : null;
       if (
         !member?.active ||
-        member.role === "observer" ||
         !saved ||
         !decision ||
         saved.revision !== decision.revision ||

@@ -133,13 +133,9 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
       if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
       const input = policyInput.parse(await body(request));
       immediate(db, () => {
-        const actor = member(principal);
+        member(principal);
         const host = runner();
-        if (
-          actor.role === "observer" ||
-          host.ownerId !== principal.userId ||
-          host.revokedAt !== null
-        )
+        if (host.ownerId !== principal.userId || host.revokedAt !== null)
           throw new Error("Only the active host owner can change its sharing settings.");
         db.run(
           `INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?) ON CONFLICT(runner_id)

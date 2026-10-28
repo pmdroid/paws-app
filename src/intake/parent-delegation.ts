@@ -129,7 +129,7 @@ export function createParentDelegations(input: {
   }
   function ownerCanAct(parent: Parent): boolean {
     const owner = workspaceMember(db, parent.workspaceId, parent.ownerUserId);
-    return !!owner?.active && owner.role !== "observer";
+    return !!owner?.active;
   }
   function refuse(parent: Parent, event: AcceptedLinearEvent, reason = PARENT_REFUSAL.reason) {
     auditWorkspaceAccess(db, {
@@ -353,7 +353,7 @@ export function createParentDelegations(input: {
       )
         return true;
       const owner = workspaceLinearMember(db, workspace.id, session.creatorId);
-      if (!owner?.active || owner.role === "observer") return false;
+      if (!owner?.active) return false;
       const issueIds = snapshot.subIssues.map((issue) => issue.linearIssueId);
       if (
         issueIds.some(
