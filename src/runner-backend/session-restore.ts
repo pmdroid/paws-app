@@ -1,15 +1,14 @@
 import type { Database } from "bun:sqlite";
-import type { RunnerCommand } from "../runner-protocol";
-
-/** First runner release that restores a Claude session snapshot before the agent starts. */
-export const CLAUDE_SESSION_RESTORE_RUNNER_VERSION = [0, 1, 43];
-/** First runner release that snapshots a Codex rollout at turn end and restores it. */
-export const CODEX_SESSION_RUNNER_VERSION = [0, 1, 45];
-/** First runner release that snapshots a Grok session folder at turn end and restores it. */
-export const GROK_SESSION_RUNNER_VERSION = [0, 1, 46];
+import {
+  CLAUDE_SESSION_RESTORE_RUNNER_VERSION,
+  CODEX_SESSION_RUNNER_VERSION,
+  GROK_SESSION_RUNNER_VERSION,
+  type RunnerCommand,
+  type RunnerVersion,
+} from "../runner-protocol";
 
 /** The runner release each agent's restore needs. */
-const RESTORE_RUNNER_VERSION = new Map<string, number[]>([
+const RESTORE_RUNNER_VERSION = new Map<string, RunnerVersion>([
   ["claude", CLAUDE_SESSION_RESTORE_RUNNER_VERSION],
   ["codex", CODEX_SESSION_RUNNER_VERSION],
   ["grok", GROK_SESSION_RUNNER_VERSION],
@@ -43,7 +42,10 @@ export type SessionRestorePlan =
 
 const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 
-export function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
+export function versionAtLeast(
+  version: string | null | undefined,
+  minimum: RunnerVersion,
+): boolean {
   const parts = version
     ?.match(/^(\d+)\.(\d+)\.(\d+)/)
     ?.slice(1)

@@ -100,6 +100,8 @@ SQLite, when opened, uses WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_time
 
 External adapters are async. Database helpers are sync because `bun:sqlite` is sync. Keep transactions short.
 
+A new runner feature declares its minimum runner version in `src/runner-protocol/versions.ts` as the next release (one patch above the latest `v*` tag). The `runner release` workflow fails when the tag is below any constant there.
+
 Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not return 200 for an unverified body.
 
 ## Conventions

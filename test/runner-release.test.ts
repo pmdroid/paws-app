@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse } from "yaml";
 
 const workflow = parse(
@@ -214,4 +214,38 @@ print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "dev
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the release fails before building when a minimum runner version is above the tag, and names it", async () => {
+  const steps: { name?: string; run?: string }[] = workflow.jobs.build.steps;
+  const check = steps.findIndex((value) => value.name === "Check minimum runner versions");
+  expect(check).toBeGreaterThan(
+    steps.findIndex((value) => value.name === "Validate release version"),
+  );
+  expect(check).toBeLessThan(steps.findIndex((value) => value.name === "Build runner archive"));
+  const constants = Object.entries(await import("../src/runner-protocol/versions"));
+  const highest = constants
+    .map(([, version]) => [...version])
+    .sort((left, right) => left[0]! - right[0]! || left[1]! - right[1]! || left[2]! - right[2]!)
+    .at(-1)!;
+  const below = [...highest.slice(0, 2), highest[2]! - 1].join(".");
+  const run = async (version: string) => {
+    const child = Bun.spawn(["/bin/bash", "-e", "-o", "pipefail", "-c", steps[check]!.run!], {
+      cwd: new URL("../", import.meta.url).pathname,
+      env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, RUNNER_VERSION: version },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    return { stderr, code };
+  };
+  const failed = await run(below);
+  expect(failed.code).not.toBe(0);
+  for (const [name, version] of constants)
+    if (version.join(".") === highest.join("."))
+      expect(failed.stderr).toContain(
+        `${name} needs runner ${highest.join(".")}, but this release is ${below}.`,
+      );
+  expect((await run(highest.join("."))).code).toBe(0);
+  expect((await run([highest[0], highest[1]! + 1, 0].join("."))).code).toBe(0);
 });
