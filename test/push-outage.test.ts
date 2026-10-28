@@ -34,7 +34,10 @@ test("a push GitHub denies to the App holds the candidate push and merges once p
   try {
     await run.until(() => getPushOutage(run.db, "pmdroid/paws-demo") !== null);
     // Further passes over the held merge job neither fail the item nor ask anyone.
-    await run.until(() => run.refusals >= 3, () => run.probeNow());
+    await run.until(
+      () => run.refusals >= 3,
+      () => run.probeNow(),
+    );
     expect(stateOf(run.db, "ENG-9"), run.detail()).toBe("merge_queue");
     expect(run.progress("elicitation"), run.detail()).toEqual([]);
     expect(run.progress("error"), run.detail()).toEqual([]);
