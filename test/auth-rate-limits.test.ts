@@ -89,6 +89,7 @@ for (const reconnect of [false, true])
       origin,
       clientId: "fixture-client",
       clientSecret: "fixture-secret",
+      expectedOrganizationId: "org",
       reconnect,
       now: () => now,
       installed() {},

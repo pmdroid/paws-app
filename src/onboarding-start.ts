@@ -35,6 +35,7 @@ export function startBrowserOnboarding(
     origin: runtime.publicUrl!,
     clientId: runtime.linearClientId,
     clientSecret: runtime.linearClientSecret,
+    expectedOrganizationId: runtime.linearOrganizationId,
     reconnect,
     async prepare() {
       const runner = loadRunnerControl(source, runtime.env);
