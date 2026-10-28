@@ -27,8 +27,11 @@ export type AwakeBreakdown = {
   recheckMs: number;
 };
 
+/** The time-limit answer that sends the accepted work to the merge queue without another turn. */
+export const TIME_LIMIT_MERGE = "Merge the accepted work";
+
 /** Once Closeout accepted the work, the cap asks this instead of failing a resumed agent. */
-export const TIME_LIMIT_OPTIONS = ["Continue", "Stop"] as const;
+export const TIME_LIMIT_OPTIONS = [TIME_LIMIT_MERGE, "Continue", "Stop"] as const;
 
 /** How much more awake time a Continue answer gives the agent. */
 export const TIME_LIMIT_EXTENSION_MS = 60 * 60 * 1000;
@@ -59,10 +62,10 @@ export function formatAwakeBreakdown(breakdown: AwakeBreakdown): string {
 
 export function timeLimitQuestion(maxAwakeMs: number, breakdown: AwakeBreakdown): string {
   return [
-    `Time limit reached (${Math.max(1, Math.round(maxAwakeMs / 60_000))} min awake); continue or stop?`,
+    `Time limit reached (${Math.max(1, Math.round(maxAwakeMs / 60_000))} min awake); merge, continue or stop?`,
     "Closeout already accepted this task's work, so Paws did not fail it.",
     formatAwakeBreakdown(breakdown),
-    `Continue gives the agent another ${minutes(TIME_LIMIT_EXTENSION_MS)}. Stop ends the task and keeps the accepted work on its branch.`,
+    `${TIME_LIMIT_MERGE} sends the accepted head to the merge queue without another agent turn. Continue gives the agent another ${minutes(TIME_LIMIT_EXTENSION_MS)}. Stop ends the task without merging: the accepted work stays on its branch and its pull request is not closed.`,
   ].join(" ");
 }
 
