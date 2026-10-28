@@ -1146,6 +1146,7 @@ async function parserDependencies(baseDir: string, deps: string): Promise<void> 
   const lock = Bun.JSONC.parse(await readFile(join(baseDir, "bun.lock"), "utf8")) as {
     lockfileVersion: number;
     configVersion: number;
+    overrides?: Record<string, string>;
     workspaces: Record<
       string,
       {
@@ -1182,7 +1183,14 @@ async function parserDependencies(baseDir: string, deps: string): Promise<void> 
   for (const name of Object.keys(dependencies)) include(name);
   await writeFile(
     join(deps, "package.json"),
-    JSON.stringify({ name: workspace.name, private: true, dependencies }),
+    // Overrides are part of the frozen lock's resolution metadata. Keep the trusted
+    // base values in both files, even when an override is unrelated to the parsers.
+    JSON.stringify({
+      name: workspace.name,
+      private: true,
+      dependencies,
+      overrides: lock.overrides,
+    }),
   );
   await writeFile(
     join(deps, "bun.lock"),
