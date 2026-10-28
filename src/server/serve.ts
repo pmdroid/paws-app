@@ -56,12 +56,13 @@ import {
   requestWorkspaceSession,
   validWorkspaceCsrf,
   type WorkspaceAccess,
+  type WorkspaceClient,
   type WorkspacePrincipal,
 } from "../workspace";
 
 export type ServerOptions = {
   server?: Bun.Server<undefined>;
-  onboarding?: (request: Request) => Promise<Response | null>;
+  onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
   tls?: PublicTls;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
@@ -165,7 +166,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
       if (stopping) return new Response("Paws is stopping.", { status: 503 });
       const ip = current?.requestIP(request)?.address ?? null;
       const operation = (async () =>
-        (await options.onboarding?.(request)) ??
+        (await options.onboarding?.(request, { ip })) ??
         route(request, {
           health,
           slackSigningSecret,

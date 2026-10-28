@@ -5,7 +5,7 @@ import type { WorkspaceAssignments } from "./assignments";
 import type { OnboardingReadinessReader } from "./onboarding-page";
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
-import { createWorkspaceAccess } from "./access";
+import { createWorkspaceAccess, type WorkspaceClient } from "./access";
 
 export async function createWorkspaceAccessFromLinear(options: {
   db: Database;
@@ -82,7 +82,8 @@ export function startWorkspaceAccess(
     authenticate: (request: Request) => accepting(() => value.authenticate(request)),
     repositoryTeams: (request: Request, signal: AbortSignal) =>
       accepting(() => value.repositoryTeams(request, signal)),
-    handle: (request: Request) => accepting(() => value.handle(request)),
+    handle: (request: Request, client?: WorkspaceClient) =>
+      accepting(() => value.handle(request, client)),
     refreshMemberships: () => accepting(() => value.refreshMemberships()),
   }));
   void access.catch(
