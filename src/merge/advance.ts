@@ -182,8 +182,13 @@ export async function advanceMerge(
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,
     isCancelled: () => mergeHeld(merge),
-    ...(mergeSettings.mainMoved === "overlap"
-      ? { overlap: { packages: caps.packages(`${repository.owner}/${repository.repo}`) } }
+    ...(mergeSettings.mainMoved === "overlap" || mergeSettings.mainMoved === "green"
+      ? {
+          overlap: {
+            packages: caps.packages(`${repository.owner}/${repository.repo}`),
+            anyFiles: mergeSettings.mainMoved === "green",
+          },
+        }
       : {}),
   };
   const turn = await laneTurn({
