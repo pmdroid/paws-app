@@ -11,6 +11,7 @@ import type { Database } from "bun:sqlite";
 import * as acp from "../src/acp";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
+import type { Finding } from "../src/closeout";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
@@ -3116,6 +3117,9 @@ async function runCiFix(options: {
   rateLimitFirstLaunch?: boolean;
   withoutReview?: boolean;
   linearTaskModes?: boolean;
+  /** What the reviewer reports in its `round`th review, from 1. Empty by default. */
+  findings?: (round: number) => Finding[];
+  publicUrl?: string;
 }): Promise<{
   state: string | null;
   linearCalls: string[];
@@ -3126,6 +3130,8 @@ async function runCiFix(options: {
   activities: { kind: string; body: string }[];
   questions: string[];
   prompts: string[];
+  /** Each pull request body Paws published, in order. */
+  pullBodies: string[];
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
@@ -3206,13 +3212,15 @@ async function runCiFix(options: {
   const queuedSummary = queuedSummaries(db);
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
-  const client = githubClient(layout.bare, createFakeGitHub());
+  const github = createFakeGitHub();
+  const client = githubClient(layout.bare, github);
   const heads: string[] = [];
   const prompts: string[] = [];
   let sequence = 0;
   let implementRuns = 0;
   let launches = 0;
   let reviewerLaunches = 0;
+  let reviews = 0;
   let movedMain = false;
   const orchestrator = attachOrchestrator({
     db,
@@ -3223,6 +3231,7 @@ async function runCiFix(options: {
     home: layout.home,
     tracker,
     linearTaskModes: options.linearTaskModes,
+    ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
     github: {
       appId: "1",
@@ -3284,7 +3293,9 @@ async function runCiFix(options: {
                 },
                 { type: "end" },
               ]
-            : emptyReview().steps;
+            : options.findings && input.purpose === "review"
+              ? reviewReporting(options.findings(++reviews))
+              : emptyReview().steps;
       writeFileSync(
         scriptPath,
         JSON.stringify({
@@ -3329,6 +3340,7 @@ async function runCiFix(options: {
       activities: tracker.progress.map(({ kind, body }) => ({ kind, body })),
       questions: tracker.questions.map((question) => question.body),
       prompts,
+      pullBodies: github.opened.map((pull) => pull.body),
       detail: debug(layout, db),
     };
   } finally {
@@ -4078,6 +4090,20 @@ function linearEvent(
   };
 }
 
+/** A reviewer turn that reports `findings`. */
+function reviewReporting(findings: Finding[]): FakeScript["steps"] {
+  return [
+    {
+      type: "update",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: JSON.stringify(findings) },
+      },
+    },
+    { type: "end", stopReason: "end_turn" },
+  ];
+}
+
 const CLOSEOUT_POLICY_WITHOUT_REVIEW = `specVersion: "0.1"
 retry:
   maxFailedAttemptsPerItem: 3
@@ -4636,6 +4662,85 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await layout.cleanup();
   }
 }, 30000);
+
+const PRE_EXISTING_P1: Finding = {
+  severity: "P1",
+  location: "README.md:1",
+  explanation: "The readme names the wrong demo.\nIt predates this change.",
+  evidence: "README.md line 1",
+};
+
+const BELOW_FAIL_ON_P2: Finding = {
+  severity: "P2",
+  location: "ok.txt:1",
+  explanation: "Ask @octocat, see [link](https://evil.example) and <b>bold</b> #12",
+  evidence: "ok.txt line 1",
+};
+
+test("open findings at the accepted head are in the PR body, the PR response and the merged response, and a later round updates the body", async () => {
+  const result = await runCiFix({
+    failRounds: 1,
+    publicUrl: "https://paws.example/",
+    findings: (round) => (round === 1 ? [PRE_EXISTING_P1, BELOW_FAIL_ON_P2] : [PRE_EXISTING_P1]),
+  });
+  expect(result.state, result.detail).toBe("merged");
+  const link = "https://paws.example/status/issues/ENG-94";
+  const first = result.pullBodies[0]!;
+  expect(first, result.detail).toContain(
+    `## Open findings\n\n2 findings still open (1 P1 pre-existing, 1 P2 below failOn). Check them: ${link}`,
+  );
+  expect(first.indexOf("## Open findings")).toBeGreaterThan(first.indexOf("Risk: normal"));
+  expect(first).toContain(
+    "- P1 `README.md:1` The readme names the wrong demo. It predates this change. (adversarial-review, pre-existing)",
+  );
+  expect(first).toContain(
+    "- P2 `ok.txt:1` Ask @\u2060octocat, see \\[link\\](https:\u2060//evil.example) and \\<b\\>bold\\</b\\> #\u206012 (adversarial-review, below failOn)",
+  );
+  expect(first).not.toContain("@octocat");
+  expect(first).not.toContain("[link](");
+  expect(first).not.toContain("<b>");
+  // The CI fix is reviewed again: the P2 is gone, and the section says so.
+  const last = result.pullBodies.at(-1)!;
+  expect(result.pullBodies.length, result.detail).toBeGreaterThan(1);
+  expect(last).toContain(
+    `## Open findings\n\n1 finding still open (1 P1 pre-existing). Check them: ${link}`,
+  );
+  expect(last).not.toContain("ok.txt:1");
+  const responses = result.activities.filter((activity) => activity.kind === "response");
+  expect(responses, result.detail).toHaveLength(2);
+  expect(responses[0]!.body).toContain(
+    `Risk: normal — no high-risk path changed\n\n2 findings still open (1 P1 pre-existing, 1 P2 below failOn). Check them: ${link}`,
+  );
+  expect(responses[1]!.body).toMatch(
+    new RegExp(
+      `^Merged #\\d+ into main at [0-9a-f]+\\. ENG-94 is Done\\.\\n\\n1 finding still open \\(1 P1 pre-existing\\)\\. Check them: ${link}$`,
+    ),
+  );
+  expect(
+    result.activities.slice(result.activities.indexOf(responses[0]!) + 1),
+    result.detail,
+  ).toEqual([responses[1]!]);
+}, 120_000);
+
+test("without a public URL the open findings say where to check them, with no link", async () => {
+  const result = await runCiFix({ failRounds: 0, findings: () => [BELOW_FAIL_ON_P2] });
+  expect(result.state, result.detail).toBe("merged");
+  const line = "1 finding still open (1 P2 below failOn). Check them on the Paws dashboard.";
+  expect(result.pullBodies[0]).toContain(`## Open findings\n\n${line}`);
+  expect(result.pullBodies[0]).not.toContain("/status/issues/");
+  const responses = result.activities.filter((activity) => activity.kind === "response");
+  expect(responses[0]!.body).toEndWith(`\n\n${line}`);
+  expect(responses[1]!.body).toEndWith(`is Done.\n\n${line}`);
+}, 120_000);
+
+test("no open findings and normal risk add no section and no line", async () => {
+  const result = await runCiFix({ failRounds: 0, publicUrl: "https://paws.example" });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.pullBodies[0]).not.toContain("Open findings");
+  const responses = result.activities.filter((activity) => activity.kind === "response");
+  expect(responses[0]!.body).toEndWith("Risk: normal — no high-risk path changed");
+  expect(responses[1]!.body).toMatch(/^Merged #\d+ into main at [0-9a-f]+\. ENG-94 is Done\.$/);
+}, 120_000);
 
 test("a PR session stays quiet through a CI fix and rebase re-verification until its merged response", async () => {
   const result = await runCiFix({ failRounds: 1, rebaseAfterPr: true });
