@@ -77,7 +77,7 @@ describe("startup recovery", () => {
     ).toEqual({ type: "ask_restart" });
   });
 
-  test("an item in the merge queue keeps its place and asks GitHub after a merge call", () => {
+  test("an item waiting in the merge queue keeps its place; one with an active run re-verifies", () => {
     expect(
       decideStartup({ itemState: "merge_queue", recoveryAttempts: 0, checkpoint: null }),
     ).toEqual({ type: "keep_place", mergeCallInFlight: false });
@@ -89,6 +89,14 @@ describe("startup recovery", () => {
         mergeCallInFlight: true,
       }),
     ).toEqual({ type: "keep_place", mergeCallInFlight: true });
+    expect(
+      decideStartup({
+        itemState: "merge_queue",
+        recoveryAttempts: 0,
+        checkpoint: checkpoint("merge_queue"),
+        runActive: true,
+      }),
+    ).toEqual({ type: "reverify" });
   });
 
   test("a re-verify of a queued item cut short by the restart starts again", () => {

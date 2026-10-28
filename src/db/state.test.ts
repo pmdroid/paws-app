@@ -286,6 +286,7 @@ describe("restart recovery", () => {
     });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
     enterMergeQueue(db, item.id, checkpoint);
+    markRun(db, run.id, "ended", clock.now());
     const merge = enqueueJob(db, {
       queue: "github.merge",
       lane: "merge",
@@ -301,17 +302,30 @@ describe("restart recovery", () => {
       state: "merge_queue",
       checkpoint: { phase: "merge_queue" },
     });
-    expect(getRun(db, run.id)?.status).not.toBe("lost");
+    expect(getRun(db, run.id)?.status).toBe("ended");
     expect(getJob(db, merge)?.status).toBe("pending");
     expect(listJobs(db).map((job) => job.queue)).toEqual(["github.merge"]);
     expect(listOutbox(db)).toHaveLength(0);
   });
 
+  test("a queued task whose run is still active at shutdown re-verifies", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { id: "eng-busy", now: clock.now() });
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+    enterMergeQueue(db, item.id, checkpoint);
+
+    prepareShutdown(db, clock.now());
+    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "reverify" }]);
+    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+  });
+
   test("a merge job the shutdown ended is queued again, and asks GitHub after a merge call", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "eng-2", now: clock.now() });
-    beginImplementRun(db, item.id, clock.now(), checkpoint);
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
     enterMergeQueue(db, item.id, checkpoint);
+    markRun(db, run.id, "ended", clock.now());
     enqueueJob(db, {
       queue: "github.merge",
       lane: "merge",
@@ -341,8 +355,9 @@ describe("restart recovery", () => {
   test("a restart during the re-verify of a queued task re-verifies it again", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "eng-twice", now: clock.now() });
-    beginImplementRun(db, item.id, clock.now(), checkpoint);
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
     enterMergeQueue(db, item.id, checkpoint);
+    markRun(db, run.id, "ended", clock.now());
     applyWorkItemEvent(db, item.id, "reverify_requested");
 
     expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "reverify" }]);
