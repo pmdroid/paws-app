@@ -82,6 +82,8 @@ test("direct worker supervisor admits an execution once and kills its process gr
 test("stop kills a worker that has not become its process group", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-worker-supervisor-"));
   roots.push(root);
+  const env = { ...process.env };
+  delete env.BUN_FEATURE_FLAG_NO_ORPHANS;
   const started = spawnSync(
     process.execPath,
     [
@@ -93,7 +95,7 @@ test("stop kills a worker that has not become its process group", async () => {
         "process.stdout.write(String(child.pid));",
       ].join(""),
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env },
   );
   const pid = Number(started.stdout);
   if (!Number.isSafeInteger(pid) || pid <= 1) {
