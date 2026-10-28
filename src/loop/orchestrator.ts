@@ -10,7 +10,7 @@ import {
   jobVersionCurrent,
   recordReviewRounds,
   restartLimit,
-  runnerWorkSettled,
+  runnerLeaseCutoff,
 } from "../db";
 import { journalCaught } from "../journal";
 import { confirmDecision, suggestDecisions } from "../decisions";
@@ -1488,16 +1488,19 @@ export class Orchestrator {
       if (this.waitingForRunnerSlot(job)) return;
       const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
-      // The turn's own Closeout (or another recheck) already owns this item.
-      if (
-        item &&
-        (this.jobContexts.has(item.id) ||
-          (item.currentRunId !== null &&
-            (this.live.has(item.currentRunId) ||
-              (getRun(this.db, item.currentRunId)?.status === "active" &&
-                !runnerWorkSettled(this.db, item.currentRunId, this.now())))))
-      )
+      // Only the turn's own live Closeout can consume an ordinary duplicate request.
+      // Holds for siblings and remote leases need a durable retry, including decide.
+      if (item && this.reverifyHeld(item)) {
+        if (
+          item.state === "verifying" &&
+          item.currentRunId !== null &&
+          this.live.has(item.currentRunId) &&
+          readBoolean(job.payload, "decide") !== true
+        )
+          return;
+        if (context.isCurrent()) waitForMergeTurn(this.db, job, this.now());
         return;
+      }
       await this.failOnLastAttempt(job, context, "reverify", async () => {
         try {
           await this.runLeasedJob(job.payload, context, () =>
@@ -1505,6 +1508,10 @@ export class Orchestrator {
           );
           await this.settleVerifying(job, context);
         } catch (error) {
+          if (error instanceof VerificationHeld && context.isCurrent()) {
+            waitForMergeTurn(this.db, job, this.now());
+            return;
+          }
           const wait = this.nextRunnerWait(job, error);
           if (!wait || !context.isCurrent()) throw error;
           journalCaught(
@@ -2937,8 +2944,8 @@ export class Orchestrator {
         candidate,
         decide,
         fromCi,
+        options.reverifyJobId !== undefined,
       );
-      if (verdict === null) return;
       await this.recordReviewRounds(item, verdict.owner.runId);
       if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
@@ -3037,7 +3044,8 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     decide = false,
     fromCi: readonly CiResult[] = [],
-  ): Promise<(CloseoutVerdict & { owner: VerificationOwner }) | null> {
+    recheck = false,
+  ): Promise<CloseoutVerdict & { owner: VerificationOwner }> {
     if (!this.options.remoteExecution) {
       this.assertJobCurrent(item.id);
       const owner = getWorkItem(this.db, item.id) ?? item;
@@ -3070,12 +3078,13 @@ export class Orchestrator {
         if (!prior || prior.itemId !== current.id) throw new Error("Verification run is missing");
         if (prior.status === "active") {
           if (this.live.get(prior.id)?.itemId === current.id) {
-            if (this.live.has(`operation:${current.id}`)) return null;
+            if (recheck || current.state !== "verifying") throw new VerificationHeld();
             return current;
           }
-          if (!runnerWorkSettled(this.db, prior.id, this.now())) return null;
+          if (this.verificationLeaseHeld(prior.id)) throw new VerificationHeld();
           // A prior process left this run active. End it before creating the recheck.
           closeActiveRun(this.db, prior.id, this.now());
+          releaseRunCapacity(this.db, prior.id, this.now());
         } else if (prior.status !== "ended" && prior.status !== "lost")
           throw new Error("Prior verification run is still provisioning");
         const snapshot = this.readProfileSnapshot(prior.id);
@@ -3098,7 +3107,6 @@ export class Orchestrator {
         setCurrentRun(this.db, current.id, run.id);
         return getWorkItem(this.db, current.id)!;
       });
-      if (owned === null) return null;
       item = owned;
       if (ownedRunId) {
         mkdirSync(runDir(this.options.pawsRoot, ownedRunId), { recursive: true, mode: 0o700 });
@@ -3784,6 +3792,25 @@ export class Orchestrator {
     return true;
   }
 
+  /** A lease, including grace, owns execution even before its result is imported. */
+  private verificationLeaseHeld(runId: string): boolean {
+    return (
+      this.db
+        .query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?")
+        .get(runId, runnerLeaseCutoff(this.now())) !== null
+    );
+  }
+
+  private reverifyHeld(item: WorkItemRecord, ownJob = false): boolean {
+    return (
+      (!ownJob && this.jobContexts.has(item.id)) ||
+      (item.currentRunId !== null &&
+        (this.live.has(item.currentRunId) ||
+          (getRun(this.db, item.currentRunId)?.status === "active" &&
+            this.verificationLeaseHeld(item.currentRunId))))
+    );
+  }
+
   private async reverify(payload: unknown, jobId: number): Promise<void> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
@@ -3831,6 +3858,7 @@ export class Orchestrator {
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
     const candidate = await this.candidateForItem(item);
     if (!candidate) return;
+    if (this.reverifyHeld(item, true)) throw new VerificationHeld();
     // The merge lane moves a rebased item to verifying; its checkpoint is still the merge queue's.
     if (item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue")
       await this.startCloseoutRound(item, head);
@@ -6227,10 +6255,6 @@ export class Orchestrator {
     const moving =
       this.shuttingDown ||
       item.cancelRequested ||
-      (item.currentRunId !== null &&
-        (this.live.has(item.currentRunId) ||
-          (getRun(this.db, item.currentRunId)?.status === "active" &&
-            !runnerWorkSettled(this.db, item.currentRunId, this.now())))) ||
       sessionId === null ||
       findOpenQuestion(this.db, sessionId) !== null ||
       listPendingLinearTurns(this.db, sessionId).length > 0 ||
@@ -7621,4 +7645,11 @@ function capacityWaitIn(error: unknown): RunnerCapacityWait | null {
     current = current.cause;
   }
   return null;
+}
+
+/** A temporary owner conflict preserves the reverify request without spending attempts. */
+class VerificationHeld extends Error {
+  constructor() {
+    super("Verification is held by another operation or runner lease");
+  }
 }
