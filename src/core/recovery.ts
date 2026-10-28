@@ -78,7 +78,8 @@ function mergeWasInProgress(state: WorkItemState, checkpoint: Checkpoint | null)
  * unfinished, asks in Linear whether to start it again. An item waiting in the merge
  * queue keeps its place; its merge job first asks GitHub whether a merge call that may
  * have been in flight went through. One whose run was still active re-verifies, as
- * does a re-verify cut short by the restart.
+ * does a re-verify cut short by the restart. A verifying item whose runner still
+ * holds its Closeout review or check run re-verifies and attaches to that work.
  */
 export function decideStartup(input: {
   itemState: WorkItemState;
@@ -94,6 +95,7 @@ export function decideStartup(input: {
   if (input.itemState === "merge_queue" && input.runActive !== true)
     return { type: "keep_place", mergeCallInFlight: input.mergeCallInFlight === true };
   if (mergeWasInProgress(input.itemState, input.checkpoint)) return { type: "reverify" };
+  if (input.runnerHoldsWork && input.itemState === "verifying") return { type: "reverify" };
   if (input.runnerHoldsWork)
     return { type: "resume", freshSession: true, checkpoint: input.checkpoint, reattach: true };
   if (input.recoveryAttempts >= 1 && (input.sinceResumeMs ?? 0) < RESUME_AGAIN_AFTER_MS)
