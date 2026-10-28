@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -107,7 +107,7 @@ export async function probeRunnerTaskAuthority(
     hostname: "127.0.0.1",
     port: 0,
     now: () => now,
-    transcriptObjects: objects,
+    transcripts: { objects, key: randomBytes(32) },
     repositoryAccess: {
       github: {
         async mintInstallationToken(input) {

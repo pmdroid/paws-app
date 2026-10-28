@@ -68,7 +68,8 @@ export async function openRunnerCoordinator(options: {
   now?: () => number;
   onError(error: unknown): void;
   repositoryAccess?: RunnerRepositoryAccessOptions;
-  transcriptObjects?: RunnerTranscriptObjects;
+  /** Encrypted transcript storage and its key from `~/.paws/secrets`. */
+  transcripts?: { objects: RunnerTranscriptObjects; key: Buffer };
   /** Encrypted agent session snapshot storage and its key from `~/.paws/secrets`. */
   agentSessions?: { objects: AgentSessionObjects; key: Buffer };
   discoverModels?: boolean;
@@ -139,8 +140,8 @@ export async function openRunnerCoordinator(options: {
   const repository = options.repositoryAccess
     ? createRunnerRepositoryAccess({ ...options.repositoryAccess, work, now: options.now })
     : undefined;
-  const transcripts = options.transcriptObjects
-    ? createRunnerTranscripts({ db: options.db, work, objects: options.transcriptObjects })
+  const transcripts = options.transcripts
+    ? createRunnerTranscripts({ db: options.db, work, ...options.transcripts })
     : undefined;
   const transcriptsHttp = transcripts ? createRunnerTranscriptsHttp(transcripts) : undefined;
   const agentSessions = options.agentSessions
