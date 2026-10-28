@@ -290,6 +290,8 @@ export async function probeWorkspaceBrowser(
       { logout: loggedOut.status, oldCookie: oldCookie.status },
     );
     membershipFailure = false;
+    now += 1;
+    const heldLogin = await login("owner");
     guest = true;
     now += 1;
     const guestLogin = await login("guest");
@@ -309,10 +311,22 @@ export async function probeWorkspaceBrowser(
     );
     const guestAdminLogin = await login("owner");
     const guestAdmin = workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
+    const heldSession = await fetch(`${origin}/api/auth/session`, {
+      headers: { cookie: heldLogin.cookie! },
+    });
     observe(
-      "an admin who became a Linear guest is refused at sign-in",
-      guestAdminLogin.response.status === 403 && guestAdminLogin.cookie === undefined,
-      { status: guestAdminLogin.response.status, role: guestAdmin?.role },
+      "an admin who became a Linear guest is refused at sign-in and loses the sessions they hold",
+      heldLogin.response.status === 303 &&
+        guestAdminLogin.response.status === 403 &&
+        guestAdminLogin.cookie === undefined &&
+        guestAdmin?.active === false &&
+        heldSession.status === 401,
+      {
+        held: heldLogin.response.status,
+        status: guestAdminLogin.response.status,
+        active: guestAdmin?.active,
+        heldSession: heldSession.status,
+      },
     );
     guest = false;
     now += 1;
