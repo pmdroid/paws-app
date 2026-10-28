@@ -48,7 +48,7 @@ export { PINNED_TAILSCALE, PINNED_TAILSCALE_VERSION } from "./tailscale";
 export { LATEST_RUNNER_RELEASE_URL, latestRunnerRelease } from "./release";
 export type { FakeBootstrap, FakeBootstrapCall, FakeBootstrapOptions } from "./fake-bootstrap";
 export type { FakeExecScript, FakeExeDev, FakeExeDevCall, FakeFailure } from "./fake";
-export { isExeDevVmName, MAX_EXEC_COMMAND_BYTES } from "./names";
+export { isExeDevPoolName, isExeDevVmName, MAX_EXEC_COMMAND_BYTES } from "./names";
 export { isProvisioningError, ProvisioningError } from "./types";
 export type {
   ExeDev,
@@ -56,6 +56,7 @@ export type {
   ExeDevDeleteResult,
   ExeDevExecOptions,
   ExeDevExecResult,
+  ExeDevPool,
   ExeDevVm,
   ExeDevVmSize,
   ProvisioningErrorCode,

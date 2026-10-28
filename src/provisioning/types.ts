@@ -1,4 +1,10 @@
-export type ProvisioningOperation = "createVm" | "deleteVm" | "execVm" | "getVm";
+export type ProvisioningOperation =
+  | "createVm"
+  | "deleteVm"
+  | "execVm"
+  | "getVm"
+  | "listPools"
+  | "adoptVm";
 
 export type ProvisioningErrorCode =
   | "invalid_name"
@@ -63,18 +69,32 @@ export type ExeDevExecOptions = {
 export type ExeDevDeleteResult = "deleted" | "missing";
 
 /**
- * Size flags for `new`, as `ssh exe.dev help new` names them: `--cpu`, `--memory`, `--disk`
- * and `--image`. A missing field sends no flag, so exe.dev uses its default.
+ * Size and placement flags for `new`, as `ssh exe.dev help new` names them: `--cpu`,
+ * `--memory`, `--disk`, `--image` and `--pool`. A missing field sends no flag, so exe.dev uses
+ * its default size and the team's VM placement.
  */
 export type ExeDevVmSize = {
   cpu?: number;
   memoryGb?: number;
   diskGb?: number;
   image?: string;
+  pool?: string;
+};
+
+/** One row of `pool list`: vCPU and memory reserved in one region. */
+export type ExeDevPool = {
+  name: string;
+  region: string | null;
+  /** For example `active`, or `pending` until exe.dev support activates it. */
+  status: string | null;
 };
 
 export type ExeDev = {
   createVm(name: string, size?: ExeDevVmSize): Promise<ExeDevCreatedVm>;
+  /** `pool list`. */
+  listPools(): Promise<ExeDevPool[]>;
+  /** `pool adopt --vm=<vm> --pool=<pool>`: admins only, and the move can take minutes. */
+  adoptVm(name: string, pool: string): Promise<void>;
   deleteVm(name: string): Promise<ExeDevDeleteResult>;
   execVm(name: string, command: string, options?: ExeDevExecOptions): Promise<ExeDevExecResult>;
   getVm(name: string): Promise<ExeDevVm>;

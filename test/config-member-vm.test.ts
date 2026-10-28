@@ -30,6 +30,27 @@ describe("[member_vm]", () => {
     expect(parseConfigToml(rendered).memberVm).toEqual(size);
   });
 
+  test("pool round-trips next to the size and must be a pool name", () => {
+    const text = '[member_vm]\ncpu = 4\npool = "build-eu_2"\n';
+    const size = parseConfigToml(text).memberVm;
+    expect(size).toEqual({ cpu: 4, pool: "build-eu_2" });
+    const rendered = renderMemberVmSettings(size);
+    expect(rendered).toBe('\n[member_vm]\ncpu = 4\npool = "build-eu_2"\n');
+    expect(parseConfigToml(rendered).memberVm).toEqual(size);
+    expect(parseConfigToml('[member_vm]\npool = "build"\n').memberVm).toEqual({ pool: "build" });
+    for (const line of [
+      "pool = 3",
+      'pool = ""',
+      'pool = "build --cpu=64"',
+      'pool = "-build"',
+      'pool = "build;rm"',
+      `pool = "${"p".repeat(64)}"`,
+    ])
+      expect(() => parseConfigToml(`[member_vm]\n${line}\n`)).toThrow(
+        "config.toml line 2 member_vm.pool must be an exe.dev pool name",
+      );
+  });
+
   test("setup rewrites keep the section", () => {
     const paths = pawsPaths(tempHome());
     ensureLayout(paths);
