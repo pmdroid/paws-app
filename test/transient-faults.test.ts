@@ -14,6 +14,9 @@ import {
   JobLoop,
   OutboxDispatcher,
   applyLinearCommand,
+  applyWorkItemEvent,
+  enqueueJob,
+  getWorkItem,
   listJobs,
   listOutbox,
   listRuns,
@@ -117,6 +120,8 @@ test("a 10-minute retry delay holds no job worker and the task resumes after it"
 }, 90_000);
 
 const HOUR_MS = 60 * 60_000;
+/** Queues whose pending job is the item's next attempt: a parked slot wait keeps its own queue. */
+const AGENT_QUEUES: string[] = [JOB_KIND.start, JOB_KIND.resume];
 const busyRunner = () => new RunnerCapacityWait(["runner-1"]);
 
 test("waiting eight hours for a slot on a busy runner keeps the task deferred without failing", async () => {
@@ -143,6 +148,31 @@ test("waiting eight hours for a slot on a busy runner keeps the task deferred wi
     runnerIds: ["runner-1"],
   });
   expect(result.implementations, result.detail).toBe(0);
+}, 90_000);
+
+test("a slot wait keeps the run and the state, and the turn starts once the slot frees", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({ error: busyRunner, times: 3, clock });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.waits.length, result.detail).toBe(3);
+  expect(result.events, result.detail).not.toContain("lease_expired");
+  expect(result.events, result.detail).not.toContain("recovered");
+  // One run row for the task, however many times it waited for the slot.
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+  expect(result.implementations, result.detail).toBe(1);
+}, 90_000);
+
+test("an accepted item that waits for a slot starts no implement run and stays accepted", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({ error: busyRunner, times: 1, clock, afterAccepted: true });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.acceptedHead, result.detail).toMatch(/^[0-9a-f]{40}$/);
+  expect(result.implementations, result.detail).toBe(1);
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+  expect(
+    result.jobs.filter((job) => job.startsWith(`${JOB_KIND.resume}:pending`)),
+    result.detail,
+  ).toEqual([]);
 }, 90_000);
 
 test("a busy runner wait wrapped by agent preparation keeps the task deferred without asking", async () => {
@@ -220,6 +250,11 @@ async function runWithFault(fault: {
   untilMs?: number;
   /** Applies Stop once the fake clock has moved this far. */
   stopAtMs?: number;
+  /**
+   * Faults start only once Closeout accepted the task. The accepted item is then resumed with
+   * nothing new for the agent, the way a recovery resumes it.
+   */
+  afterAccepted?: boolean;
 }): Promise<{
   state: string | null;
   states: (string | null)[];
@@ -231,6 +266,7 @@ async function runWithFault(fault: {
   implementations: number;
   waits: { delayMs: number; runningJobs: number }[];
   events: string[];
+  acceptedHead: string | null;
   capacityWait: unknown;
   elapsedMs: number;
   detail: string;
@@ -319,7 +355,8 @@ async function runWithFault(fault: {
     },
   });
   const startCodeIssue = lifecycle.startCodeIssue;
-  let remaining = fault.times;
+  let remaining = fault.afterAccepted ? 0 : fault.times;
+  let reopen = fault.afterAccepted === true;
   const states: (string | null)[] = [];
   const listSessionActivities = tracker.listSessionActivities!;
   if (fault.tracker)
@@ -355,22 +392,34 @@ async function runWithFault(fault: {
     expect(await gate.accept(event)).toBe(true);
     await orchestrator.onLinearEvent(event);
     const deadline = Date.now() + 60_000;
+    const reopenAccepted = () => {
+      const item = getWorkItem(db, itemIdOf(db))!;
+      db.run("UPDATE job SET status='cancelled' WHERE status='pending'");
+      applyWorkItemEvent(db, item.id, "lease_expired");
+      applyWorkItemEvent(db, item.id, "lease_expired");
+      enqueueJob(db, {
+        queue: JOB_KIND.resume,
+        payload: { itemId: item.id, reason: "recovery" },
+        now: clock.now(),
+      });
+      remaining = fault.times;
+    };
     const startedAt = clock.now();
     let stopped = false;
     while (
       Date.now() < deadline &&
-      !["merge_queue", "merged", "failed", "cancelled"].includes(stateOf(db, "ENG-7") ?? "") &&
+      (reopen ||
+        !["merge_queue", "merged", "failed", "cancelled"].includes(stateOf(db, "ENG-7") ?? "")) &&
       (fault.untilMs === undefined || clock.now() - startedAt < fault.untilMs)
     ) {
+      if (reopen && stateOf(db, "ENG-7") === "merge_queue") {
+        reopen = false;
+        reopenAccepted();
+      }
       if (!stopped && fault.stopAtMs !== undefined && clock.now() - startedAt >= fault.stopAtMs) {
-        const itemId = (
-          db.query("SELECT id FROM work_item WHERE linear_identifier='ENG-7'").get() as {
-            id: string;
-          }
-        ).id;
         applyLinearCommand(db, {
           type: "stop",
-          itemId,
+          itemId: itemIdOf(db),
           source: "linear",
           requestedAt: clock.now(),
         });
@@ -381,7 +430,7 @@ async function runWithFault(fault: {
         outbox.tick();
         await Bun.sleep(25);
         const delayed = listJobs(db).find(
-          (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+          (job) => AGENT_QUEUES.includes(job.queue) && job.status === "pending",
         );
         if (fault.clock && delayed && delayed.runAt > clock.now()) {
           waits.push({
@@ -401,7 +450,7 @@ async function runWithFault(fault: {
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     const pendingResume = listJobs(db).find(
-      (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+      (job) => AGENT_QUEUES.includes(job.queue) && job.status === "pending",
     );
     return {
       events: db
@@ -410,6 +459,7 @@ async function runWithFault(fault: {
         )
         .all()
         .map((row) => (row as { event: string }).event),
+      acceptedHead: getWorkItem(db, itemIdOf(db))?.acceptedHead ?? null,
       capacityWait: (pendingResume?.payload as { capacityWait?: unknown } | undefined)
         ?.capacityWait,
       elapsedMs: clock.now() - startedAt,
@@ -435,4 +485,12 @@ async function runWithFault(fault: {
     db.close();
     await layout.cleanup();
   }
+}
+
+function itemIdOf(db: ReturnType<typeof openDatabase>): string {
+  return (
+    db.query("SELECT id FROM work_item WHERE linear_identifier='ENG-7'").get() as {
+      id: string;
+    }
+  ).id;
 }
