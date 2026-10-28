@@ -151,6 +151,16 @@ export async function advanceMerge(
       number: pull.number,
       head: published.head,
     });
+    if (wait?.reason === "ahead" && policyChanged(db, item, caps, published.worktree)) {
+      // A policy change spent every waiting acceptance; each re-verifies now, in parallel up to
+      // the free slots, and keeps its place instead of waiting for its turn at the front.
+      reverify(
+        merge,
+        { kind: "reverify", head: published.head, base: "", rebased: false },
+        input.jobId,
+      );
+      return { kind: "returned" };
+    }
     if (wait) return { kind: "wait", ...wait };
     if (caps.stopped()) return { kind: "obsolete" };
   }
@@ -414,6 +424,20 @@ function dependencyWait(item: WorkItemRecord, caps: MergeCapabilities): MergeSte
   return { kind: "wait", message, queued: true, reason: "dependencies" };
 }
 
+/** Closeout accepted the item under a policy digest that differs from the readable one now. */
+function policyChanged(
+  db: Database,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  worktree: string,
+): boolean {
+  const acceptedHead = getWorkItem(db, item.id)?.acceptedHead ?? null;
+  if (acceptedHead === null) return false;
+  const accepted = closeoutPolicyDigest(db, item.id, acceptedHead);
+  const current = caps.policyDigest(item, worktree);
+  return accepted !== null && current !== null && accepted !== current;
+}
+
 /**
  * The facts `mergeable(S)` judges: GitHub's and Git's read, plus Closeout's accept row for S.
  * Under `ci` and `overlap`, a head the lane rebased from the accepted head carries its row.
@@ -498,6 +522,8 @@ function reverify(
       now: caps.now(),
     });
   });
+  // Busy now, it no longer holds the lane: the ready tasks behind it look again.
+  wakeMergesBehind(db, caps.now());
   if (step.rebased)
     caps.voice.status(
       item,

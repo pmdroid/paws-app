@@ -503,7 +503,7 @@ function readScopedSnapshot(
   const queues = listMergeQueues(db);
   const merging = new Map<string, StatusMergeQueue>(
     queues.map((entry) => {
-      const ahead = entry.aheadItemId ? recordsById.get(entry.aheadItemId) : undefined;
+      const ahead = entry.nextItemId ? recordsById.get(entry.nextItemId) : undefined;
       return [
         entry.itemId,
         {
@@ -511,6 +511,7 @@ function readScopedSnapshot(
           position: entry.position,
           total: entry.total,
           ahead: ahead ? publicId(ahead) : null,
+          ...(entry.busy ? { rechecking: true } : {}),
         },
       ];
     }),
@@ -772,7 +773,10 @@ function toItem(
   const pr = pullRequest(record, rows, repo);
   const fact = facts.get(record.id);
   const waiting = record.state === "queued" ? queue.get(record.id) : undefined;
-  const mergeQueue = record.state === "merge_queue" ? merging.get(record.id) : undefined;
+  const mergeQueue =
+    record.state === "merge_queue" || record.state === "verifying"
+      ? merging.get(record.id)
+      : undefined;
   const githubQueue =
     record.state === "merge_queue" ? githubQueueOf(mergeJob(record.id, jobs)) : undefined;
   return {
@@ -1619,11 +1623,11 @@ function mergeQueueFor(
       const reason =
         record.state === "verifying"
           ? "closeout"
-          : place && place.position > 1
+          : place?.nextItemId
             ? "ahead"
             : (wait?.reason ?? "ci");
-      const ahead = place?.aheadItemId
-        ? records.find((candidate) => candidate.id === place.aheadItemId)
+      const ahead = place?.nextItemId
+        ? records.find((candidate) => candidate.id === place.nextItemId)
         : undefined;
       return {
         position: place?.position ?? null,
@@ -1641,7 +1645,7 @@ function mergeQueueFor(
               ? `Starts when ${aheadLabel(ahead, items)} merges`
               : null
             : reason === "closeout"
-              ? "Branch updated. Closeout runs again."
+              ? "Re-checking, keeps its place."
               : (wait?.message ?? null),
         settings: mergeSettings(db, record.id),
         steps: mergeSteps(job),

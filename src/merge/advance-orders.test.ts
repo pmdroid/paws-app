@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND, MERGE_LANE } from "../core";
 import {
+  applyWorkItemEvent,
+  claimNextJob,
   enqueueJob,
   getConfirmedRemoteMerge,
   getJob,
@@ -41,6 +43,14 @@ function resumes(h: MergeHarness) {
 
 function mergedOrder(h: MergeHarness, ids: string[]): string[] {
   return h.github.merged.map((merge) => ids[merge.number - 1]!);
+}
+
+/** Lane passes until the task merges: a branch behind main is updated first, then merges. */
+async function passUntilMerged(h: MergeHarness, id: string) {
+  let step = await h.pass(id);
+  for (let pass = 0; pass < 3 && step.kind === "wait" && step.reason === "ci"; pass++)
+    step = await h.pass(id);
+  return step;
 }
 
 function queued(h: MergeHarness): string[] {
@@ -154,6 +164,78 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(await h.pass("ENG-123")).toEqual({ kind: "merged" });
     expect(await h.pass("ENG-121")).toEqual({ kind: "merged" });
     expect(mergedOrder(h, ids)).toEqual(["ENG-122", "ENG-123", "ENG-121"]);
+  });
+
+  test("a re-verifying task keeps its place without holding the lane, and merges next once accepted", async () => {
+    const h = await start({ settings: { order: "queue", mainMoved: "ci" } });
+    const ids = ["ENG-141", "ENG-142", "ENG-143", "ENG-144"];
+    for (const id of ids) await h.addItem(id);
+    h.state.ci = pendingCi;
+    for (const id of ids) {
+      await h.pass(id);
+      h.clock.advance(1_000);
+    }
+    applyWorkItemEvent(h.db, "ENG-141", "reverify_requested");
+    expect(
+      listMergeQueues(h.db).map((entry) => [entry.itemId, entry.position, entry.busy]),
+    ).toEqual([
+      ["ENG-141", 1, true],
+      ["ENG-142", 2, false],
+      ["ENG-143", 3, false],
+      ["ENG-144", 4, false],
+    ]);
+
+    h.state.ci = () => undefined;
+    expect(await h.pass("ENG-143")).toMatchObject({
+      kind: "wait",
+      reason: "ahead",
+      message: "Third in the acme/app queue. ENG-142 merges first.",
+    });
+    expect(await h.pass("ENG-142")).toEqual({ kind: "merged" });
+    expect(await passUntilMerged(h, "ENG-143")).toEqual({ kind: "merged" });
+    expect(queued(h)).toEqual(["ENG-141", "ENG-144"]);
+
+    await h.closeout("ENG-141");
+    expect(await h.pass("ENG-144")).toMatchObject({
+      kind: "wait",
+      reason: "ahead",
+      message: "Second in the acme/app queue. ENG-141 merges first.",
+    });
+    expect(await passUntilMerged(h, "ENG-141")).toEqual({ kind: "merged" });
+    expect(await passUntilMerged(h, "ENG-144")).toEqual({ kind: "merged" });
+    expect(mergedOrder(h, ids)).toEqual(["ENG-142", "ENG-143", "ENG-141", "ENG-144"]);
+  });
+
+  test("a policy change re-verifies every waiting task at once, each keeping its place", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const ids = ["ENG-151", "ENG-152", "ENG-153", "ENG-154", "ENG-155"];
+    for (const id of ids) await h.addItem(id);
+    h.state.ci = pendingCi;
+    for (const id of ids) {
+      await h.pass(id);
+      h.clock.advance(1_000);
+    }
+    h.state.policyDigest = "sha256:changed-policy";
+    // Behind the front, each waiting task sends itself to Closeout without waiting for its turn.
+    for (const id of ids.toReversed()) expect(await h.pass(id)).toEqual({ kind: "returned" });
+    expect(ids.map((id) => getWorkItem(h.db, id)?.state)).toEqual(ids.map(() => "verifying"));
+    const reverify = listJobs(h.db).filter((job) => job.queue === JOB_KIND.reverify);
+    expect(reverify.map((job) => (job.payload as { itemId: string }).itemId).toSorted()).toEqual(
+      ids,
+    );
+    expect(new Set(reverify.map((job) => job.status))).toEqual(new Set(["pending"]));
+    expect(new Set(reverify.map((job) => job.runAt))).toEqual(new Set([h.clock.now()]));
+    expect(listMergeQueues(h.db).map((entry) => [entry.itemId, entry.busy])).toEqual(
+      ids.map((id) => [id, true]),
+    );
+    expect(h.github.merged).toEqual([]);
+    // The five Closeout re-runs are claimed side by side, not one after another.
+    const running = ids.map(() =>
+      claimNextJob(h.db, { queues: [JOB_KIND.reverify], now: h.clock.now() }),
+    );
+    expect(
+      running.map((job) => (job?.payload as { itemId?: string } | undefined)?.itemId).toSorted(),
+    ).toEqual(ids);
   });
 
   test("a task blocked by the one behind it holds no place: the blocker merges first, then it", async () => {
