@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -181,77 +180,70 @@ test("doctor shows whether GitHub webhook deliveries arrive", () => {
   expect(doctorChecks(probe(true)).map((item) => item.name)).not.toContain("github-webhook");
 });
 
-test("doctor loads the closeout policy from origin/main", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-doctor-policy-"));
-  const bare = join(root, "origin.git");
-  const repo = join(root, "repo");
-  const home = join(root, "home");
-  mkdirSync(home);
-  execFileSync("git", ["init", "--bare", "-b", "main", bare]);
-  execFileSync("git", ["clone", bare, repo]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "paws-test@example.com"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "Paws Test"]);
-  execFileSync("git", ["-C", repo, "config", "commit.gpgsign", "false"]);
-  mkdirSync(join(repo, ".agents"), { recursive: true });
-  const policy = join(repo, ".agents", "closeout.yaml");
-  writeFileSync(
-    policy,
-    'specVersion: "0.1"\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30\n',
-  );
-  execFileSync("git", ["-C", repo, "add", ".agents/closeout.yaml"]);
-  execFileSync("git", ["-C", repo, "commit", "-m", "policy"]);
-  execFileSync("git", ["-C", repo, "push", "origin", "HEAD:main"]);
+test("doctor passes Closeout without a checkout and loads configured local policies", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-doctor-policy-"));
   const db = migratedDatabase(join(home, "paws.db"));
   db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook', 1000)");
   db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook-missed', 2000)");
+  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
+  db.run("INSERT INTO workspace_repository VALUES('workspace','acme/widgets','team_a')");
+  db.run("INSERT INTO workspace_repository VALUES('workspace','acme/widgets','team_b')");
+  db.run("INSERT INTO workspace_repository VALUES('workspace','acme/api','team_a')");
   db.close();
-  const env = { HOME: home, PAWS_HOME: home, PAWS_CHECKOUT: repo, PATH: process.env.PATH ?? "" };
+  const env = { HOME: home, PAWS_HOME: home, PATH: process.env.PATH ?? "" };
   const ready = await realProbe(env);
   expect(ready.facts.linearWebhook).toEqual({
     reason: "missed",
     lastVerifiedMs: 1000,
     missedMs: 2000,
   });
+  expect(ready.facts.repos).toEqual(["acme/api", "acme/widgets"]);
   expect(ready.facts.closeout).toEqual({
     ok: true,
-    detail: "policy loads on origin/main",
+    detail: "policy loads from each repository's origin/main on the runner",
     fix: null,
   });
 
-  writeFileSync(policy, 'specVersion: "0.1"\nitems: [\n');
-  execFileSync("git", ["-C", repo, "add", ".agents/closeout.yaml"]);
-  execFileSync("git", ["-C", repo, "commit", "-m", "malformed"]);
-  execFileSync("git", ["-C", repo, "push", "origin", "HEAD:main"]);
-  const broken = await realProbe(env);
-  expect(broken.facts.closeout.ok).toBe(false);
-  expect(broken.facts.closeout.detail).toBe("policy on origin/main is malformed");
-  expect(broken.facts.closeout.fix?.includes("\n")).toBe(false);
-  expect(broken.facts.closeout.fix?.length).toBeGreaterThan(0);
-  const text = formatDoctor(doctorChecks(broken));
-  const lines = text.split("\n");
-  const index = lines.findIndex((line) => line.startsWith("missing closeout:"));
-  expect(lines[index]).toBe("missing closeout: policy on origin/main is malformed");
-  expect(lines[index + 1]).toBe(`  fix: ${broken.facts.closeout.fix}`);
-  expect(lines.filter((line) => line.startsWith("missing closeout:"))).toHaveLength(1);
   const localRoot = join(home, "policies");
   mkdirSync(join(localRoot, ".agents"), { recursive: true });
   writeFileSync(join(localRoot, ".agents/closeout.yaml"), 'specVersion: "0.1"\nitems: []\n');
   writeFileSync(
     join(home, "config.toml"),
-    '[github]\nrepo = "acme/widgets"\n[closeout.projects."acme/widgets"]\npolicy_root = "policies"\n',
+    '[closeout.projects."acme/widgets"]\npolicy_root = "policies"\n',
   );
-  const local = await realProbe(env);
-  expect(local.facts.closeout).toEqual({
+  expect((await realProbe(env)).facts.closeout).toEqual({
     ok: true,
-    detail: `local policy loads from ${localRoot}`,
+    detail: "local policy loads for acme/widgets",
     fix: null,
   });
   writeFileSync(join(localRoot, ".agents/closeout.yaml"), "invalid");
-  expect((await realProbe(env)).facts.closeout).toMatchObject({
+  const broken = await realProbe(env);
+  expect(broken.facts.closeout).toMatchObject({
     ok: false,
-    detail: "configured local Closeout policy is invalid",
+    detail: "configured local Closeout policy for acme/widgets is invalid",
   });
+  expect(broken.facts.closeout.fix?.includes("\n")).toBe(false);
+  const lines = formatDoctor(doctorChecks(broken)).split("\n");
+  const index = lines.findIndex((line) => line.startsWith("missing closeout:"));
+  expect(lines[index]).toBe(
+    "missing closeout: configured local Closeout policy for acme/widgets is invalid",
+  );
+  expect(lines[index + 1]).toBe(`  fix: ${broken.facts.closeout.fix}`);
 }, 30_000);
+
+test("doctor names the chosen repositories and fails when none is chosen", () => {
+  const ready = probe(true);
+  ready.facts.repos = ["acme/api", "acme/widgets"];
+  expect(doctorChecks(ready).find((item) => item.name === "repository")).toMatchObject({
+    ok: true,
+    detail: "acme/api, acme/widgets",
+  });
+  ready.facts.repos = [];
+  expect(doctorChecks(ready).find((item) => item.name === "repository")).toMatchObject({
+    ok: false,
+    detail: "no repository is chosen",
+  });
+});
 
 test("bun run paws doctor exits nonzero until prerequisites exist", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-doctor-"));
@@ -504,7 +496,6 @@ function probe(
 ): DoctorProbe {
   const ready = ok
     ? {
-        PAWS_GITHUB_REPOSITORY: "pmdroid/paws-demo",
         PAWS_PUBLIC_DASHBOARD: "1",
       }
     : env;
@@ -545,7 +536,7 @@ function greenFacts(): ProbeFacts {
     webhooks: false,
     workspace: "Paws Demo",
     publicUrl: null,
-    repo: "pmdroid/paws-demo",
+    repos: ["pmdroid/paws-demo"],
     team: "ENG",
     teamId: "team_eng",
     claudeAdapter: { ok: true, detail: "claude-agent-acp 0.88.0" },
@@ -580,7 +571,7 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
     },
     webhooks: false,
     publicUrl: null,
-    repo: null,
+    repos: [],
     team: null,
     teamId: null,
     claudeAdapter: { ok: false, detail: "claude-agent-acp is not installed" },

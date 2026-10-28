@@ -9,6 +9,7 @@ import {
   OutboxDispatcher,
   applyWorkItemEvent,
   beginImplementRun,
+  bindWorkItemRepository,
   getConversation,
   getWorkItem,
   insertQueuedItem,
@@ -76,6 +77,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       migrate(db);
       const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
       beginImplementRun(db, item.id, 1);
+      bindWorkItemRepository(db, item.id, { owner: "acme", repo: "app", remoteUrl: bare });
       const create = () =>
         attachOrchestrator({
           db,
@@ -84,7 +86,7 @@ for await (const line of createInterface({ input: process.stdin })) {
           pawsRoot,
           home: root,
           tracker: createFakeTracker(),
-          repository: { owner: "acme", repo: "app", remoteUrl: bare },
+          repositories: [{ owner: "acme", repo: "app", remoteUrl: bare }],
           launch(input) {
             launches++;
             if (input.role === lostRole)

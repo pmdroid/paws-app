@@ -84,14 +84,14 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker: linear,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "",
       installationId: "",
       privateKeyPem: "",
       client,
       tokenProvider: { mode: "token", tokenFor: async () => "synthetic-delivery-token" },
-    },
+    }),
     launch,
   });
   await orchestrator.onLinearEvent(created("parent"));

@@ -16,8 +16,6 @@ export type PawsEnv = {
   githubAppInstallationId: string | null;
   githubAppPrivateKeyPath: string | null;
   githubWebhookSecret: string | null;
-  /** `owner/repo` for the one repository this process pushes to. */
-  githubRepository: string | null;
 };
 
 export function loadEnv(source: EnvSource = process.env): PawsEnv {
@@ -31,7 +29,6 @@ export function loadEnv(source: EnvSource = process.env): PawsEnv {
     githubAppInstallationId: optional(source, "GITHUB_APP_INSTALLATION_ID"),
     githubAppPrivateKeyPath: optional(source, "GITHUB_APP_PRIVATE_KEY_PATH"),
     githubWebhookSecret: optional(source, "GITHUB_WEBHOOK_SECRET"),
-    githubRepository: optional(source, "PAWS_GITHUB_REPOSITORY"),
   };
 }
 

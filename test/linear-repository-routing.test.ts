@@ -79,7 +79,6 @@ function event(body: string | null = null): AcceptedLinearEvent {
 function fixture(
   options: {
     issueId?: string;
-    defaultRepository?: boolean;
     auth?: GitHubIntegration;
     interpretation?: { output: string; hang?: boolean; removeAccess?: string };
     confidence?: number;
@@ -121,7 +120,6 @@ function fixture(
       pawsRoot,
       clock,
       githubInstallation: options.auth,
-      repository: options.defaultRepository ? repositories[0] : undefined,
       repositories: [...repositories, repositories[0]!],
       repositoryAccess: async (repository) => {
         checked.push(repository.repo);
@@ -285,8 +283,8 @@ test.each(["https://github.com/acme/two.git", "https://github.com/ACME/TWO.git"]
   },
 );
 
-test("an obsolete merge job cannot bind the default while a repository answer is pending", async () => {
-  const f = fixture({ defaultRepository: true });
+test("an obsolete merge job cannot bind a repository while a repository answer is pending", async () => {
+  const f = fixture();
   try {
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());

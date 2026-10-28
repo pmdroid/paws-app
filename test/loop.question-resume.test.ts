@@ -399,8 +399,8 @@ async function askOnce(answerDuringTurn?: string): Promise<{
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: "unused",
@@ -409,7 +409,7 @@ async function askOnce(answerDuringTurn?: string): Promise<{
             return { status: 404, body: {} };
           },
         },
-      },
+      }),
       launch,
     });
   const orchestrator = attach(jobs, outbox);
@@ -618,8 +618,8 @@ test("the implementer's prompt includes the project overview with its mock links
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: "unused",
@@ -628,7 +628,7 @@ test("the implementer's prompt includes the project overview with its mock links
           return { status: 404, body: {} };
         },
       },
-    },
+    }),
     launch,
   });
   try {

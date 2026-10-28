@@ -341,7 +341,7 @@ export async function probeRunnerOrchestration(
       pawsRoot: home,
       home,
       tracker,
-      repository: { owner: "acme", repo: "fixture", remoteUrl: origin },
+      repositories: [{ owner: "acme", repo: "fixture", remoteUrl: origin }],
       ...(scenario === "success"
         ? {
             githubInstallation: {
@@ -374,7 +374,7 @@ export async function probeRunnerOrchestration(
       ...(runnerWait ? { runnerWait: { pollMs: 20, askAfterMs: 300 } } : {}),
       ...(merging
         ? {
-            github: {
+            githubForRepository: () => ({
               appId: "",
               installationId: "",
               privateKeyPem: "",
@@ -417,7 +417,7 @@ export async function probeRunnerOrchestration(
                   );
                 },
               },
-            },
+            }),
           }
         : {}),
       launch() {

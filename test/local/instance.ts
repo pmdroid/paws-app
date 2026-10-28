@@ -250,14 +250,14 @@ async function scenario(
     pawsRoot,
     home: process.env.HOME,
     tracker: linear,
-    repository: { owner: "local", repo: "fixture", remoteUrl: bare },
-    github: {
+    repositories: [{ owner: "local", repo: "fixture", remoteUrl: bare }],
+    githubForRepository: () => ({
       appId: "",
       installationId: "",
       privateKeyPem: "",
       client,
       tokenProvider: { mode: "token", tokenFor: async () => token },
-    },
+    }),
     launch,
   });
   let interrupted = false;

@@ -105,7 +105,7 @@ describe("paws install", () => {
     const runtime = loadRuntime(parseEnv(written.env));
     expect(runtime.configError).toBeNull();
     expect(runtime.env.port).toBe(443);
-    expect(runtime.repo).toBe("pmdroid/paws-app");
+    expect(runtime.repos).toEqual(["pmdroid/paws-app", "pmdroid/agentbox"]);
   });
 
   test("a re-run keeps unchanged values and unrelated config.toml keys", async () => {

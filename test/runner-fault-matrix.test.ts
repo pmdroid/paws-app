@@ -417,7 +417,7 @@ async function runRemoteFault(fault: Fault) {
     pawsRoot: root,
     home: root,
     tracker,
-    repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
+    repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     retryBaseMs: 10,
     placementPollMs: 5,
     launch() {
