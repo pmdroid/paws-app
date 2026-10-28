@@ -69,7 +69,7 @@ describe("GitHub App tokens", () => {
     };
     expect(request.path).toBe("/app/installations/7/access_tokens");
     expect(request.body.repositories).toEqual(["paws-demo"]);
-    expect(request.body.permissions).toEqual(INSTALLATION_PERMISSIONS);
+    expect(request.body.permissions).toEqual({ ...INSTALLATION_PERMISSIONS, workflows: "write" });
 
     const now = new Date("2026-10-09T12:00:00.000Z");
     expect(
