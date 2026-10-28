@@ -102,5 +102,5 @@ export type { GitHubBinding } from "./binding";
 export { defaultGitExec } from "./git";
 
 export { closeStoppedPull } from "./stopped";
-export { mergedPullHeads } from "./merged-pulls";
+export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
 export { inspectPullRequestMerge } from "./blocker-merge";

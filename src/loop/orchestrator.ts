@@ -134,6 +134,7 @@ import {
   cancelOpenJobs,
   getLinearSessionAccess,
   getConfirmedRemoteMerge,
+  type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getTaskModeGeneration,
   getLinearSessionGeneration,
@@ -195,6 +196,7 @@ import {
   saveCheckpoint,
   recordItemBranchState,
   recordItemPullRequest,
+  getItemPullRequest,
   saveVisualReviewMarks,
   type VisualReviewMark,
   saveRunResult,
@@ -252,6 +254,7 @@ import {
   leaveGitHubMergeQueue,
   readReviewThreads,
   mergedPullHeads,
+  readPullMerge,
   UPSTREAM_MAIN_REF,
   type GitHubBinding,
   type GitHubTokenProvider,
@@ -3528,9 +3531,45 @@ export class Orchestrator {
           await this.flush(published.signal);
           return { kind: "asked" };
         },
+        mergedOutsideLane: (item) => this.mergedOutsideLane(item),
         completed: () => this.dispatch(),
       },
     );
+  }
+
+  /** The merge of the item's pull request when a person merged it on GitHub, outside the lane. */
+  private async mergedOutsideLane(
+    item: WorkItemRecord,
+  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null> {
+    const pull = getItemPullRequest(this.db, item.id);
+    const repository = pull ? this.repositoryForItem(item) : null;
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!pull || !repository || !github) return null;
+    const read = await readPullMerge({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      number: pull.pullNumber,
+      ...this.gitHubCredentials(github),
+      signal: AbortSignal.timeout(10_000),
+    }).catch((caughtError) => {
+      journalCaught(
+        caughtError,
+        "orchestrator.mergedOutsideLane.readPullMerge",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    });
+    if (!read?.merged) return null;
+    return {
+      repositoryOwner: repository.owner,
+      repositoryName: repository.repo,
+      pullNumber: pull.pullNumber,
+      pullUrl: read.url ?? pull.pullUrl,
+      mergeSha: read.sha,
+    };
   }
 
   private async publishForMerge(
