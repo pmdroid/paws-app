@@ -263,7 +263,7 @@ test("eligibleRunners reads only SQLite", () => {
   }
 });
 
-test("a runner with an unacknowledged cancel is offline until that cancel expires", () => {
+test("a runner with an unacknowledged cancel is offline until it expires and the runner reports without that run", () => {
   const space = workspace({ box: { owner: "me" } });
   const now = Date.now();
   const cancel = (id: string, expiresAt: number) =>
@@ -276,6 +276,8 @@ test("a runner with an unacknowledged cancel is offline until that cancel expire
     expect(space.check({ now }).map((runner) => runner.reason)).toEqual(["offline"]);
     space.db.run("DELETE FROM runner_command");
     cancel("expired-cancel", now - 60_000);
+    expect(space.check({ now }).map((runner) => runner.reason)).toEqual(["offline"]);
+    space.db.run("UPDATE runner SET live_reported_at=? WHERE id='box'", [now]);
     expect(space.check({ now }).map((runner) => runner.reason)).toEqual(["own"]);
   } finally {
     space.close();

@@ -2,7 +2,13 @@ import { journalCaught } from "../journal";
 import { randomUUID, type KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { getLinearSession, immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
+import {
+  getLinearSession,
+  immediate,
+  runnerCancelPending,
+  runnerHasCapacity,
+  workspaceSessionIds,
+} from "../db";
 import {
   RunnerCommandSchema,
   RunnerHelperResultSchema,
@@ -101,13 +107,7 @@ export function createRunnerHelpers(options: {
         if (!session) throw new HelperFencedError("Linear helper session is unavailable");
         const runner = scope(input.runnerId, input.sessionId, session.generation);
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
-        if (
-          db
-            .query(
-              "SELECT 1 FROM runner_command c WHERE c.runner_id=? AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL)",
-            )
-            .get(input.runnerId)
-        )
+        if (runnerCancelPending(db, input.runnerId, now()))
           throw new Error("Runner cancellation teardown is still pending");
         if (
           db
