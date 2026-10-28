@@ -1959,7 +1959,7 @@ if (import.meta.main) {
     console.error("usage: paws login slack");
     process.exit(1);
   }
-  const unknown = argv[0];
+  const unknown = argv.find((arg) => arg !== "--no-tunnel");
   if (unknown) {
     console.error(`Unknown option ${unknown}.`);
     process.exit(1);
