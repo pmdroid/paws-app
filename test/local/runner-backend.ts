@@ -881,7 +881,13 @@ export async function probeRunnerBackend(
         replayRows === 1 &&
         JSON.parse(replayAnswer ?? "{}").url === "https://linear.app/artifact/replayed" &&
         JSON.stringify(origins) === JSON.stringify([sameOrigin, sameOrigin]),
-      { stopReason: replayResult.stopReason, replayPublications, replayRows, replayAnswer, origins },
+      {
+        stopReason: replayResult.stopReason,
+        replayPublications,
+        replayRows,
+        replayAnswer,
+        origins,
+      },
     );
     await git(["-C", source, "reset", "--hard", base]);
     const accepted = item();
