@@ -4,6 +4,7 @@ export {
   fakeStatusProvider,
   providerFor,
   startStatusServer,
+  statusSnapshots,
 } from "./src/server/handler";
 export type { StatusProvider } from "./src/server/handler";
 export { createLiveStatusProvider, emptyLiveSnapshot } from "./src/live/provider";

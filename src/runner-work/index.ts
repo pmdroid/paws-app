@@ -6,3 +6,4 @@ export {
 } from "./control";
 export type { RunnerWork, RunnerEvent } from "./control";
 export { createRunnerWorkHttp } from "./http";
+export { runnerFailureStatus, runnerRequestUnavailable } from "./failure";

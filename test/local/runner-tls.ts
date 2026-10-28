@@ -28,6 +28,7 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
   let rejectedStreamCancelled = false;
   let authorizationCount = 0;
   let expireAtAuthorization = 0;
+  let authorizationFails = false;
   let bodyAuthorized: (() => void) | undefined;
   const logged: string[] = [];
   const listener = await startRunnerListener({
@@ -36,6 +37,7 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
     log: (line) => logged.push(line),
     authorize: async (peer) => {
       authorizationCount++;
+      if (authorizationFails) throw new Error("database is locked");
       if (authorizationCount === expireAtAuthorization) {
         await new Promise<void>((resolve) => setImmediate(resolve));
         now = certificate.notAfter + 1;
@@ -48,6 +50,7 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
       accepted.push({ path: new URL(input.url).pathname, peer });
       if (new URL(input.url).pathname === "/unavailable")
         return new Response(null, { status: 503 });
+      if (new URL(input.url).pathname === "/throws") throw new Error("database is locked");
       if (new URL(input.url).pathname === "/slow") {
         now += 6_000;
         return new Response(null, { status: 204 });
@@ -175,6 +178,17 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
     observe("failed and slow runner requests are logged with path, status and duration", true, {
       logged,
     });
+    const handlerFailed = await call({ cert: certificate.pem, key, path: "/throws" });
+    assert.equal(handlerFailed.status, 503);
+    authorizationFails = true;
+    const checkFailed = await call({ cert: certificate.pem, key });
+    authorizationFails = false;
+    assert.equal(checkFailed.status, 503);
+    observe(
+      "a handler or peer check that fails without denying access answers 503, not 403",
+      true,
+      { handlerStatus: handlerFailed.status, checkStatus: checkFailed.status },
+    );
     const missing = await denied({
       headers: { "x-client-cert": certificate.pem.replace(/\n/g, "") },
     });

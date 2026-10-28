@@ -62,6 +62,11 @@ export interface StatusServerOptions {
   linearUsage?: LiveStatusOptions["linearUsage"];
   /** Where status API response sizes go. Defaults to the process's per-minute journal line. */
   responseSizes?: ResponseSizeJournal;
+  /**
+   * Reuses a built `/api/status` body for a second; the engine passes `statusSnapshots`.
+   * Omit it to build the body on every request.
+   */
+  snapshotCache?: StatusSnapshotCache;
 }
 
 export function fakeStatusProvider(): StatusProvider {
@@ -126,7 +131,8 @@ export async function handleStatusRequest(
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
   const sizes = options.responseSizes ?? statusResponseSizes;
-  if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(options), sizes);
+  if (pathname === STATUS_API_PATH)
+    return apiResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname.startsWith(`${STATUS_ITEM_API_PATH}/`))
     return itemResponse(request, providerFor(options), pathname, sizes);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
@@ -240,10 +246,64 @@ function artifactHome(options: StatusServerOptions): string | null {
   return null;
 }
 
+/** How long a built `/api/status` body answers repeated polls before it is built again. */
+export const STATUS_SNAPSHOT_REUSE_MS = 1_000;
+
+type BuiltSnapshot = { body: string; etag: string } | { error: string };
+
+/**
+ * Built `/api/status` bodies, per data source and reader, so a dashboard polling from several
+ * tabs builds the snapshot at most once a second. A poll that arrives while one is being built
+ * waits for it.
+ */
+export interface StatusSnapshotCache {
+  get(source: object, reader: string, build: () => Promise<BuiltSnapshot>): Promise<BuiltSnapshot>;
+}
+
+export function createStatusSnapshotCache(
+  options: { now?: () => number; reuseMs?: number } = {},
+): StatusSnapshotCache {
+  const now = options.now ?? Date.now;
+  const reuseMs = options.reuseMs ?? STATUS_SNAPSHOT_REUSE_MS;
+  const sources = new WeakMap<object, Map<string, { at: number; built: Promise<BuiltSnapshot> }>>();
+  return {
+    get(source, reader, build) {
+      const at = now();
+      let readers = sources.get(source);
+      if (readers === undefined) sources.set(source, (readers = new Map()));
+      for (const [key, entry] of readers) if (at - entry.at >= reuseMs) readers.delete(key);
+      const cached = readers.get(reader);
+      if (cached !== undefined) return cached.built;
+      const built = build();
+      const entry = { at, built };
+      readers.set(reader, entry);
+      // A failed build is not reused: the next poll tries again.
+      void built.then(
+        (result) => {
+          if ("error" in result && readers.get(reader) === entry) readers.delete(reader);
+        },
+        () => {
+          if (readers.get(reader) === entry) readers.delete(reader);
+        },
+      );
+      return built;
+    },
+  };
+}
+
+/** The process's cache, shared by every status request the engine serves. */
+export const statusSnapshots = createStatusSnapshotCache();
+
+const UNCACHED: StatusSnapshotCache = { get: (_source, _reader, build) => build() };
+
+/** Status bodies built without a database or provider share this source. */
+const EMPTY_SOURCE = {};
+
 async function apiResponse(
   request: Request,
-  provider: StatusProvider,
+  options: StatusServerOptions,
   sizes: ResponseSizeJournal,
+  cache: StatusSnapshotCache,
 ): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: { ...CORS } });
@@ -252,14 +312,38 @@ async function apiResponse(
     return json({ error: "Method not allowed" }, 405);
   }
   try {
-    const snapshot = await provider.snapshot();
-    const parsed = parseStatusSnapshot(snapshot);
-    if (!parsed.ok) return json({ error: parsed.error }, 500);
-    return served(sizes, request, parsed.snapshot);
+    const source = options.provider ?? options.db ?? EMPTY_SOURCE;
+    const reader =
+      options.sessionIds === undefined ? "*" : [...options.sessionIds].sort().join(",");
+    const built = await cache.get(source, reader, async () => {
+      const parsed = parseStatusSnapshot(await providerFor(options).snapshot());
+      if (!parsed.ok) return { error: parsed.error };
+      const body = JSON.stringify(parsed.snapshot);
+      return { body, etag: `"${Bun.hash(body).toString(36)}"` };
+    });
+    if ("error" in built) return json({ error: built.error }, 500);
+    if (etagMatches(request.headers.get("if-none-match"), built.etag))
+      return new Response(null, {
+        status: 304,
+        headers: { ...CORS, ETag: built.etag, "Cache-Control": "no-cache" },
+      });
+    sizes.record(new URL(request.url).pathname, Buffer.byteLength(built.body));
+    const response = jsonText(built.body, 200);
+    response.headers.set("ETag", built.etag);
+    response.headers.set("Cache-Control", "no-cache");
+    return response;
   } catch (caughtError1) {
     journalCaught(caughtError1, "handler.apiResponse.snapshot", null);
     return json({ error: "status unavailable" }, 500);
   }
+}
+
+function etagMatches(header: string | null, etag: string): boolean {
+  if (header === null) return false;
+  return header
+    .split(",")
+    .map((tag) => tag.trim().replace(/^W\//, ""))
+    .some((tag) => tag === "*" || tag === etag);
 }
 
 async function itemResponse(
