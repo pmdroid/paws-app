@@ -26,6 +26,7 @@ import {
   listHooks,
   pinnedSlotsReserved,
   releasePinnedSlot,
+  restartedFromMergeQueue,
   runnerHasCapacity,
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
@@ -194,9 +195,10 @@ type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
 
 /**
  * Where a command for the run goes. A turn that continues the agent session is pinned to the
- * run's runner, or to the runner holding the session when the run's runner last ran only checks
- * or a review. Merge-queue work that continues no session, such as a re-verify's checks and
- * review, is not pinned: it prefers the run's runner and takes any eligible one.
+ * run's runner. Merge-queue work that continues no session, such as a re-verify's checks and
+ * review, is not pinned: it prefers the run's runner and takes any eligible one. So when such
+ * work last ran on another runner, the merge-queue item's next turn is pinned to the runner
+ * holding its session. A run that moved because its runner went away keeps its new runner.
  */
 function runRunner(
   db: Database,
@@ -209,26 +211,24 @@ function runRunner(
     )
     .get(input.runId);
   if (!row) return {};
-  if (!input.continuesSession && inMergeQueue(db, input.itemId))
-    return { preferRunnerId: row.runnerId };
-  const sessionless =
-    row.kind === "review" ||
-    (row.kind === "run" &&
-      row.envelope !== null &&
-      (
-        JSON.parse(
-          Buffer.from(
-            (JSON.parse(row.envelope) as { payload: string }).payload,
-            "base64url",
-          ).toString("utf8"),
-        ) as { checkpoint?: boolean }
-      ).checkpoint === false);
-  return {
-    pinnedRunnerId:
-      input.continuesSession && sessionless && input.sessionRunnerId
-        ? input.sessionRunnerId
-        : row.runnerId,
-  };
+  const merging = inMergeQueue(db, input.itemId);
+  if (!input.continuesSession && merging) return { preferRunnerId: row.runnerId };
+  const backToSession =
+    input.continuesSession &&
+    input.sessionRunnerId !== undefined &&
+    (merging || restartedFromMergeQueue(db, input.itemId)) &&
+    (row.kind === "review" ||
+      (row.kind === "run" &&
+        row.envelope !== null &&
+        (
+          JSON.parse(
+            Buffer.from(
+              (JSON.parse(row.envelope) as { payload: string }).payload,
+              "base64url",
+            ).toString("utf8"),
+          ) as { checkpoint?: boolean }
+        ).checkpoint === false));
+  return { pinnedRunnerId: backToSession ? input.sessionRunnerId : row.runnerId };
 }
 
 function snapshotCommit(workspace: string, repository: { owner: string; repo: string }) {

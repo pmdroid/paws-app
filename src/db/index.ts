@@ -562,6 +562,7 @@ export {
   listMergeQueues,
   markMergeQueueNotified,
   mergeQueuePosition,
+  restartedFromMergeQueue,
 } from "./merge-queue";
 export type { MergeQueuePosition } from "./merge-queue";
 export {
