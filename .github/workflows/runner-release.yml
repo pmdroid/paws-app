@@ -41,6 +41,8 @@ jobs:
           version="${RELEASE_TAG#v}"
           python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",sys.argv[1]) else 1)' "$version"
           echo "RUNNER_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Check minimum runner versions
+        run: bun scripts/check-runner-versions.ts "$RUNNER_VERSION"
       - run: bun install --frozen-lockfile
       - name: Build runner archive
         env:
