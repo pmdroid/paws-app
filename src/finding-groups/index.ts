@@ -91,9 +91,10 @@ export function groupingBatch(
   const open: GroupingInput[] = [];
   const titles: FindingIssueTitle[] = [];
   const ordered = [...findings].sort((a, b) => a.id - b.id);
-  const start = ordered.length ? cursor % ordered.length : 0;
+  const after = ordered.findIndex((row) => row.id > cursor);
+  const start = after < 0 ? 0 : after;
   let length = groupingPrompt([], []).length;
-  for (let offset = 0; offset < ordered.length - start; offset++) {
+  for (let offset = 0; offset < ordered.length; offset++) {
     const row = ordered[(start + offset) % ordered.length]!;
     const candidate = {
       ...row,
@@ -123,7 +124,8 @@ export function groupingBatch(
     open,
     issues: titles,
     partial: open.length < findings.length,
-    nextFindingCursor: ordered.length ? (start + open.length) % ordered.length : 0,
+    nextFindingCursor: open.at(-1)?.id ?? 0,
+    cycleComplete: start + open.length >= ordered.length,
     nextIssueCursor: candidates.length ? (first + titles.length) % candidates.length : 0,
   };
 }
@@ -200,29 +202,32 @@ export function createFindingGrouping(options: {
       const day = new Date(at).toISOString().slice(0, 10);
       // Persist the daily claim before any external read or helper dispatch, including failures.
       const findings = options.sources(workspaceId);
-      const fingerprint = createHash("sha256")
-        .update(
-          JSON.stringify(
-            findings
-              .map((f) => [
-                f.id,
-                f.repository,
-                f.teamId,
-                f.path,
-                f.lines,
-                f.severity,
-                f.review,
-                f.text,
-                f.bugClass,
-                f.itemCount,
-                f.status,
-                f.last.at,
-                f.statusAt,
-              ])
-              .sort((a, b) => Number(a[0]) - Number(b[0])),
-          ),
-        )
-        .digest("hex");
+      // Version the persisted cursor semantics: legacy fingerprints used list offsets.
+      const fingerprint =
+        "id:" +
+        createHash("sha256")
+          .update(
+            JSON.stringify(
+              findings
+                .map((f) => [
+                  f.id,
+                  f.repository,
+                  f.teamId,
+                  f.path,
+                  f.lines,
+                  f.severity,
+                  f.review,
+                  f.text,
+                  f.bugClass,
+                  f.itemCount,
+                  f.status,
+                  f.last.at,
+                  f.statusAt,
+                ])
+                .sort((a, b) => Number(a[0]) - Number(b[0])),
+            ),
+          )
+          .digest("hex");
       const runId = randomUUID();
       const last = db
         .query<
@@ -278,7 +283,7 @@ export function createFindingGrouping(options: {
           const batch = groupingBatch(
             open,
             allIssues,
-            last?.findingCursor ?? 0,
+            last?.fingerprint.startsWith("id:") ? last.findingCursor : 0,
             last?.issueCursor ?? 0,
           );
           nextFindingCursor = batch.nextFindingCursor;
@@ -286,7 +291,7 @@ export function createFindingGrouping(options: {
           if (batch.partial) selectedIds = batch.open.map((f) => f.id);
           const issues = batch.issues;
           // A partial snapshot must be revisited even if no finding changes tomorrow.
-          if (batch.nextFindingCursor !== 0)
+          if (!batch.cycleComplete)
             db.run("UPDATE finding_group_run SET fingerprint=? WHERE id=?", [
               `${fingerprint}:partial`,
               runId,
@@ -310,6 +315,10 @@ export function createFindingGrouping(options: {
             .map((f) => f.id),
         );
         immediate(db, () => {
+          if (
+            !db.query("SELECT 1 FROM finding_group_run WHERE id=? AND status='running'").get(runId)
+          )
+            throw new Error("Finding grouping run no longer owns this result.");
           if (selectedIds !== null) {
             // Preserve the unprocessed members of earlier groups during a partial snapshot.
             db.run(
@@ -357,17 +366,17 @@ export function createFindingGrouping(options: {
             );
             count++;
           }
-          db.run(
-            "UPDATE finding_group_run SET status='completed',finished_at=?,tokens=?,group_count=?,finding_cursor=?,issue_cursor=? WHERE id=?",
+          const completed = db.run(
+            "UPDATE finding_group_run SET status='completed',finished_at=?,tokens=?,group_count=?,finding_cursor=?,issue_cursor=? WHERE id=? AND status='running'",
             [now(), tokens, count, nextFindingCursor, nextIssueCursor, runId],
-          );
+          ).changes;
+          if (completed !== 1) throw new Error("Finding grouping run no longer owns this result.");
         });
       } catch (error) {
-        db.run("UPDATE finding_group_run SET status='failed',finished_at=?,error=? WHERE id=?", [
-          now(),
-          error instanceof Error ? error.message : "Grouping failed",
-          runId,
-        ]);
+        db.run(
+          "UPDATE finding_group_run SET status='failed',finished_at=?,error=? WHERE id=? AND status='running'",
+          [now(), error instanceof Error ? error.message : "Grouping failed", runId],
+        );
         throw error;
       }
     },

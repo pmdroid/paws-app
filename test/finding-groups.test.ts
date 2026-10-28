@@ -874,3 +874,161 @@ test("dismissal conflicts roll back group completion and release the claim", asy
     f.db.close();
   }
 });
+
+test("overflow resumes after a stable ID when earlier findings close and wraps into the head", async () => {
+  const { groupingBatch } = await import("../src/finding-groups");
+  const f = seed();
+  try {
+    const source = f.sources()[0]!;
+    const rows = Array.from({ length: 25 }, (_, i) => ({
+      ...source,
+      id: (i + 1) * 10,
+      text: "x".repeat(4000),
+    }));
+    const first = groupingBatch(rows, [], 0);
+    const remaining = rows.filter((row) => row.id > 30);
+    const second = groupingBatch(remaining, [], first.nextFindingCursor);
+    expect(second.open[0]!.id).toBe(first.open.at(-1)!.id + 10);
+    const tail = groupingBatch(rows, [], 230);
+    expect(tail.open.slice(0, 3).map((row) => row.id)).toEqual([240, 250, 10]);
+    expect(tail.open.length).toBe(first.open.length);
+    expect(tail.cycleComplete).toBe(true);
+    expect(tail.nextFindingCursor).toBe(tail.open.at(-1)!.id);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("persisted overflow IDs survive closures between daily runs", async () => {
+  const f = seed();
+  try {
+    const source = f.sources()[0]!;
+    let rows = Array.from({ length: 25 }, (_, i) => ({
+      ...source,
+      id: (i + 1) * 10,
+      text: "x".repeat(4000),
+    }));
+    let now = epoch;
+    const batches: number[][] = [];
+    const grouping = createFindingGrouping({
+      db: f.db,
+      issues: f.issues,
+      sources: () => rows,
+      now: () => now,
+      helper: async (input) => {
+        batches.push(
+          (
+            JSON.parse(input.prompt.split("\n\n").at(-1)!) as { findings: { id: number }[] }
+          ).findings.map((row) => row.id),
+        );
+        return { text: '{"groups":[]}' };
+      },
+    });
+    await grouping.run("ws", new AbortController().signal);
+    rows = rows.slice(3);
+    now += 86400000;
+    await grouping.run("ws", new AbortController().signal);
+    expect(batches[1]![0]).toBe(batches[0]!.at(-1)! + 10);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("recovered runs cannot publish groups or overwrite interrupted history", async () => {
+  const { recoverFindingGroupRuns } = await import("../src/db");
+  const f = seed();
+  try {
+    await f.grouping.run("ws", new AbortController().signal);
+    const before = listFindingGroups(f.db, "ws");
+    let now = epoch + 86400000;
+    const grouping = createFindingGrouping({
+      db: f.db,
+      issues: f.issues,
+      sources: () => f.sources().map((row) => ({ ...row, text: row.text + " changed" })),
+      now: () => now,
+      helper: async () => {
+        now += 12 * 60000;
+        recoverFindingGroupRuns(f.db, now);
+        return {
+          text: JSON.stringify({
+            groups: [{ title: "Fix", summary: "Shared fix", scope: "src", findingIds: f.ids }],
+          }),
+        };
+      },
+    });
+    await expect(grouping.run("ws", new AbortController().signal)).rejects.toThrow(
+      "no longer owns",
+    );
+    expect(listFindingGroups(f.db, "ws")).toEqual(before);
+    expect(lastFindingGroupRun(f.db, "ws")).toMatchObject({
+      status: "failed",
+      error: "Grouping interrupted before completion",
+      finishedAt: now,
+    });
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a preempted turn consumes the daily allowance and retries on the next UTC day", async () => {
+  const f = seed();
+  try {
+    let now = epoch;
+    let attempts = 0;
+    const grouping = createFindingGrouping({
+      db: f.db,
+      issues: f.issues,
+      sources: f.sources,
+      now: () => now,
+      helper: async () => {
+        if (++attempts === 1) throw new Error("Grouping helper preempted");
+        return { text: '{"groups":[]}' };
+      },
+    });
+    await expect(grouping.run("ws", new AbortController().signal)).rejects.toThrow("preempted");
+    expect(lastFindingGroupRun(f.db, "ws")).toMatchObject({
+      status: "failed",
+      error: "Grouping helper preempted",
+    });
+    await grouping.run("ws", new AbortController().signal);
+    expect(attempts).toBe(1);
+    now += 86400000;
+    await grouping.run("ws", new AbortController().signal);
+    expect(attempts).toBe(2);
+    expect(lastFindingGroupRun(f.db, "ws")?.status).toBe("completed");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("legacy position cursors start a fresh ID-based pass", async () => {
+  const f = seed();
+  try {
+    f.db.run(
+      "INSERT INTO finding_group_run(id,workspace_id,day,started_at,finished_at,fingerprint,status,finding_cursor) VALUES('legacy','ws','2026-10-27',?,?,'legacy-snapshot','completed',100)",
+      [epoch - 86400000, epoch - 86400000],
+    );
+    const source = f.sources()[0]!;
+    let firstId = 0;
+    const rows = Array.from({ length: 25 }, (_, i) => ({
+      ...source,
+      id: (i + 1) * 10,
+      text: "x".repeat(4000),
+    }));
+    const grouping = createFindingGrouping({
+      db: f.db,
+      issues: f.issues,
+      sources: () => rows,
+      now: () => epoch,
+      helper: async (input) => {
+        firstId = (JSON.parse(input.prompt.split("\n\n").at(-1)!) as { findings: { id: number }[] })
+          .findings[0]!.id;
+        return { text: '{"groups":[]}' };
+      },
+    });
+    await grouping.run("ws", new AbortController().signal);
+    expect(firstId).toBe(10);
+  } finally {
+    f.db.close();
+  }
+});
