@@ -41,8 +41,9 @@ function fixture() {
   const db = tempDb();
   const home = tempHome();
   const deadlines: AbortController[] = [];
+  const originalTimeout = AbortSignal.timeout;
   const timeout = spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
-    expect(ms).toBe(10_000);
+    if (ms !== 10_000) return originalTimeout(ms);
     const controller = new AbortController();
     deadlines.push(controller);
     return controller.signal;

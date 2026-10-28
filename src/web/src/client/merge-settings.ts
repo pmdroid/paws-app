@@ -18,6 +18,7 @@ const ORDERS: Record<MergeOrder, string> = {
 };
 const MAIN_MOVED: Record<MainMoved, string> = {
   overlap: "Update and re-test only when main changed the same files or package",
+  green: "Merge on green CI without updating the branch onto main",
   ci: "Always update the branch and wait for CI",
   closeout: "Always update the branch and run Closeout again",
 };
@@ -28,6 +29,8 @@ const ORDER_HELP: Record<MergeOrder, string> = {
 };
 const MAIN_MOVED_HELP: Record<MainMoved, string> = {
   overlap: "Needs GitHub's “Require branches to be up to date” rule off for this repository.",
+  green:
+    "Main's new commits are not tested with this change before it merges. Needs GitHub's “Require branches to be up to date” rule off.",
   ci: "Closeout does not run again after the branch update.",
   closeout: "A Closeout re-check starts with a fresh retry budget.",
 };

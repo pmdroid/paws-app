@@ -638,7 +638,7 @@ export type MergeWaitReason = (typeof MERGE_WAIT_REASONS)[number];
 /** Settings → Merging. `queue` merges one at a time per repository. */
 export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
 export type MergeOrderSetting = (typeof MERGE_ORDERS)[number];
-export const MAIN_MOVED_CHOICES = ["overlap", "ci", "closeout"] as const;
+export const MAIN_MOVED_CHOICES = ["overlap", "green", "ci", "closeout"] as const;
 export type MainMovedSetting = (typeof MAIN_MOVED_CHOICES)[number];
 
 /** The merge settings a task resolved, and the issue rule's label when a rule chose them. */
