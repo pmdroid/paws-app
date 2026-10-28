@@ -22,6 +22,7 @@ import {
   getTaskMode,
   getWorkItem,
   immediate,
+  inMergeQueue,
   listHooks,
   pinnedSlotsReserved,
   releasePinnedSlot,
@@ -190,6 +191,45 @@ function versionAtLeast(version: string | null | undefined, minimum: number[]): 
 }
 
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
+
+/**
+ * Where a command for the run goes. A turn that continues the agent session is pinned to the
+ * run's runner, or to the runner holding the session when the run's runner last ran only checks
+ * or a review. Merge-queue work that continues no session, such as a re-verify's checks and
+ * review, is not pinned: it prefers the run's runner and takes any eligible one.
+ */
+function runRunner(
+  db: Database,
+  input: { itemId: string; runId: string; continuesSession: boolean; sessionRunnerId?: string },
+): { pinnedRunnerId?: string; preferRunnerId?: string } {
+  const row = db
+    .query<{ runnerId: string; kind: string | null; envelope: string | null }, [string]>(
+      `SELECT w.runner_id AS runnerId, c.kind, c.envelope FROM runner_work w
+       LEFT JOIN runner_command c ON c.id=w.command_id WHERE w.run_id=?`,
+    )
+    .get(input.runId);
+  if (!row) return {};
+  if (!input.continuesSession && inMergeQueue(db, input.itemId))
+    return { preferRunnerId: row.runnerId };
+  const sessionless =
+    row.kind === "review" ||
+    (row.kind === "run" &&
+      row.envelope !== null &&
+      (
+        JSON.parse(
+          Buffer.from(
+            (JSON.parse(row.envelope) as { payload: string }).payload,
+            "base64url",
+          ).toString("utf8"),
+        ) as { checkpoint?: boolean }
+      ).checkpoint === false);
+  return {
+    pinnedRunnerId:
+      input.continuesSession && sessionless && input.sessionRunnerId
+        ? input.sessionRunnerId
+        : row.runnerId,
+  };
+}
 
 function snapshotCommit(workspace: string, repository: { owner: string; repo: string }) {
   const fd = openSync(`${workspace}.repository.json`, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -440,6 +480,11 @@ export function createRemoteAgentRunner(options: {
     );
     if (pinnedOnline)
       candidates = candidates.filter((runner) => runner.id === placement.pinnedRunnerId);
+    else if (placement.preferRunnerId)
+      candidates = [
+        ...candidates.filter((runner) => runner.id === placement.preferRunnerId),
+        ...candidates.filter((runner) => runner.id !== placement.preferRunnerId),
+      ];
     placement.signal?.throwIfAborted();
     offered.push(...candidates.map((runner) => runner.id));
     const pending = unassigned();
@@ -596,23 +641,23 @@ export function createRemoteAgentRunner(options: {
           );
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
-        const holder =
+        const continuesSession =
           !responseTask &&
           !input.prepareOnly &&
           input.role === "implementer" &&
-          input.checkpoint !== false
-            ? sessionHolder(db, itemId)
-            : undefined;
+          input.checkpoint !== false;
+        const holder = continuesSession ? sessionHolder(db, itemId) : undefined;
         const session = holder?.agent === profile.agent ? { runnerId: holder.runnerId } : undefined;
         const runId = getWorkItem(db, itemId)?.currentRunId;
-        const pinnedRunnerId =
+        const { pinnedRunnerId, preferRunnerId } =
           !input.prepareOnly && runId
-            ? db
-                .query<{ runnerId: string }, [string]>(
-                  "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
-                )
-                .get(runId)?.runnerId
-            : undefined;
+            ? runRunner(db, {
+                itemId,
+                runId,
+                continuesSession,
+                ...(session ? { sessionRunnerId: session.runnerId } : {}),
+              })
+            : {};
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
@@ -620,6 +665,7 @@ export function createRemoteAgentRunner(options: {
           purpose: input.prepareOnly ? "prepare" : "work",
           excludeRunnerIds: excluded,
           ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
+          ...(preferRunnerId ? { preferRunnerId } : {}),
           ...(move.from ? { handedOverFrom: move.from } : {}),
           ...(session ? { session } : {}),
           // A moved run prefers a runner that can continue its saved agent session.
