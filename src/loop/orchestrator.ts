@@ -10,6 +10,7 @@ import {
   jobVersionCurrent,
   recordReviewRounds,
   restartLimit,
+  runnerWorkSettled,
 } from "../db";
 import { journalCaught } from "../journal";
 import { confirmDecision, suggestDecisions } from "../decisions";
@@ -1485,6 +1486,18 @@ export class Orchestrator {
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      // The turn's own Closeout (or another recheck) already owns this item.
+      if (
+        item &&
+        (this.jobContexts.has(item.id) ||
+          (item.currentRunId !== null &&
+            (this.live.has(item.currentRunId) ||
+              (getRun(this.db, item.currentRunId)?.status === "active" &&
+                !runnerWorkSettled(this.db, item.currentRunId, this.now())))))
+      )
+        return;
       await this.failOnLastAttempt(job, context, "reverify", async () => {
         try {
           await this.runLeasedJob(job.payload, context, () =>
@@ -2925,6 +2938,7 @@ export class Orchestrator {
         decide,
         fromCi,
       );
+      if (verdict === null) return;
       await this.recordReviewRounds(item, verdict.owner.runId);
       if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
@@ -3023,7 +3037,7 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     decide = false,
     fromCi: readonly CiResult[] = [],
-  ): Promise<CloseoutVerdict & { owner: VerificationOwner }> {
+  ): Promise<(CloseoutVerdict & { owner: VerificationOwner }) | null> {
     if (!this.options.remoteExecution) {
       this.assertJobCurrent(item.id);
       const owner = getWorkItem(this.db, item.id) ?? item;
@@ -3043,7 +3057,7 @@ export class Orchestrator {
     const priorRunId = item.currentRunId;
     let ownedRunId: string | null = null;
     try {
-      item = immediate(this.db, () => {
+      const owned = immediate(this.db, () => {
         const current = getWorkItem(this.db, item.id);
         if (
           !current ||
@@ -3055,11 +3069,14 @@ export class Orchestrator {
         const prior = current.currentRunId ? getRun(this.db, current.currentRunId) : null;
         if (!prior || prior.itemId !== current.id) throw new Error("Verification run is missing");
         if (prior.status === "active") {
-          if (current.state !== "verifying" || this.live.get(prior.id)?.itemId !== current.id)
-            throw new Error("Verification run is not owned by this operation");
-          return current;
-        }
-        if (prior.status !== "ended" && prior.status !== "lost")
+          if (this.live.get(prior.id)?.itemId === current.id) {
+            if (this.live.has(`operation:${current.id}`)) return null;
+            return current;
+          }
+          if (!runnerWorkSettled(this.db, prior.id, this.now())) return null;
+          // A prior process left this run active. End it before creating the recheck.
+          closeActiveRun(this.db, prior.id, this.now());
+        } else if (prior.status !== "ended" && prior.status !== "lost")
           throw new Error("Prior verification run is still provisioning");
         const snapshot = this.readProfileSnapshot(prior.id);
         if (
@@ -3081,6 +3098,8 @@ export class Orchestrator {
         setCurrentRun(this.db, current.id, run.id);
         return getWorkItem(this.db, current.id)!;
       });
+      if (owned === null) return null;
+      item = owned;
       if (ownedRunId) {
         mkdirSync(runDir(this.options.pawsRoot, ownedRunId), { recursive: true, mode: 0o700 });
         writeFileSync(
@@ -6208,6 +6227,10 @@ export class Orchestrator {
     const moving =
       this.shuttingDown ||
       item.cancelRequested ||
+      (item.currentRunId !== null &&
+        (this.live.has(item.currentRunId) ||
+          (getRun(this.db, item.currentRunId)?.status === "active" &&
+            !runnerWorkSettled(this.db, item.currentRunId, this.now())))) ||
       sessionId === null ||
       findOpenQuestion(this.db, sessionId) !== null ||
       listPendingLinearTurns(this.db, sessionId).length > 0 ||
