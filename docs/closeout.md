@@ -242,7 +242,7 @@ In this repository, the `test` check runs `bun scripts/affected-tests.ts`, which
 - **Other files**, such as docs, run the tests whose source names the changed path.
 - `test/boundaries.test.ts` always runs.
 
-When the diff cannot be read or there is no base, the full suite runs. The check's log starts with the files that ran and why, for example `test/merge-lane.test.ts  imports src/merge` or `full suite (556 files): package.json changed`. `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it.
+When the diff, a test, or an imported helper cannot be read, when import parsing fails, or when there is no base, the full suite runs. Imports are parsed as code so fixture strings and comments do not affect the import graph. The check's log starts with the files that ran and why, for example `test/merge-lane.test.ts  imports src/merge` or `full suite (556 files): package.json changed`. `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it.
 
 ## Review escapes
 

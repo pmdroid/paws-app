@@ -151,3 +151,75 @@ test("an unreadable diff selects everything", () => {
     "affected-tests: full suite (13 files): the diff could not be read",
   );
 });
+
+test("an unreadable test falls back to the full suite", () => {
+  git("checkout", "-q", "--detach", "base");
+  const selection = selectTests({
+    root,
+    changed: ["src/merge/step.ts"],
+    tests: ["test/missing.test.ts"],
+  });
+  expect(selection.full).toBe(true);
+  expect(describeSelection(selection, 1)).toContain("import graph could not be read");
+});
+
+test("an unreadable imported helper falls back to the full suite", () => {
+  git("checkout", "-q", "--detach", "base");
+  write("test/broken.test.ts", 'import "./missing-helper";');
+  const selection = selectTests({
+    root,
+    changed: ["src/merge/step.ts"],
+    tests: ["test/broken.test.ts"],
+  });
+  expect(selection.full).toBe(true);
+  expect(describeSelection(selection, 1)).toContain("import graph could not be read");
+  rmSync(join(root, "test/broken.test.ts"));
+});
+
+test("every entry into a helper cycle sees the module imported by the cycle", () => {
+  git("checkout", "-q", "--detach", "base");
+  write("test/cycle-a.ts", 'import "./cycle-b"; import "../src/merge";');
+  write("test/cycle-b.ts", 'import "./cycle-a";');
+  write("test/cycle-a.test.ts", 'import "./cycle-a";');
+  write("test/cycle-b.test.ts", 'import "./cycle-b";');
+  expect(
+    paths(
+      selectTests({
+        root,
+        changed: ["src/merge/step.ts"],
+        tests: ["test/cycle-a.test.ts", "test/cycle-b.test.ts"],
+      }),
+    ),
+  ).toEqual(["test/cycle-a.test.ts", "test/cycle-b.test.ts"]);
+  for (const path of [
+    "test/cycle-a.ts",
+    "test/cycle-b.ts",
+    "test/cycle-a.test.ts",
+    "test/cycle-b.test.ts",
+  ])
+    rmSync(join(root, path));
+});
+
+test("import-looking fixture strings and comments do not trigger missing-helper fallback", () => {
+  git("checkout", "-q", "--detach", "base");
+  write(
+    "test/fixtures.test.ts",
+    `const fixture = 'import "./missing";'; // import "./also-missing";\nimport "../src/merge";`,
+  );
+  expect(
+    paths(selectTests({ root, changed: ["src/merge/step.ts"], tests: ["test/fixtures.test.ts"] })),
+  ).toEqual(["test/fixtures.test.ts"]);
+  rmSync(join(root, "test/fixtures.test.ts"));
+});
+
+test("a parse error falls back to the full suite", () => {
+  git("checkout", "-q", "--detach", "base");
+  write("test/invalid.test.ts", "import {");
+  expect(
+    selectTests({ root, changed: ["src/merge/step.ts"], tests: ["test/invalid.test.ts"] }),
+  ).toEqual({
+    full: true,
+    reason: "import graph could not be read: cannot parse test/invalid.test.ts",
+  });
+  rmSync(join(root, "test/invalid.test.ts"));
+});

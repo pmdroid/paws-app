@@ -8,6 +8,7 @@
  * Closeout checks out at the candidate head. Anything the script cannot decide runs the full
  * suite. GitHub CI always runs the full suite.
  */
+import { parseSync } from "oxc-parser";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
@@ -27,8 +28,6 @@ export function testFiles(root = "."): string[] {
 }
 
 const SHARED_FILES = new Set(["package.json", "bun.lock", "bunfig.toml"]);
-const IMPORT =
-  /(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\(|\bmock\.module\s*\()\s*["'](\.{1,2}\/[^"']*)["']/g;
 const EXTENSIONS = ["", ".ts", ".tsx", ".js", "/index.ts", "/index.tsx"];
 
 export type Selection =
@@ -94,14 +93,21 @@ export function selectTests(input: {
     else if (!TEST_FILE.test(path)) others.push(path);
   }
   const graph = createImportGraph(root);
-  for (const test of tests) {
-    for (const unit of units) {
-      if (test.startsWith(`${unit}/`)) choose(test, `in ${unit}`);
-      else if (graph.reaches(test).has(unit)) choose(test, `imports ${unit}`);
+  try {
+    for (const test of tests) {
+      for (const unit of units) {
+        if (test.startsWith(`${unit}/`)) choose(test, `in ${unit}`);
+        else if (graph.reaches(test).has(unit)) choose(test, `imports ${unit}`);
+      }
+      if (others.length === 0) continue;
+      const text = graph.read(test);
+      for (const path of others) if (text.includes(path)) choose(test, `mentions ${path}`);
     }
-    if (others.length === 0) continue;
-    const text = graph.read(test);
-    for (const path of others) if (text.includes(path)) choose(test, `mentions ${path}`);
+  } catch (error) {
+    return {
+      full: true,
+      reason: `import graph could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
   if (tests.includes(BOUNDARIES)) choose(BOUNDARIES, "always");
   return {
@@ -112,21 +118,56 @@ export function selectTests(input: {
   };
 }
 
+/** Parse executable imports without treating fixture strings or comments as code. */
+function relativeImports(path: string, text: string): string[] {
+  if (path.endsWith(".json")) return [];
+  const parsed = parseSync(path, text);
+  if (parsed.errors.length) throw new Error(`cannot parse ${path}`);
+  const imports = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value === "string" && /^\.{1,2}\//.test(value)) imports.add(value);
+  };
+  for (const entry of parsed.module.staticImports) add(entry.moduleRequest.value);
+  for (const group of parsed.module.staticExports)
+    for (const entry of group.entries) add(entry.moduleRequest?.value);
+  const record = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    const node = record(value);
+    if (node.type === "ImportExpression") add(record(node.source).value);
+    if (node.type === "CallExpression") {
+      const callee = record(node.callee);
+      if (
+        (callee.type === "Identifier" && callee.name === "require") ||
+        (callee.type === "MemberExpression" &&
+          record(callee.object).name === "mock" &&
+          record(callee.property).name === "module")
+      ) {
+        const argument = Array.isArray(node.arguments) ? node.arguments[0] : undefined;
+        add(record(argument).value);
+      }
+    }
+    for (const child of Object.values(node)) visit(child);
+  };
+  visit(parsed.program);
+  return [...imports];
+}
+
 /**
  * Relative imports, followed through files outside `src/` (test helpers) and stopped at the
  * first `src/` unit they reach.
  */
 function createImportGraph(root: string) {
   const texts = new Map<string, string>();
-  const reached = new Map<string, Set<string>>();
   const read = (path: string): string => {
     let text = texts.get(path);
     if (text === undefined) {
-      try {
-        text = readFileSync(join(root, path), "utf8");
-      } catch {
-        text = "";
-      }
+      text = readFileSync(join(root, path), "utf8");
       texts.set(path, text);
     }
     return text;
@@ -142,19 +183,16 @@ function createImportGraph(root: string) {
     return target;
   };
   const reaches = (path: string, seen = new Set<string>()): Set<string> => {
-    const cached = reached.get(path);
-    if (cached) return cached;
     const units = new Set<string>();
     seen.add(path);
-    for (const match of read(path).matchAll(IMPORT)) {
-      const target = resolve(path, match[1]!);
+    for (const specifier of relativeImports(path, read(path))) {
+      const target = resolve(path, specifier);
       if (target === undefined) continue;
       const unit = sourceUnit(target);
       if (unit !== undefined) units.add(unit);
       else if (!seen.has(target) && !target.includes("node_modules/"))
         for (const found of reaches(target, seen)) units.add(found);
     }
-    reached.set(path, units);
     return units;
   };
   return { read, reaches: (path: string) => reaches(path) };
