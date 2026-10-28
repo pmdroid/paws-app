@@ -189,16 +189,23 @@ export async function advanceMerge(
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
     facts: async (facts) => {
-      const currentRisk = await caps.riskApproval(item, { ...published, head: facts.head });
+      // Only the published candidate is available for evidence reads in this checkout.
+      // A different head may carry a manual approval or normal-tier result through
+      // mergeFacts' recorded rebase check, but must never carry automatic eligibility.
+      const currentRisk =
+        facts.head === published.head
+          ? { head: facts.head, approval: await caps.riskApproval(item, published) }
+          : {
+              head: published.head,
+              approval: riskApproval === "automatic" ? ("missing" as const) : riskApproval,
+            };
       return mergeFacts(
         db,
         item.id,
         facts,
         caps.policyDigest(item, published.worktree),
         mergeSettings.mainMoved,
-        currentRisk === "missing" && riskApproval === "approved"
-          ? { head: published.head, approval: riskApproval }
-          : { head: facts.head, approval: currentRisk },
+        currentRisk,
       );
     },
     rebase: () => rebaseOntoMain(lane),

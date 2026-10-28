@@ -113,3 +113,21 @@ test("a rebased head cannot carry automatic eligibility", async () => {
   expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
   expect(h.github.merged).toHaveLength(0);
 });
+
+test("under ci, a carried normal-tier head still needs no risk approval", async () => {
+  const h = (harness = await mergeHarness({ settings: { mainMoved: "ci" } }));
+  const item = await h.addItem("ENG-1");
+  const reads: string[] = [];
+  h.state.risk = (head) => {
+    reads.push(head);
+    return head === item.accepted ? "not_required" : "missing";
+  };
+  await h.moveMain("side.txt", "side\n");
+  expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+  const head = await h.remoteHead("ENG-1");
+  expect(head).not.toBe(item.accepted);
+  expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+  expect(h.state.riskAsked).toEqual([]);
+  expect(reads.every((read) => read === item.accepted)).toBe(true);
+  expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([head]);
+});
