@@ -27,7 +27,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - run: bun test --parallel=4 --timeout=20000 $(bun scripts/test-shard.ts ${{ matrix.shard }} 4)
+      - run: bun test --parallel=4 --timeout=20000 --no-orphans $(bun scripts/test-shard.ts ${{ matrix.shard }} 4)
 
   check:
     name: lint, format, types, test, dashboard build
