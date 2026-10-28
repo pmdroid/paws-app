@@ -38,7 +38,10 @@ import {
 
 export function createExecutionControlsFixture(
   root: string,
-  options: { interruptItem?: (id: string) => Promise<void> } = {},
+  options: {
+    interruptItem?: (id: string) => Promise<void>;
+    onMemberRevoked?: () => Promise<void>;
+  } = {},
 ) {
   mkdirSync(root, { recursive: true });
   const db = openDatabase(join(root, "controls.sqlite"));
@@ -161,6 +164,7 @@ export function createExecutionControlsFixture(
   const origin = `http://127.0.0.1:${server.port}`;
   const access = createWorkspaceAccess({
     interruptItem: options.interruptItem,
+    onMemberRevoked: options.onMemberRevoked,
     db,
     publicUrl: origin,
     clientId: "client",

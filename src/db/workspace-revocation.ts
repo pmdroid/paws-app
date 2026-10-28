@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { TERMINAL_WORK_ITEM_STATES } from "../core";
 import { applyLinearCommand } from "./commands";
 import { delegatedLinearUserIdSql } from "./linear-sessions";
 import { immediate } from "./tx";
@@ -6,7 +7,6 @@ import {
   auditWorkspaceAccess,
   workspaceMember,
   workspaceMemberUsable,
-  workspaceMemberUsableSql,
   WORKSPACE_REVOKED_RESPONSE,
 } from "./workspace";
 
@@ -23,16 +23,7 @@ export function changeWorkspaceRevocation(
     if (!member) throw new Error("Choose a workspace member.");
     if (input.revoked && input.actorId === input.userId)
       throw new Error("You cannot revoke your own access.");
-    // Defense in depth: the usable admin actor and self-revocation guard also preserve an admin.
-    if (input.revoked && workspaceMemberUsable(member) && member.role === "admin") {
-      const admins = db
-        .query<{ count: number }, [string]>(
-          `SELECT count(*) AS count FROM workspace_member WHERE workspace_id=? AND role='admin'
-         AND ${workspaceMemberUsableSql("workspace_member")}`,
-        )
-        .get(input.workspaceId)!.count;
-      if (admins <= 1) throw new Error("The workspace must keep an active admin.");
-    }
+    // The usable admin actor remains; refusing self-revocation also protects the last admin.
     if ((member.revokedAt !== null) === input.revoked) return [];
     db.run(
       "UPDATE workspace_member SET revoked_at=?,revoked_by=? WHERE workspace_id=? AND user_id=?",
@@ -45,13 +36,23 @@ export function changeWorkspaceRevocation(
     );
     const stopped: string[] = [];
     if (input.revoked) {
+      db.run(
+        `UPDATE member_vm SET runner_id=NULL,updated_at=? WHERE runner_id IN (
+          SELECT id FROM runner WHERE workspace_id=? AND owner_user_id=?)`,
+        [input.now, input.workspaceId, input.userId],
+      );
+      const excludedStates = [...TERMINAL_WORK_ITEM_STATES, "manual"];
       const items = db
-        .query<{ id: string }, [string, string]>(
-          `SELECT i.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
-         JOIN workspace w ON w.linear_organization_id=s.organization_id
-         WHERE w.id=? AND ${delegatedLinearUserIdSql("i", "s")}=? AND i.state NOT IN ('completed','merged','cancelled','manual')`,
+        .query<{ id: string }, string[]>(
+          `SELECT i.id FROM work_item i
+           LEFT JOIN linear_session s ON s.session_id=i.session_key
+           JOIN workspace w ON w.id=?
+           WHERE (s.organization_id IS NULL OR s.organization_id=w.linear_organization_id)
+             AND (i.owner_user_id=? OR
+               (i.owner_user_id IS NULL AND ${delegatedLinearUserIdSql("i", "s")}=?))
+             AND i.state NOT IN (${excludedStates.map(() => "?").join(",")})`,
         )
-        .all(input.workspaceId, member.linearUserId);
+        .all(input.workspaceId, input.userId, member.linearUserId, ...excludedStates);
       for (const item of items) {
         if (
           !applyLinearCommand(

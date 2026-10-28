@@ -63,12 +63,19 @@ export function issueWorkspaceBootstrap(
   return token;
 }
 
+export class WorkspaceAccessRevoked extends Error {
+  constructor() {
+    super(WORKSPACE_REVOKED_SIGN_IN);
+    this.name = "WorkspaceAccessRevoked";
+  }
+}
+
 export function issueWorkspaceSession(
   db: Database,
   input: { userId: string; workspaceId: string; now: number },
 ): { token: string; session: WorkspaceSession } {
   const member = workspaceMember(db, input.workspaceId, input.userId);
-  if (member?.revokedAt != null) throw new Error(WORKSPACE_REVOKED_SIGN_IN);
+  if (member?.revokedAt != null) throw new WorkspaceAccessRevoked();
   if (!workspaceMemberUsable(member)) throw new Error("Workspace membership is required.");
   const token = workspaceSecret();
   const session: WorkspaceSession = {

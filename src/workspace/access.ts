@@ -1,5 +1,4 @@
 import {
-  WORKSPACE_REVOKED_SIGN_IN,
   workspaceMemberUsable,
   auditWorkspaceAccess,
   consumeWorkspaceBootstrap,
@@ -32,6 +31,7 @@ import { handleWorkspaceAdministration, readWorkspaceJson } from "./administrati
 import {
   clearWorkspaceSessionCookie,
   issueWorkspaceSession,
+  WorkspaceAccessRevoked,
   issueWorkspaceBootstrap,
   requestWorkspaceSession,
   validWorkspaceCsrf,
@@ -58,6 +58,7 @@ export type WorkspaceAccessOptions = {
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
   interruptItem?: (itemId: string) => Promise<void>;
+  onMemberRevoked?: () => Promise<void>;
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
   /** Where over-limit counters are reported. Never receives a URL, code, state or cookie. */
@@ -433,6 +434,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           now: now(),
         });
       }
+      if (workspaceMember(options.db, workspace.id, userId)?.revokedAt != null)
+        throw new WorkspaceAccessRevoked();
       syncWorkspaceMember(options.db, {
         workspaceId: workspace.id,
         userId,
@@ -441,8 +444,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         teamIds: identity.teamIds,
         now: syncAt,
       });
-      if (workspaceMember(options.db, workspace.id, userId)?.revokedAt != null)
-        return json({ error: WORKSPACE_REVOKED_SIGN_IN }, 403);
       let location = "/status/";
       if (result.assignmentHash !== null) {
         if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
@@ -484,8 +485,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       );
       return new Response(null, { status: 303, headers });
     } catch (caughtError4) {
-      if (caughtError4 instanceof Error && caughtError4.message === WORKSPACE_REVOKED_SIGN_IN)
-        return json({ error: WORKSPACE_REVOKED_SIGN_IN }, 403);
+      if (caughtError4 instanceof WorkspaceAccessRevoked) {
+        const refusal = json({ error: caughtError4.message }, 403);
+        refusal.headers.append(
+          "set-cookie",
+          "__Host-paws-login=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+        );
+        return refusal;
+      }
       journalCaught(caughtError4, "access.callback.completeWorkspaceOAuth", null);
       return json({ error: "Linear sign-in could not be completed. Start sign-in again." }, 400);
     }
@@ -540,6 +547,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       origin,
       now: now(),
       interruptItem: options.interruptItem,
+      onMemberRevoked: options.onMemberRevoked,
       verifyTeam: options.verifyTeam,
       memberships: options.memberships,
     });

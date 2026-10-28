@@ -630,6 +630,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
       }
       workspace = startWorkspaceAccess({
+        onMemberRevoked: async () => {
+          const coordinator = await runnerReady;
+          coordinator?.control.expireConnections();
+        },
         interruptItem: async (itemId) => {
           await orchestrator?.interruptItem(itemId);
         },

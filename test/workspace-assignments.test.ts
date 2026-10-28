@@ -130,6 +130,7 @@ function fixture({
   let teams = ["team"];
   let failContinue = false;
   let changeAtIntake: (() => void) | undefined;
+  let beforeContinuationIntake: ((event: AcceptedLinearEvent) => void | Promise<void>) | undefined;
   let calls = 0;
   let linearRequests = 0;
   const logs: string[] = [];
@@ -223,6 +224,8 @@ function fixture({
           failContinue = false;
           throw new Error("Interrupted before canonical intake");
         }
+        await beforeContinuationIntake?.(value);
+        beforeContinuationIntake = undefined;
         await orchestrator.onLinearEvent(value);
         const delegationId = getLinearSession(db, "session")!.delegationId!;
         const itemIds = db
@@ -369,7 +372,7 @@ function fixture({
   /** Sends every queued Linear write to the fake tracker, as the outbox would. */
   async function deliver() {
     for (const row of listOutbox(db))
-      if (!delivered.has(row.id)) {
+      if (row.status === "pending" && !delivered.has(row.id)) {
         delivered.add(row.id);
         await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
       }
@@ -438,6 +441,9 @@ function fixture({
     },
     onMemberRead(fn: () => Promise<void>) {
       memberRead = fn;
+    },
+    beforeContinuationIntake(fn: (event: AcceptedLinearEvent) => void | Promise<void>) {
+      beforeContinuationIntake = fn;
     },
     changeAtIntake(fn: () => void) {
       changeAtIntake = fn;
@@ -1905,8 +1911,20 @@ test("revoked members cannot sign in or delegate while Linear still considers th
       revoked: true,
       now: f.clock.now(),
     });
+    f.db.run("UPDATE workspace_member SET active=0,checked_at=0 WHERE user_id='member'");
+    const before = workspaceLinearMember(f.db, "workspace", "member")!;
     const denied = await f.callback(await f.begin(`${f.origin}/auth/linear`));
     expect(denied.status).toBe(403);
+    expect(workspaceLinearMember(f.db, "workspace", "member")).toMatchObject({
+      active: before.active,
+      checkedAt: before.checkedAt,
+      role: before.role,
+      teamIds: before.teamIds,
+      revokedAt: before.revokedAt,
+      revokedBy: before.revokedBy,
+    });
+    expect(denied.headers.get("set-cookie")).toContain("__Host-paws-login=;");
+    expect(denied.headers.get("set-cookie")).toContain("Max-Age=0");
     expect(await denied.json()).toEqual({ error: WORKSPACE_REVOKED_SIGN_IN });
     expect(await f.assignments.authorize(f.event)).toEqual({
       outcome: "refused",
@@ -1927,6 +1945,44 @@ test("revoked members cannot sign in or delegate while Linear still considers th
       now: f.clock.now(),
     });
     expect((await f.callback(await f.begin(`${f.origin}/auth/linear`))).status).toBe(303);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a held delegation revoked during continuation retains its final response", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    expect((await f.callback(await f.begin())).status).toBe(303);
+    f.beforeContinuationIntake(async (event) => {
+      changeWorkspaceRevocation(f.db, {
+        workspaceId: "workspace",
+        actorId: "owner",
+        userId: workspaceLinearMember(f.db, "workspace", "member")!.userId,
+        revoked: true,
+        now: f.clock.now(),
+      });
+      expect(await f.assignments.authorize(event)).toEqual({
+        outcome: "refused",
+        reason: WORKSPACE_REVOKED_RESPONSE,
+        response: true,
+      });
+    });
+    const jobs = f.jobs();
+    await jobs.tick();
+    await jobs.tick();
+    expect(
+      listJobs(f.db)
+        .filter((job) => job.queue === "workspace.assignment" && job.lastError)
+        .map((job) => job.lastError),
+    ).toEqual([]);
+    expect(f.calls).toBe(1);
+    await f.deliver();
+    expect(listWorkItems(f.db)).toHaveLength(0);
+    expect(
+      f.tracker.progress.filter((row) => row.kind === "response").map((row) => row.body),
+    ).toContain(WORKSPACE_REVOKED_RESPONSE);
   } finally {
     await f.close();
   }

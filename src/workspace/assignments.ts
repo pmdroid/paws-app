@@ -96,7 +96,11 @@ type Verified = {
 };
 
 const ACCEPTED: IntakeDecision = { outcome: "accepted" };
-const refused = (reason: string): Refusal => ({ outcome: "refused", reason });
+const refused = (reason: string, response?: true): Refusal => ({
+  outcome: "refused",
+  reason,
+  ...(response ? { response } : {}),
+});
 const retry = (reason: string): Refusal => ({ outcome: "retry", reason });
 
 const SIGN_IN = "It waits until you sign in to Paws with your Linear account.";
@@ -451,7 +455,7 @@ export function createWorkspaceAssignments(options: {
     // A valid Linear member without a Paws sign-in enters the onboarding hold below.
     return eligibility.allowed || eligibility.signIn
       ? null
-      : { ...refused(eligibility.reason), ...(eligibility.response ? { response: true } : {}) };
+      : refused(eligibility.reason, eligibility.response);
   }
   /**
    * The one re-check before a held delegation resumes. It reuses the snapshot stored with the
@@ -508,7 +512,7 @@ export function createWorkspaceAssignments(options: {
    * Ends a hold that may not resume and tells the session why, once. A stopped or replaced
    * session hears nothing: its generation moved on.
    */
-  function refuseHold(hold: Hold, reason: string) {
+  function refuseHold(hold: Hold, reason: string, response = false) {
     immediate(db, () => {
       const latest = holds(hold.sessionId);
       if (latest?.tokenHash !== hold.tokenHash || latest.status === "invalid") return;
@@ -522,8 +526,8 @@ export function createWorkspaceAssignments(options: {
         idempotencyKey: `assignment-refused:${hold.tokenHash}`,
         payload: {
           sessionId: hold.sessionId,
-          kind: "error",
-          body: `Paws did not start this work. ${reason}`,
+          kind: response ? "response" : "error",
+          body: response ? reason : `Paws did not start this work. ${reason}`,
           linearIdentifier: holdIdentifier(hold),
         },
         now: now(),
@@ -602,7 +606,7 @@ export function createWorkspaceAssignments(options: {
         const { teamId } = holdIssue(hold);
         const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
         const eligibility = canAct({ id: hold.actorId, member, teamId }, "delegate");
-        if (!eligibility.allowed) return refused(eligibility.reason);
+        if (!eligibility.allowed) return refused(eligibility.reason, eligibility.response);
         return current(hold) && holds(hold.sessionId)?.status === "accepted"
           ? ACCEPTED
           : refused(STOPPED);
@@ -776,7 +780,7 @@ export function createWorkspaceAssignments(options: {
           );
           if ("outcome" in verified) {
             if (verified.outcome === "retry") throw new Error(verified.reason);
-            return refuseHold(hold, verified.reason);
+            return refuseHold(hold, verified.reason, verified.response);
           }
           const accepted = immediate(db, () => {
             if (!context.isCurrent()) throw new Error("Assignment job claim is no longer current.");
@@ -821,7 +825,7 @@ export function createWorkspaceAssignments(options: {
             if (!(error instanceof LinearIntakeRefusedError)) throw error;
             journalCaught(error, "assignments.register.continue", null);
             if (error.quiet) invalidate(hold);
-            else refuseHold(hold, error.message);
+            else refuseHold(hold, error.message, error.response);
           } finally {
             continuations.delete(event);
           }

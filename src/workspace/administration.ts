@@ -27,6 +27,7 @@ export async function handleWorkspaceAdministration(
     now: number;
     memberships: LinearMembershipReads;
     interruptItem?: (itemId: string) => Promise<void>;
+    onMemberRevoked?: () => Promise<void>;
     verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   },
 ): Promise<Response | null> {
@@ -104,7 +105,7 @@ export async function handleWorkspaceAdministration(
           (typeof body["role"] === "string" && ["admin", "member"].includes(body["role"]))
         )
       )
-        throw new Error("Choose a workspace member and role.");
+        throw new Error("Choose a workspace member and a role, or set revoked to true or false.");
       const member = workspaceMember(options.db, principal.workspaceId, body["userId"]);
       const workspace = getWorkspace(options.db, principal.workspaceId);
       if (member === null || workspace === null) throw new Error("Choose a workspace member.");
@@ -116,6 +117,10 @@ export async function handleWorkspaceAdministration(
           revoked: body["revoked"],
           now: options.now,
         });
+        if (body["revoked"])
+          void Promise.resolve()
+            .then(() => options.onMemberRevoked?.())
+            .catch((error) => journalCaught(error, "administration.revoke.disconnect", null));
         // The durable stop is already committed. Interrupt the attached execution as well.
         for (const itemId of stopped)
           void Promise.resolve()

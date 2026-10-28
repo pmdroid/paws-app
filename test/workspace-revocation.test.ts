@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   changeWorkspaceRevocation,
+  beginImplementRun,
   insertQueuedItem,
   recordLinearInstallation,
   delegatedLinearUserId,
@@ -370,4 +371,108 @@ test("a forced attribution refresh corrects an inactive snapshot after joining a
       await access.stop();
     }
   });
+});
+
+test("revocation stops explicit owners and delegators without session metadata", async () => {
+  await fixtureTest(async ({ db }) => {
+    // A NULL Linear identity is not representable in the shipped schema.
+    expect(() => db.run("UPDATE workspace_user SET linear_user_id=NULL WHERE id='member'")).toThrow(
+      "NOT NULL",
+    );
+    const cases = [
+      ["owner-no-session", "member", "outside", null, true, true],
+      ["owner-missing-session", "member", null, "missing-owner", true, false],
+      ["delegator-no-session", null, "member", null, true, false],
+      ["delegator-missing-session", null, "member", "missing-delegator", true, true],
+      ["other-owner-no-session", "outside", "member", null, false, false],
+      ["unowned-no-session", null, null, null, false, false],
+      ["other-org-owner", "member", null, "foreign-owned", false, false],
+    ] as const;
+    const now = Date.now();
+    for (const [id, owner, delegator, session, , running] of cases) {
+      insertQueuedItem(db, { id, now });
+      db.run("UPDATE work_item SET owner_user_id=?,delegated_by=?,session_key=? WHERE id=?", [
+        owner,
+        delegator,
+        session,
+        id,
+      ]);
+      if (session === "foreign-owned")
+        recordLinearInstallation(db, {
+          sessionId: session,
+          organizationId: "foreign",
+          teamId: "team",
+          oauthClientId: "client",
+          appUserId: "app",
+          observedAtMs: now,
+        });
+      if (running) beginImplementRun(db, id, now);
+    }
+    const stopped = changeWorkspaceRevocation(db, {
+      workspaceId: "workspace",
+      actorId: "admin",
+      userId: "member",
+      revoked: true,
+      now,
+    });
+    const expected = cases.filter((c) => c[4]);
+    expect(new Set(stopped)).toEqual(new Set(expected.map((c) => c[0])));
+    for (const [id, , , , stop] of cases)
+      expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
+    const responses = listOutbox(db)
+      .map((row) => row.payload as { body?: string; sessionId?: string })
+      .filter((row) => row.body === WORKSPACE_REVOKED_RESPONSE);
+    expect(new Set(responses.map((row) => row.sessionId))).toEqual(
+      new Set(expected.map((c) => c[3] ?? c[0])),
+    );
+  });
+});
+
+test("revoking an idle member detaches their VM runner and notifies the connection owner after commit", async () => {
+  let calls = 0;
+  let committed = false;
+  let database: Parameters<typeof changeWorkspaceRevocation>[0];
+  await fixtureTest(
+    async (f) => {
+      database = f.db;
+      const now = Date.now();
+      f.db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('idle-box','workspace','member','Idle','active',?)",
+        [now],
+      );
+      f.db.run(
+        "INSERT INTO member_vm(id,workspace_id,user_id,vm_name,step,runner_id,step_started_at,created_at,updated_at) VALUES('vm','workspace','member','vm-idle','ready','idle-box',?,?,?)",
+        [now, now, now],
+      );
+      const response = await fetch(`${f.origin}/api/workspaces/members`, {
+        method: "PUT",
+        headers: f.headers("admin"),
+        body: JSON.stringify({ userId: "member", revoked: true }),
+      });
+      expect(response.status).toBe(200);
+      expect(calls).toBe(1);
+      expect(committed).toBe(true);
+      expect(f.db.query("SELECT runner_id FROM member_vm WHERE id='vm'").get()).toEqual({
+        runner_id: null,
+      });
+      expect(f.db.query("SELECT status FROM runner WHERE id='idle-box'").get()).toEqual({
+        status: "revoked",
+      });
+      const restore = await fetch(`${f.origin}/api/workspaces/members`, {
+        method: "PUT",
+        headers: f.headers("admin"),
+        body: JSON.stringify({ userId: "member", revoked: false }),
+      });
+      expect(restore.status).toBe(200);
+      expect(calls).toBe(1);
+    },
+    {
+      onMemberRevoked: async () => {
+        calls++;
+        committed =
+          !database.inTransaction &&
+          workspaceMember(database, "workspace", "member")?.revokedAt !== null;
+      },
+    },
+  );
 });
