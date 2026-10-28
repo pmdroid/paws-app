@@ -41,7 +41,7 @@ const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "respon
 
 /**
  * Deliver `linear` outbox rows to the tracker.
- * `activity` / `linear.activity` post progress. `linear.catchup` runs the poller.
+ * `activity` posts progress. `linear.catchup` runs the poller.
  * `linear.evidence` uploads a Closeout file and posts it inline.
  */
 export async function deliverLinearOutbox(
@@ -112,7 +112,7 @@ export async function deliverLinearOutbox(
     if (!db) throw new Error("Sub-issue filing needs the database");
     return fileSubIssues(message, payload, tracker, db, options);
   }
-  if (message.op === "activity" || message.op === "linear.activity") {
+  if (message.op === "activity") {
     const terminal =
       (payload.kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(message.idempotencyKey)) ||
       (payload.kind === "thought" && AFTER_PULL_REQUEST_THOUGHT.test(message.idempotencyKey));

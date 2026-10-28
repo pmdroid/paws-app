@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { JOB_KIND, MERGE_LANE } from "../core";
+import { JOB_KIND } from "../core";
 import {
   accrueAwake,
   applyWorkItemEvent,
@@ -85,7 +85,6 @@ describe("journal", () => {
     completeJob(db, claim(db, JOB_KIND.resume), 1_000);
     enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "b" },
       maxAttempts: 1,
       now: 0,

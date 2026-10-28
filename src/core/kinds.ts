@@ -25,8 +25,6 @@ export const JOB_KIND = {
   runnerSetupCheck: "runner_setup.check",
 } as const;
 
-export const MERGE_LANE = "merge";
-
 /** Activity rows the host posts. Delivery to Linear is a later dispatcher. */
 export const OUTBOX_ACTIVITY = {
   target: "linear",
@@ -36,15 +34,8 @@ export const OUTBOX_ACTIVITY = {
 export const MERGE_WORK = {
   queue: JOB_KIND.merge,
   queuePrefix: `${JOB_KIND.merge}.`,
-  lane: MERGE_LANE,
-  lanePrefix: `${MERGE_LANE}:`,
 } as const;
 
-export function isMergeWork(queue: string, lane: string): boolean {
-  return (
-    queue === MERGE_WORK.queue ||
-    queue.startsWith(MERGE_WORK.queuePrefix) ||
-    lane === MERGE_WORK.lane ||
-    lane.startsWith(MERGE_WORK.lanePrefix)
-  );
+export function isMergeWork(queue: string): boolean {
+  return queue === MERGE_WORK.queue || queue.startsWith(MERGE_WORK.queuePrefix);
 }
