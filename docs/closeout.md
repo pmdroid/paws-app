@@ -208,6 +208,28 @@ retry:
 
 `maxFailedAttemptsPerItem` remains a legacy alias for `attempts_per_check`. The legacy `[merge] ci_fix_attempts` setting in `config.toml` no longer sets a separate CI budget; CI fixes count against `fix_rounds_per_item`. `[merge] main_moved` decides whether a rebased head runs Closeout again; see the [configuration reference](configuration.md#merge).
 
+### Re-checks take green CI
+
+A command check can name the GitHub checks that run the same command in CI with `ci:`, one pattern where `*` matches any text:
+
+```yaml
+- id: test
+  kind: command
+  gate: beforePR
+  exec: ["bun", "run", "test"]
+  timeoutSeconds: 1800
+  ci: "test (*)"
+```
+
+A re-check of an item already in the merge queue (after a CI fix, a conflict fix, or a re-verify) reads CI on the pull request head before it runs Closeout. A first Closeout run, before Closeout ever accepted a head, is unchanged.
+
+- **CI green.** Each mapped check whose pattern matches at least one check, all `SUCCESS`, is recorded as passed from CI: the record keeps the run URL and each check's conclusion, and its line reads "from CI run <link>: `test (0/4)` success, …". The other checks, the rules, the reviews and the evidence checks run on the new head as usual. On a remote runner, the checks run tells the agent to skip the mapped ids.
+- **CI pending.** The re-check waits for it, reading again every 15 seconds for up to 45 minutes, rather than running the suite itself. After that it runs the checks.
+- **CI red.** No check runs: the item goes to a CI fix round, `restart(item, ci)` with the failing checks, while fix rounds are left. With none left, the checks run and Paws asks as usual.
+- **CI unreadable,** or the head is not the pull request's: the checks run as before.
+
+`ci:` is a Paws extension to the policy schema, so a runner older than the change rejects a policy that uses it: ship the deploy and the runner release before the policy.
+
 ## Review escapes
 
 A review escape is a bug that Closeout's independent review accepted and a later pull request had to fix. `evals/review-escapes.jsonl` collects the confirmed ones, so a change to the reviewer can be scored against real misses instead of guessed.
