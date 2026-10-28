@@ -115,15 +115,15 @@ async function delegate(refusal: string) {
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     retryBaseMs: 10,
     publicationGitExec: gitExec,
-    github: {
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: privateKey as string,
       client: githubClient(layout.bare, createFakeGitHub()),
-    },
+    }),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `outage-${sequence}.json`);
