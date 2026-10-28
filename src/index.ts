@@ -366,12 +366,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
   let executionControls: ReturnType<typeof createExecutionControls> | null = null;
-  const repository = repositoryBinding(runtime.repo);
-  const repositories = [runtime.repo, ...runtime.file.githubRepos]
+  const repositories = runtime.repos
     .map(repositoryBinding)
     .filter((value): value is RepositoryBinding => value !== null);
-  const auth = repository === null ? null : authProvider(runtime, repository, "write", resolveApp);
-  const github = githubBinding(auth);
   const listCatalog = async () => {
     const client = createFetchGitHubClient();
     const lists = await Promise.all(
@@ -659,7 +656,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
   const commitPolicyForItem = async (
     item: WorkItemRecord,
-    selected = getWorkItemRepository(db, item.id) ?? repository,
+    selected = getWorkItemRepository(db, item.id),
   ): Promise<GitCommitPolicy> => {
     if (!selected) throw new Error("Attribution repository is missing");
     const bot = await authProvider(runtime, selected, "read", resolveApp)?.botIdentity?.();
@@ -1125,7 +1122,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             : true,
         scheduling: () => {
           enqueueMissingSnapshots();
-          return { defaultRepository: repository, ownerCap: ownerCap(paths.configFile) };
+          return { ownerCap: ownerCap(paths.configFile) };
         },
         publicationReady: (
           ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
@@ -1276,7 +1273,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         catchUp: async () => {
           await running.catchUp();
         },
-        repository,
         repositories,
         repositoryAccess: async (candidate, signal, access) => {
           const provider = authProvider(runtime, candidate, access, resolveApp);
@@ -1297,7 +1293,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           signal.throwIfAborted();
           return token;
         },
-        github,
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
@@ -1473,7 +1468,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
     },
     restartFromMain: (item) => {
-      const selected = getWorkItemRepository(db, item.id) ?? repository;
+      const selected = getWorkItemRepository(db, item.id);
       if (selected === null) return;
       const policy = getItemRunCommitPolicy(db, item.id);
       if (!policy) return;

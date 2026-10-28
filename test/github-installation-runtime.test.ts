@@ -48,7 +48,9 @@ function fixture(launch?: AgentLaunch) {
     githubInstallation: host,
     linearTaskModes: true,
     launch,
-    repository: { owner: "acme", repo: "app", remoteUrl: "https://github.example/acme/app.git" },
+    repositories: [
+      { owner: "acme", repo: "app", remoteUrl: "https://github.example/acme/app.git" },
+    ],
   });
   workspaceDispatch(db, { now: clock.now() });
   return { db, home, clock, item, jobs, outbox, host, tracker, orchestrator };

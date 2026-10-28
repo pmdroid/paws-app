@@ -341,7 +341,7 @@ export async function probeRunnerOrchestration(
       pawsRoot: home,
       home,
       tracker,
-      repository: { owner: "acme", repo: "fixture", remoteUrl: origin },
+      repositories: [{ owner: "acme", repo: "fixture", remoteUrl: origin }],
       ...(scenario === "success"
         ? {
             githubInstallation: {

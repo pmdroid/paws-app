@@ -84,7 +84,7 @@ for await (const line of createInterface({ input: process.stdin })) {
           pawsRoot,
           home: root,
           tracker: createFakeTracker(),
-          repository: { owner: "acme", repo: "app", remoteUrl: bare },
+          repositories: [{ owner: "acme", repo: "app", remoteUrl: bare }],
           launch(input) {
             launches++;
             if (input.role === lostRole)

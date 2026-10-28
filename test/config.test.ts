@@ -163,10 +163,11 @@ describe("config", () => {
     const runtime = loadRuntime({
       PAWS_HOME: home,
       PAWS_GITHUB_REPOSITORY: "other/repo",
+      PAWS_CHECKOUT: "/elsewhere",
     });
     expect(runtime.configured).toBe(true);
     expect(runtime.linearAccessToken).toBe("lin_oauth_from_file");
-    expect(runtime.repo).toBe("other/repo");
+    expect(runtime.repos).toEqual(["pmdroid/paws-demo"]);
     expect(runtime.githubAuth).toBe("app");
     expect(runtime.maxTurns).toBe(40);
     expect(runtime.webhooks).toBe(false);

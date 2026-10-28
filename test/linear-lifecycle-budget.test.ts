@@ -391,8 +391,8 @@ async function runTask(input: {
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: privateKey as string,
@@ -420,7 +420,7 @@ async function runTask(input: {
           return { status: 200, body };
         },
       },
-    },
+    }),
     launch,
     linearTaskModes: true,
     linearAccess: gate,

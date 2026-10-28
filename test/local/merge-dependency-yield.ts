@@ -50,8 +50,10 @@ export async function probeMergeDependencyYield(
       clock,
       pawsRoot: directory,
       ...(guard ? { admission: createAdmission({ db, authority: guard }) } : {}),
-      repository: { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" },
-      github: {
+      repositories: [
+        { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" },
+      ],
+      githubForRepository: () => ({
         appId: "",
         installationId: "",
         privateKeyPem: "",
@@ -61,7 +63,7 @@ export async function probeMergeDependencyYield(
             throw new Error("Workspace publication must be held");
           },
         },
-      },
+      }),
     });
     try {
       enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "item" }, now: clock.now() });
