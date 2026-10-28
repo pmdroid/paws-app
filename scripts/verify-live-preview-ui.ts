@@ -102,6 +102,9 @@ try {
       const beforePoll = loaded;
       await page.waitForTimeout(5500);
       expect(loaded).toBe(beforePoll);
+      // The next preview can reuse this service URL; its new lifetime must reload the app.
+      preview.expiresAt += 1;
+      await expect.poll(() => loaded, { timeout: 10000 }).toBe(beforePoll + 1);
       await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
       await page.screenshot({ path: join(directory, `${theme}-${width}.png`), fullPage: true });
       preview.frameable = false;
