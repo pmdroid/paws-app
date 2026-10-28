@@ -32,6 +32,18 @@ import {
   unitPaths,
   writeIfChanged,
 } from "./files";
+import {
+  aclLines,
+  checkTls,
+  fetchTailnetCert,
+  RENEW_SERVICE,
+  RENEW_TIMER,
+  renderRenewService,
+  renderRenewTimer,
+  tailnetHost,
+  tailnetTlsPaths,
+  type TlsPaths,
+} from "./tls";
 
 export const BUN_VERSION = "1.4.2";
 export const MISE_BUN_COMMAND = `mise use -g bun@${BUN_VERSION}`;
@@ -54,6 +66,8 @@ export type InstallHostDeps = {
   prompt: Prompt | null;
   findBun(): Promise<BunInfo | null>;
   systemctl(args: string[]): Promise<number>;
+  /** The `tailscale` CLI, or null when it is not on PATH. */
+  tailscale: string | null;
   out(line: string): void;
 };
 
@@ -67,6 +81,8 @@ export type InstallArgs = {
 export const INSTALL_HELP = `usage: paws install [--non-interactive] [--answers <file.toml>] [--<key> <value>]...
 
 Writes PAWS_HOME/${ENV_FILE}, config.toml and the systemd user unit, then reloads systemd.
+A public dashboard on a *.ts.net URL can fetch its certificate with tailscale cert and
+renews it weekly with ${RENEW_TIMER}.
 Keys: ${ANSWER_KEYS.map((key) => key.replaceAll("_", "-")).join(", ")}.
 An answers file uses the same keys with underscores. Flags override it.`;
 
@@ -155,6 +171,17 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
   await resolve("member_vm_memory_gb", size?.memoryGb === undefined ? "" : String(size.memoryGb));
   await resolve("member_vm_disk_gb", size?.diskGb === undefined ? "" : String(size.diskGb));
   await resolve("member_vm_image", size?.image ?? "");
+  const tailnet = raw.paws_public_dashboard === "yes" ? tailnetHost(raw.paws_public_url!) : null;
+  let renew: TlsPaths | null = null;
+  if (raw.paws_public_dashboard === "yes") {
+    const tls = await resolveTls(paths.home, envNow, given, raw, tailnet, deps);
+    raw.tls_key_path = tls.paths.key;
+    raw.tls_cert_path = tls.paths.cert;
+    if (tls.fetched) renew = tls.paths;
+  } else {
+    raw.tls_key_path = envNow.PAWS_TLS_KEY_PATH ?? "";
+    raw.tls_cert_path = envNow.PAWS_TLS_CERT_PATH ?? "";
+  }
   deps.prompt?.close?.();
 
   const answers = toAnswers(raw as Required<RawAnswers>);
@@ -168,6 +195,17 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
     writeIfChanged(units.unit, renderUnit({ envFile: envPath, bun: bun.path }), 0o644) &&
       units.unit,
     writeIfChanged(units.dropIn, renderDropIn(answers.checkout), 0o644) && units.dropIn,
+    ...(renew === null || tailnet === null || deps.tailscale === null
+      ? []
+      : [
+          writeIfChanged(
+            join(dirname(units.unit), RENEW_SERVICE),
+            renderRenewService({ tailscale: deps.tailscale, host: tailnet, paths: renew }),
+            0o644,
+          ) && join(dirname(units.unit), RENEW_SERVICE),
+          writeIfChanged(join(dirname(units.unit), RENEW_TIMER), renderRenewTimer(), 0o644) &&
+            join(dirname(units.unit), RENEW_TIMER),
+        ]),
   ].filter((path): path is string => typeof path === "string");
   deps.out(
     written.length === 0 ? "Nothing changed." : written.map((path) => `Wrote ${path}`).join("\n"),
@@ -179,8 +217,79 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
     deps.out(`systemctl --user daemon-reload exited ${reload}.`);
     return 1;
   }
+  if (renew !== null) {
+    const enable = await deps.systemctl(["--user", "enable", "--now", RENEW_TIMER]);
+    if (enable !== 0) {
+      deps.out(`systemctl --user enable --now ${RENEW_TIMER} exited ${enable}.`);
+      return 1;
+    }
+    deps.out(`${RENEW_TIMER} renews the tailnet certificate weekly and reloads Paws.`);
+  }
   deps.out("Reloaded the systemd user units. The service is not started yet.");
+  if (answers.publicDashboard && answers.runnerHost)
+    deps.out(
+      `The runner listener on PAWS_RUNNER_PORT ${answers.runnerPort} uses the same certificate.`,
+    );
+  if (tailnet !== null)
+    for (const line of aclLines(answers.port, answers.runnerPort)) deps.out(line);
   return 0;
+}
+
+/**
+ * The public dashboard's key and certificate. On a tailnet URL, offers `tailscale cert`
+ * into `PAWS_HOME/tls`; otherwise, or when that fails, asks for existing paths.
+ * A pair that fails `public-tls validate` is explained and asked again.
+ */
+async function resolveTls(
+  pawsHome: string,
+  envNow: Record<string, string>,
+  given: RawAnswers,
+  raw: RawAnswers,
+  tailnet: string | null,
+  deps: InstallHostDeps,
+): Promise<{ paths: TlsPaths; fetched: boolean }> {
+  const managed = tailnet === null ? null : tailnetTlsPaths(pawsHome, tailnet);
+  const keyNow = envNow.PAWS_TLS_KEY_PATH ?? "";
+  // Offer tailscale cert unless the env already points elsewhere or it just gave a bad pair.
+  let offer = keyNow !== "" && keyNow !== managed?.key ? "no" : "yes";
+  for (;;) {
+    let paths: TlsPaths | null = null;
+    let fetched = false;
+    if (managed !== null) {
+      raw.tailscale_cert = await answer("tailscale_cert", offer, given.tailscale_cert, raw, deps);
+      if (raw.tailscale_cert === "yes") {
+        const failure = await fetchTailnetCert(deps.tailscale, tailnet!, managed);
+        if (failure === null) {
+          paths = managed;
+          fetched = true;
+        } else deps.out(failure);
+      }
+    }
+    if (paths === null) {
+      raw.tls_key_path = await answer("tls_key_path", keyNow, given.tls_key_path, raw, deps);
+      raw.tls_cert_path = await answer(
+        "tls_cert_path",
+        envNow.PAWS_TLS_CERT_PATH ?? "",
+        given.tls_cert_path,
+        raw,
+        deps,
+      );
+      paths = { key: raw.tls_key_path, cert: raw.tls_cert_path };
+    }
+    const problem = checkTls({
+      pawsHome,
+      publicUrl: raw.paws_public_url!,
+      runnerHost: raw.paws_runner_host!,
+      paths,
+    });
+    if (problem === null) return { paths, fetched };
+    if (deps.prompt === null) throw new Error(`TLS: ${problem}`);
+    deps.out(`  ${problem}`);
+    if (fetched) offer = "no";
+    delete given.tailscale_cert;
+    delete given.tls_key_path;
+    delete given.tls_cert_path;
+  }
 }
 
 async function answer(
@@ -257,6 +366,7 @@ export function realInstallHostDeps(nonInteractive: boolean): InstallHostDeps {
         return 127;
       }
     },
+    tailscale: Bun.which("tailscale"),
     out: (line) => console.log(line),
   };
 }

@@ -24,3 +24,14 @@ export {
   unitPaths,
 } from "./files";
 export type { UnitPaths } from "./files";
+export {
+  aclLines,
+  fakeTailscale,
+  RENEW_SERVICE,
+  RENEW_TIMER,
+  renderRenewService,
+  renderRenewTimer,
+  tailnetHost,
+  tailnetTlsPaths,
+} from "./tls";
+export type { TlsPaths } from "./tls";

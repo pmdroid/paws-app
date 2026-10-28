@@ -21,6 +21,8 @@ export type InstallAnswers = {
   githubRepos: string[];
   /** `[member_vm]`: the exe.dev size Create VM asks for. A missing field sends no flag. */
   memberVm: MemberVmSize;
+  tlsKeyPath: string;
+  tlsCertPath: string;
 };
 
 export const ANSWER_KEYS = [
@@ -38,6 +40,9 @@ export const ANSWER_KEYS = [
   "member_vm_memory_gb",
   "member_vm_disk_gb",
   "member_vm_image",
+  "tailscale_cert",
+  "tls_key_path",
+  "tls_cert_path",
 ] as const;
 
 export type AnswerKey = (typeof ANSWER_KEYS)[number];
@@ -93,6 +98,9 @@ export const FIELDS: Record<AnswerKey, Field> = {
   member_vm_memory_gb: memberVmField("exe.dev runner VM memory in GB (--memory)", "memory_gb"),
   member_vm_disk_gb: memberVmField("exe.dev runner VM disk in GB (--disk)", "disk_gb"),
   member_vm_image: memberVmField("exe.dev runner VM image (--image)", "image"),
+  tailscale_cert: { question: "Run tailscale cert for the public host (yes/no)", check: yesNo },
+  tls_key_path: { question: "PAWS_TLS_KEY_PATH", check: (value, _, home) => path(value, home) },
+  tls_cert_path: { question: "PAWS_TLS_CERT_PATH", check: (value, _, home) => path(value, home) },
 };
 
 /** An optional `[member_vm]` key, checked as config.toml checks it. Empty keeps exe.dev's default. */
@@ -127,6 +135,8 @@ export function toAnswers(raw: Required<RawAnswers>): InstallAnswers {
       ...(raw.member_vm_disk_gb ? { diskGb: Number(raw.member_vm_disk_gb) } : {}),
       ...(raw.member_vm_image ? { image: raw.member_vm_image } : {}),
     },
+    tlsKeyPath: raw.tls_key_path,
+    tlsCertPath: raw.tls_cert_path,
   };
 }
 

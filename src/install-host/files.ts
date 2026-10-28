@@ -25,6 +25,8 @@ const MANAGED_ENV = [
   "PAWS_PUBLIC_DASHBOARD",
   "PAWS_RUNNER_HOST",
   "PAWS_RUNNER_PORT",
+  "PAWS_TLS_KEY_PATH",
+  "PAWS_TLS_CERT_PATH",
 ] as const;
 
 /** `KEY=value` pairs from an env file. Values are never printed. */
@@ -49,6 +51,8 @@ export function renderEnvFile(current: string, answers: InstallAnswers): string 
     PAWS_PUBLIC_DASHBOARD: answers.publicDashboard ? "1" : "0",
     PAWS_RUNNER_HOST: answers.runnerHost || null,
     PAWS_RUNNER_PORT: answers.runnerHost ? String(answers.runnerPort) : null,
+    PAWS_TLS_KEY_PATH: answers.tlsKeyPath || null,
+    PAWS_TLS_CERT_PATH: answers.tlsCertPath || null,
   };
   const written = new Set<string>();
   const lines: string[] = [];
