@@ -556,6 +556,7 @@ export {
 } from "./linear-reads";
 export type { TaskMergeSettings } from "./merge-settings";
 export {
+  inMergeQueue,
   joinMergeQueue,
   leaveMergeQueue,
   listMergeQueues,

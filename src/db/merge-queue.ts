@@ -36,6 +36,18 @@ export function leaveMergeQueue(db: Database, itemId: string): void {
   db.run("DELETE FROM merge_queue_entry WHERE item_id=?", [itemId]);
 }
 
+/** Whether the task holds a place in a merge queue: `merge_queue`, or `verifying` in it. */
+export function inMergeQueue(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM merge_queue_entry e JOIN work_item w ON w.id = e.item_id
+         WHERE e.item_id = ? AND w.state IN ${HOLDING} AND w.cancel_requested = 0`,
+      )
+      .get(itemId) !== null
+  );
+}
+
 export function markMergeQueueNotified(db: Database, itemId: string, position: number): void {
   db.run("UPDATE merge_queue_entry SET notified_position=? WHERE item_id=?", [position, itemId]);
 }
