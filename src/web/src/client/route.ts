@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import type { StatusSnapshot } from "../contract";
+import { hasStatusSlice, type StatusSlice, type StatusSnapshot } from "../contract";
 import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 
 export type Route =
@@ -77,8 +77,27 @@ export function routeHref(route: Route): string {
   return `${routerBase(page?.pathname ?? "")}${routePath(route)}`;
 }
 
+export const ROUTE_SLICES: Record<Route["view"], readonly StatusSlice[]> = {
+  overview: ["items", "questions", "mergeQueue", "intake"],
+  issues: ["items"],
+  runs: ["items"],
+  mergeQueue: ["items", "mergeQueue", "mergeHistory"],
+  questions: ["items", "questions"],
+  evidence: ["items", "evidence"],
+  runners: [],
+  settings: [],
+};
+
+export function routeSlices(route: Route): readonly StatusSlice[] {
+  return ROUTE_SLICES[route.view];
+}
+
+export function routeCovered(route: Route, snapshot: StatusSnapshot | null): boolean {
+  return routeSlices(route).every((slice) => hasStatusSlice(snapshot, slice));
+}
+
 export function needsSnapshot(route: Route): boolean {
-  return ["overview", "issues", "runs", "mergeQueue", "questions", "evidence"].includes(route.view);
+  return routeSlices(route).length > 0;
 }
 
 const FOLDED = new Set(["runs", "sessions", "verdicts"]);
@@ -90,7 +109,7 @@ const FOLDED = new Set(["runs", "sessions", "verdicts"]);
  * Null when the path is not one of those, or the snapshot has not arrived yet.
  */
 export function issueRedirect(path: string, snapshot: StatusSnapshot | null): string | null {
-  if (!snapshot) return null;
+  if (!hasStatusSlice(snapshot, "items")) return null;
   const head = path
     .replace(/^#/, "")
     .split("/")
