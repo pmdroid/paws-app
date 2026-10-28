@@ -220,10 +220,12 @@ export async function probeExecutionControls(root: string) {
       (await fetch(`${fixture.origin}/api/execution-controls?itemId=controlled`)).status,
       401,
     );
-    for (const identity of ["observer", "outside"])
-      assert.equal((await call(undefined, identity)).status, 403);
-    for (const item of ["foreign", "unmapped"])
-      assert.equal((await call(undefined, "owner", item)).status, 403);
+    const none = async (response: Response) => {
+      assert.equal(response.status, 200);
+      assert.deepEqual(((await response.json()) as { actions: string[] }).actions, []);
+    };
+    for (const identity of ["observer", "outside"]) await none(await call(undefined, identity));
+    for (const item of ["foreign", "unmapped"]) await none(await call(undefined, "owner", item));
     assert.equal((await call(undefined, "owner")).status, 200);
     assert.deepEqual(((await (await call()).json()) as { actions: string[] }).actions, [
       "stop",
