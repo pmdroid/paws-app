@@ -24,6 +24,12 @@ function isMemberVmImage(value: string): boolean {
   return IMAGE.test(value);
 }
 
+export type MemberVmKey = (typeof MEMBER_VM_KEYS)[number];
+
+export function isMemberVmKey(key: string): key is MemberVmKey {
+  return (MEMBER_VM_KEYS as readonly string[]).includes(key);
+}
+
 /** Assign one `[member_vm]` key, or throw with the line number. */
 export function assignMemberVmKey(
   size: MemberVmSize,
@@ -31,31 +37,38 @@ export function assignMemberVmKey(
   value: string | number | boolean | string[],
   line: number,
 ): void {
-  if (key === "cpu") size.cpu = positive(value, line, key, MAX_MEMBER_VM_CPU);
-  else if (key === "memory_gb") size.memoryGb = positive(value, line, key, MAX_MEMBER_VM_MEMORY_GB);
-  else if (key === "disk_gb") size.diskGb = positive(value, line, key, MAX_MEMBER_VM_DISK_GB);
-  else if (key === "image") {
-    if (typeof value !== "string" || !isMemberVmImage(value))
-      throw new Error(
-        `config.toml line ${line} member_vm.image must be an image name such as "ubuntu:24.04"`,
-      );
-    size.image = value;
-  } else
+  if (!isMemberVmKey(key))
     throw new Error(
       `config.toml line ${line} has an unknown key: member_vm.${key} (use ${MEMBER_VM_KEYS.join(", ")})`,
     );
+  let checked: number | string;
+  try {
+    checked = checkMemberVmValue(key, value);
+  } catch (error) {
+    throw new Error(`config.toml line ${line} ${(error as Error).message}`, { cause: error });
+  }
+  if (key === "cpu") size.cpu = checked as number;
+  else if (key === "memory_gb") size.memoryGb = checked as number;
+  else if (key === "disk_gb") size.diskGb = checked as number;
+  else size.image = checked as string;
 }
 
-function positive(
+/** One `[member_vm]` value, checked as config.toml and `paws install` take it. */
+export function checkMemberVmValue(
+  key: MemberVmKey,
   value: string | number | boolean | string[],
-  line: number,
-  key: string,
-  max: number,
-): number {
+): number | string {
+  if (key === "cpu") return positive(value, key, MAX_MEMBER_VM_CPU);
+  if (key === "memory_gb") return positive(value, key, MAX_MEMBER_VM_MEMORY_GB);
+  if (key === "disk_gb") return positive(value, key, MAX_MEMBER_VM_DISK_GB);
+  if (typeof value !== "string" || !isMemberVmImage(value))
+    throw new Error('member_vm.image must be an image name such as "ubuntu:24.04"');
+  return value;
+}
+
+function positive(value: string | number | boolean | string[], key: string, max: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > max)
-    throw new Error(
-      `config.toml line ${line} member_vm.${key} must be a whole number from 1 to ${max}`,
-    );
+    throw new Error(`member_vm.${key} must be a whole number from 1 to ${max}`);
   return value;
 }
 
