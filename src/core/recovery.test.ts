@@ -37,6 +37,17 @@ describe("startup recovery", () => {
     });
   });
 
+  test("re-verifies a verifying item whose runner still holds its Closeout work", () => {
+    expect(
+      decideStartup({
+        itemState: "verifying",
+        recoveryAttempts: 1,
+        checkpoint: checkpoint("verifying"),
+        runnerHoldsWork: true,
+      }),
+    ).toEqual({ type: "reverify" });
+  });
+
   test("asks whether to start again when the item was already resumed", () => {
     expect(
       decideStartup({
