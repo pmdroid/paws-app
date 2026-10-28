@@ -217,8 +217,8 @@ test("a second click, or the same finding on another item, returns the issue and
 test("two clicks at once file one issue", async () => {
   const { tracker, post } = setup();
   const [first, second] = await Promise.all([post(fileOld()), post(fileOld())]);
-  expect((await first!.json()).identifier).toBe("FAKE-1");
-  expect((await second!.json()).identifier).toBe("FAKE-1");
+  expect(await first!.json()).toMatchObject({ identifier: "FAKE-1" });
+  expect(await second!.json()).toMatchObject({ identifier: "FAKE-1" });
   expect(tracker.findingIssueRequests).toHaveLength(1);
 });
 
