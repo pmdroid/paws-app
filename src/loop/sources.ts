@@ -17,14 +17,24 @@ export function itemPathId(item: {
     : name;
 }
 
-export function taskBranchKey(
-  item: Pick<WorkItemRecord, "id" | "taskKey" | "linearIssueId" | "linearIdentifier">,
-): string {
-  return itemPathId(item).toLowerCase();
+type BranchItem = Pick<
+  WorkItemRecord,
+  "id" | "taskKey" | "linearIssueId" | "linearIdentifier" | "continuesBranch"
+>;
+
+/** An item that continues an earlier one pushes to that item's branch, so its pull request stays. */
+export function taskBranchKey(item: BranchItem): string {
+  const continued = item.continuesBranch?.startsWith("paws/")
+    ? item.continuesBranch.slice("paws/".length)
+    : null;
+  return continued || itemPathId(item).toLowerCase();
 }
 
-export function worktreeBranch(
-  item: Pick<WorkItemRecord, "id" | "taskKey" | "linearIssueId" | "linearIdentifier">,
-): string {
+/** Where a new worktree starts: the tip of the continued branch, else main. */
+export function worktreeStartRef(item: BranchItem): string | undefined {
+  return item.continuesBranch ? `origin/${worktreeBranch(item)}` : undefined;
+}
+
+export function worktreeBranch(item: BranchItem): string {
   return `paws/${taskBranchKey(item)}`;
 }
