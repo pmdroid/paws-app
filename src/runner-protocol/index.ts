@@ -6,6 +6,7 @@ export {
   type RunnerHandoverFailure,
   RunnerCommandSchema,
   RunnerRepositorySchema,
+  runnerCandidateBases,
   RunnerCheckoutExclusionsSchema,
   RunnerCheckpointBotSchema,
   RunnerCommitPolicySchema,

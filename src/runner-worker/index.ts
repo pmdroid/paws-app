@@ -94,6 +94,7 @@ import {
   RunnerEventSchema,
   RunnerHelperResultSchema,
   RUNNER_SKILL_FOLDERS,
+  runnerCandidateBases,
   type RunnerArtifact,
   type RunnerEvent,
   type RunnerHandoverFailure,
@@ -749,6 +750,23 @@ export async function executeRunnerCommand(
       )
         throw new Error("Runner repository main mismatch");
       await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", main]);
+      // A conflict round rebases onto the item's branch as GitHub holds it.
+      const { branchName, branchSha } = command.repository;
+      if (command.type === "run" && branchName && branchSha) {
+        if (
+          (
+            await invokeGit(["-C", worktree, "rev-parse", "--verify", `${branchSha}^{commit}`])
+          ).trim() !== branchSha
+        )
+          throw new Error("Runner repository branch tip mismatch");
+        await invokeGit([
+          "-C",
+          worktree,
+          "update-ref",
+          `refs/remotes/origin/${branchName}`,
+          branchSha,
+        ]);
+      }
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
@@ -1386,10 +1404,7 @@ export async function executeRunnerCommand(
           await invokeGit(["-C", worktree, "update-ref", ref, saved.sha]);
           try {
             closeSync(outputFile(options.outputDirectory, name, options.resultsGid));
-            const bases = [
-              run.repository.baseSha,
-              ...(run.repository.mainSha ? [run.repository.mainSha] : []),
-            ];
+            const bases = runnerCandidateBases(run.repository);
             await invokeGit([
               "-C",
               worktree,
@@ -1571,8 +1586,7 @@ export async function executeRunnerCommand(
       if (command.type !== "run" && command.type !== "review") return;
       const sha = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
       if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Invalid runner candidate commit");
-      const bases = [command.repository.baseSha];
-      if (command.repository.mainSha) bases.push(command.repository.mainSha);
+      const bases = runnerCandidateBases(command.repository);
       await assertDescendsFromAny((args) => invokeGit(["-C", worktree, ...args]), bases, sha);
       if (command.type === "run") {
         if (command.commitPolicy)

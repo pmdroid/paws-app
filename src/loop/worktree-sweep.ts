@@ -31,6 +31,8 @@ export type WorktreeSweep = {
   busy(itemId: string): boolean;
   hold(itemIds: readonly string[], operation: () => Promise<void>): Promise<void>;
   mergedHeads(item: WorkItemRecord, repository: RepositoryBinding): Promise<string[]>;
+  /** Clears what an ended item left on GitHub once its worktree goes. */
+  retired?(item: WorkItemRecord, repository: RepositoryBinding): Promise<void>;
 };
 
 export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
@@ -65,6 +67,13 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
           return undefined;
         },
       );
+      for (const item of items)
+        if (RETIRED_STATES.has(item.state))
+          await sweep
+            .retired?.(item, repository)
+            .catch((caughtError4) =>
+              journalCaught(caughtError4, "worktree-sweep.sweepWorktrees.retired", item.id),
+            );
     });
   }
 }

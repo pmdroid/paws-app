@@ -251,6 +251,7 @@ import {
   fetchUpstreamMain,
   leaveGitHubMergeQueue,
   readReviewThreads,
+  deleteConflictBranch,
   mergedPullHeads,
   UPSTREAM_MAIN_REF,
   type GitHubBinding,
@@ -2541,8 +2542,6 @@ export class Orchestrator {
         signal: controller.signal,
         promptRunner,
         askTeam,
-        // One conflict round in a row; a second conflict asks the team.
-        conflictRound: () => returned?.reason !== "conflict",
         updatePlan: this.planHook(item, sessionProgress),
         pullRequest: this.pullRequestHook(item),
         postUpdate: this.updateHook(item),
@@ -2582,10 +2581,11 @@ export class Orchestrator {
         await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
         return;
       }
+      // The candidate conflicts with commits its branch gained on GitHub; the worktree holds it.
       if (executed.run.candidateConflict) {
         restart(this.db, finished, {
           reason: "conflict",
-          body: `${BRANCH_CONFLICT_INSTRUCTION}\n\n${executed.run.candidateConflict.error}`,
+          body: candidateConflictPrompt(executed.run.candidateConflict),
           now: this.now(),
         });
         return;
@@ -3837,6 +3837,16 @@ export class Orchestrator {
     });
     if (!merged) return;
     wakeMergesBehind(this.db, this.now());
+    await this.deleteConflictBranch(item, repository, AbortSignal.timeout(30_000)).catch(
+      (caughtError) =>
+        journalCaught(
+          caughtError,
+          "orchestrator.completeMerge.deleteConflictBranch",
+          item.id,
+          undefined,
+          this.options.journal,
+        ),
+    );
     await removeWorktree({
       owner: repository.owner,
       repo: repository.repo,
@@ -4621,6 +4631,7 @@ export class Orchestrator {
             if (this.jobContexts.get(itemId) === held) this.jobContexts.delete(itemId);
         }
       },
+      retired: (item, repository) => this.deleteConflictBranch(item, repository, signal),
       mergedHeads: async (item, repository) => {
         const github = this.githubForRepository(repository);
         if (!github) return [];
@@ -6841,6 +6852,32 @@ export class Orchestrator {
     }
   }
 
+  /** An ended item's candidate no longer waits for a conflict round. Only such an item has one. */
+  private async deleteConflictBranch(
+    item: WorkItemRecord,
+    repository: RepositoryBinding,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (
+      !this.db
+        .query(
+          "SELECT 1 FROM work_item_event WHERE item_id=? AND kind='restart' AND reason='conflict' LIMIT 1",
+        )
+        .get(item.id)
+    )
+      return;
+    const github = this.githubForRepository(repository);
+    if (!github) return;
+    await deleteConflictBranch({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      branch: item.branchName,
+      ...this.gitHubCredentials(github),
+      signal,
+    });
+  }
+
   private githubForRepository(repository: RepositoryBinding): GitHubBinding | null {
     if (this.options.githubForRepository) return this.options.githubForRepository(repository);
     const configured = this.options.repository;
@@ -6889,9 +6926,17 @@ export class Orchestrator {
 const HANDOVER_FAILED_PROMPT =
   "Paws asked to move this session to another runner, but the move failed after your turn was stopped, so it stays here. Your work so far is committed. Continue where you left off.";
 
-/** The conflict round after a candidate that did not rebase onto the item's branch on GitHub. */
-export const BRANCH_CONFLICT_INSTRUCTION =
-  "Paws could not push your last candidate: the task's branch on GitHub holds commits it does not contain, and they do not rebase cleanly. This turn starts from the branch on GitHub. Bring your previous turn's change onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+/** The conflict round after a candidate whose rebase onto its branch on GitHub conflicted. */
+export function candidateConflictPrompt(conflict: {
+  branch: string;
+  tip: string;
+  files: readonly string[];
+}): string {
+  const files = conflict.files.length
+    ? ` The rebase conflicted in ${conflict.files.map((file) => `\`${file}\``).join(", ")}.`
+    : "";
+  return `The branch \`${conflict.branch}\` on GitHub gained commits your work does not contain, so Paws could not push it.${files} Your checkout holds your work, and Paws already fetched the branch at ${conflict.tip.slice(0, 7)} into origin/${conflict.branch}. Rebase your work onto origin/${conflict.branch} without fetching again and without a merge commit, keep the changes from both sides, resolve every conflict so the change still does what the issue asks, and run the checks again.`;
+}
 
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;

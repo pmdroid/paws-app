@@ -45,6 +45,18 @@ test("a handover that fails after the interrupt sends the item back to the agent
   expect(result.prompts[1], result.detail).toContain("the move failed after your turn was stopped");
 }, 90_000);
 
+test("a candidate whose rebase onto its branch conflicts goes back to the agent for a conflict round", async () => {
+  const result = await handOver({ conflict: true });
+  expect(result.state, result.detail).toBe("running");
+  expect(result.questions, result.detail).toEqual([]);
+  expect(result.prompts.length, result.detail).toBe(2);
+  expect(result.prompts[1], result.detail).toContain(
+    "Rebase your work onto origin/paws/eng-8 without fetching again",
+  );
+  expect(result.prompts[1], result.detail).toContain("conflicted in `wip.txt`");
+  expect(result.restarts, result.detail).toContain("conflict");
+}, 90_000);
+
 /**
  * The remote runner hands the run over: it optionally asks, then Paws holds the WIP commit. With
  * `failure`, the first turn's handover fails after the interrupt instead.
@@ -52,6 +64,8 @@ test("a handover that fails after the interrupt sends the item back to the agent
 async function handOver(options: {
   ask?: string;
   failure?: "commit" | "snapshot" | "publication";
+  /** The first turn's candidate conflicts with its branch on GitHub instead. */
+  conflict?: boolean;
 }) {
   const layout = await repoLayout("paws-handover-loop-");
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
@@ -89,7 +103,8 @@ async function handOver(options: {
         return async (input: RunAgentOptions): Promise<RunAgentResult> => {
           if (input.prepareOnly) return runAgent(input);
           prompts.push(input.prompt);
-          const failing = options.failure !== undefined && prompts.length === 1;
+          const failing =
+            (options.failure !== undefined || options.conflict === true) && prompts.length === 1;
           if (options.ask)
             await input.askTeam!.ask(
               { question: options.ask },
@@ -120,6 +135,21 @@ async function handOver(options: {
             wipCommit: wip,
           });
           handed = !failing;
+          if (failing && options.conflict)
+            return {
+              role: input.role,
+              stopReason: "error",
+              cancelled: false,
+              timedOut: false,
+              authRequired: false,
+              agentExited: true,
+              errorMessage: "The runner stopped this run: the candidate conflicts.",
+              candidateConflict: {
+                branch: "paws/eng-8",
+                tip: "a".repeat(40),
+                files: ["wip.txt"],
+              },
+            };
           return {
             role: input.role,
             stopReason: "cancelled",
@@ -177,6 +207,12 @@ async function handOver(options: {
       state: stateOf(db, "ENG-8"),
       checkpoint: getWorkItem(db, item.id)?.checkpoint,
       questions: tracker.questions.map((question) => question.body),
+      restarts: db
+        .query<{ reason: string }, [string]>(
+          "SELECT reason FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id",
+        )
+        .all(item.id)
+        .map((row) => row.reason),
       detail: JSON.stringify({
         items: db.query("SELECT linear_identifier, state FROM work_item").all(),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),

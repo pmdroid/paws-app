@@ -101,4 +101,5 @@ export { defaultGitExec } from "./git";
 
 export { closeStoppedPull } from "./stopped";
 export { mergedPullHeads } from "./merged-pulls";
+export { conflictBranchName, deleteConflictBranch } from "./conflict-branch";
 export { inspectPullRequestMerge } from "./blocker-merge";

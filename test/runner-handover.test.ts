@@ -23,7 +23,12 @@ import {
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { verifyRunnerCommand, type RunnerCommand, type RunnerEvent } from "../src/runner-protocol";
+import {
+  verifyRunnerCommand,
+  type RunnerCommand,
+  type RunnerEvent,
+  type RunnerResult,
+} from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
@@ -122,6 +127,8 @@ async function setup() {
   const base = git(["-C", paws, "rev-parse", "HEAD"]);
   const runner = join(root, "runner-worktree");
   git(["clone", "-q", paws, runner]);
+  const github: { tip: string | null } = { tip: null };
+  const fetched: string[] = [];
   const backend = createRemoteAgentRunner({
     db,
     work,
@@ -131,8 +138,15 @@ async function setup() {
     pollIntervalMs: 1,
     // Through networkGit in production; here Paws fetches the WIP commit from the runner's checkout.
     async fetchCandidate(candidate) {
+      fetched.push(candidate.branch);
       git(["-C", candidate.worktree, "fetch", "-q", runner, candidate.candidateSha]);
       git(["-C", candidate.worktree, "reset", "-q", "--hard", candidate.candidateSha]);
+    },
+    // The item's branch on GitHub: its tip is a commit of the runner's checkout.
+    async fetchBranchTip(input) {
+      if (!github.tip) return null;
+      git(["-C", input.worktree, "fetch", "-q", runner, github.tip]);
+      return github.tip;
     },
   });
   const seen = new Set<string>();
@@ -162,6 +176,8 @@ async function setup() {
     git(["-C", runner, "reset", "-q", "--hard", base]);
     git(["-C", runner, "clean", "-qfd"]);
     db.run("UPDATE run SET status='ended' WHERE status='active'");
+    github.tip = null;
+    fetched.length = 0;
     work.heartbeat(runnerId);
     const id = `item-${++sequence}`;
     const sessionKey = `session-${sequence}`;
@@ -250,11 +266,17 @@ async function setup() {
   }
   function submit(
     command: RunCommand,
-    extra: {
-      handedOver?: true;
-      candidateSha?: string;
-      handoverFailure?: "commit" | "snapshot" | "publication";
-    },
+    extra: Partial<
+      Pick<
+        RunnerResult,
+        | "handedOver"
+        | "candidateSha"
+        | "handoverFailure"
+        | "stopReason"
+        | "errorMessage"
+        | "pushFailure"
+      >
+    >,
   ) {
     results.submit({
       runnerId,
@@ -330,6 +352,8 @@ async function setup() {
     next,
     release,
     work,
+    github,
+    fetched,
     cleanup() {
       db.close();
       rmSync(root, { recursive: true, force: true });
@@ -696,4 +720,142 @@ test("a stop while a handover is under way is cancelled at once, leaving the che
   } finally {
     context.release("0.1.44");
   }
+});
+
+/** A commit of the runner's checkout on top of `from`, standing in for a head on GitHub. */
+function commitOnRunner(from: string, file: string, body: string, message: string) {
+  const { git, runner } = context;
+  git(["-C", runner, "checkout", "-q", "--detach", from]);
+  writeFileSync(join(runner, file), body);
+  git(["-C", runner, "add", "-A"]);
+  git(["-C", runner, "commit", "-q", "-m", message]);
+  return git(["-C", runner, "rev-parse", "HEAD"]);
+}
+
+test("a resumed run whose branch tip on GitHub is ahead of its checkpoint starts from the tip", async () => {
+  const { db, git, paws, base } = context;
+  const record = context.item();
+  saveCheckpoint(db, record.id, { phase: "running", baseSha: base, wipCommit: base });
+  // An earlier turn of the item pushed this head before the run was restarted.
+  const earlier = commitOnRunner(base, "earlier.txt", "earlier", "Earlier head");
+  context.github.tip = earlier;
+  context.release("0.1.48");
+  try {
+    const { result, command } = await context.turn(record, async (dispatched) => {
+      context.submit(dispatched, { candidateSha: earlier });
+    });
+    expect(command.repository.baseSha).toBe(earlier);
+    expect(command.repository.branchSha).toBeUndefined();
+    expect(result.stopReason).toBe("end_turn");
+    expect(git(["-C", paws, "rev-parse", "HEAD"])).toBe(earlier);
+    expect(getWorkItem(db, record.id)?.checkpoint).toMatchObject({
+      baseSha: base,
+      wipCommit: earlier,
+    });
+  } finally {
+    context.release("0.1.44");
+  }
+});
+
+test("a branch tip that does not descend from the checkpoint leaves the turn at the checkpoint and reaches the runner", async () => {
+  const { db, git, paws, base } = context;
+  const record = context.item();
+  const saved = commitOnRunner(base, "saved.txt", "saved", "Saved work");
+  git(["-C", paws, "fetch", "-q", context.runner, saved]);
+  git(["-C", paws, "reset", "-q", "--hard", saved]);
+  saveCheckpoint(db, record.id, { phase: "running", baseSha: base, wipCommit: saved });
+  const diverged = commitOnRunner(base, "other.txt", "other", "Someone else's head");
+  context.github.tip = diverged;
+  context.release("0.1.48");
+  try {
+    const { command } = await context.turn(record, async (dispatched) => {
+      context.submit(dispatched, { candidateSha: saved });
+    });
+    expect(command.repository.baseSha).toBe(saved);
+    expect(command.repository.branchSha).toBe(diverged);
+    expect(command.repository.branchName).toMatch(/^paws\//);
+    expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(saved);
+  } finally {
+    context.release("0.1.44");
+  }
+  // A runner release that cannot check the tip out is not sent it.
+  const older = context.item();
+  git(["-C", paws, "fetch", "-q", context.runner, saved]);
+  git(["-C", paws, "reset", "-q", "--hard", saved]);
+  saveCheckpoint(db, older.id, { phase: "running", baseSha: base, wipCommit: saved });
+  context.github.tip = diverged;
+  const { command } = await context.turn(older, async (dispatched) => {
+    context.submit(dispatched, { candidateSha: saved });
+  });
+  expect(command.repository.baseSha).toBe(saved);
+  expect(command.repository.branchSha).toBeUndefined();
+});
+
+test("a candidate whose rebase onto the branch conflicts comes back for a conflict round, with no question", async () => {
+  const { db, git, paws, base } = context;
+  const record = context.item();
+  const tip = commitOnRunner(base, "result.txt", "remote", "Earlier head");
+  const parked = commitOnRunner(base, "result.txt", "agent", "Agent's work");
+  const questions: string[] = [];
+  const { result, command } = await context.turn(
+    record,
+    async (dispatched) => {
+      context.submit(dispatched, {
+        stopReason: "error",
+        errorMessage: "The runner stopped this run: the candidate conflicts.",
+        pushFailure: {
+          branch: "paws/fixture",
+          error: "Rebasing conflicts in result.txt.",
+          conflict: { branch: "paws/fixture-conflict", sha: parked, tip, files: ["result.txt"] },
+        },
+      });
+    },
+    async (question) => {
+      questions.push(question);
+      return { answer: "retry" };
+    },
+  );
+  expect(questions).toEqual([]);
+  expect(result.candidateConflict).toEqual({
+    branch: "paws/fixture",
+    tip,
+    files: ["result.txt"],
+  });
+  expect(context.fetched).toEqual(["paws/fixture-conflict"]);
+  expect(git(["-C", paws, "rev-parse", "HEAD"])).toBe(parked);
+  expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(parked);
+  expect(command.repository.baseSha).toBe(base);
+});
+
+test("a candidate that conflicts again right after a conflict round asks a person", async () => {
+  const { db, base } = context;
+  const record = context.item();
+  db.run(
+    `INSERT INTO work_item_event(item_id,version,at,from_state,to_state,event,kind,reason)
+     VALUES(?,1000,?,'running','queued','restart','restart','conflict')`,
+    [record.id, Date.now()],
+  );
+  const tip = commitOnRunner(base, "result.txt", "remote", "Earlier head");
+  const parked = commitOnRunner(base, "result.txt", "agent", "Agent's work");
+  const questions: string[] = [];
+  const { result } = await context.turn(
+    record,
+    async (dispatched) => {
+      context.submit(dispatched, {
+        stopReason: "error",
+        pushFailure: {
+          branch: "paws/fixture",
+          error: "Rebasing conflicts in result.txt.",
+          conflict: { branch: "paws/fixture-conflict", sha: parked, tip, files: ["result.txt"] },
+        },
+      });
+    },
+    async (question) => {
+      questions.push(question);
+      return { answer: "retry" };
+    },
+  );
+  expect(result.candidateConflict).toBeUndefined();
+  expect(questions).toHaveLength(1);
+  expect(questions[0]).toContain("Paws could not push the candidate to `paws/fixture`");
 });

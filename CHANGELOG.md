@@ -2,6 +2,15 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-10-27: A resumed run starts from its branch tip, and a stale candidate is rebased
+
+### Changed
+
+- **Upgrade runners to 0.1.48** for the rebase and the conflict round. An older runner still pushes as before and asks when GitHub rejects the push.
+- When a run starts or resumes, Paws fetches the item's branch from GitHub. When the tip descends from the checkpoint, the turn starts from the tip, so work that already reached GitHub stays. When it does not, Paws journals why and starts from the checkpoint.
+- Before the candidate push, the runner fetches the branch and leases the push on the tip it saw. It never force-pushes over commits that aren't in the candidate. A candidate that lacks the tip is rebased onto it and pushed without a question, and Closeout verifies the rebased head.
+- A rebase that conflicts parks the candidate on the Paws-owned branch `<branch>-conflict` and sends a conflict round to the agent: its checkout holds the candidate and the branch tip as `origin/<branch>`. A second conflict right after a conflict round asks a person. The runner deletes the conflict branch once a push of the item's branch contains its commits or comes from the conflict round. Paws also deletes it when an item that had a conflict round merges, or when the worktree sweep removes its worktree after it ended.
+
 ## 2026-10-27: Closeout's live review runs the agent's review command on the runner
 
 ### Changed

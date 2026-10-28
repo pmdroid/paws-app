@@ -57,11 +57,38 @@ export const RunnerRepositorySchema = z
       .string()
       .regex(/^[a-f0-9]{40}$/)
       .optional(),
+    /**
+     * The item's branch on GitHub at `branchSha`, which a conflict round rebases onto. The
+     * checkout holds it as `origin/<branchName>`, and the candidate may descend from it.
+     */
+    branchName: z
+      .string()
+      .regex(/^paws\/[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+      .max(200)
+      .optional(),
+    branchSha: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/)
+      .optional(),
   })
   .refine(
     (repository) =>
       repository.remoteUrl === `https://github.com/${repository.owner}/${repository.repo}.git`,
+  )
+  .refine(
+    (repository) => (repository.branchName === undefined) === (repository.branchSha === undefined),
   );
+
+/** The commits a run's candidate may start from: its base, main and the branch it rebases onto. */
+export function runnerCandidateBases(repository: {
+  baseSha: string;
+  mainSha?: string;
+  branchSha?: string;
+}): string[] {
+  return [repository.baseSha, repository.mainSha, repository.branchSha].filter(
+    (sha): sha is string => sha !== undefined,
+  );
+}
 
 export const RunnerCheckpointBotSchema = z.strictObject({
   appId: z.string().regex(/^[1-9][0-9]*$/),

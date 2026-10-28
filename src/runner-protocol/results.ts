@@ -64,8 +64,18 @@ export const RunnerResultSchema = z.strictObject({
     .strictObject({
       branch: z.string().min(1).max(256),
       error: z.string().min(1).max(4096),
-      /** The branch holds commits the candidate lacks, and they did not rebase cleanly. */
-      conflict: z.literal(true).optional(),
+      /**
+       * The branch had commits the candidate lacks and the rebase onto them conflicted: the
+       * candidate `sha` waits on the side branch for a conflict round onto `tip`.
+       */
+      conflict: z
+        .strictObject({
+          branch: z.string().min(1).max(256),
+          sha: z.string().regex(/^[a-f0-9]{40}$/),
+          tip: z.string().regex(/^[a-f0-9]{40}$/),
+          files: z.array(z.string().min(1).max(1024)).max(64),
+        })
+        .optional(),
     })
     .optional(),
 });

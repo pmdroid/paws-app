@@ -30,7 +30,7 @@ import {
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
 } from "../runner-answers";
-import { createRunnerRepositories, RunnerCandidateConflict } from "../runner-repositories";
+import { createRunnerRepositories, type CandidatePublication } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
 import { openRunnerRuntimeInventory } from "./runtimes";
@@ -1110,30 +1110,20 @@ export async function openRunnerRuntime(options: {
       check(entry);
       if (!credential.branch) throw new Error("Runner publication branch is missing");
       entry.publicationBranch = credential.branch;
+      let published: CandidatePublication;
       try {
-        // A candidate replayed onto newer commits on the branch goes back as the pushed commit.
-        result.candidateSha = (
-          await repositories.publish(
-            entry.execution.command,
-            {
-              bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
-              sha: result.candidateSha,
-              branch: credential.branch,
-            },
-            entry.abort.signal,
-            entry.checkpointSha,
-          )
-        ).sha;
+        published = await repositories.publish(
+          entry.execution.command,
+          {
+            bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
+            sha: result.candidateSha,
+            branch: credential.branch,
+          },
+          entry.abort.signal,
+          entry.checkpointSha,
+          true,
+        );
       } catch (error) {
-        if (error instanceof RunnerCandidateConflict) {
-          journalCaught(error, "runner-runtime.complete.conflict", entry.execution.command.itemId);
-          await interrupt(entry, error.message, true, {
-            branch: error.branch,
-            error: error.message.slice(0, 4096),
-            conflict: true,
-          });
-          return;
-        }
         if (!(error instanceof GitHubFailure)) throw error;
         journalCaught(error, "runner-runtime.complete.publish", entry.execution.command.itemId);
         const tries = (entry.pushTries ?? 0) + 1;
@@ -1155,6 +1145,22 @@ export async function openRunnerRuntime(options: {
         return;
       }
       check(entry);
+      if ("conflict" in published) {
+        const { conflict } = published;
+        await interrupt(
+          entry,
+          `the candidate conflicts with ${credential.branch} at ${conflict.tip.slice(0, 7)} on GitHub; it waits on ${conflict.branch}`,
+          true,
+          {
+            branch: credential.branch,
+            error: `Rebasing ${conflict.sha.slice(0, 7)} onto ${conflict.tip.slice(0, 7)} conflicts${conflict.files.length ? ` in ${conflict.files.join(", ")}`.slice(0, 3800) : ""}.`,
+            conflict,
+          },
+        );
+        return;
+      }
+      // Rebased onto commits the branch gained: Paws imports and verifies the rebased head.
+      result.candidateSha = published.sha;
     }
     await drainTranscript(entry, true);
     const token = await grant(entry);
