@@ -194,6 +194,7 @@ function walk(
         timeoutSeconds: raw.timeoutSeconds,
       };
       if (paths.paths.length > 0) item.paths = paths.paths;
+      if (raw.ci !== undefined) item.ci = raw.ci;
       state.items.push(item);
       continue;
     }
