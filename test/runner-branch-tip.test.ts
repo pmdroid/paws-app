@@ -132,3 +132,21 @@ test("a rebased branch tip is not adopted when the checkout has work it lacks", 
   expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBeNull();
   expect(await f.head()).toBe(unpushed);
 });
+
+test("a local rebase onto newer main that never reached GitHub gives way to the branch tip", async () => {
+  const f = await fixture();
+  await localCommit(f, "the item's work");
+  const tip = (await f.run(["-C", f.worktree, "rev-parse", "HEAD"])).trim();
+  await f.run(["-C", f.worktree, "push", "--quiet", "origin", "HEAD:refs/heads/paws/task"]);
+  writeFileSync(join(f.worktree, "main.txt"), "main moved");
+  await f.run(["-C", f.worktree, "checkout", "--quiet", "-b", "upstream", "origin/main"]);
+  await f.run(["-C", f.worktree, "add", "."]);
+  await f.run(["-C", f.worktree, "commit", "-qm", "main moved"]);
+  const main = (await f.run(["-C", f.worktree, "rev-parse", "HEAD"])).trim();
+  await f.run(["-C", f.worktree, "update-ref", "refs/paws/upstream-main", main]);
+  await f.run(["-C", f.worktree, "checkout", "--quiet", "-B", "work", tip]);
+  await f.run(["-C", f.worktree, "rebase", "--quiet", main]);
+
+  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBe(tip);
+  expect(await f.head()).toBe(tip);
+});
