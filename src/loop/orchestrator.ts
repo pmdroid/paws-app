@@ -1473,8 +1473,7 @@ export class Orchestrator {
           waiting = wait;
         });
       } catch (error) {
-        if (!this.shuttingDown && context.isCurrent() && this.holdForPushOutage(job, error))
-          return;
+        if (!this.shuttingDown && context.isCurrent() && this.holdForPushOutage(job, error)) return;
         if (this.shuttingDown || job.attempts >= job.maxAttempts || !context.isCurrent())
           throw error;
 
@@ -2028,7 +2027,14 @@ export class Orchestrator {
         this.options.journal,
       );
     if (askAboutPushOutage(this.db, repositoryName, this.now()) === "asked") void this.flush();
-    if (parkForPushOutage(this.db, job, getPushOutage(this.db, repositoryName) ?? outage, this.now()) === "lost")
+    if (
+      parkForPushOutage(
+        this.db,
+        job,
+        getPushOutage(this.db, repositoryName) ?? outage,
+        this.now(),
+      ) === "lost"
+    )
       throw error;
     return true;
   }

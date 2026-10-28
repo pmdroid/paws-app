@@ -30,7 +30,9 @@ export function isPushOutage(stderr: string): boolean {
 export const PUSH_OUTAGE_PROBE_MS = [60_000, 120_000, 300_000, 600_000] as const;
 
 export function pushOutageProbeDelayMs(failedProbes: number): number {
-  return PUSH_OUTAGE_PROBE_MS[Math.min(Math.max(0, failedProbes), PUSH_OUTAGE_PROBE_MS.length - 1)]!;
+  return PUSH_OUTAGE_PROBE_MS[
+    Math.min(Math.max(0, failedProbes), PUSH_OUTAGE_PROBE_MS.length - 1)
+  ]!;
 }
 
 /**

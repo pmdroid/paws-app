@@ -667,6 +667,8 @@ export interface StatusSnapshotBase {
   dead?: StatusDeadDelivery[];
   linearBudget?: StatusLinearBudget;
   linearWebhook?: StatusLinearWebhook;
+  /** Repositories GitHub refuses pushes from the Paws App for, the oldest outage first. */
+  pushOutages?: StatusPushOutage[];
 }
 
 /**
@@ -833,6 +835,17 @@ export interface StatusDeadDelivery {
   at: string;
   /** False for a job from an earlier state of the item; retrying it would revive obsolete work. */
   retryable?: boolean;
+}
+
+/** GitHub refuses pushes from the Paws App to `repository`; its pushes wait and retry. */
+export interface StatusPushOutage {
+  repository: string;
+  since: string;
+  /** GitHub's last refusal. */
+  lastError: string;
+  nextProbeAt: string;
+  /** The App installation's settings on GitHub, to check permissions and repository access. */
+  installationUrl: string | null;
 }
 
 export interface StatusLinearWebhook {
@@ -1031,6 +1044,24 @@ function readBase(body: Record<string, unknown>): StatusSnapshotBase {
     ...(body.linearWebhook === undefined || body.linearWebhook === null
       ? {}
       : { linearWebhook: readLinearWebhook(body.linearWebhook, "linearWebhook") }),
+    ...(body.pushOutages === undefined
+      ? {}
+      : {
+          pushOutages: array(body, "pushOutages", "status").map((entry, index) =>
+            readPushOutage(entry, `pushOutages[${index}]`),
+          ),
+        }),
+  };
+}
+
+function readPushOutage(input: unknown, path: string): StatusPushOutage {
+  const body = object(input, path);
+  return {
+    repository: text(body, "repository", path),
+    since: dateString(body, "since", path),
+    lastError: text(body, "lastError", path),
+    nextProbeAt: dateString(body, "nextProbeAt", path),
+    installationUrl: nullableText(body, "installationUrl", path),
   };
 }
 

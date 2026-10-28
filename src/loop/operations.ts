@@ -41,7 +41,8 @@ export function ask(
     )
       throw new Error("Question owner is stale");
     const result = openQuestion(db, owner, ...args);
-    if (!pending && !workspace) awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
+    if (!pending && !workspace)
+      awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
     return result;
   });
 }

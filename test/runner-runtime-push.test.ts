@@ -193,7 +193,8 @@ async function fixture(rejection: string | (() => string | null)) {
     posted,
     pushes,
     candidateSha,
-    remoteBranch: (branch: string) => git(["rev-parse", `refs/heads/${branch}`], join(root, "origin.git")),
+    remoteBranch: (branch: string) =>
+      git(["rev-parse", `refs/heads/${branch}`], join(root, "origin.git")),
     async run(minutes: number) {
       for (let step = 0; step <= minutes * 2; step++) {
         for (let index = 0; index < 5; index++) {

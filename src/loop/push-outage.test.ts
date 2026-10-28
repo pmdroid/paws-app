@@ -50,7 +50,7 @@ function lane() {
       now: 10 + index,
     });
   });
-  return { db, jobs };
+  return { db, jobs: jobs as [number, number, number] };
 }
 
 function claim(db: Database, now: number) {
@@ -58,7 +58,11 @@ function claim(db: Database, now: number) {
 }
 
 /** Runs the next due merge job the way the orchestrator does with a push outage. */
-function attempt(db: Database, now: number, pushes: (jobId: number) => "refused" | "works") {
+function attempt(
+  db: Database,
+  now: number,
+  pushes: (jobId: number) => "refused" | "works",
+): { id: number; pushed: boolean; held?: boolean } | null {
   const job = claim(db, now);
   if (!job) return null;
   try {
@@ -175,13 +179,13 @@ describe("a push outage", () => {
     expect(question.body).toContain("https://github.com/settings/installations/2");
     expect(question.body).toContain("denied to paws-helper[bot]");
     // One question for the workspace, not one per item, and the item keeps its state.
-    expect(askAboutPushOutage(db, REPOSITORY, hour + 10 * MINUTE)).toBe(
-      "already",
-    );
+    expect(askAboutPushOutage(db, REPOSITORY, hour + 10 * MINUTE)).toBe("already");
     for (const name of ["b", "c"]) expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
     expect(getWorkItem(db, "item-a")?.state).toBe("running");
     expect(
-      listOutbox(db).filter((row) => row.op === "elicitation").map((row) => row.idempotencyKey),
+      listOutbox(db)
+        .filter((row) => row.op === "elicitation")
+        .map((row) => row.idempotencyKey),
     ).toEqual([`question:${question.id}`]);
 
     db.run("UPDATE job SET run_at = 0 WHERE id = ?", [jobs[0]]);
