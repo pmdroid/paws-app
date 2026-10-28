@@ -134,5 +134,27 @@ async function containedIn(
     () => null,
   );
   if (cherry === null) return false;
-  return cherry.split("\n").every((line) => line === "" || line.startsWith("- "));
+  const missing = cherry
+    .split("\n")
+    .filter((line) => line.startsWith("+ "))
+    .map((line) => line.slice(2));
+  if (missing.length === 0) return true;
+  const tipBase = main
+    ? await run(["merge-base", tip, main]).then(
+        (out) => out.trim(),
+        () => "",
+      )
+    : own;
+  const onTip = await run(["log", "--format=%s", tip, ...(tipBase ? [`^${tipBase}`] : [])]).then(
+    (out) => new Set(out.split("\n").filter(Boolean)),
+    () => new Set<string>(),
+  );
+  for (const sha of missing) {
+    const subject = await run(["log", "-1", "--format=%s", sha]).then(
+      (out) => out.trim(),
+      () => "",
+    );
+    if (!subject || !onTip.has(subject)) return false;
+  }
+  return true;
 }

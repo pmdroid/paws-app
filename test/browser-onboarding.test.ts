@@ -12,7 +12,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("a fresh HTTPS instance serves browser onboarding without CLI setup", async () => {
+function freshInstance(expectedOrganizationId?: string) {
   const home = mkdtempSync(join(tmpdir(), "paws-browser-onboarding-"));
   roots.push(home);
   const cert = join(home, "server.crt");
@@ -53,14 +53,32 @@ test("a fresh HTTPS instance serves browser onboarding without CLI setup", async
     PAWS_TLS_CERT_PATH: cert,
     LINEAR_CLIENT_ID: "fixture-client",
     LINEAR_CLIENT_SECRET: "fixture-client-secret",
+    LINEAR_ORGANIZATION_ID: expectedOrganizationId,
   });
   processes.push(paws);
+  return paws;
+}
+
+test("a fresh HTTPS instance serves browser onboarding for its configured organization", async () => {
+  const paws = freshInstance("org");
   await paws.ready;
   const response = await paws.server.fetch(new Request("https://localhost:8787/api/auth/session"));
   expect(response.status).toBe(401);
   expect(await response.json()).toMatchObject({ onboarding: true });
   const blocked = await paws.server.fetch(new Request("https://localhost:8787/api/status"));
   expect(blocked.status).toBe(401);
+  const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
+  expect(login.status).toBe(303);
+});
+
+test("a fresh HTTPS instance refuses sign-in until its organization is configured", async () => {
+  const paws = freshInstance();
+  await paws.ready;
+  const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
+  expect(login.status).toBe(503);
+  expect(await login.text()).toContain("LINEAR_ORGANIZATION_ID");
+  expect(paws.db.query("SELECT 1 FROM workspace_oauth_request").get()).toBeNull();
+  expect(paws.db.query("SELECT 1 FROM workspace").get()).toBeNull();
 });
 
 import { existsSync, readFileSync } from "node:fs";
@@ -88,12 +106,15 @@ function fixture() {
     guest: false,
     app: true,
     organization: "org",
+    userOrganization: "org",
+    expectedOrganizationId: "org" as string | null,
     memberAdmin: true,
     now: Date.now(),
     installed: 0,
     exchanges: 0,
     reconnect: false,
     appToken: "fixture-app",
+    prepare: undefined as (() => Promise<void>) | undefined,
   };
   const origin = "https://paws.example";
   const fakeFetch: typeof fetch = (async (input: string | Request | URL, init?: RequestInit) => {
@@ -120,7 +141,7 @@ function fixture() {
             admin: state.admin,
             active: state.active,
             guest: state.guest,
-            organization: { id: "org", name: "Workspace" },
+            organization: { id: state.userOrganization, name: "Workspace" },
           },
         },
       });
@@ -154,6 +175,8 @@ function fixture() {
       origin,
       clientId: "fixture-client",
       clientSecret: "fixture-client-secret",
+      expectedOrganizationId: state.expectedOrganizationId,
+      prepare: async () => state.prepare?.(),
       fetch: fakeFetch,
       now: () => state.now,
       reconnect: state.reconnect,
@@ -203,7 +226,7 @@ function fixture() {
   };
 }
 
-test("browser sign-in and app authorization create an owner without a setup code", async () => {
+test("browser sign-in creates an owner only in the operator's configured organization", async () => {
   const scene = fixture();
   try {
     const install = await scene.installation();
@@ -233,6 +256,97 @@ test("browser sign-in and app authorization create an owner without a setup code
     );
     expect(again.headers.get("location")).toContain("already-connected");
     expect(scene.state.exchanges).toBe(2);
+  } finally {
+    scene.close();
+  }
+});
+
+test("fresh installation requires an operator-configured Linear organization", async () => {
+  const scene = fixture();
+  try {
+    scene.state.expectedOrganizationId = null;
+    scene.reopen();
+    const response = await scene.request("/auth/linear");
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("LINEAR_ORGANIZATION_ID");
+    expect(scene.db.query("SELECT 1 FROM workspace_oauth_request").get()).toBeNull();
+    expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
+    expect(scene.state.exchanges).toBe(0);
+  } finally {
+    scene.close();
+  }
+});
+
+test("an unrelated Linear admin cannot claim a fresh instance", async () => {
+  const scene = fixture();
+  try {
+    scene.state.userOrganization = "foreign-org";
+    scene.state.organization = "foreign-org";
+    const install = await scene.installation();
+    expect(install.response.headers.get("location")).toBe("/status/?onboarding=workspace-mismatch");
+    expect(scene.db.query("SELECT 1 FROM browser_installation_request").get()).toBeNull();
+    expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
+    expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
+    expect(install.response.headers.get("set-cookie")).toBeNull();
+    expect(scene.state.installed).toBe(0);
+  } finally {
+    scene.close();
+  }
+});
+
+test("installation rechecks the operator organization after a restart", async () => {
+  const scene = fixture();
+  try {
+    const install = await scene.installation();
+    scene.state.expectedOrganizationId = "another-org";
+    scene.reopen();
+    const response = await scene.request(
+      `/auth/linear/install/callback?state=${install.state}&code=app-code`,
+      install.cookie,
+    );
+    expect(response.headers.get("location")).toBe("/status/?onboarding=workspace-mismatch");
+    expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
+    expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
+    expect(scene.state.exchanges).toBe(1);
+    expect(scene.state.installed).toBe(0);
+  } finally {
+    scene.close();
+  }
+});
+
+test("a concurrently bound foreign workspace prevents credential writes", async () => {
+  const scene = fixture();
+  try {
+    const install = await scene.installation();
+    scene.state.prepare = async () => {
+      scene.db.run(
+        "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('foreign','foreign-org','Foreign',0)",
+      );
+    };
+    const response = await scene.request(
+      `/auth/linear/install/callback?state=${install.state}&code=app-code`,
+      install.cookie,
+    );
+    expect(response.headers.get("location")).toBe("/status/?onboarding=workspace-mismatch");
+    expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
+    expect(existsSync(join(scene.home, "secrets/linear-client.json"))).toBe(false);
+    expect(workspaceForOrganization(scene.db, "org")).toBeNull();
+    expect(scene.state.installed).toBe(0);
+  } finally {
+    scene.close();
+  }
+});
+
+test("configured organization cannot override a persisted workspace", async () => {
+  const scene = fixture();
+  try {
+    scene.db.run(
+      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('foreign','foreign-org','Foreign',0)",
+    );
+    const response = await scene.request("/auth/linear");
+    expect(response.status).toBe(503);
+    expect(scene.db.query("SELECT 1 FROM workspace_oauth_request").get()).toBeNull();
+    expect(scene.state.exchanges).toBe(0);
   } finally {
     scene.close();
   }
@@ -307,6 +421,7 @@ for (const concurrentRevocation of [false, true]) {
       });
       scene.state.now++;
       scene.state.reconnect = true;
+      scene.state.expectedOrganizationId = null;
       scene.state.appToken = "fixture-reconnected-app";
       scene.reopen();
       const next = await scene.installation();

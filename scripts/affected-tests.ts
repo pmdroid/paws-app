@@ -11,7 +11,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
-import { testFiles } from "./test-shard";
 
 /** Always runs: it reads every module, so any change can break it. */
 export const BOUNDARIES = "test/boundaries.test.ts";
@@ -19,6 +18,14 @@ export const BOUNDARIES = "test/boundaries.test.ts";
 export const TEST_COMMAND = ["bun", "test", "--parallel=4", "--timeout=20000", "--no-orphans"];
 
 const TEST_FILE = /(\.|_)(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
+const SKIPPED = /(^|\/)(node_modules|dist|\.git)\//;
+
+export function testFiles(root = "."): string[] {
+  return [...new Bun.Glob("**/*").scanSync({ cwd: root, onlyFiles: true })]
+    .filter((path) => TEST_FILE.test(path) && !SKIPPED.test(path))
+    .sort();
+}
+
 const SHARED_FILES = new Set(["package.json", "bun.lock", "bunfig.toml"]);
 const IMPORT =
   /(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\(|\bmock\.module\s*\()\s*["'](\.{1,2}\/[^"']*)["']/g;

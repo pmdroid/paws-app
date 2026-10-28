@@ -16,6 +16,8 @@ import {
 } from "../linear";
 import {
   fakeStatusProvider,
+  FINDINGS_API_PATH,
+  handleFindingsRequest,
   handleStatusRequest,
   statusSnapshots,
   type ReadLinearArtifact,
@@ -56,12 +58,13 @@ import {
   requestWorkspaceSession,
   validWorkspaceCsrf,
   type WorkspaceAccess,
+  type WorkspaceClient,
   type WorkspacePrincipal,
 } from "../workspace";
 
 export type ServerOptions = {
   server?: Bun.Server<undefined>;
-  onboarding?: (request: Request) => Promise<Response | null>;
+  onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
   tls?: PublicTls;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
@@ -165,7 +168,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
       if (stopping) return new Response("Paws is stopping.", { status: 503 });
       const ip = current?.requestIP(request)?.address ?? null;
       const operation = (async () =>
-        (await options.onboarding?.(request)) ??
+        (await options.onboarding?.(request, { ip })) ??
         route(request, {
           health,
           slackSigningSecret,
@@ -403,6 +406,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       principal,
       sessionIds,
       submit: secrets.visualReviewChanges,
+    }))!;
+  }
+  if (path === FINDINGS_API_PATH) {
+    if (secrets.db === undefined) return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleFindingsRequest(request, {
+      db: secrets.db,
+      ...(principal === undefined ? {} : { principal }),
+      ...(sessionIds === undefined ? {} : { sessionIds }),
     }))!;
   }
   if (path.startsWith(EVIDENCE_API_PATH)) {

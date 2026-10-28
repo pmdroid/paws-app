@@ -5,7 +5,7 @@ Configure a Linear OAuth app with these callback URLs for your Paws HTTPS origin
 - `/auth/linear/callback` for personal sign-in.
 - `/auth/linear/install/callback` for the workspace app authorization.
 
-Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace owners can connect repositories in Integrations.
+Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Before the first installation, set `LINEAR_ORGANIZATION_ID` to the ID of the Linear workspace this Paws instance will serve. Paws accepts installation only for that organization. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace owners can connect repositories in Integrations.
 
 Give Paws a valid TLS certificate and its matching private key. The key must be readable by the Paws process and have mode `0400` or `0600`.
 
@@ -16,12 +16,13 @@ PAWS_HOST=0.0.0.0 \
 PAWS_PORT=8787 \
 PAWS_TLS_KEY_PATH=/etc/paws/tls.key \
 PAWS_TLS_CERT_PATH=/etc/paws/tls.crt \
+LINEAR_ORGANIZATION_ID=your-linear-organization-id \
 bun run paws
 ```
 
 Open the dashboard and select **Sign in with Linear**. A Linear workspace admin completes the personal sign-in and approves installing Paws into that same workspace. Paws rechecks their admin membership through the new app authorization, stores encrypted credentials, creates the owner's workspace, and starts the connected service automatically. The owner continues to **Integrations** to connect GitHub and map repositories to Linear teams.
 
-If Linear revokes the app authorization, the dashboard offers **Reconnect Linear**. A workspace admin signs in and authorizes the same installation again. Paws preserves the workspace and its roles.
+If Linear revokes the app authorization, the dashboard offers **Reconnect Linear**. A workspace admin signs in and authorizes the same installation again. Paws preserves the workspace and its roles. The stored workspace binds reconnection to its organization. If `LINEAR_ORGANIZATION_ID` is set, it must match that stored organization.
 
 Subsequent members use **Sign in with Linear** to open the workspace. A connected instance verifies each user's current membership against its installed Linear workspace.
 

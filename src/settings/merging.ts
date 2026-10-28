@@ -73,6 +73,7 @@ const ORDER_NAMES: Record<MergeChoice["order"], string> = {
 };
 const MAIN_MOVED_NAMES: Record<MergeChoice["mainMoved"], string> = {
   overlap: "Update and re-test only when main changed the same files or package",
+  green: "Merge on green CI without updating the branch onto main",
   ci: "Always update the branch and wait for CI",
   closeout: "Always update the branch and run Closeout again",
 };
