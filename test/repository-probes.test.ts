@@ -707,3 +707,221 @@ test("literal union members are compared without overwriting one another", () =>
   expect(ran.exitCode).toBe(1);
   expect(ran.output).toContain('const="b" removed');
 });
+
+function namedSchemaChange(name: string, before: string, after: string) {
+  const source = (schema: string) =>
+    `import { z } from "zod";\nexport const ${name} = ${schema};\n`;
+  return candidate(
+    { ...API, "src/runner-protocol/index.ts": source(before) },
+    { "src/runner-protocol/index.ts": source(after) },
+  );
+}
+
+test.each([
+  ['z.enum(["a", "b"])', 'z.enum(["a", "b", "c"])'],
+  ['z.literal("a")', 'z.enum(["a", "b"])'],
+  ["z.number().max(20)", "z.number().max(50)"],
+  ["z.number().min(1)", "z.number().min(0)"],
+  ["z.string().max(20)", "z.string().max(50)"],
+  ["z.array(z.string()).max(2)", "z.array(z.string()).max(3)"],
+  ["z.string().regex(/^a$/)", "z.string()"],
+  ["z.string().uuid()", "z.string()"],
+  ["z.number().int()", "z.number()"],
+  ["z.string()", "z.unknown()"],
+  ["z.string()", "z.string().nullable()"],
+])("older runner readers reject widened input %s to %s", (before, after) => {
+  const ran = probe("api-contract", namedSchemaChange("RunnerCommandSchema", before, after));
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toMatch(/old runner rejects widened input|new command variant/);
+});
+
+test.each([
+  "RunnerPromptContextSchema",
+  "RunnerLoginInputSchema",
+  "SignedRunnerCommandSchema",
+  "RunnerAgentTargetSchema",
+])("%s protects its old strict reader", (name) => {
+  const ran = probe(
+    "api-contract",
+    namedSchemaChange(
+      name,
+      "z.strictObject({id:z.string()})",
+      "z.strictObject({id:z.string(), encoding:z.string().optional()})",
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain(`${name}.encoding\tnew field rejected by old strict reader`);
+});
+
+test("older readers require a formerly required input field", () => {
+  const ran = probe(
+    "api-contract",
+    namedSchemaChange(
+      "RunnerPromptContextSchema",
+      "z.strictObject({id:z.string()})",
+      "z.strictObject({id:z.string().optional()})",
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("old runner requires field");
+});
+
+test.each([
+  [
+    "z.union([z.object({label:z.string().optional()}),z.string()])",
+    "z.union([z.object({label:z.string().optional(),hint:z.string().optional()}),z.string()])",
+  ],
+  [
+    "z.union([z.string().uuid(),z.string().regex(/^a$/)])",
+    "z.union([z.string().regex(/^a$/),z.string().uuid()])",
+  ],
+  [
+    "z.union([z.object({a:z.string().optional()}),z.object({b:z.string().optional()})])",
+    "z.union([z.object({b:z.string().optional()}),z.object({a:z.string().optional(),hint:z.string().optional()})])",
+  ],
+])("untagged unions tolerate optional additions and repeated primitive types", (before, after) => {
+  const ran = probe("api-contract", schemaChange(before, after));
+  expect(ran.exitCode).toBe(0);
+  expect(ran.output).toContain("0 breaking changes");
+});
+
+test("status object constant keys and nested values are compared", () => {
+  const before =
+    STATUS +
+    '\nexport const STATUS_SLICE_FIELDS = {items:["id","title"], runners:["id"]} as const;';
+  const ran = probe(
+    "api-contract",
+    candidate(
+      { ...API, "src/web/src/contract.ts": before },
+      {
+        "src/web/src/contract.ts": before
+          .replace(', runners:["id"]', "")
+          .replace('["id","title"]', '["id"]'),
+      },
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("STATUS_SLICE_FIELDS.runners\tremoved");
+  expect(ran.output).toContain('STATUS_SLICE_FIELDS.items\tvalue "title" removed');
+});
+
+test("unrelated unsupported exports do not crash extraction", () => {
+  const ran = probe(
+    "api-contract",
+    apiCandidate({
+      "src/runner-protocol/index.ts":
+        EVENTS + '\nexport const RUNNER_KNOWN_AGENTS = new Set(["a"]);',
+      "src/web/src/contract.ts":
+        STATUS + '\nexport const UNUSED = new Set(["a"]);\nexport const EXTRA_PATH = `/api/extra`;',
+    }),
+  );
+  expect(ran.exitCode).toBe(0);
+  expect(ran.output).toContain("EXTRA_PATH\tadded");
+});
+
+function routeChange(before: string, after: string) {
+  return candidate(
+    { ...API, "src/runner-work/http.ts": before },
+    { "src/runner-work/http.ts": after },
+  );
+}
+
+test("regex methods do not include methods owned by unrelated routes", () => {
+  const before =
+    'export function handle(request: Request) { const path=new URL(request.url).pathname; const match=/^\\/api\\/regex$/.exec(path); if(path==="/api/x") {if(request.method==="POST")return new Response(null);} if(!match)return null; if(request.method!=="GET")return new Response(null,{status:405}); return new Response(null); }';
+  const ran = probe(
+    "api-contract",
+    routeChange(
+      before,
+      before.replace('if(request.method==="POST")return', 'if(request.method==="PUT")return'),
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("POST /api/x");
+  expect(ran.output).not.toMatch(/route\t[^\n]*regex:[^\n]*no longer/);
+});
+
+test("negative prefix auth gates and nested closures do not own route methods", () => {
+  const before =
+    'export function handle(request: Request) {const path=new URL(request.url).pathname; if(true && !path.startsWith("/webhooks")) { return new Response(null); } if(path.startsWith("/webhooks/")) { const unrelated=()=>{if(request.method!=="GET")return null;}; return new Response(null); } return null;}';
+  const ran = probe(
+    "api-contract",
+    routeChange(before, before.replace('request.method!=="GET"', 'request.method!=="POST"')),
+  );
+  expect(ran.exitCode).toBe(0);
+  expect(ran.output).toContain("0 breaking changes");
+});
+
+test("simple negative prefix guards compare methods in their continuation", () => {
+  const before =
+    'export function handle(request: Request) {const path=new URL(request.url).pathname; if(!path.startsWith("/api/x/"))return null; if(request.method!=="GET")return new Response(null,{status:405}); return new Response(null);}';
+  const ran = probe("api-contract", routeChange(before, before.replace('!=="GET"', '!=="POST"')));
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("GET /api/x/*\tGET no longer served; now POST");
+});
+
+test("contextual fetch handlers and validated redirect paths are extracted", () => {
+  const before =
+    'const redirect=new URL(input.redirectUri); if(redirect.pathname!=="/oauth/test/callback")throw new Error("path"); Bun.serve({async fetch(request) {const url=new URL(request.url); if(url.pathname!==redirect.pathname)return new Response(null,{status:404}); if(request.method!=="GET")return new Response(null,{status:405}); return new Response(null);}});';
+  const ran = probe("api-contract", routeChange(before, before.replace('!=="GET"', '!=="POST"')));
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("GET /oauth/test/callback\tGET no longer served; now POST");
+});
+
+test("wrapping request branches in a closure preserves their routes", () => {
+  const body =
+    'const path=new URL(request.url).pathname; if(path==="/api/wrapped" && request.method==="GET")return new Response(null); return null;';
+  const ran = probe(
+    "api-contract",
+    routeChange(
+      `export function handle(request: Request) {${body}}`,
+      `export function handle(request: Request) {return withAuth(async ()=>{${body}});}`,
+    ),
+  );
+  expect(ran.exitCode).toBe(0);
+  expect(ran.output).toContain("0 breaking changes");
+});
+
+test("route constant resolution follows index re-exports and ignores expensive unrelated declarations", () => {
+  const path = 'export const CALLBACK_PATH="/api/callback";';
+  const route =
+    'import {CALLBACK_PATH} from "../shared"; export function handle(request: Request, path:string){if(path===CALLBACK_PATH && request.method==="GET") return new Response(null);return null;}';
+  const huge = `export const UNUSED = [${'"unused",'.repeat(105_000)}{ method() {} }];`;
+  const at = candidate(
+    {
+      ...API,
+      "src/shared/index.ts": 'export {CALLBACK_PATH} from "./paths";',
+      "src/shared/paths.ts": path,
+      "src/runner-work/http.ts": route,
+    },
+    { "src/unused.ts": huge },
+  );
+  const ran = probe("api-contract", at);
+  expect(ran.exitCode).toBe(0);
+  expect(ran.output).toContain("0 breaking changes");
+});
+
+test("unrelated unavailable base dependencies are not installed by the probe", () => {
+  const manifest = JSON.parse(API["package.json"]);
+  const lock = Bun.JSONC.parse(API["bun.lock"]) as {
+    workspaces: Record<string, { dependencies: Record<string, string> }>;
+    packages: Record<string, unknown>;
+  };
+  manifest.dependencies["unavailable-contract-fixture"] = "999.0.0";
+  lock.workspaces[""]!.dependencies["unavailable-contract-fixture"] = "999.0.0";
+  lock.packages["unavailable-contract-fixture"] = [
+    "unavailable-contract-fixture@999.0.0",
+    "",
+    {},
+    "sha512-invalid",
+  ];
+  const ran = probe(
+    "api-contract",
+    candidate(
+      { ...API, "package.json": JSON.stringify(manifest), "bun.lock": JSON.stringify(lock) },
+      { "README.md": "no API change" },
+    ),
+  );
+  expect(ran.exitCode).toBe(0);
+  expect(ran.output).toContain("0 breaking changes");
+});
