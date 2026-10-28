@@ -368,7 +368,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   recoverOnStartup(db);
   const abort = new AbortController();
   // Startup reads the last mark to tell how long Paws was down (runner leases do not count it).
-  const aliveTimer = setInterval(() => markPawsAlive(db, Date.now()), PAWS_ALIVE_INTERVAL_MS);
+  const aliveTimer = setInterval(() => {
+    try {
+      markPawsAlive(db, Date.now());
+    } catch (error) {
+      journalCaught(error, "index.startPaws.markPawsAlive", null);
+    }
+  }, PAWS_ALIVE_INTERVAL_MS);
   aliveTimer.unref?.();
   abort.signal.addEventListener("abort", () => clearInterval(aliveTimer));
   let orchestrator: Orchestrator | null = null;

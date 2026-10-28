@@ -15,6 +15,13 @@ export function runnerLeaseLive(leaseUntil: number, now: number): boolean {
   return leaseUntil > runnerLeaseCutoff(now);
 }
 
+/** Settled results and acknowledged cancellations no longer hold work. Queries alias work as w. */
+const UNSETTLED_RUNNER_WORK_SQL = `AND NOT EXISTS(SELECT 1 FROM runner_result r
+    WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)
+  AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.run_id=w.run_id
+    AND c.generation=w.generation AND c.runner_id=w.runner_id AND c.kind='cancel'
+    AND c.acknowledged_at IS NOT NULL)`;
+
 /**
  * Whether Paws may release the runner slot of `runId` without fencing work the runner still does.
  * True when no work is open, when the lease is past the grace, when the runner sent its result
@@ -26,11 +33,7 @@ export function runnerWorkSettled(db: Database, runId: string, now: number): boo
     db
       .query(
         `SELECT 1 FROM runner_work w WHERE w.run_id=?1 AND w.ended_at IS NULL AND w.lease_until>?2
-         AND NOT EXISTS(SELECT 1 FROM runner_result r
-           WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)
-         AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.run_id=w.run_id
-           AND c.generation=w.generation AND c.runner_id=w.runner_id AND c.kind='cancel'
-           AND c.acknowledged_at IS NOT NULL)`,
+         ${UNSETTLED_RUNNER_WORK_SQL}`,
       )
       .get(runId, runnerLeaseCutoff(now)) === null
   );
@@ -73,11 +76,7 @@ export function shiftRunnerLeasesForDowntime(
        MIN(w.lease_until+?1, (SELECT c.expires_at FROM runner_command c WHERE c.id=w.command_id)))
      WHERE w.ended_at IS NULL AND w.lease_until>?2
      AND EXISTS(SELECT 1 FROM runner_command c WHERE c.id=w.command_id)
-     AND NOT EXISTS(SELECT 1 FROM runner_result r
-       WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)
-     AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.run_id=w.run_id
-       AND c.generation=w.generation AND c.runner_id=w.runner_id AND c.kind='cancel'
-       AND c.acknowledged_at IS NOT NULL)`,
+     ${UNSETTLED_RUNNER_WORK_SQL}`,
     [shift, runnerLeaseCutoff(aliveAt)],
   );
   return shift;

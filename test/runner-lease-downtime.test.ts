@@ -175,6 +175,26 @@ async function fixture() {
 const resumes = (db: Database) =>
   listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending");
 
+test("a runner that never returns retains only its remaining lease plus grace after startup", async () => {
+  const f = await fixture();
+  try {
+    f.admit();
+    const remaining = f.leaseUntil() - f.clock.at;
+    f.down(25 * MINUTE);
+    recoverOnStartup(f.db, f.clock.at, BUDGET);
+    expect(f.leaseUntil() - f.clock.at).toBe(remaining);
+    // No renewal arrives. The shifted deadline expires after the original remaining lease
+    // and grace, rather than another offline budget after startup.
+    f.clock.at = f.leaseUntil() + RUNNER_LEASE_GRACE_MS;
+    markPawsAlive(f.db, f.clock.at);
+    expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([
+      { type: "resume", freshSession: true, checkpoint: null },
+    ]);
+  } finally {
+    f.close();
+  }
+}, 30_000);
+
 test("Paws down 20 minutes with a 30-minute budget: the runner still holds the work and the run reattaches", async () => {
   const f = await fixture();
   try {
