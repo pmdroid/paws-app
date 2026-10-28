@@ -50,6 +50,7 @@ import { createHookSettings } from "./hooks";
 import { createCheckoutSettings } from "./checkout-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
+import { createFindings } from "./findings";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
 import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
@@ -74,6 +75,7 @@ const hookSettings = createHookSettings();
 const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
+const findings = createFindings();
 const executionControls = createExecutionControls(reload);
 const deadDeliveryRetry = createDeadDeliveryRetry(reload);
 const reviewDraw = createReviewDraw(reload);
@@ -333,6 +335,9 @@ function paint(): void {
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
   if (runnerRoot && model.route.view === "runners")
     runners.mount(runnerRoot, currentEngine(), source(), model.route.id);
+  const findingsRoot = document.querySelector<HTMLElement>("#findings-page");
+  if (findingsRoot && model.route.view === "findings")
+    findings.mount(findingsRoot, currentEngine(), source());
   if (loadOpenLogs()) paint();
 }
 

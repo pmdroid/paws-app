@@ -8,6 +8,7 @@ export type Route =
   | { view: "issues"; id: string | null }
   | { view: "runs"; id: string | null }
   | { view: "mergeQueue" }
+  | { view: "findings" }
   | { view: "evidence"; id: string | null }
   | { view: "questions"; id: string | null }
   | { view: "settings"; page?: SettingsPage };
@@ -48,6 +49,8 @@ export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Rout
     }
     case "merge-queue":
       return { view: "mergeQueue" };
+    case "findings":
+      return { view: "findings" };
     case "evidence":
       return { view: "evidence", id };
     case "sessions":
@@ -69,6 +72,7 @@ export function routePath(route: Route): string {
   if (route.view === "overview") return "/";
   if (route.view === "settings") return route.page ? `/settings/${route.page}` : "/settings";
   if (route.view === "mergeQueue") return "/merge-queue";
+  if (route.view === "findings") return "/findings";
   return route.id ? `/${route.view}/${encodeURIComponent(route.id)}` : `/${route.view}`;
 }
 
