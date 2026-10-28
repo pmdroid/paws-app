@@ -23,12 +23,17 @@ export async function classifyCandidateRisk(input: {
   head: string;
   settingsGlobs: readonly string[];
 }): Promise<RiskClassification & { matches: RiskMatch[] }> {
-  const changed = (
-    await input.git(["diff", "--name-only", "--no-renames", "-z", input.base, input.head, "--"])
-  )
+  return classifyPathsRisk({
+    ...input,
+    changed: await changedPaths(input.git, input.base, input.head),
+  });
+}
+
+/** Every path the candidate at `head` changes since `base`. A rename counts as both paths. */
+export async function changedPaths(git: RiskGit, base: string, head: string): Promise<string[]> {
+  return (await git(["diff", "--name-only", "--no-renames", "-z", base, head, "--"]))
     .split("\0")
     .filter((path) => path !== "");
-  return classifyPathsRisk({ ...input, changed });
 }
 
 /**
