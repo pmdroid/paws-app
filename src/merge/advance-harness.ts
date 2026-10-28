@@ -15,6 +15,7 @@ import {
   getWorkItem,
   insertQueuedItem,
   markCloseoutAccepted,
+  markRun,
   migrate,
   openDatabase,
   saveCheckpoint,
@@ -225,8 +226,10 @@ export async function mergeHarness(
     const head = await git(worktree, "rev-parse", "HEAD");
     const base = await git(worktree, "rev-parse", "origin/main");
     insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
-    beginImplementRun(db, id, clock.now());
+    const { run } = beginImplementRun(db, id, clock.now());
     enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
+    // The implementer run ends once Closeout accepts, as it does in the loop.
+    markRun(db, run.id, "ended", clock.now());
     acceptHead(id, base, head);
     const item = { id, worktree, pull: items.size + 1, accepted: head, base };
     items.set(id, item);

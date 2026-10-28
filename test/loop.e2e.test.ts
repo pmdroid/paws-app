@@ -2151,7 +2151,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
 }
 
 for (const movedHead of [false, true]) {
-  test(`a restarted merge re-verifies the same head after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once`, async () => {
+  test(`a merge waiting across a restart keeps its job after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once`, async () => {
     const layout = await repoLayout("paws-e2e-");
     const tracker = createFakeTracker([
       {
@@ -2225,14 +2225,7 @@ for (const movedHead of [false, true]) {
       db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
       recoverOnStartup(db);
       const restarted = attach();
-      await tickWithRestarts(restarted.jobs, restarted.orchestrator, db);
-      const retry = listJobs(db).find(
-        (job) => job.queue === JOB_KIND.merge && job.status === "pending",
-      );
-      expect(retry, debug(layout, db)).toBeDefined();
-      expect(retry!.id).not.toBe(original.id);
-      expect(retry!.payload).toMatchObject({ head: item.checkpoint!.wipCommit });
-      expect(listJobs(db).find((job) => job.id === original.id)?.status).toBe("cancelled");
+      expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
       for (let tick = 0; tick < 5; tick++) {
         // A moved pull request head releases the lane to read it again. Skip the poll delay.
         db.run(`UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'`, [
@@ -2243,14 +2236,17 @@ for (const movedHead of [false, true]) {
       expect(getWorkItem(db, item.id)?.state, debug(layout, db)).toBe("merged");
       expect(github.merged).toHaveLength(1);
       expect(rejectedHeads).toBe(movedHead ? 2 : 0);
-      // A moved head never sends the accepted head back to Closeout or merges another head.
+      // The waiting merge keeps its job. A moved head never sends the accepted head back to
+      // Closeout or merges another head.
       expect(
-        listJobs(db).filter((job) => job.queue === JOB_KIND.merge && job.status === "done"),
-      ).toHaveLength(1);
+        listJobs(db)
+          .filter((job) => job.queue === JOB_KIND.merge)
+          .map((job) => [job.id, job.status]),
+      ).toEqual([[original.id, "done"]]);
       expect(
         listJobs(db).filter((job) => job.queue === JOB_KIND.reverify),
         debug(layout, db),
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       expect(github.merged[0]!.expectedHeadSha).toBe(item.checkpoint!.wipCommit!);
       expect((await exec("git", ["--git-dir", layout.bare, "show", "main:ok.txt"])).stdout).toBe(
         "ok\n",

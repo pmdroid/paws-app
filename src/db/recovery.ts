@@ -15,7 +15,7 @@ import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStat
 import type { WorkItemRecord } from "./items";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
-import { markRun, releaseRunCapacity } from "./runs";
+import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { getTaskMode } from "./tasks";
 import { immediate } from "./tx";
 
@@ -51,6 +51,7 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
         checkpoint: item.checkpoint,
         runnerHoldsWork: runnerHoldsWork(db, item, now),
         mergeCallInFlight: mergeCallInFlight(db, item.id),
+        runActive: runActive(db, item),
         ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
       });
       const followed =
@@ -101,8 +102,9 @@ function hasPendingResume(db: Database, itemId: string, reason: string): boolean
 
 /**
  * SIGINT / SIGTERM. Commit WIP on each in-flight item branch, then move running
- * work to recovering without using the one resume attempt. An item in the merge
- * queue keeps its state and its place for the next start to pick up.
+ * work to recovering without using the one resume attempt. An item waiting in
+ * the merge queue keeps its state and its place for the next start to pick up; one
+ * whose run is still active is left for a re-verify.
  */
 export function prepareShutdown(
   db: Database,
@@ -126,7 +128,16 @@ export function prepareShutdown(
       if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
       applyWorkItemEvent(db, item.id, "lease_expired");
     }
+    for (const item of listWorkItemsByStates(db, ["merge_queue"])) {
+      if (!runActive(db, item)) continue;
+      markRun(db, item.currentRunId!, "lost", now);
+      applyWorkItemEvent(db, item.id, "lease_expired");
+    }
   });
+}
+
+function runActive(db: Database, item: WorkItemRecord): boolean {
+  return item.currentRunId !== null && getRun(db, item.currentRunId)?.status === "active";
 }
 
 function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boolean {
