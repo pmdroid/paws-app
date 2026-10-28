@@ -17,6 +17,7 @@ import {
 import {
   fakeStatusProvider,
   handleStatusRequest,
+  statusSnapshots,
   type ReadLinearArtifact,
   type StartLinearSession,
 } from "../web";
@@ -497,6 +498,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   const status = await handleStatusRequest(request, {
     csrfToken,
+    snapshotCache: statusSnapshots,
     ...(sessionIds === undefined ? {} : { sessionIds }),
     ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     ...(secrets.readLinearArtifact
