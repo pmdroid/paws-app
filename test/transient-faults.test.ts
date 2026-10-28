@@ -356,7 +356,7 @@ async function runWithFault(fault: {
   });
   const startCodeIssue = lifecycle.startCodeIssue;
   let remaining = fault.afterAccepted ? 0 : fault.times;
-  let reopened = false;
+  let reopen = fault.afterAccepted === true;
   const states: (string | null)[] = [];
   const listSessionActivities = tracker.listSessionActivities!;
   if (fault.tracker)
@@ -392,10 +392,8 @@ async function runWithFault(fault: {
     expect(await gate.accept(event)).toBe(true);
     await orchestrator.onLinearEvent(event);
     const deadline = Date.now() + 60_000;
-    const reopen = () => {
-      reopened = true;
+    const reopenAccepted = () => {
       const item = getWorkItem(db, itemIdOf(db))!;
-      if (item.state !== "merge_queue") return false;
       db.run("UPDATE job SET status='cancelled' WHERE status='pending'");
       applyWorkItemEvent(db, item.id, "lease_expired");
       applyWorkItemEvent(db, item.id, "lease_expired");
@@ -405,16 +403,19 @@ async function runWithFault(fault: {
         now: clock.now(),
       });
       remaining = fault.times;
-      return true;
     };
     const startedAt = clock.now();
     let stopped = false;
     while (
       Date.now() < deadline &&
-      (!["merge_queue", "merged", "failed", "cancelled"].includes(stateOf(db, "ENG-7") ?? "") ||
-        (fault.afterAccepted === true && !reopened && reopen())) &&
+      (reopen ||
+        !["merge_queue", "merged", "failed", "cancelled"].includes(stateOf(db, "ENG-7") ?? "")) &&
       (fault.untilMs === undefined || clock.now() - startedAt < fault.untilMs)
     ) {
+      if (reopen && stateOf(db, "ENG-7") === "merge_queue") {
+        reopen = false;
+        reopenAccepted();
+      }
       if (!stopped && fault.stopAtMs !== undefined && clock.now() - startedAt >= fault.stopAtMs) {
         applyLinearCommand(db, {
           type: "stop",
