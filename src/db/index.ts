@@ -703,9 +703,3 @@ export { restart, fixRounds, restartLimit, type RestartHandoff } from "./restart
 export { jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
-
-export {
-  getAutomaticRiskApproval,
-  saveAutomaticRiskApproval,
-  type AutomaticRiskApproval,
-} from "./automatic-risk-approval";

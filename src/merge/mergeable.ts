@@ -26,12 +26,13 @@ export type MergeFacts = {
   protection: "satisfied" | "review_required" | "changes_requested";
   /**
    * The risk approval of S: `not_required` for a normal-tier head or a Paws whose risk gate is
-   * off, `approved` when a person approved S (or the same patch on an older main) in Paws.
+   * off, `approved` when a person approved S (or the same patch on an older main) in Paws,
+   * `automatic` only while current clean review evidence covers exactly S.
    */
   riskApproval: RiskApproval;
 };
 
-export type RiskApproval = "not_required" | "approved" | "missing";
+export type RiskApproval = "not_required" | "approved" | "automatic" | "missing";
 
 /** Why S may not merge now, in the order the lane acts on them. */
 export type MergeBlock =
@@ -47,8 +48,8 @@ export type MergeBlock =
 export type Mergeable = { ok: true } | { ok: false; block: MergeBlock };
 
 /**
- * `mergeable(S)`: Closeout accepted S under the current policy digest, a person approved S when
- * its risk tier is high, CI is green for S, S contains the current main (or is apart from it
+ * `mergeable(S)`: Closeout accepted S under the current policy digest, the high-risk gate
+ * passes through a manual approval or current clean review evidence, CI is green for S, S contains the current main (or is apart from it
  * under `overlap`), no review thread is unresolved and branch protection is satisfied. The only
  * thing that lets the lane squash S.
  */

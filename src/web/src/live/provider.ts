@@ -42,7 +42,6 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
-  getAutomaticRiskApproval,
   getCandidateRisk,
   getRiskFix,
   latestCandidateRisk,
@@ -186,6 +185,7 @@ export type LiveStatusOptions = {
     workspace?: string | null;
   };
   env?: NodeJS.ProcessEnv;
+  automaticRisk?: (itemId: string, head: string) => Promise<string[] | null>;
   linearUsage?: () => LinearUsageView;
 };
 
@@ -200,10 +200,26 @@ export type LinearUsageView = {
 
 export function createLiveStatusProvider(
   db: Database,
-  options: LiveStatusOptions = {},
+  options?: LiveStatusOptions & { automaticRisk?: undefined },
 ): {
   snapshot(): StatusSnapshot;
   item(id: string): StatusItemDetail | null;
+  checkLog(request: CheckLogRequest): CheckOutput | null;
+};
+export function createLiveStatusProvider(
+  db: Database,
+  options: LiveStatusOptions,
+): {
+  snapshot(): StatusSnapshot;
+  item(id: string): StatusItemDetail | null | Promise<StatusItemDetail | null>;
+  checkLog(request: CheckLogRequest): CheckOutput | null;
+};
+export function createLiveStatusProvider(
+  db: Database,
+  options: LiveStatusOptions = {},
+): {
+  snapshot(): StatusSnapshot;
+  item(id: string): StatusItemDetail | null | Promise<StatusItemDetail | null>;
   checkLog(request: CheckLogRequest): CheckOutput | null;
 } {
   return {
@@ -215,7 +231,19 @@ export function createLiveStatusProvider(
       };
     },
     item(id) {
-      return readItemDetail(db, id, options);
+      const detail = readItemDetail(db, id, options);
+      if (!detail?.risk?.head || !options.automaticRisk) return detail;
+      const itemId = readScopedSnapshot(db, options, id).current?.record.id;
+      if (!itemId) return detail;
+      return options.automaticRisk(itemId, detail.risk.head).then((evidenceIds) => ({
+        ...detail,
+        risk: {
+          ...detail.risk!,
+          automaticApproval: evidenceIds
+            ? { approvedBy: "paws:clean-reviews" as const, evidenceIds }
+            : null,
+        },
+      }));
     },
     checkLog(request) {
       return readCheckLog(db, request, options);
@@ -347,16 +375,9 @@ function itemRisk(db: Database, current: CurrentItem): StatusItemRisk | null {
       ? { state: check.state, detail: check.detail?.trim() || null, head: current.verdict!.headSha }
       : null;
   if (stored === null && securityReview === null) return null;
-  const automatic = stored ? getAutomaticRiskApproval(db, current.record.id, stored.head) : null;
   const lists = new Map((stored?.matches ?? []).map((match) => [match.path, match.lists]));
   return {
-    automaticApproval: automatic
-      ? {
-          approvedBy: automatic.approvedBy,
-          evidenceIds: automatic.evidenceIds,
-          approvedAt: new Date(automatic.approvedAt).toISOString(),
-        }
-      : null,
+    automaticApproval: null,
     tier: stored?.tier ?? null,
     head: stored?.head ?? null,
     base: stored?.base ?? null,

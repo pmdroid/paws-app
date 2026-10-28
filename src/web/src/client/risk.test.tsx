@@ -135,7 +135,6 @@ test("the Risk card shows an automatic approval after parsing the live payload",
         automaticApproval: {
           approvedBy: "paws:clean-reviews",
           evidenceIds: ["security/1.json", "independent/1.json"],
-          approvedAt: "2026-10-28T17:00:00.000Z",
         },
       }),
     ),

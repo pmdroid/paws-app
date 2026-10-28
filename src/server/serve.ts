@@ -88,6 +88,7 @@ export type ServerOptions = {
   githubWebhook?: GitHubWebhook;
   slackSigningSecret?: string | null;
   linearWebhook?: LinearWebhookDeps;
+  automaticRisk?: (itemId: string, head: string) => Promise<string[] | null>;
   linearUsage?: () => LinearUsage;
   /**
    * Webhook routes. Default follows `LINEAR_WEBHOOKS` via `webhookChecksNeeded`.
@@ -177,6 +178,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           githubWebhookSecret,
           linearWebhook,
           linearUsage: options.linearUsage,
+          automaticRisk: options.automaticRisk,
           webhooks,
           csrfToken,
           ip,
@@ -231,6 +233,7 @@ type Secrets = {
   githubWebhookSecret: string | null;
   githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
+  automaticRisk?: ServerOptions["automaticRisk"];
   linearUsage?: (() => LinearUsage) | undefined;
   webhooks: boolean;
   csrfToken: string;
@@ -548,6 +551,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     ...(secrets.db
       ? {
           db: secrets.db,
+          ...(secrets.automaticRisk ? { automaticRisk: secrets.automaticRisk } : {}),
           ...(secrets.linearUsage ? { linearUsage: secrets.linearUsage } : {}),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
           ...(secrets.closeoutHome ? { closeoutHome: secrets.closeoutHome } : {}),

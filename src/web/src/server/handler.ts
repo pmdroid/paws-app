@@ -63,6 +63,7 @@ export interface StatusServerOptions {
   evidenceRoot?: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
+  automaticRisk?: LiveStatusOptions["automaticRisk"];
   linearUsage?: LiveStatusOptions["linearUsage"];
   /** Where status API response sizes go. Defaults to the process's per-minute journal line. */
   responseSizes?: ResponseSizeJournal;
@@ -197,6 +198,7 @@ function liveProvider(options?: {
   db?: Database;
   env?: Record<string, string | undefined>;
   closeoutHome?: string;
+  automaticRisk?: LiveStatusOptions["automaticRisk"];
   linearUsage?: LiveStatusOptions["linearUsage"];
 }): StatusProvider {
   if (options?.provider) return options.provider;
@@ -205,6 +207,7 @@ function liveProvider(options?: {
       ...(options.sessionIds === undefined ? {} : { sessionIds: options.sessionIds }),
       ...(options.env ? { env: options.env } : {}),
       ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
+      ...(options.automaticRisk ? { automaticRisk: options.automaticRisk } : {}),
       ...(options.linearUsage ? { linearUsage: options.linearUsage } : {}),
     });
   }

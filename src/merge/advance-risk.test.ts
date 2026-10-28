@@ -93,3 +93,23 @@ test("under ci, a high-risk head nobody approved is asked about before the lane 
   expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
   expect(h.github.merged).toEqual([]);
 });
+
+test("automatic eligibility is checked again immediately before mergeable(S)", async () => {
+  const h = (harness = await mergeHarness());
+  await h.addItem("ENG-1");
+  let reads = 0;
+  h.state.risk = () => (++reads === 1 ? "automatic" : "missing");
+  expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+  expect(reads).toBe(2);
+  expect(h.github.merged).toHaveLength(0);
+});
+
+test("a rebased head cannot carry automatic eligibility", async () => {
+  const h = (harness = await mergeHarness({ settings: { mainMoved: "ci" } }));
+  const item = await h.addItem("ENG-1");
+  h.state.risk = (head) => (head === item.accepted ? "automatic" : "missing");
+  await h.moveMain("side.txt", "side\n");
+  expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+  expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+  expect(h.github.merged).toHaveLength(0);
+});

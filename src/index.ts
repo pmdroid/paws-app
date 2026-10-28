@@ -939,6 +939,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       db,
       statusEnv: envSource,
       closeoutHome: paths.home,
+      automaticRisk: async (itemId, head) =>
+        orchestrator?.automaticRiskStatus(itemId, head) ?? null,
       evidenceDir: paths.evidenceDir,
       visualReviewChanges: async (input) =>
         orchestrator ? orchestrator.requestVisualReviewChanges(input) : "rejected",

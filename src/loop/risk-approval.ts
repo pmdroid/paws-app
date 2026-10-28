@@ -10,7 +10,8 @@ import {
   enqueueOutboxOnce,
   immediate,
   getCandidateRisk,
-  saveAutomaticRiskApproval,
+  listReviewFindings,
+  reviewFindingItems,
   listCloseoutProgress,
   getRiskFix,
   getWorkItem,
@@ -53,7 +54,7 @@ export type FixRisk = { changed: string[]; paths: string[] };
  * whose risk gate is off, needs nothing. A high-risk or unclassified head needs a person's
  * approval of S in Paws, or of an earlier head with the same patch against main (`samePatch`),
  * as after a rebase. A Linear reply never approves, so only `approve` decisions count.
- * Exact and carried-over manual approvals take precedence over automatic approval. Automatic approval needs
+ * Exact and carried-over manual approvals take precedence. Automatic eligibility needs
  * clean evidence on this exact head and base, and never carries to a fix or rebase.
  *
  * A fix Paws made after the latest approval (CI, a review, a comment) keeps that approval when
@@ -96,20 +97,11 @@ export async function riskApprovalFor(
     });
     if (fix !== null && fix.paths.length === 0) return "approved";
   }
-  // Stored automatic approvals are audit records. Revalidate the current accepted evidence,
-  // including its base and policy, on every authorization read.
   if (risk?.tier === "high" && automaticEnabled(input.automatic, input.itemId)) {
-    const evidenceIds = await cleanReviewEvidence(db, risk, input.automatic);
+    const evidenceIds = await automaticRiskEvidence(db, risk, input.automatic);
     if (evidenceIds !== null) {
       const now = input.now ?? Date.now();
       immediate(db, () => {
-        saveAutomaticRiskApproval(db, {
-          itemId: input.itemId,
-          head: input.head,
-          approvedBy: "paws:clean-reviews",
-          evidenceIds,
-          approvedAt: now,
-        });
         const item = getWorkItem(db, input.itemId);
         const pending = openRiskAsk(db, input.itemId);
         if (pending?.headCommit === input.head) {
@@ -132,7 +124,7 @@ export async function riskApprovalFor(
             now,
           });
       });
-      return "approved";
+      return "automatic";
     }
   }
   return "missing";
@@ -172,11 +164,12 @@ function automaticEnabled(
 }
 
 /** A bypass, skipped review, missing record or unreadable checkout always leaves the person gate. */
-async function cleanReviewEvidence(
+export async function automaticRiskEvidence(
   db: Database,
   risk: CandidateRisk,
   checks: AutomaticRiskChecks,
 ): Promise<string[] | null> {
+  if (!automaticEnabled(checks, risk.itemId)) return null;
   const run = listCloseoutProgress(db, risk.itemId, risk.head).at(-1);
   if (
     run?.decision !== "accepted" ||
@@ -211,6 +204,7 @@ async function cleanReviewEvidence(
       // is ambiguous, even when one copy is clean, so it cannot authorize an approval.
       if (
         matching.length !== 1 ||
+        records.some((entry) => entry.itemId === step!.id && entry.attempt > step!.attempt) ||
         matching[0]!.findings.some((finding) => finding.severity !== "P3")
       )
         return null;
@@ -228,6 +222,29 @@ async function cleanReviewEvidence(
       return null;
     const policyPaths = await checks.policyPaths(run.policyDigest);
     if (policyPaths === null || changed.some((path) => policyPaths.includes(path))) return null;
+    // Findings can be added or reopened after the accepted review completed.
+    const open = listReviewFindings(db, { status: "open" }).filter(
+      (finding) => finding.severity !== "P3",
+    );
+    const reported = reviewFindingItems(
+      db,
+      open.map((finding) => finding.id),
+    );
+    if (
+      open.some((finding) =>
+        reported
+          .get(finding.id)
+          ?.some((item) => item.itemId === risk.itemId && item.head === risk.head),
+      )
+    )
+      return null;
+    const current = listCloseoutProgress(db, risk.itemId, risk.head).at(-1);
+    if (
+      !automaticEnabled(checks, risk.itemId) ||
+      current?.id !== run.id ||
+      current.updatedAt !== run.updatedAt
+    )
+      return null;
     return reviews.map((step) => step!.evidencePath!);
   } catch (error) {
     journalCaught(error, "risk-approval.cleanReviewEvidence", risk.itemId);

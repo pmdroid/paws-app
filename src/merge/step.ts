@@ -4,10 +4,10 @@ import type { RebaseBudget } from "./budget";
 import { closeoutAccepted, mergeable, type MergeBlock, type MergeFacts } from "./mergeable";
 import type { MergeWait } from "./wait";
 
-/** What one lane turn may do. Each is called at most once per turn. */
+/** What one lane turn may do. Facts are refreshed if GitHub returns new readiness. */
 export type LaneActions = {
   read(): Promise<PullFactsRead>;
-  facts(pull: PullFacts): MergeFacts;
+  facts(pull: PullFacts): MergeFacts | Promise<MergeFacts>;
   rebase(): Promise<RebaseResult>;
   squash(expectedHead: string, pull: PullFacts): Promise<SerialMergeResult>;
 };
@@ -48,7 +48,7 @@ export async function laneTurn(actions: LaneActions): Promise<LaneTurn> {
         message: pull.readiness.message,
       },
     };
-  const facts = actions.facts(pull);
+  const facts = await actions.facts(pull);
   const verdict = mergeable(facts);
   if (verdict.ok) {
     const result = await actions.squash(pull.head, pull);
@@ -58,7 +58,7 @@ export async function laneTurn(actions: LaneActions): Promise<LaneTurn> {
     const recheck = result.readiness;
     if (recheck && (recheck.outcome === "ci_failed" || recheck.outcome === "pending")) {
       const fresh: PullFacts = { ...pull, readiness: recheck };
-      const again = mergeable(actions.facts(fresh));
+      const again = mergeable(await actions.facts(fresh));
       if (!again.ok && again.block !== "behind_main")
         return { kind: "blocked", block: again.block, pull: fresh };
     }

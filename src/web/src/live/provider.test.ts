@@ -32,7 +32,6 @@ import {
   type CloseoutStepWrite,
   saveCandidateRisk,
   saveRiskFix,
-  saveAutomaticRiskApproval,
 } from "../../../db";
 import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
@@ -1199,7 +1198,7 @@ describe("live status provider", () => {
     expect((await get("ENG-404"))?.status).toBe(404);
   });
 
-  test("the item detail's risk block has the tier, each path's list and the security review", () => {
+  test("the item detail's risk block has the tier, each path's list and the security review", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
@@ -1279,20 +1278,15 @@ describe("live status provider", () => {
       ],
       securityReview: { state: "passed", detail: null, head },
     });
-    saveAutomaticRiskApproval(db, {
-      itemId: item.id,
-      head,
-      approvedBy: "paws:clean-reviews",
-      evidenceIds: ["security/1.json", "independent/1.json"],
-      approvedAt: now,
+    let eligible = true;
+    const live = createLiveStatusProvider(db, {
+      automaticRisk: async () => (eligible ? ["security/1.json", "independent/1.json"] : null),
     });
-    const approved = parseStatusItemDetail(JSON.parse(JSON.stringify(provider.item(item.id))));
-    if (!approved.ok) throw new Error(approved.error);
-    expect(approved.detail.risk?.automaticApproval).toEqual({
-      approvedBy: "paws:clean-reviews",
-      evidenceIds: ["security/1.json", "independent/1.json"],
-      approvedAt: new Date(now).toISOString(),
-    });
+    expect((await live.item(item.id))?.risk?.automaticApproval?.approvedBy).toBe(
+      "paws:clean-reviews",
+    );
+    eligible = false;
+    expect((await live.item(item.id))?.risk?.automaticApproval).toBeNull();
     saveCandidateRisk(db, {
       itemId: item.id,
       head: "e".repeat(40),

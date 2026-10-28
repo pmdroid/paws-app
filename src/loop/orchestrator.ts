@@ -134,6 +134,7 @@ import {
 } from "../core";
 import {
   saveCandidateRisk,
+  getCandidateRisk,
   listWaitingProfileRuns,
   getTaskMode,
   assertLinearSessionCleanup,
@@ -438,6 +439,9 @@ import {
   askRiskApproval,
   postRiskActivity,
   riskApprovalFor,
+  riskApprovals,
+  automaticRiskEvidence,
+  type AutomaticRiskChecks,
   type FixRisk,
   RISK_ANSWERERS,
 } from "./risk-approval";
@@ -3756,6 +3760,68 @@ export class Orchestrator {
     });
   }
 
+  private automaticRiskChecks(
+    item: WorkItemRecord,
+    worktree: string,
+    head: string,
+  ): AutomaticRiskChecks {
+    return {
+      enabled: () =>
+        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
+          .autoApproveHighRisk,
+      policyPaths: async (digest) => {
+        const { home, policyRoot } = this.closeoutHome(item);
+        const policy = candidatePolicyInputs(
+          worktree,
+          home,
+          policyRoot,
+          this.runCheckout(item).checks,
+        );
+        return policy?.digest === digest ? policy.paths : null;
+      },
+      changedPaths: async (base) =>
+        (await git(["-C", worktree, "diff", "--name-only", "--no-renames", "-z", base, head, "--"]))
+          .split("\0")
+          .filter(Boolean),
+      reviews: (taskId, reviewedHead, scope) =>
+        reviewRecordsAt(taskId, reviewedHead, this.options.pawsRoot, scope),
+    };
+  }
+
+  /** Current merge eligibility for the Risk card; never an approval record. */
+  async automaticRiskStatus(itemId: string, head: string): Promise<string[] | null> {
+    const item = getWorkItem(this.db, itemId);
+    const risk = getCandidateRisk(this.db, itemId, head);
+    if (
+      !item ||
+      item.checkpoint?.wipCommit !== head ||
+      risk?.tier !== "high" ||
+      !this.options.publicUrl?.startsWith("https://")
+    )
+      return null;
+    const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
+    const approvals = riskApprovals(this.db, itemId);
+    for (const approved of approvals.toReversed())
+      if (
+        approved.headCommit === head ||
+        (await samePatch(worktree, approved.headCommit, head, risk.base))
+      )
+        return null;
+    const latest = approvals.at(-1);
+    if (latest) {
+      const repository = this.repositoryForItem(item);
+      if (!repository) return null;
+      const fix = await this.fixRisk(
+        item,
+        { worktree, head, repository, signal: new AbortController().signal },
+        latest.headCommit,
+        risk.base,
+      );
+      if (fix?.paths.length === 0) return null;
+    }
+    return automaticRiskEvidence(this.db, risk, this.automaticRiskChecks(item, worktree, head));
+  }
+
   private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
@@ -3779,39 +3845,7 @@ export class Orchestrator {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
-            automatic: {
-              enabled: () =>
-                readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-                  .autoApproveHighRisk,
-              policyPaths: async (digest) => {
-                const { home, policyRoot } = this.closeoutHome(item);
-                const policy = candidatePolicyInputs(
-                  published.worktree,
-                  home,
-                  policyRoot,
-                  this.runCheckout(item).checks,
-                );
-                return policy?.digest === digest ? policy.paths : null;
-              },
-              changedPaths: async (base) =>
-                (
-                  await git([
-                    "-C",
-                    published.worktree,
-                    "diff",
-                    "--name-only",
-                    "--no-renames",
-                    "-z",
-                    base,
-                    published.head,
-                    "--",
-                  ])
-                )
-                  .split("\0")
-                  .filter(Boolean),
-              reviews: (taskId, head, scope) =>
-                reviewRecordsAt(taskId, head, this.options.pawsRoot, scope),
-            },
+            automatic: this.automaticRiskChecks(item, published.worktree, published.head),
             samePatch: (approved, base) =>
               samePatch(published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),
@@ -4132,7 +4166,7 @@ export class Orchestrator {
    */
   private async fixRisk(
     item: WorkItemRecord,
-    published: MergePublication,
+    published: Pick<MergePublication, "worktree" | "head" | "repository" | "signal">,
     approved: string,
     base: string,
   ): Promise<FixRisk | null> {

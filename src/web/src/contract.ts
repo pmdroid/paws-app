@@ -819,7 +819,6 @@ export interface StatusItemRisk {
   automaticApproval?: {
     approvedBy: "paws:clean-reviews";
     evidenceIds: string[];
-    approvedAt: string;
   } | null;
   tier: RiskTier | null;
   head: string | null;
@@ -972,7 +971,6 @@ function readItemRisk(input: unknown): StatusItemRisk | null {
         `${at}.approvedBy`,
       ),
       evidenceIds: array(approval, "evidenceIds", at).map(String),
-      approvedAt: dateString(approval, "approvedAt", at),
     };
   }
   return {

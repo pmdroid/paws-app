@@ -10,7 +10,6 @@ import {
   ensureCloseoutProgress,
   finishCloseoutProgress,
   upsertCloseoutStep,
-  getAutomaticRiskApproval,
   beginImplementRun,
   enqueueJob,
   enqueueOutboxOnce,
@@ -21,6 +20,9 @@ import {
   listJobs,
   listOutbox,
   migrate,
+  recordReviewFindings,
+  listReviewFindings,
+  setReviewFindingStatus,
   openDatabase,
   saveCandidateRisk,
   saveCheckpoint,
@@ -739,17 +741,11 @@ test("clean reviews approve the head with evidence, no question and one Linear a
   const { db, itemId } = held();
   try {
     cleanReviews(db);
-    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db)).toBe("automatic");
     expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
-    expect(getAutomaticRiskApproval(db, itemId, heads.s)).toEqual({
-      itemId,
-      head: heads.s,
-      approvedBy: "paws:clean-reviews",
-      evidenceIds: [`${heads.s}/security-review/1.json`, `${heads.s}/independent-review/1.json`],
-      approvedAt: NOW,
-    });
-    expect(await automatic(db)).toBe("approved");
+    expect(db.query("SELECT * FROM automatic_risk_approval").all()).toEqual([]);
+    expect(await automatic(db)).toBe("automatic");
     const tracker = createFakeTracker();
     for (const row of listOutbox(db))
       if (row.op === "activity")
@@ -803,7 +799,11 @@ for (const scenario of [
         }),
       ).toBe("asked");
       expect(findOpenQuestion(db, "ses_1")).not.toBeNull();
-      expect(getAutomaticRiskApproval(db, itemId, heads.s)).toBeNull();
+      expect(
+        db
+          .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
+          .get(itemId, heads.s),
+      ).toBeNull();
     } finally {
       db.close();
     }
@@ -813,12 +813,16 @@ test("automatic approval never carries to a new head, even with the same patch",
   const { db, itemId } = held();
   try {
     cleanReviews(db);
-    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db)).toBe("automatic");
     classify(db, heads.rebased, heads.base);
     expect(await automatic(db, { head: heads.rebased })).toBe("missing");
     cleanReviews(db, heads.rebased);
-    expect(await automatic(db, { head: heads.rebased })).toBe("approved");
-    expect(getAutomaticRiskApproval(db, itemId, heads.rebased)).not.toBeNull();
+    expect(await automatic(db, { head: heads.rebased })).toBe("automatic");
+    expect(
+      db
+        .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
+        .get(itemId, heads.rebased),
+    ).toBeNull();
   } finally {
     db.close();
   }
@@ -828,10 +832,14 @@ test("turning automatic approval off makes a queued approved head ask a person",
   const { db, itemId } = held();
   try {
     cleanReviews(db);
-    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db)).toBe("automatic");
     expect(await automatic(db, { enabled: false })).toBe("missing");
-    // Keep the audit record, but it no longer authorizes this head while the setting is off.
-    expect(getAutomaticRiskApproval(db, itemId, heads.s)).not.toBeNull();
+    // No automatic authorization exists to revoke.
+    expect(
+      db
+        .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
+        .get(itemId, heads.s),
+    ).toBeNull();
     expect(
       askRiskApproval(db, {
         item: getWorkItem(db, itemId)!,
@@ -882,7 +890,7 @@ test("normal heads and a disabled risk gate never read the automatic approval se
     classify(db, heads.s, heads.base);
     // Unreadable configuration fails closed for high-risk heads, including stored approvals.
     cleanReviews(db);
-    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db)).toBe("automatic");
     expect(await read(PUBLIC_URL)).toBe("missing");
     expect(reads).toBe(1);
   } finally {
@@ -894,7 +902,7 @@ test("a rule skipped because no paths matched still permits clean automatic appr
   const { db } = held();
   try {
     cleanReviews(db, heads.s, { skippedProbe: "no changed path matches" });
-    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db)).toBe("automatic");
   } finally {
     db.close();
   }
@@ -906,7 +914,11 @@ test("reviews and the protected-path diff must cover the same base", async () =>
     // The accepted reviews cover heads.base, while risk classification used heads.newMain.
     cleanReviews(db);
     expect(await automatic(db)).toBe("missing");
-    expect(getAutomaticRiskApproval(db, itemId, heads.s)).toBeNull();
+    expect(
+      db
+        .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
+        .get(itemId, heads.s),
+    ).toBeNull();
     expect(
       askRiskApproval(db, {
         item: getWorkItem(db, itemId)!,
@@ -921,20 +933,17 @@ test("reviews and the protected-path diff must cover the same base", async () =>
   }
 });
 
-test("stored automatic approval cannot authorize a different base or changed review evidence", async () => {
-  const { db, itemId } = held();
+test("automatic eligibility changes with the base and current evidence", async () => {
+  const { db } = held();
   try {
     cleanReviews(db);
-    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db)).toBe("automatic");
     classify(db, heads.s, heads.newMain);
     expect(await automatic(db)).toBe("missing");
     cleanReviews(db, heads.s, { base: heads.newMain, at: NOW + 1, attempt: 2 });
     expect(await automatic(db, { attempt: 2, severity: "P2" })).toBe("missing");
-    expect(await automatic(db, { attempt: 2 })).toBe("approved");
-    expect(getAutomaticRiskApproval(db, itemId, heads.s)?.evidenceIds).toEqual([
-      `${heads.s}/security-review/2.json`,
-      `${heads.s}/independent-review/2.json`,
-    ]);
+    expect(await automatic(db, { attempt: 2 })).toBe("automatic");
+    expect(db.query("SELECT * FROM automatic_risk_approval").all()).toEqual([]);
     cleanReviews(db, heads.s, { base: heads.newMain, at: NOW + 1, attempt: 2, failedProbe: true });
     expect(await automatic(db, { attempt: 2 })).toBe("missing");
   } finally {
@@ -948,7 +957,11 @@ for (const duplicateFirst of [true, false])
     try {
       cleanReviews(db);
       expect(await automatic(db, { duplicateFirst })).toBe("missing");
-      expect(getAutomaticRiskApproval(db, itemId, heads.s)).toBeNull();
+      expect(
+        db
+          .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
+          .get(itemId, heads.s),
+      ).toBeNull();
     } finally {
       db.close();
     }
@@ -968,7 +981,11 @@ for (const patchMatches of [true, false])
           fix: { changed: ["test/x.test.ts"], paths: [] },
         }),
       ).toBe("approved");
-      expect(getAutomaticRiskApproval(db, itemId, head)).toBeNull();
+      expect(
+        db
+          .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
+          .get(itemId, head),
+      ).toBeNull();
       expect(
         activities(db).filter((activity) => activity.body.includes("Approved automatically")),
       ).toHaveLength(0);
@@ -982,13 +999,56 @@ test("automatic approval closes a pending risk ask and resumes verification", as
   try {
     const question = findOpenQuestion(db, "ses_1")!;
     cleanReviews(db);
-    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db)).toBe("automatic");
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
     expect(getLinkAsk(db, question.id)?.closedReason).toBe("cancelled");
     expect(getLinkAsk(db, question.id)?.decidedBy).toBeNull();
     expect(getWorkItem(db, itemId)?.state).toBe("verifying");
-    expect(await automatic(db)).toBe("approved");
+    expect(await automatic(db)).toBe("automatic");
     expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toHaveLength(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("a new or reopened finding drops automatic eligibility without invalidation", async () => {
+  const { db, itemId } = held();
+  try {
+    cleanReviews(db);
+    expect(await automatic(db)).toBe("automatic");
+    expect(await automatic(db, { policyPaths: null })).toBe("missing");
+    expect(await automatic(db)).toBe("automatic");
+    recordReviewFindings(db, {
+      itemId,
+      repository: "test/repo",
+      head: heads.s,
+      seenAt: NOW + 1,
+      findings: [
+        {
+          review: "security-review",
+          severity: "P2",
+          location: "session.ts:1",
+          text: "New finding",
+          bugClass: "authorization",
+          why: "below failOn",
+        },
+      ],
+      reviewed: [],
+    });
+    const finding = listReviewFindings(db)[0]!;
+    expect(await automatic(db)).toBe("missing");
+    setReviewFindingStatus(db, {
+      id: finding.id,
+      status: "dismissed",
+      reason: "Reviewed",
+      by: "user",
+      now: NOW + 2,
+    });
+    expect(await automatic(db)).toBe("automatic");
+    setReviewFindingStatus(db, { id: finding.id, status: "open", by: "user", now: NOW + 3 });
+    expect(await automatic(db)).toBe("missing");
+    expect(await automatic(db, { policyPaths: null })).toBe("missing");
+    expect(db.query("SELECT * FROM automatic_risk_approval").all()).toEqual([]);
   } finally {
     db.close();
   }

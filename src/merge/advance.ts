@@ -188,15 +188,19 @@ export async function advanceMerge(
   };
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
-    facts: (facts) =>
-      mergeFacts(
+    facts: async (facts) => {
+      const currentRisk = await caps.riskApproval(item, { ...published, head: facts.head });
+      return mergeFacts(
         db,
         item.id,
         facts,
         caps.policyDigest(item, published.worktree),
         mergeSettings.mainMoved,
-        { head: published.head, approval: riskApproval },
-      ),
+        currentRisk === "missing" && riskApproval === "approved"
+          ? { head: published.head, approval: riskApproval }
+          : { head: facts.head, approval: currentRisk },
+      );
+    },
     rebase: () => rebaseOntoMain(lane),
     squash: async (head, facts) => {
       // A call that throws may still have reached GitHub, so its marker stays for the next start.

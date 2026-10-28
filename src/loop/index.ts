@@ -113,6 +113,7 @@ export {
   askRiskApproval,
   type AutomaticRiskChecks,
   riskApprovalFor,
+  automaticRiskEvidence,
   riskGateOn,
   RISK_ANSWERERS,
   RISK_GATE_NEEDS_PUBLIC_URL,
