@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND, MERGE_LANE } from "../core";
 import {
   applyWorkItemEvent,
+  claimNextJob,
   enqueueJob,
   getConfirmedRemoteMerge,
   getJob,
@@ -228,6 +229,13 @@ describe("advanceMerge in the repository merge queue", () => {
       ids.map((id) => [id, true]),
     );
     expect(h.github.merged).toEqual([]);
+    // The five Closeout re-runs are claimed side by side, not one after another.
+    const running = ids.map(() =>
+      claimNextJob(h.db, { queues: [JOB_KIND.reverify], now: h.clock.now() }),
+    );
+    expect(
+      running.map((job) => (job?.payload as { itemId?: string } | undefined)?.itemId).toSorted(),
+    ).toEqual(ids);
   });
 
   test("a task blocked by the one behind it holds no place: the blocker merges first, then it", async () => {
