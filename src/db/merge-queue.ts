@@ -36,6 +36,37 @@ export function leaveMergeQueue(db: Database, itemId: string): void {
   db.run("DELETE FROM merge_queue_entry WHERE item_id=?", [itemId]);
 }
 
+/** Whether the task holds a place in a merge queue: `merge_queue`, or `verifying` in it. */
+export function inMergeQueue(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM merge_queue_entry e JOIN work_item w ON w.id = e.item_id
+         WHERE e.item_id = ? AND w.state IN ${HOLDING} AND w.cancel_requested = 0`,
+      )
+      .get(itemId) !== null
+  );
+}
+
+/**
+ * Whether the task's latest restart sent it back to the agent from the merge queue, or from the
+ * re-verify of a task in it: a CI, conflict, review or findings fix of a finished pull request.
+ */
+export function restartedFromMergeQueue(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM work_item_event ev
+         WHERE ev.id = (SELECT MAX(r.id) FROM work_item_event r WHERE r.item_id = ?1 AND r.kind = 'restart')
+         AND (ev.from_state = 'merge_queue' OR (ev.from_state = 'verifying'
+           AND (SELECT p.from_state FROM work_item_event p WHERE p.item_id = ?1 AND p.id < ev.id
+             AND p.to_state = 'verifying' AND p.from_state <> 'verifying'
+             ORDER BY p.id DESC LIMIT 1) = 'merge_queue'))`,
+      )
+      .get(itemId) !== null
+  );
+}
+
 export function markMergeQueueNotified(db: Database, itemId: string, position: number): void {
   db.run("UPDATE merge_queue_entry SET notified_position=? WHERE item_id=?", [position, itemId]);
 }

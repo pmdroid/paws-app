@@ -57,6 +57,13 @@ type Item = {
   owner: string | null;
   repo: string | null;
   turn: string;
+  /** Place in its repository's merge queue, or null outside it. */
+  mergePosition: number | null;
+  /**
+   * When the item became merge-queue work: ready to merge, or sent back to the agent from the
+   * merge queue and queued again. Null for any other item.
+   */
+  mergeAt: number | null;
 };
 type Admission = {
   itemId: string;
@@ -227,8 +234,18 @@ function allItems(db: Database, now: number): Item[] {
       AND start.queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')) AS placing,
     EXISTS(SELECT 1 FROM runner_setup_hold h WHERE h.item_id=i.id) AS setupHeld,
     w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo,
-    COALESCE('user:'||i.owner_user_id,'') AS turn
+    COALESCE('user:'||i.owner_user_id,'') AS turn,
+    CASE WHEN e.item_id IS NULL THEN NULL ELSE (SELECT count(*) FROM merge_queue_entry o
+      JOIN work_item ow ON ow.id=o.item_id WHERE o.repository=e.repository
+      AND ow.state IN ('merge_queue','verifying') AND ow.cancel_requested=0
+      AND (o.ready_at<e.ready_at OR (o.ready_at=e.ready_at AND o.item_id<=e.item_id))) END AS mergePosition,
+    COALESCE(e.ready_at,CASE WHEN i.state='queued' THEN (SELECT ev.at FROM work_item_event ev
+      WHERE ev.id=(SELECT MAX(last.id) FROM work_item_event last WHERE last.item_id=i.id)
+      AND ev.kind='restart' AND (ev.from_state='merge_queue' OR (ev.from_state='verifying'
+        AND (SELECT p.from_state FROM work_item_event p WHERE p.item_id=i.id AND p.id<ev.id
+          AND p.to_state='verifying' AND p.from_state<>'verifying' ORDER BY p.id DESC LIMIT 1)='merge_queue'))) END) AS mergeAt
     FROM work_item i
+    LEFT JOIN merge_queue_entry e ON e.item_id=i.id AND i.state IN ('merge_queue','verifying')
     LEFT JOIN linear_session s ON s.session_id=i.session_key
     LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
     LEFT JOIN work_item_scheduling c ON c.item_id=i.id
@@ -263,31 +280,53 @@ function taskSlots(
   };
 }
 
-type PinnedWait = { itemId: string; jobId: number; runnerId: string };
+type PinnedWait = {
+  itemId: string;
+  jobId: number;
+  /** The pinned runner, or for unpinned merge-queue work every busy runner it may use. */
+  runnerIds: readonly string[];
+};
 
 /**
- * Items whose resume or reverify job waits for a slot on the runner their run is pinned to. Each
- * holds that runner's next free slot. A wait on an offline pinned runner, or one past its hold,
- * holds nothing: placement then may move the run.
+ * Items whose resume or reverify job waits for a runner slot. A wait for the runner its run is
+ * pinned to holds that runner's next free slot. A wait on an offline pinned runner, or one past
+ * its hold, holds nothing: placement then may move the run. Merge-queue work that is not pinned,
+ * such as a re-verify that only runs the checks and the review, holds the next slot that frees on
+ * any of the runners it waits for.
  */
 function pinnedWaits(db: Database, now: number): PinnedWait[] {
   return db
-    .query<PinnedWait & { payload: string }, [number]>(
-      `SELECT i.id AS itemId,j.id AS jobId,w.runner_id AS runnerId,j.payload
+    .query<
+      {
+        itemId: string;
+        jobId: number;
+        runnerId: string | null;
+        online: number;
+        merging: number;
+        payload: string;
+      },
+      [number]
+    >(
+      `SELECT i.id AS itemId,j.id AS jobId,w.runner_id AS runnerId,r.id IS NOT NULL AS online,
+       EXISTS(SELECT 1 FROM merge_queue_entry e WHERE e.item_id=i.id) AS merging,j.payload
        FROM work_item i
-       JOIN runner_work w ON w.run_id=i.current_run_id
-       JOIN runner r ON r.id=w.runner_id
        JOIN job j ON j.id=(SELECT q.id FROM job q WHERE q.status='pending'
          AND q.queue IN ('${JOB_KIND.resume}','${JOB_KIND.reverify}')
          AND json_extract(q.payload,'$.itemId')=i.id ORDER BY q.id DESC LIMIT 1)
-       WHERE i.state IN ('recovering','verifying','merge_queue') AND i.cancel_requested=0
-       AND r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
+       LEFT JOIN runner_work w ON w.run_id=i.current_run_id
+       LEFT JOIN runner r ON r.id=w.runner_id
+         AND r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?
+       WHERE i.state IN ('recovering','verifying','merge_queue') AND i.cancel_requested=0`,
     )
     .all(now - RUNNER_SEEN_MS)
-    .flatMap(({ payload, ...pin }) => {
-      const wait = runnerCapacityWait(JSON.parse(payload));
-      return wait?.runnerIds.includes(pin.runnerId) && now - wait.since < (wait.holdMs ?? Infinity)
-        ? [pin]
+    .flatMap(({ payload, runnerId, online, merging, ...wait }): PinnedWait[] => {
+      const capacity = runnerCapacityWait(JSON.parse(payload));
+      if (!capacity || now - capacity.since >= (capacity.holdMs ?? Infinity)) return [];
+      const pinned = online && runnerId !== null && capacity.runnerIds.includes(runnerId);
+      if (pinned && (!merging || capacity.runnerIds.length === 1))
+        return [{ ...wait, runnerIds: [runnerId] }];
+      return merging && capacity.runnerIds.length
+        ? [{ ...wait, runnerIds: capacity.runnerIds }]
         : [];
     });
 }
@@ -322,7 +361,10 @@ function fairOrder(
   const order: { item: Item; capped: boolean }[] = [];
   while (lines.size) {
     const head = (turn: string) => rank.get(lines.get(turn)![0]!.id)!;
+    // Merge-queue work leads its owner's line and goes before any owner's other work.
+    const merging = (turn: string) => lines.get(turn)![0]!.mergeAt !== null;
     const ahead = (turn: string, best: string) => {
+      if (merging(turn) !== merging(best)) return merging(turn);
       const difference = (load.get(turn) ?? 0) - (load.get(best) ?? 0);
       return difference < 0 || (difference === 0 && head(turn) < head(best));
     };
@@ -517,7 +559,12 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         held.push(entry);
       }
     const depth = depths(db, items);
+    // Merge-queue work goes first, in merge order: finished pull requests never wait behind new
+    // implementation work.
     const rank = (a: Item, b: Item) =>
+      Number(a.mergeAt === null) - Number(b.mergeAt === null) ||
+      (a.mergePosition ?? Number.MAX_SAFE_INTEGER) - (b.mergePosition ?? Number.MAX_SAFE_INTEGER) ||
+      (a.mergeAt ?? 0) - (b.mergeAt ?? 0) ||
       (depth.get(b.id) ?? 0) - (depth.get(a.id) ?? 0) ||
       (a.priority || 5) - (b.priority || 5) ||
       a.createdAt - b.createdAt ||
@@ -526,23 +573,30 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const slots = taskSlots(db, now);
     const pins = slots
       ? pinnedWaits(db, now)
-          .filter((pin) => byId.has(pin.itemId) && slots.open.has(pin.runnerId))
+          .filter((pin) => byId.has(pin.itemId) && pin.runnerIds.some((id) => slots.open.has(id)))
           .sort((a, b) => rank(byId.get(a.itemId)!, byId.get(b.itemId)!))
       : [];
     let pinned = 0;
     const reservedSlots = new Map<number, PinnedSlot>();
     // Pinned waits ranked ahead of `before` take their runner's next free slot, and are woken
     // when that slot is free now. On a full runner the wait holds the slot that frees next. The
-    // reservation is saved on the wait's job, so runner placement keeps queued work off it.
+    // reservation is saved on the wait's job, so runner placement keeps queued work off it. An
+    // unpinned merge-queue wait takes a free slot on any of its runners; while all are full it
+    // holds nothing, and the next tick gives it the first slot that frees.
     const claimPinned = (before?: Item) => {
       for (; pinned < pins.length; pinned += 1) {
         const pin = pins[pinned]!;
         if (before && rank(byId.get(pin.itemId)!, before) > 0) return;
-        const open = slots!.open.get(pin.runnerId)!;
-        slots!.open.set(pin.runnerId, open - 1);
+        const runnerId =
+          pin.runnerIds.length === 1
+            ? pin.runnerIds[0]!
+            : pin.runnerIds.find((id) => (slots!.open.get(id) ?? 0) > 0);
+        if (runnerId === undefined) continue;
+        const open = slots!.open.get(runnerId) ?? 0;
+        slots!.open.set(runnerId, open - 1);
         // Queued work ranked ahead already took every free slot; this wait waits its turn.
         if (open > 0 && free <= 0) continue;
-        reservedSlots.set(pin.jobId, { runnerId: pin.runnerId, order: pinned });
+        reservedSlots.set(pin.jobId, { runnerId, order: pinned });
         if (open <= 0) continue;
         db.run("UPDATE job SET run_at=? WHERE id=? AND status='pending' AND run_at>?", [
           now,

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
+import { RunnerCapacityWait } from "../src/core";
 import {
   beginImplementRun,
   bindLinearSessionTask,
@@ -377,6 +378,12 @@ async function setup() {
     advance(ms: number) {
       now += ms;
     },
+    backend,
+    source,
+    item,
+    next,
+    finish,
+    reset,
     move,
     cleanup() {
       db.close();
@@ -629,4 +636,105 @@ test("another Grok version still restores, and a failed load names both versions
   expect(notices).toEqual([
     `${FALLBACK} (the saved session didn't load: Grok 1.0.50 on A, 1.0.51 on B).\n`,
   ]);
+});
+
+/**
+ * Runner A ran the item's first turn and is now full with other work; B is online and free. The
+ * item is first in its merge queue and re-verifies.
+ */
+async function mergeQueueItemOnFullRunner() {
+  const { db, runners, backend, source, root } = context;
+  context.reset();
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  const record = context.item();
+  const turn = (options: { checkpoint?: false } = {}) =>
+    backend.forItem(record.id)({
+      profile: { agent: "claude", model: "model" },
+      role: "implementer",
+      itemId: `display-${record.id}`,
+      runId: record.runId,
+      prompt: "Implement fixture",
+      worktreePath: source,
+      pawsRoot: root,
+      networkGit: async () => "",
+      ...options,
+    });
+  const first = turn();
+  const onA = (await context.next(runners.a)) as RunCommand;
+  context.finish(onA, runners.a);
+  await first;
+  db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
+  context.work.heartbeat(runners.a);
+  context.work.heartbeat(runners.b);
+  // A re-verify moves the first item in the merge queue to verifying; it keeps its place.
+  db.run("UPDATE work_item SET state='verifying' WHERE id=?", [record.id]);
+  db.run("INSERT INTO merge_queue_entry(item_id,repository,ready_at) VALUES(?,?,?)", [
+    record.id,
+    "fixture/repository",
+    context.now,
+  ]);
+  const other = insertQueuedItem(db, { id: `busy-${record.id}`, now: context.now });
+  const busy = beginImplementRun(db, other.id, context.now).run.id;
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,?,workspace_id,1,0,?,? FROM runner WHERE id=?",
+    [busy, runners.a, `busy-${record.id}`, context.now + 60 * 60_000, runners.a],
+  );
+  const freeA = () => {
+    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [context.now, busy]);
+    db.run("UPDATE run SET status='ended' WHERE id=?", [busy]);
+  };
+  return { record, turn, freeA };
+}
+
+test("a merge-queue re-verify's checks run on a free runner while the pinned runner is full", async () => {
+  const { runners } = context;
+  const { record, turn, freeA } = await mergeQueueItemOnFullRunner();
+  try {
+    const checks = turn({ checkpoint: false });
+    const onB = (await context.next(runners.b)) as RunCommand;
+    expect(onB.runnerId).toBe(runners.b);
+    expect(onB.checkpoint).toBe(false);
+    context.finish(onB, runners.b);
+    await checks;
+  } finally {
+    freeA();
+    context.db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
+  }
+});
+
+test("a merge-queue agent turn that continues the session still waits for its pinned runner", async () => {
+  const { runners } = context;
+  const { record, turn, freeA } = await mergeQueueItemOnFullRunner();
+  try {
+    const fix = await turn().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(fix).toBeInstanceOf(RunnerCapacityWait);
+    expect((fix as RunnerCapacityWait).runnerIds).toEqual([runners.a]);
+  } finally {
+    freeA();
+    context.db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
+  }
+});
+
+test("after checks ran on another runner, the next agent turn returns to the runner holding its session", async () => {
+  const { runners } = context;
+  const { record, turn, freeA } = await mergeQueueItemOnFullRunner();
+  try {
+    const checks = turn({ checkpoint: false });
+    const onB = (await context.next(runners.b)) as RunCommand;
+    context.finish(onB, runners.b);
+    await checks;
+    freeA();
+    const fix = turn();
+    const onA = (await context.next(runners.a)) as RunCommand;
+    expect(onA.runnerId).toBe(runners.a);
+    expect(onA.resumeSessionId).toBe("claude-session");
+    context.finish(onA, runners.a);
+    await fix;
+  } finally {
+    freeA();
+    context.db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
+  }
 });
