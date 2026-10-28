@@ -158,6 +158,8 @@ export function insertRunningQueue(
     edges: readonly DependencyEdge[];
     now: number;
     sessionKey?: string | null;
+    /** Issues whose earlier item's branch and pull request the new item takes over. */
+    continuations?: ReadonlyMap<string, EarlierAttempt>;
   },
 ): { delegation: StoredDelegation; items: StoredWorkItem[] } {
   const delegationId = ulid(input.now);
@@ -168,7 +170,8 @@ export function insertRunningQueue(
     linearIdentifier: node.identifier,
     title: node.title,
     state: "queued" as const,
-    branchName: branchName(node.identifier),
+    branchName:
+      input.continuations?.get(node.linearIssueId)?.branchName ?? branchName(node.identifier),
     position,
     version: 0,
   }));
@@ -193,6 +196,12 @@ export function insertRunningQueue(
           input.sessionKey ?? null,
         ],
       );
+      const continued = input.continuations?.get(item.linearIssueId);
+      if (continued)
+        db.run(
+          "INSERT INTO item_continuation (item_id, previous_item_id, branch) VALUES (?, ?, ?)",
+          [item.id, continued.itemId, continued.branchName],
+        );
       const project = input.projects?.get(item.linearIssueId);
       if (project) saveWorkItemLinearProject(db, item.id, project);
     }
@@ -214,6 +223,40 @@ export function insertRunningQueue(
     },
     items,
   };
+}
+
+/** An earlier item of an issue that a new delegation may continue. */
+export type EarlierAttempt = {
+  itemId: string;
+  linearIssueId: string;
+  linearIdentifier: string;
+  /** The branch the earlier item pushed, `paws/<key>`. */
+  branchName: string;
+};
+
+/**
+ * The latest earlier item of the issue that ran and did not land: its branch may hold work a
+ * new delegation continues. Merged and completed items leave nothing to continue.
+ */
+export function readEarlierAttempt(db: Database, linearIssueId: string): EarlierAttempt | null {
+  const row = db
+    .query<{ id: string; linear_identifier: string; branch_name: string }, [string]>(
+      `SELECT id, linear_identifier, branch_name FROM work_item item
+       WHERE linear_issue_id = ? AND state NOT IN ('merged', 'completed')
+         AND branch_name LIKE 'paws/%'
+         AND EXISTS (SELECT 1 FROM run WHERE run.item_id = item.id)
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(linearIssueId);
+  return row === null
+    ? null
+    : {
+        itemId: row.id,
+        linearIssueId,
+        linearIdentifier: row.linear_identifier,
+        branchName: row.branch_name,
+      };
 }
 
 function mapItem(row: ItemRow): StoredWorkItem {
