@@ -223,7 +223,8 @@ test.each([false, true, "cap"] as const)(
         (!tracker.progress.some((update) => /fix attempt 1 of 2/i.test(update.body)) ||
           metadata("linear.session.summary")?.summary !==
             "ENG-302: fixing Closeout findings (1 of 2)" ||
-          metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress")
+          metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress" ||
+          metadata("linear.session.plan")?.plan?.[0]?.content !== "Repair missing output")
       ) {
         while (outbox.tick().length > 0) await outbox.idle();
         await new Promise<void>((resolve) => setImmediate(resolve));
