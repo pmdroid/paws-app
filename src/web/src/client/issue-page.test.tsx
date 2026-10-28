@@ -78,8 +78,8 @@ describe("issue page", () => {
     const html = renderToStaticMarkup(
       createElement(Fragment, null, themedMarkup(page(redelegated()))),
     );
-    expect(html).toContain("issue-facts-grid");
-    expect(html).toContain("earlier-attempt");
+    expect(html).toContain("rt-Grid");
+    expect(html).toContain("Earlier attempt, ended ");
     expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
     expect(html).not.toMatch(/style="[^"]*width:\s*\d{3,}px/);
   });

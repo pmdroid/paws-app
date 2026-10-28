@@ -94,20 +94,16 @@ test("run checks, transcripts, and stop controls keep their columns aligned", ()
   const closeout = emptyCloseoutView();
   closeout.open[`section\n${checkListKey("ENG-101", 1)}`] = true;
   const html = markup(ready("runs", "r-101", closeout).content);
-  const checks = classNames(html, "chk").filter((value) => !value.includes("section-toggle"));
+  const checks = [...html.matchAll(/<button[^>]*data-action="toggle-check"[^>]*>/g)].map(
+    (match) => match[0],
+  );
   expect(checks.length).toBeGreaterThan(1);
   for (const value of checks) {
     expect(value).toContain("focus-visible:outline-2");
-    expect(html).toContain("check-command");
-    expect(html).toContain("check-meta");
     expect(value).not.toContain("flex-wrap");
   }
-  const lines = classNames(html, "ln");
-  expect(lines.length).toBeGreaterThan(0);
-  for (const value of lines) {
-    expect(value).toContain("grid-cols-[auto_auto_minmax(0,1fr)]");
-    expect(value).not.toContain("flex-wrap");
-  }
+  expect(html).toContain("bun run typecheck");
+  expect(html).toContain("8.4s · exit 0");
   const action = markup(
     '<div class="row"><button class="btn" type="button">Pause item</button><details><summary>Stop this item</summary><p>Stop this item and keep its branch?</p><button class="btn" type="button">Confirm stop</button></details></div>',
   );

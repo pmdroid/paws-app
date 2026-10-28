@@ -17,6 +17,7 @@ import { Card } from "./ui/card";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "./ui/table";
 import { cn } from "./ui/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs";
+import { RadixIssuePage } from "./radix-issue";
 
 const SETTINGS_SECTION_LAYOUT =
   "grid min-w-0 grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(12rem,1fr)_minmax(0,2fr)] [&>*]:min-w-0";
@@ -103,6 +104,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if ("data-view-tabs" in attribs) return <ViewTabs node={node} />;
   const classes = new Set((attribs.class ?? "").split(/\s+/));
   const has = (...names: string[]) => names.some((value) => classes.has(value));
+  if (name === "article" && has("issue-page")) return <RadixIssuePage node={node} />;
   const props = attributesToProps(attribs);
   delete props.style;
   const children = () => domToReact(node.children as DOMNode[], options);

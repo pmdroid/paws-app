@@ -170,7 +170,7 @@ describe("review findings on the issue page", () => {
     const html = renderToStaticMarkup(
       createElement(Fragment, null, themedMarkup(page(withReviews()))),
     );
-    expect(html).toContain("review-location");
+    expect(html).toContain("src/retention/job.ts:44");
     // Tailwind's `fixed` utility would pull a fixed finding out of the list.
     expect(html).not.toMatch(/class="(?:[^"]*\s)?fixed(?:\s[^"]*)?"/);
     expect(html).not.toMatch(/class="[^"]*review-finding[^"]*whitespace-nowrap/);
