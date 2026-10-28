@@ -11,6 +11,7 @@ import {
 } from "../db";
 import { OUTBOX_ACTIVITY } from "../core";
 import {
+  CHECKPOINT_RUNNER_VERSION,
   RUNNER_CHECKPOINT_LIMIT_MS,
   RunnerEventSchema,
   type RunnerCommand,
@@ -20,8 +21,6 @@ import { RUNNER_ONLINE_MS } from "../runner-placement";
 import type { RunnerWork } from "../runner-work";
 import { versionAtLeast } from "./session-restore";
 
-/** First runner release that checkpoints a running turn on its interval and before a stop. */
-export const CHECKPOINT_RUNNER_VERSION = [0, 1, 46];
 /** Past the runner's limit: polling and delivery of its checkpoint. */
 const DELIVERY_GRACE_MS = 30_000;
 
