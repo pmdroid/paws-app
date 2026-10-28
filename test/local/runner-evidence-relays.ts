@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -111,7 +111,12 @@ export async function probeRunnerEvidenceRelays(
     work: coordinator.work,
   });
   const objects = createFakeRunnerTranscriptObjects();
-  const transcripts = createRunnerTranscripts({ db, work: coordinator.work, objects });
+  const transcripts = createRunnerTranscripts({
+    db,
+    work: coordinator.work,
+    objects,
+    key: randomBytes(32),
+  });
   const transcriptHttp = createRunnerTranscriptsHttp(transcripts);
   const workHttp = createRunnerWorkHttp(coordinator.work);
   let loseResponse = "";

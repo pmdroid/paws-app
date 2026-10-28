@@ -13,37 +13,43 @@ import {
   writeSync,
 } from "node:fs";
 import { isAbsolute } from "node:path";
-import { AGENT_SESSION_OBJECT_MAX_BYTES } from "./schema";
+import { RUN_FILE_KINDS, RUN_FILE_OBJECT_MAX_BYTES, type RunFileKind } from "./kinds";
 
-/** Encrypted snapshot chunks. Callers only ever hand it ciphertext. */
-export interface AgentSessionObjects {
+/** Encrypted run file chunks, one object per chunk. Callers only ever hand it ciphertext. */
+export interface RunFileObjects {
   write(key: string, bytes: Uint8Array): Promise<void>;
   read(key: string): Promise<Uint8Array>;
   /** Removes a chunk; a missing one is not an error. */
   delete(key: string): Promise<void>;
 }
 
-/** Chunks under `~/.paws/agent-sessions`: an owner-only 0700 directory of 0600 files, no links. */
-export function createLocalAgentSessionObjects(root: string): AgentSessionObjects {
-  if (!isAbsolute(root)) throw new Error("Agent session directory must be absolute");
+function label(kind: RunFileKind) {
+  const { noun } = RUN_FILE_KINDS[kind];
+  return { noun, Noun: noun[0]!.toUpperCase() + noun.slice(1) };
+}
+
+/** Chunks under `~/.paws/<kind directory>`: an owner-only 0700 directory of 0600 files, no links. */
+export function createLocalRunFileObjects(kind: RunFileKind, root: string): RunFileObjects {
+  const { noun, Noun } = label(kind);
+  if (!isAbsolute(root)) throw new Error(`${Noun} directory must be absolute`);
   function directory() {
     const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     const info = fstatSync(fd);
     if (info.uid !== process.getuid!() || (info.mode & 0o7777) !== 0o700) {
       closeSync(fd);
-      throw new Error("Unsafe agent session directory");
+      throw new Error(`Unsafe ${noun} directory`);
     }
     return fd;
   }
   function name(key: string) {
-    if (!key || key.length > 2048) throw new Error("Invalid agent session key");
-    return createHash("sha256").update(key).digest("hex") + ".bin";
+    if (!key || key.length > 2048) throw new Error(`Invalid ${noun} key`);
+    return createHash("sha256").update(key).digest("hex") + RUN_FILE_KINDS[kind].suffix;
   }
   return {
     async write(key, bytes) {
       const filename = name(key);
-      if (bytes.byteLength > AGENT_SESSION_OBJECT_MAX_BYTES)
-        throw new Error("Agent session chunk exceeds size limit");
+      if (bytes.byteLength > RUN_FILE_OBJECT_MAX_BYTES)
+        throw new Error(`${Noun} chunk exceeds size limit`);
       mkdirSync(root, { recursive: true, mode: 0o700 });
       const rootFd = directory();
       const temporary = `/proc/self/fd/${rootFd}/${randomUUID()}.tmp`;
@@ -57,7 +63,7 @@ export function createLocalAgentSessionObjects(root: string): AgentSessionObject
         let offset = 0;
         while (offset < bytes.byteLength) {
           const written = writeSync(fd, bytes, offset, bytes.byteLength - offset);
-          if (written <= 0) throw new Error("Agent session write did not advance");
+          if (written <= 0) throw new Error(`${Noun} write did not advance`);
           offset += written;
         }
         fsyncSync(fd);
@@ -87,18 +93,18 @@ export function createLocalAgentSessionObjects(root: string): AgentSessionObject
           info.nlink !== 1 ||
           info.uid !== process.getuid!() ||
           (info.mode & 0o7777) !== 0o600 ||
-          info.size > AGENT_SESSION_OBJECT_MAX_BYTES
+          info.size > RUN_FILE_OBJECT_MAX_BYTES
         )
-          throw new Error("Unsafe agent session file");
+          throw new Error(`Unsafe ${noun} file`);
         const bytes = Buffer.alloc(info.size);
         let offset = 0;
         while (offset < bytes.length) {
           const read = readSync(fd, bytes, offset, bytes.length - offset, offset);
-          if (read <= 0) throw new Error("Agent session file changed while reading");
+          if (read <= 0) throw new Error(`${Noun} file changed while reading`);
           offset += read;
         }
         if (readSync(fd, Buffer.alloc(1), 0, 1, offset) !== 0)
-          throw new Error("Agent session file changed while reading");
+          throw new Error(`${Noun} file changed while reading`);
         return bytes;
       } finally {
         if (fd !== undefined) closeSync(fd);
@@ -125,16 +131,17 @@ export function createLocalAgentSessionObjects(root: string): AgentSessionObject
 }
 
 /** Chunks in the configured transcript S3 bucket. Each object is one sealed chunk. */
-export function createS3AgentSessionObjects(options: {
-  client: S3Client;
-  bucket: string;
-}): AgentSessionObjects {
+export function createS3RunFileObjects(
+  kind: RunFileKind,
+  options: { client: S3Client; bucket: string },
+): RunFileObjects {
+  const { noun, Noun } = label(kind);
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(options.bucket))
-    throw new Error("Invalid agent session bucket");
+    throw new Error(`Invalid ${noun} bucket`);
   return {
     async write(key, bytes) {
-      if (bytes.byteLength > AGENT_SESSION_OBJECT_MAX_BYTES)
-        throw new Error("Agent session chunk exceeds size limit");
+      if (bytes.byteLength > RUN_FILE_OBJECT_MAX_BYTES)
+        throw new Error(`${Noun} chunk exceeds size limit`);
       await options.client.file(key).write(bytes, { type: "application/octet-stream", retry: 1 });
     },
     async read(key) {
@@ -142,8 +149,7 @@ export function createS3AgentSessionObjects(options: {
       let size = 0;
       for await (const part of options.client.file(key).stream()) {
         size += part.byteLength;
-        if (size > AGENT_SESSION_OBJECT_MAX_BYTES)
-          throw new Error("Agent session object exceeds size limit");
+        if (size > RUN_FILE_OBJECT_MAX_BYTES) throw new Error(`${Noun} object exceeds size limit`);
         parts.push(part);
       }
       return Buffer.concat(parts);
@@ -155,13 +161,13 @@ export function createS3AgentSessionObjects(options: {
 }
 
 /**
- * Writes go to `remote`. Reads use the local chunk when one exists, so snapshots sealed before
- * S3 was configured still restore. Deletes remove the chunk from both.
+ * Writes go to `remote`. Reads use the local chunk when one exists, so files sealed before S3
+ * was configured still read. Deletes remove the chunk from both.
  */
-export function withLocalAgentSessionFallback(
-  local: AgentSessionObjects,
-  remote: AgentSessionObjects,
-): AgentSessionObjects {
+export function withLocalRunFileFallback(
+  local: RunFileObjects,
+  remote: RunFileObjects,
+): RunFileObjects {
   return {
     write: (key, bytes) => remote.write(key, bytes),
     async read(key) {
@@ -179,7 +185,7 @@ export function withLocalAgentSessionFallback(
   };
 }
 
-export function createFakeAgentSessionObjects() {
+export function createFakeRunFileObjects() {
   const objects = new Map<string, Uint8Array>();
   const writes: string[] = [];
   const deletes: string[] = [];
@@ -193,14 +199,14 @@ export function createFakeAgentSessionObjects() {
     },
     async read(key: string) {
       const bytes = objects.get(key);
-      if (!bytes) throw new Error("Agent session object missing");
+      if (!bytes) throw new Error("Run file object missing");
       return new Uint8Array(bytes);
     },
     async delete(key: string) {
       objects.delete(key);
       deletes.push(key);
     },
-  } satisfies AgentSessionObjects & {
+  } satisfies RunFileObjects & {
     objects: Map<string, Uint8Array>;
     writes: string[];
     deletes: string[];

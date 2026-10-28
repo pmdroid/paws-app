@@ -11,12 +11,14 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   configureRunnerTranscriptStorage,
@@ -69,10 +71,6 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     assert.equal(statSync(file).mode & 0o777, 0o600);
   for (const directory of [home, join(home, "secrets")])
     assert.equal(statSync(directory).mode & 0o777, 0o700);
-  assert.equal(
-    loadRunnerTranscriptObjects(home).uri("proof.jsonl"),
-    "s3://fixture-transcripts/proof.jsonl",
-  );
   // Agent session snapshots use the same bucket.
   assert.equal(loadRunnerTranscriptS3(home)?.bucket, "fixture-transcripts");
   assert.equal(loadRunnerTranscriptS3(join(root, "unconfigured")), null);
@@ -203,7 +201,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   }
   symlinkSync(home, join(root, "symlink-home"));
   assert.throws(() => loadRunnerTranscriptObjects(join(root, "symlink-home")));
-  assert(loadRunnerTranscriptObjects(join(root, "missing")).uri("proof").startsWith("file://"));
+  loadRunnerTranscriptObjects(join(root, "missing"));
   assert(!existsSync(join(root, "missing")));
   observe(
     "unsafe filesystem objects, plaintext and missing envelope keys fail closed without blocking",
@@ -347,9 +345,9 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     if (layout === "missing-config") mkdirSync(join(target, "secrets"), { mode: 0o700 });
     const defaults = loadRunnerTranscriptObjects(target);
     assert(!existsSync(join(target, "runner-transcripts")));
-    await defaults.write("default", new Blob([layout]));
+    await defaults.write("default", Buffer.from(layout));
     assert.equal(
-      await new Response(loadRunnerTranscriptObjects(target).read("default")).text(),
+      Buffer.from(await loadRunnerTranscriptObjects(target).read("default")).toString(),
       layout,
     );
     assert(!existsSync(join(target, "secrets", "runner-transcript-storage.json")));
@@ -357,9 +355,9 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   const localHome = join(root, "local-home");
   assert.equal((await cli('{"kind":"local"}', localHome)).code, 0);
   const local = loadRunnerTranscriptObjects(localHome);
-  await local.write("restart", new Blob(["persistent transcript"]));
+  await local.write("restart", Buffer.from("persistent transcript"));
   assert.equal(
-    await new Response(loadRunnerTranscriptObjects(localHome).read("restart")).text(),
+    Buffer.from(await loadRunnerTranscriptObjects(localHome).read("restart")).toString(),
     "persistent transcript",
   );
   let localObservations = 0;
@@ -388,8 +386,8 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   try {
     S3Client.prototype.file = function (key, ...args) {
       return Object.assign(nativeFile.call(this, key, ...args), {
-        async write(payload: Blob | Response) {
-          const text = await payload.text();
+        async write(payload: Uint8Array) {
+          const text = Buffer.from(payload).toString();
           uploaded.set(key, text);
           return Buffer.byteLength(text);
         },
@@ -400,19 +398,22 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
         },
       });
     };
-    assert.equal(await new Response(remote.read("restart")).text(), "persistent transcript");
+    const text = async (key: string) => Buffer.from(await remote.read(key)).toString();
+    assert.equal(await text("restart"), "persistent transcript");
     assert.equal(downloads, 0);
-    await remote.write("remote-only", new Blob(["S3 transcript"]));
-    assert(!existsSync(new URL(local.uri("remote-only"))));
-    assert.equal(remote.uri("remote-only"), "s3://fixture-transcripts/remote-only");
-    assert.equal(await new Response(remote.read("remote-only")).text(), "S3 transcript");
+    const files = readdirSync(join(localHome, "runner-transcripts"));
+    await remote.write("remote-only", Buffer.from("S3 transcript"));
+    assert.deepEqual(readdirSync(join(localHome, "runner-transcripts")), files);
+    assert.equal(await text("remote-only"), "S3 transcript");
+    // An unsafe local directory or file fails closed instead of falling back to S3.
     chmodSync(join(localHome, "runner-transcripts"), 0o755);
-    assert.equal(await new Response(remote.read("remote-only")).text(), "S3 transcript");
-    assert.throws(() => remote.read("restart"), /Unsafe transcript directory/);
+    await assert.rejects(text("remote-only"), /Unsafe transcript directory/);
+    await assert.rejects(text("restart"), /Unsafe transcript directory/);
     chmodSync(join(localHome, "runner-transcripts"), 0o700);
-    chmodSync(new URL(local.uri("restart")), 0o644);
-    assert.throws(() => remote.read("restart"), /Unsafe transcript file/);
-    assert.equal(downloads, 2);
+    const restart = createHash("sha256").update("restart").digest("hex");
+    chmodSync(join(localHome, "runner-transcripts", `${restart}.jsonl`), 0o644);
+    await assert.rejects(text("restart"), /Unsafe transcript file/);
+    assert.equal(downloads, 1);
   } finally {
     S3Client.prototype.file = nativeFile;
   }
@@ -551,8 +552,8 @@ if (import.meta.main && process.argv[2] === "s3-client") {
     );
   else {
     const objects = loadRunnerTranscriptObjects(process.env.PAWS_HOME!);
-    await objects.write("actual.jsonl", new Blob(["raw proof\n"]));
-    assert.equal(await new Response(objects.read("actual.jsonl")).text(), "raw proof\n");
+    await objects.write("actual.jsonl", Buffer.from("raw proof\n"));
+    assert.equal(Buffer.from(await objects.read("actual.jsonl")).toString(), "raw proof\n");
   }
   console.log("Storage child verified.");
 } else if (import.meta.main) {

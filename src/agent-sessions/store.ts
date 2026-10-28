@@ -1,20 +1,16 @@
-import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { immediate } from "../db";
 import { journalCaught } from "../journal";
 import type { RunnerWork } from "../runner-work";
-import { agentSessionKeyId, openAgentSessionChunk, sealAgentSessionChunk } from "./key";
-import type { AgentSessionObjects } from "./objects";
+import { createRunFileChunks, type RunFileObjects } from "../run-files";
 import {
   AgentSessionChunkSchema,
   AgentSessionFinishSchema,
-  AGENT_SESSION_CHUNK_BYTES,
   AGENT_SESSION_MAX_BYTES,
   type AgentSessionChunk,
   type AgentSessionFinish,
 } from "./schema";
 
-export class AgentSessionStorageError extends Error {}
 export class AgentSessionRefusedError extends Error {}
 
 type Access = { runnerId: string; runId: string; token: string };
@@ -38,34 +34,32 @@ export type AgentSessionSnapshot = {
   createdAt: number;
   sealedAt: number | null;
 };
-type Chunk = { offset: number; sizeBytes: number; sha256: string; keyId: string };
 
 /** Chunks of discarded snapshots deleted per transaction. */
 const PRUNE_BATCH = 256;
 
-function hash(bytes: Uint8Array) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
 function refused(): never {
   throw new AgentSessionRefusedError("Agent session request is refused");
-}
-function unavailable(): never {
-  throw new AgentSessionStorageError("Agent session storage is unavailable");
 }
 
 export function createAgentSessions(options: {
   db: Database;
   work: RunnerWork;
-  objects: AgentSessionObjects;
+  objects: RunFileObjects;
   /** The 32-byte key from `loadAgentSessionKey`. */
   key: Buffer;
   now?: () => number;
   /** A lower cap than `AGENT_SESSION_MAX_BYTES`, for tests. */
   maxBytes?: number;
 }) {
-  const { db, work, objects, key } = options;
-  if (key.length !== 32) throw new Error("Agent session key is invalid.");
-  const keyId = agentSessionKeyId(key);
+  const { db, work, objects } = options;
+  const files = createRunFileChunks({
+    db,
+    kind: "agent_session",
+    objects,
+    key: options.key,
+    refused,
+  });
   const now = options.now ?? Date.now;
   const maxBytes = Math.min(options.maxBytes ?? AGENT_SESSION_MAX_BYTES, AGENT_SESSION_MAX_BYTES);
 
@@ -84,6 +78,13 @@ export function createAgentSessions(options: {
         sealed_at AS sealedAt FROM agent_session_snapshot WHERE run_id=? AND generation=?`,
       )
       .get(runId, generation);
+  }
+  function file(row: Pick<AgentSessionSnapshot, "workspaceId" | "runId" | "generation">) {
+    return {
+      runId: row.runId,
+      generation: row.generation,
+      prefix: `paws/agent-sessions/${row.workspaceId}/${row.runId}/${row.generation}`,
+    };
   }
   /** The writer's row for its own generation, created on first contact. */
   function rowFor(access: Access, generation: number) {
@@ -105,53 +106,6 @@ export function createAgentSessions(options: {
     )
       refused();
     return row;
-  }
-  function objectKey(
-    row: Pick<AgentSessionSnapshot, "workspaceId" | "runId" | "generation">,
-    chunk: { offset: number; sha256: string },
-  ) {
-    return `paws/agent-sessions/${row.workspaceId}/${row.runId}/${row.generation}/${chunk.offset}-${chunk.sha256}`;
-  }
-  function existing(runId: string, generation: number, offset: number) {
-    return db
-      .query<Chunk, [string, number, number]>(
-        `SELECT offset,size_bytes AS sizeBytes,sha256,key_id AS keyId FROM agent_session_snapshot_chunk
-        WHERE run_id=? AND generation=? AND offset=?`,
-      )
-      .get(runId, generation, offset);
-  }
-  /** Decrypted chunks in order, each checked against its recorded size and sha256. */
-  async function* decrypted(row: AgentSessionSnapshot, before?: () => void) {
-    const chunks = db
-      .query<Chunk, [string, number]>(
-        `SELECT offset,size_bytes AS sizeBytes,sha256,key_id AS keyId FROM agent_session_snapshot_chunk
-        WHERE run_id=? AND generation=? ORDER BY offset`,
-      )
-      .all(row.runId, row.generation);
-    let total = 0;
-    for (const chunk of chunks) {
-      before?.();
-      if (chunk.offset !== total || chunk.keyId !== keyId) unavailable();
-      let bytes: Buffer;
-      try {
-        const sealed = await objects.read(objectKey(row, chunk));
-        bytes = openAgentSessionChunk(
-          key,
-          {
-            runId: row.runId,
-            generation: row.generation,
-            offset: chunk.offset,
-            sha256: chunk.sha256,
-          },
-          sealed,
-        );
-      } catch {
-        unavailable();
-      }
-      if (bytes.length !== chunk.sizeBytes || hash(bytes) !== chunk.sha256) unavailable();
-      total += bytes.length;
-      yield bytes;
-    }
   }
   function sameFinish(row: AgentSessionSnapshot, finish: AgentSessionFinish) {
     return (
@@ -224,13 +178,7 @@ export function createAgentSessions(options: {
         )
         .all(PRUNE_BATCH);
       if (!chunks.length) return;
-      for (const chunk of chunks)
-        await objects.delete(
-          objectKey(
-            { workspaceId: chunk.workspaceId, runId: chunk.runId, generation: chunk.generation },
-            chunk,
-          ),
-        );
+      for (const chunk of chunks) await objects.delete(files.objectKey(file(chunk).prefix, chunk));
       immediate(db, () => {
         for (const chunk of chunks)
           db.run(
@@ -262,70 +210,17 @@ export function createAgentSessions(options: {
     snapshot,
     async upload(access: Access, raw: AgentSessionChunk) {
       const chunk = AgentSessionChunkSchema.parse(raw);
-      const bytes = Buffer.from(chunk.data, "base64");
-      if (
-        !bytes.length ||
-        bytes.length > AGENT_SESSION_CHUNK_BYTES ||
-        bytes.toString("base64") !== chunk.data ||
-        hash(bytes) !== chunk.sha256 ||
-        chunk.offset % AGENT_SESSION_CHUNK_BYTES !== 0 ||
-        chunk.offset + bytes.length > maxBytes
-      )
-        refused();
-      const check = () => {
-        const row = rowFor(access, chunk.generation);
-        const previous = existing(access.runId, chunk.generation, chunk.offset);
-        if (previous) {
-          if (previous.sha256 !== chunk.sha256 || previous.sizeBytes !== bytes.length) refused();
-        } else if (row.status !== "uploading" || row.sizeBytes !== chunk.offset) refused();
-        return { row, previous };
-      };
-      const initial = immediate(db, check);
-      if (initial.previous) return { offset: chunk.offset + bytes.length, duplicate: true };
-      const sealed = sealAgentSessionChunk(
-        key,
-        {
-          runId: access.runId,
-          generation: chunk.generation,
-          offset: chunk.offset,
-          sha256: chunk.sha256,
+      return files.upload(
+        access.runId,
+        chunk,
+        maxBytes,
+        () => {
+          const row = rowFor(access, chunk.generation);
+          return { ...file(row), sizeBytes: row.sizeBytes, open: row.status === "uploading" };
         },
-        bytes,
-      );
-      try {
-        await objects.write(objectKey(initial.row, chunk), sealed);
-      } catch {
-        unavailable();
-      }
-      try {
-        return immediate(db, () => {
-          const current = check();
-          if (!current.previous) {
-            db.run("INSERT INTO agent_session_snapshot_chunk VALUES(?,?,?,?,?,?)", [
-              access.runId,
-              chunk.generation,
-              chunk.offset,
-              bytes.length,
-              chunk.sha256,
-              keyId,
-            ]);
-            db.run(
-              "UPDATE agent_session_snapshot SET size_bytes=? WHERE run_id=? AND generation=?",
-              [chunk.offset + bytes.length, access.runId, chunk.generation],
-            );
-          }
-          return { offset: chunk.offset + bytes.length, duplicate: !!current.previous };
-        });
-      } catch (error) {
         // A prune discarded the snapshot while the chunk was being written; nothing references it.
-        if (snapshot(access.runId, chunk.generation)?.status === "discarded")
-          await objects
-            .delete(objectKey(initial.row, chunk))
-            .catch((caught: unknown) =>
-              journalCaught(caught, "agent-sessions.upload.delete", null),
-            );
-        throw error;
-      }
+        () => snapshot(access.runId, chunk.generation)?.status === "discarded",
+      );
     },
     async finish(access: Access, raw: AgentSessionFinish) {
       const finish = AgentSessionFinishSchema.parse(raw);
@@ -339,13 +234,7 @@ export function createAgentSessions(options: {
       };
       const initial = immediate(db, check);
       if (initial.status === "sealed") return receipt(initial);
-      const digest = createHash("sha256");
-      let total = 0;
-      for await (const bytes of decrypted(initial)) {
-        digest.update(bytes);
-        total += bytes.length;
-      }
-      if (total !== finish.sizeBytes || digest.digest("hex") !== finish.sha256) refused();
+      await files.verify(file(initial), finish.sizeBytes, finish.sha256);
       const sealed = immediate(db, () => {
         const row = check();
         if (row.status === "sealed") return receipt(row);
@@ -383,16 +272,9 @@ export function createAgentSessions(options: {
      */
     read(access: Access & { generation: number }, generation: number): AsyncGenerator<Uint8Array> {
       const row = readable(access, generation);
-      return (async function* () {
-        const digest = createHash("sha256");
-        let total = 0;
-        for await (const bytes of decrypted(row, () => readable(access, generation))) {
-          digest.update(bytes);
-          total += bytes.length;
-          yield bytes;
-        }
-        if (total !== row.sealedSize || digest.digest("hex") !== row.sha256) unavailable();
-      })();
+      return files.read(file(row), row.sealedSize!, row.sha256!, () =>
+        readable(access, generation),
+      );
     },
   };
 }

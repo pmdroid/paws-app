@@ -12,34 +12,31 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  createLocalRunnerTranscriptObjects,
-  RUNNER_TRANSCRIPT_MAX_BYTES,
-} from "../src/runner-transcripts";
+import { createHash } from "node:crypto";
+import { createLocalRunnerTranscriptObjects } from "../src/runner-transcripts";
 import {
   configureRunnerTranscriptStorage,
   loadRunnerTranscriptObjects,
 } from "../src/runner-transcript-config";
 import { probeRunnerTranscripts } from "./local/runner-transcripts";
 
+const file = (root: string, key: string) =>
+  join(root, createHash("sha256").update(key).digest("hex") + ".jsonl");
+const text = async (read: Promise<Uint8Array>) => Buffer.from(await read).toString();
+
 test("local transcript configuration persists protected files across reconstruction", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-local-transcripts-"));
   try {
     configureRunnerTranscriptStorage(home, JSON.stringify({ kind: "local" }));
     const objects = loadRunnerTranscriptObjects(home);
-    await objects.write("first", new Blob(["original"]));
+    await objects.write("first", Buffer.from("original"));
     expect(statSync(join(home, "runner-transcripts")).mode & 0o777).toBe(0o700);
-    expect(statSync(fileURLToPath(objects.uri("first"))).mode & 0o777).toBe(0o600);
-    expect(await new Response(loadRunnerTranscriptObjects(home).read("first")).text()).toBe(
-      "original",
-    );
-    await objects.write("first", new Blob(["replacement"]));
-    expect(await new Response(objects.read("first")).text()).toBe("replacement");
-    await objects.write("../../escape", new Blob(["bounded key"]));
-    expect(fileURLToPath(objects.uri("../../escape"))).toStartWith(
-      join(home, "runner-transcripts") + "/",
-    );
+    expect(statSync(file(join(home, "runner-transcripts"), "first")).mode & 0o777).toBe(0o600);
+    expect(await text(loadRunnerTranscriptObjects(home).read("first"))).toBe("original");
+    await objects.write("first", Buffer.from("replacement"));
+    expect(await text(objects.read("first"))).toBe("replacement");
+    await objects.write("../../escape", Buffer.from("bounded key"));
+    expect(statSync(file(join(home, "runner-transcripts"), "../../escape")).isFile()).toBe(true);
     expect(readdirSync(join(home, "runner-transcripts"))).toHaveLength(2);
     expect(
       readFileSync(join(home, "secrets", "runner-transcript-storage.json"), "utf8"),
@@ -52,29 +49,15 @@ test("local transcript configuration persists protected files across reconstruct
   }
 });
 
-test("interrupted and oversized transcript writes preserve the previous object and remove temporary files", async () => {
+test("oversized transcript writes preserve the previous object and remove temporary files", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-local-transcripts-"));
   try {
     const objects = createLocalRunnerTranscriptObjects(root);
-    await objects.write("key", new Blob(["previous"]));
-    const interrupted = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode("partial"));
-      },
-      pull(controller) {
-        controller.error(new Error("Synthetic stream failure"));
-      },
-    });
-    await expect(objects.write("key", interrupted)).rejects.toThrow("Synthetic stream failure");
-    await expect(
-      objects.write("key", new Blob([new Uint8Array(RUNNER_TRANSCRIPT_MAX_BYTES + 1)])),
-    ).rejects.toThrow("Transcript exceeds size limit");
-    expect(await new Response(objects.read("key")).text()).toBe("previous");
-    expect(readdirSync(root)).toHaveLength(1);
-    const locked = new Blob(["locked"]).stream();
-    const reader = locked.getReader();
-    await expect(objects.write("key", locked)).rejects.toThrow();
-    reader.releaseLock();
+    await objects.write("key", Buffer.from("previous"));
+    await expect(objects.write("key", new Uint8Array(524_288 + 29))).rejects.toThrow(
+      "Transcript chunk exceeds size limit",
+    );
+    expect(await text(objects.read("key"))).toBe("previous");
     expect(readdirSync(root)).toHaveLength(1);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -86,26 +69,26 @@ test("local transcript reads reject symlinks, hard links and unsafe permissions"
   const directory = join(root, "objects");
   try {
     const objects = createLocalRunnerTranscriptObjects(directory);
-    await objects.write("key", new Blob(["owned"]));
-    const path = fileURLToPath(objects.uri("key"));
+    await objects.write("key", Buffer.from("owned"));
+    const path = file(directory, "key");
     rmSync(path);
     const outside = join(root, "outside");
     writeFileSync(outside, "private", { mode: 0o600 });
     symlinkSync(outside, path);
-    expect(() => objects.read("key")).toThrow();
+    await expect(objects.read("key")).rejects.toThrow();
     rmSync(path);
     linkSync(outside, path);
-    expect(() => objects.read("key")).toThrow();
+    await expect(objects.read("key")).rejects.toThrow();
     rmSync(path);
-    await objects.write("key", new Blob(["owned"]));
+    await objects.write("key", Buffer.from("owned"));
     chmodSync(path, 0o644);
-    expect(() => objects.read("key")).toThrow("Unsafe transcript file");
+    await expect(objects.read("key")).rejects.toThrow("Unsafe transcript file");
     chmodSync(directory, 0o755);
-    expect(() => objects.read("key")).toThrow("Unsafe transcript directory");
-    expect(() => createLocalRunnerTranscriptObjects(directory).read("key")).toThrow();
+    await expect(objects.read("key")).rejects.toThrow("Unsafe transcript directory");
+    await expect(createLocalRunnerTranscriptObjects(directory).read("key")).rejects.toThrow();
     const alias = join(root, "alias");
     symlinkSync(directory, alias);
-    expect(() => createLocalRunnerTranscriptObjects(alias).read("key")).toThrow();
+    await expect(createLocalRunnerTranscriptObjects(alias).read("key")).rejects.toThrow();
     expect(readFileSync(outside, "utf8")).toBe("private");
   } finally {
     rmSync(root, { recursive: true, force: true });
