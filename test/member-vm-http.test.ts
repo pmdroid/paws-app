@@ -160,6 +160,23 @@ describe("member VM routes", () => {
     expect((await f.call(f.member, "GET", "/api/runners/vm/retry")).status).toBe(405);
   });
 
+  test("GET names the [member_vm] size Create VM will ask for, and hides it when config.toml fails", async () => {
+    const f = await fixture();
+    let size: () => { cpu?: number; memoryGb?: number } = () => ({ cpu: 8, memoryGb: 16 });
+    const http = createMemberVmHttp({ db: f.db, available: () => true, size: () => size() });
+    const get = async () =>
+      (await (await http(new Request("https://paws.test/api/runners/vm"), f.member))!.json()) as {
+        size?: unknown;
+      };
+    expect((await get()).size).toEqual({ cpu: 8, memoryGb: 16 });
+    size = () => ({});
+    expect((await get()).size).toEqual({});
+    size = () => {
+      throw new Error("config.toml line 3 member_vm.cpu must be a whole number from 1 to 512");
+    };
+    expect((await get()).size).toBeUndefined();
+  });
+
   test("create, fail, retry and ready, with each step's state and elapsed time", async () => {
     const f = await fixture();
     expect(await f.call(f.member, "GET")).toEqual({

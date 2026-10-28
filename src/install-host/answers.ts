@@ -1,5 +1,11 @@
 import { isAbsolute, join } from "node:path";
-import { loadEnv, loadRunnerControl } from "../config";
+import {
+  checkMemberVmValue,
+  loadEnv,
+  loadRunnerControl,
+  type MemberVmKey,
+  type MemberVmSize,
+} from "../config";
 
 /** What `paws install` writes. An empty string leaves the value unset. */
 export type InstallAnswers = {
@@ -13,6 +19,8 @@ export type InstallAnswers = {
   runnerPort: number;
   linearTeam: string;
   githubRepos: string[];
+  /** `[member_vm]`: the exe.dev size Create VM asks for. A missing field sends no flag. */
+  memberVm: MemberVmSize;
 };
 
 export const ANSWER_KEYS = [
@@ -26,6 +34,10 @@ export const ANSWER_KEYS = [
   "paws_runner_port",
   "linear_team",
   "github_repos",
+  "member_vm_cpu",
+  "member_vm_memory_gb",
+  "member_vm_disk_gb",
+  "member_vm_image",
 ] as const;
 
 export type AnswerKey = (typeof ANSWER_KEYS)[number];
@@ -77,7 +89,25 @@ export const FIELDS: Record<AnswerKey, Field> = {
     optional: true,
     check: (value) => repositories(value).join(", "),
   },
+  member_vm_cpu: memberVmField("exe.dev runner VM CPUs (--cpu)", "cpu"),
+  member_vm_memory_gb: memberVmField("exe.dev runner VM memory in GB (--memory)", "memory_gb"),
+  member_vm_disk_gb: memberVmField("exe.dev runner VM disk in GB (--disk)", "disk_gb"),
+  member_vm_image: memberVmField("exe.dev runner VM image (--image)", "image"),
 };
+
+/** An optional `[member_vm]` key, checked as config.toml checks it. Empty keeps exe.dev's default. */
+function memberVmField(question: string, key: MemberVmKey): Field {
+  return {
+    question,
+    optional: true,
+    check: (value) => {
+      const trimmed = value.trim();
+      if (trimmed === "") return "";
+      const typed = key !== "image" && /^-?\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
+      return String(checkMemberVmValue(key, typed));
+    },
+  };
+}
 
 export function toAnswers(raw: Required<RawAnswers>): InstallAnswers {
   return {
@@ -91,6 +121,12 @@ export function toAnswers(raw: Required<RawAnswers>): InstallAnswers {
     runnerPort: Number(raw.paws_runner_port),
     linearTeam: raw.linear_team,
     githubRepos: repositories(raw.github_repos),
+    memberVm: {
+      ...(raw.member_vm_cpu ? { cpu: Number(raw.member_vm_cpu) } : {}),
+      ...(raw.member_vm_memory_gb ? { memoryGb: Number(raw.member_vm_memory_gb) } : {}),
+      ...(raw.member_vm_disk_gb ? { diskGb: Number(raw.member_vm_disk_gb) } : {}),
+      ...(raw.member_vm_image ? { image: raw.member_vm_image } : {}),
+    },
   };
 }
 
