@@ -14,7 +14,9 @@ import {
   enqueueJob,
   enqueueJobOnce,
   enqueueOutboxOnce,
+  hotFiles,
   immediate,
+  latestCandidatePaths,
   mergeLaneSql,
   requeueOrphanedWork,
   runnerCapacityWait,
@@ -24,11 +26,12 @@ import {
   type ItemHold,
   type PinnedSlot,
   type JobLoop,
+  repositoryKey,
   runnerLeaseCutoff,
 } from "../db";
 import { blockingIssues, readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
-import { itemWaits, postWaitKeepalives, type ItemWait } from "./waits";
+import { itemWaits, overlapLine, postWaitKeepalives, type ItemWait } from "./waits";
 
 const TICK = "scheduler.tick";
 const RUNNER_SEEN_MS = 60_000;
@@ -95,12 +98,47 @@ const HOLD_LINES: Record<ItemHold["reason"], string> = {
   cap: "its owner already runs the most tasks at once",
   slot: "no free slot on any runner",
   workspace: "no Linear workspace",
+  overlap: "waiting for other work that changes the same files to merge",
 };
 
 function holdLine(hold: ItemHold): string {
+  if (hold.reason === "overlap" && hold.blockers.length)
+    return overlapLine(hold.blockers[0]!, hold.files ?? []);
   return hold.reason === "blocked" && hold.blockers.length
     ? `blocked by ${hold.blockers.join(", ")}`
     : HOLD_LINES[hold.reason];
+}
+
+type Overlap = { blocker: string; files: string[] };
+
+/**
+ * Holds work that would conflict again in the merge queue. A queued item whose latest candidate
+ * changes a hot file, one that caused a merge-queue conflict in the last week, waits while a
+ * running or merge-queue item in the same repository changes that file too, until that one
+ * merges. An item without a candidate is never held: Paws cannot know its files.
+ */
+function overlapGate(db: Database, now: number) {
+  const hot = new Map<string, Set<string>>();
+  for (const file of hotFiles(db, now)) {
+    const key = file.repository.toLowerCase();
+    hot.set(key, (hot.get(key) ?? new Set()).add(file.path));
+  }
+  const paths = hot.size ? latestCandidatePaths(db) : new Map<string, string[]>();
+  return (item: Item, occupants: readonly Item[]): Overlap | null => {
+    if (!item.owner || !item.repo) return null;
+    const key = repositoryKey(item.owner, item.repo);
+    const files = hot.get(key);
+    const mine = files ? (paths.get(item.id) ?? []).filter((path) => files.has(path)) : [];
+    if (!mine.length) return null;
+    for (const other of occupants) {
+      if (other.id === item.id || !other.owner || !other.repo) continue;
+      if (repositoryKey(other.owner, other.repo) !== key) continue;
+      const theirs = new Set(paths.get(other.id) ?? []);
+      const shared = mine.filter((path) => theirs.has(path));
+      if (shared.length) return { blocker: other.identifier ?? other.id, files: shared };
+    }
+    return null;
+  };
 }
 
 /**
@@ -605,11 +643,21 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       )
         running.set(item.turn, (running.get(item.turn) ?? 0) + 1);
     const cap = options.ownerCap ?? null;
-    const order = fairOrder(
-      candidates.filter((item) => !held.some((entry) => entry.itemId === item.id)),
-      running,
-      cap,
+    const overlapping = overlapGate(db, now);
+    const occupants = items.filter(
+      (item) =>
+        holdsExecution(item) ||
+        item.state === "merge_queue" ||
+        (item.state === "queued" && held.some((entry) => entry.itemId === item.id)),
     );
+    const overlaps = new Map<string, Overlap>();
+    const unheld = candidates.filter((item) => {
+      if (held.some((entry) => entry.itemId === item.id)) return false;
+      const overlap = overlapping(item, occupants);
+      if (overlap) overlaps.set(item.id, overlap);
+      return overlap === null;
+    });
+    const order = fairOrder(unheld, running, cap);
     // Only checked while runners exist, so a workspace without runners behaves as before.
     const ownerHasRunner = slots === null ? undefined : options.ownerHasRunner;
     const setup = new Set(
@@ -624,6 +672,12 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       if (free <= 0) break;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
+      // Work admitted earlier in this tick runs too.
+      const overlap = overlapping(item, occupants);
+      if (overlap) {
+        overlaps.set(item.id, overlap);
+        continue;
+      }
       db.run(
         `UPDATE job SET status='cancelled',finished_at=? WHERE queue=?
         AND status='pending' AND json_extract(payload,'$.itemId')=?`,
@@ -648,12 +702,15 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         [item.id, jobId, "*", next.repositoryKey, next.sessionId, "[]", 0, now],
       );
       held.push(next);
+      occupants.push(item);
       admitted.push(item.id);
       free -= 1;
     }
     claimPinned();
     savePinnedSlots(db, reservedSlots);
-    const waiting = order.filter(({ item }) => !admitted.includes(item.id) && !setup.has(item.id));
+    const waiting = order.filter(
+      ({ item }) => !admitted.includes(item.id) && !setup.has(item.id) && !overlaps.has(item.id),
+    );
     const line = [
       ...waiting.filter(({ capped }) => !capped),
       ...waiting.filter(({ capped }) => capped),
@@ -681,6 +738,12 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         itemId: item.id,
         reason: capped ? "cap" : "slot",
         blockers: [],
+      })),
+      ...[...overlaps].map(([itemId, overlap]): ItemHold => ({
+        itemId,
+        reason: "overlap",
+        blockers: [overlap.blocker],
+        files: overlap.files,
       })),
     ];
     const changes = saveItemHolds(db, holds).map((change) => {
