@@ -131,6 +131,62 @@ test("a held item is not counted in the runner line", () => {
   }
 });
 
+function blocks(db: Database, blocker: string, blocked: string): void {
+  db.run("INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)", [
+    `lin-item-${blocker}`,
+    `lin-item-${blocked}`,
+  ]);
+}
+
+test("a merge-queue item that depends on the queued item does not hold it", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "dependent", [PROVIDER]);
+    setState(db, "dependent", "merge_queue");
+    item(db, "prerequisite", [PROVIDER], 2);
+    blocks(db, "prerequisite", "dependent");
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["prerequisite"]);
+    expect(listItemHolds(db)).toEqual([]);
+  } finally {
+    db.close();
+  }
+});
+
+test("an item that depends on the queued item through another issue does not hold it", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "dependent", [PROVIDER]);
+    setState(db, "dependent", "merge_queue");
+    item(db, "middle", null);
+    setState(db, "middle", "merged");
+    item(db, "prerequisite", [PROVIDER], 2);
+    blocks(db, "prerequisite", "middle");
+    blocks(db, "middle", "dependent");
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["prerequisite"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("an item the queued item depends on still holds it", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "prerequisite", [PROVIDER]);
+    setState(db, "prerequisite", "merge_queue");
+    item(db, "dependent", [PROVIDER], 2);
+    blocks(db, "dependent", "unrelated");
+    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(listItemHolds(db).map((hold) => [hold.itemId, hold.reason])).toEqual([
+      ["dependent", "overlap"],
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
 test("hot files come from conflict restarts in the last 7 days", () => {
   const db = tempDb();
   try {

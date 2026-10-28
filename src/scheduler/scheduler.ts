@@ -115,7 +115,9 @@ type Overlap = { blocker: string; files: string[] };
  * Holds work that would conflict again in the merge queue. A queued item whose latest candidate
  * changes a hot file, one that caused a merge-queue conflict in the last week, waits while a
  * running or merge-queue item in the same repository changes that file too, until that one
- * merges. An item without a candidate is never held: Paws cannot know its files.
+ * merges. An item without a candidate is never held: Paws cannot know its files. An item that
+ * depends on the candidate, directly or through other issues, never holds it: it cannot merge
+ * before the candidate does, so both would wait forever.
  */
 function overlapGate(db: Database, now: number) {
   const hot = new Map<string, Set<string>>();
@@ -124,14 +126,36 @@ function overlapGate(db: Database, now: number) {
     hot.set(key, (hot.get(key) ?? new Set()).add(file.path));
   }
   const paths = hot.size ? latestCandidatePaths(db) : new Map<string, string[]>();
+  const blocks = new Map<string, string[]>();
+  if (hot.size)
+    for (const edge of db
+      .query<{ blocker: string; blocked: string }, []>(
+        "SELECT blocker_linear_issue_id AS blocker,blocked_linear_issue_id AS blocked FROM task_block",
+      )
+      .all())
+      blocks.set(edge.blocker, [...(blocks.get(edge.blocker) ?? []), edge.blocked]);
+  /** Every issue that waits for `issueId`, at any depth. */
+  const dependents = (issueId: string): Set<string> => {
+    const found = new Set<string>();
+    const next = [issueId];
+    while (next.length)
+      for (const blocked of blocks.get(next.pop()!) ?? [])
+        if (!found.has(blocked)) {
+          found.add(blocked);
+          next.push(blocked);
+        }
+    return found;
+  };
   return (item: Item, occupants: readonly Item[]): Overlap | null => {
     if (!item.owner || !item.repo) return null;
     const key = repositoryKey(item.owner, item.repo);
     const files = hot.get(key);
     const mine = files ? (paths.get(item.id) ?? []).filter((path) => files.has(path)) : [];
     if (!mine.length) return null;
+    const waiting = dependents(item.issueId);
     for (const other of occupants) {
       if (other.id === item.id || !other.owner || !other.repo) continue;
+      if (waiting.has(other.issueId)) continue;
       if (repositoryKey(other.owner, other.repo) !== key) continue;
       const theirs = new Set(paths.get(other.id) ?? []);
       const shared = mine.filter((path) => theirs.has(path));
