@@ -182,6 +182,15 @@ export {
 } from "./candidate-risk";
 export { getOpenFindingsLine, saveOpenFindings, withOpenFindings } from "./open-findings";
 export { deleteRiskFix, getRiskFix, latestRiskFix, saveRiskFix, type RiskFix } from "./risk-fix";
+export {
+  endPushOutage,
+  getPushOutage,
+  listPushOutages,
+  recordPushOutage,
+  setPushOutageQuestion,
+  takePushOutageProbe,
+  type PushOutage,
+} from "./push-outage";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,
