@@ -219,7 +219,9 @@ import {
 import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
 import {
+  encryptRunnerTranscripts,
   loadRunnerTranscriptKey,
+  RUNNER_TRANSCRIPT_ENCRYPT_JOB,
   RUNNER_TRANSCRIPT_KEY_FILE,
   type RunnerTranscriptObjects,
 } from "./runner-transcripts";
@@ -231,7 +233,7 @@ import {
   withLocalAgentSessionFallback,
 } from "./agent-sessions";
 import {
-  loadRunnerTranscriptObjects,
+  loadRunnerTranscriptStores,
   loadRunnerTranscriptS3,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
@@ -305,9 +307,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw new Error("Public dashboard requires an HTTPS origin in PAWS_PUBLIC_URL.");
   }
   const placeOnRunner = remotePlacementReady;
-  const transcriptObjects =
-    options?.runnerTranscriptObjects ??
-    (placeOnRunner ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
+  const transcriptStorage = options?.runnerTranscriptObjects
+    ? { objects: options.runnerTranscriptObjects, stores: [options.runnerTranscriptObjects] }
+    : placeOnRunner
+      ? loadRunnerTranscriptStores(runtime.env.home)
+      : undefined;
+  const transcriptObjects = transcriptStorage?.objects;
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
   assertLinearQueue(paths.db);
@@ -1419,6 +1424,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: 3_600_000,
         now: Date.now(),
       });
+      // Enqueued once by a migration; it seals transcript chunks stored before encryption.
+      if (transcriptStorage)
+        created.jobs.register(RUNNER_TRANSCRIPT_ENCRYPT_JOB, (_job, context) =>
+          encryptRunnerTranscripts({
+            db,
+            stores: transcriptStorage.stores,
+            key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
+            signal: AbortSignal.any([context.signal, abort.signal]),
+          }).then(() => undefined),
+        );
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
         queue: "github.auth.recover",

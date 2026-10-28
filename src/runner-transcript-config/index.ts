@@ -70,11 +70,20 @@ export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket
   });
 }
 
-export function loadRunnerTranscriptObjects(home: string) {
+/**
+ * Transcript chunks: `objects` reads the local chunk when one exists and the S3 bucket otherwise,
+ * and writes to the bucket when one is configured. `stores` lists each store on its own.
+ */
+export function loadRunnerTranscriptStores(home: string) {
   const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
   const s3 = loadRunnerTranscriptS3(home);
-  if (s3 === null) return local;
-  return withLocalRunnerTranscriptFallback(local, createS3RunnerTranscriptObjects(s3));
+  if (s3 === null) return { objects: local, stores: [local] };
+  const remote = createS3RunnerTranscriptObjects(s3);
+  return { objects: withLocalRunnerTranscriptFallback(local, remote), stores: [local, remote] };
+}
+
+export function loadRunnerTranscriptObjects(home: string) {
+  return loadRunnerTranscriptStores(home).objects;
 }
 
 export function configureRunnerTranscriptStorage(home: string, text: string): void {
