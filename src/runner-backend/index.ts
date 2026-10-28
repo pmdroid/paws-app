@@ -1561,13 +1561,14 @@ export function createRemoteAgentRunner(options: {
                     throw error;
                   });
                 publishedEffects = true;
-                signal.throwIfAborted();
+                // Store the outcome before a shutdown stops the read, so a replay does not publish again.
                 results.answer({
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify(publication),
                 });
+                signal.throwIfAborted();
               }
               if (event.type === "pull_request")
                 await input.pullRequest?.update({ title: event.title, body: event.body });
