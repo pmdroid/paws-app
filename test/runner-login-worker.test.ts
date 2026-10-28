@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runProviderLogin } from "../src/runner-login-worker";
@@ -24,7 +32,7 @@ input.on("line", (line) => {
   else if (request.method === "authenticate") {
     authentication = request.id;
     send({ id: "authorization", method: "elicitation/create", params: { mode: "url", url: "https://auth.openai.com/codex/device", message: "Enter 1234", elicitationId: "code", requestId: authentication } });
-  } else if (request.id === "authorization" && request.result?.action === "accept") { send({ id: authentication, result: {} }); process.exit(0); }
+  } else if (request.id === "authorization" && request.result?.action === "accept") { require("node:fs").writeFileSync(process.env.CODEX_HOME + "/auth.json", "{}"); send({ id: authentication, result: {} }); process.exit(0); }
 });
 `,
     );
@@ -45,14 +53,17 @@ input.on("line", (line) => {
         expect(accepted).toBe(true);
         expect(command).toBe("codex");
         expect(args).toEqual(["login", "status"]);
-        expect(env.HOME).toBe(home);
-        expect(env.CODEX_HOME).toBe(join(home, ".codex"));
+        expect(env.HOME).not.toBe(home);
+        expect(env.HOME!.startsWith(join(home, ".paws-login-"))).toBe(true);
+        expect(env.CODEX_HOME).toBe(join(env.HOME!, ".codex"));
         expect(env.OPENAI_API_KEY).toBeUndefined();
         verified = true;
         return { exitCode: 0, stdout: "Logged in", stderr: "" };
       },
     });
     expect(verified).toBe(true);
+    expect(readFileSync(join(home, ".codex", "auth.json"), "utf8")).toBe("{}");
+    expect(readdirSync(home).filter((name) => name.startsWith(".paws-login-"))).toEqual([]);
     expect(updates.at(-1)).toEqual({
       state: "connected",
       terminal: "",
@@ -71,7 +82,7 @@ test("Claude receives terminal input and clears output after confirmed sign-in",
     const path = join(home, "provider.js");
     writeFileSync(
       path,
-      `process.stdout.write("Paste provider code: "); process.stdin.once("data", () => process.exit(0));`,
+      `process.stdout.write("Paste provider code: "); process.stdin.once("data", () => { require("node:fs").writeFileSync(process.env.CLAUDE_CONFIG_DIR + "/.credentials.json", "{}"); process.exit(0); });`,
     );
     let input = false;
     await runProviderLogin({
@@ -92,7 +103,7 @@ test("Claude receives terminal input and clears output after confirmed sign-in",
       async loginCommand(command, args, env) {
         expect(command).toBe("claude");
         expect(args).toEqual(["auth", "status"]);
-        expect(env.CLAUDE_CONFIG_DIR).toBe(join(home, ".claude"));
+        expect(env.CLAUDE_CONFIG_DIR).toBe(join(env.HOME!, ".claude"));
         return { exitCode: 0, stdout: JSON.stringify({ authMethod: "claude.ai" }), stderr: "" };
       },
     });
@@ -140,6 +151,7 @@ for (const outcome of ["success", "failure", "cancel"] as const) {
         `
 process.stderr.write(${JSON.stringify("\nTo sign in, open this URL in your browser:\n\n  https://accounts.x.ai/oauth2/device?user_code=ABCD-1234\n\nConfirm this code in your browser:\n\n  ABCD-1234\n\n\u001b[90mOnly continue with a code you requested. Don't share it with anyone.\u001b[0m\n\nWaiting for authorization...\n")});
 process.stdout.write("synthetic-private-token");
+require("node:fs").writeFileSync(process.env.HOME + "/.grok/auth.json", "{}");
 ${outcome === "cancel" ? "setInterval(() => {}, 1000);" : `setTimeout(() => process.exit(${outcome === "success" ? 0 : 1}), 100);`}
 `,
       );
@@ -165,8 +177,148 @@ ${outcome === "cancel" ? "setInterval(() => {}, 1000);" : `setTimeout(() => proc
       expect(JSON.stringify(updates)).not.toContain("synthetic-private-token");
       expect(updates.at(-1)!.state).toBe(outcome === "success" ? "connected" : "failed");
       expect(updates.at(-1)!.authorization).toBeNull();
+      expect(statSync(join(home, ".grok", "auth.json"), { throwIfNoEntry: false })?.isFile()).toBe(
+        outcome === "success" ? true : undefined,
+      );
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 }
+
+test("a sign-in renames new credentials over the ones running turns read", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-switch-login-"));
+  const updates: RunnerLoginUpdate[] = [];
+  const old = JSON.stringify({ account: "old", padding: "o".repeat(65536) });
+  const next = JSON.stringify({ account: "new", padding: "n".repeat(65536) });
+  try {
+    mkdirSync(join(home, ".codex"));
+    const live = join(home, ".codex", "auth.json");
+    writeFileSync(live, old);
+    const before = statSync(live).ino;
+    const path = join(home, "provider.js");
+    // The provider writes its credentials slowly, a piece at a time, as a real CLI may.
+    writeFileSync(
+      path,
+      `
+const fs = require("node:fs");
+const next = ${JSON.stringify(next)};
+const input = require("node:readline").createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
+input.on("line", async (line) => {
+  const request = JSON.parse(line);
+  if (request.method === "initialize") send({ id: request.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [{ id: "chat-gpt-device-code", name: "ChatGPT" }] } });
+  else if (request.method === "authenticate") {
+    const file = process.env.CODEX_HOME + "/auth.json";
+    for (let at = 0; at < next.length; at += 8192) {
+      fs.appendFileSync(file, next.slice(at, at + 8192));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    send({ id: request.id, result: {} });
+  }
+});
+`,
+    );
+    const seen = new Set<string>();
+    const reader = setInterval(() => {
+      const value = readFileSync(live, "utf8");
+      seen.add(value === old ? "old" : value === next ? "new" : "partial");
+    }, 1);
+    try {
+      await runProviderLogin({
+        agent: "codex",
+        home,
+        signal: AbortSignal.timeout(5000),
+        command: [process.execPath, path],
+        emit: (update) => updates.push(update),
+        async answer() {
+          throw new Error("This provider asks for no input");
+        },
+        async loginCommand(_command, _args, env) {
+          expect(readFileSync(join(env.CODEX_HOME!, "auth.json"), "utf8")).toBe(next);
+          expect(readFileSync(live, "utf8")).toBe(old);
+          return { exitCode: 0, stdout: "Logged in", stderr: "" };
+        },
+      });
+    } finally {
+      clearInterval(reader);
+    }
+    seen.add(readFileSync(live, "utf8") === next ? "new" : "partial");
+    expect(updates.at(-1)!.state).toBe("connected");
+    expect([...seen].sort()).toEqual(["new", "old"]);
+    expect(statSync(live).ino).not.toBe(before);
+    expect(statSync(live).mode & 0o777).toBe(0o600);
+    expect(readdirSync(join(home, ".codex"))).toEqual(["auth.json"]);
+    expect(readdirSync(home).filter((name) => name.startsWith(".paws-login-"))).toEqual([]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 10000);
+
+test("a Claude sign-in keeps the live settings and moves only the account over", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-claude-switch-"));
+  try {
+    mkdirSync(join(home, ".claude"));
+    writeFileSync(join(home, ".claude", ".credentials.json"), '{"claudeAiOauth":"old"}');
+    writeFileSync(
+      join(home, ".claude", ".claude.json"),
+      JSON.stringify({ hasCompletedOnboarding: true, oauthAccount: { emailAddress: "old" } }),
+    );
+    const path = join(home, "provider.js");
+    writeFileSync(
+      path,
+      `const fs = require("node:fs"); const dir = process.env.CLAUDE_CONFIG_DIR;
+fs.writeFileSync(dir + "/.credentials.json", '{"claudeAiOauth":"new"}');
+fs.writeFileSync(dir + "/.claude.json", JSON.stringify({ firstStartTime: "now", oauthAccount: { emailAddress: "new" } }));
+process.exit(0);`,
+    );
+    const updates: RunnerLoginUpdate[] = [];
+    await runProviderLogin({
+      agent: "claude",
+      home,
+      signal: AbortSignal.timeout(5000),
+      command: [process.execPath, path],
+      emit: (update) => updates.push(update),
+      answer: (_id, signal) =>
+        new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        ),
+      async loginCommand() {
+        return { exitCode: 0, stdout: JSON.stringify({ authMethod: "claude.ai" }), stderr: "" };
+      },
+    });
+    expect(updates.at(-1)!.state).toBe("connected");
+    expect(readFileSync(join(home, ".claude", ".credentials.json"), "utf8")).toBe(
+      '{"claudeAiOauth":"new"}',
+    );
+    expect(JSON.parse(readFileSync(join(home, ".claude", ".claude.json"), "utf8"))).toEqual({
+      hasCompletedOnboarding: true,
+      oauthAccount: { emailAddress: "new" },
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 10000);
+
+test("a sign-in that writes no credentials fails and leaves the live ones", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-empty-login-"));
+  try {
+    mkdirSync(join(home, ".grok"));
+    writeFileSync(join(home, ".grok", "auth.json"), "old");
+    const updates: RunnerLoginUpdate[] = [];
+    await runProviderLogin({
+      agent: "grok",
+      home,
+      signal: AbortSignal.timeout(5000),
+      command: [process.execPath, "-e", "process.exit(0)"],
+      emit: (update) => updates.push(update),
+      async answer() {
+        throw new Error("Grok polls the provider without browser input");
+      },
+    });
+    expect(updates.at(-1)!.state).toBe("failed");
+    expect(readFileSync(join(home, ".grok", "auth.json"), "utf8")).toBe("old");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 10000);

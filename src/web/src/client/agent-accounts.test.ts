@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { accountStatus, loginChallenge, terminalMarkup } from "./agent-accounts";
+import { accountStatus, loginChallenge, runningNotice, terminalMarkup } from "./agent-accounts";
 
 const idle = { agent: "claude" as const, connected: false, session: null };
 
@@ -29,6 +29,17 @@ test("a sign-in in progress wins over the runner's status", () => {
       "signed_in",
     ),
   ).toBe("Starting sign-in…");
+});
+
+test("the dialog says before a sign-in that the agent's running tasks switch accounts", () => {
+  expect(runningNotice("Claude", 0)).toBe("");
+  expect(runningNotice("Claude", undefined)).toBe("");
+  expect(runningNotice("Claude", 1)).toBe(
+    "Claude is running 1 task on this runner. Signing in switches it to the new account from its next request.",
+  );
+  expect(runningNotice("Codex", 3)).toBe(
+    "Codex is running 3 tasks on this runner. Signing in switches them to the new account from their next request.",
+  );
 });
 
 const AUTHORIZE =

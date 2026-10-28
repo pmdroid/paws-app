@@ -132,9 +132,16 @@ export function createRunnerLogin(options: {
               "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? ORDER BY rowid DESC LIMIT 1",
             )
             .get(runnerId, principal.userId, agent);
+          // Sign-in replaces the credentials these tasks read from their next request on.
+          const running = db
+            .query<{ count: number }, [string, string, number]>(
+              "SELECT COUNT(*) AS count FROM runner_work JOIN run ON run.id=runner_work.run_id WHERE runner_work.runner_id=? AND run.agent=? AND runner_work.ended_at IS NULL AND runner_work.lease_until>?",
+            )
+            .get(runnerId, agent, runnerLeaseCutoff(now()))!.count;
           return {
             agent,
             connected: account?.connected === 1,
+            running,
             session: session ? snapshot(read(session.id)) : null,
           };
         }),
@@ -151,17 +158,6 @@ export function createRunnerLogin(options: {
           )
           .get(runnerId, principal.userId, agent, at);
         if (existing) return snapshot(read(existing.id));
-        if (
-          db
-            .query(
-              "SELECT 1 FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>? UNION ALL SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>? LIMIT 1",
-            )
-            .get(runnerId, runnerLeaseCutoff(at), runnerId, at)
-        )
-          throw new SignInRefused(
-            "This runner is working on a task. Sign in once its work has finished.",
-            409,
-          );
         const count = db
           .query<{ count: number }, [string, number]>(
             "SELECT COUNT(*) AS count FROM runner_login WHERE runner_id=? AND state IN ('starting','waiting') AND expires_at>?",
