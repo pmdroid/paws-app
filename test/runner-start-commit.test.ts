@@ -365,7 +365,7 @@ async function startScenario(input: {
   const { runnerId } = await control.enroll({
     ...enrollment,
     token: control.createEnrollment(
-      { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
+      { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now, teamIds: [] },
       enrollment,
     ).token,
   });
