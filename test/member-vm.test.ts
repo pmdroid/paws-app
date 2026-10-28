@@ -251,6 +251,21 @@ describe("member VM", () => {
     expect(f.bootstrap.tokens).toHaveLength(0);
   });
 
+  test("a name exe.dev holds for another account moves Create VM to the next name", async () => {
+    const exeDev = createFakeExeDev();
+    exeDev.fail("createVm", "name_unavailable", { vm: "ada-lovelace-paws" });
+    const f = await fixture({ exeDev });
+    startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await drive(f, f.jobs(), (value) => value.step !== "create" || !!value.failure);
+    expect(row.failure).toBeNull();
+    expect(row.step).toBe("install");
+    expect(row.vmName).toBe("ada-lovelace-paws-2");
+    expect([...exeDev.vms.keys()]).toEqual(["ada-lovelace-paws-2"]);
+    expect(
+      exeDev.calls.filter((call) => call.operation === "createVm").map((call) => call.vm),
+    ).toEqual(["ada-lovelace-paws", "ada-lovelace-paws-2"]);
+  });
+
   test("a rejected first request does not make a later conflict look like Paws' own VM", async () => {
     const exeDev = createFakeExeDev();
     exeDev.addVm("ada-lovelace-paws");
