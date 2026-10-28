@@ -1424,16 +1424,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: 3_600_000,
         now: Date.now(),
       });
-      // Enqueued once by a migration; it seals transcript chunks stored before encryption.
-      if (transcriptStorage)
-        created.jobs.register(RUNNER_TRANSCRIPT_ENCRYPT_JOB, (_job, context) =>
-          encryptRunnerTranscripts({
-            db,
-            stores: transcriptStorage.stores,
-            key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
-            signal: AbortSignal.any([context.signal, abort.signal]),
-          }).then(() => undefined),
-        );
+      // Enqueued once by a migration; it seals transcript chunks stored before encryption. It is
+      // registered without runner placement too, since an unhandled job is cancelled, not kept.
+      created.jobs.register(RUNNER_TRANSCRIPT_ENCRYPT_JOB, (_job, context) =>
+        encryptRunnerTranscripts({
+          db,
+          stores: (transcriptStorage ?? loadRunnerTranscriptStores(runtime.env.home)).stores,
+          key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
+          signal: AbortSignal.any([context.signal, abort.signal]),
+        }).then(() => undefined),
+      );
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
         queue: "github.auth.recover",
