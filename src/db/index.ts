@@ -181,6 +181,21 @@ export {
   type CandidateRisk,
 } from "./candidate-risk";
 export { getOpenFindingsLine, saveOpenFindings, withOpenFindings } from "./open-findings";
+export {
+  getReviewFinding,
+  getReviewFindingByKey,
+  listReviewFindings,
+  markReviewFindingFiled,
+  recordReviewFindings,
+  reviewFindingItems,
+  setReviewFindingStatus,
+  type ReviewFindingFilter,
+  type ReviewFindingItem,
+  type ReviewFindingRecord,
+  type ReviewFindingReport,
+  type ReviewFindingSeverity,
+  type ReviewFindingWhy,
+} from "./review-findings";
 export { deleteRiskFix, getRiskFix, latestRiskFix, saveRiskFix, type RiskFix } from "./risk-fix";
 export {
   endPushOutage,
@@ -311,6 +326,7 @@ export {
 export {
   appendCloseoutOutput,
   acceptedCloseoutReviews,
+  acceptedCloseoutRuns,
   ensureCloseoutProgress,
   finishCloseoutProgress,
   latestCloseoutIdentity,
@@ -320,6 +336,7 @@ export {
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,
   type AcceptedCloseoutReviews,
+  type AcceptedCloseoutRun,
   type CloseoutProgressIdentity,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
