@@ -80,7 +80,7 @@ function attempt(
       installationUrl: "https://github.com/settings/installations/2",
       now,
     });
-    expect(parkForPushOutage(db, job, outage, now)).toBe("parked");
+    expect(parkForPushOutage(db, job, outage!, now)).toBe("parked");
     return { id: job.id, pushed: false, held: error.held };
   }
 }
