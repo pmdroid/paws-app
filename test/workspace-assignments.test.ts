@@ -268,7 +268,7 @@ function fixture({
           : { outcome: "refused", reason: "denied" },
       authorizeLinearIntake: (sessionId, spec) => assignments.authorizeIntake(sessionId, spec),
       ...(agent
-        ? { repository: agent.repository, launch: agent.launch }
+        ? { repositories: [agent.repository], launch: agent.launch }
         : {
             launch: () => {
               throw new Error("No agent may start in the onboarding fixture");
