@@ -286,7 +286,7 @@ describe("member VM routes", () => {
       },
     });
     expect(
-      (await f.call(f.observer, "POST", "/api/runners/vm/pool", { id, pool: "build" })).status,
+      (await f.call(f.inactive, "POST", "/api/runners/vm/pool", { id, pool: "build" })).status,
     ).toBe(403);
     expect(
       (await f.call(f.member, "POST", "/api/runners/vm/pool", { id: "nope", pool: "build" }))
