@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { applyLinearCommand } from "./commands";
+import { delegatedLinearUserIdSql } from "./linear-sessions";
 import { immediate } from "./tx";
 import {
   auditWorkspaceAccess,
@@ -22,6 +23,7 @@ export function changeWorkspaceRevocation(
     if (!member) throw new Error("Choose a workspace member.");
     if (input.revoked && input.actorId === input.userId)
       throw new Error("You cannot revoke your own access.");
+    // Defense in depth: the usable admin actor and self-revocation guard also preserve an admin.
     if (input.revoked && workspaceMemberUsable(member) && member.role === "admin") {
       const admins = db
         .query<{ count: number }, [string]>(
@@ -47,7 +49,7 @@ export function changeWorkspaceRevocation(
         .query<{ id: string }, [string, string]>(
           `SELECT i.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
-         WHERE w.id=? AND s.creator_id=? AND i.state NOT IN ('completed','merged','cancelled','manual')`,
+         WHERE w.id=? AND ${delegatedLinearUserIdSql("i", "s")}=? AND i.state NOT IN ('completed','merged','cancelled','manual')`,
         )
         .all(input.workspaceId, member.linearUserId);
       for (const item of items) {
@@ -62,7 +64,7 @@ export function changeWorkspaceRevocation(
             },
             input.now,
             WORKSPACE_REVOKED_RESPONSE,
-            { responseOnly: true },
+            { responseOnly: true, keepPullRequest: true },
           ).applied
         )
           throw new Error("Work changed before access could be revoked. Try again.");

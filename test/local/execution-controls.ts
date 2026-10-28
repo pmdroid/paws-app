@@ -36,7 +36,10 @@ import {
   type WorkspaceAccess,
 } from "../../src/workspace";
 
-export function createExecutionControlsFixture(root: string) {
+export function createExecutionControlsFixture(
+  root: string,
+  options: { interruptItem?: (id: string) => Promise<void> } = {},
+) {
   mkdirSync(root, { recursive: true });
   const db = openDatabase(join(root, "controls.sqlite"));
   migrate(db);
@@ -157,6 +160,7 @@ export function createExecutionControlsFixture(root: string) {
   });
   const origin = `http://127.0.0.1:${server.port}`;
   const access = createWorkspaceAccess({
+    interruptItem: options.interruptItem,
     db,
     publicUrl: origin,
     clientId: "client",

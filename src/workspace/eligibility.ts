@@ -1,4 +1,8 @@
-import { workspaceMemberUsable, WORKSPACE_REVOKED_RESPONSE } from "../db";
+import {
+  workspaceMemberUsable,
+  WORKSPACE_REVOKED_RESPONSE,
+  WORKSPACE_REVOKED_SIGN_IN,
+} from "../db";
 import type { WorkspaceMember } from "../db";
 import type { LinearMemberIdentity } from "../linear";
 
@@ -12,10 +16,7 @@ export type ActionActor = {
   /** Omitted for callers that already verified the Linear event at the boundary. */
   identity?: LinearMemberIdentity;
   /** null means a verified Linear member has never signed in to Paws. */
-  member?:
-    | (Pick<WorkspaceMember, "active" | "role" | "teamIds"> &
-        Partial<Pick<WorkspaceMember, "revokedAt">>)
-    | null;
+  member?: Pick<WorkspaceMember, "active" | "role" | "teamIds" | "revokedAt"> | null;
   teamId?: string;
 };
 export type ActorAction =
@@ -25,7 +26,7 @@ export type ActorAction =
   | { kind: "answer"; allowedIds?: readonly (string | null)[] };
 export type ActorEligibility =
   | { allowed: true }
-  | { allowed: false; reason: string; signIn?: true };
+  | { allowed: false; reason: string; signIn?: true; response?: true };
 
 /** Authorization policy only. Callers retain installation checks and race rechecks. */
 export function canAct(actor: ActionActor, action: ActorAction): ActorEligibility {
@@ -43,7 +44,10 @@ export function canAct(actor: ActionActor, action: ActorAction): ActorEligibilit
   }
   const member = actor.member;
   if (member) {
-    if (member.revokedAt != null) return deny(WORKSPACE_REVOKED_RESPONSE);
+    if (member.revokedAt !== null)
+      return action === "delegate"
+        ? { allowed: false, reason: WORKSPACE_REVOKED_RESPONSE, response: true }
+        : deny(WORKSPACE_REVOKED_SIGN_IN);
     if (!workspaceMemberUsable(member))
       return deny("Your Paws workspace membership is not active.");
     if (actor.teamId && !member.teamIds.includes(actor.teamId))

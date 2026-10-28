@@ -204,13 +204,17 @@ export function workItemForSession(
   return row ? { id: row.id, delegationId: row.delegation_id, state: row.state } : null;
 }
 
+/** The delegator rule shared by item reads and bulk access revocation. Aliases are internal SQL. */
+export function delegatedLinearUserIdSql(item: string, session: string): string {
+  return `COALESCE((SELECT u.linear_user_id FROM workspace_user u WHERE u.id=${item}.owner_user_id), ${item}.delegated_by, ${session}.creator_id)`;
+}
+
 export function delegatedLinearUserId(db: Database, itemId: string): string | null {
   return (
     db
       .query<{ actorId: string | null }, [string]>(
-        `SELECT COALESCE(u.linear_user_id, w.delegated_by, s.creator_id) AS actorId
+        `SELECT ${delegatedLinearUserIdSql("w", "s")} AS actorId
          FROM work_item w
-         LEFT JOIN workspace_user u ON u.id = w.owner_user_id
          LEFT JOIN linear_session s ON s.session_id = w.session_key
          WHERE w.id = ?`,
       )

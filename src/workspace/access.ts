@@ -1,12 +1,6 @@
-import { WORKSPACE_REVOKED_SIGN_IN } from "../db";
-import { workspaceMemberUsable } from "../db";
-import { journalCaught } from "../journal";
-import { handleDecisions } from "./decisions";
-import { createGitHubAttributionLink } from "./github-attribution";
-import { LINEAR_GUEST_REFUSAL } from "./eligibility";
-import type { Database } from "bun:sqlite";
-import type { WorkspaceAssignments } from "./assignments";
 import {
+  WORKSPACE_REVOKED_SIGN_IN,
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   consumeWorkspaceBootstrap,
   deleteWorkspaceSession,
@@ -21,6 +15,12 @@ import {
   workspaceLinearMember,
   workspaceMember,
 } from "../db";
+import { journalCaught } from "../journal";
+import { handleDecisions } from "./decisions";
+import { createGitHubAttributionLink } from "./github-attribution";
+import { LINEAR_GUEST_REFUSAL } from "./eligibility";
+import type { Database } from "bun:sqlite";
+import type { WorkspaceAssignments } from "./assignments";
 import { linearItem, type LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceIdentityLinks } from "./identity-links";
@@ -125,7 +125,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     )
       throw new Error("This workspace is not installed.");
     const observedAt = now();
-    if (permitted && !workspaceMemberUsable(member))
+    if (permitted && member.revokedAt !== null)
       throw new Error("Current permitted workspace membership is required for attribution.");
     if (!force && membershipFresh(member, observedAt)) return;
     const key = `${workspaceKey}:${userId}`;

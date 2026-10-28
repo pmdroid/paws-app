@@ -326,10 +326,10 @@ export function listWorkspaceAudit(db: Database, workspaceId: string, before: nu
 
 /** Linear membership and the administrator's access decision are independent. */
 export function workspaceMemberUsable<
-  T extends { active: boolean | number; revokedAt?: number | null },
+  T extends { active: boolean | number; revokedAt: number | null },
 >(member: T | null | undefined): member is T {
   return (
-    member != null && (member.active === true || member.active === 1) && member.revokedAt == null
+    member != null && (member.active === true || member.active === 1) && member.revokedAt === null
   );
 }
 

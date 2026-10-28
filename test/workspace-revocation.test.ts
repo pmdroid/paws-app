@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
+import { JOB_KIND } from "../src/core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   changeWorkspaceRevocation,
+  insertQueuedItem,
+  recordLinearInstallation,
+  delegatedLinearUserId,
+  recordItemPullRequest,
   getWorkItem,
   listOutbox,
   recordItemBranchState,
@@ -14,14 +19,20 @@ import {
   WORKSPACE_REVOKED_RESPONSE,
   WORKSPACE_REVOKED_SIGN_IN,
 } from "../src/db";
-import { issueWorkspaceSession, requestWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import {
+  createWorkspaceAccess,
+  issueWorkspaceSession,
+  requestWorkspaceSession,
+  WORKSPACE_COOKIE,
+} from "../src/workspace";
 import { createExecutionControlsFixture } from "./local/execution-controls";
 
 async function fixtureTest(
   run: (f: ReturnType<typeof createExecutionControlsFixture>) => Promise<void>,
+  options: Parameters<typeof createExecutionControlsFixture>[1] = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-member-revocation-"));
-  const f = createExecutionControlsFixture(root);
+  const f = createExecutionControlsFixture(root, options);
   try {
     await run(f);
   } finally {
@@ -191,5 +202,172 @@ test("a failed Stop rolls back the whole revocation", async () => {
         .get(),
     ).toBeNull();
     expect(getWorkItem(f.db, "controlled")?.state).toBe("running");
+  });
+});
+
+test("revocation uses resolved delegator ownership, not the session creator", async () => {
+  await fixtureTest(async ({ db }) => {
+    db.run("UPDATE workspace_user SET linear_user_id='linear-member' WHERE id='member'");
+    const now = Date.now();
+    const cases = [
+      ["owner", "member", "outside", "app", true],
+      ["delegated", null, "linear-member", "app", true],
+      ["creator", null, null, "linear-member", true],
+      ["other-owner", "outside", "linear-member", "linear-member", false],
+      ["other-delegator", null, "outside", "linear-member", false],
+      ["other-organization", "member", null, "linear-member", false],
+    ] as const;
+    for (const [id, owner, delegated, creator] of cases) {
+      insertQueuedItem(db, { id, sessionKey: `ownership-${id}`, now });
+      recordLinearInstallation(db, {
+        sessionId: `ownership-${id}`,
+        organizationId: id === "other-organization" ? "foreign" : "org",
+        teamId: "team",
+        oauthClientId: "client",
+        appUserId: "app",
+        observedAtMs: now,
+      });
+      db.run("UPDATE linear_session SET creator_id=? WHERE session_id=?", [
+        creator,
+        `ownership-${id}`,
+      ]);
+      db.run("UPDATE work_item SET owner_user_id=?,delegated_by=? WHERE id=?", [
+        owner,
+        delegated,
+        id,
+      ]);
+    }
+    const stopped = changeWorkspaceRevocation(db, {
+      workspaceId: "workspace",
+      actorId: "admin",
+      userId: "member",
+      revoked: true,
+      now,
+    });
+    expect(new Set(stopped)).toEqual(new Set(["owner", "delegated", "creator"]));
+    for (const [id, , , , stop] of cases) {
+      expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
+      if (stop) expect(delegatedLinearUserId(db, id)).toBe("linear-member");
+    }
+    const responses = listOutbox(db)
+      .map((row) => row.payload as { body?: string; sessionId?: string })
+      .filter((p) => p.body === WORKSPACE_REVOKED_RESPONSE);
+    expect(new Set(responses.map((p) => p.sessionId))).toEqual(
+      new Set(["ownership-owner", "ownership-delegated", "ownership-creator"]),
+    );
+  });
+});
+
+test("revocation stops accepted work without closing its pull request", async () => {
+  await fixtureTest(async ({ db }) => {
+    db.run("UPDATE linear_session SET creator_id='member' WHERE session_id='session-controlled'");
+    db.run("UPDATE work_item SET state='merge_queue' WHERE id='controlled'");
+    recordItemPullRequest(db, {
+      itemId: "controlled",
+      pullNumber: 87,
+      pullUrl: "https://example.invalid/pull/87",
+      openedAt: Date.now(),
+    });
+    changeWorkspaceRevocation(db, {
+      workspaceId: "workspace",
+      actorId: "admin",
+      userId: "member",
+      revoked: true,
+      now: Date.now(),
+    });
+    expect(getWorkItem(db, "controlled")?.state).toBe("cancelled");
+    expect(db.query("SELECT 1 FROM job WHERE queue=?").get(JOB_KIND.closeStoppedPull)).toBeNull();
+    expect(
+      db.query("SELECT pull_number FROM item_pull_request WHERE item_id='controlled'").get(),
+    ).toEqual({ pull_number: 87 });
+    expect(
+      listOutbox(db).some(
+        (row) => (row.payload as { body?: string }).body === WORKSPACE_REVOKED_RESPONSE,
+      ),
+    ).toBe(true);
+  });
+});
+
+test("revoke returns after durable Stop while all interrupts are still pending", async () => {
+  const gate = Promise.withResolvers<void>();
+  const called: string[] = [];
+  try {
+    await fixtureTest(
+      async (f) => {
+        f.db.run(
+          "UPDATE linear_session SET creator_id='member' WHERE session_id='session-controlled'",
+        );
+        const pending = fetch(`${f.origin}/api/workspaces/members`, {
+          method: "PUT",
+          headers: f.headers("admin"),
+          body: JSON.stringify({ userId: "member", revoked: true }),
+        });
+        const response = await Promise.race([pending, Bun.sleep(2000).then(() => null)]);
+        expect(response?.status).toBe(200);
+        expect(new Set(called)).toEqual(new Set(["controlled", "other"]));
+        expect(getWorkItem(f.db, "controlled")?.state).toBe("cancelled");
+      },
+      {
+        interruptItem: async (id) => {
+          called.push(id);
+          await gate.promise;
+        },
+      },
+    );
+  } finally {
+    gate.resolve();
+  }
+});
+
+test("a forced attribution refresh corrects an inactive snapshot after joining an earlier read", async () => {
+  await fixtureTest(async (f) => {
+    const gate = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    let reads = 0;
+    let at = Date.now() + 100;
+    const access = createWorkspaceAccess({
+      db: f.db,
+      publicUrl: f.origin,
+      clientId: "client",
+      installedOrganization: { id: "org", name: "Workspace" },
+      now: () => ++at,
+      memberships: {
+        async installation() {
+          return { id: "org", name: "Workspace" };
+        },
+        async member(organizationId, userId) {
+          const n = userId === "member" ? ++reads : 0;
+          if (n === 1) {
+            started.resolve();
+            await gate.promise;
+          }
+          return {
+            organizationId,
+            userId,
+            active: n !== 1,
+            guest: false,
+            admin: false,
+            teamIds: ["team"],
+          };
+        },
+      },
+    });
+    try {
+      const refresh = access.refreshMemberships();
+      await started.promise;
+      const attribution = access.handle(
+        new Request(`${f.origin}/api/workspaces/github-attribution`, {
+          headers: f.headers("member"),
+        }),
+      );
+      gate.resolve();
+      await refresh;
+      await attribution;
+      expect(reads).toBe(2);
+      expect(workspaceMember(f.db, "workspace", "member")?.active).toBe(true);
+    } finally {
+      gate.resolve();
+      await access.stop();
+    }
   });
 });

@@ -117,13 +117,10 @@ export async function handleWorkspaceAdministration(
           now: options.now,
         });
         // The durable stop is already committed. Interrupt the attached execution as well.
-        for (const itemId of stopped) {
-          try {
-            await options.interruptItem?.(itemId);
-          } catch (error) {
-            journalCaught(error, "administration.revoke.interruptItem", itemId);
-          }
-        }
+        for (const itemId of stopped)
+          void Promise.resolve()
+            .then(() => options.interruptItem?.(itemId))
+            .catch((error) => journalCaught(error, "administration.revoke.interruptItem", itemId));
         return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
       }
       const verified = await options.memberships.member(
