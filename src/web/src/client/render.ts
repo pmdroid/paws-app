@@ -594,9 +594,11 @@ function pullRequestSection(snapshot: StatusItemDetail, item: StatusItem): strin
           ? `Back with the agent after ${outcome.reason === "conflict" ? "a branch update conflicted" : "CI failed"}.`
           : item.state === "merge_queue"
             ? "Waiting to merge."
-            : item.pr
-              ? "Not in the merge queue yet."
-              : "";
+            : item.mergeQueue?.rechecking
+              ? "Re-checking, keeps its place in the merge queue."
+              : item.pr
+                ? "Not in the merge queue yet."
+                : "";
   const pr = item.pr
     ? `<a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">Pull request #${item.pr.number}</a>`
     : "";
@@ -761,14 +763,18 @@ function queueNotice(item: StatusItem): string {
   return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `${held ? `${held}. ` : ""}Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p></div></section>`;
 }
 
-/** Where an item stands in its repository's merge queue. Only the first one moves. */
+/** Where an item stands in its repository's merge queue. Only the first ready one moves. */
 function mergeQueueNotice(item: StatusItem): string {
-  const queue = item.state === "merge_queue" ? item.mergeQueue : undefined;
+  const queue =
+    item.state === "merge_queue" || (item.state === "verifying" && item.mergeQueue?.rechecking)
+      ? item.mergeQueue
+      : undefined;
   if (!queue) return "";
-  const detail =
-    queue.position === 1
+  const detail = queue.rechecking
+    ? "Re-checking, keeps its place. Closeout runs again on this pull request; the ready ones behind it merge meanwhile, and it merges next once Closeout accepts it."
+    : queue.position === 1 || queue.ahead === null
       ? "This pull request moves now: Paws updates its branch onto main if main moved, waits for CI on that commit, and merges it."
-      : `${queue.ahead ?? "The item ahead"} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
+      : `${queue.ahead} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
   return `<section class="closeout-result queue-notice" aria-labelledby="merge-queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${queue.position}</span><div><h3 id="merge-queue-${esc(item.id)}">${esc(mergeQueueLine(queue))}</h3><p>${esc(detail)}</p></div></section>`;
 }
 

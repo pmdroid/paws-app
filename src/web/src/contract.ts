@@ -198,11 +198,13 @@ export interface StatusVisualReviewCarry {
 export interface StatusMergeQueue {
   /** `owner/repo`. */
   repository: string;
-  /** 1 is the pull request that moves. */
+  /** 1 is the front of the queue. */
   position: number;
   total: number;
-  /** The issue in front, or null for the first. */
+  /** The issue that merges before this one, or null when this one moves. */
   ahead: string | null;
+  /** Closeout runs again on it: it keeps its place, and the ready ones behind it move meanwhile. */
+  rechecking?: boolean;
 }
 
 export interface StatusGitHubQueue {
@@ -1361,6 +1363,7 @@ function readMergeQueue(input: unknown, path: string): StatusMergeQueue {
     position: positiveInteger(body, "position", path),
     total: positiveInteger(body, "total", path),
     ahead: nullableText(body, "ahead", path),
+    ...(body.rechecking === true ? { rechecking: true } : {}),
   };
 }
 

@@ -1,19 +1,27 @@
 import type { Database } from "bun:sqlite";
 
 /**
- * A task's place in its repository's merge queue. 1 moves; the others wait. Only tasks in
- * `merge_queue`, or `verifying` while the first one runs Closeout again, hold a place, so a task
- * that went back to the agent, waits for an answer, or ended blocks nobody.
+ * A task's place in its repository's merge queue. The first task in `merge_queue` moves; the
+ * others wait. A task `verifying` while Closeout runs again is busy: it keeps its place but blocks
+ * nobody, and moves before the tasks behind it once it is back in `merge_queue`. A task that went
+ * back to the agent, waits for an answer, or ended holds no place.
  */
 export type MergeQueuePosition = {
   itemId: string;
   repository: string;
-  /** 1 is the pull request that moves. */
+  /** 1 is the front of the queue. */
   position: number;
   total: number;
   readyAt: number;
   /** The task in front of this one, or null for the first. */
   aheadItemId: string | null;
+  /** Re-verifying: keeps its place, but does not hold the lane. */
+  busy: boolean;
+  /**
+   * The nearest ready task in front of this one, which merges before it. Null when none is: then
+   * this task, if it is ready, is the one that moves.
+   */
+  nextItemId: string | null;
   /** The position Linear was last told about, or null. */
   notifiedPosition: number | null;
 };
@@ -106,11 +114,12 @@ export function listMergeQueues(
         repository: string;
         readyAt: number;
         notifiedPosition: number | null;
+        state: string;
       },
       []
     >(
       `SELECT e.item_id AS itemId, e.repository, e.ready_at AS readyAt,
-              e.notified_position AS notifiedPosition
+              e.notified_position AS notifiedPosition, w.state
        FROM merge_queue_entry e JOIN work_item w ON w.id = e.item_id
        WHERE w.state IN ${HOLDING} AND w.cancel_requested = 0
        ORDER BY e.repository, e.ready_at, e.id`,
@@ -120,11 +129,14 @@ export function listMergeQueues(
   for (const row of rows.filter((entry) => !held(entry.itemId)))
     byRepository.set(row.repository, [...(byRepository.get(row.repository) ?? []), row]);
   return [...byRepository.values()].flatMap((queue) =>
-    queue.map((row, index) => ({
+    queue.map(({ state, ...row }, index) => ({
       ...row,
       position: index + 1,
       total: queue.length,
       aheadItemId: queue[index - 1]?.itemId ?? null,
+      busy: state !== "merge_queue",
+      nextItemId:
+        queue.slice(0, index).findLast((ahead) => ahead.state === "merge_queue")?.itemId ?? null,
     })),
   );
 }
