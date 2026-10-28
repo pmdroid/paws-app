@@ -60,6 +60,8 @@ import {
   REVIEW_COMMAND_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNTIMES_RUNNER_VERSION,
+  ANY_MISE_BACKEND_RUNNER_VERSION,
+  legacyRuntimeTool,
   SESSION_RESUME_RUNNER_VERSION,
   type RunnerCommand,
   type RunnerResult,
@@ -1174,16 +1176,23 @@ export function createRemoteAgentRunner(options: {
                     })
                   : undefined;
               signal.throwIfAborted();
-              const acceptsRuntimes = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                RUNTIMES_RUNNER_VERSION,
+              const runnerVersion = db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(selected.id)?.version;
+              const acceptsRuntimes = versionAtLeast(runnerVersion, RUNTIMES_RUNNER_VERSION);
+              // An older runner rejects the whole command over one tool it does not know.
+              const anyBackend = versionAtLeast(runnerVersion, ANY_MISE_BACKEND_RUNNER_VERSION);
+              const held = anyBackend
+                ? []
+                : (runtimeList?.runtimes ?? []).filter(
+                    (runtime) => !legacyRuntimeTool(runtime.tool),
+                  );
+              const sendable = (runtimeList?.runtimes ?? []).filter(
+                (runtime) => !held.includes(runtime),
               );
-              const runtimes =
-                runtimeList?.runtimes.length && acceptsRuntimes ? runtimeList.runtimes : undefined;
+              const runtimes = sendable.length && acceptsRuntimes ? sendable : undefined;
               if (
                 input.reviewCommand &&
                 !versionAtLeast(
@@ -1203,6 +1212,11 @@ export function createRemoteAgentRunner(options: {
                 ...(runtimeList?.runtimes.length && !acceptsRuntimes
                   ? [
                       `Paws did not send the repository's runtimes to this runner because it needs runner ${RUNTIMES_RUNNER_VERSION.join(".")} or later.`,
+                    ]
+                  : []),
+                ...(acceptsRuntimes && held.length
+                  ? [
+                      `Paws did not send ${held.map((runtime) => `\`${runtime.tool}\``).join(", ")} to this runner because tools other than core and aqua: need runner ${ANY_MISE_BACKEND_RUNNER_VERSION.join(".")} or later.`,
                     ]
                   : []),
               ];
