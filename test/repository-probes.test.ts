@@ -334,6 +334,29 @@ const API = {
   "src/server/serve.ts": SERVE,
 };
 
+test("trusted base overrides survive parser dependency isolation", () => {
+  const manifest = JSON.parse(API["package.json"]);
+  const lock = Bun.JSONC.parse(API["bun.lock"]) as Record<string, unknown>;
+  // Use the already locked version, so this also works without network access.
+  const packages = lock.packages as Record<string, [string, ...unknown[]]>;
+  const overrides = { zod: packages.zod![0].slice("zod@".length) };
+  manifest.overrides = overrides;
+  lock.overrides = overrides;
+  const ran = probe(
+    "api-contract",
+    candidate(
+      {
+        ...API,
+        "package.json": JSON.stringify(manifest),
+        "bun.lock": JSON.stringify(lock),
+      },
+      { "README.md": "No API change.\n" },
+    ),
+  );
+  expect(ran.output).toContain("0 breaking changes");
+  expect(ran.exitCode).toBe(0);
+});
+
 /** The base supplies locked dependencies, never the candidate checkout. */
 function apiCandidate(change: Record<string, string | null>) {
   const at = candidate(API, change);
