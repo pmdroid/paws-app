@@ -4,7 +4,13 @@ import type {
   StatusCloseoutAttempt,
   StatusVerdict,
 } from "../contract";
-import { renderCloseoutChecks, shownAttempt, type CloseoutView } from "./closeout";
+import {
+  renderCloseoutChecks,
+  sectionOpen,
+  sectionToggle,
+  shownAttempt,
+  type CloseoutView,
+} from "./closeout";
 import { durationLabel, esc, utcClock } from "./format";
 
 const AGENT_KEY = "agent:";
@@ -58,11 +64,9 @@ export function renderAgentCloseout(
   collapsed: boolean,
 ): string {
   const verdict = agentVerdict(agent);
-  const key = agentSectionKey(agent.runId);
-  const open = view.open[key] ?? !collapsed;
-  const progress = agentProgress(agent);
+  const open = sectionOpen(view, verdict.itemId, !collapsed);
   const toggle = collapsed
-    ? `<button class="chk agent-closeout-toggle${open ? " on" : ""}" type="button" data-action="agent-closeout-toggle" data-item="${esc(verdict.itemId)}" data-attempt="${verdict.attempt}" data-open="${open}" aria-expanded="${open}"><h2>Agent Closeout</h2><span class="muted">${esc(progress)}</span><span class="check-chevron" aria-hidden="true">${open ? "⌄" : "›"}</span></button>`
+    ? sectionToggle(verdict.itemId, open, "<h2>Agent Closeout</h2>", agentProgress(agent))
     : "";
   const body = open
     ? renderCloseoutChecks(verdict, view, engineUrl, null, undefined, {

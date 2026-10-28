@@ -22,6 +22,7 @@ import {
   emptyCloseoutView,
   isOpen,
   parseCheckHash,
+  checkListKey,
   type CheckLogView,
 } from "./closeout";
 import { captureLogs, restoreLogs } from "./log-scroll";
@@ -533,7 +534,7 @@ function onClick(event: MouseEvent): void {
   const attempt = Number(holder?.getAttribute("data-attempt") ?? "");
   const checkId = holder?.getAttribute("data-check") ?? "";
   if (!itemId || !Number.isInteger(attempt) || attempt < 1) return;
-  if (action === "agent-closeout-toggle") {
+  if (action === "section-toggle") {
     closeout.open[`section\n${itemId}`] = holder?.getAttribute("data-open") !== "true";
     paint();
   }
@@ -545,6 +546,7 @@ function onClick(event: MouseEvent): void {
     const checks = closeoutChecks(itemId, attempt).filter((check) => check.kind !== "rule");
     const open = !checks.every((check) => isOpen(closeout, itemId, attempt, check));
     for (const check of checks) closeout.open[checkKey(itemId, attempt, check.id)] = open;
+    closeout.open[`section\n${checkListKey(itemId, attempt)}`] = open;
     paint();
   }
   if (!checkId) return;

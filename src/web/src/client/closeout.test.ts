@@ -7,6 +7,7 @@ import { parseStatusItemDetail } from "../contract";
 import {
   checkHash,
   checkKey,
+  checkListKey,
   emptyCloseoutView,
   parseCheckHash,
   renderCloseoutChecks,
@@ -234,7 +235,23 @@ test("accepted output describes the actual delivery state instead of assuming a 
   expect(merged).not.toContain("is waiting to merge");
 });
 
+test("an accepted attempt folds its passing checks into one row until it is opened", () => {
+  const entry = verdict("ENG-101");
+  const folded = renderCloseoutChecks(entry, emptyCloseoutView(), null);
+  expect(folded).toContain('data-item="checks:ENG-101:1"');
+  expect(folded).toContain("<b>3 checks</b>");
+  expect(folded).not.toContain('class="check-list"');
+  const view = emptyCloseoutView();
+  view.open[`section\n${checkListKey("ENG-101", 1)}`] = true;
+  expect(renderCloseoutChecks(entry, view, null)).toContain('class="check-list"');
+});
+
 describe("independent review measurements", () => {
+  const listOpen = (): CloseoutView => ({
+    ...emptyCloseoutView(),
+    open: { [`section\n${checkListKey("ENG-101", 1)}`]: true },
+  });
+
   function measured() {
     const entry = verdict("ENG-101");
     const review = entry.checks.find((check) => check.kind === "review")!;
@@ -244,7 +261,7 @@ describe("independent review measurements", () => {
   }
 
   test("desktop: the review row shows how long it took and the tokens it used", () => {
-    const html = renderCloseoutChecks(measured(), emptyCloseoutView(), null);
+    const html = renderCloseoutChecks(measured(), listOpen(), null);
     expect(html).toContain('<span class="check-meta">3m 12s · 52.3k tokens</span>');
   });
 
@@ -253,7 +270,7 @@ describe("independent review measurements", () => {
       createElement(
         Fragment,
         null,
-        themedMarkup(renderCloseoutChecks(measured(), emptyCloseoutView(), null)),
+        themedMarkup(renderCloseoutChecks(measured(), listOpen(), null)),
       ),
     );
     expect(html).toContain("3m 12s · 52.3k tokens");
