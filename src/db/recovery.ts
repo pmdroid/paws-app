@@ -2,7 +2,6 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   decideStartup,
-  isResponseTaskMode,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   type StartupDecision,
@@ -16,7 +15,6 @@ import type { WorkItemRecord } from "./items";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
-import { getTaskMode } from "./tasks";
 import { immediate } from "./tx";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
@@ -141,10 +139,8 @@ function runActive(db: Database, item: WorkItemRecord): boolean {
 }
 
 function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boolean {
-  const mode = getTaskMode(db, item.id);
   return (
     item.state === "running" &&
-    !isResponseTaskMode(mode) &&
     item.currentRunId !== null &&
     db
       .query(
