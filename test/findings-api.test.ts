@@ -25,7 +25,7 @@ function finding(patch: Partial<ReviewFindingReport>): ReviewFindingReport {
   };
 }
 
-function seed(role: "member" | "observer" = "member"): Database {
+function seed(active = true): Database {
   const db = tempDb();
   for (const [id, repo] of [
     ["item-a", "platform"],
@@ -64,7 +64,14 @@ function seed(role: "member" | "observer" = "member"): Database {
     email: "ada@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 1]);
-  syncWorkspaceMember(db, { workspaceId: "ws-1", userId, role, active: true, teamIds: [], now: 1 });
+  syncWorkspaceMember(db, {
+    workspaceId: "ws-1",
+    userId,
+    role: "member",
+    active,
+    teamIds: [],
+    now: 1,
+  });
   return db;
 }
 
@@ -176,8 +183,8 @@ test("a member dismisses with a reason and reopens; others and bad requests are 
   }
 });
 
-test("an observer cannot change a finding", async () => {
-  const db = seed("observer");
+test("an inactive member cannot change a finding", async () => {
+  const db = seed(false);
   try {
     const [first] = (await list(db)).findings;
     expect((await post(db, { id: first!.id, action: "dismiss", reason: "no" }))!.status).toBe(403);
