@@ -224,15 +224,20 @@ export async function handleFindingGroupsRequest(
     }
     immediate(db, () => {
       for (const finding of rows) {
-        if (action.action === "dismiss")
-          setReviewFindingStatus(db, {
+        if (action.action === "dismiss") {
+          const changed = setReviewFindingStatus(db, {
             id: finding.id,
             status: "dismissed",
             reason: action.reason,
             by,
             now,
           });
-        else markReviewFindingFiled(db, { key: finding.key, issue: identifier!, by, now });
+          if (!changed)
+            throw Object.assign(
+              new Error("A finding changed. Refresh the group before dismissing."),
+              { noFindingWrite: true, findingConflict: true },
+            );
+        } else markReviewFindingFiled(db, { key: finding.key, issue: identifier!, by, now });
       }
       db.run(
         "UPDATE finding_group SET status=?,status_reason=?,status_by=?,status_at=?,filed_issue=? WHERE id=?",
@@ -262,6 +267,8 @@ export async function handleFindingGroupsRequest(
         group.id,
         action.action,
       ]);
+    if (error instanceof Error && "findingConflict" in error)
+      return Response.json({ error: error.message }, { status: 409 });
     return Response.json(
       { error: "Linear could not finish this action. Retry the same action safely." },
       { status: 502 },

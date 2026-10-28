@@ -76,7 +76,12 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
   return {
     async openTitles(teamIds, signal) {
       const result: FindingIssueTitle[] = [];
+      // A bounded, fair title sample; the prompt cannot use more than 65k characters.
+      const budget = Math.max(1, Math.floor(65000 / Math.max(1, teamIds.length)));
       for (const teamId of teamIds) {
+        let used = 0;
+        let full = false;
+        let count = 0;
         let after: string | null = null;
         do {
           const data: {
@@ -100,7 +105,19 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
                 { signal },
               ),
             ).issues;
-          result.push(...data.nodes.map((i) => ({ ...i, teamId })));
+          for (const entry of data.nodes) {
+            const title = { ...entry, title: entry.title.slice(0, 500), teamId };
+            const size = JSON.stringify(title).length + 1;
+            if (used + size > budget) {
+              full = true;
+              break;
+            }
+            used += size;
+            count++;
+            result.push(title);
+          }
+          // Even tiny titles stop after a bounded number of pages per team.
+          if (full || used >= budget - 700 || count >= 1000) break;
           if (
             data.pageInfo.hasNextPage &&
             (!data.pageInfo.endCursor || data.pageInfo.endCursor === after)

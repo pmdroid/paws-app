@@ -219,7 +219,7 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
 test("output schema rejects malformed groups and suggestions from another team", () => {
   const f = seed();
   try {
-    expect(() => validateGroups('{"groups":[{"title":42}]}', f.sources(), [])).toThrow();
+    expect(validateGroups('{"groups":[{"title":42}]}', f.sources(), [])).toEqual([]);
     const groups = validateGroups(
       JSON.stringify({
         groups: [
@@ -795,6 +795,81 @@ test("a partial grouping cycle processes each finding and then skips unchanged s
     await grouping.run("ws", new AbortController().signal);
     expect(calls).toBe(completedCalls);
     expect(lastFindingGroupRun(f.db, "ws")?.skipReason).toContain("No findings changed");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("daily finding updates do not reset the overflow cursor", async () => {
+  const f = seed();
+  try {
+    const source = f.sources()[0]!;
+    const rows = Array.from({ length: 40 }, (_, i) => ({
+      ...source,
+      id: i + 1,
+      text: "x".repeat(4000),
+    }));
+    const covered = new Set<number>();
+    let now = epoch;
+    const grouping = createFindingGrouping({
+      db: f.db,
+      sources: () => rows,
+      issues: f.issues,
+      now: () => now,
+      helper: async (input) => {
+        const json = JSON.parse(input.prompt.split("\n\n").at(-1)!) as {
+          findings: { id: number }[];
+        };
+        json.findings.forEach((row) => covered.add(row.id));
+        return { text: '{"groups":[]}' };
+      },
+    });
+    for (let day = 0; day < 6 && covered.size < rows.length; day++) {
+      rows[0] = { ...rows[0]!, last: { ...rows[0]!.last, at: now } };
+      await grouping.run("ws", new AbortController().signal);
+      now += 86400000;
+    }
+    expect(covered.size).toBe(rows.length);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("invalid model groups do not discard valid groups", () => {
+  const f = seed();
+  try {
+    const valid = { title: "Fix", summary: "Shared fix", scope: "src", findingIds: f.ids };
+    const groups = validateGroups(
+      JSON.stringify({ groups: [{ title: 42 }, { ...valid, title: "x".repeat(230) }, valid] }),
+      f.sources(),
+      [],
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.title).toHaveLength(200);
+    expect(groups[0]!.memberIds).toEqual(f.ids);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("dismissal conflicts roll back group completion and release the claim", async () => {
+  const f = seed();
+  try {
+    await f.grouping.run("ws", new AbortController().signal);
+    const group = listFindingGroups(f.db, "ws")[0]!;
+    const member = group.memberIds[0]!;
+    f.db.exec(
+      `CREATE TEMP TRIGGER member_changed AFTER UPDATE OF action ON finding_group WHEN NEW.action='dismiss' BEGIN UPDATE review_finding SET status='filed' WHERE id=${member}; END`,
+    );
+    expect((await post(f, { action: "dismiss", id: group.id, reason: "Not needed" })).status).toBe(
+      409,
+    );
+    expect(listFindingGroups(f.db, "ws").find((row) => row.id === group.id)).toMatchObject({
+      status: "open",
+      action: null,
+      statusReason: null,
+    });
+    expect(f.sources().find((row) => row.id === member)?.status).toBe("filed");
   } finally {
     f.db.close();
   }

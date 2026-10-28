@@ -245,23 +245,24 @@ export function renderConfigToml(config: PawsSetupConfig): string {
  */
 export function writeConfigFile(path: string, config: PawsSetupConfig): boolean {
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const stored = parseConfigToml(current);
   const profiles = parseAgentSettingsToml(current, config.implementer);
   const rendered =
     renderConfigToml({
       ...config,
-      githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
-      closeoutProjects: config.closeoutProjects ?? parseConfigToml(current).closeoutProjects,
+      githubRepos: config.githubRepos ?? stored.githubRepos,
+      closeoutProjects: config.closeoutProjects ?? stored.closeoutProjects,
     }) +
     renderCheckoutProjects(parseCheckoutProjects(current)) +
     renderProjectSkills(parseProjectSkills(current)) +
-    renderMergeSettings(storedMerge(parseConfigToml(current))) +
+    renderMergeSettings(storedMerge(stored)) +
     renderQueueSettings({
-      startTimeoutHours: parseConfigToml(current).queueStartTimeoutHours,
-      maxRunningPerOwner: parseConfigToml(current).queueMaxRunningPerOwner,
+      startTimeoutHours: stored.queueStartTimeoutHours,
+      maxRunningPerOwner: stored.queueMaxRunningPerOwner,
     }) +
-    renderMemberVmSettings(parseConfigToml(current).memberVm) +
-    (parseConfigToml(current).findingsGroupingTime
-      ? `\n[findings]\ngrouping_time = ${tomlString(parseConfigToml(current).findingsGroupingTime!)}\n`
+    renderMemberVmSettings(stored.memberVm) +
+    (stored.findingsGroupingTime
+      ? `\n[findings]\ngrouping_time = ${tomlString(stored.findingsGroupingTime!)}\n`
       : "");
   const next =
     profiles === null

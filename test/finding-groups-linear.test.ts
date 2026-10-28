@@ -192,3 +192,25 @@ test("deterministically rejected issue mutations release actions without treatin
   transport.failMutation(timeout);
   await expect(transport.adapter.file(input)).rejects.toBe(timeout);
 });
+
+test("open issue title reads stop at a bounded sample even when Linear has more pages", async () => {
+  let pages = 0;
+  const adapter = createFindingIssueAdapter({
+    async query() {
+      pages++;
+      return {
+        issues: {
+          nodes: Array.from({ length: 100 }, (_, i) => ({
+            identifier: `PAS-${pages * 100 + i}`,
+            title: "x".repeat(500),
+          })),
+          pageInfo: { hasNextPage: true, endCursor: String(pages) },
+        },
+      };
+    },
+  });
+  const titles = await adapter.openTitles(["team"], new AbortController().signal);
+  expect(pages).toBeLessThanOrEqual(2);
+  expect(JSON.stringify(titles).length).toBeLessThanOrEqual(65000);
+  expect(titles.length).toBeGreaterThan(100);
+});
