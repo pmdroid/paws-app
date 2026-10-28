@@ -84,6 +84,7 @@ export type {
 export { scrubText } from "./run/scrub";
 export {
   addReview,
+  approvalRules,
   decision,
   digest,
   candidatePolicyDigest,

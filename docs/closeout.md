@@ -159,6 +159,17 @@ The question lists every check with its status and attempts. When the candidate 
 
 A reply in Linear is guidance, whatever it says. `/paws bypass check -- reason` in a reply bypasses nothing: Paws sends it to the agent as guidance and answers once with the link to the card. Without a public link the question stays a Linear question, a reply is guidance, and no check can be bypassed.
 
+### Rules set to approve
+
+A rule under `rules:` in the policy may set `onFail: approve`, for a rule you sometimes mean to break, like an API contract change. `onFail: fix`, the default, treats a failed rule like any failed check. A failed `approve` rule does not go back to the agent and uses no fix round or fix attempt; it still holds the pull request until a person decides. When other checks failed too, the fix round hands the agent only those, and the rule is checked again on the next head.
+
+When only `approve` rules failed, Paws asks with `ask()`. With a public link, Linear gets one Markdown message with each broken rule's summary and finding and the link to the "Rule break" card on the item page (`/status/issues/<id>#rule`). The probe output stays out of Linear; the card shows it. The delegator or the project lead decides there, with a reason:
+
+- **Approve** accepts the rules' findings for this task, base, head and policy digest. The reason is saved with the approver's name, Audit history records the decision, the pull request body lists it under Bypassed checks, and Paws verifies the same head again. The next head checks the rule again.
+- **Send back** calls `restart(item, answer)` with the reason and the finding, as if the rule were `onFail: fix`.
+
+A reply in Linear sends the finding back to the agent with the reply and never approves the break; Paws answers once with the link to the card. Without a public link the question is a Linear question, and a reply sends it back.
+
 ### After acceptance
 
 When Closeout accepts head S, it writes an accept row: S, the policy digest it ran under, and any bypass rows for S. The item enters `merge_queue`. The merge lane takes the repository lock, reads the pull request and checks one predicate, `mergeable(S)`:

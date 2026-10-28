@@ -18,6 +18,7 @@ import {
   type GateOutcome,
   type GateResult,
   type ReviewFindings,
+  type RuleApproval,
   type StoredReviewFinding,
 } from "./types";
 import { isSha, readHead } from "./worktree";
@@ -41,6 +42,7 @@ import {
   type CloseoutProgressIdentity,
   type CloseoutProgressStep,
   type CloseoutStepState,
+  approvalRules,
   type DecisionDocument as SpecDecision,
   type EvidenceApproval,
   type PublishedEvidence,
@@ -392,11 +394,21 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
+    // A rule set to approve waits for a person; it is not the agent's to fix and uses no attempt.
+    const held = heldRules(input, evaluation);
+    if (
+      held.size > 0 &&
+      (evaluation.decision?.items ?? []).every(
+        (item) =>
+          item.state !== "failed" || held.has(item.id) || waivedIds(evaluation).has(item.id),
+      )
+    )
+      return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     // Failed fixes retry without a new evaluation, so every retry answers the same findings.
     const left = await fixesLeft(input, head, evaluation.decision);
     const first = fixAttempts + 1;
 
-    const feedback = await repairFeedback(input, evaluation);
+    const feedback = await repairFeedback(input, evaluation, (id) => !held.has(id));
     const failures: string[] = [];
     let lastThrown: string | undefined;
     let fixed: string | undefined;
@@ -594,19 +606,79 @@ export async function storedReviewFindings(
   });
 }
 
-async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise<string> {
+/** Checks an approved bypass waived on this evaluation. */
+function waivedIds(evaluation: Evaluation): Set<string> {
+  return new Set(evaluation.bypasses?.flatMap((approval) => [...approval.checkIds]) ?? []);
+}
+
+/**
+ * The failed rules of `evaluation` whose policy says `onFail: approve`, by id with their summary.
+ * One whose attempts ran out still waits for a person: its failures were never the agent's to
+ * fix. A bypass a person approved for this head no longer holds anything.
+ */
+function heldRules(input: GateInput, evaluation: Evaluation): Map<string, string> {
+  const failed = (evaluation.decision?.items ?? []).filter(
+    (item) => item.kind === "rule" && (item.state === "failed" || item.state === "exhausted"),
+  );
+  if (failed.length === 0) return new Map();
+  let rules;
+  try {
+    rules = approvalRules(input.worktree, input.home, input.policyRoot);
+  } catch (error) {
+    journalCaught(error, "run.heldRules.approvalRules", input.taskId);
+    return new Map();
+  }
+  const waived = waivedIds(evaluation);
+  return new Map(
+    rules
+      .filter((rule) => failed.some((item) => item.id === rule.id) && !waived.has(rule.id))
+      .map((rule) => [rule.id, rule.summary]),
+  );
+}
+
+/** Each held rule with the finding a send back hands the agent. */
+async function ruleApprovals(
+  input: GateInput,
+  evaluation: Evaluation,
+  held: ReadonlyMap<string, string>,
+): Promise<RuleApproval[]> {
+  const approvals: RuleApproval[] = [];
+  for (const item of evaluation.decision?.items ?? []) {
+    const summary = held.get(item.id);
+    if (summary === undefined) continue;
+    approvals.push({
+      id: item.id,
+      summary,
+      message: item.message,
+      ...(item.attempt === undefined ? {} : { attempt: item.attempt }),
+      feedback: await repairFeedback(input, evaluation, (id) => id === item.id),
+    });
+  }
+  return approvals;
+}
+
+/** The fix feedback for the failed checks `select` keeps, with the end of each check's log. */
+async function repairFeedback(
+  input: GateInput,
+  evaluation: Evaluation,
+  select: (id: string) => boolean = () => true,
+): Promise<string> {
   const decision = evaluation.decision;
   if (decision === null) return evaluation.error ?? "closeout rejected the candidate";
-  const waived = new Set(evaluation.bypasses?.flatMap((approval) => [...approval.checkIds]) ?? []);
+  const waived = waivedIds(evaluation);
   const parts = [
     formatFixFeedback(
-      { ...decision, items: decision.items.filter((item) => !waived.has(item.id)) },
-      evaluation.reviewFindings,
+      {
+        ...decision,
+        items: decision.items.filter((item) => !waived.has(item.id) && select(item.id)),
+      },
+      evaluation.reviewFindings.filter((review) => select(review.itemId)),
     ),
   ];
   for (const item of decision.items) {
     if (
       waived.has(item.id) ||
+      !select(item.id) ||
       (item.kind !== "command" && item.kind !== "rule") ||
       item.state !== "failed" ||
       item.attempt === undefined
@@ -1142,10 +1214,13 @@ async function finalResult(
   if (evaluation?.bypasses?.length) summaryParts.push(bypassSummary(evaluation.bypasses));
   if (error) summaryParts.push(error);
   if (evaluation?.error && evaluation.error !== error) summaryParts.push(evaluation.error);
+  const held =
+    evaluation && outcome !== "accepted" ? heldRules(input, evaluation) : new Map<string, string>();
   const handoff =
     input.maxFixAttempts === 0 && evaluation?.decision?.decision === "rejected"
-      ? await repairFeedback(input, evaluation)
+      ? await repairFeedback(input, evaluation, (id) => !held.has(id))
       : undefined;
+  const approvals = evaluation && held.size > 0 ? await ruleApprovals(input, evaluation, held) : [];
   const left = handoff === undefined ? null : await fixesLeft(input, head, decision);
   const result: GateResult = {
     ...(handoff ? { handoff } : {}),
@@ -1160,6 +1235,7 @@ async function finalResult(
     decision,
     summary: summaryParts.join("\n"),
     ...(evaluation?.bypasses ? { bypasses: evaluation.bypasses } : {}),
+    ...(approvals.length > 0 ? { ruleApprovals: approvals } : {}),
   };
   if (input.reportDir) {
     result.reportPath = await writeVerdictReport(input.reportDir, result);

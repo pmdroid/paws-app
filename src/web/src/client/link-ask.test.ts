@@ -227,3 +227,55 @@ test("the Risk card shows an approval a fix carried over, with the approved head
     render(model({ snapshot: asking, route: { view: "issues", id: "ENG-103" } })).content,
   ).not.toContain('id="risk-carry-over"');
 });
+
+function withRule(): FullStatus {
+  const snapshot = withLinkAsk();
+  snapshot.questions[0]!.linkAsk = {
+    kind: "rule",
+    head: "7f65200aa1",
+    title: "A rule broke on 7f65200 and needs your decision.",
+    detail:
+      "Rule api-contract broke: No removed field or route. Finding: probe exited 1; P1 finding.",
+    link: "https://paws.example/status/issues/ENG-103#rule",
+    bypass: {
+      policyDigest: "sha256:0eadf4c1234",
+      passed: ["lint"],
+      checks: [
+        {
+          id: "api-contract",
+          kind: "rule",
+          state: "failed",
+          attempt: 1,
+          finding: "removed field Task.title",
+        },
+      ],
+    },
+  };
+  return snapshot;
+}
+
+test("Needs you shows a rule ask with Review rule, linking to the rule card", () => {
+  const html = render(model({ snapshot: withRule() })).content;
+  expect(html).toContain('href="/issues/ENG-103#rule"');
+  expect(html).toContain("Review rule</a>");
+});
+
+test("the rule card shows the finding, a reason field, Approve and Send back", () => {
+  const html = render(
+    model({ snapshot: withRule(), route: { view: "issues", id: "ENG-103" } }),
+  ).content;
+  expect(html).toContain('id="rule"');
+  expect(html).toContain("Rule break");
+  expect(html).toContain("<b>api-contract</b>");
+  expect(html).toContain("removed field Task.title");
+  expect(html).toContain("Reason: why the rule may break, or what the agent should change");
+  expect(html).toContain('value="approve"');
+  expect(html).toContain(">Approve</button>");
+  expect(html).toContain('value="changes"');
+  expect(html).toContain(">Send back</button>");
+  expect(html).toContain("sha256:0eadf4c");
+  expect(html).toContain(
+    "A reply in Linear sends the finding back to the agent and never approves the break.",
+  );
+  expect(html).not.toContain('data-bypass="');
+});

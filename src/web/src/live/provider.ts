@@ -1044,7 +1044,7 @@ function withBypassChecks(
   env: NodeJS.ProcessEnv,
 ): StatusQuestion {
   const ask = question.linkAsk;
-  if (ask?.kind !== "bypass") return question;
+  if (ask?.kind !== "bypass" && ask?.kind !== "rule") return question;
   const recovery = getCloseoutRecovery(db, question.id);
   if (recovery === null) return question;
   const verdict = verdicts.find(
