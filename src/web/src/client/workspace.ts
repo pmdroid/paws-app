@@ -215,7 +215,9 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
                       ([role, label]) =>
                         `<option value="${role}"${role === member.role ? " selected" : ""}>${label}</option>`,
                     )
-                    .join("")}</select></label><button class="btn" type="submit"${member.active ? "" : " disabled"}>Save role</button></form>`,
+                    .join(
+                      "",
+                    )}</select></label><button class="btn" type="submit"${member.active ? "" : " disabled"}>Save role</button></form>`,
               )
               .join(""),
           );

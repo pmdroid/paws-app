@@ -26,12 +26,7 @@ export function requireAttributionSession(db: Database, binding: AttributionBind
     )
     .get(binding.sessionHash, binding.workspaceId, binding.userId);
   const member = workspaceMember(db, binding.workspaceId, binding.userId);
-  if (
-    !session ||
-    !member?.active ||
-    now < session.authenticated_at ||
-    now >= session.expires_at
-  )
+  if (!session || !member?.active || now < session.authenticated_at || now >= session.expires_at)
     throw new Error("A current sign-in and permitted workspace membership are required.");
 }
 

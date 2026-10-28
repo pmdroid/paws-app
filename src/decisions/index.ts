@@ -169,8 +169,7 @@ export function changeDecision(
   return db
     .transaction(() => {
       const member = workspaceMember(db, actor.workspaceId, actor.userId);
-      if (!member?.active)
-        throw new Error("Current workspace membership is required.");
+      if (!member?.active) throw new Error("Current workspace membership is required.");
       const previous = input.id
         ? db.query<Row, [string]>(`${SELECT} WHERE d.id=?`).get(input.id)
         : null;

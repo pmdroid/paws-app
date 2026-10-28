@@ -571,8 +571,8 @@ export function onboardingPage(input: OnboardingPageInput): Response {
   ].join("");
   // Add a host lives outside the steps, so a refresh of the steps keeps a shown command.
   const host = `<section class="host" id="host" hidden aria-labelledby="host-heading"><h2 id="host-heading">Add a host</h2><form id="host-form"><label>Host name<input name="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${escape(
-        `${first.toLowerCase().replace(/[^a-z0-9-]+/g, "-") || "my"}-host`,
-      )}"></label><button type="submit" class="action">Create command</button></form><div id="host-command" aria-live="polite"></div></section>`;
+    `${first.toLowerCase().replace(/[^a-z0-9-]+/g, "-") || "my"}-host`,
+  )}"></label><button type="submit" class="action">Create command</button></form><div id="host-command" aria-live="polite"></div></section>`;
   // While something is still moving, the page re-reads itself: every few seconds while a VM is
   // being set up, otherwise every 15 s. Each read is this page, which reads only SQLite.
   const poll = remaining === 0 ? "" : String(runner.state === "setting-up" ? VM_POLL_MS : POLL_MS);
