@@ -105,7 +105,8 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
   const until = async (paws: ReturnType<typeof open>, count: number) => {
     const deadline = Date.now() + 60_000;
     let ticking: Promise<unknown> = Promise.resolve();
-    while (Date.now() < deadline && sent < count) {
+    while (Date.now() < deadline) {
+      if (sent >= count) return;
       paws.orchestrator.reconcileExecution();
       paws.outbox.tick();
       ticking = ticking.then(() => paws.jobs.tick()).catch(() => undefined);
