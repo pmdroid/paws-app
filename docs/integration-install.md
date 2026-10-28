@@ -17,7 +17,6 @@ Set these environment variables on the Paws server using the app settings. Keep 
 | `PAWS_GITHUB_CLIENT_SECRET`   | GitHub App client secret                   |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | Path to the downloaded private key         |
 | `GITHUB_WEBHOOK_SECRET`       | A webhook secret chosen for the GitHub App |
-| `PAWS_GITHUB_REPOSITORY`      | `organization/sandbox-repository`          |
 | `LINEAR_CLIENT_ID`            | Linear OAuth client ID                     |
 | `LINEAR_CLIENT_SECRET`        | Linear OAuth client secret                 |
 | `LINEAR_WEBHOOK_SECRET`       | Linear webhook signing secret              |
