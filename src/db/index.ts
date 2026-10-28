@@ -437,7 +437,10 @@ export {
   saveConversation,
 } from "./acp-conversations";
 export {
+  beginMergeCall,
+  endMergeCall,
   getConfirmedRemoteMerge,
+  mergeCallInFlight,
   recordConfirmedRemoteMerge,
   type ConfirmedRemoteMerge,
 } from "./remote-merges";
