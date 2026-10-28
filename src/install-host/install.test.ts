@@ -50,6 +50,10 @@ const FIRST = [
   "", // runner port: 8788
   "PAS",
   "pmdroid/paws-app, pmdroid/agentbox",
+  "", // member_vm cpu: exe.dev's default
+  "", // member_vm memory
+  "", // member_vm disk
+  "", // member_vm image
 ];
 
 function files(home: string) {
@@ -121,13 +125,13 @@ describe("paws install", () => {
     writeFileSync(envPath, `${readFileSync(envPath, "utf8")}PAWS_TLS_CERT_PATH=/tls.crt\n`);
     const before = files(home);
 
-    const prompt = fakePrompt(Array.from({ length: 10 }, () => ""));
+    const prompt = fakePrompt(Array.from({ length: 14 }, () => ""));
     const run = deps(home, prompt);
     expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
     expect(files(home)).toEqual(before);
     expect(run.out).toContain("Nothing changed.");
 
-    const rerun = fakePrompt(["", "", "", "8443", "", "", "", "", "", "-"]);
+    const rerun = fakePrompt(["", "", "", "8443", "", "", "", "", "", "-", "", "", "", ""]);
     expect(await runInstall(parseInstallArgs([]), deps(home, rerun).deps)).toBe(0);
     const after = files(home);
     expect(after.env).toContain("PAWS_PORT=8443\n");
@@ -156,6 +160,10 @@ describe("paws install", () => {
       "https://paws.example.com/path",
       "https://paws.example.com",
       "-",
+      "",
+      "",
+      "",
+      "",
       "",
       "",
     ]);
@@ -199,6 +207,64 @@ describe("paws install", () => {
     expect(swap(actual.config)).toBe(expected.config);
     expect(swap(actual.unit)).toBe(expected.unit);
     expect(swap(actual.dropIn)).toBe(expected.dropIn);
+  });
+
+  test("the exe.dev VM size is asked, re-asked when invalid, kept on a re-run and cleared with -", async () => {
+    const home = tempHome();
+    const prompt = fakePrompt([
+      ...FIRST.slice(0, 10),
+      "-2",
+      "eight",
+      "8",
+      "16",
+      "100",
+      "ubuntu 24.04",
+      "ubuntu:24.04",
+    ]);
+    const run = deps(home, prompt);
+    expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
+    expect(prompt.questions.filter((q) => q.startsWith("exe.dev runner VM CPUs"))).toHaveLength(3);
+    expect(prompt.questions.filter((q) => q.startsWith("exe.dev runner VM image"))).toHaveLength(2);
+    expect(run.out).toContain("  member_vm.cpu must be a whole number from 1 to 512");
+    const written = parseConfigToml(files(home).config).memberVm;
+    expect(written).toEqual({ cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" });
+    expect(files(home).config).toContain("[member_vm]\ncpu = 8\n");
+
+    const keep = fakePrompt(Array.from({ length: 14 }, () => ""));
+    const kept = deps(home, keep);
+    expect(await runInstall(parseInstallArgs([]), kept.deps)).toBe(0);
+    expect(kept.out).toContain("Nothing changed.");
+
+    const clear = fakePrompt([...FIRST.slice(0, 10).map(() => ""), "-", "", "-", "-"]);
+    expect(await runInstall(parseInstallArgs([]), deps(home, clear).deps)).toBe(0);
+    expect(parseConfigToml(files(home).config).memberVm).toEqual({ memoryGb: 16 });
+  });
+
+  test("an answers file sets the exe.dev VM size and rejects an invalid one", async () => {
+    const home = tempHome();
+    const answers = join(home, "answers.toml");
+    writeFileSync(
+      answers,
+      [
+        'paws_public_url = "https://paws.example.com"',
+        "member_vm_cpu = 4",
+        "member_vm_memory_gb = 8",
+      ].join("\n"),
+    );
+    const args = parseInstallArgs(["--non-interactive", "--answers", answers]);
+    expect(await runInstall(args, deps(home, null).deps)).toBe(0);
+    expect(parseConfigToml(files(home).config).memberVm).toEqual({ cpu: 4, memoryGb: 8 });
+
+    const bad = parseInstallArgs([
+      "--non-interactive",
+      "--answers",
+      answers,
+      "--member-vm-disk-gb",
+      "0",
+    ]);
+    await expect(runInstall(bad, deps(tempHome(), null).deps)).rejects.toThrow(
+      "member_vm_disk_gb: member_vm.disk_gb must be a whole number",
+    );
   });
 
   test("--non-interactive rejects an invalid value instead of asking", async () => {

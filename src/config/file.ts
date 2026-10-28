@@ -274,7 +274,7 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
   return true;
 }
 
-export type ConfigKeyValue = string | readonly string[] | null;
+export type ConfigKeyValue = string | number | readonly string[] | null;
 
 /**
  * Set keys in one `[section]` of `config.toml` text, keeping every other line,
@@ -286,8 +286,8 @@ export function setConfigKeys(
   values: Record<string, ConfigKeyValue>,
 ): string {
   const pending = new Map(Object.entries(values));
-  const render = (key: string, value: string | readonly string[]) =>
-    `${key} = ${typeof value === "string" ? tomlString(value) : tomlStringArray(value)}`;
+  const render = (key: string, value: string | number | readonly string[]) =>
+    `${key} = ${typeof value === "string" ? tomlString(value) : typeof value === "number" ? tomlNumber(value) : tomlStringArray(value)}`;
   const out: string[] = [];
   let state: "before" | "in" | "after" = "before";
   let insertAt = -1;
@@ -328,6 +328,11 @@ export function setConfigKeys(
   }
   const text = out.join("\n");
   return text.endsWith("\n") || text.length === 0 ? text : `${text}\n`;
+}
+
+function tomlNumber(value: number): string {
+  if (!Number.isFinite(value)) throw new Error("config value must be a finite number");
+  return String(value);
 }
 
 function tomlStringArray(values: readonly string[]): string {

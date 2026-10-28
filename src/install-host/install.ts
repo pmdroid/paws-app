@@ -150,6 +150,11 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
     "github_repos",
     [configNow?.repo, ...(configNow?.githubRepos ?? [])].filter(Boolean).join(", "),
   );
+  const size = configNow?.memberVm;
+  await resolve("member_vm_cpu", size?.cpu === undefined ? "" : String(size.cpu));
+  await resolve("member_vm_memory_gb", size?.memoryGb === undefined ? "" : String(size.memoryGb));
+  await resolve("member_vm_disk_gb", size?.diskGb === undefined ? "" : String(size.diskGb));
+  await resolve("member_vm_image", size?.image ?? "");
   deps.prompt?.close?.();
 
   const answers = toAnswers(raw as Required<RawAnswers>);

@@ -70,13 +70,20 @@ export function renderEnvFile(current: string, answers: InstallAnswers): string 
   return `${lines.join("\n")}\n`;
 }
 
-/** `config.toml` with the Linear team and repositories set, keeping every other key. */
+/** `config.toml` with the Linear team, repositories and VM size set, keeping every other key. */
 export function renderConfig(current: string, answers: InstallAnswers): string {
   const [repo, ...repos] = answers.githubRepos;
   let text = setConfigKeys(current, "linear", { team: answers.linearTeam || null });
   text = setConfigKeys(text, "github", {
     repo: repo ?? null,
     repos: repos.length > 0 ? repos : null,
+  });
+  const size = answers.memberVm;
+  text = setConfigKeys(text, "member_vm", {
+    cpu: size.cpu ?? null,
+    memory_gb: size.memoryGb ?? null,
+    disk_gb: size.diskGb ?? null,
+    image: size.image ?? null,
   });
   parseConfigToml(text);
   return text;
