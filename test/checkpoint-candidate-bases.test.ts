@@ -27,7 +27,10 @@ async function repository() {
 test("a candidate that replaced the Paws checkpoint it started from builds on the checkpoint's parent", async () => {
   const { run, commit } = await repository();
   const before = await commit("real work", "Real work");
-  const checkpoint = await commit("half done", `${CHECKPOINT_COMMIT_MESSAGE}\n\nCo-authored-by: A <a@b.c>\n`);
+  const checkpoint = await commit(
+    "half done",
+    `${CHECKPOINT_COMMIT_MESSAGE}\n\nCo-authored-by: A <a@b.c>\n`,
+  );
   await run(["reset", "-q", "--hard", before]);
   const candidate = await commit("done", "Finish the work");
 
