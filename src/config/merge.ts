@@ -14,7 +14,7 @@ export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
  * once its CI is green. `overlap`: merge without a rebase when main changed none of the pull
  * request's files or packages. `closeout`: rebase and run Closeout again on the new head.
  */
-export const MAIN_MOVED = ["overlap", "ci", "closeout"] as const;
+export const MAIN_MOVED = ["overlap", "green", "ci", "closeout"] as const;
 
 export type MergeOrder = (typeof MERGE_ORDERS)[number];
 export type MainMoved = (typeof MAIN_MOVED)[number];

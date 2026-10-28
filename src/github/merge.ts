@@ -47,7 +47,7 @@ export type SerialMergeInput = {
    * `[merge] main_moved = "overlap"`: compare main's new commits with the pull request's files,
    * grouped by these package roots, when S is behind main.
    */
-  overlap?: { packages: readonly string[] };
+  overlap?: { packages: readonly string[]; anyFiles?: boolean };
 };
 
 /** What the merge lane reads about the branch head S under the repository lock. */
@@ -131,7 +131,9 @@ async function readOverlap(
   token: string,
   gitExec: GitExec,
 ): Promise<Pick<PullFacts, "apart" | "shared" | "upToDateRule">> {
-  const { shared } = await mainOverlap(input.worktree, input.overlap?.packages ?? [], gitExec);
+  const { shared } = input.overlap?.anyFiles
+    ? { shared: [] as string[] }
+    : await mainOverlap(input.worktree, input.overlap?.packages ?? [], gitExec);
   if (shared.length > 0) return { apart: false, shared };
   const rule = await readUpToDateRule({
     client: input.client,
