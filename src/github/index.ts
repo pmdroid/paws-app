@@ -104,4 +104,5 @@ export { defaultGitExec } from "./git";
 
 export { closeStoppedPull } from "./stopped";
 export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
+export { branchContains, readOpenPullHead } from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";

@@ -1,6 +1,7 @@
+import { mergeAcceptedWork } from "./accepted-work";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND } from "../core";
+import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import {
   applyLinearTurns,
   announceLinearTurn,
@@ -113,8 +114,16 @@ export function questionEffects(
       `closeout-guidance:${question.id}`,
     );
   };
-  /** Continue gives the resumed agent more awake time. Stop ends the task; the accepted work stays. */
+  /**
+   * Merge sends the accepted head to the merge queue without another turn. Continue gives the
+   * resumed agent more awake time. Stop ends the task; the accepted work stays.
+   */
   const timeLimit = (question: StoredQuestion) => {
+    if ((question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_MERGE.toLowerCase()) {
+      consumeTurn(question);
+      mergeAcceptedWork(db, question.itemId, { now: input.now });
+      return;
+    }
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
       extendAwakeCap(db, question.itemId);
       resume(question);

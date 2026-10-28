@@ -103,6 +103,8 @@ export interface AskTeamRequest {
   question: string;
   options?: readonly AskTeamOption[];
   context?: string;
+  /** Set by Paws, not the agent: the run's candidate push to `branch` was rejected. */
+  pushRejected?: { branch: string };
 }
 
 export interface AskTeamResponse {

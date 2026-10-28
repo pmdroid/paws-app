@@ -68,6 +68,7 @@ export {
   formatAwakeBreakdown,
   timeLimitQuestion,
   TIME_LIMIT_EXTENSION_MS,
+  TIME_LIMIT_MERGE,
   TIME_LIMIT_OPTIONS,
   type AwakeBreakdown,
   type CapReason,

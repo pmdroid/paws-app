@@ -2,6 +2,7 @@ import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity
 import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
+import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import {
   saveHumanRetryWindow,
   fixRounds,
@@ -264,6 +265,8 @@ import {
   readPullCi,
   mergedPullHeads,
   readPullMerge,
+  branchContains,
+  readOpenPullHead,
   UPSTREAM_MAIN_REF,
   type GitHubBinding,
   type GitHubTokenProvider,
@@ -1415,6 +1418,7 @@ export class Orchestrator {
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
+      if (await this.mergeInsteadOfTurn(job, context)) return;
       await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
@@ -4203,6 +4207,11 @@ export class Orchestrator {
         }
         if (context.signal.aborted) throw new Error("cancelled");
         this.assertJobCurrent(item.id);
+        if (request.pushRejected && (await this.acceptedOnRemote(item, request.pushRejected))) {
+          this.askedRuns.add(runId);
+          await this.flush();
+          return { answer: ACCEPTED_ON_REMOTE };
+        }
         immediate(this.db, () => {
           ask(
             this.db,
@@ -4252,6 +4261,93 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * A rejected candidate push of accepted work: when the branch on GitHub is the accepted head or
+   * contains it, the item goes to the merge queue instead of asking. Anything else, or a failed
+   * read, goes on to the question and the conflict handling.
+   */
+  private async acceptedOnRemote(
+    item: WorkItemRecord,
+    rejected: { branch: string },
+  ): Promise<boolean> {
+    const accepted = getWorkItem(this.db, item.id)?.acceptedHead ?? null;
+    const repository = accepted === null ? null : this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (accepted === null || !repository || !github) return false;
+    const remote = await branchContains({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      branch: rejected.branch,
+      sha: accepted,
+      ...this.gitHubCredentials(github),
+      signal: AbortSignal.timeout(10_000),
+    }).catch((caughtError) => {
+      journalCaught(
+        caughtError,
+        "orchestrator.acceptedOnRemote.branchContains",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    });
+    if (remote === null) return false;
+    return settleRejectedPush(this.db, item.id, {
+      remoteHead: remote.head,
+      containsAccepted: remote.contains,
+      now: this.now(),
+    });
+  }
+
+  /**
+   * A resume that brings nothing new for work Closeout accepted, while that head is the pull
+   * request's head on GitHub, goes to the merge queue instead of starting an implement turn.
+   */
+  private async mergeInsteadOfTurn(job: Job, context: JobContext): Promise<boolean> {
+    const itemId = readString(job.payload, "itemId");
+    const item = itemId === null ? null : getWorkItem(this.db, itemId);
+    if (!item?.acceptedHead || !context.isCurrent()) return false;
+    const reason = readString(job.payload, "reason");
+    if (
+      acceptedResumeNeedsTurn({
+        acceptedHead: item.acceptedHead,
+        pullHead: item.acceptedHead,
+        reason,
+      })
+    )
+      return false;
+    const pull = getItemPullRequest(this.db, item.id);
+    const repository = pull ? this.repositoryForItem(item) : null;
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!pull || !repository || !github) return false;
+    const pullHead = await readOpenPullHead({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      number: pull.pullNumber,
+      ...this.gitHubCredentials(github),
+      signal: AbortSignal.timeout(10_000),
+    }).catch((caughtError) => {
+      journalCaught(
+        caughtError,
+        "orchestrator.mergeInsteadOfTurn.readOpenPullHead",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    });
+    if (
+      !context.isCurrent() ||
+      acceptedResumeNeedsTurn({ acceptedHead: item.acceptedHead, pullHead, reason }) ||
+      !mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: job.id })
+    )
+      return false;
+    await this.flush();
+    return true;
+  }
+
   private releaseAskedRun(runId: string): void {
     if (!this.askedRuns.delete(runId)) return;
     releaseRunCapacity(this.db, runId, this.now());
@@ -4293,6 +4389,9 @@ export class Orchestrator {
   private async keepAskedWork(itemId: string, runId: string, worktree: string): Promise<void> {
     let current = getWorkItem(this.db, itemId);
     if (!current || current.state === "cancelled" || current.cancelRequested) return;
+    // Accepted work that went to the merge queue keeps its accepted head, not the rejected turn's.
+    if (current.state === "merge_queue" && current.checkpoint?.wipCommit === current.acceptedHead)
+      return;
     const sessionId = this.activitySession(current);
     if (
       current.state === "running" &&
@@ -7184,6 +7283,8 @@ export class Orchestrator {
 const HANDOVER_FAILED_PROMPT =
   "Paws asked to move this session to another runner, but the move failed after your turn was stopped, so it stays here. Your work so far is committed. Continue where you left off.";
 
+const ACCEPTED_ON_REMOTE =
+  "The branch on GitHub already has the work Closeout accepted, so Paws sent it to the merge queue. End your turn now without further changes.";
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
 const OUTBOX_WAIT_MS = 30_000;
