@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, the status dashboard build, Markdown links, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. The test suite runs in GitHub CI, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
+description: Lint, format, typecheck, the tests the change affects, the status dashboard build, Markdown links, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. GitHub CI runs the full test suite, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -27,6 +27,13 @@ items:
     exec: ["bun", "run", "typecheck"]
     timeoutSeconds: 600
     ci: "lint, format, types, test, dashboard build"
+  - id: test
+    kind: command
+    gate: beforePR
+    # Only the tests the change affects; CI runs the full suite. See docs/closeout.md.
+    exec: ["bun", "scripts/affected-tests.ts"]
+    timeoutSeconds: 1800
+    ci: "test (*)"
   - id: build-status
     kind: command
     gate: beforePR
