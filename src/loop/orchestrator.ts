@@ -2991,7 +2991,8 @@ export class Orchestrator {
           policy,
           assertCurrent,
           report: (body) => report(body),
-          fromCi: fromCi.map((entry) => entry.id),
+          // CI's results are for the head it ran on; a fixed head runs every check.
+          fromCi: commit === head ? fromCi.map((entry) => entry.id) : [],
         });
         runnerChecks.set(commit, checks);
       }
