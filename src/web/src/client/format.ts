@@ -272,6 +272,7 @@ const HELD_LINES: Record<HeldReason, string> = {
   cap: "its owner already runs the most items at once",
   slot: "no free slot on any runner",
   workspace: "no Linear workspace is configured",
+  overlap: "another item that changes the same conflict-prone files has to merge first",
 };
 
 export function heldLine(item: StatusItem): string | null {
@@ -279,6 +280,10 @@ export function heldLine(item: StatusItem): string | null {
   if (!held) return null;
   if (held.reason === "blocked" && held.blockers.length)
     return `Waiting: blocked by ${held.blockers.join(", ")}`;
+  if (held.reason === "overlap" && held.blockers[0]) {
+    const names = [...new Set((held.files ?? []).map((path) => path.split("/").pop()!))];
+    return `Held: waiting for ${held.blockers[0]} to merge${names.length ? ` (both change ${names.join(", ")})` : ""}`;
+  }
   if (held.reason === "cap" && item.queue?.ownerCap)
     return `Waiting: ${capLine(item, item.queue.ownerCap)}`;
   return `Waiting: ${HELD_LINES[held.reason]}`;
