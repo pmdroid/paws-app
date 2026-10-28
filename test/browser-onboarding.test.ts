@@ -12,7 +12,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("a fresh HTTPS instance serves browser onboarding without CLI setup", async () => {
+function freshInstance(expectedOrganizationId?: string) {
   const home = mkdtempSync(join(tmpdir(), "paws-browser-onboarding-"));
   roots.push(home);
   const cert = join(home, "server.crt");
@@ -53,14 +53,32 @@ test("a fresh HTTPS instance serves browser onboarding without CLI setup", async
     PAWS_TLS_CERT_PATH: cert,
     LINEAR_CLIENT_ID: "fixture-client",
     LINEAR_CLIENT_SECRET: "fixture-client-secret",
+    LINEAR_ORGANIZATION_ID: expectedOrganizationId,
   });
   processes.push(paws);
+  return paws;
+}
+
+test("a fresh HTTPS instance serves browser onboarding for its configured organization", async () => {
+  const paws = freshInstance("org");
   await paws.ready;
   const response = await paws.server.fetch(new Request("https://localhost:8787/api/auth/session"));
   expect(response.status).toBe(401);
   expect(await response.json()).toMatchObject({ onboarding: true });
   const blocked = await paws.server.fetch(new Request("https://localhost:8787/api/status"));
   expect(blocked.status).toBe(401);
+  const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
+  expect(login.status).toBe(303);
+});
+
+test("a fresh HTTPS instance refuses sign-in until its organization is configured", async () => {
+  const paws = freshInstance();
+  await paws.ready;
+  const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
+  expect(login.status).toBe(503);
+  expect(await login.text()).toContain("LINEAR_ORGANIZATION_ID");
+  expect(paws.db.query("SELECT 1 FROM workspace_oauth_request").get()).toBeNull();
+  expect(paws.db.query("SELECT 1 FROM workspace").get()).toBeNull();
 });
 
 import { existsSync, readFileSync } from "node:fs";
