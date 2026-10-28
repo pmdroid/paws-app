@@ -217,7 +217,11 @@ import {
 } from "./runner-coordinator";
 import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
-import type { RunnerTranscriptObjects } from "./runner-transcripts";
+import {
+  loadRunnerTranscriptKey,
+  RUNNER_TRANSCRIPT_KEY_FILE,
+  type RunnerTranscriptObjects,
+} from "./runner-transcripts";
 import {
   AGENT_SESSION_KEY_FILE,
   createLocalAgentSessionObjects,
@@ -684,7 +688,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           port: runnerConfig.port,
           tls: tls!,
           repositoryAccess,
-          transcriptObjects,
+          transcripts: transcriptObjects && {
+            objects: transcriptObjects,
+            key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
+          },
           agentSessions: placeOnRunner
             ? {
                 objects: agentSessionObjects(),

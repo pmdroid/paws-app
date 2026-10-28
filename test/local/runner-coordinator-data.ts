@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -165,7 +165,7 @@ export async function probeRunnerCoordinatorData(
         return installation;
       },
     },
-    transcriptObjects: objects,
+    transcripts: { objects, key: randomBytes(32) },
   };
   let coordinator = await openRunnerCoordinator({ ...coordinatorOptions, db, port: 0 });
   now = Date.now();

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   beginImplementRun,
   bindLinearSessionTask,
@@ -13,6 +13,7 @@ import {
   recordLinearInstallation,
 } from "../../src/db";
 import { createFakeGitHub } from "../../src/github";
+import { createLocalRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { RunnerRequestError, openRunnerDaemon } from "../../src/runner-daemon";
 import {
@@ -63,15 +64,10 @@ function git(args: string[], cwd = root) {
   assert.equal(child.exitCode, 0, child.stderr.toString());
   return child.stdout.toString().trim();
 }
-const transcriptObjects = {
-  async write(key: string, bytes: Blob | ReadableStream<Uint8Array>) {
-    const path = join(server, "objects", key);
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    await Bun.write(path, await new Response(bytes).arrayBuffer());
-    chmodSync(path, 0o600);
-  },
-  read: (key: string) => Bun.file(join(server, "objects", key)).stream(),
-  uri: (key: string) => `s3://fixture-transcripts/${key}`,
+// One key for every process, so transcripts sealed in one read back in the next.
+const transcripts = {
+  objects: createLocalRunnerTranscriptObjects(join(server, "objects")),
+  key: Buffer.alloc(32, 7),
 };
 const repositoryAccess = {
   github: createFakeGitHub(),
@@ -157,7 +153,7 @@ if (mode === "prepare") {
     hostname: "127.0.0.1",
     port: 0,
     repositoryAccess,
-    transcriptObjects,
+    transcripts,
     onError: () => {},
   });
   const browser = Bun.serve({
@@ -247,7 +243,7 @@ if (mode === "prepare") {
     hostname: "127.0.0.1",
     port: config.runnerPort,
     repositoryAccess,
-    transcriptObjects,
+    transcripts,
     onError: () => process.exit(2),
   });
   const answered = new Set<string>();

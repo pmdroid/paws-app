@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { RUN_FILE_CHUNK_BYTES } from "../run-files";
 
-export const RUNNER_TRANSCRIPT_CHUNK_BYTES = 524_288;
+export const RUNNER_TRANSCRIPT_CHUNK_BYTES = RUN_FILE_CHUNK_BYTES;
 export const RUNNER_TRANSCRIPT_MAX_BYTES = 16_777_216;
 export const RunnerTranscriptChunkSchema = z.strictObject({
   generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
