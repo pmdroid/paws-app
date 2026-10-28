@@ -232,7 +232,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
       signed = new URL(this.presign(key));
       return Object.assign(file.call(this, key, ...args), { stream: () => new Blob([]).stream() });
     };
-    loadRunnerTranscriptObjects(home).read("proof.jsonl");
+    await loadRunnerTranscriptObjects(home).read("proof.jsonl");
     assert(signed);
     assert.equal(signed.origin, config.endpoint);
     assert.equal(signed.pathname, "/fixture-transcripts/proof.jsonl");
@@ -243,7 +243,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
       home,
       JSON.stringify({ ...config, sessionToken: "explicit-fixture-session" }),
     );
-    loadRunnerTranscriptObjects(home).read("proof.jsonl");
+    await loadRunnerTranscriptObjects(home).read("proof.jsonl");
     assert.equal(signed.searchParams.get("X-Amz-Security-Token"), "explicit-fixture-session");
   } finally {
     S3Client.prototype.file = file;
@@ -306,8 +306,8 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
       );
       requests++;
       return Object.assign(nativeFile.call(this, key, ...args), {
-        async write(payload: Blob | Response) {
-          const value = new Uint8Array(await payload.arrayBuffer());
+        async write(payload: Uint8Array) {
+          const value = new Uint8Array(payload);
           objects.set(key, value);
           return value.length;
         },
