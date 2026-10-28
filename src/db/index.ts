@@ -201,6 +201,7 @@ export {
   dispatchOutbox,
   enqueueOutbox,
   enqueueOutboxOnce,
+  lastOutboxSequence,
   LINEAR_PROGRESS_INTERVAL_MS,
   getOutbox,
   listOutbox,

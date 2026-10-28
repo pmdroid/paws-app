@@ -130,6 +130,7 @@ export {
   type AcpEvent,
   type AgentIdentity,
   type AcpEventListener,
+  type AcpEventOrigin,
   type ExecuteItemOptions,
   type ExecuteItemResult,
   type RunAgentOptions,
