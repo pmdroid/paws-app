@@ -84,6 +84,7 @@ export function renderConfig(current: string, answers: InstallAnswers): string {
     memory_gb: size.memoryGb ?? null,
     disk_gb: size.diskGb ?? null,
     image: size.image ?? null,
+    pool: size.pool ?? null,
   });
   parseConfigToml(text);
   return text;
