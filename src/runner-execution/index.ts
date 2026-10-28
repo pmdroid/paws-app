@@ -10,7 +10,7 @@ export {
   runnerJobDirectory,
   type RunnerSpool,
 } from "./spool";
-export { createRunnerBrokerClient, type RunnerBrokerClient } from "./broker";
+export type { RunnerBrokerClient } from "./broker";
 export { createDirectWorkerSupervisor, RUNNER_SKILLS_ENV } from "./supervisor";
 export {
   runnerResultDirectory,

@@ -69,7 +69,6 @@ import {
   policyCoauthors,
 } from "./core";
 import {
-  assertLinearQueue,
   enqueueCommand,
   enqueueJobOnce,
   getLinearSession,
@@ -317,7 +316,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const transcriptObjects = transcriptStorage?.objects;
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
-  assertLinearQueue(paths.db);
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
@@ -1369,27 +1367,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               reconciler?.reconcile({ ...target, signal: abort.signal }),
             ),
           );
-          attached.reconcileExecution();
-        });
-        created.jobs.register("linear.epic.reconcile", async (job) => {
-          const legacy = job.payload as { epicId: string; workspaceId: string };
-          const item = db
-            .query<{ id: string }, [string]>(
-              `SELECT i.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
-               WHERE i.delegation_id=? AND s.stopped_at IS NULL
-               AND i.state NOT IN ('completed','merged','cancelled') ORDER BY i.position,i.id LIMIT 1`,
-            )
-            .get(legacy.epicId);
-          if (item)
-            await linearCaller("epic-reconcile", () =>
-              forItem(item.id, () =>
-                reconciler?.reconcile({
-                  itemId: item.id,
-                  workspaceId: legacy.workspaceId,
-                  signal: abort.signal,
-                }),
-              ),
-            );
           attached.reconcileExecution();
         });
         created.jobs.register("linear.epics.reconcile", async () => {

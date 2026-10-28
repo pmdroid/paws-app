@@ -295,7 +295,6 @@ describe("laptop sleep and wake", () => {
     enterMergeQueue(db, "eng-9", checkpoint);
     enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       payload: { itemId: "eng-9" },
       now: clock.now(),
     });

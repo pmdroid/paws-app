@@ -1669,7 +1669,6 @@ export class Orchestrator {
                 getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
                   ? JOB_KIND.reverify
                   : job.queue,
-              lane: job.lane,
               priority: job.priority,
               payload: job.payload,
               jobKey: `merge-reconciliation:${job.id}`,
@@ -4658,8 +4657,7 @@ export class Orchestrator {
     }
     // The installation check answers its own waiting question when the App returns.
     if (open.kind === "github-auth") return "rejected";
-    if (!canAnswer({ kind: open.kind === "closeout-help" ? "closeout-bypass" : open.kind }, user))
-      return "rejected";
+    if (!canAnswer({ kind: open.kind }, user)) return "rejected";
     if (open.kind === "push-outage") {
       const outcome = answerAsked(
         this.db,
