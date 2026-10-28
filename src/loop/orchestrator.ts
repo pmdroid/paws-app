@@ -10,7 +10,9 @@ import {
   jobVersionCurrent,
   recordReviewRounds,
   restartLimit,
-  runnerLeaseCutoff,
+  runnerHoldsRunWork,
+  runnerWorkHasResult,
+  parkLeasedJob,
 } from "../db";
 import { journalCaught } from "../journal";
 import { confirmDecision, suggestDecisions } from "../decisions";
@@ -1488,17 +1490,8 @@ export class Orchestrator {
       if (this.waitingForRunnerSlot(job)) return;
       const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
-      // Only the turn's own live Closeout can consume an ordinary duplicate request.
-      // Holds for siblings and remote leases need a durable retry, including decide.
       if (item && this.reverifyHeld(item)) {
-        if (
-          item.state === "verifying" &&
-          item.currentRunId !== null &&
-          this.live.has(item.currentRunId) &&
-          readBoolean(job.payload, "decide") !== true
-        )
-          return;
-        if (context.isCurrent()) waitForMergeTurn(this.db, job, this.now());
+        await this.waitForVerification(job, context, item);
         return;
       }
       await this.failOnLastAttempt(job, context, "reverify", async () => {
@@ -1509,7 +1502,8 @@ export class Orchestrator {
           await this.settleVerifying(job, context);
         } catch (error) {
           if (error instanceof VerificationHeld && context.isCurrent()) {
-            waitForMergeTurn(this.db, job, this.now());
+            const held = itemId === null ? null : getWorkItem(this.db, itemId);
+            if (held) await this.waitForVerification(job, context, held);
             return;
           }
           const wait = this.nextRunnerWait(job, error);
@@ -3065,7 +3059,7 @@ export class Orchestrator {
     const priorRunId = item.currentRunId;
     let ownedRunId: string | null = null;
     try {
-      const owned = immediate(this.db, () => {
+      item = immediate(this.db, () => {
         const current = getWorkItem(this.db, item.id);
         if (
           !current ||
@@ -3081,9 +3075,16 @@ export class Orchestrator {
             if (recheck || current.state !== "verifying") throw new VerificationHeld();
             return current;
           }
-          if (this.verificationLeaseHeld(prior.id)) throw new VerificationHeld();
-          // A prior process left this run active. End it before creating the recheck.
-          closeActiveRun(this.db, prior.id, this.now());
+          if (runnerWorkHasResult(this.db, prior.id)) {
+            // Keep the original run so the backend can import its delivered result.
+            if (current.state === "merge_queue")
+              applyWorkItemEvent(this.db, current.id, "reverify_requested");
+            ownedRunId = prior.id;
+            return getWorkItem(this.db, current.id)!;
+          }
+          if (runnerHoldsRunWork(this.db, prior.id, this.now())) throw new VerificationHeld();
+          // An abandoned run did not finish cleanly. Preserve that in its history.
+          closeActiveRun(this.db, prior.id, this.now(), "lost");
           releaseRunCapacity(this.db, prior.id, this.now());
         } else if (prior.status !== "ended" && prior.status !== "lost")
           throw new Error("Prior verification run is still provisioning");
@@ -3107,8 +3108,7 @@ export class Orchestrator {
         setCurrentRun(this.db, current.id, run.id);
         return getWorkItem(this.db, current.id)!;
       });
-      item = owned;
-      if (ownedRunId) {
+      if (ownedRunId && ownedRunId !== priorRunId) {
         mkdirSync(runDir(this.options.pawsRoot, ownedRunId), { recursive: true, mode: 0o700 });
         writeFileSync(
           join(runDir(this.options.pawsRoot, ownedRunId), "agent-profile.json"),
@@ -3154,7 +3154,8 @@ export class Orchestrator {
       assertOwned();
       return { ...verdict, owner: { version: getWorkItem(this.db, item.id)!.version, runId } };
     } finally {
-      if (ownedRunId) closeActiveRun(this.db, ownedRunId, this.now());
+      if (ownedRunId && (ownedRunId !== priorRunId || !runnerWorkHasResult(this.db, ownedRunId)))
+        closeActiveRun(this.db, ownedRunId, this.now());
     }
   }
 
@@ -3792,13 +3793,36 @@ export class Orchestrator {
     return true;
   }
 
-  /** A lease, including grace, owns execution even before its result is imported. */
-  private verificationLeaseHeld(runId: string): boolean {
-    return (
-      this.db
-        .query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?")
-        .get(runId, runnerLeaseCutoff(this.now())) !== null
-    );
+  private async waitForVerification(
+    job: Job,
+    context: JobContext,
+    item: WorkItemRecord,
+  ): Promise<void> {
+    if (!context.isCurrent()) return;
+    const payload = job.payload as Record<string, unknown>;
+    const since =
+      typeof payload.verificationWaitSince === "number"
+        ? payload.verificationWaitSince
+        : this.now();
+    if (this.now() - since >= 20 * 60_000) {
+      this.options.journal?.(
+        `reverify job ${job.id} stalled for item ${item.id}: ownership held for 20 minutes`,
+      );
+      await this.askCloseoutHelp(
+        item,
+        undefined,
+        "Closeout: blocked\nVerification has waited 20 minutes for another operation or runner. Check the runner and retry once it is ready.",
+      );
+      return;
+    }
+    if (payload.verificationWaitSince === undefined)
+      this.options.journal?.(`reverify job ${job.id} waiting for ownership of item ${item.id}`);
+    parkLeasedJob(this.db, job, {
+      runAt: this.now() + 5_000,
+      payload: { ...payload, verificationWaitSince: since },
+      attempts: job.attempts - 1,
+      now: this.now(),
+    });
   }
 
   private reverifyHeld(item: WorkItemRecord, ownJob = false): boolean {
@@ -3807,7 +3831,8 @@ export class Orchestrator {
       (item.currentRunId !== null &&
         (this.live.has(item.currentRunId) ||
           (getRun(this.db, item.currentRunId)?.status === "active" &&
-            this.verificationLeaseHeld(item.currentRunId))))
+            runnerHoldsRunWork(this.db, item.currentRunId, this.now()) &&
+            !runnerWorkHasResult(this.db, item.currentRunId))))
     );
   }
 

@@ -175,7 +175,7 @@ test("a resume job claimed for an item in verifying journals and asks instead of
   }
 }, 90_000);
 
-test("a reverify steps aside while the turn's own Closeout is live", async () => {
+test("a reverify waits beside the turn's own Closeout and needs no second Closeout", async () => {
   const f = await verifyingWithHeldGate({ remote: true });
   try {
     const item = listWorkItems(f.db)[0]!;
@@ -192,8 +192,8 @@ test("a reverify steps aside while the turn's own Closeout is live", async () =>
     f.db.run("UPDATE job SET queue=? WHERE id=?", [JOB_KIND.start, f.jobId]);
 
     expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
-      status: "done",
-      attempts: 1,
+      status: "pending",
+      attempts: 0,
       lastError: null,
     });
     expect(f.gate.runs).toHaveLength(1);
@@ -204,6 +204,9 @@ test("a reverify steps aside while the turn's own Closeout is live", async () =>
     f.release();
     await f.turn;
     expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+    await f.tickReverify();
+    expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe("done");
     expect(f.gate.runs).toHaveLength(1);
   } finally {
     f.release();
@@ -268,6 +271,141 @@ for (const hold of ["sibling", "live-decide"] as const)
     }
   }, 90_000);
 
+test("a deferred duplicate survives an aborted live Closeout with its flags", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      maxAttempts: 1,
+      now: Date.now(),
+      payload: { itemId: item.id, recheckHead: true, failClosed: true },
+    });
+    f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
+    await f.tickReverify();
+    expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      payload: { itemId: item.id, recheckHead: true, failClosed: true },
+    });
+    f.throwFromRun(new DOMException("Lost original Closeout", "AbortError"));
+    f.db.run("UPDATE job SET locked_by='lost' WHERE id=?", [f.jobId]);
+    f.release();
+    await f.turn;
+    f.throwFromRun(null);
+    f.db.run("UPDATE job SET status='done' WHERE id=?", [f.jobId]);
+    f.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), item.currentRunId!]);
+    f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+    await f.tickReverify();
+    expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+      status: "done",
+      lastError: null,
+    });
+    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect(f.gate.runs).toHaveLength(2);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+for (const importResult of [true, false])
+  test(`a delivered runner result survives lease grace with import success: ${importResult}`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true });
+    try {
+      f.release();
+      await f.turn;
+      await f.restart();
+      const item = listWorkItems(f.db)[0]!;
+      const runId = item.currentRunId!;
+      f.db.run("UPDATE run SET status='active' WHERE id=?", [runId]);
+      f.db.run("UPDATE work_item SET state='verifying' WHERE id=?", [item.id]);
+      f.db.run("UPDATE runner_work SET ended_at=NULL, lease_until=? WHERE run_id=?", [
+        Date.now() - RUNNER_LEASE_GRACE_MS - 1000,
+        runId,
+      ]);
+      f.db.run(
+        "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at) SELECT command_id,runner_id,run_id,generation,'run','{}',? FROM runner_work WHERE run_id=?",
+        [Date.now() + 60_000, runId],
+      );
+      f.db.run(
+        "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) SELECT run_id,generation,command_id,'{}',? FROM runner_work WHERE run_id=?",
+        [Date.now(), runId],
+      );
+      let imported = false;
+      const verify = f.gate.run;
+      f.gate.run = async (input) => {
+        expect(getWorkItem(f.db, item.id)?.currentRunId).toBe(runId);
+        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect(
+          f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId),
+        ).not.toBeNull();
+        if (!importResult) throw new Error("fixture import interrupted");
+        // The fake gate imports the delivered result, just as the remote backend does.
+        f.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), runId]);
+        imported = true;
+        return verify(input);
+      };
+      const jobId = enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id },
+        now: Date.now(),
+        maxAttempts: 2,
+      });
+      await f.tickReverify();
+      expect(imported).toBe(importResult);
+      expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe(
+        importResult ? "done" : "pending",
+      );
+      expect(getWorkItem(f.db, item.id)).toMatchObject({
+        state: importResult ? "merge_queue" : "verifying",
+        currentRunId: runId,
+      });
+      expect(getRun(f.db, runId)?.status).toBe(importResult ? "ended" : "active");
+      expect(
+        f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId) !==
+          null,
+      ).toBe(!importResult);
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
+
+test("a prolonged sibling ownership hold asks for help instead of polling forever", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    f.release();
+    await f.turn;
+    await f.restart();
+    const item = listWorkItems(f.db)[0]!;
+    const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
+      .jobContexts;
+    contexts.set(item.id, { isCurrent: () => true });
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      now: Date.now(),
+      maxAttempts: 1,
+      payload: { itemId: item.id, verificationWaitSince: Date.now() - 20 * 60_000 },
+    });
+    await f.tickReverify();
+    contexts.delete(item.id);
+    expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+      status: "done",
+      lastError: null,
+    });
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(findOpenQuestion(f.db, "ses_1")?.body).toContain("20 minutes");
+    expect(f.gate.runs).toHaveLength(1);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
 for (const state of ["verifying", "merge_queue"] as const)
   for (const lease of ["missing", "expired", "live", "grace"] as const)
     test(`a reverify after restart handles an active ${state} run with ${lease} runner work`, async () => {
@@ -325,7 +463,7 @@ for (const state of ["verifying", "merge_queue"] as const)
         }
         {
           expect(f.gate.runs).toHaveLength(2);
-          expect(getRun(f.db, runId)?.status).toBe("ended");
+          expect(getRun(f.db, runId)?.status).toBe("lost");
           expect(
             f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").all(runId),
           ).toEqual([]);
@@ -628,7 +766,7 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
     jobId,
     release: () => release(),
     /** The held run throws this instead of returning its verdict. */
-    throwFromRun(error: Error) {
+    throwFromRun(error: Error | null) {
       thrown = error;
     },
     turn,
