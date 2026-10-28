@@ -1,6 +1,5 @@
-import { SQLiteError } from "bun:sqlite";
 import { journalCaught } from "../journal";
-import { RunnerWorkFencedError } from "../runner-work";
+import { runnerFailureStatus } from "../runner-work";
 import { RUN_FILE_KINDS, type RunFileKind } from "./kinds";
 import { RunFileStorageError } from "./store";
 
@@ -8,7 +7,7 @@ export type RunFileAccess = { runnerId: string; runId: string; token: string };
 
 /**
  * `POST /v1/runs/:id/<segment>/<action>` on the runner channel, under the run grant. Fences map
- * to 409, storage and a busy database to 503, and everything else to 403.
+ * to 409, storage, a busy database and a timed-out body to 503, and everything else to 403.
  */
 export function createRunFileHttp(options: {
   kind: RunFileKind;
@@ -48,13 +47,7 @@ export function createRunFileHttp(options: {
       return Response.json(
         { error: options.failure },
         {
-          status:
-            error instanceof RunnerWorkFencedError
-              ? 409
-              : error instanceof RunFileStorageError ||
-                  (error instanceof SQLiteError && [5, 6, 10, 13].includes(error.errno & 255))
-                ? 503
-                : 403,
+          status: error instanceof RunFileStorageError ? 503 : runnerFailureStatus(error),
           headers: { "cache-control": "no-store" },
         },
       );
