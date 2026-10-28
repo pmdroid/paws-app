@@ -93,7 +93,7 @@ import {
 import { isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
-import { reviewsOf } from "./reviews";
+import { itemReviews } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
 import {
   STATUS_API_VERSION,
@@ -305,11 +305,7 @@ function readItemDetail(
     verdicts: detail.verdicts.map((verdict) => {
       const record = records.find((entry) => publicId(entry) === verdict.itemId);
       if (!record) return verdict;
-      const reviews = reviewsOf(
-        progress.filter((row) => row.itemId === record.id),
-        pawsHome,
-        env,
-      );
+      const reviews = itemReviews(db, record.id, pawsHome, env, progress);
       return reviews.length === 0 ? verdict : { ...verdict, reviews };
     }),
     id,

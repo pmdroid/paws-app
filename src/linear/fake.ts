@@ -5,6 +5,15 @@ import type { LinearIssueContext } from "./issue-context";
 import type { FiledSubIssue } from "../core";
 import type { ProjectOverview } from "./project-scope";
 import { subIssueId, validateSubIssueRequest, type SubIssueRequest } from "./sub-issues";
+import {
+  findingIssueId,
+  findingIssueState,
+  REVIEW_FINDING_LABEL,
+  validateFindingIssueRequest,
+  type FiledFindingIssue,
+  type FindingIssueRequest,
+  type FindingIssueTeamState,
+} from "./finding-issues";
 import type { LinearSessionAdapter } from "./sessions";
 import { activityInput, elicitationInput, validateSessionUpdate, validateUrls } from "./sessions";
 import {
@@ -50,6 +59,32 @@ export type FakeTracker = LinearSessionAdapter &
       request: SubIssueRequest,
       options?: TrackerRequestOptions,
     ): Promise<FiledSubIssue[]>;
+    /** Team, project and workflow states of each issue a finding issue is filed next to. */
+    findingIssueTargets: Map<
+      string,
+      { teamId: string; projectId: string | null; states: FindingIssueTeamState[] }
+    >;
+    /** Issue labels; filing a finding issue creates `review finding` in the team when missing. */
+    labels: { id: string; name: string; teamId: string | null }[];
+    /** Every fileFindingIssue call, including retries, in order. */
+    findingIssueRequests: FindingIssueRequest[];
+    /** Issues filed from findings, with what Linear would hold for each. */
+    findingIssues: (FiledFindingIssue & {
+      key: string;
+      teamId: string;
+      projectId: string | null;
+      stateId: string | null;
+      labelIds: string[];
+      title: string;
+      description: string;
+      relations: { type: "related"; relatedIssueId: string }[];
+    })[];
+    /** Errors the next fileFindingIssue calls throw, first first. */
+    findingIssueFailures: Error[];
+    fileFindingIssue(
+      request: FindingIssueRequest,
+      options?: TrackerRequestOptions,
+    ): Promise<FiledFindingIssue>;
     /** Project and labels per issue. A missing issue has neither. */
     mergeContexts: Map<string, LinearMergeContext>;
     issueMergeContext(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
@@ -82,6 +117,11 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const repositoryLabels: { issueId: string; repository: string }[] = [];
   const mergeContexts = new Map<string, LinearMergeContext>();
   const subIssueRequests: SubIssueRequest[] = [];
+  const findingIssueTargets: FakeTracker["findingIssueTargets"] = new Map();
+  const labels: FakeTracker["labels"] = [];
+  const findingIssueRequests: FindingIssueRequest[] = [];
+  const findingIssues: FakeTracker["findingIssues"] = [];
+  const findingIssueFailures: Error[] = [];
   const subIssues = new Map<
     string,
     (FiledSubIssue & { key: string; blockedBy: readonly string[] })[]
@@ -186,6 +226,46 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
           repositoryLabels.push({ issueId: filed.id, repository: request.repository });
         return filed;
       });
+    },
+    findingIssueTargets,
+    labels,
+    findingIssueRequests,
+    findingIssues,
+    findingIssueFailures,
+    async fileFindingIssue(request, options) {
+      options?.signal?.throwIfAborted();
+      validateFindingIssueRequest(request);
+      findingIssueRequests.push(structuredClone(request));
+      const failure = findingIssueFailures.shift();
+      if (failure) throw failure;
+      const target = findingIssueTargets.get(request.relatedIssueId);
+      if (!target) throw new Error("Linear returned no issue to file the finding by");
+      const id = findingIssueId(request.key);
+      const existing = findingIssues.find((issue) => issue.id === id);
+      if (existing) return { id, identifier: existing.identifier, url: existing.url };
+      let label = labels.find(
+        (entry) =>
+          entry.name.toLowerCase() === REVIEW_FINDING_LABEL &&
+          (entry.teamId === target.teamId || entry.teamId === null),
+      );
+      if (!label) {
+        label = { id: crypto.randomUUID(), name: REVIEW_FINDING_LABEL, teamId: target.teamId };
+        labels.push(label);
+      }
+      const identifier = `FAKE-${findingIssues.length + 1}`;
+      const filed = { id, identifier, url: `https://linear.app/fake/issue/${identifier}` };
+      findingIssues.push({
+        ...filed,
+        key: request.key,
+        teamId: target.teamId,
+        projectId: target.projectId,
+        stateId: findingIssueState(target.states),
+        labelIds: [label.id],
+        title: request.title,
+        description: request.description,
+        relations: [{ type: "related", relatedIssueId: request.relatedIssueId }],
+      });
+      return filed;
     },
     async issueRepositoryHints(issueId, options) {
       options?.signal?.throwIfAborted();

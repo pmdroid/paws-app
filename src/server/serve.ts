@@ -15,6 +15,7 @@ import {
   type LinearWebhookDeps,
 } from "../linear";
 import {
+  FINDING_ISSUE_PATH,
   fakeStatusProvider,
   handleStatusRequest,
   statusSnapshots,
@@ -57,6 +58,7 @@ import {
   type WorkspaceAccess,
   type WorkspacePrincipal,
 } from "../workspace";
+import type { WorkspaceSession } from "../db";
 
 export type ServerOptions = {
   server?: Bun.Server<undefined>;
@@ -76,6 +78,21 @@ export type ServerOptions = {
     request: Request,
     principal: WorkspacePrincipal | undefined,
     sessionIds: readonly string[] | undefined,
+  ) => Promise<Response | null>;
+  /**
+   * `POST /api/review-findings/issues`: file a pre-existing review finding in Linear. The
+   * server checked the origin and the CSRF token; the handler checks them again with `access`.
+   */
+  findingIssues?: (
+    request: Request,
+    access:
+      | {
+          principal: WorkspacePrincipal;
+          session: WorkspaceSession;
+          origin: string;
+          sessionIds: readonly string[];
+        }
+      | undefined,
   ) => Promise<Response | null>;
   hostname?: string;
   port?: number;
@@ -181,6 +198,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
+          ...(options.findingIssues ? { findingIssues: options.findingIssues } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
           ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
           ...(options.agentSettings
@@ -220,6 +238,7 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   executionControls?: ServerOptions["executionControls"];
   linkAsks?: ServerOptions["linkAsks"];
+  findingIssues?: ServerOptions["findingIssues"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
@@ -383,6 +402,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
         const response = await secrets.runnerControl(request, access.principal);
+        if (response !== null) return response;
+      }
+      if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {
+        const response = await secrets.findingIssues(request, {
+          principal: access.principal,
+          session: access.session,
+          origin: workspace.origin,
+          sessionIds,
+        });
         if (response !== null) return response;
       }
     }
