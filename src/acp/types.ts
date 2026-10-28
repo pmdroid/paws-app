@@ -78,7 +78,13 @@ export type AcpEvent =
       message: string;
     };
 
-export type AcpEventListener = (event: AcpEvent) => void | Promise<void>;
+/**
+ * The runner event an ACP event came from. A reattached run reads the same events again from its
+ * cursor, so effects keyed by the origin are not repeated after a Paws restart.
+ */
+export type AcpEventOrigin = { runId: string; generation: number; sequence: number };
+
+export type AcpEventListener = (event: AcpEvent, origin?: AcpEventOrigin) => void | Promise<void>;
 
 export type AgentIdentity = { session: string; model: string; provider: string };
 

@@ -117,6 +117,22 @@ export function enqueueOutboxOnce(db: Database, row: NewOutbox): number {
   return existing.id;
 }
 
+/**
+ * The highest number that follows `prefix` in a stored idempotency key, or 0. A counter that
+ * starts from it after a restart does not reuse a key from before the restart.
+ */
+export function lastOutboxSequence(db: Database, prefix: string): number {
+  return db
+    .query<{ key: string }, [string, string]>(
+      "SELECT idempotency_key AS key FROM outbox WHERE idempotency_key > ? AND idempotency_key < ?",
+    )
+    .all(prefix, `${prefix}\u{10ffff}`)
+    .reduce((last, row) => {
+      const suffix = row.key.slice(prefix.length);
+      return /^\d+$/.test(suffix) ? Math.max(last, Number(suffix)) : last;
+    }, 0);
+}
+
 export function getOutbox(db: Database, id: number): OutboxRow | null {
   const row = db.query<OutboxSqlRow, [number]>("SELECT * FROM outbox WHERE id = ?").get(id);
   return row === null ? null : mapOutbox(row);

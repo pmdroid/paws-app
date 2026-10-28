@@ -173,10 +173,10 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
             ...(deps.home ? { home: deps.home } : {}),
             ...(deps.signal ? { signal: deps.signal } : {}),
             ...spawnOf(launch),
-            onEvent(event) {
+            onEvent(event, origin) {
               if (event.type === "permission" && event.decision === "deny") refusals.push(event);
               if (event.type === "progress" && !event.messageChunk)
-                void deps.postUpdate?.post(event.text).catch((caughtError1) => {
+                void deps.postUpdate?.post(event.text, origin).catch((caughtError1) => {
                   journalCaught(caughtError1, "agents.onEvent.post", request.itemId);
                   return undefined;
                 });
@@ -282,9 +282,9 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
-        onEvent(event) {
+        onEvent(event, origin) {
           if (event.type === "progress" && !event.messageChunk)
-            void deps.postUpdate?.post(event.text).catch((caughtError) => {
+            void deps.postUpdate?.post(event.text, origin).catch((caughtError) => {
               journalCaught(caughtError, "agents.reviewCommand.post", request.itemId);
               return undefined;
             });
