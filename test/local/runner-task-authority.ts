@@ -53,6 +53,10 @@ export async function probeRunnerTaskAuthority(
   // This upgrade fixture starts before task commands existed. Enrollment needs only the
   // workspace and runner tables already present, so install its table before enrolling.
   applyMigration(migrations.find((value) => value.id === "134_runner_enrollment")!);
+  // Enrollment uses current membership authorization while task tables stay at the old version.
+  applyMigration(
+    migrations.find((value) => value.id === "20261028T1929_workspace_member_revocation")!,
+  );
   let now = Date.now();
   const userId = putWorkspaceUser(db, {
     id: workspaceId(),

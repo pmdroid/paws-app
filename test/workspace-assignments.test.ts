@@ -4,6 +4,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  changeWorkspaceRevocation,
+  WORKSPACE_REVOKED_RESPONSE,
+  WORKSPACE_REVOKED_SIGN_IN,
   advanceLinearSessionGeneration,
   claimNextJob,
   completeJob,
@@ -1886,6 +1889,44 @@ test("Stop before sign-in discards the creator's held replies", async () => {
     ).toEqual({ state: "cancelled" });
     expect((await f.begin(link)).status).toBe(404);
     expect(f.calls).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("revoked members cannot sign in or delegate while Linear still considers them active; restore permits sign-in", async () => {
+  const f = fixture();
+  try {
+    linkMember(f);
+    changeWorkspaceRevocation(f.db, {
+      workspaceId: "workspace",
+      actorId: "owner",
+      userId: "member",
+      revoked: true,
+      now: f.clock.now(),
+    });
+    const denied = await f.callback(await f.begin(`${f.origin}/auth/linear`));
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: WORKSPACE_REVOKED_SIGN_IN });
+    expect(await f.assignments.authorize(f.event)).toEqual({
+      outcome: "refused",
+      reason: WORKSPACE_REVOKED_RESPONSE,
+      response: true,
+    });
+    await acknowledgeNewSession(f.tracker, f.event, (event) => f.orchestrator.onLinearEvent(event));
+    expect(listWorkItems(f.db)).toHaveLength(0);
+    expect(f.tracker.progress.slice(1).map((update) => [update.kind, update.body])).toEqual([
+      ["response", WORKSPACE_REVOKED_RESPONSE],
+    ]);
+    expect(workspaceLinearMember(f.db, "workspace", "member")?.revokedAt).not.toBeNull();
+    changeWorkspaceRevocation(f.db, {
+      workspaceId: "workspace",
+      actorId: "owner",
+      userId: "member",
+      revoked: false,
+      now: f.clock.now(),
+    });
+    expect((await f.callback(await f.begin(`${f.origin}/auth/linear`))).status).toBe(303);
   } finally {
     await f.close();
   }
