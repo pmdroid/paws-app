@@ -60,7 +60,7 @@ function hookRow(hook: WorkspaceHook, label: string, busy: boolean): string {
 
 export function renderHookSettings(view: HookView): string {
   if (view.denied)
-    return `<section class="settings-section">${intro}<p class="sub">Only workspace owners and admins can change hooks.</p></section>`;
+    return `<section class="settings-section">${intro}<p class="sub">Only workspace admins can change hooks.</p></section>`;
   if (!view.data)
     return `<section class="settings-section">${intro}<div class="col"><div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading hooks…")}</div>${view.error ? '<div class="row"><button class="btn" type="button" data-hook="reload">Try again</button></div>' : ""}</div></section>`;
   const data = view.data;

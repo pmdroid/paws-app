@@ -158,7 +158,7 @@ export function renderCheckoutSettings(view: CheckoutView): string {
   const label = view.saved?.label ?? FULL_CHECKOUT_LABEL;
   const intro = `<div class="settings-label"><h2>Repository checkout</h2><p class="sub">Leave paths out of the checkout so agents only see what helps them. New runs use the change; a running item keeps the checkout it started with. Add the Linear label <code>${esc(label)}</code> to an issue to run it with everything.</p></div>`;
   if (view.denied)
-    return `<section class="settings-section">${intro}<p class="sub">Only workspace owners and admins can change the repository checkout.</p></section>`;
+    return `<section class="settings-section">${intro}<p class="sub">Only workspace admins can change the repository checkout.</p></section>`;
   if (!view.saved)
     return `<section class="settings-section">${intro}<div class="col"><div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading repository checkout…")}</div>${view.error ? '<div class="row"><button class="btn" type="button" data-checkout="reload">Try again</button></div>' : ""}</div></section>`;
   const changed = checkoutChanged(view);
