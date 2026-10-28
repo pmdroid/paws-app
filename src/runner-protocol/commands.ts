@@ -228,7 +228,7 @@ export const RunnerCommandSchema = z
       type: z.literal("helper"),
       sessionId: id,
       sessionGeneration: generation,
-      purpose: z.enum(["classify", "select_repository"]),
+      purpose: z.enum(["classify", "select_repository", "finding_groups"]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(65_536),
     }),

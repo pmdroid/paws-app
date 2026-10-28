@@ -1,3 +1,4 @@
+import { createFindingIssueAdapter, type FindingIssueAdapter } from "./finding-issues";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { IN_FLIGHT_ITEM_STATES, type LinearCommand } from "../core";
@@ -36,6 +37,7 @@ export type LinearRunning = {
 };
 
 export type OpenLinear = {
+  findingIssues: FindingIssueAdapter | null;
   memberships: LinearMembershipReads | null;
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
@@ -120,6 +122,10 @@ export function openLinear(options: {
   const onEvent = intake?.onEvent;
   let running: LinearRunning | null = null;
   return {
+    findingIssues:
+      client === null
+        ? null
+        : createFindingIssueAdapter(defaultCallerClient(client, "finding-groups")),
     memberships: client === null ? null : createLinearMembershipReads(callerClient(client, "auth")),
     webhook: { store, onEvent, intake: intake?.queue },
     tracker,

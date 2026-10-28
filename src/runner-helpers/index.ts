@@ -8,6 +8,7 @@ import {
   runnerCancelPending,
   runnerHasCapacity,
   workspaceSessionIds,
+  workspaceMember,
 } from "../db";
 import {
   RunnerCommandSchema,
@@ -49,7 +50,12 @@ export function createRunnerHelpers(options: {
     if (!row) throw new HelperFencedError("Runner helper identity is unavailable");
     return row;
   }
-  function scope(runnerId: string, sessionId: string, generation: number) {
+  function scope(
+    runnerId: string,
+    sessionId: string,
+    generation: number,
+    purpose?: HelperCommand["purpose"],
+  ) {
     const runner = identity(runnerId);
     const session = getLinearSession(db, sessionId);
     const installation = db
@@ -57,9 +63,12 @@ export function createRunnerHelpers(options: {
         "SELECT oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
       )
       .get(sessionId);
+    const grouping = purpose === "finding_groups";
+    const member = grouping ? workspaceMember(db, runner.workspaceId, runner.userId) : null;
     if (
+      (grouping && (!member?.active || !["admin", "owner"].includes(member.role))) ||
       !session ||
-      session.stoppedAt !== null ||
+      (!grouping && session.stoppedAt !== null) ||
       session.generation !== generation ||
       !installation?.clientId ||
       !workspaceSessionIds(db, runner.workspaceId, runner.userId, installation.clientId).includes(
@@ -90,7 +99,12 @@ export function createRunnerHelpers(options: {
       command.expiresAt <= now()
     )
       throw new HelperFencedError("Runner helper command is obsolete");
-    const runner = scope(row.runnerId, command.sessionId, command.sessionGeneration);
+    const runner = scope(
+      row.runnerId,
+      command.sessionId,
+      command.sessionGeneration,
+      command.purpose,
+    );
     if (runner.fence !== row.runnerFence || runner.workspaceId !== row.workspaceId)
       throw new HelperFencedError("Runner helper identity changed");
     return { row, command, envelope };
@@ -106,7 +120,7 @@ export function createRunnerHelpers(options: {
       return immediate(db, () => {
         const session = getLinearSession(db, input.sessionId);
         if (!session) throw new HelperFencedError("Linear helper session is unavailable");
-        const runner = scope(input.runnerId, input.sessionId, session.generation);
+        const runner = scope(input.runnerId, input.sessionId, session.generation, input.purpose);
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
         if (runnerCancelPending(db, input.runnerId, now()))
           throw new Error("Runner cancellation teardown is still pending");

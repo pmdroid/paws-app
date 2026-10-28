@@ -186,3 +186,5 @@ export { cacheLinearMemberships, createLinearMembershipReads } from "./membershi
 export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
 
 export { isPawsStop } from "./event-dispatch";
+export { createFindingIssueAdapter, createFakeFindingIssueAdapter } from "./finding-issues";
+export type { FindingIssueAdapter, FindingIssueTitle } from "./finding-issues";

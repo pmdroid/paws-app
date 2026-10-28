@@ -102,6 +102,8 @@ export type PawsConfigFile = {
   queueStartTimeoutHours?: number;
   /** `[queue] max_running_per_owner`. Missing means no cap. */
   queueMaxRunningPerOwner?: number;
+  /** `[findings] grouping_time`, HH:MM UTC; default 06:00. */
+  findingsGroupingTime?: string;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
   /** `[member_vm]`: the exe.dev size Create VM asks for. Missing means exe.dev's default. */
@@ -167,7 +169,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|checkout|caps|agents|server|member_vm)$/.test(
+        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm)$/.test(
           section,
         ) &&
         !/^(closeout|merge|checkout|agents|skills)\./.test(section) &&
@@ -257,7 +259,10 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
       startTimeoutHours: parseConfigToml(current).queueStartTimeoutHours,
       maxRunningPerOwner: parseConfigToml(current).queueMaxRunningPerOwner,
     }) +
-    renderMemberVmSettings(parseConfigToml(current).memberVm);
+    renderMemberVmSettings(parseConfigToml(current).memberVm) +
+    (parseConfigToml(current).findingsGroupingTime
+      ? `\n[findings]\ngrouping_time = ${tomlString(parseConfigToml(current).findingsGroupingTime!)}\n`
+      : "");
   const next =
     profiles === null
       ? rendered
@@ -459,6 +464,16 @@ function assignConfig(
   value: string | number | boolean | string[],
   line: number,
 ): void {
+  if (section === "findings") {
+    if (
+      key !== "grouping_time" ||
+      typeof value !== "string" ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)
+    )
+      throw new Error(`config.toml line ${line}: findings.grouping_time must be HH:MM UTC`);
+    config.findingsGroupingTime = value;
+    return;
+  }
   if (section === "linear") {
     if (key === "team") config.linearTeam = asString(value, line);
     else if (key === "team_id") config.linearTeamId = asString(value, line);
