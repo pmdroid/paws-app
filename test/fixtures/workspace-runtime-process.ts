@@ -304,7 +304,7 @@ try {
         signedIn.status === 200 &&
         identity.userId === userId &&
         identity.workspaceId === workspace.id &&
-        identity.role === "owner",
+        identity.role === "admin",
       {
         begin: begin.status,
         callback: callback.status,

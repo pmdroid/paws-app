@@ -64,7 +64,7 @@ async function setup() {
   const principal = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };

@@ -6,7 +6,9 @@ test("owner becomes admin, observer becomes an inactive member, member and admin
   const db = new Database(":memory:");
   try {
     migrate(db, { until: "20261028T0052_runner_transcript_chunk_key" });
-    db.run("INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','o','W',1)");
+    db.run(
+      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','o','W',1)",
+    );
     const people = [
       ["owner", "manual", "owner"],
       ["admin", "linear", null],
@@ -32,7 +34,9 @@ test("owner becomes admin, observer becomes an inactive member, member and admin
     migrate(db, { until: "20261028T0223_workspace_two_roles" });
     expect(
       db
-        .query("SELECT user_id AS id,role,manual_role AS manual,active FROM workspace_member ORDER BY user_id")
+        .query(
+          "SELECT user_id AS id,role,manual_role AS manual,active FROM workspace_member ORDER BY user_id",
+        )
         .all(),
     ).toEqual([
       { id: "admin", role: "admin", manual: null, active: 1 },
@@ -40,9 +44,11 @@ test("owner becomes admin, observer becomes an inactive member, member and admin
       { id: "observer", role: "member", manual: "member", active: 0 },
       { id: "owner", role: "admin", manual: "admin", active: 1 },
     ]);
-    expect(
-      db.query("SELECT user_id AS id FROM workspace_session ORDER BY user_id").all(),
-    ).toEqual([{ id: "admin" }, { id: "member" }, { id: "owner" }]);
+    expect(db.query("SELECT user_id AS id FROM workspace_session ORDER BY user_id").all()).toEqual([
+      { id: "admin" },
+      { id: "member" },
+      { id: "owner" },
+    ]);
   } finally {
     db.close();
   }

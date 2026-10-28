@@ -45,7 +45,7 @@ export async function probeAgentModels(
     syncWorkspaceMember(db, {
       workspaceId: workspaceKey!,
       userId: user!,
-      role: "owner",
+      role: "admin",
       active: true,
       teamIds: [],
       now,

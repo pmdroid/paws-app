@@ -23,7 +23,7 @@ function fixture() {
   syncWorkspaceMember(db, {
     workspaceId: workspace,
     userId,
-    role: "owner",
+    role: "admin",
     active: true,
     teamIds: [],
     now,
@@ -74,7 +74,7 @@ test("a runner's run history labels the model it ran", async () => {
   );
   const response = await createRunnerPlacementBrowser({ db })(
     new Request("http://127.0.0.1/api/runners/usage"),
-    { ...principal, role: "owner", authenticatedAt: now, teamIds: [] },
+    { ...principal, role: "admin", authenticatedAt: now, teamIds: [] },
   );
   const body = (await response!.json()) as {
     usage: Array<{ resolvedModel: string; modelLabel: string }>;
@@ -95,7 +95,7 @@ test("a runner's history names the issue each execution worked on", async () => 
   );
   const response = await createRunnerPlacementBrowser({ db })(
     new Request("http://127.0.0.1/api/runners/usage"),
-    { ...principal, role: "owner", authenticatedAt: now, teamIds: [] },
+    { ...principal, role: "admin", authenticatedAt: now, teamIds: [] },
   );
   const body = (await response!.json()) as {
     usage: Array<{ commandId: string; identifier: string | null; title: string | null }>;

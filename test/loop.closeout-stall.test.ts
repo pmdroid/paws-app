@@ -479,7 +479,7 @@ async function attachRunnerLease(db: Database): Promise<void> {
       syncWorkspaceMember(db, {
         workspaceId: "ws-1",
         userId,
-        role: "owner",
+        role: "admin",
         active: true,
         teamIds: [],
         now,

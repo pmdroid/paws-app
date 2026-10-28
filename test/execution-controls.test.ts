@@ -52,8 +52,8 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     ]);
 
     assert.equal((await retry("job:x")).status, 400);
-    assert.equal((await retry(`job:${mine}`, "observer")).status, 403);
-    assert.equal((await retry(`job:${foreign}`, "owner")).status, 403);
+    assert.equal((await retry(`job:${mine}`, "inactive")).status, 401);
+    assert.equal((await retry(`job:${foreign}`, "admin")).status, 403);
     assert.equal(getJob(db, foreign)!.status, "dead");
     assert.equal((await retry(`job:${mine}`)).status, 200);
     assert.equal(getJob(db, mine)!.status, "pending");
@@ -88,7 +88,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     db.run("UPDATE linear_session SET stopped_at = ? WHERE session_id = ?", [Date.now(), session]);
     assert.equal((await retry(`job:${late}`)).status, 403);
     assert.equal(getJob(db, late)!.status, "dead");
-    assert.equal((await retry(`outbox:${stop}`, "observer")).status, 403);
+    assert.equal((await retry(`outbox:${stop}`, "inactive")).status, 401);
     assert.equal((await retry(`outbox:${stop}`)).status, 200);
     assert.equal(getOutbox(db, stop)!.status, "pending");
   } finally {

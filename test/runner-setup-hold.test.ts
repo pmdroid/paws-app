@@ -139,7 +139,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
         {
           workspaceId: workspace.id,
           userId: ownerId,
-          role: "owner",
+          role: "admin",
           authenticatedAt: now,
           teamIds: [],
         },

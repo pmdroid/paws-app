@@ -77,7 +77,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
       return query(...args);
     }) as typeof f.db.query;
     expect(() =>
-      confirmDecision(f.db, pending.id, suggestion.value, "observer", Date.now()),
+      confirmDecision(f.db, pending.id, suggestion.value, "inactive", Date.now()),
     ).toThrow();
     f.db.query = query;
     expect(transactions.length).toBeGreaterThan(0);
