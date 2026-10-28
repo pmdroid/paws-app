@@ -2,14 +2,17 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
+  beginMergeCall,
   carriedAcceptFor,
   closeoutPolicyDigest,
   completeMergedItem,
+  endMergeCall,
   enqueueJobOnce,
   getConfirmedRemoteMerge,
   getWorkItem,
   immediate,
   leaveMergeQueue,
+  mergeCallInFlight,
   recordCarriedAccept,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
@@ -115,6 +118,10 @@ export async function advanceMerge(
   // A pull request merged by hand on GitHub merges the item: publishing again would open another.
   const outside = await mergedOutsideLane(db, item, caps);
   if (outside) return outside;
+  if (restartedDuringMergeCall(db, item.id, input.payload)) {
+    reverifyAfterRestart(db, item, input.jobId, caps.now());
+    return { kind: "returned" };
+  }
   const held = reviewHold(db, item.id, caps.now());
   if (held) return held;
   const waiting = dependencyWait(item, caps);
@@ -176,7 +183,13 @@ export async function advanceMerge(
         { head: published.head, approval: riskApproval },
       ),
     rebase: () => rebaseOntoMain(lane),
-    squash: (head, facts) => squashPull(lane, { head, base: facts.base }, published.summary),
+    squash: async (head, facts) => {
+      // A call that throws may still have reached GitHub, so its marker stays for the next start.
+      beginMergeCall(db, item.id, head, caps.now());
+      const squashed = await squashPull(lane, { head, base: facts.base }, published.summary);
+      if (!squashed.merged) endMergeCall(db, item.id);
+      return squashed;
+    },
   });
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
@@ -224,6 +237,7 @@ export async function advanceMerge(
       mergeSha: turn.result.sha ?? null,
       confirmedAt: caps.now(),
     });
+  if (turn.kind === "merged") endMergeCall(db, item.id);
   if (caps.stopped()) {
     if (turn.kind === "merged") completeMergedItem(db, { itemId: item.id, now: caps.now() });
     return { kind: "obsolete" };
@@ -325,6 +339,7 @@ async function mergedOutsideLane(
   const merge = await caps.mergedOutsideLane(item);
   if (merge === null || getWorkItem(db, item.id)?.state !== "merge_queue") return null;
   recordConfirmedRemoteMerge(db, { ...merge, itemId: item.id, confirmedAt: caps.now() });
+  endMergeCall(db, item.id);
   leaveMergeQueue(db, item.id);
   wakeMergesBehind(db, caps.now());
   journal(
@@ -335,6 +350,38 @@ async function mergedOutsideLane(
     return { kind: "obsolete" };
   }
   return { kind: "merged" };
+}
+
+/** Paws stopped while the lane's merge call for the item may have been in flight. */
+function restartedDuringMergeCall(db: Database, itemId: string, payload: unknown): boolean {
+  const flagged =
+    typeof payload === "object" &&
+    payload !== null &&
+    (payload as { mergeCallInFlight?: unknown }).mergeCallInFlight === true;
+  return flagged && mergeCallInFlight(db, itemId);
+}
+
+/**
+ * GitHub does not show the merge that may have been in flight when Paws stopped, so the merge
+ * fails closed: Closeout checks the head again before the lane does, and the item keeps its place.
+ */
+function reverifyAfterRestart(
+  db: Database,
+  item: WorkItemRecord,
+  jobId: number,
+  now: number,
+): void {
+  immediate(db, () => {
+    endMergeCall(db, item.id);
+    applyWorkItemEvent(db, item.id, "reverify_requested");
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.reverify,
+      jobKey: `reverify:restart:${item.id}:${jobId}`,
+      payload: { itemId: item.id },
+      now,
+    });
+  });
+  journal(`item ${item.linearIdentifier} re-verifies: its merge call may have been in flight`);
 }
 
 /**
