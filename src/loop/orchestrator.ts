@@ -790,7 +790,12 @@ export class Orchestrator {
         .filter((item) => item.state !== "merged" && item.state !== "completed")
         .map((item) => this.options.remoteExecution?.cancelItem?.(item.id)),
     ]);
-    if (items.some((item) => getConversation(this.db, item.id).blocked))
+    // A previous session's agent the runner reports gone no longer holds up a new delegation.
+    if (
+      items.some(
+        (item) => getConversation(this.db, item.id).blocked && !this.releaseCleanupBlock(item.id),
+      )
+    )
       throw new Error("ACP process cleanup could not be verified");
     const failure = joined.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;

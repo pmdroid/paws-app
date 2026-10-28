@@ -7,6 +7,8 @@ import {
   advanceLinearSessionGeneration,
   applyWorkItemEvent,
   beginImplementRun,
+  blockConversation,
+  getConversation,
   getLinearSession,
   getWorkItem,
   migrate,
@@ -23,6 +25,8 @@ import {
   type TrackerAdapter,
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
+import { remoteCommandsGone } from "../src/runner-backend";
+import { RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { tempHome } from "./helpers";
 
 function created(sessionId: string): AcceptedLinearEvent {
@@ -87,6 +91,7 @@ async function fixture() {
         agentForSession: () => {
           throw new Error("Unexpected agent");
         },
+        commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
       },
     });
   let orchestrator = makeOrchestrator();
@@ -301,3 +306,50 @@ test("an unverified ACP cleanup cannot release the old issue", async () => {
     f.db.close();
   }
 });
+
+test.each([
+  ["reports the old command gone", true],
+  ["still names the old command", false],
+] as const)(
+  "a cancelled item blocked by a failed cleanup, whose runner %s, decides a new delegation",
+  async (_case, gone) => {
+    const f = await fixture();
+    try {
+      const old = getWorkItem(f.db, f.oldId)!;
+      const now = Date.now();
+      // The run failed on agentbox with a cleanup error, then the item was cancelled.
+      blockConversation(f.db, f.oldId, now);
+      f.db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [f.oldId]);
+      // The runner's first heartbeat after its restart. Foreign keys are off only for its rows.
+      const reported = now + RUNNER_LIVE_GRACE_MS;
+      f.db.run("PRAGMA foreign_keys = OFF");
+      f.db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,live_reported_at) VALUES('agentbox','workspace','owner','agentbox','active',?,?)",
+        [now, reported],
+      );
+      f.db.run(
+        "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('command','agentbox',?,1,'run','{}',?,?)",
+        [old.currentRunId, now + 600_000, now],
+      );
+      f.db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,confirmed_at) VALUES(?,'agentbox','workspace',1,0,'command',?,?,?)",
+        [old.currentRunId, now + 60_000, now, gone ? null : reported],
+      );
+      f.db.run("PRAGMA foreign_keys = ON");
+      if (gone) {
+        await f.orchestrator.onLinearEvent(created("new"));
+        expect(getConversation(f.db, f.oldId).blocked).toBe(false);
+        expect(f.db.query("SELECT id FROM work_item WHERE state = 'queued'").all()).toHaveLength(1);
+      } else {
+        await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
+          "retry automatically",
+        );
+        expect(getConversation(f.db, f.oldId).blocked).toBe(true);
+        expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+      }
+    } finally {
+      f.db.run("UPDATE linear_conversation SET blocked = 0");
+      await f.close();
+    }
+  },
+);
