@@ -35,3 +35,10 @@ test("paws login github and paws logout no longer exist", async () => {
   expect(logout.code).toBe(1);
   expect(logout.stderr).toContain("Unknown option logout.");
 });
+
+test("--no-tunnel from an older systemd unit is accepted and ignored", async () => {
+  const started = await paws(["--no-tunnel", "bogus"]);
+  expect(started.code).toBe(1);
+  expect(started.stderr).toContain("Unknown option bogus.");
+  expect(started.stderr).not.toContain("Unknown option --no-tunnel.");
+});
