@@ -51,6 +51,12 @@ export { createPullRequests, openPullRequest, publishAccepted, pushBranch } from
 export type { PullRequestClientOptions } from "./pulls";
 export { fetchUpstreamMain, readPullFacts, rebaseOntoMain, squashPull } from "./merge";
 export { repositoriesRequiringUpToDate } from "./overlap";
+export {
+  PULL_MERGEABLE_READS,
+  PULL_MERGEABLE_RETRY_MS,
+  readPullMergeable,
+  type PullMergeable,
+} from "./pull-mergeable";
 export { readPullReview } from "./review";
 export type { PullReview } from "./review";
 export { readReviewThreads } from "./review-threads";

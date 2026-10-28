@@ -8,7 +8,11 @@ import {
   enqueueJob,
   getJob,
   getWorkItem,
+  beginImplementRun,
+  enterMergeQueue,
   insertQueuedItem,
+  joinMergeQueue,
+  listJobs,
   migrate,
   openDatabase,
 } from "../db";
@@ -368,6 +372,90 @@ describe("GitHub deliveries", () => {
     });
     expect(parkMerge(db, job!, clock.now(), { head })).toBe("parked");
     expect(getJob(db, id)).toMatchObject({ status: "pending", runAt: clock.now() });
+  });
+});
+
+describe("main moving", () => {
+  const main = "c".repeat(40);
+  const repository = { full_name: "acme/app", default_branch: "main" };
+
+  function twoQueued() {
+    const { db, clock } = queue();
+    for (const id of ["eng-1", "eng-2"]) {
+      insertQueuedItem(db, { id, now: clock.now() });
+      beginImplementRun(db, id, clock.now());
+      enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "b".repeat(40), wipCommit: id });
+      joinMergeQueue(db, { itemId: id, repository: "acme/app", now: clock.now() });
+      clock.advance(1_000);
+    }
+    return { db, clock };
+  }
+
+  function sweeps(db: ReturnType<typeof queue>["db"]) {
+    return listJobs(db)
+      .filter((job) => job.queue === JOB_KIND.queueConflicts)
+      .map((job) => job.payload);
+  }
+
+  test("a push to the default branch, its redelivery and the merged pull request check the queue once", () => {
+    const { db, clock } = twoQueued();
+    const push = { ref: "refs/heads/main", after: main, repository };
+    acceptGitHubDelivery(
+      db,
+      { deliveryId: "p-1", event: "push", payload: JSON.stringify(push) },
+      clock.now(),
+    );
+    acceptGitHubDelivery(
+      db,
+      { deliveryId: "p-2", event: "push", payload: JSON.stringify(push) },
+      clock.now(),
+    );
+    acceptGitHubDelivery(
+      db,
+      {
+        deliveryId: "pr-1",
+        event: "pull_request",
+        payload: JSON.stringify({
+          action: "closed",
+          pull_request: {
+            merged: true,
+            merge_commit_sha: main,
+            base: { ref: "main" },
+            head: { sha: "d".repeat(40), ref: "paws/other" },
+          },
+          repository,
+        }),
+      },
+      clock.now(),
+    );
+    expect(sweeps(db)).toEqual([{ repository: "acme/app", main }]);
+  });
+
+  test("a push to another branch or a closed unmerged pull request checks nothing", () => {
+    const { db, clock } = twoQueued();
+    acceptGitHubDelivery(
+      db,
+      {
+        deliveryId: "p-1",
+        event: "push",
+        payload: JSON.stringify({ ref: "refs/heads/paws/eng-1", after: main, repository }),
+      },
+      clock.now(),
+    );
+    acceptGitHubDelivery(
+      db,
+      {
+        deliveryId: "pr-1",
+        event: "pull_request",
+        payload: JSON.stringify({
+          action: "closed",
+          pull_request: { merged: false, base: { ref: "main" } },
+          repository,
+        }),
+      },
+      clock.now(),
+    );
+    expect(sweeps(db)).toEqual([]);
   });
 });
 

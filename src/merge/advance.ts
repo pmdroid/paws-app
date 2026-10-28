@@ -48,6 +48,7 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
+import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { ciFixes, rebaseBudgetFor } from "./returns";
 import {
   laneTurn,
@@ -138,7 +139,11 @@ export async function advanceMerge(
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
-    if (handed !== "no_queue") return handed;
+    if (handed !== "no_queue") {
+      if (handed.kind === "merged")
+        checkQueueBehind(db, { repository: queueName(repository), main: null, now: caps.now() });
+      return handed;
+    }
   }
   const queued = mergeSettings.order === "queue";
   if (queued) {
@@ -227,7 +232,12 @@ export async function advanceMerge(
     });
   if (step.kind === "wait" && step.reason === "ci")
     return caps.stopped() ? { kind: "obsolete" } : step;
-  if (turn.kind === "merged")
+  if (turn.kind === "merged") {
+    checkQueueBehind(db, {
+      repository: queueName(repository),
+      main: turn.result.sha ?? null,
+      now: caps.now(),
+    });
     recordConfirmedRemoteMerge(db, {
       itemId: item.id,
       repositoryOwner: repository.owner,
@@ -237,6 +247,7 @@ export async function advanceMerge(
       mergeSha: turn.result.sha ?? null,
       confirmedAt: caps.now(),
     });
+  }
   if (turn.kind === "merged") endMergeCall(db, item.id);
   if (caps.stopped()) {
     if (turn.kind === "merged") completeMergedItem(db, { itemId: item.id, now: caps.now() });
@@ -325,6 +336,11 @@ export async function advanceMerge(
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
   return { kind: "failed", reason: "merge", message };
+}
+
+/** The repository as the merge queue names it. */
+function queueName(repository: { owner: string; repo: string }): string {
+  return `${repository.owner}/${repository.repo}`;
 }
 
 /**

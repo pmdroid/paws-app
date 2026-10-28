@@ -6,16 +6,16 @@ import {
   enqueueJobOnce,
   getWorkItem,
   immediate,
-  leaveMergeQueue,
   saveCheckpoint,
   parkLeasedJob,
   recordGitHubDelivery,
   retryLeasedJob,
+  returnToMergeQueue,
   type Job,
   type RunnerCapacityWaitState,
   markCloseoutAccepted,
 } from "../db";
-import { githubQueueWatch } from "../merge";
+import { githubQueueWatch, mainMoved, type QueueConflictSweep } from "../merge";
 import { recordCommentDelivery, type PullCommentFilter } from "./pull-comments";
 import { recordReviewDelivery } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
@@ -80,6 +80,8 @@ export function acceptGitHubDelivery(
   const body: unknown = JSON.parse(delivery.payload);
   recordReviewDelivery(db, delivery.event, body, now);
   recordCommentDelivery(db, delivery.event, body, now, comments);
+  const moved = mainMove(delivery.event, body);
+  if (moved) mainMoved(db, { ...moved, now });
   const facts = deliveryFacts(delivery.event, body);
   const jobs = db
     .query<{ id: number; payload: string }, [string]>(
@@ -105,6 +107,29 @@ export function acceptGitHubDelivery(
       );
   }
   return true;
+}
+
+/** A push to the default branch, or a pull request merged into it: main's new commit. */
+function mainMove(event: string, body: unknown): QueueConflictSweep | null {
+  const record = payloadRecord(body);
+  const repository = payloadRecord(record.repository);
+  const name = repository.full_name;
+  const main = repository.default_branch;
+  if (typeof name !== "string" || typeof main !== "string") return null;
+  if (event === "push" && record.ref === `refs/heads/${main}` && record.deleted !== true)
+    return { repository: name, main: typeof record.after === "string" ? record.after : null };
+  const pull = payloadRecord(record.pull_request);
+  if (
+    event === "pull_request" &&
+    record.action === "closed" &&
+    pull.merged === true &&
+    payloadRecord(pull.base).ref === main
+  )
+    return {
+      repository: name,
+      main: typeof pull.merge_commit_sha === "string" ? pull.merge_commit_sha : null,
+    };
+  return null;
 }
 
 function deliveryFacts(event: string, body: unknown): { shas: Set<string>; branches: Set<string> } {
@@ -210,7 +235,7 @@ export function acceptCloseout(
       baseSha: input.base,
       wipCommit: input.head,
     });
-    if (input.reverifyJobId === undefined) leaveMergeQueue(db, input.itemId);
+    if (input.reverifyJobId === undefined) returnToMergeQueue(db, input.itemId);
     return enqueueVerifiedMerge(db, {
       itemId: input.itemId,
       head: input.head,

@@ -261,6 +261,7 @@ import {
   closeStoppedPull,
   fetchUpstreamMain,
   leaveGitHubMergeQueue,
+  readPullMergeable,
   readReviewThreads,
   readPullCi,
   mergedPullHeads,
@@ -371,7 +372,9 @@ import {
   type FailedCiCheck,
   ciWaitVerification,
   parkMerge,
+  queueConflictSweep,
   rebaseBudgetFor,
+  returnQueuedConflicts,
   wakeMergesBehind,
   type MergePublication,
   type MergeStep,
@@ -1481,6 +1484,32 @@ export class Orchestrator {
           "merge",
           withAcceptedBranch(`merge timed out waiting for GitHub: ${waiting.message}`, item),
         );
+    });
+    jobs.register(JOB_KIND.queueConflicts, async (job, context) => {
+      const sweep = queueConflictSweep(job.payload);
+      if (sweep === null || !context.isCurrent()) return;
+      await returnQueuedConflicts(this.db, sweep, {
+        ask,
+        now: () => this.now(),
+        session: (item) => this.activitySession(item),
+        voice: {
+          thought: (item, body, key) => this.post(item, "thought", body, key),
+          flush: () => this.flush(),
+        },
+        readPull: async (item, pullNumber) => {
+          const repository = this.repositoryForItem(item);
+          const github = repository ? this.githubForRepository(repository) : null;
+          if (!repository || !github) return null;
+          return readPullMergeable({
+            client: github.client,
+            owner: repository.owner,
+            repo: repository.repo,
+            prNumber: pullNumber,
+            ...this.gitHubCredentials(github),
+            signal: context.signal,
+          });
+        },
+      });
     });
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
       const itemId = readString(job.payload, "itemId");

@@ -124,3 +124,39 @@ test("an unclassified stop rejection logs the thrown value and exits 1", async (
     restore();
   }
 });
+
+test("a stop failure whose stack lacks its message still logs the message", async () => {
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  const exits: number[] = [];
+  const error = new Error("fake server stop rejected");
+  error.stack = "Error\n    at <anonymous> (test/shutdown.test.ts:1:1)";
+  try {
+    await shutdownPaws(
+      {
+        stop: () =>
+          stopPawsComponents({
+            groups: [
+              [
+                {
+                  name: "server",
+                  stop: () => {
+                    throw error;
+                  },
+                },
+              ],
+            ],
+            flush: () => {},
+            close: () => {},
+          }),
+      },
+      0,
+      (code) => exits.push(code),
+    );
+    expect(lines).toEqual([
+      "Paws shutdown failed at server: Error: fake server stop rejected\n    at <anonymous> (test/shutdown.test.ts:1:1)",
+    ]);
+  } finally {
+    restore();
+  }
+});

@@ -17,6 +17,13 @@ export {
   type MergeVoice,
   type OrderCapabilities,
 } from "./orders";
+export {
+  mainMoved,
+  queueConflictSweep,
+  returnQueuedConflicts,
+  type QueueConflictCapabilities,
+  type QueueConflictSweep,
+} from "./queue-conflicts";
 export { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
 export {
   askMergeHelp,
