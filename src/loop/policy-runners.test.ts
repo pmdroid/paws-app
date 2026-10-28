@@ -51,7 +51,7 @@ function check(db: Database, digest = DIGEST) {
 describe("a Closeout policy key the lowest online runner does not know", () => {
   test("is recorded and journaled once, and the dashboard shows it", () => {
     const db = database();
-    runner(db, "new", "0.1.51", NOW - 1_000);
+    runner(db, "new", "0.1.49", NOW - 1_000);
     runner(db, "old", "0.1.48", NOW - 1_000);
     // Offline for ten minutes: it takes no work, so it does not count.
     runner(db, "gone", "0.1.40", NOW - 600_000);
@@ -63,20 +63,20 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
           repository: REPOSITORY,
           policyDigest: DIGEST,
           runnerVersion: "0.1.48",
-          keys: [{ key: "items[].ci", needs: "0.1.50" }],
+          keys: [{ key: "items[].ci", needs: "0.1.49" }],
           checkedAt: NOW,
         });
     } finally {
       restore();
     }
-    expect(lines.filter((line) => line.includes("items[].ci (runner 0.1.50)"))).toHaveLength(1);
+    expect(lines.filter((line) => line.includes("items[].ci (runner 0.1.49)"))).toHaveLength(1);
     expect(lines[0]).toContain("the lowest online runner is 0.1.48");
     expect(createLiveStatusProvider(db).snapshot().policyRunnerWarnings).toEqual([
       {
         repository: REPOSITORY,
         policyDigest: DIGEST,
         runnerVersion: "0.1.48",
-        keys: [{ key: "items[].ci", needs: "0.1.50" }],
+        keys: [{ key: "items[].ci", needs: "0.1.49" }],
         checkedAt: "2026-10-28T06:43:00.000Z",
       },
     ]);
@@ -86,7 +86,7 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
     const db = database();
     runner(db, "old", "0.1.48", NOW - 1_000);
     expect(check(db)).not.toBeNull();
-    db.run("UPDATE runner_host_status SET runner_version='0.1.51'");
+    db.run("UPDATE runner_host_status SET runner_version='0.1.49'");
     expect(check(db)).toBeNull();
     expect(listPolicyRunnerWarnings(db)).toEqual([]);
     expect(createLiveStatusProvider(db).snapshot().policyRunnerWarnings).toBeUndefined();

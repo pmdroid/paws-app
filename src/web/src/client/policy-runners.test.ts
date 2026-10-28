@@ -10,8 +10,8 @@ const WARNING: StatusPolicyRunnerWarning = {
   policyDigest: `sha256:${"a".repeat(64)}`,
   runnerVersion: "0.1.48",
   keys: [
-    { key: "items[].ci", needs: "0.1.50" },
-    { key: "items[].recheck", needs: "0.1.51" },
+    { key: "items[].ci", needs: "0.1.49" },
+    { key: "items[].recheck", needs: "0.1.49" },
   ],
   checkedAt: "2026-10-28T06:43:00.000Z",
 };
@@ -35,8 +35,8 @@ describe("a runner too old for a Closeout policy key on the dashboard", () => {
         'aria-label="Closeout policy needs a newer runner for pmdroid/paws-app"',
       );
       expect(html).toContain("the Closeout policy uses keys runner 0.1.48 does not know.");
-      expect(html).toContain("<code>items[].ci</code> needs runner 0.1.50");
-      expect(html).toContain("<code>items[].recheck</code> needs runner 0.1.51");
+      expect(html).toContain("<code>items[].ci</code> needs runner 0.1.49");
+      expect(html).toContain("<code>items[].recheck</code> needs runner 0.1.49");
     }
   });
 
