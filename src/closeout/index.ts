@@ -28,6 +28,7 @@ export {
   evidencePath,
   PolicyFetchError,
   readReviewRounds,
+  reviewRecordsAt,
   runCloseoutGate,
   snapshotRetryBaseline,
   storedReviewFindings,

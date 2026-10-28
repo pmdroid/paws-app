@@ -15,6 +15,7 @@ import {
   type CandidateIdentity,
   type CloseoutItem,
   type DecisionDocument,
+  type Finding,
   type GateOutcome,
   type GateResult,
   type ReviewFindings,
@@ -604,6 +605,30 @@ export async function storedReviewFindings(
       status: finding.status,
     };
   });
+}
+
+/**
+ * The findings of each review round stored for `head`, with secrets scrubbed. The marks Closeout
+ * gave them (pre-existing, `failOn`) are on the review steps of its progress record.
+ */
+export async function reviewRecordsAt(
+  taskId: string,
+  head: string,
+  pawsHome?: string,
+): Promise<Array<{ itemId: string; attempt: number; findings: Finding[] }>> {
+  const records = await reviewRecordsSince(evidencePath(taskId, pawsHome), []);
+  return records
+    .filter((record) => record.head === head)
+    .map((record) => ({
+      itemId: record.itemId,
+      attempt: record.attempt,
+      findings: record.findings.map((finding) => ({
+        severity: finding.severity,
+        location: scrub(finding.location),
+        explanation: scrub(finding.explanation),
+        evidence: scrub(finding.evidence),
+      })),
+    }));
 }
 
 /** Checks an approved bypass waived on this evaluation. */

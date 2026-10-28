@@ -28,6 +28,7 @@ import { cancelOpenJobs, enqueueJobOnce, hasLiveJob } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
 import { getLinearSessionGeneration } from "./linear-sessions";
+import { withOpenFindings } from "./open-findings";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
@@ -636,7 +637,11 @@ export function completeMergedItem(
         sessionId,
         itemId: current.id,
         kind: "response",
-        body: `Merged #${fact.pullNumber} into main at ${fact.mergeSha ?? "unknown commit"}. ${current.linearIdentifier} is Done.`,
+        body: withOpenFindings(
+          db,
+          current.id,
+          `Merged #${fact.pullNumber} into main at ${fact.mergeSha ?? "unknown commit"}. ${current.linearIdentifier} is Done.`,
+        ),
       },
       now: input.now,
     });
@@ -793,7 +798,7 @@ function commitFailure(
     payload: {
       sessionId,
       kind: afterPr ? "response" : "error",
-      body: afterPr ? `Closed: ${text}` : text,
+      body: afterPr ? withOpenFindings(db, item.id, `Closed: ${text}`) : text,
     },
     now,
   });
