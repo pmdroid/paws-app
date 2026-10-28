@@ -226,6 +226,13 @@ function replace(node: DOMNode): ReactElement | undefined {
       ),
     );
   if (has("attempts")) return styled("flex items-center gap-2");
+  // A segment of the issue page's time bar, as wide as its share of the item's age.
+  if (has("time-seg"))
+    return createElement(
+      name,
+      { ...props, style: { flexGrow: Number(attribs["data-ms"]) || 0 } },
+      children(),
+    );
   if (
     name === "i" &&
     node.parent instanceof Element &&

@@ -52,6 +52,7 @@ import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
+import { itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
@@ -253,7 +254,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
   return `${pageHeading("overview")}
     <div class="between"><p class="overview-summary">${esc(summary)}</p><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
     <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you</h2>
-      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p></div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
+      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p>${ageOf(snapshot, entry.itemId)}</div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
     </section>
     ${intake}
     <section class="overview-section" aria-labelledby="work-heading"><h2 id="work-heading">Working now</h2>
@@ -263,14 +264,20 @@ function viewOverview(snapshot: StatusSnapshot): string {
               .slice(0, 6)
               .map((item) => {
                 const href = routeHref({ view: "issues", id: item.id });
-                return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}</li>`;
+                return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemAge(item)}${statePill(item.state, itemLabel(item.state))}</li>`;
               })
               .join(
                 "",
               )}</ul>${work.length > 6 ? `<a href="${routeHref({ view: "issues", id: null })}">View all ${work.length} working issues</a>` : ""}`
           : '<p class="muted">No work is running right now.</p>'
       }
-    </section>`;
+    </section>
+    ${mergedTimesSection(snapshot.mergedTimes)}`;
+}
+
+function ageOf(snapshot: StatusSnapshot, itemId: string): string {
+  const item = findItem(snapshot, itemId);
+  return item ? itemAge(item) : "";
 }
 
 const EMPTY_ISSUES = "No issues yet. Delegate an issue to Paws in Linear.";
@@ -341,7 +348,7 @@ function projectFilter(items: readonly StatusItem[]): string {
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
   const blockers = item.blockers;
   const reason = waitReason(item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${itemAge(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {
@@ -407,6 +414,7 @@ function issuePage(
     </header>
     ${run ? phaseStrip(item, run, verdict, agent) : ""}
     ${queueNotice(item)}
+    ${stateTimeBar(item.stateTimes)}
     ${deadDeliveriesSection(snapshot, item.id)}
     ${run ? (run.usagePause ? usagePauseSection(item, run, run.usagePause) : executionControls(item, run)) : ""}
     ${snapshot.questions
