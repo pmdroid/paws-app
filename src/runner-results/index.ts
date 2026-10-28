@@ -8,7 +8,7 @@ import {
   RunnerEventSchema,
   type RunnerResult,
 } from "../runner-protocol";
-import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
+import { RunnerWorkFencedError, runnerFailureStatus, type RunnerWork } from "../runner-work";
 
 const integer = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
@@ -264,8 +264,9 @@ export function createRunnerResults(options: {
         return json({ answers: api.answers({ ...input, ...answerInput.parse(body) }) });
       } catch (error) {
         journalCaught(error, "runner-results.fetch.get", null);
-        if (error instanceof RunnerWorkFencedError)
-          return json({ error: "Runner work is fenced.", code: "fenced" }, 409);
+        const status = runnerFailureStatus(error);
+        if (status === 409) return json({ error: "Runner work is fenced.", code: "fenced" }, 409);
+        if (status === 503) return json({ error: "Paws is busy. Retry the request." }, 503);
         return json({ error: "Runner result request is denied or invalid." }, 403);
       }
     },

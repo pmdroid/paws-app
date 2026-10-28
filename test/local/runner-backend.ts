@@ -187,7 +187,9 @@ export async function probeRunnerBackend(
   const backend = createRemoteAgentRunner(backendOptions);
   const seen = new Set<string>();
   async function next(selectedRunnerId = runnerId, acknowledge = true) {
-    for (let i = 0; i < 500; i++) {
+    // Measured in time, not polls: four test files run at once and can starve a 1 ms poll.
+    const until = performance.now() + 10_000;
+    while (performance.now() < until) {
       for (const envelope of work.commands(selectedRunnerId)) {
         const v = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),

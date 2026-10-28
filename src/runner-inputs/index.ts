@@ -15,7 +15,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute } from "node:path";
-import { SQLiteError } from "bun:sqlite";
 import { z } from "zod";
 import {
   RUNNER_INPUT_CHUNK_BYTES,
@@ -26,7 +25,7 @@ import {
   RunnerInputFilesSchema,
   type RunnerInputFile,
 } from "../runner-protocol";
-import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
+import { RunnerWorkFencedError, runnerFailureStatus, type RunnerWork } from "../runner-work";
 
 export class RunnerInputStorageError extends Error {}
 export type RunnerInputSource = { path: string; mimeType: string; bytes: Uint8Array };
@@ -330,13 +329,7 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
         return Response.json(
           { error: "Runner input request failed" },
           {
-            status:
-              error instanceof RunnerWorkFencedError
-                ? 409
-                : error instanceof RunnerInputStorageError ||
-                    (error instanceof SQLiteError && [5, 6, 10, 13].includes(error.errno & 255))
-                  ? 503
-                  : 403,
+            status: error instanceof RunnerInputStorageError ? 503 : runnerFailureStatus(error),
             headers: { "cache-control": "no-store" },
           },
         );

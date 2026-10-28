@@ -211,6 +211,18 @@ export function createRunnerWork(options: {
     )
       throw new RunnerWorkFencedError("Linear response task binding changed");
   }
+  /** Whether the runner's latest heartbeat named this run among the work it still runs. */
+  function stillReported(runnerId: string, runId: string) {
+    return (
+      db
+        .query(
+          `SELECT 1 FROM runner_work w JOIN runner r ON r.id=w.runner_id
+          WHERE w.run_id=? AND r.id=? AND w.confirmed_at IS NOT NULL
+          AND r.live_reported_at IS NOT NULL AND w.confirmed_at>=r.live_reported_at`,
+        )
+        .get(runId, runnerId) !== null
+    );
+  }
   function live(
     runnerId: string,
     runId: string,
@@ -218,10 +230,13 @@ export function createRunnerWork(options: {
     at: number,
     allowPendingQuestion = false,
     settled = false,
+    reported?: boolean,
   ): Assignment {
     const identity = runner(runnerId);
     const work = assignment(runId);
     const lapsed = work !== null && work.leaseUntil <= at && !settled;
+    // A lapsed lease keeps its grace while the runner still reports the run, however full the
+    // runner is: a busy Paws answers the renewing heartbeat late. Capacity decides the rest.
     if (
       !work ||
       work.runnerId !== runnerId ||
@@ -231,7 +246,8 @@ export function createRunnerWork(options: {
       work.endedAt !== null ||
       (lapsed &&
         (work.leaseUntil + RUNNER_LEASE_GRACE_MS <= at ||
-          !runnerHasCapacity(db, runnerId, at, runId)))
+          (!(reported ?? stillReported(runnerId, runId)) &&
+            !runnerHasCapacity(db, runnerId, at, runId))))
     )
       throw new RunnerWorkFencedError("Runner work is fenced or its lease expired.");
     const command = workCommand(work);
@@ -563,7 +579,15 @@ export function createRunnerWork(options: {
         for (const row of rows) {
           try {
             const settled = accepted(row);
-            live(runnerId, row.runId, row.generation, at, true, settled);
+            live(
+              runnerId,
+              row.runId,
+              row.generation,
+              at,
+              true,
+              settled,
+              running && running.has(`${row.runId}:${row.generation}`),
+            );
             if (running?.has(`${row.runId}:${row.generation}`))
               db.run("UPDATE runner_work SET confirmed_at=? WHERE run_id=?", [at, row.runId]);
             else if (running && !settled && acknowledgedBy(row, at - RUNNER_LIVE_GRACE_MS)) {

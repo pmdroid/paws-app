@@ -86,6 +86,8 @@ let linkedHash = "";
 let linkedCard = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
+/** The ETag `/api/status` sent with `snapshot`. */
+let snapshotTag: string | null = null;
 /** The open issue page's data. While an issue page is open, only this is polled. */
 let detail: StatusItemDetail | null = null;
 let error: string | null = null;
@@ -174,15 +176,22 @@ async function reload(): Promise<void> {
     const loaded = await loadDetail(route);
     if (loaded === "signed-out") return;
     if (loaded === "none") {
+      // An unchanged snapshot answers 304 without a body, and the page keeps the one it has.
       const response = await fetch("/api/status", {
-        headers: { Accept: "application/json" },
+        headers: {
+          Accept: "application/json",
+          ...(snapshot !== null && snapshotTag !== null ? { "If-None-Match": snapshotTag } : {}),
+        },
         cache: "no-store",
       });
       if (!(await signedIn(response))) return;
-      if (!response.ok) throw new Error(await errorText(response));
-      const parsed = parseStatusSnapshot(await response.json());
-      if (!parsed.ok) throw new Error(parsed.error);
-      snapshot = parsed.snapshot;
+      if (response.status !== 304) {
+        if (!response.ok) throw new Error(await errorText(response));
+        const parsed = parseStatusSnapshot(await response.json());
+        if (!parsed.ok) throw new Error(parsed.error);
+        snapshot = parsed.snapshot;
+        snapshotTag = response.headers.get("ETag");
+      }
     }
     phase = "ready";
     error = null;
