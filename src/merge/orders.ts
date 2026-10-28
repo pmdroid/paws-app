@@ -197,26 +197,20 @@ export async function mergeQueueTurn(
   joinMergeQueue(db, { itemId: item.id, repository: name, now: caps.now() });
   const place = mergeQueuePosition(db, item.id, held);
   if (place === null) return undefined;
+  // A busy task ahead keeps its place but does not hold the lane: the first ready task moves.
+  const next = place.nextItemId ? getWorkItem(db, place.nextItemId) : null;
+  const first = `${next?.linearIdentifier ?? "The task ahead"} merges first.`;
   if (
     place.notifiedPosition !== place.position &&
     (place.position > 1 || place.notifiedPosition !== null)
   ) {
-    const ahead = place.aheadItemId ? getWorkItem(db, place.aheadItemId) : null;
     const line = mergeQueueLine(place);
-    const body =
-      place.position === 1
-        ? `${line}. Merging next.`
-        : `${line}. ${ahead?.linearIdentifier ?? "The task ahead"} merges first.`;
+    const body = place.nextItemId === null ? `${line}. Merging next.` : `${line}. ${first}`;
     caps.voice.status(item, body, `${item.id}:merge-queue:${place.readyAt}:${place.position}`);
     markMergeQueueNotified(db, item.id, place.position);
   }
-  if (place.position === 1) return undefined;
-  const ahead = place.aheadItemId ? getWorkItem(db, place.aheadItemId) : null;
-  return {
-    message: `${mergeQueueLine(place)}. ${ahead?.linearIdentifier ?? "The task ahead"} merges first.`,
-    queued: true,
-    reason: "ahead",
-  };
+  if (place.nextItemId === null) return undefined;
+  return { message: `${mergeQueueLine(place)}. ${first}`, queued: true, reason: "ahead" };
 }
 
 export async function mergeThroughGitHubQueue(
