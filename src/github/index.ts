@@ -15,7 +15,7 @@ export {
   fakeMergeReadiness,
   fakeRequiredChecks,
 } from "./fake";
-export type { FakeGitHub, FakeMergeQueue, FakeReviewThread } from "./fake";
+export type { FakeCheckContext, FakeGitHub, FakeMergeQueue, FakeReviewThread } from "./fake";
 export {
   classifyRemoval,
   enqueuePullRequest,
@@ -64,7 +64,8 @@ export type {
   RebaseResult,
   SerialMergeInput,
 } from "./merge";
-export type { Readiness } from "./readiness";
+export { readPullCi } from "./readiness";
+export type { FailedCheck, PassedCheck, PullCi, Readiness } from "./readiness";
 export {
   createAppTokenProvider,
   inferGitHubRepository,

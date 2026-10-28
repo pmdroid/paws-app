@@ -228,6 +228,7 @@ function decodeItem(value: unknown): PolicyItem {
       timeoutSeconds: expectInt(value.timeoutSeconds),
     };
     if (paths !== undefined) item.paths = paths;
+    if (value.ci !== undefined) item.ci = expectString(value.ci);
     return item;
   }
   if (value.kind === "review") {

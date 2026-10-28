@@ -6,8 +6,8 @@
   "license": "Apache-2.0",
   "files": {
     "decision.schema.json": "f6db18d3e20add29b078615277517dd124f9d380ac5f2da4c20e2084f2549ea1",
-    "evidence.schema.json": "9677e4a039862b836e502638c0fbbfa5f8375bb4fa628fdcdcb076e5fc653c6f",
-    "policy.schema.json": "739eab83145a744f4f37f16d06ab77fce353d674c4c99fe7b6a3beaca016ec37"
+    "evidence.schema.json": "fe56f65b9959d9dc4e95e076a406230148a1c79327f64306f615ea401fea8cee",
+    "policy.schema.json": "eb16bbc546c6bdcc3f64dd0706357e9f645d5e3ed4d80631abc6c4c892c44da8"
   },
-  "pawsExtensions": ["retry.attempts_per_check", "retry.fix_rounds_per_item", "rules"]
+  "pawsExtensions": ["retry.attempts_per_check", "retry.fix_rounds_per_item", "rules", "ci"]
 }

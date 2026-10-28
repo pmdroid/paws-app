@@ -1,5 +1,6 @@
 export { candidatePolicyDigest, FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export {
+  ciMappings,
   fixAttemptLimit,
   fixesLeft,
   policyFixBudget,
@@ -48,6 +49,7 @@ export {
 } from "./session-report";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";
 export type {
+  CiResult,
   CloseoutOutputStream,
   CloseoutProgress,
   CloseoutProgressIdentity,
