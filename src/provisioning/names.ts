@@ -34,8 +34,28 @@ export function assertCommand(command: unknown): string {
 }
 
 const IMAGE = /^[A-Za-z0-9][A-Za-z0-9._\-/:@]{0,254}$/;
+/** As `[member_vm] pool` takes it: nothing a shell or exe.dev's parser would split on. */
+const POOL = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$/;
 
-/** `new --name=<vm>` plus a flag for each size field that is set, in `help new` order. */
+export function isExeDevPoolName(name: unknown): name is string {
+  return typeof name === "string" && POOL.test(name);
+}
+
+export function assertPoolName(operation: ProvisioningOperation, name: unknown): string {
+  if (isExeDevPoolName(name)) return name;
+  throw new ProvisioningError(
+    operation,
+    "invalid_command",
+    `exe.dev ${operation}: the pool must be a pool name such as build (letters, digits, - and _).`,
+  );
+}
+
+/** `pool adopt --vm=<vm> --pool=<pool>`. */
+export function adoptVmCommand(name: string, pool: string): string {
+  return `pool adopt --vm=${assertVmName("adoptVm", name)} --pool=${assertPoolName("adoptVm", pool)}`;
+}
+
+/** `new --name=<vm>` plus a flag for each size field that is set, then `--pool`. */
 export function newVmCommand(name: string, size: ExeDevVmSize = {}): string {
   const vm = assertVmName("createVm", name);
   const flags = [`--name=${vm}`];
@@ -51,6 +71,7 @@ export function newVmCommand(name: string, size: ExeDevVmSize = {}): string {
     flags.push(`--image=${size.image}`);
   }
   if (size.memoryGb !== undefined) flags.push(`--memory=${count("memory", size.memoryGb)}GB`);
+  if (size.pool !== undefined) flags.push(`--pool=${assertPoolName("createVm", size.pool)}`);
   return `new ${flags.join(" ")}`;
 }
 
