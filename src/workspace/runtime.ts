@@ -19,19 +19,60 @@ export async function createWorkspaceAccessFromLinear(options: {
   githubAttributionClient?: { clientId: string; clientSecret: string };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
+  signal?: AbortSignal;
 }) {
-  const installedOrganization = await options.memberships.installation(AbortSignal.timeout(10_000));
+  const timeout = AbortSignal.timeout(10_000);
+  const installedOrganization = await options.memberships.installation(
+    options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+  );
   return createWorkspaceAccess({ ...options, installedOrganization });
 }
+
+const ACCESS_RETRY_BASE_MS = 2_000;
+const ACCESS_RETRY_CAP_MS = 60_000;
 
 export function startWorkspaceAccess(
   options: Parameters<typeof createWorkspaceAccessFromLinear>[0] & {
     refreshIntervalMs?: number;
+    accessRetryBaseMs?: number;
+    /** Whether a failed startup read is worth retrying; the composition passes `isTransient`. */
+    retryable?: (error: unknown) => boolean;
     onError: () => void;
   },
 ) {
   let stopping = false;
-  const original = createWorkspaceAccessFromLinear(options);
+  const stopped = new AbortController();
+  /**
+   * A slow or failing Linear read at startup must not exit Paws: the server answers 503 until
+   * access resolves, so a retryable failure retries with backoff until it succeeds or Paws stops.
+   * Any other failure, such as a missing app installation, still rejects.
+   */
+  async function resolveAccess() {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await createWorkspaceAccessFromLinear({ ...options, signal: stopped.signal });
+      } catch (error) {
+        if (stopping) throw new Error("Workspace access is stopping.", { cause: error });
+        if (!options.retryable?.(error)) throw error;
+        journalCaught(error, "workspace/runtime.startWorkspaceAccess.retry", null, "retrying");
+        const delay = Math.min(
+          ACCESS_RETRY_CAP_MS,
+          (options.accessRetryBaseMs ?? ACCESS_RETRY_BASE_MS) * 2 ** Math.min(20, attempt - 1),
+        );
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(done, delay);
+          function done() {
+            clearTimeout(timer);
+            stopped.signal.removeEventListener("abort", done);
+            resolve();
+          }
+          stopped.signal.addEventListener("abort", done, { once: true });
+        });
+        if (stopping) throw new Error("Workspace access is stopping.", { cause: error });
+      }
+    }
+  }
+  const original = resolveAccess();
   function accepting<T>(run: () => Promise<T>): Promise<T> {
     if (stopping) return Promise.reject(new Error("Workspace access is stopping."));
     return run();
@@ -91,6 +132,7 @@ export function startWorkspaceAccess(
     refresh,
     async stop() {
       stopping = true;
+      stopped.abort();
       clearInterval(timer);
       await Promise.allSettled([pending]);
       await access

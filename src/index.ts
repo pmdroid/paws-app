@@ -64,6 +64,7 @@ import {
   type GitCommitPolicy,
   type AppBotIdentity,
   type Clock,
+  isTransient,
   policyCoauthors,
 } from "./core";
 import {
@@ -636,6 +637,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         memberships: linear.memberships,
         verifyTeam: (id, signal) => linear.access!.team(id, { signal }),
         readTeams: (signal) => linear.access!.teams!({ signal }),
+        retryable: isTransient,
         onError: () => console.error("Paws workspace access refresh failed."),
       });
     } catch (error) {
@@ -1967,6 +1969,9 @@ if (import.meta.main) {
   try {
     await paws.ready;
   } catch (caughtError5) {
+    // A signal during startup stops what `ready` waits on; that shutdown chooses the exit code.
+    if (exiting) await new Promise<never>(() => {});
+    exiting = true;
     journalCaught(caughtError5, "Paws startup failed.", null);
     await shutdownPaws(paws, 1);
     process.exit(1);
