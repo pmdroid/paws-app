@@ -90,9 +90,7 @@ describe("paws install", () => {
     expect(config.repo).toBe("pmdroid/paws-app");
     expect(config.githubRepos).toEqual(["pmdroid/agentbox"]);
     expect(written.unit).toContain(`EnvironmentFile=${home}/.paws/https.env`);
-    expect(written.unit).toContain(
-      "ExecStart=/opt/bun/bin/bun --no-env-file src/index.ts --no-tunnel",
-    );
+    expect(written.unit).toContain("ExecStart=/opt/bun/bin/bun --no-env-file src/index.ts\n");
     expect(written.unit).toContain("RestartForceExitStatus=75");
     expect(written.unit).toContain("WantedBy=default.target");
     expect(written.dropIn).toBe(`[Service]\nWorkingDirectory=${home}/.local/share/paws/app\n`);

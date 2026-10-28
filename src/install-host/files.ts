@@ -95,7 +95,7 @@ export function renderUnit(input: { envFile: string; bun: string }): string {
     "Type=exec",
     `EnvironmentFile=${input.envFile}`,
     "Environment=NODE_ENV=production",
-    `ExecStart=${input.bun} --no-env-file src/index.ts --no-tunnel`,
+    `ExecStart=${input.bun} --no-env-file src/index.ts`,
     `ExecReload=${input.bun} --no-env-file src/index.ts public-tls validate`,
     "ExecReload=/bin/kill -HUP $MAINPID",
     "Restart=on-failure",
