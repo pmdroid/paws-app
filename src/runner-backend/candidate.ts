@@ -114,7 +114,22 @@ async function containedIn(
   tip: string,
   head: string,
 ): Promise<boolean> {
-  const cherry = await run(["cherry", tip, head]).then(
+  const main = await run([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    "refs/paws/upstream-main^{commit}",
+  ]).then(
+    (out) => out.trim(),
+    () => "",
+  );
+  const own = main
+    ? await run(["merge-base", head, main]).then(
+        (out) => out.trim(),
+        () => "",
+      )
+    : "";
+  const cherry = await run(["cherry", tip, head, ...(own ? [own] : [])]).then(
     (out) => out.trim(),
     () => null,
   );
