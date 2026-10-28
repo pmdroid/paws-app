@@ -16,6 +16,8 @@ type Login = {
 type Account = {
   agent: Agent;
   connected: boolean;
+  /** Tasks this agent is running on the runner now. */
+  running?: number;
   session: Login | null;
 };
 type RunnerSignIns = { id: string; agents?: { agent: string; status: string }[] };
@@ -36,6 +38,13 @@ export function accountStatus(account: Account, runnerStatus: string | undefined
   if (login?.state === "failed") return "Sign-in failed. Start again to try another sign-in.";
   if (login?.state === "cancelled") return "Sign-in cancelled";
   return "Not connected";
+}
+
+/** Said before a sign-in starts while the agent is running tasks on the runner. */
+export function runningNotice(name: string, running: number | undefined): string {
+  if (!running) return "";
+  const [tasks, them, their] = running === 1 ? ["task", "it", "its"] : ["tasks", "them", "their"];
+  return `${name} is running ${running} ${tasks} on this runner. Signing in switches ${them} to the new account from ${their} next request.`;
 }
 
 const CLAUDE_HOSTS = ["claude.ai", "claude.com", "console.anthropic.com", "platform.claude.com"];
@@ -94,7 +103,7 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
         row.className = "flex min-w-0 flex-col gap-3";
         renderMarkup(
           row,
-          `<h3>${name}</h3><p data-agent-status role="status" aria-live="polite"></p><div data-agent-actions class="row"></div><div data-agent-authorization class="flex min-w-0 flex-col gap-2"></div><pre data-agent-terminal class="max-h-64 overflow-auto whitespace-pre-wrap break-words" tabindex="0" aria-label="${name} sign-in terminal" hidden></pre><form data-agent-input hidden><label class="field"><span>Reply to ${name}</span><input name="text" autocomplete="off" spellcheck="false" maxlength="4096"></label><button class="btn" type="submit">Send reply</button></form>`,
+          `<h3>${name}</h3><p data-agent-status role="status" aria-live="polite"></p><p data-agent-running class="muted" hidden></p><div data-agent-actions class="row"></div><div data-agent-authorization class="flex min-w-0 flex-col gap-2"></div><pre data-agent-terminal class="max-h-64 overflow-auto whitespace-pre-wrap break-words" tabindex="0" aria-label="${name} sign-in terminal" hidden></pre><form data-agent-input hidden><label class="field"><span>Reply to ${name}</span><input name="text" autocomplete="off" spellcheck="false" maxlength="4096"></label><button class="btn" type="submit">Send reply</button></form>`,
         );
         list.append(row);
       }
@@ -104,6 +113,9 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
         account,
         runnerStatus.get(agent),
       );
+      const running = row.querySelector<HTMLElement>("[data-agent-running]")!;
+      running.textContent = active ? "" : runningNotice(name, account.running);
+      running.hidden = !running.textContent;
       const actions = row.querySelector<HTMLElement>("[data-agent-actions]")!;
       const action = active ? "cancel" : "start";
       if (actions.dataset.action !== action) {
