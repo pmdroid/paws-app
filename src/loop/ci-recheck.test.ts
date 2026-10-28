@@ -58,7 +58,7 @@ function recheck(client: GitHubClient, sleeps: number[] = [], mappings = MAPPING
           repo: "paws-app",
           prNumber: 7,
           head: HEAD,
-          tokenProvider: { tokenFor: async () => "synthetic-token" },
+          tokenProvider: { mode: "app", tokenFor: async () => "synthetic-token" },
         }),
       sleep: async (ms) => {
         sleeps.push(ms);
