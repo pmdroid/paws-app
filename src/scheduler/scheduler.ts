@@ -1,11 +1,10 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import {
   JOB_KIND,
   delegationHasOpenWork,
   holdsExecution,
-  isBlockerSatisfied,
   isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
@@ -15,8 +14,6 @@ import {
   enqueueJob,
   enqueueJobOnce,
   enqueueOutboxOnce,
-  getTaskMode,
-  getConfirmedRemoteMerge,
   immediate,
   mergeLaneSql,
   requeueOrphanedWork,
@@ -29,7 +26,7 @@ import {
   type JobLoop,
   runnerLeaseCutoff,
 } from "../db";
-import { readyItems } from "../intake";
+import { blockingIssues, readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
 import { itemWaits, postWaitKeepalives, type ItemWait } from "./waits";
 
@@ -106,25 +103,12 @@ function holdLine(hold: ItemHold): string {
     : HOLD_LINES[hold.reason];
 }
 
-/** Identifiers of the Linear issues that block `issueId` and have not merged or finished. */
-export function openBlockers(db: Database, issueId: string): string[] {
-  return db
-    .query<{ id: string; identifier: string; state: WorkItemState }, [string]>(
-      `SELECT i.id,i.linear_identifier AS identifier,i.state FROM task_block b
-       JOIN work_item i ON i.id=(SELECT c.id FROM work_item c WHERE c.linear_issue_id=b.blocker_linear_issue_id
-         ORDER BY c.created_at DESC,c.id DESC LIMIT 1)
-       WHERE b.blocked_linear_issue_id=? AND i.linear_identifier IS NOT NULL ORDER BY i.position,i.id`,
-    )
-    .all(issueId)
-    .filter(
-      (blocker) =>
-        !isBlockerSatisfied({
-          ...blocker,
-          mode: getTaskMode(db, blocker.id),
-          mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
-        }),
-    )
-    .map((blocker) => blocker.identifier);
+/**
+ * Identifiers of the Linear issues that hold `itemId` as blocked, by the rules readiness uses.
+ * Empty means readiness and the blockers disagree; the scheduler journals that as an inconsistency.
+ */
+export function openBlockers(db: Database, itemId: string): string[] {
+  return blockingIssues(db, itemId);
 }
 
 export function schedulerPaths(paths: readonly string[]): string[] {
@@ -689,7 +673,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
               {
                 itemId: item.id,
                 reason: start.held,
-                blockers: start.held === "blocked" ? openBlockers(db, item.issueId) : [],
+                blockers: start.held === "blocked" ? openBlockers(db, item.id) : [],
               },
             ],
       ),
@@ -708,6 +692,8 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           )
           .get(change.itemId)?.name ??
         change.itemId;
+      if (change.held?.reason === "blocked" && !change.held.blockers.length)
+        journal(`scheduler inconsistency: item ${name} is held as blocked but has no open blocker`);
       return change.held
         ? `item ${name} held: ${holdLine(change.held)}`
         : `item ${name} no longer held`;
