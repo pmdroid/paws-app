@@ -15,6 +15,7 @@ import {
   getWorkItem,
   insertQueuedItem,
   markCloseoutAccepted,
+  markRun,
   migrate,
   openDatabase,
   saveCheckpoint,
@@ -139,6 +140,8 @@ export async function mergeHarness(
     handMerged: new Map<number, string>(),
     /** Lane reads of GitHub's merge state for the task's pull request before it reports one. */
     handMergeSeenAfter: 0,
+    /** GitHub merges the pull request, but its answer to the merge call never arrives. */
+    dropMergeResponse: false,
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
   const publishedIds: string[] = [];
@@ -196,6 +199,10 @@ export async function mergeHarness(
           number,
           expectedHeadSha: body.sha,
         });
+        if (state.dropMergeResponse) {
+          state.handMerged.set(number, result.sha);
+          throw new Error("The connection closed before GitHub answered.");
+        }
         return { status: 200, body: { sha: result.sha, merged: true } };
       }
       return { status: 404, body: {} };
@@ -219,8 +226,10 @@ export async function mergeHarness(
     const head = await git(worktree, "rev-parse", "HEAD");
     const base = await git(worktree, "rev-parse", "origin/main");
     insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
-    beginImplementRun(db, id, clock.now());
+    const { run } = beginImplementRun(db, id, clock.now());
     enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
+    // The implementer run ends once Closeout accepts, as it does in the loop.
+    markRun(db, run.id, "ended", clock.now());
     acceptHead(id, base, head);
     const item = { id, worktree, pull: items.size + 1, accepted: head, base };
     items.set(id, item);
@@ -365,9 +374,10 @@ export async function mergeHarness(
     lines.push({ kind, body });
   }
 
-  async function pass(id: string): Promise<MergeStep> {
+  /** One lane turn, with the harness's payload for the task or the merge job's own. */
+  async function pass(id: string, jobPayload?: Record<string, unknown>): Promise<MergeStep> {
     jobId += 1;
-    const payload = payloads.get(id)!;
+    const payload = jobPayload ?? payloads.get(id)!;
     const step = await advanceMerge(db, { itemId: id, payload, jobId }, capabilities(id));
     if (step.kind === "wait")
       payloads.set(id, {

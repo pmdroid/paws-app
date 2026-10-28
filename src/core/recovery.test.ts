@@ -75,19 +75,31 @@ describe("startup recovery", () => {
     expect(
       decideStartup({ itemState: "recovering", recoveryAttempts: 1, checkpoint: null }),
     ).toEqual({ type: "ask_restart" });
-    expect(
-      decideStartup({ itemState: "merge_queue", recoveryAttempts: 0, checkpoint: null }),
-    ).toEqual({ type: "reverify" });
   });
 
-  test("fails a merge closed instead of continuing it", () => {
+  test("an item waiting in the merge queue keeps its place; one with an active run re-verifies", () => {
+    expect(
+      decideStartup({ itemState: "merge_queue", recoveryAttempts: 0, checkpoint: null }),
+    ).toEqual({ type: "keep_place", mergeCallInFlight: false });
     expect(
       decideStartup({
         itemState: "merge_queue",
         recoveryAttempts: 0,
         checkpoint: checkpoint("merge_queue"),
+        mergeCallInFlight: true,
+      }),
+    ).toEqual({ type: "keep_place", mergeCallInFlight: true });
+    expect(
+      decideStartup({
+        itemState: "merge_queue",
+        recoveryAttempts: 0,
+        checkpoint: checkpoint("merge_queue"),
+        runActive: true,
       }),
     ).toEqual({ type: "reverify" });
+  });
+
+  test("a re-verify of a queued item cut short by the restart starts again", () => {
     expect(
       decideStartup({
         itemState: "verifying",
