@@ -5,11 +5,11 @@ import {
   applyLinearCommand,
   applyWorkItemEvent,
   deleteRiskFix,
+  closeLinkAsk,
   enqueueJobOnce,
   enqueueOutboxOnce,
   immediate,
   getCandidateRisk,
-  getAutomaticRiskApproval,
   saveAutomaticRiskApproval,
   listCloseoutProgress,
   getRiskFix,
@@ -25,7 +25,7 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import type { RiskApproval } from "../merge";
-import { shortCommit } from "../questions";
+import { cancelQuestion, removeLinkAskUrl, shortCommit } from "../questions";
 import { askWithLink, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
 
 /** Why Settings › Merging shows the risk gate as off on a Paws without an https dashboard link. */
@@ -53,7 +53,7 @@ export type FixRisk = { changed: string[]; paths: string[] };
  * whose risk gate is off, needs nothing. A high-risk or unclassified head needs a person's
  * approval of S in Paws, or of an earlier head with the same patch against main (`samePatch`),
  * as after a rebase. A Linear reply never approves, so only `approve` decisions count.
- * An exact manual approval takes precedence over automatic approval. Automatic approval needs
+ * Exact and carried-over manual approvals take precedence over automatic approval. Automatic approval needs
  * clean evidence on this exact head and base, and never carries to a fix or rebase.
  *
  * A fix Paws made after the latest approval (CI, a review, a comment) keeps that approval when
@@ -81,8 +81,24 @@ export async function riskApprovalFor(
   if (risk?.tier === "normal") return "not_required";
   const approvals = riskApprovals(db, input.itemId);
   if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
+  if (risk === null) return "missing";
+  for (const ask of approvals.toReversed())
+    if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
+  const latest = approvals.at(-1);
+  if (latest !== undefined && input.fixRisk !== undefined) {
+    const fix = await fixSinceApproval(db, {
+      itemId: input.itemId,
+      head: input.head,
+      approved: latest,
+      base: risk.base,
+      fixRisk: input.fixRisk,
+      now: input.now ?? Date.now(),
+    });
+    if (fix !== null && fix.paths.length === 0) return "approved";
+  }
+  // Stored automatic approvals are audit records. Revalidate the current accepted evidence,
+  // including its base and policy, on every authorization read.
   if (risk?.tier === "high" && automaticEnabled(input.automatic, input.itemId)) {
-    if (getAutomaticRiskApproval(db, input.itemId, input.head) !== null) return "approved";
     const evidenceIds = await cleanReviewEvidence(db, risk, input.automatic);
     if (evidenceIds !== null) {
       const now = input.now ?? Date.now();
@@ -95,6 +111,17 @@ export async function riskApprovalFor(
           approvedAt: now,
         });
         const item = getWorkItem(db, input.itemId);
+        const pending = openRiskAsk(db, input.itemId);
+        if (pending?.headCommit === input.head) {
+          if (item !== null) approveRisk(db, pending, item, now);
+          closeLinkAsk(db, pending.questionId, {
+            reason: "cancelled",
+            note: "Approved automatically: both reviews clean",
+            now,
+          });
+          cancelQuestion(db, pending.questionId, now);
+          removeLinkAskUrl(db, pending.questionId, now);
+        }
         if (item?.sessionKey)
           postRiskActivity(db, {
             sessionId: item.sessionKey,
@@ -108,20 +135,7 @@ export async function riskApprovalFor(
       return "approved";
     }
   }
-  if (risk === null) return "missing";
-  for (const ask of approvals.toReversed())
-    if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
-  const latest = approvals.at(-1);
-  if (latest === undefined || input.fixRisk === undefined) return "missing";
-  const fix = await fixSinceApproval(db, {
-    itemId: input.itemId,
-    head: input.head,
-    approved: latest,
-    base: risk.base,
-    fixRisk: input.fixRisk,
-    now: input.now ?? Date.now(),
-  });
-  return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
+  return "missing";
 }
 
 /** Inputs read from the candidate checkout and Closeout's structured evidence store. */
@@ -190,10 +204,16 @@ async function cleanReviewEvidence(
       base: run.base,
     });
     for (const step of reviews) {
-      const record = records.find(
+      const matching = records.filter(
         (entry) => entry.itemId === step!.id && entry.attempt === step!.attempt,
       );
-      if (!record || record.findings.some((finding) => finding.severity !== "P3")) return null;
+      // The evidence store assigns unique increasing attempts. A reader returning duplicates
+      // is ambiguous, even when one copy is clean, so it cannot authorize an approval.
+      if (
+        matching.length !== 1 ||
+        matching[0]!.findings.some((finding) => finding.severity !== "P3")
+      )
+        return null;
     }
     const changed = await checks.changedPaths(risk.base);
     if (

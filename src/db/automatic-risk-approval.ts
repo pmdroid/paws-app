@@ -11,7 +11,9 @@ export type AutomaticRiskApproval = {
 export function saveAutomaticRiskApproval(db: Database, approval: AutomaticRiskApproval): void {
   db.run(
     `INSERT INTO automatic_risk_approval (item_id, head, approved_by, evidence_ids, approved_at)
-    VALUES (?, ?, ?, ?, ?) ON CONFLICT (item_id, head) DO NOTHING`,
+    VALUES (?, ?, ?, ?, ?) ON CONFLICT (item_id, head) DO UPDATE SET
+      evidence_ids = excluded.evidence_ids, approved_at = excluded.approved_at
+      WHERE automatic_risk_approval.evidence_ids != excluded.evidence_ids`,
     [
       approval.itemId,
       approval.head,

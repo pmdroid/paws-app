@@ -632,16 +632,24 @@ test("a rebase that changed the patch asks again, even when the change is only a
 function cleanReviews(
   db: ReturnType<typeof openDatabase>,
   head = heads.s,
-  options: { missing?: string; failedProbe?: boolean; skippedProbe?: string } = {},
+  options: {
+    missing?: string;
+    failedProbe?: boolean;
+    skippedProbe?: string;
+    base?: string;
+    at?: number;
+    attempt?: number;
+  } = {},
 ) {
+  const at = options.at ?? NOW;
   const identity = {
     taskId: "risk-task",
-    base: heads.base,
+    base: options.base ?? heads.base,
     head,
     policyDigest: "digest",
     policyPath: null,
   };
-  ensureCloseoutProgress(db, "ENG-106", identity, NOW, false);
+  ensureCloseoutProgress(db, "ENG-106", identity, at, false);
   for (const id of ["security-review", "independent-review", "rule-probe"]) {
     if (id === options.missing) continue;
     upsertCloseoutStep(
@@ -659,29 +667,33 @@ function cleanReviews(
               : "passed",
         command: "",
         detail: id === "rule-probe" ? (options.skippedProbe ?? null) : null,
-        attempt: 1,
+        attempt: options.attempt ?? 1,
         timeoutSeconds: null,
-        startedAt: NOW,
-        finishedAt: NOW,
+        startedAt: at,
+        finishedAt: at,
         exitCode: 0,
         timedOut: false,
         timeoutReason: null,
         truncated: false,
         logPath: null,
-        evidencePath: `${head}/${id}/1.json`,
+        evidencePath: `${head}/${id}/${options.attempt ?? 1}.json`,
         findings: null,
         ordinal: 0,
       },
-      NOW,
+      at,
     );
   }
-  finishCloseoutProgress(db, "ENG-106", identity, "accepted", NOW);
+  finishCloseoutProgress(db, "ENG-106", identity, "accepted", at);
 }
 
 function automatic(
   db: ReturnType<typeof openDatabase>,
   options: {
     head?: string;
+    attempt?: number;
+    duplicateFirst?: boolean;
+    samePatch?: boolean;
+    fix?: { changed: string[]; paths: string[] };
     paths?: string[];
     severity?: string;
     missingRecord?: string;
@@ -694,19 +706,31 @@ function automatic(
     head: options.head ?? heads.s,
     publicUrl: PUBLIC_URL,
     now: NOW,
-    samePatch: async () => true,
+    samePatch: async () => options.samePatch ?? true,
+    ...(options.fix ? { fixRisk: async () => options.fix! } : {}),
     automatic: {
       enabled: () => options.enabled ?? true,
       policyPaths: async () => (options.policyPaths === undefined ? [] : options.policyPaths),
       changedPaths: async () => options.paths ?? ["session.ts"],
-      reviews: async () =>
-        ["security-review", "independent-review"]
+      reviews: async () => {
+        const records = ["security-review", "independent-review"]
           .filter((id) => id !== options.missingRecord)
           .map((itemId) => ({
             itemId,
-            attempt: 1,
+            attempt: options.attempt ?? 1,
             findings: options.severity ? [{ severity: options.severity }] : [],
-          })),
+          }));
+        if (options.duplicateFirst !== undefined) {
+          const duplicate = {
+            itemId: "security-review",
+            attempt: options.attempt ?? 1,
+            findings: [{ severity: "P1" }],
+          };
+          if (options.duplicateFirst) records.unshift(duplicate);
+          else records.push(duplicate);
+        }
+        return records;
+      },
     },
   });
 }
@@ -892,6 +916,75 @@ test("reviews and the protected-path diff must cover the same base", async () =>
       }),
     ).toBe("asked");
     expect(findOpenQuestion(db, "ses_1")).not.toBeNull();
+  } finally {
+    db.close();
+  }
+});
+
+test("stored automatic approval cannot authorize a different base or changed review evidence", async () => {
+  const { db, itemId } = held();
+  try {
+    cleanReviews(db);
+    expect(await automatic(db)).toBe("approved");
+    classify(db, heads.s, heads.newMain);
+    expect(await automatic(db)).toBe("missing");
+    cleanReviews(db, heads.s, { base: heads.newMain, at: NOW + 1, attempt: 2 });
+    expect(await automatic(db, { attempt: 2, severity: "P2" })).toBe("missing");
+    expect(await automatic(db, { attempt: 2 })).toBe("approved");
+    expect(getAutomaticRiskApproval(db, itemId, heads.s)?.evidenceIds).toEqual([
+      `${heads.s}/security-review/2.json`,
+      `${heads.s}/independent-review/2.json`,
+    ]);
+    cleanReviews(db, heads.s, { base: heads.newMain, at: NOW + 1, attempt: 2, failedProbe: true });
+    expect(await automatic(db, { attempt: 2 })).toBe("missing");
+  } finally {
+    db.close();
+  }
+});
+
+for (const duplicateFirst of [true, false])
+  test(`ambiguous review attempts fail closed with dirty record first: ${duplicateFirst}`, async () => {
+    const { db, itemId } = held();
+    try {
+      cleanReviews(db);
+      expect(await automatic(db, { duplicateFirst })).toBe("missing");
+      expect(getAutomaticRiskApproval(db, itemId, heads.s)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+for (const samePatch of [true, false])
+  test(`manual carry-over takes precedence over automatic approval, same patch: ${samePatch}`, async () => {
+    const { db, itemId } = riskApproved();
+    try {
+      const head = samePatch ? heads.rebased : heads.ciFix;
+      fixAccepted(db, head, heads.base);
+      cleanReviews(db, head);
+      expect(
+        await automatic(db, { head, samePatch, fix: { changed: ["test/x.test.ts"], paths: [] } }),
+      ).toBe("approved");
+      expect(getAutomaticRiskApproval(db, itemId, head)).toBeNull();
+      expect(
+        activities(db).filter((activity) => activity.body.includes("Approved automatically")),
+      ).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
+test("automatic approval closes a pending risk ask and resumes verification", async () => {
+  const { db, itemId } = asked();
+  try {
+    const question = findOpenQuestion(db, "ses_1")!;
+    cleanReviews(db);
+    expect(await automatic(db)).toBe("approved");
+    expect(findOpenQuestion(db, "ses_1")).toBeNull();
+    expect(getLinkAsk(db, question.id)?.closedReason).toBe("cancelled");
+    expect(getLinkAsk(db, question.id)?.decidedBy).toBeNull();
+    expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+    expect(await automatic(db)).toBe("approved");
+    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toHaveLength(1);
   } finally {
     db.close();
   }
