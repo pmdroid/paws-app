@@ -138,6 +138,40 @@ export interface StatusItem {
   endedAt?: string;
   /** Every state change of the item, oldest first, from `work_item_event`. */
   timeline?: StatusItemEvent[];
+  /** How long the item spent in each state since it was delegated. */
+  stateTimes?: StatusStateTimes;
+}
+
+/**
+ * The time an item spent in each engine state, from its creation and `work_item_event`.
+ * `states` add up to `until - since`. An open item's `current` state counts up to `until`, the
+ * time the body was built; a finished item stops when it finished and has `current: null`.
+ */
+export interface StatusStateTimes {
+  since: string;
+  until: string;
+  current: string | null;
+  /** Milliseconds in each engine state, in the order the item first entered it. */
+  states: StatusStateTime[];
+}
+
+export interface StatusStateTime {
+  /** An engine work-item state, such as `recovering` or `merge_queue`. */
+  state: string;
+  ms: number;
+}
+
+/**
+ * The items that merged in the last 24 hours: how long each took from delegation to merge, and
+ * how long an item spent in each state on average. `p90Ms` is the nearest-rank 90th percentile.
+ */
+export interface StatusMergedTimes {
+  since: string;
+  merged: number;
+  medianMs: number;
+  p90Ms: number;
+  /** The average milliseconds per merged item in each state, largest first. */
+  states: StatusStateTime[];
 }
 
 /**
@@ -671,6 +705,8 @@ export interface StatusSnapshotBase {
   linearWebhook?: StatusLinearWebhook;
   /** Repositories GitHub refuses pushes from the Paws App for, the oldest outage first. */
   pushOutages?: StatusPushOutage[];
+  /** Only in the list, while an item merged in the last 24 hours. */
+  mergedTimes?: StatusMergedTimes;
 }
 
 /**
@@ -681,6 +717,68 @@ export interface StatusSnapshotBase {
 export interface StatusSnapshot extends StatusSnapshotBase {
   verdicts: StatusVerdictSummary[];
   agentCloseout?: StatusAgentCloseoutSummary[];
+  slices?: StatusSlice[];
+}
+
+export const STATUS_SLICES = [
+  "items",
+  "questions",
+  "mergeQueue",
+  "mergeHistory",
+  "evidence",
+  "intake",
+  "ciRounds",
+  "dead",
+] as const;
+export type StatusSlice = (typeof STATUS_SLICES)[number];
+
+export const STATUS_SLICE_FIELDS = {
+  items: ["items", "runs", "verdicts", "agentCloseout", "mergedTimes"],
+  questions: ["questions"],
+  mergeQueue: ["mergeQueue", "pushOutages"],
+  mergeHistory: ["mergeHistory"],
+  evidence: ["evidence"],
+  intake: ["intake", "linearBudget", "linearWebhook"],
+  ciRounds: ["ciRounds"],
+  dead: ["dead"],
+} as const satisfies Record<StatusSlice, readonly (keyof StatusSnapshot)[]>;
+
+export const GENERATED_AT_HEADER = "Paws-Generated-At";
+
+export function statusSlicesPath(slices: readonly StatusSlice[]): string {
+  const named = STATUS_SLICES.filter((slice) => slices.includes(slice));
+  return `${STATUS_API_PATH}?slices=${named.join(",")}`;
+}
+
+export function parseStatusSlices(
+  raw: string | null,
+): { ok: true; slices: StatusSlice[] | null } | { ok: false; error: string } {
+  if (raw === null) return { ok: true, slices: null };
+  const named = raw.split(",").map((part) => part.trim());
+  const unknown = named.filter((part) => !(STATUS_SLICES as readonly string[]).includes(part));
+  if (unknown.length) return { ok: false, error: `unknown status slice ${unknown.join(", ")}` };
+  return { ok: true, slices: STATUS_SLICES.filter((slice) => named.includes(slice)) };
+}
+
+export function selectStatusSlices(
+  snapshot: StatusSnapshot,
+  slices: readonly StatusSlice[],
+): StatusSnapshot {
+  const body: Record<string, unknown> = {
+    version: snapshot.version,
+    source: snapshot.source,
+    generatedAt: snapshot.generatedAt,
+    project: snapshot.project,
+    slices: [...slices],
+  };
+  for (const slice of slices)
+    for (const field of STATUS_SLICE_FIELDS[slice])
+      if (snapshot[field] !== undefined) body[field] = snapshot[field];
+  return body as unknown as StatusSnapshot;
+}
+
+export function hasStatusSlice(snapshot: StatusSnapshot | null, slice: StatusSlice): boolean {
+  return snapshot !== null && (snapshot.slices === undefined || snapshot.slices.includes(slice));
 }
 
 /**
@@ -1036,9 +1134,17 @@ function ids(values: string[], label: string, problems: string[]): Set<string> {
 }
 
 function readSnapshot(input: unknown): StatusSnapshot {
-  const body = object(input, "status");
+  const sent = object(input, "status");
+  const slices = readSlices(sent);
+  const body: Record<string, unknown> = { ...sent };
+  if (slices !== undefined) {
+    const carried = new Set<string>(slices.flatMap((slice) => STATUS_SLICE_FIELDS[slice]));
+    for (const field of ["items", "runs", "questions", "mergeQueue", "verdicts"])
+      if (!carried.has(field)) body[field] = [];
+  }
   return {
     ...readBase(body),
+    ...(slices === undefined ? {} : { slices }),
     verdicts: array(body, "verdicts", "status").map((entry, index) =>
       readVerdictSummary(entry, `verdicts[${index}]`),
     ),
@@ -1050,6 +1156,13 @@ function readSnapshot(input: unknown): StatusSnapshot {
           ),
         }),
   };
+}
+
+function readSlices(body: Record<string, unknown>): StatusSlice[] | undefined {
+  if (body.slices === undefined) return undefined;
+  return array(body, "slices", "status").map((entry, index) =>
+    oneOf(typeof entry === "string" ? entry : "", STATUS_SLICES, `status.slices[${index}]`),
+  );
 }
 
 function readBase(body: Record<string, unknown>): StatusSnapshotBase {
@@ -1117,7 +1230,41 @@ function readBase(body: Record<string, unknown>): StatusSnapshotBase {
             readPushOutage(entry, `pushOutages[${index}]`),
           ),
         }),
+    ...(body.mergedTimes === undefined
+      ? {}
+      : { mergedTimes: readMergedTimes(body.mergedTimes, "mergedTimes") }),
   };
+}
+
+function readMergedTimes(input: unknown, path: string): StatusMergedTimes {
+  const body = object(input, path);
+  return {
+    since: dateString(body, "since", path),
+    merged: count(body, "merged", path),
+    medianMs: count(body, "medianMs", path),
+    p90Ms: count(body, "p90Ms", path),
+    states: readStateTimeList(body, path),
+  };
+}
+
+function readStateTimes(input: unknown, path: string): StatusStateTimes {
+  const body = object(input, path);
+  return {
+    since: dateString(body, "since", path),
+    until: dateString(body, "until", path),
+    current: nullableText(body, "current", path),
+    states: readStateTimeList(body, path),
+  };
+}
+
+function readStateTimeList(body: Record<string, unknown>, path: string): StatusStateTime[] {
+  return array(body, "states", path).map((entry, at) => {
+    const state = object(entry, `${path}.states[${at}]`);
+    return {
+      state: text(state, "state", `${path}.states[${at}]`),
+      ms: count(state, "ms", `${path}.states[${at}]`),
+    };
+  });
 }
 
 function readPushOutage(input: unknown, path: string): StatusPushOutage {
@@ -1350,6 +1497,9 @@ function readItem(input: unknown, index: number): StatusItem {
             readItemEvent(entry, `${path}.timeline[${at}]`),
           ),
         }),
+    ...(body.stateTimes === undefined
+      ? {}
+      : { stateTimes: readStateTimes(body.stateTimes, `${path}.stateTimes`) }),
   };
 }
 

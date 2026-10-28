@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { JOB_KIND, MERGE_LANE } from "../core";
+import { JOB_KIND } from "../core";
 import {
   enqueueJob,
   getConfirmedRemoteMerge,
@@ -24,7 +24,6 @@ function enqueueMerges(h: MergeHarness, ids: string[]): void {
   for (const id of ids)
     enqueueJob(h.db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       jobKey: `merge:${id}`,
       payload: { itemId: id, head: getWorkItem(h.db, id)!.checkpoint!.wipCommit },
       now: h.clock.now(),

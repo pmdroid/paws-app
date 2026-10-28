@@ -8,7 +8,7 @@ export type AnswerableQuestion =
   | { kind: "repository" }
   | { kind: "runner-wait" }
   | { kind: "time-limit" }
-  | { kind: "closeout-bypass" }
+  | { kind: "closeout-help" }
   | { kind: "ci-help" }
   | { kind: "visual-review"; delegatorId: string | null; leadId: string | null }
   | { kind: "github-auth"; actorId: string }
@@ -45,7 +45,7 @@ export const ANSWER_POLICY: Policy = {
   repository: canAnswer,
   "runner-wait": canAnswer,
   "time-limit": canAnswer,
-  "closeout-bypass": canAnswer,
+  "closeout-help": canAnswer,
   "ci-help": canAnswer,
   "visual-review": canAnswer,
   "github-auth": canAnswer,

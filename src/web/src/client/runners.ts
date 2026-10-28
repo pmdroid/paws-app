@@ -4,6 +4,7 @@ import { durationLabel, esc, skillVersionLabel, statePill } from "./format";
 import { readCsrfToken } from "./csrf";
 import { openAgentAccounts } from "./agent-accounts";
 import { routeHref } from "./route";
+import { livePoll } from "./poll";
 
 /** The runner list refreshes this often while the page is visible. */
 export const RUNNER_POLL_MS = 10_000;
@@ -436,12 +437,6 @@ export function hostEnrollmentCommand(enrollment: HostEnrollment & { config: obj
   ].join(" && \\\n  ");
 }
 
-type Timers = {
-  setInterval: (handler: () => void, ms: number) => unknown;
-  clearInterval: (id: never) => void;
-};
-type Visibility = Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">;
-
 const AGENTS = ["claude", "codex", "grok"] as const;
 const AGENT_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
@@ -451,26 +446,6 @@ const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   usage_limit: ["warn", "Usage limit"],
   unknown: ["", "Not checked"],
 };
-
-/** Runs `tick` every `every` ms while the document is visible, and at once when it becomes visible. */
-export function livePoll(
-  tick: () => void,
-  visibility: Visibility = document,
-  timers: Timers = globalThis as unknown as Timers,
-  every = RUNNER_POLL_MS,
-): () => void {
-  const interval = timers.setInterval(() => {
-    if (visibility.visibilityState === "visible") tick();
-  }, every);
-  const onVisibility = () => {
-    if (visibility.visibilityState === "visible") tick();
-  };
-  visibility.addEventListener("visibilitychange", onVisibility);
-  return () => {
-    timers.clearInterval(interval as never);
-    visibility.removeEventListener("visibilitychange", onVisibility);
-  };
-}
 
 /** Negative when `a` is older than `b`; null when either is not a dotted version. */
 export function compareVersions(a: string, b: string): number | null {
@@ -1915,7 +1890,7 @@ export function createRunners() {
         );
         return;
       }
-      stopPolling ??= livePoll(poll);
+      stopPolling ??= livePoll(poll, RUNNER_POLL_MS);
       void load();
     },
     refresh() {

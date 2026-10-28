@@ -201,7 +201,6 @@ export {
 export type { Migration } from "./migration";
 export { openDatabase } from "./open";
 export { journal, setJournalSink } from "./journal";
-export { assertLinearQueue } from "./legacy-tracker";
 export {
   advanceOutboxSession,
   attachSessionUpdates,

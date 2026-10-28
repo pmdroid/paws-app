@@ -24,7 +24,7 @@ describe("status snapshot cache", () => {
     const first = (await handleStatusRequest(poll(), { provider, snapshotCache }))!;
     expect(first.status).toBe(200);
     const etag = first.headers.get("ETag")!;
-    expect(etag).toMatch(/^"[0-9a-z]+"$/);
+    expect(etag).toMatch(/^W\/".+"$/);
     const body = await first.text();
     now += STATUS_SNAPSHOT_REUSE_MS - 1;
     const second = (await handleStatusRequest(poll(), { provider, snapshotCache }))!;
