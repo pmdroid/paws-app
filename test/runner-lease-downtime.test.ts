@@ -78,7 +78,7 @@ async function fixture() {
   const { runnerId } = await control.enroll({
     ...pending,
     token: control.createEnrollment(
-      { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now(), teamIds: [] },
+      { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now(), teamIds: [] },
       pending,
     ).token,
   });
