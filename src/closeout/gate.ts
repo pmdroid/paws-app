@@ -57,6 +57,7 @@ export type CloseoutGateOptions = {
   commandRunner?: CloseoutCommandPort;
   published?: GateInput["published"];
   approvals?: GateInput["approvals"];
+  fromCi?: GateInput["fromCi"];
 };
 
 /**
@@ -96,6 +97,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.commandRunner ? { commandRunner: options.commandRunner } : {}),
         ...(options.published ? { published: options.published } : {}),
         ...(options.approvals ? { approvals: options.approvals } : {}),
+        ...(options.fromCi ? { fromCi: options.fromCi } : {}),
       });
       return toVerdict(result, input.attempt);
     };

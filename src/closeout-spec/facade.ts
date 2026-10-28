@@ -46,6 +46,7 @@ import { runCloseoutCommands, type CloseoutCommandPort } from "./run/run";
 import {
   SPEC_VERSION,
   type CandidateIdentity,
+  type CiResult,
   type DecisionDocument,
   type DecisionWarning,
   type EarlierFinding,
@@ -136,6 +137,8 @@ export type RunRequest = {
   commandRunner?: CloseoutCommandPort;
   published?: readonly PublishedEvidence[];
   approvals?: readonly EvidenceApproval[];
+  /** Command checks whose result comes from green CI at `head`. See {@link ciMappings}. */
+  fromCi?: readonly CiResult[];
 };
 
 export type ReviewIntake =
@@ -271,6 +274,24 @@ export function reviewRequirements(
         failOn,
       })),
   };
+}
+
+/**
+ * The command checks of the trusted policy that declare `ci:`, each with its CI check pattern.
+ * Empty when the policy cannot be read.
+ */
+export function ciMappings(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): Array<{ id: string; ci: string }> {
+  const loaded = loadOrigin(repo, home, policyRoot);
+  if (!loaded.ok) return [];
+  return loaded.policy.items.flatMap((item) =>
+    item.kind === "command" && !("supported" in item) && item.ci !== undefined
+      ? [{ id: item.id, ci: item.ci }]
+      : [],
+  );
 }
 
 /**
@@ -545,6 +566,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     ...(input.progress !== undefined ? { progress: input.progress } : {}),
     ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
     ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+    ...(input.fromCi !== undefined ? { fromCi: input.fromCi } : {}),
   });
   if (ran.blocked !== undefined) {
     return evaluate(

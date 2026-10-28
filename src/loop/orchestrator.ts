@@ -85,7 +85,9 @@ import {
   type CloseoutVerdict,
   type ResolvedEvidence,
   type CandidateIdentity,
+  type CiResult,
   candidatePolicyDigest,
+  ciMappings,
 } from "../closeout";
 import {
   CommandBus,
@@ -258,6 +260,7 @@ import {
   fetchUpstreamMain,
   leaveGitHubMergeQueue,
   readReviewThreads,
+  readPullCi,
   mergedPullHeads,
   readPullMerge,
   UPSTREAM_MAIN_REF,
@@ -354,10 +357,14 @@ import {
   type VerificationOwner,
 } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import { ciForRecheck, type CiRecheck } from "./ci-recheck";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
   REBASE_CONFLICT_INSTRUCTION,
   advanceMerge,
+  ciFixHandoff,
+  ciFixRoundLine,
+  type FailedCiCheck,
   ciWaitVerification,
   parkMerge,
   rebaseBudgetFor,
@@ -452,6 +459,8 @@ export type OrchestratorOptions = {
   closeoutGate?: (options: CloseoutGateOptions) => CloseoutGate;
   /** Reads the review requirements from the trusted Closeout policy. Tests pass a fake. */
   reviewRequirements?: typeof reviewRequirements;
+  /** How often a merge-queue re-check reads CI while it waits for it, and for how long. */
+  ciRecheckWait?: { pollMs: number; maxWaitMs: number };
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
@@ -2733,9 +2742,23 @@ export class Orchestrator {
       await this.flush();
     if (!options.decide && (await this.openVisualReviewCheck(item, worktree, base, head)))
       await this.flush();
+    const ci = options.decide ? null : await this.recheckCi(item, worktree, head);
+    if (ci?.kind === "ci-failed" && this.sendBackForCi(item, head, ci.checks)) {
+      await this.flush();
+      return;
+    }
+    const fromCi = ci?.kind === "check" ? ci.fromCi : [];
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
-      const verdict = await this.runVerification(item, worktree, base, head, candidate, decide);
+      const verdict = await this.runVerification(
+        item,
+        worktree,
+        base,
+        head,
+        candidate,
+        decide,
+        fromCi,
+      );
       await this.recordReviewRounds(item, verdict.owner.runId);
       if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
@@ -2798,6 +2821,7 @@ export class Orchestrator {
     head: string,
     candidate: CandidateIdentity,
     decide = false,
+    fromCi: readonly CiResult[] = [],
   ): Promise<CloseoutVerdict & { owner: VerificationOwner }> {
     if (!this.options.remoteExecution) {
       this.assertJobCurrent(item.id);
@@ -2810,6 +2834,7 @@ export class Orchestrator {
         candidate,
         () => this.assertJobCurrent(item.id),
         decide,
+        fromCi,
       );
       this.assertJobCurrent(item.id);
       return { ...verdict, owner: { version: owner.version, runId: owner.currentRunId } };
@@ -2895,6 +2920,7 @@ export class Orchestrator {
         candidate,
         assertCurrent,
         decide,
+        fromCi,
       );
       // A finished verdict still decides an item this run owns, even after an abort (PAS-771).
       assertOwned();
@@ -2912,6 +2938,7 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     assertCurrent: () => void = () => {},
     decide = false,
+    fromCi: readonly CiResult[] = [],
   ): Promise<CloseoutVerdict> {
     const policy = await this.commitPolicy(item);
     if (policy)
@@ -2964,6 +2991,7 @@ export class Orchestrator {
           policy,
           assertCurrent,
           report: (body) => report(body),
+          fromCi: fromCi.map((entry) => entry.id),
         });
         runnerChecks.set(commit, checks);
       }
@@ -3018,6 +3046,7 @@ export class Orchestrator {
       candidate,
       published: () => publishedEvidence(this.db, item.id),
       approvals: () => visualReviewApprovals(this.db, item.id, itemPathId(item)),
+      ...(fromCi.length > 0 ? { fromCi } : {}),
       ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
         async review(request) {
@@ -3075,6 +3104,8 @@ export class Orchestrator {
       policy: GitCommitPolicy | undefined;
       assertCurrent: () => void;
       report: (body: string) => void;
+      /** Checks Closeout took from CI, which the runner leaves alone. */
+      fromCi?: readonly string[];
     },
   ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
@@ -3106,7 +3137,7 @@ export class Orchestrator {
           profile: deps.profiles?.implementer,
           itemId: itemPathId(item),
           runId: `checks-${itemPathId(item)}-${short}-${attempt}`,
-          prompt: closeoutChecksPrompt(head),
+          prompt: closeoutChecksPrompt(head, input.fromCi),
           worktreePath: worktree,
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
@@ -3294,6 +3325,83 @@ export class Orchestrator {
     if (!current) return;
     this.post(current, "thought", summary, `${current.currentRunId ?? current.id}:preparation`);
     await this.askCloseoutHelp(current, undefined, summary);
+  }
+
+  /**
+   * CI on the head of a merge-queue re-check (a CI or conflict fix, or a re-verify). Null for a
+   * first Closeout run, or a policy that maps no check to CI.
+   */
+  private async recheckCi(
+    item: WorkItemRecord,
+    worktree: string,
+    head: string,
+  ): Promise<CiRecheck | null> {
+    // Closeout accepted an earlier head and its pull request is open: the item is in the merge
+    // queue, back from a CI or conflict fix, or re-verified there. A first run has no accepted head.
+    const pull = getItemPullRequest(this.db, item.id);
+    if (pull === null || getWorkItem(this.db, item.id)?.acceptedHead == null) return null;
+    const repository = this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github) return null;
+    const { home, policyRoot } = this.closeoutHome(item);
+    const mappings = ciMappings(worktree, home, policyRoot);
+    if (mappings.length === 0) return null;
+    const signal = this.signalForItem(item.id);
+    const short = head.slice(0, 7);
+    return ciForRecheck({
+      mappings,
+      read: () => {
+        this.assertJobCurrent(item.id);
+        return readPullCi({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pull.pullNumber,
+          head,
+          ...this.gitHubCredentials(github),
+        });
+      },
+      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      now: () => this.now(),
+      ...(this.options.ciRecheckWait ?? {}),
+      onWait: (message) =>
+        this.options.journal?.(
+          `item ${item.linearIdentifier} re-check at ${short} waits for CI: ${message}`,
+        ),
+    });
+  }
+
+  /**
+   * CI failed on a merge-queue re-check's head: a CI fix round, as the merge lane would send.
+   * False when no fix round is left, so the checks run and the usual way asks.
+   */
+  private sendBackForCi(
+    item: WorkItemRecord,
+    head: string,
+    checks: readonly FailedCiCheck[],
+  ): boolean {
+    this.assertJobCurrent(item.id);
+    const current = getWorkItem(this.db, item.id);
+    if (
+      !current ||
+      current.cancelRequested ||
+      (current.state !== "verifying" && current.state !== "merge_queue")
+    )
+      return false;
+    const rounds = fixRounds(this.db, item.id);
+    const limit = this.fixRoundLimit(current);
+    if (rounds >= limit) return false;
+    this.options.journal?.(
+      `item ${current.linearIdentifier} re-check at ${head.slice(0, 7)}: ${ciFixRoundLine(checks, rounds + 1, limit)}`,
+    );
+    return (
+      restart(this.db, current, {
+        reason: "ci",
+        body: ciFixHandoff(checks),
+        now: this.now(),
+        jobKey: `ci-failed:${item.id}:recheck:${head}`,
+      }) !== null
+    );
   }
 
   private async askCloseoutHelp(

@@ -11,6 +11,9 @@ export { SPEC_COMMIT, SPEC_VERSION } from "./types";
 export type {
   Artifact,
   CandidateIdentity,
+  CiCheckConclusion,
+  CiProvenance,
+  CiResult,
   CommandExec,
   CommandRecord,
   CommandRunRequest,
@@ -85,6 +88,7 @@ export { scrubText } from "./run/scrub";
 export {
   addReview,
   approvalRules,
+  ciMappings,
   decision,
   digest,
   candidatePolicyDigest,

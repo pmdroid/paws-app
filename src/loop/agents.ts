@@ -78,11 +78,16 @@ export function closeoutPrompt(): string {
   ].join(" ");
 }
 
-export function closeoutChecksPrompt(head: string): string {
+export function closeoutChecksPrompt(head: string, fromCi: readonly string[] = []): string {
   return [
     `Run Paws Closeout on commit ${head}. Main moved or the commit is new, so its checks have not run yet.`,
     "Do not edit, create, or delete files, and do not commit. Do not try to fix anything.",
     "Call get_closeout, run each pending id in order with run_closeout, then call get_closeout again.",
+    ...(fromCi.length > 0
+      ? [
+          `Skip these pending ids: ${fromCi.join(", ")}. Paws took their results from green CI on this commit.`,
+        ]
+      : []),
     "Keep going when a check fails, so every pending check has a result.",
     "Reviews stay in required and are not pending. Leave them.",
     "Finish with one line per check: its id and status.",

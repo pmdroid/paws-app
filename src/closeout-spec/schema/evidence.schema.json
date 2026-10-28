@@ -75,6 +75,29 @@
           "type": "array",
           "maxItems": 16,
           "items": { "$ref": "#/$defs/artifact" }
+        },
+        "ci": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run", "checks"],
+          "properties": {
+            "run": { "type": ["string", "null"], "minLength": 1, "maxLength": 2048 },
+            "checks": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "conclusion", "url"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+                  "conclusion": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "url": { "type": ["string", "null"], "minLength": 1, "maxLength": 2048 }
+                }
+              }
+            }
+          }
         }
       }
     },
