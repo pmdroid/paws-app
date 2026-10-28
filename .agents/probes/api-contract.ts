@@ -1,25 +1,4 @@
-/**
- * Closeout rule `api-contract`.
- *
- * Builds the API contract at the base and at the candidate and compares them:
- *
- * - `runner-protocol`: every zod schema exported by `src/runner-protocol`, as JSON Schema.
- *   A runner and Paws are updated separately and the protocol has no version.
- * - `status`: the exported interfaces and object types of `src/web/src/contract.ts`
- *   (the status snapshot) and its exported constants (paths, state lists).
- * - `route`: the HTTP routes Paws serves, read from the request branches under `src/`
- *   (`path === "/api/..."`, `path.startsWith(...)`, with the `request.method` checked
- *   in the same condition or inside the branch). `*` is any method.
- *
- * A removed schema, field, value, type or route, a field that became required or a
- * new required field in a runner schema, a status field that became optional, and a
- * narrowed type are breaking. Optional event fields and new routes are additive. New
- * command fields and variants also protect older strict command readers.
- *
- * Runs as `bun api-contract.ts --base <sha> --head <sha> --repo <checkout>` with the
- * candidate checked out at `--head`. Only the two parser dependencies are installed from trusted base metadata. Both trees are
- * read from git. Exits 0 when nothing breaks and 1 otherwise, listing each break.
- */
+/** API contract probe. Reads committed source as data using trusted base dependencies. */
 
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,7 +19,7 @@ type Change = { surface: string; name: string; kind: string };
 
 const PROTOCOL = "src/runner-protocol/index.ts";
 const STATUS = "src/web/src/contract.ts";
-// Paws -> runner inputs. Event/result/telemetry schemas retain additive-field policy.
+
 const RUNNER_INPUT_SCHEMAS = new Set([
   "RunnerCommandSchema",
   "SignedRunnerCommandSchema",
@@ -83,8 +62,6 @@ async function run(argv: string[], cwd: string): Promise<string> {
   if (code !== 0) throw new Error(`${argv.join(" ")} exited ${code}\n${err}`);
   return out;
 }
-
-// --- Static extraction. Source expressions are never imported or executed.
 
 type Node = { type: string; start: number; end: number; [key: string]: unknown };
 
@@ -152,28 +129,28 @@ function shape(source: string, node: Node): Shape {
   return result;
 }
 
-function statusShapes(source: string, program: Node): Record<string, Declaration> {
+function statusTypes(source: string, program: Node): Record<string, Declaration> {
   const shapes: Record<string, Declaration> = {};
-  for (const statement of program.body as Node[]) {
-    if (statement.type !== "ExportNamedDeclaration" || !isNode(statement.declaration)) continue;
-    const declaration = statement.declaration;
-    const name = (declaration.id as Node | undefined)?.name as string | undefined;
+  for (const stmt of program.body as Node[]) {
+    if (stmt.type !== "ExportNamedDeclaration" || !isNode(stmt.declaration)) continue;
+    const decl = stmt.declaration;
+    const name = (decl.id as Node | undefined)?.name as string | undefined;
     if (!name) continue;
-    if (declaration.type === "TSInterfaceDeclaration") {
-      const heritage = (declaration.extends as Node[] | undefined) ?? [];
+    if (decl.type === "TSInterfaceDeclaration") {
+      const heritage = (decl.extends as Node[] | undefined) ?? [];
       shapes[name] = {
         union: ["{…}"],
-        fields: members(source, (declaration.body as Node).body as Node[]),
+        fields: members(source, (decl.body as Node).body as Node[]),
         extends: heritage.map((item) => text(source, item)),
       };
-    } else if (declaration.type === "TSTypeAliasDeclaration") {
-      shapes[name] = { ...shape(source, declaration.typeAnnotation as Node), extends: [] };
+    } else if (decl.type === "TSTypeAliasDeclaration") {
+      shapes[name] = { ...shape(source, decl.typeAnnotation as Node), extends: [] };
     }
   }
   return shapes;
 }
 
-function sourceFiles(root: string, dir: string): Promise<string[]> {
+function filesIn(root: string, dir: string): Promise<string[]> {
   return readdir(join(root, dir), { recursive: true }).then((names) =>
     names
       .map((name) => join(dir, name))
@@ -189,10 +166,6 @@ function sourceFiles(root: string, dir: string): Promise<string[]> {
   );
 }
 
-/**
- * The name an incoming request path is read through: `path`, `pathname`, `url.pathname`.
- * `request.path` is an outgoing GitHub API request, not a route.
- */
 function isPathRead(node: Node): boolean {
   if (node.type === "Identifier") return /^(path|pathname)$/.test(node.name as string);
   return (
@@ -235,14 +208,14 @@ function literal(node: Node, constants: Map<string, Set<string>>): string | null
 }
 
 type PathCondition = { path: string; negative: boolean };
-function pathConditions(
+function pathTests(
   test: Node,
   constants: Map<string, Set<string>>,
   negated = false,
 ): PathCondition[] {
   if (isFunction(test)) return [];
   if (test.type === "UnaryExpression" && test.operator === "!")
-    return pathConditions(test.argument as Node, constants, !negated);
+    return pathTests(test.argument as Node, constants, !negated);
   if (test.type === "BinaryExpression" && /^[!=]==?$/.test(String(test.operator))) {
     for (const [read, other] of [
       [test.left, test.right],
@@ -267,10 +240,10 @@ function pathConditions(
         return [{ path: `${value}*`, negative: negated }];
     }
   }
-  return children(test).flatMap((child) => pathConditions(child, constants, negated));
+  return children(test).flatMap((child) => pathTests(child, constants, negated));
 }
 function pathsIn(test: Node, constants: Map<string, Set<string>>): string[] {
-  return pathConditions(test, constants).map((condition) => condition.path);
+  return pathTests(test, constants).map((condition) => condition.path);
 }
 
 function methodsIn(test: Node): string[] {
@@ -292,8 +265,7 @@ function methodsIn(test: Node): string[] {
   return methods;
 }
 
-/** Methods at this route level. Other route branches and nested functions own their methods. */
-function methodsBelow(branch: Node, constants: Map<string, Set<string>>): string[] {
+function branchMethods(branch: Node, constants: Map<string, Set<string>>): string[] {
   const methods: string[] = [];
   const visit = (node: Node): void => {
     if (isFunction(node)) return;
@@ -307,7 +279,7 @@ function methodsBelow(branch: Node, constants: Map<string, Set<string>>): string
   visit(branch);
   return methods;
 }
-function requestHandler(node: Node): boolean {
+function handlesRequest(node: Node): boolean {
   if (!isFunction(node)) return false;
   return ((node.params as Node[]) ?? []).some((param) => {
     const annotation = param.typeAnnotation as Node | undefined;
@@ -317,7 +289,7 @@ function requestHandler(node: Node): boolean {
     );
   });
 }
-function continuation(node: Node, ancestors: Node[]): Node {
+function following(node: Node, ancestors: Node[]): Node {
   for (let index = ancestors.length - 1; index >= 0; index--) {
     const block = ancestors[index]!;
     if (block.type !== "BlockStatement") continue;
@@ -339,8 +311,7 @@ function routesIn(program: Node, constants: Map<string, Set<string>>, into: Set<
     for (const method of methods.length ? methods : ["*"]) into.add(`${method} ${path}`);
   };
   walk(program, (node, ancestors) => {
-    // Closures retain the outer request binding; typed and contextual fetch handlers work alike.
-    if (!ancestors.some(requestHandler)) return;
+    if (!ancestors.some(handlesRequest)) return;
     if (node.type === "CallExpression") {
       const callee = node.callee as Node;
       const argument = (node.arguments as Node[])[0];
@@ -354,7 +325,7 @@ function routesIn(program: Node, constants: Map<string, Set<string>>, into: Set<
         if (re?.pattern.startsWith("^\\/"))
           add(
             `regex:/${re.pattern}/${re.flags}`,
-            methodsBelow(continuation(node, ancestors), constants),
+            branchMethods(following(node, ancestors), constants),
           );
       }
     }
@@ -364,7 +335,7 @@ function routesIn(program: Node, constants: Map<string, Set<string>>, into: Set<
         if (value?.startsWith("/"))
           add(
             value,
-            methodsBelow(
+            branchMethods(
               { type: "BlockStatement", start: 0, end: 0, body: branch.consequent },
               constants,
             ),
@@ -373,30 +344,28 @@ function routesIn(program: Node, constants: Map<string, Set<string>>, into: Set<
     }
     if (node.type !== "IfStatement" && node.type !== "ConditionalExpression") return;
     const test = node.test as Node;
-    for (const condition of pathConditions(test, constants)) {
+    for (const condition of pathTests(test, constants)) {
       if (condition.negative) {
-        // A simple exclusion guard routes the continuation; compound auth gates do not serve it.
         if (test.type === "LogicalExpression" || !returnsEarly(node.consequent as Node)) continue;
-        add(condition.path, methodsBelow(continuation(node, ancestors), constants));
+        add(condition.path, branchMethods(following(node, ancestors), constants));
       } else {
         const methods = methodsIn(test);
         add(
           condition.path,
-          methods.length ? methods : methodsBelow(node.consequent as Node, constants),
+          methods.length ? methods : branchMethods(node.consequent as Node, constants),
         );
       }
     }
   });
 }
 
-/** Only this interpreter calls trusted Zod constructors. Candidate expressions are data. */
-async function staticContract(
+async function extract(
   root: string,
   parseSync: Parser,
   z: typeof import("zod").z,
 ): Promise<Contract> {
   const programs = new Map<string, { source: string; program: Node }>();
-  for (const file of await sourceFiles(root, "src")) {
+  for (const file of await filesIn(root, "src")) {
     const source = await readFile(join(root, file), "utf8");
     const parsed = parseSync(file, source);
     if (parsed.errors?.length) throw new Error(`Cannot parse ${file}`);
@@ -410,15 +379,15 @@ async function staticContract(
       if (programs.has(next)) return next;
     throw new Error(`Unresolved contract import ${file}: ${spec}`);
   };
-  const declarations = new Map<string, Map<string, Node>>();
+  const decls = new Map<string, Map<string, Node>>();
   const imports = new Map<string, Map<string, { file: string; name: string }>>();
   for (const [file, { program }] of programs) {
     const locals = new Map<string, Node>();
     const bindings = new Map<string, { file: string; name: string }>();
-    for (let statement of program.body as Node[]) {
-      if (statement.type === "ImportDeclaration" && statement.importKind !== "type") {
-        const spec = String((statement.source as Node).value);
-        for (const binding of statement.specifiers as Node[]) {
+    for (let stmt of program.body as Node[]) {
+      if (stmt.type === "ImportDeclaration" && stmt.importKind !== "type") {
+        const spec = String((stmt.source as Node).value);
+        for (const binding of stmt.specifiers as Node[]) {
           if (binding.importKind === "type") continue;
           const name = String((binding.local as Node).name);
           if (spec === "zod" && name === "z") bindings.set(name, { file: "zod", name: "z" });
@@ -429,16 +398,15 @@ async function staticContract(
             });
         }
       }
-      if (statement.type === "ExportNamedDeclaration" && isNode(statement.declaration))
-        statement = statement.declaration;
-      if (statement.type === "VariableDeclaration")
-        for (const declaration of statement.declarations as Node[])
-          if ((declaration.id as Node).type === "Identifier")
-            locals.set(String((declaration.id as Node).name), declaration.init as Node);
-      if (statement.type === "FunctionDeclaration")
-        locals.set(String((statement.id as Node).name), statement);
+      if (stmt.type === "ExportNamedDeclaration" && isNode(stmt.declaration))
+        stmt = stmt.declaration;
+      if (stmt.type === "VariableDeclaration")
+        for (const decl of stmt.declarations as Node[])
+          if ((decl.id as Node).type === "Identifier")
+            locals.set(String((decl.id as Node).name), decl.init as Node);
+      if (stmt.type === "FunctionDeclaration") locals.set(String((stmt.id as Node).name), stmt);
     }
-    declarations.set(file, locals);
+    decls.set(file, locals);
     imports.set(file, bindings);
   }
   type Helper = { helper: Node; file: string };
@@ -450,7 +418,7 @@ async function staticContract(
     if (cache.has(key)) return cache.get(key);
     if (failures.has(key)) throw failures.get(key);
     if (active.size === 0) budget = 100_000;
-    if (active.has(key)) throw new Error(`Circular contract declaration ${key}`);
+    if (active.has(key)) throw new Error(`Circular contract decl ${key}`);
     active.add(key);
     try {
       const binding = imports.get(file)?.get(name);
@@ -459,11 +427,11 @@ async function staticContract(
       else if (binding)
         value = lookup(resolveFile(file, relative(dirname(file), binding.file)), binding.name);
       else {
-        const node = declarations.get(file)?.get(name);
+        const node = decls.get(file)?.get(name);
         if (!node) {
           const exported = exportsOf(file).get(name);
           if (!exported || (exported.file === file && exported.name === name))
-            throw new Error(`Unknown contract declaration ${key}`);
+            throw new Error(`Unknown contract decl ${key}`);
           value = lookup(exported.file, exported.name);
         } else value = evaluate(node, file, new Map());
       }
@@ -625,7 +593,7 @@ async function staticContract(
       if (callee.type === "MemberExpression" && !callee.computed) {
         const receiver = evaluate(callee.object as Node, file, scope);
         const method = String((callee.property as Node).name);
-        // These callbacks affect output or impose custom refinements. Never execute them.
+
         if (
           receiver instanceof z.ZodType &&
           ["transform", "pipe", "refine", "superRefine"].includes(method)
@@ -677,29 +645,27 @@ async function staticContract(
     if (seen.has(file)) throw new Error(`Circular contract export ${file}`);
     seen.add(file);
     const exports = new Map<string, { file: string; name: string }>();
-    for (const statement of (programs.get(file)?.program.body as Node[]) ?? []) {
-      if (statement.exportKind === "type") continue;
-      if (statement.type === "ExportAllDeclaration") {
+    for (const stmt of (programs.get(file)?.program.body as Node[]) ?? []) {
+      if (stmt.exportKind === "type") continue;
+      if (stmt.type === "ExportAllDeclaration") {
         for (const [name, value] of exportsOf(
-          resolveFile(file, String((statement.source as Node).value)),
+          resolveFile(file, String((stmt.source as Node).value)),
           new Set(seen),
         ))
           exports.set(name, value);
       }
-      if (statement.type !== "ExportNamedDeclaration") continue;
-      const declaration = statement.declaration as Node | null;
-      if (declaration?.type === "VariableDeclaration")
-        for (const item of declaration.declarations as Node[]) {
+      if (stmt.type !== "ExportNamedDeclaration") continue;
+      const decl = stmt.declaration as Node | null;
+      if (decl?.type === "VariableDeclaration")
+        for (const item of decl.declarations as Node[]) {
           const name = String((item.id as Node).name);
           exports.set(name, { file, name });
         }
-      for (const spec of statement.specifiers as Node[]) {
+      for (const spec of stmt.specifiers as Node[]) {
         if (spec.exportKind === "type") continue;
         const name = keyName(spec.local as Node)!;
         exports.set(keyName(spec.exported as Node)!, {
-          file: statement.source
-            ? resolveFile(file, String((statement.source as Node).value))
-            : file,
+          file: stmt.source ? resolveFile(file, String((stmt.source as Node).value)) : file,
           name,
         });
       }
@@ -709,7 +675,7 @@ async function staticContract(
   const contract: Contract = { schemas: {}, constants: {}, status: {}, routes: [] };
   if (programs.has(PROTOCOL))
     for (const [name, binding] of exportsOf(PROTOCOL)) {
-      const node = declarations.get(binding.file)?.get(binding.name);
+      const node = decls.get(binding.file)?.get(binding.name);
       if (!node || isFunction(node)) continue;
       let value: unknown;
       try {
@@ -726,17 +692,15 @@ async function staticContract(
     }
   const status = programs.get(STATUS);
   if (status) {
-    contract.status = statusShapes(status.source, status.program);
+    contract.status = statusTypes(status.source, status.program);
     for (const [name, binding] of exportsOf(STATUS)) {
-      if (!declarations.get(binding.file)?.has(binding.name)) continue;
-      const node = declarations.get(binding.file)!.get(binding.name)!;
+      if (!decls.get(binding.file)?.has(binding.name)) continue;
+      const node = decls.get(binding.file)!.get(binding.name)!;
       if (isFunction(node)) continue;
       try {
         const value = lookup(binding.file, binding.name);
         if (isJson(value)) contract.constants[name] = value;
-      } catch {
-        /* Non-data exports are not part of the status constant contract. */
-      }
+      } catch {}
     }
   }
   const routes = new Set<string>();
@@ -758,7 +722,7 @@ async function staticContract(
         }
       }
     });
-    // Resolve only identifiers actually used in path comparisons, lazily.
+
     const names = new Set<string>();
     walk(program, (node) => {
       if (node.type !== "BinaryExpression") return;
@@ -769,7 +733,7 @@ async function staticContract(
         if (isPathRead(read) && other.type === "Identifier") names.add(String(other.name));
     });
     for (const name of names) {
-      if (!declarations.get(file)?.has(name) && !imports.get(file)?.has(name)) continue;
+      if (!decls.get(file)?.has(name) && !imports.get(file)?.has(name)) continue;
       const value = lookup(file, name);
       if (typeof value === "string") constants.set(name, new Set([value]));
     }
@@ -779,8 +743,6 @@ async function staticContract(
   return contract;
 }
 type Parser = (file: string, source: string) => { program: Node; errors?: unknown[] };
-
-// --- Comparison.
 
 function isObject(value: Json | undefined): value is { [key: string]: Json } {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -824,7 +786,7 @@ function variants(schema: { [key: string]: Json }): Json[] {
 type Found = (at: string, kind: string) => void;
 type Added = (at: string) => void;
 
-function compareLimits(
+function limits(
   base: { [key: string]: Json },
   next: { [key: string]: Json },
   at: string,
@@ -872,10 +834,7 @@ function compareLimits(
       found(at, `narrowed: ${key} changed`);
 }
 
-/** Detects removed inputs and narrowed readers. Commands also protect the old strict reader.
- * Event optional fields remain additive by policy, including strict event objects.
- */
-function compareSchema(
+function compare(
   base: Json,
   next: Json,
   at: string,
@@ -884,9 +843,9 @@ function compareSchema(
   command = false,
 ): void {
   if (!isObject(base) || !isObject(next)) return;
-  compareLimits(base, next, at, found);
+  limits(base, next, at, found);
   if (command)
-    compareLimits(next, base, at, (path, kind) =>
+    limits(next, base, at, (path, kind) =>
       found(path, `old runner rejects widened input: ${kind}`),
     );
   if (base.additionalProperties !== false && next.additionalProperties === false)
@@ -896,7 +855,7 @@ function compareSchema(
   const before = variants(base);
   const after = variants(next);
   const remaining = new Set(after.map((_, index) => index));
-  // Exact matches first, so repeated primitive kinds retain their own constraints.
+
   const pairs = new Map<number, number>();
   before.forEach((variant, index) => {
     const exact = [...remaining].find((i) => JSON.stringify(variant) === JSON.stringify(after[i]));
@@ -913,7 +872,7 @@ function compareSchema(
       match = candidates.sort((a, b) => {
         const score = (i: number) => {
           let count = 0;
-          compareSchema(
+          compare(
             variant,
             after[i]!,
             at,
@@ -928,7 +887,7 @@ function compareSchema(
       if (match !== undefined) remaining.delete(match);
     }
     if (match === undefined) found(at, `variant ${key} removed`);
-    else compareSchema(variant, after[match]!, `${at}<${key}>`, found, added, command);
+    else compare(variant, after[match]!, `${at}<${key}>`, found, added, command);
   });
   for (const index of remaining) {
     const key = tag(after[index]!);
@@ -940,7 +899,7 @@ function compareSchema(
   const required = new Set(Array.isArray(base.required) ? base.required.map(String) : []);
   for (const key of Object.keys(props)) {
     if (!(key in nextProps)) found(`${at}.${key}`, "removed");
-    else compareSchema(props[key]!, nextProps[key]!, `${at}.${key}`, found, added, command);
+    else compare(props[key]!, nextProps[key]!, `${at}.${key}`, found, added, command);
   }
   for (const key of Object.keys(nextProps))
     if (!(key in props)) {
@@ -956,10 +915,9 @@ function compareSchema(
       if (!(Array.isArray(next.required) ? next.required : []).includes(key))
         found(`${at}.${key}`, "old runner requires field");
   if (base.items !== undefined && next.items !== undefined)
-    compareSchema(base.items, next.items, `${at}[]`, found, added, command);
+    compare(base.items, next.items, `${at}[]`, found, added, command);
 }
 
-/** Compares two status snapshot shapes the way the dashboard reads a snapshot. */
 function compareShape(base: Shape, next: Shape, at: string, found: Found, added: Added): void {
   const kept = new Set(next.union);
   const removed = base.union.filter((member) => !kept.has(member));
@@ -980,11 +938,11 @@ function compareShape(base: Shape, next: Shape, at: string, found: Found, added:
   if (base.items && next.items) compareShape(base.items, next.items, `${at}[]`, found, added);
 }
 
-function compareConstant(base: Json, next: Json, at: string, found: Found, added: Added): void {
+function diffConst(base: Json, next: Json, at: string, found: Found, added: Added): void {
   if (isObject(base) && isObject(next)) {
     for (const [key, value] of Object.entries(base)) {
       if (!(key in next)) found(`${at}.${key}`, "removed");
-      else compareConstant(value, next[key]!, `${at}.${key}`, found, added);
+      else diffConst(value, next[key]!, `${at}.${key}`, found, added);
     }
     for (const key of Object.keys(next)) if (!(key in base)) added(`${at}.${key}`);
   } else if (Array.isArray(base) && Array.isArray(next)) {
@@ -1017,7 +975,7 @@ function diff(base: Contract, next: Contract): { breaks: Change[]; additions: st
     if (!(name in next.schemas))
       breaks.push({ surface: "runner-protocol", name, kind: "schema removed" });
     else
-      compareSchema(
+      compare(
         schema,
         next.schemas[name]!,
         "",
@@ -1030,16 +988,16 @@ function diff(base: Contract, next: Contract): { breaks: Change[]; additions: st
     if (!(name in base.schemas)) additions.push(`runner-protocol\t${name}`);
 
   const status = surface("status");
-  for (const [name, declaration] of Object.entries(base.status)) {
+  for (const [name, decl] of Object.entries(base.status)) {
     const after = next.status[name];
     if (after === undefined) {
       breaks.push({ surface: "status", name, kind: "type removed" });
       continue;
     }
-    for (const parent of declaration.extends)
+    for (const parent of decl.extends)
       if (!after.extends.includes(parent))
         breaks.push({ surface: "status", name, kind: `no longer extends ${parent}` });
-    compareShape(declaration, after, "", status.found(name), status.added(name));
+    compareShape(decl, after, "", status.found(name), status.added(name));
   }
   for (const name of Object.keys(next.status))
     if (!(name in base.status)) additions.push(`status\t${name}`);
@@ -1047,7 +1005,7 @@ function diff(base: Contract, next: Contract): { breaks: Change[]; additions: st
   for (const [name, value] of Object.entries(base.constants)) {
     const after = next.constants[name];
     if (after === undefined) breaks.push({ surface: "status", name, kind: "export removed" });
-    else compareConstant(value, after, "", status.found(name), status.added(name));
+    else diffConst(value, after, "", status.found(name), status.added(name));
   }
   for (const name of Object.keys(next.constants))
     if (!(name in base.constants)) additions.push(`status\t${name}`);
@@ -1070,8 +1028,6 @@ function diff(base: Contract, next: Contract): { breaks: Change[]; additions: st
   return { breaks, additions };
 }
 
-// --- Main.
-
 if (!values.base || !values.head || !values.repo) {
   console.error("usage: api-contract.ts --base <sha> --head <sha> --repo <candidate checkout>");
   process.exit(2);
@@ -1084,10 +1040,7 @@ async function commit(sha: string): Promise<string> {
   ).trim();
 }
 
-// Only the trusted base supplies executable dependencies and installation metadata.
-// Both source trees are archived as data. No child starts in either source tree.
 async function tree(sha: string, dir: string): Promise<void> {
-  // Batch immutable blobs, preserving binary bytes and ignoring export-ignore attributes.
   const listed = await run(["git", "ls-tree", "-r", "-z", sha], repo);
   const files: { path: string; oid: string }[] = [];
   for (const entry of listed.split("\0")) {
@@ -1135,7 +1088,6 @@ async function tree(sha: string, dir: string): Promise<void> {
   }
 }
 
-/** Keep only trusted parser packages and their locked dependencies, never candidate metadata. */
 async function parserDependencies(baseDir: string, deps: string): Promise<void> {
   type Entry = [
     string,
@@ -1174,7 +1126,6 @@ async function parserDependencies(baseDir: string, deps: string): Promise<void> 
       ...entry[2].dependencies,
       ...entry[2].optionalDependencies,
     })) {
-      // Bun lockfiles place a conflicting dependency under its parent package key.
       let resolved = `${name}/${dependency}`;
       if (!lock.packages[resolved]) resolved = dependency;
       include(resolved);
@@ -1183,8 +1134,7 @@ async function parserDependencies(baseDir: string, deps: string): Promise<void> 
   for (const name of Object.keys(dependencies)) include(name);
   await writeFile(
     join(deps, "package.json"),
-    // Overrides are part of the frozen lock's resolution metadata. Keep the trusted
-    // base values in both files, even when an override is unrelated to the parsers.
+
     JSON.stringify({
       name: workspace.name,
       private: true,
@@ -1229,8 +1179,8 @@ try {
     parseSync: Parser;
   };
   const { z } = (await import(Bun.resolveSync("zod", deps))) as typeof import("zod");
-  const before = await staticContract(baseDir, parseSync, z);
-  const after = await staticContract(nextDir, parseSync, z);
+  const before = await extract(baseDir, parseSync, z);
+  const after = await extract(nextDir, parseSync, z);
   const { breaks, additions } = diff(before, after);
   for (const change of breaks) console.log(`${change.surface}\t${change.name}\t${change.kind}`);
   for (const addition of additions) console.log(`${addition}\tadded`);
