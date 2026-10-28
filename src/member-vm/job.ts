@@ -5,6 +5,7 @@ import {
   isProvisioningError,
   type ExeDev,
   type ExeDevBootstrap,
+  type ExeDevVmSize,
   type ProvisioningErrorCode,
 } from "../provisioning";
 import { workspaceTokenHash } from "../workspace";
@@ -21,6 +22,8 @@ export type MemberVmProvisioning = {
   exeDev: ExeDev;
   bootstrap: ExeDevBootstrap;
   mintEnrollment: MintEnrollment;
+  /** `[member_vm]` in config.toml. Missing: a bare `new`, exe.dev's default size. */
+  size?: ExeDevVmSize;
 };
 
 export type MemberVmJobOptions = (
@@ -123,7 +126,7 @@ async function runStep(
       const asked = row.createRequestedAt;
       update(db, row, { create_requested_at: asked ?? now() }, now());
       try {
-        await exeDev.createVm(vm);
+        await exeDev.createVm(vm, options.size);
       } catch (error) {
         const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
         if (ours) journalCaught(error, "member-vm.createVm", null, "resuming our create request");

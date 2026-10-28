@@ -166,9 +166,26 @@ export type MemberVm = {
     steps: { step: MemberVmDeleteStep; state: StepState; elapsedMs: number | null }[];
   } | null;
 };
+/** `[member_vm]` in config.toml. A missing field is exe.dev's default. */
+export type MemberVmSize = { cpu?: number; memoryGb?: number; diskGb?: number; image?: string };
 export type MemberVmState =
   | { available: false }
-  | { available: true; vm: MemberVm | null; vms?: MemberVm[] };
+  | { available: true; vm: MemberVm | null; vms?: MemberVm[]; size?: MemberVmSize };
+
+/** The size Create VM asks exe.dev for, next to the button. */
+export function memberVmSizeMarkup(size: MemberVmSize | undefined): string {
+  if (size === undefined) return "";
+  const parts = [
+    size.cpu === undefined ? "default CPUs" : `${size.cpu} ${size.cpu === 1 ? "CPU" : "CPUs"}`,
+    size.memoryGb === undefined ? "default memory" : `${size.memoryGb} GB memory`,
+    size.diskGb === undefined ? "default disk" : `${size.diskGb} GB disk`,
+    ...(size.image === undefined ? [] : [`image ${size.image}`]),
+  ];
+  const text = Object.values(size).every((value) => value === undefined)
+    ? "exe.dev's default size"
+    : parts.join(" · ");
+  return `<p class="muted" id="vm-create-size">Create VM uses ${esc(text)}. Change it under <span class="mono">[member_vm]</span> in config.toml.</p>`;
+}
 
 const VM_STEPS: Record<MemberVm["steps"][number]["step"], string> = {
   create: "Create the VM",
@@ -1371,9 +1388,13 @@ export function createRunners() {
       ? "<p>No runners are enrolled. Select <b>Add a runner</b> to connect a Linux runner.</p>"
       : "<p>No runners are enrolled. A workspace member adds a Linux runner with <b>Add a runner</b>.</p>";
     const vm = addsHosts() && memberVm.available ? memberVm.vm : null;
+    const createVmSize =
+      addsHosts() && memberVm.available && memberVm.vm === null
+        ? memberVmSizeMarkup(memberVm.size)
+        : "";
     const createVm =
       addsHosts() && memberVm.available && memberVm.vm === null
-        ? `<button class="btn" data-vm-create data-focus="vm-create"${disabled}>Create VM</button>`
+        ? `<button class="btn" data-vm-create data-focus="vm-create"${createVmSize ? ' aria-describedby="vm-create-size"' : ""}${disabled}>Create VM</button>`
         : "";
     const actions = addsHosts()
       ? `<div class="settings-actions">${createVm}<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a runner</button></div>`
@@ -1393,7 +1414,7 @@ export function createRunners() {
           )
         : ""
     }`;
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${createVmSize}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });

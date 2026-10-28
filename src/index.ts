@@ -721,9 +721,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmExeDev = createExeDev({ readToken: exeDevToken });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
+  const memberVmSize = () => loadConfigFile(paths.configFile).memberVm ?? {};
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
+    size: memberVmSize,
     ...(options?.memberVm
       ? { exeDev: options.memberVm.exeDev, bootstrap: options.memberVm.bootstrap }
       : {}),
@@ -788,7 +790,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
   const sessionMovesStop = new AbortController();
-  const memberVmHttp = createMemberVmHttp({ db, available: createVmAvailable });
+  const memberVmHttp = createMemberVmHttp({
+    db,
+    available: createVmAvailable,
+    size: memberVmSize,
+  });
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");

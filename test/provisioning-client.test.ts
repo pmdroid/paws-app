@@ -136,6 +136,43 @@ describe("createVm", () => {
     expect(request?.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
   });
 
+  test("sends the configured size as `new` flags", async () => {
+    const { exe, sent } = client(() => json(CREATED));
+    await exe.createVm("ada-paws", { cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" });
+    await exe.createVm("ada-paws", { memoryGb: 8 });
+    await exe.createVm("ada-paws", {});
+    expect(sent.map((request) => request.body)).toEqual([
+      "new --name=ada-paws --cpu=8 --disk=100GB --image=ubuntu:24.04 --memory=16GB",
+      "new --name=ada-paws --memory=8GB",
+      "new --name=ada-paws",
+    ]);
+  });
+
+  test("a size exe.dev refuses fails with exe.dev's message", async () => {
+    for (const [status, body] of [
+      [422, { error: "cpu 64 exceeds your plan limit of 16" }],
+      [200, { error: "cpu 64 exceeds your plan limit of 16" }],
+    ] as const) {
+      const { exe } = client(() => json(body, status));
+      const error = await failure(exe.createVm("ada-paws", { cpu: 64 }));
+      expectCode(error, "createVm", "unknown");
+      expect(error.message).toBe(
+        "exe.dev refused Create VM for ada-paws with --cpu=64: cpu 64 exceeds your plan limit of 16. Change [member_vm] in config.toml.",
+      );
+    }
+    const { exe } = client(() => json({ error: `bad size for ${TOKEN}` }, 400));
+    expect((await failure(exe.createVm("ada-paws", { diskGb: 5 }))).message).toContain(
+      "bad size for [redacted]",
+    );
+  });
+
+  test("an invalid size fails before any request", async () => {
+    const { exe, sent } = client(() => json(CREATED));
+    for (const size of [{ cpu: 0 }, { memoryGb: -1 }, { diskGb: 2.5 }, { image: "x --cpu=99" }])
+      expectCode(await failure(exe.createVm("ada-paws", size)), "createVm", "invalid_command");
+    expect(sent).toHaveLength(0);
+  });
+
   test("rejects invalid VM names before any request", async () => {
     const { exe, sent, reads } = client(() => json(CREATED));
     for (const name of ["", "Ada", "-ada", "ada-", "ada paws", "a;rm -rf /", "a".repeat(64)]) {

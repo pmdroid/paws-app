@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { workspaceMember } from "../db";
+import type { ExeDevVmSize } from "../provisioning";
 import type { WorkspacePrincipal } from "../workspace";
 import {
   findMemberVm,
@@ -56,7 +57,13 @@ export type MemberVmView = {
 /** What `GET /api/runners/vm` and the two POST routes answer. */
 export type MemberVmResponse =
   | { available: false }
-  | { available: true; vm: MemberVmView | null; vms: MemberVmView[] };
+  | {
+      available: true;
+      vm: MemberVmView | null;
+      vms: MemberVmView[];
+      /** The size Create VM asks exe.dev for. Absent when config.toml cannot be read. */
+      size?: ExeDevVmSize;
+    };
 
 export function memberVmView(
   row: MemberVm,
@@ -171,6 +178,8 @@ const MAX_BODY = 4096;
 export function createMemberVmHttp(options: {
   db: Database;
   available: () => boolean | Promise<boolean>;
+  /** `[member_vm]` from config.toml. */
+  size?: () => ExeDevVmSize;
   now?: () => number;
 }) {
   const { db } = options;
@@ -215,12 +224,14 @@ export function createMemberVmHttp(options: {
         startMemberVmDelete(db, { ...member, ...body, now: at });
       }
       const own = findMemberVm(db, member);
+      const size = readSize(options.size);
       return json({
         available: true,
         vm: own === null ? null : memberVmView(own, at),
         vms: listDeletableMemberVms(db, member).map((row) =>
           memberVmView(row, at, memberName(db, row.userId)),
         ),
+        ...(size === null ? {} : { size }),
       } satisfies MemberVmResponse);
     } catch (error) {
       journalCaught(error, "http.createMemberVmHttp.startMemberVm", null);
@@ -230,6 +241,16 @@ export function createMemberVmHttp(options: {
       return json({ error: message }, /membership/i.test(message) ? 403 : 409);
     }
   };
+}
+
+function readSize(read: (() => ExeDevVmSize) | undefined): ExeDevVmSize | null {
+  if (read === undefined) return null;
+  try {
+    return read();
+  } catch (caughtError6) {
+    journalCaught(caughtError6, "http.readSize", null, "Create VM reports the config error");
+    return null;
+  }
 }
 
 function memberName(db: Database, userId: string): string | null {
