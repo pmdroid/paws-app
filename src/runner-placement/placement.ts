@@ -11,6 +11,7 @@ import {
   runnerSlotsHeldBetweenCommands,
   delegatedLinearUserId,
   workspaceMember,
+  findingGroupingAdmins,
 } from "../db";
 import type { PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
 import { eligibleRunners, runnerSetupNeed, RUNNER_ONLINE_MS } from "./eligible";
@@ -106,7 +107,7 @@ export function createRunnerPlacement(options: {
     const session = sessionId ? getLinearSession(db, sessionId) : null;
     if (
       !session ||
-      session.stoppedAt !== null ||
+      (session.stoppedAt !== null && !(input.findingGroups && input.purpose === "helper")) ||
       !session.organizationId ||
       getLinearSessionAccess(db, session.sessionId) !== "allowed"
     )
@@ -118,7 +119,8 @@ export function createRunnerPlacement(options: {
       .get(session.organizationId);
     if (!workspace) throw new Error("Runner workspace is unavailable");
     const repository = item ? getWorkItemRepository(db, item.id) : null;
-    const issueId = item?.linearIssueId ?? session.issueId;
+    const issueId =
+      item?.linearIssueId ?? session.issueId ?? (input.findingGroups ? session.sessionId : null);
     if (!issueId) throw new Error("Runner issue authority is unavailable");
     const placement = item
       ? {
@@ -259,21 +261,43 @@ export function createRunnerPlacement(options: {
               )
               .get(pinnedRunnerId, at - RUNNER_ONLINE_MS) !== null
           : false;
-      const rows = eligibleRunners(db, {
-        ...eligibility(current),
-        agent: input.profile.agent,
-        purpose: input.purpose,
-        now: at,
-        includeRevoked: true,
-      }).filter((runner) => {
-        const reason = !runner.eligible
-          ? runner.reason
-          : pinnedOnline && runner.id !== pinnedRunnerId
-            ? "run pinned to another online runner"
-            : null;
-        if (reason) input.onRejected?.(runner.id, reason);
-        return reason === null;
-      });
+      const groupingTeam =
+        input.findingGroups && input.purpose === "helper"
+          ? db
+              .query<{ teamId: string | null }, [string]>(
+                "SELECT team_id AS teamId FROM linear_session WHERE session_id=?",
+              )
+              .get(current.session.sessionId)?.teamId
+          : null;
+      if (input.findingGroups && !groupingTeam) throw new Error("Runner issue team is unavailable");
+      const scopes =
+        input.findingGroups && input.purpose === "helper"
+          ? findingGroupingAdmins(db, current.workspace.id).map((admin) => ({
+              workspaceId: current.workspace.id,
+              teamId: groupingTeam!,
+              ownerUserId: admin.userId,
+              leadUserIds: [],
+            }))
+          : [eligibility(current)];
+      const rows = scopes
+        .flatMap((owner) =>
+          eligibleRunners(db, {
+            ...owner,
+            agent: input.profile!.agent,
+            purpose: input.findingGroups ? "work" : input.purpose,
+            now: at,
+            includeRevoked: true,
+          }),
+        )
+        .filter((runner) => {
+          const reason = !runner.eligible
+            ? runner.reason
+            : pinnedOnline && runner.id !== pinnedRunnerId
+              ? "run pinned to another online runner"
+              : null;
+          if (reason) input.onRejected?.(runner.id, reason);
+          return reason === null;
+        });
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(

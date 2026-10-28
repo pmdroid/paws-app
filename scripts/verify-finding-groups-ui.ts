@@ -90,6 +90,8 @@ const groups: FindingGroupsResponse = {
   ],
 };
 const actions: unknown[] = [];
+let failGroups = false;
+let groupsReads = 0;
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -98,6 +100,11 @@ const server = Bun.serve({
     if (path === "/api/auth/session") return new Response(null, { status: 404 });
     if (path === "/api/findings") return Response.json(findings);
     if (path === "/api/finding-groups") {
+      if (request.method === "GET") {
+        groupsReads++;
+        if (failGroups)
+          return Response.json({ error: "Grouping temporarily unavailable" }, { status: 500 });
+      }
       if (request.method === "POST") {
         if (request.headers.get("x-paws-csrf") !== "fixture-csrf")
           return Response.json({ error: "CSRF token required" }, { status: 403 });
@@ -160,6 +167,22 @@ try {
   await expect(page.getByRole("status").filter({ hasText: "Group updated." })).toBeVisible();
   await page.getByRole("button", { name: "Run now", exact: true }).click();
   await expect.poll(() => actions.length).toBe(4);
+  await expect(page.getByRole("status").filter({ hasText: "Grouping queued." })).toBeVisible();
+  failGroups = true;
+  await page.goto(`http://127.0.0.1:${server.port}/status/findings`);
+  await expect(page.locator("#finding-1")).toBeVisible();
+  const beforeFilters = groupsReads;
+  await page.locator("[data-findings-filter=severity]").selectOption("P1");
+  await expect(page.locator("[data-findings-filter=severity]")).toHaveValue("P1");
+  expect(groupsReads).toBe(beforeFilters);
+  await page.getByRole("button", { name: "Groups", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Could not load groups");
+  failGroups = false;
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Use constant-time comparisons for secrets" }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
   expect(errors).toEqual([]);
   await Bun.write(
     join(output, "observations.json"),
@@ -169,6 +192,9 @@ try {
         widths: [1440, 390],
         noHorizontalOverflow: true,
         linkedFinding: true,
+        groupsFailureIsolated: true,
+        filtersDoNotFetchGroups: true,
+        groupsRetryRecovers: true,
         actions,
         pageErrors: errors,
       },

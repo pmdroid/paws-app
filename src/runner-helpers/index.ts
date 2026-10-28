@@ -141,7 +141,7 @@ export function createRunnerHelpers(options: {
           workspaceId: runner.workspaceId,
           sessionGeneration: session.generation,
           issuedAt: at,
-          expiresAt: at + 60_000,
+          expiresAt: at + (input.purpose === "finding_groups" ? 600_000 : 60_000),
         }) as HelperCommand;
         const envelope = signRunnerCommand({
           keyId: options.keyId,

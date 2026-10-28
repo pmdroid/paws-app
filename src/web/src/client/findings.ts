@@ -23,6 +23,7 @@ import { renderMarkup } from "./theme";
 export type FindingsView = {
   data: FindingsResponse | null;
   groups?: FindingGroupsResponse | null;
+  groupsError?: string | null;
   mode?: "findings" | "groups";
   filter: FindingFilter;
   busy: boolean;
@@ -44,7 +45,7 @@ const STATUS_LABEL: Record<FindingStatus, string> = {
 export function renderFindings(view: FindingsView): string {
   const tabs = `<div class="row" role="group" aria-label="Findings view"><button class="btn${view.mode !== "groups" ? " on" : ""}" type="button" data-findings-mode="findings" aria-pressed="${view.mode !== "groups"}">Findings</button><button class="btn${view.mode === "groups" ? " on" : ""}" type="button" data-findings-mode="groups" aria-pressed="${view.mode === "groups"}">Groups</button></div>`;
   if (view.mode === "groups")
-    return `${tabs}${view.error ? `<p role="alert" class="checkout-error">${esc(view.error)} <button class="btn" data-findings-action="reload">Retry</button></p>` : ""}<p role="status">${esc(view.message)}</p>${renderFindingGroups(view.groups ?? null, view.local, view.busy)}`;
+    return `${tabs}${(view.groupsError ?? view.error) ? `<p role="alert" class="checkout-error">${esc(view.groupsError ?? view.error ?? "")} <button class="btn" data-findings-action="reload">Retry</button></p>` : ""}<p role="status">${esc(view.message)}</p>${renderFindingGroups(view.groups ?? null, view.local, view.busy)}`;
   const intro = `<p>Review findings that did not block a merge: in code the change did not touch, or below the review's <code>failOn</code>. Each is listed once, however many issues reported it.</p>`;
   const message = `<p class="muted" role="status" data-findings-message="">${esc(view.message)}</p>`;
   if (view.error && !view.data)
@@ -208,6 +209,7 @@ export function createFindings(): {
   let root: HTMLElement | null = null;
   let engine: string | null = null;
   let generation = 0;
+  let groupsGeneration = 0;
   let view: FindingsView = {
     data: null,
     filter: DEFAULT_FINDING_FILTER,
@@ -224,13 +226,9 @@ export function createFindings(): {
     const started = ++generation;
     view.busy = true;
     try {
-      const [data, groups] = await Promise.all([
-        findingsRequest(engine, { filter: view.filter }) as Promise<FindingsResponse>,
-        findingGroupsRequest(engine) as Promise<FindingGroupsResponse>,
-      ]);
+      const data = (await findingsRequest(engine, { filter: view.filter })) as FindingsResponse;
       if (started !== generation) return;
       view.data = data;
-      view.groups = groups;
       view.error = null;
     } catch (error) {
       journalCaught(error, "findings.createFindings.load", null);
@@ -242,6 +240,22 @@ export function createFindings(): {
         paint();
       }
     }
+  };
+  const loadGroups = async () => {
+    if (!engine) return;
+    const mounted = root;
+    const started = ++groupsGeneration;
+    try {
+      const groups = (await findingGroupsRequest(engine)) as FindingGroupsResponse;
+      if (root !== mounted || started !== groupsGeneration) return;
+      view.groups = groups;
+      view.groupsError = null;
+    } catch (error) {
+      journalCaught(error, "findings.loadGroups", null);
+      if (root === mounted && started === groupsGeneration)
+        view.groupsError = "Could not load groups. Retry to refresh groups.";
+    }
+    if (root === mounted && started === groupsGeneration) paint();
   };
   const filterTo = (filter: FindingFilter) => {
     view.filter = filter;
@@ -282,6 +296,7 @@ export function createFindings(): {
       view.busy = false;
       paint();
     }
+    await loadGroups();
     if (!view.error) await load();
   };
   const formFilter = (form: HTMLFormElement): FindingFilter =>
@@ -322,7 +337,10 @@ export function createFindings(): {
     }
     const button = target.closest<HTMLButtonElement>("[data-findings-action]");
     if (!button) return;
-    if (button.dataset.findingsAction === "reload") void load();
+    if (button.dataset.findingsAction === "reload") {
+      void load();
+      void loadGroups();
+    }
     if (button.dataset.findingsAction === "reopen")
       void act({ id: Number(button.dataset.findingId), action: "reopen" });
   };
@@ -371,6 +389,7 @@ export function createFindings(): {
       root.addEventListener("click", click);
       root.addEventListener("change", change);
       root.addEventListener("submit", submit);
+      groupsGeneration++;
       view = {
         data: null,
         filter: parseFindingQuery(location.search),
@@ -381,6 +400,7 @@ export function createFindings(): {
       };
       paint();
       void load();
+      void loadGroups();
     },
   };
 }

@@ -721,3 +721,5 @@ export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
 
 export { listFindingGroups, lastFindingGroupRun, findingGroupSources } from "./finding-groups";
 export type { FindingGroup, FindingGroupRun } from "./finding-groups";
+
+export { findingGroupingAdmins, recoverFindingGroupRuns } from "./finding-groups";

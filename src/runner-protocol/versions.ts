@@ -31,4 +31,4 @@ export const REVIEW_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 47];
 export const CANDIDATE_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 48];
 
 /** First runner release accepting the read-only daily finding grouping helper purpose. */
-export const FINDING_GROUPS_RUNNER_VERSION: RunnerVersion = [0, 1, 51];
+export const FINDING_GROUPS_RUNNER_VERSION: RunnerVersion = [0, 1, 52];

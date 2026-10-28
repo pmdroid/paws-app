@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
   enqueueJobOnce,
-  getReviewFinding,
+  listReviewFindings,
   immediate,
   lastFindingGroupRun,
   listFindingGroups,
@@ -30,6 +30,7 @@ export type FindingGroupServices = {
     add(input: { key: string; teamId: string; identifier: string; body: string }): Promise<void>;
   };
 };
+const activeActions = new Set<string>();
 const actionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("run") }),
   z.strictObject({ action: z.literal("file"), id: z.string().uuid() }),
@@ -44,10 +45,15 @@ function members(
   db: Database,
   group: FindingGroup,
   sessions?: readonly string[],
-): ReviewFindingRecord[] | null {
-  const rows = group.memberIds.map((id) => getReviewFinding(db, id));
-  if (rows.some((r) => r === null)) return null;
-  const items = reviewFindingItems(db, group.memberIds);
+  snapshot?: {
+    rows: Map<number, ReviewFindingRecord>;
+    items: ReturnType<typeof reviewFindingItems>;
+  },
+): { rows: ReviewFindingRecord[]; items: ReturnType<typeof reviewFindingItems> } | null {
+  const available = snapshot?.rows ?? new Map(listReviewFindings(db).map((f) => [f.id, f]));
+  const rows = group.memberIds.map((id) => available.get(id));
+  if (rows.some((r) => r === undefined)) return null;
+  const items = snapshot?.items ?? reviewFindingItems(db, group.memberIds);
   if (
     sessions !== undefined &&
     group.memberIds.some(
@@ -58,7 +64,7 @@ function members(
     )
   )
     return null;
-  return rows as ReviewFindingRecord[];
+  return { rows: rows as ReviewFindingRecord[], items };
 }
 export async function handleFindingGroupsRequest(
   request: Request,
@@ -79,10 +85,18 @@ export async function handleFindingGroupsRequest(
       canRun: !!member?.active && ["admin", "owner"].includes(member.role),
     };
     if (workspaceId && (!principal || member?.active)) {
-      data.groups = listFindingGroups(db, workspaceId).flatMap((group) => {
-        const rows = members(db, group, options.sessionIds);
-        if (!rows) return [];
-        const items = reviewFindingItems(db, group.memberIds);
+      const groups = listFindingGroups(db, workspaceId, 200);
+      const snapshot = {
+        rows: new Map(listReviewFindings(db).map((f) => [f.id, f])),
+        items: reviewFindingItems(
+          db,
+          groups.flatMap((g) => g.memberIds),
+        ),
+      };
+      data.groups = groups.flatMap((group) => {
+        const accessible = members(db, group, options.sessionIds, snapshot);
+        if (!accessible) return [];
+        const { rows, items } = accessible;
         return [
           {
             ...group,
@@ -145,12 +159,13 @@ export async function handleFindingGroupsRequest(
   }
   const group = listFindingGroups(db, principal.workspaceId).find((g) => g.id === action.id);
   if (!group) return Response.json({ error: "Group not found." }, { status: 404 });
-  const rows = members(db, group, options.sessionIds);
-  if (!rows)
+  const accessible = members(db, group, options.sessionIds);
+  if (!accessible)
     return Response.json(
       { error: "You cannot access every finding in this group." },
       { status: 403 },
     );
+  const { rows } = accessible;
   if (group.status !== "open" || (group.action && group.action !== action.action))
     return Response.json(
       { error: "This group has already been acted on. Refresh the page." },
@@ -165,6 +180,8 @@ export async function handleFindingGroupsRequest(
     return Response.json({ error: "No existing issue was suggested." }, { status: 400 });
   if (action.action !== "dismiss" && !options.services)
     return Response.json({ error: "Linear is unavailable." }, { status: 503 });
+  if (activeActions.has(group.id))
+    return Response.json({ error: "This group action is still running." }, { status: 409 });
   // Store the chosen action before the network write. Stable Linear ids make retries safe.
   const claimed = db.run(
     "UPDATE finding_group SET action=? WHERE id=? AND status='open' AND (action IS NULL OR action=?)",
@@ -172,6 +189,7 @@ export async function handleFindingGroupsRequest(
   ).changes;
   if (!claimed)
     return Response.json({ error: "The group changed. Refresh the page." }, { status: 409 });
+  activeActions.add(group.id);
   const by = member.name || member.email || principal.userId;
   let identifier: string | null = null;
   try {
@@ -225,10 +243,18 @@ export async function handleFindingGroupsRequest(
     return Response.json({ ok: true, identifier });
   } catch (error) {
     journalCaught(error, "finding-groups.action", null);
+    // The adapter checks the stable Linear id before a definitive refusal, including on retries.
+    if (error instanceof Error && "noFindingWrite" in error && error.noFindingWrite === true)
+      db.run("UPDATE finding_group SET action=NULL WHERE id=? AND status='open' AND action=?", [
+        group.id,
+        action.action,
+      ]);
     return Response.json(
       { error: "Linear could not finish this action. Retry the same action safely." },
       { status: 502 },
     );
+  } finally {
+    activeActions.delete(group.id);
   }
 }
 

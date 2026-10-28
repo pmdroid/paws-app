@@ -1,8 +1,7 @@
-import { workspaceSessionIds } from "./db";
 import {
   createFindingGrouping,
   registerFindingGrouping,
-  scopedGroupingSources,
+  workspaceGroupingSources,
 } from "./finding-groups";
 import { shutdownPaws, stopPawsComponents } from "./shutdown";
 import { journalCaught } from "./journal";
@@ -847,19 +846,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         }),
         sources: (workspaceId) => {
           if (!runtime.linearClientId) return [];
-          const admins = db
-            .query<{ userId: string }, [string]>(
-              "SELECT user_id AS userId FROM workspace_member WHERE workspace_id=? AND active=1 AND role IN ('owner','admin')",
-            )
-            .all(workspaceId);
-          const sessions = [
-            ...new Set(
-              admins.flatMap((a) =>
-                workspaceSessionIds(db, workspaceId, a.userId, runtime.linearClientId!),
-              ),
-            ),
-          ];
-          return scopedGroupingSources(db, workspaceId, sessions);
+          return workspaceGroupingSources(db, workspaceId, runtime.linearClientId);
         },
       })
     : null;

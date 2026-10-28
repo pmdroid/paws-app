@@ -26,15 +26,15 @@ export type FindingGroupRun = {
   groupCount: number;
   error: string | null;
 };
-export function listFindingGroups(db: Database, workspaceId: string): FindingGroup[] {
+export function listFindingGroups(db: Database, workspaceId: string, limit = -1): FindingGroup[] {
   return db
-    .query<Omit<FindingGroup, "memberIds"> & { members: string }, [string]>(`
+    .query<Omit<FindingGroup, "memberIds"> & { members: string }, [string, number]>(`
     SELECT id,workspace_id AS workspaceId,repository,team_id AS teamId,title,summary,scope,
       suggested_issue AS suggestedIssue,member_ids AS members,created_at AS createdAt,
       run_id AS runId,status,status_reason AS statusReason,filed_issue AS filedIssue,action
-    FROM finding_group WHERE workspace_id=? ORDER BY created_at DESC,id
+    FROM finding_group WHERE workspace_id=? ORDER BY (status='open') DESC,created_at DESC,id LIMIT ?
   `)
-    .all(workspaceId)
+    .all(workspaceId, limit)
     .map(({ members, ...row }) => ({ ...row, memberIds: JSON.parse(members) as number[] }));
 }
 export function lastFindingGroupRun(db: Database, workspaceId: string): FindingGroupRun | null {
@@ -60,4 +60,20 @@ export function findingGroupSources(
     WHERE w.id=? AND s.team_id IS NOT NULL ORDER BY s.session_id
   `)
     .all(workspaceId);
+}
+
+export function findingGroupingAdmins(db: Database, workspaceId: string): { userId: string }[] {
+  return db
+    .query<{ userId: string }, [string]>(
+      "SELECT user_id AS userId FROM workspace_member WHERE workspace_id=? AND active=1 AND role IN ('owner','admin') ORDER BY user_id",
+    )
+    .all(workspaceId);
+}
+
+/** An expired command cannot return evidence after a coordinator restart. */
+export function recoverFindingGroupRuns(db: Database, now: number): void {
+  db.run(
+    "UPDATE finding_group_run SET status='failed',finished_at=?,error='Grouping interrupted before completion' WHERE status='running' AND started_at<=?",
+    [now, now - 11 * 60_000],
+  );
 }

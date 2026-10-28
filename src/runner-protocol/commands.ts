@@ -288,7 +288,12 @@ export const RunnerCommandSchema = z
   )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
-  .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000);
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
+      command.expiresAt - command.issuedAt <=
+        (command.purpose === "finding_groups" ? 600_000 : 60_000),
+  );
 
 export const SignedRunnerCommandSchema = z.strictObject({
   keyId: id,

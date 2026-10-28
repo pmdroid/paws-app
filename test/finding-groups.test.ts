@@ -452,3 +452,100 @@ test("a lost Linear reply keeps the action retryable and protects its members du
     f.db.close();
   }
 });
+
+test("large inputs fit the helper schema and rotate overflow without another finding change", async () => {
+  const { groupingBatch, groupingPrompt } = await import("../src/finding-groups");
+  const f = seed();
+  try {
+    const source = f.sources()[0]!;
+    const findings = Array.from({ length: 300 }, (_, i) => ({
+      ...source,
+      id: i + 1,
+      text: "x".repeat(5000),
+    }));
+    const issues = Array.from({ length: 500 }, (_, i) => ({
+      teamId: "team",
+      identifier: `PAS-${i + 1}`,
+      title: "Title ".repeat(100),
+    }));
+    const first = groupingBatch(findings, issues, 100);
+    const next = groupingBatch(findings, issues, 101);
+    expect(groupingPrompt(first.open, first.issues).length).toBeLessThanOrEqual(65536);
+    expect(first.open.length).toBeGreaterThan(0);
+    expect(first.partial).toBe(true);
+    expect(next.open.map((row) => row.id)).not.toEqual(first.open.map((row) => row.id));
+    const helper = createFakeGroupingHelper('{"groups":[]}');
+    let now = epoch;
+    const grouping = createFindingGrouping({
+      db: f.db,
+      sources: () => findings,
+      issues: f.issues,
+      helper: helper.run,
+      now: () => now,
+    });
+    await grouping.run("ws", new AbortController().signal);
+    now += 86400000;
+    await grouping.run("ws", new AbortController().signal);
+    expect(helper.calls).toHaveLength(2);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("fenced model JSON parses and interrupted runs recover without spending another daily turn", async () => {
+  const { recoverFindingGroupRuns } = await import("../src/db");
+  const f = seed();
+  try {
+    expect(validateGroups('```json\n{"groups":[]}\n```', f.sources(), [])).toEqual([]);
+    f.db.run(
+      "INSERT INTO finding_group_run(id,workspace_id,day,started_at,fingerprint,status) VALUES('crashed','ws','2026-10-28',?,'old','running')",
+      [epoch],
+    );
+    recoverFindingGroupRuns(f.db, epoch + 12 * 60000);
+    expect(lastFindingGroupRun(f.db, "ws")).toMatchObject({
+      status: "failed",
+      finishedAt: epoch + 12 * 60000,
+    });
+    await f.grouping.run("ws", new AbortController().signal);
+    expect(f.helper.calls).toHaveLength(0);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a definitive Linear refusal releases the group so a member can dismiss it", async () => {
+  const f = seed();
+  try {
+    await f.grouping.run("ws", new AbortController().signal);
+    const group = listFindingGroups(f.db, "ws")[0]!;
+    f.issues.file = async () => {
+      throw Object.assign(new Error("Team has no Triage state"), { noFindingWrite: true });
+    };
+    expect((await post(f, { action: "file", id: group.id })).status).toBe(502);
+    expect(listFindingGroups(f.db, "ws").find((g) => g.id === group.id)?.action).toBeNull();
+    expect(
+      (await post(f, { action: "dismiss", id: group.id, reason: "Track separately" })).status,
+    ).toBe(200);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("reopened findings can join new groups while acted-on group history survives", async () => {
+  const f = seed();
+  try {
+    await f.grouping.run("ws", new AbortController().signal);
+    const group = listFindingGroups(f.db, "ws")[0]!;
+    await post(f, { action: "dismiss", id: group.id, reason: "Already handled" });
+    f.db.run("UPDATE review_finding SET status='open',status_at=?", [epoch + 1000]);
+    f.nextDay();
+    await f.grouping.run("ws", new AbortController().signal);
+    const groups = listFindingGroups(f.db, "ws");
+    expect(groups.find((g) => g.id === group.id)?.status).toBe("dismissed");
+    expect(groups.filter((g) => g.status === "open").flatMap((g) => g.memberIds)).toContain(
+      group.memberIds[0]!,
+    );
+  } finally {
+    f.db.close();
+  }
+});

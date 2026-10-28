@@ -7,7 +7,8 @@ import type { RunnerHelpers } from "../runner-helpers";
 import type { RunnerPlacement } from "../runner-placement";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { immediate, runnerHasCapacity } from "../db";
-import type { RunnerCommand } from "../runner-protocol";
+import { FINDING_GROUPS_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
+import { versionAtLeast } from "./session-restore";
 
 import { RetryableRunnerError, runWithFailover } from "./failover";
 
@@ -48,6 +49,7 @@ export function createRemoteSessionAgentRunner(options: {
           const runners = options.placement
             ? await options.placement.candidates({
                 sessionId,
+                ...(purpose === "finding_groups" ? { findingGroups: true } : {}),
                 profile,
                 role: input.role,
                 purpose: "helper",
@@ -62,6 +64,14 @@ export function createRemoteSessionAgentRunner(options: {
                 .filter((runner) => runnerHasCapacity(options.db, runner.id, now()));
           for (const runner of runners) {
             if (excluded.includes(runner.id)) continue;
+            if (purpose === "finding_groups") {
+              const host = options.db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(runner.id);
+              if (!versionAtLeast(host?.version, FINDING_GROUPS_RUNNER_VERSION)) continue;
+            }
             try {
               command = immediate(options.db, () => {
                 const dispatched = options.helpers.dispatch({
@@ -106,6 +116,7 @@ export function createRemoteSessionAgentRunner(options: {
             );
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
+        let accounted = false;
         try {
           const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
           while (now() < deadline) {
@@ -121,6 +132,7 @@ export function createRemoteSessionAgentRunner(options: {
                   finishedAt: now(),
                 }),
               );
+              accounted = true;
               if (
                 disposition?.retryable &&
                 result.agentExited &&
@@ -133,6 +145,28 @@ export function createRemoteSessionAgentRunner(options: {
                     ? "The runner agent requires sign-in."
                     : "The runner agent exhausted its observed quota.",
                 );
+              if (purpose === "finding_groups") {
+                if (
+                  result.errorMessage ||
+                  result.stopReason !== "end_turn" ||
+                  result.timedOut ||
+                  result.cancelled ||
+                  result.authRequired ||
+                  !result.agentExited
+                )
+                  throw new Error(
+                    result.errorMessage ?? "Finding grouping helper did not complete.",
+                  );
+                await input.onEvent?.({
+                  type: "session_update",
+                  sessionId: result.sessionId ?? command.id,
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: result.text },
+                  },
+                });
+                return { ...result, transcriptPath: "" };
+              }
               const transcriptRunId = command.purpose === "classify" ? input.runId : command.id;
               const transcript = `${runDir(input.pawsRoot, transcriptRunId)}/acp.jsonl`;
               mkdirSync(runDir(input.pawsRoot, transcriptRunId), { recursive: true, mode: 0o700 });
@@ -165,15 +199,28 @@ export function createRemoteSessionAgentRunner(options: {
           }
           throw new Error("Remote session helper timed out");
         } finally {
-          options.helpers.finish(command.id);
+          try {
+            if (!accounted)
+              options.placement?.finished({
+                commandId: command.id,
+                runnerId: command.runnerId,
+                profile,
+                failure: "heartbeat_lost",
+                finishedAt: now(),
+              });
+          } finally {
+            options.helpers.finish(command.id);
+          }
         }
       };
       return (input: RunAgentOptions) =>
-        runWithFailover(
-          { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
-          attempt,
-          async () => {},
-        );
+        purpose === "finding_groups"
+          ? attempt(input, [])
+          : runWithFailover(
+              { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
+              attempt,
+              async () => {},
+            );
     },
   };
 }

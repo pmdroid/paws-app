@@ -1,94 +1,54 @@
-import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import type { RunnerHelpers } from "../runner-helpers";
 import type { AgentProfile } from "../config";
-import { eligibleRunners } from "../runner-placement";
-import { FINDING_GROUPS_RUNNER_VERSION } from "../runner-protocol";
+import { createRunnerPlacement, type RunnerPlacement } from "../runner-placement";
 import type { GroupingHelper } from "../finding-groups";
-import { versionAtLeast } from "./session-restore";
+import { createRemoteSessionAgentRunner } from "./helpers";
 
-/** One dispatch, without failover: a daily job cannot spend a second helper turn. */
+/** One issued turn per day; shared helper lifecycle records usage and auth/quota outcomes. */
 export function createFindingGroupHelper(options: {
   db: Database;
   helpers: () => Promise<RunnerHelpers>;
   profile: () => AgentProfile;
+  placement?: RunnerPlacement;
 }): GroupingHelper {
+  const placement = options.placement ?? createRunnerPlacement({ db: options.db });
   return async (input) => {
-    input.signal.throwIfAborted();
-    const helpers = await options.helpers();
-    const profile = options.profile();
-    const owners = options.db
-      .query<{ userId: string }, [string]>(
-        "SELECT user_id AS userId FROM workspace_member WHERE workspace_id=? AND active=1 AND role IN ('owner','admin') ORDER BY user_id",
+    const scope = options.db
+      .query(
+        "SELECT 1 FROM linear_session s JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE s.session_id=? AND w.id=?",
       )
-      .all(input.workspaceId);
-    const session = options.db
-      .query<{ teamId: string }, [string]>(
-        "SELECT team_id AS teamId FROM linear_session WHERE session_id=?",
-      )
-      .get(input.sessionId);
-    if (!session) throw new Error("Finding grouping needs a reporting session.");
-    let id: string | null = null;
-    for (const owner of owners) {
-      const candidates = eligibleRunners(options.db, {
-        workspaceId: input.workspaceId,
-        teamId: session.teamId,
-        ownerUserId: owner.userId,
-        leadUserIds: [],
-        agent: profile.agent,
-        purpose: "work",
-      });
-      for (const runner of candidates.filter((r) => r.eligible)) {
-        const health = options.db
-          .query<{ version: string | null }, [string]>(
-            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-          )
-          .get(runner.id);
-        if (!versionAtLeast(health?.version, FINDING_GROUPS_RUNNER_VERSION)) continue;
-        try {
-          id = helpers.dispatch({
-            runnerId: runner.id,
-            sessionId: input.sessionId,
-            purpose: "finding_groups",
-            profile,
-            prompt: input.prompt,
-          }).command.id;
-          break;
-        } catch (error) {
-          // Busy runners are safe to skip before a command is issued.
-          if (!(error instanceof Error) || !/busy|capacity/i.test(error.message)) throw error;
-        }
-      }
-      if (id) break;
-    }
-    if (!id)
-      throw new Error(
-        "No available admin runner supports finding grouping. Update a paired runner and check agent sign-in.",
-      );
-    try {
-      const deadline = Date.now() + 60_000;
-      while (Date.now() < deadline) {
-        input.signal.throwIfAborted();
-        const result = helpers.result(id);
-        if (result) {
-          if (
-            result.stopReason !== "end_turn" ||
-            result.timedOut ||
-            result.cancelled ||
-            result.authRequired ||
-            !result.agentExited
-          )
-            throw new Error("Finding grouping helper did not complete.");
-          return {
-            text: result.text,
-            ...(result.tokens === undefined ? {} : { tokens: result.tokens }),
-          };
-        }
-        await delay(250, undefined, { signal: input.signal });
-      }
-      throw new Error("Finding grouping helper timed out.");
-    } finally {
-      helpers.finish(id);
-    }
+      .get(input.sessionId, input.workspaceId);
+    if (!scope) throw new Error("Finding grouping session is outside the workspace.");
+    let text = "";
+    const helper = createRemoteSessionAgentRunner({
+      db: options.db,
+      helpers: await options.helpers(),
+      placement,
+    });
+    const result = await helper.forSession(
+      input.sessionId,
+      "finding_groups",
+    )({
+      role: "implementer",
+      itemId: "",
+      runId: "",
+      worktreePath: "",
+      pawsRoot: "",
+      readOnly: true,
+      onEvent: (event) => {
+        if (
+          event.type === "session_update" &&
+          event.update.sessionUpdate === "agent_message_chunk" &&
+          event.update.content.type === "text"
+        )
+          text += event.update.content.text;
+      },
+      profile: options.profile(),
+      prompt: input.prompt,
+      signal: input.signal,
+      timeoutMs: 600_000,
+    });
+    return { text, ...(result.tokens === undefined ? {} : { tokens: result.tokens }) };
   };
 }

@@ -5,6 +5,7 @@ function fakeLinear() {
   const calls: { query: string; variables: Record<string, unknown> }[] = [];
   const issues = new Map<string, string>();
   const comments = new Set<string>();
+  let triage = true;
   let stateType = "started";
   let teamId = "team";
   const adapter = createFindingIssueAdapter({
@@ -28,7 +29,7 @@ function fakeLinear() {
       if (query.includes("FindingTriage"))
         return {
           team: {
-            states: { nodes: [{ id: "triage", type: "triage" }] },
+            states: { nodes: triage ? [{ id: "triage", type: "triage" }] : [] },
             labels: { nodes: [{ id: "label", name: "review finding" }] },
           },
         };
@@ -59,6 +60,9 @@ function fakeLinear() {
   return {
     adapter,
     calls,
+    setTriage: (enabled: boolean) => {
+      triage = enabled;
+    },
     setTarget: (state: string, team = "team") => {
       stateType = state;
       teamId = team;
@@ -118,4 +122,17 @@ test("only open titles for requested teams are read", async () => {
   expect(f.calls[0]!.variables).toEqual({ team: "team", after: null });
   expect(f.calls[0]!.query).toContain('nin:["completed","canceled"]');
   expect(f.calls[0]!.query).not.toContain("description");
+});
+
+test("missing Triage is a definitive no-write refusal that routes can safely unlock", async () => {
+  const f = fakeLinear();
+  f.setTriage(false);
+  let error: unknown;
+  try {
+    await f.adapter.file({ key: "group", teamId: "team", title: "Fix", description: "Findings" });
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toMatchObject({ noFindingWrite: true });
+  expect(f.calls.filter((c) => c.query.includes("FindingGroupIssue"))).toHaveLength(0);
 });

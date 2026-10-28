@@ -6,6 +6,9 @@ import {
   immediate,
   listReviewFindings,
   findingGroupSources,
+  workspaceSessionIds,
+  findingGroupingAdmins,
+  recoverFindingGroupRuns,
   type JobLoop,
   type ReviewFindingRecord,
 } from "../db";
@@ -60,12 +63,54 @@ export function groupingPrompt(
   ].join("\n\n");
 }
 
+/** Keep a complete JSON document below the signed helper command limit. Rotate overflow daily. */
+export function groupingBatch(
+  findings: readonly GroupingInput[],
+  issues: readonly FindingIssueTitle[],
+  day: number,
+) {
+  const open: GroupingInput[] = [];
+  const titles: FindingIssueTitle[] = [];
+  const ordered = [...findings].sort((a, b) => a.id - b.id);
+  const start = ordered.length ? day % ordered.length : 0;
+  for (let offset = 0; offset < ordered.length; offset++) {
+    const row = ordered[(start + offset) % ordered.length]!;
+    const candidate = {
+      ...row,
+      text: row.text.slice(0, 4000),
+      path: row.path.slice(0, 1000),
+      bugClass: row.bugClass?.slice(0, 500),
+    };
+    if (groupingPrompt([...open, candidate], []).length > 48000) break;
+    open.push(candidate);
+  }
+  const teams = new Set(open.map((f) => f.teamId));
+  const candidates = issues.filter((i) => teams.has(i.teamId));
+  const first = candidates.length ? day % candidates.length : 0;
+  for (let offset = 0; offset < candidates.length; offset++) {
+    const candidate = {
+      ...candidates[(first + offset) % candidates.length]!,
+      title: candidates[(first + offset) % candidates.length]!.title.slice(0, 500),
+    };
+    if (groupingPrompt(open, [...titles, candidate]).length > 65000) break;
+    titles.push(candidate);
+  }
+  return { open, issues: titles, partial: open.length < findings.length };
+}
+
 export function validateGroups(
   text: string,
   findings: readonly GroupingInput[],
   issues: readonly FindingIssueTitle[],
 ) {
-  const parsed = outputSchema.parse(JSON.parse(text));
+  const parsed = outputSchema.parse(
+    JSON.parse(
+      text
+        .trim()
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/, ""),
+    ),
+  );
   const available = new Map(findings.map((f) => [f.id, f]));
   const used = new Set<number>();
   return parsed.groups.flatMap((group) => {
@@ -113,9 +158,13 @@ export function createFindingGrouping(options: {
 }) {
   const { db } = options;
   const now = options.now ?? Date.now;
+  // A previous process cannot still own a helper after the maximum command lifetime.
+  recoverFindingGroupRuns(db, now());
   return {
     async run(workspaceId: string, signal: AbortSignal): Promise<void> {
+      signal = AbortSignal.any([signal, AbortSignal.timeout(600_000)]);
       const at = now();
+      recoverFindingGroupRuns(db, at);
       const day = new Date(at).toISOString().slice(0, 10);
       // Persist the daily claim before any external read or helper dispatch, including failures.
       const findings = options.sources(workspaceId);
@@ -168,37 +217,37 @@ export function createFindingGrouping(options: {
         let tokens: number | null = null;
         const open = findings.filter((f) => f.status === "open");
         if (open.length) {
-          const issues = await options.issues.openTitles(
+          const allIssues = await options.issues.openTitles(
             [...new Set(open.map((f) => f.teamId))],
             signal,
           );
+          const batch = groupingBatch(open, allIssues, Math.floor(at / 86400000));
+          const issues = batch.issues;
+          // A partial snapshot must be revisited even if no finding changes tomorrow.
+          if (batch.partial)
+            db.run("UPDATE finding_group_run SET fingerprint=? WHERE id=?", [
+              `${fingerprint}:partial`,
+              runId,
+            ]);
           signal.throwIfAborted();
           const result = await options.helper({
             workspaceId,
             sessionId: open[0]!.sessionId,
-            prompt: groupingPrompt(open, issues),
+            prompt: groupingPrompt(batch.open, issues),
             signal,
           });
           signal.throwIfAborted();
-          groups = validateGroups(result.text, open, issues);
+          groups = validateGroups(result.text, batch.open, issues);
           tokens = result.tokens ?? null;
         }
+        // Read the source snapshot before acquiring the SQLite writer lock.
+        const current = new Set(
+          options
+            .sources(workspaceId)
+            .filter((f) => f.status === "open")
+            .map((f) => f.id),
+        );
         immediate(db, () => {
-          // Findings acted on while the helper ran cannot be reintroduced as open group members.
-          const current = new Set(
-            options
-              .sources(workspaceId)
-              .filter((f) => f.status === "open")
-              .map((f) => f.id),
-          );
-          const acted = new Set(
-            db
-              .query<{ ids: string }, [string]>(
-                "SELECT member_ids AS ids FROM finding_group WHERE workspace_id=? AND status<>'open'",
-              )
-              .all(workspaceId)
-              .flatMap((r) => JSON.parse(r.ids) as number[]),
-          );
           db.run(
             "DELETE FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NULL",
             [workspaceId],
@@ -206,16 +255,14 @@ export function createFindingGrouping(options: {
           const held = new Set(
             db
               .query<{ ids: string }, [string]>(
-                "SELECT member_ids AS ids FROM finding_group WHERE workspace_id=?",
+                "SELECT member_ids AS ids FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NOT NULL",
               )
               .all(workspaceId)
               .flatMap((r) => JSON.parse(r.ids) as number[]),
           );
           let count = 0;
           for (const group of groups) {
-            const ids = group.memberIds.filter(
-              (id) => current.has(id) && !acted.has(id) && !held.has(id),
-            );
+            const ids = group.memberIds.filter((id) => current.has(id) && !held.has(id));
             if (!ids.length) continue;
             db.run(
               `INSERT INTO finding_group(id,workspace_id,repository,team_id,title,summary,scope,suggested_issue,member_ids,created_at,run_id)
@@ -259,9 +306,14 @@ export function scopedGroupingSources(
   sessions: readonly string[],
 ): GroupingInput[] {
   const allowed = new Set(sessions);
-  const sources = findingGroupSources(db, workspaceId).filter((s) => allowed.has(s.sessionId));
+  const sources = new Map(
+    findingGroupSources(db, workspaceId)
+      .filter((s) => allowed.has(s.sessionId))
+      .reverse()
+      .map((s) => [s.id, s]),
+  );
   return listReviewFindings(db).flatMap((f) => {
-    const source = sources.find((s) => s.id === f.id);
+    const source = sources.get(f.id);
     return source ? [{ ...f, teamId: source.teamId, sessionId: source.sessionId }] : [];
   });
 }
@@ -282,6 +334,7 @@ export function registerFindingGrouping(
   });
   jobs.register("findings.group.tick", () => {
     const at = now();
+    recoverFindingGroupRuns(jobs.db, at);
     const iso = new Date(at).toISOString();
     if (iso.slice(11, 16) < options.groupingTime) return;
     for (const workspaceId of options.workspaces())
@@ -307,4 +360,19 @@ export function createFakeGroupingHelper(text: string) {
     return { text, tokens: 123 };
   };
   return { run, calls };
+}
+
+export function workspaceGroupingSources(
+  db: Database,
+  workspaceId: string,
+  clientId: string,
+): GroupingInput[] {
+  const admin = findingGroupingAdmins(db, workspaceId)[0];
+  return admin
+    ? scopedGroupingSources(
+        db,
+        workspaceId,
+        workspaceSessionIds(db, workspaceId, admin.userId, clientId),
+      )
+    : [];
 }

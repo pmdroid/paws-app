@@ -12,7 +12,7 @@ import { tempDb } from "./helpers";
 
 function seed() {
   const db = tempDb();
-  const now = Date.now();
+  let now = Date.now();
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
   putWorkspaceUser(db, {
     id: "admin",
@@ -43,10 +43,17 @@ function seed() {
     [now, now],
   );
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner','codex',1)");
-  recordRunnerHostStatus(db, "runner", { runnerVersion: "0.1.51" }, now);
+  recordRunnerHostStatus(db, "runner", { runnerVersion: "0.1.52" }, now);
   const { privateKey } = generateKeyPairSync("ed25519");
   const helpers = createRunnerHelpers({ db, keyId: "key", privateKey, now: () => now });
-  return { db, now, helpers };
+  return {
+    db,
+    now,
+    helpers,
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
 }
 
 test("daily helper uses an admin runner, accepts a stopped reporting session, and fences role changes", async () => {
@@ -122,7 +129,7 @@ test("daily helper refuses older runners and cannot read a session from another 
         prompt: "Group",
         signal: new AbortController().signal,
       }),
-    ).rejects.toThrow("supports finding grouping");
+    ).rejects.toThrow("No paired runner");
     expect(f.db.query("SELECT 1 FROM runner_helper").get()).toBeNull();
     recordLinearInstallation(f.db, {
       sessionId: "other-session",
@@ -141,6 +148,110 @@ test("daily helper refuses older runners and cannot read a session from another 
         prompt: "Group",
       }),
     ).toThrow("authority changed");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("grouping accepts a result after one minute, records usage, and rejects error results", async () => {
+  for (const failed of [false, true]) {
+    const f = seed();
+    try {
+      const helper = createFindingGroupHelper({
+        db: f.db,
+        profile: () => ({ agent: "codex", model: null }),
+        helpers: async () => ({
+          ...f.helpers,
+          dispatch(input) {
+            const dispatched = f.helpers.dispatch(input);
+            expect(dispatched.command.expiresAt - dispatched.command.issuedAt).toBe(600000);
+            f.advance(90000);
+            f.helpers.submit("runner", {
+              commandId: dispatched.command.id,
+              executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+              role: "implementer",
+              stopReason: "end_turn",
+              timedOut: false,
+              cancelled: false,
+              authRequired: failed,
+              agentExited: true,
+              text: '{"groups":[]}',
+              ...(failed ? { errorMessage: "Agent sign-in required" } : {}),
+              tokens: 456,
+            });
+            return dispatched;
+          },
+        }),
+      });
+      const result = helper({
+        workspaceId: "ws",
+        sessionId: "reporting-session",
+        prompt: "Group",
+        signal: new AbortController().signal,
+      });
+      if (failed) await expect(result).rejects.toThrow();
+      else expect(await result).toMatchObject({ text: '{"groups":[]}', tokens: 456 });
+      const usage = f.db
+        .query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM runner_execution_usage")
+        .get();
+      expect(usage?.ended).not.toBeNull();
+      if (failed)
+        expect(
+          f.db
+            .query<{ expired: number }, []>(
+              "SELECT auth_expired AS expired FROM runner_agent_policy",
+            )
+            .get()?.expired,
+        ).toBe(1);
+    } finally {
+      f.db.close();
+    }
+  }
+});
+
+test("pre-dispatch refusals try the next admin runner without issuing a second helper", async () => {
+  const f = seed();
+  try {
+    f.db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'runner2',workspace_id,owner_user_id,'Second','active',created_at,last_seen_at FROM runner WHERE id='runner'",
+    );
+    f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner2','codex',1)");
+    recordRunnerHostStatus(f.db, "runner2", { runnerVersion: "0.1.52" }, f.now);
+    let attempts = 0;
+    const helper = createFindingGroupHelper({
+      db: f.db,
+      profile: () => ({ agent: "codex", model: null }),
+      helpers: async () => ({
+        ...f.helpers,
+        dispatch(input) {
+          attempts++;
+          if (attempts === 1) throw new Error("Runner cancellation teardown is still pending");
+          const result = f.helpers.dispatch(input);
+          f.helpers.submit(input.runnerId, {
+            commandId: result.command.id,
+            executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            role: "implementer",
+            stopReason: "end_turn",
+            timedOut: false,
+            cancelled: false,
+            authRequired: false,
+            agentExited: true,
+            text: '{"groups":[]}',
+          });
+          return result;
+        },
+      }),
+    });
+    await helper({
+      workspaceId: "ws",
+      sessionId: "reporting-session",
+      prompt: "Group",
+      signal: new AbortController().signal,
+    });
+    expect(attempts).toBe(2);
+    expect(
+      f.db.query<{ count: number }, []>("SELECT count(*) AS count FROM runner_helper").get()?.count,
+    ).toBe(1);
   } finally {
     f.db.close();
   }

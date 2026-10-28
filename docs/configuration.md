@@ -65,7 +65,7 @@ The merge lane squashes head S only when `mergeable(S)` holds: the pull request 
 
 `grouping_time = "06:00"` schedules daily review-finding grouping at that UTC time. It accepts `HH:MM` and defaults to `06:00`. Unchanged findings skip the helper and the Linear title read. Each workspace can spend at most one helper turn per UTC day, including **Run now** from the Findings page. Failed or interrupted attempts consume that day's allowance.
 
-Grouping uses an active workspace owner or admin's paired runner, signed in to the configured implementer, on runner 0.1.51 or later. It runs read-only without a repository checkout. The job only reads open issue titles. A member must choose **File as one issue**, **Add to** the suggested issue, or **Dismiss group** with a reason. Filing creates an undelegated Triage issue with the `review finding` label. Open groups are replaced on the next changed snapshot; groups already acted on remain in history.
+Grouping uses an active workspace owner or admin's paired runner, signed in to the configured implementer, on runner 0.1.52 or later. It runs read-only without a repository checkout. The job only reads open issue titles. A member must choose **File as one issue**, **Add to** the suggested issue, or **Dismiss group** with a reason. Filing creates an undelegated Triage issue with the `review finding` label. Open groups are replaced on the next changed snapshot; groups already acted on remain in history.
 
 ### `[queue]`
 
@@ -84,3 +84,5 @@ retry:
 - **`fix_rounds_per_item`**: fix rounds per item, counted since the latest reply from a person in the item's session. Default 3. Closeout findings, red CI and changes-requested reviews all count. When they are spent, Paws asks the team.
 
 Rebase returns are not configurable: three in a row on a known main commit and six in any rolling hour, then Paws asks. Only a person's reply in the session refills a budget. [Fix rounds](closeout.md#fix-rounds) and [When Paws asks the team](closeout.md#when-paws-asks-the-team) describe both.
+
+Grouping bounds each helper prompt to 65,000 characters. Large snapshots rotate a batch of findings and issue titles daily; finding text is capped at 4,000 characters and titles at 500. Partial snapshots are revisited without requiring another finding change. Grouping helpers have a ten-minute command lifetime.

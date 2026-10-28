@@ -8,6 +8,10 @@ export interface FindingIssueAdapter {
   file(input: { key: string; teamId: string; title: string; description: string }): Promise<string>;
   add(input: { key: string; teamId: string; identifier: string; body: string }): Promise<void>;
 }
+/** A deterministic refusal before any issue/comment mutation. Safe to release a new action claim. */
+class FindingWriteRefused extends Error {
+  readonly noFindingWrite = true;
+}
 const node = z.object({ id: z.string() });
 const page = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() });
 const issue = node.extend({ identifier: z.string() });
@@ -64,36 +68,45 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
       const id = stableUuid(`paws:finding-group:${input.key}`);
       const previous = await existing(id);
       if (previous) return previous.identifier;
-      const team = z
-        .object({
-          team: z.object({
-            states: z.object({ nodes: z.array(node.extend({ type: z.string() })) }),
-            labels: z.object({ nodes: z.array(node.extend({ name: z.string() })) }),
-          }),
-        })
-        .parse(
-          await client.query(
-            `query FindingTriage($id: String!) { team(id:$id) {
+      const prepared = await (async () => {
+        const team = z
+          .object({
+            team: z.object({
+              states: z.object({ nodes: z.array(node.extend({ type: z.string() })) }),
+              labels: z.object({ nodes: z.array(node.extend({ name: z.string() })) }),
+            }),
+          })
+          .parse(
+            await client.query(
+              `query FindingTriage($id: String!) { team(id:$id) {
           states(first:100) { nodes { id type } }
           labels(first:100,filter:{name:{eq:"review finding"}}) { nodes { id name } }
         } }`,
-            { id: input.teamId },
-          ),
-        ).team;
-      const stateId = team.states.nodes.find((s) => s.type === "triage")?.id;
-      if (!stateId) throw new Error("The Linear team needs a Triage state to file findings.");
-      let labelId = team.labels.nodes.find((l) => l.name === "review finding")?.id;
-      if (!labelId) {
-        const created = z
-          .object({ issueLabelCreate: z.object({ success: z.literal(true), issueLabel: node }) })
-          .parse(
-            await client.query(
-              `mutation FindingLabel($input: IssueLabelCreateInput!) { issueLabelCreate(input:$input) { success issueLabel { id } } }`,
-              { input: { name: "review finding", teamId: input.teamId } },
+              { id: input.teamId },
             ),
-          );
-        labelId = created.issueLabelCreate.issueLabel.id;
-      }
+          ).team;
+        const stateId = team.states.nodes.find((s) => s.type === "triage")?.id;
+        if (!stateId)
+          throw new FindingWriteRefused("The Linear team needs a Triage state to file findings.");
+        let labelId = team.labels.nodes.find((l) => l.name === "review finding")?.id;
+        if (!labelId) {
+          const created = z
+            .object({ issueLabelCreate: z.object({ success: z.literal(true), issueLabel: node }) })
+            .parse(
+              await client.query(
+                `mutation FindingLabel($input: IssueLabelCreateInput!) { issueLabelCreate(input:$input) { success issueLabel { id } } }`,
+                { input: { name: "review finding", teamId: input.teamId } },
+              ),
+            );
+          labelId = created.issueLabelCreate.issueLabel.id;
+        }
+        return { stateId, labelId };
+      })().catch((error) => {
+        if (error instanceof FindingWriteRefused) throw error;
+        throw new FindingWriteRefused(
+          "Linear could not prepare the Triage state and review finding label. Check team access before retrying.",
+        );
+      });
       const created = z
         .object({ issueCreate: z.object({ success: z.literal(true), issue }) })
         .parse(
@@ -105,8 +118,8 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
                 teamId: input.teamId,
                 title: input.title,
                 description: input.description,
-                stateId,
-                labelIds: [labelId],
+                stateId: prepared.stateId,
+                labelIds: [prepared.labelId],
                 delegateId: null,
               },
             },
@@ -135,10 +148,10 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
           ),
         ).issue;
       if (target.team.id !== input.teamId)
-        throw new Error("The suggested issue is outside this group's team.");
+        throw new FindingWriteRefused("The suggested issue is outside this group's team.");
       if (target.comments.nodes.length) return;
       if (["completed", "canceled"].includes(target.state.type))
-        throw new Error("The suggested issue is no longer open.");
+        throw new FindingWriteRefused("The suggested issue is no longer open.");
       z.object({ commentCreate: z.object({ success: z.literal(true) }) }).parse(
         await client.query(
           `mutation FindingGroupComment($input: CommentCreateInput!) { commentCreate(input:$input) { success } }`,
