@@ -23,6 +23,7 @@ import {
   ruleRequirement,
   type RuleRequirement,
 } from "../evaluate/evaluate";
+import { recheckDigest } from "../policy/canonical";
 import { SPEC_VERSION } from "../types";
 import {
   changedPaths,
@@ -796,6 +797,7 @@ function progressIdentity(
     head,
     policyDigest: input.policy.digest ?? "",
     policyPath: input.policy.source === "none" ? null : input.policy.entryPath,
+    recheckDigest: input.policy.source === "none" ? "" : recheckDigest(input.policy),
   };
 }
 

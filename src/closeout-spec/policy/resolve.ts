@@ -1,4 +1,4 @@
-import { journalCaught } from "../../journal";
+import { journal, journalCaught } from "../../journal";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { policyCanonicalJson, sha256Hex, sha256Text, sortPolicyFiles } from "./canonical";
@@ -17,6 +17,23 @@ import type {
 } from "../types";
 
 export const PUBLIC_POLICY_PATH = ".agents/closeout.yaml";
+
+/** Decision warning code for keys the policy parser does not know and left out. */
+export const UNKNOWN_POLICY_KEYS_CODE = "unknown-policy-keys";
+
+/** Digests whose unknown keys this process already journaled: one line per policy digest. */
+const journaledUnknownKeys = new Set<string>();
+
+/** The decision warning for a policy with keys this parser does not know, if it has any. */
+export function unknownKeysWarning(
+  policy: Pick<TreePolicy, "unknownKeys">,
+): { code: string; message: string } | undefined {
+  if (policy.unknownKeys.length === 0) return undefined;
+  return {
+    code: UNKNOWN_POLICY_KEYS_CODE,
+    message: `Ignored policy keys this Closeout does not know: ${policy.unknownKeys.join(", ")}. A newer runner applies them.`,
+  };
+}
 
 /**
  * Most bytes of policy files Paws sends to the runner. A skill or a probe larger than this can
@@ -49,6 +66,8 @@ export type TreePolicy = {
   rules: ResolvedRule[];
   files: PolicyFile[];
   retry?: RetryPolicy;
+  /** Keys the parser does not know, as `<file>:<JSON pointer>`. They were left out of the policy. */
+  unknownKeys: string[];
 };
 
 export type TreeLoad =
@@ -80,6 +99,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     skillFiles: new Map(),
     probeFiles: new Map(),
     ids: new Set<string>(),
+    unknownKeys: [],
   };
   const walked = walk(state, PUBLIC_POLICY_PATH, "", []);
   if (walked !== undefined) return { ok: false, message: walked };
@@ -102,8 +122,15 @@ function loadTree(tree: PolicyTree): TreeLoad {
     items: state.items,
     rules: state.rules,
     files,
+    unknownKeys: state.unknownKeys,
   };
   if (state.retry !== undefined) policy.retry = state.retry;
+  if (state.unknownKeys.length > 0 && !journaledUnknownKeys.has(policy.digest)) {
+    journaledUnknownKeys.add(policy.digest);
+    journal(
+      `closeout policy ${policy.digest} has keys this parser does not know, ignored: ${state.unknownKeys.join(", ")}`,
+    );
+  }
   return { ok: true, absent: false, policy };
 }
 
@@ -118,6 +145,7 @@ type WalkState = {
   files: PolicyFile[];
   seenFiles: Set<string>;
   ids: Set<string>;
+  unknownKeys: string[];
 };
 
 function walk(
@@ -136,6 +164,7 @@ function walk(
   if (text === undefined) return `${safe}: could not read the policy file`;
   const parsed = parsePolicy(text);
   if (!parsed.ok) return `${safe}: ${parsed.message}`;
+  for (const key of parsed.unknownKeys) state.unknownKeys.push(`${safe}:${key}`);
   const document = parsed.document;
   if (prefix.length > 0 && document.retry !== undefined) {
     return "retry is only allowed on the entry policy";
@@ -195,6 +224,7 @@ function walk(
       };
       if (paths.paths.length > 0) item.paths = paths.paths;
       if (raw.ci !== undefined) item.ci = raw.ci;
+      if (raw.recheck === true) item.recheck = true;
       state.items.push(item);
       continue;
     }
@@ -211,6 +241,7 @@ function walk(
       if (raw.hint !== undefined) item.hint = raw.hint;
       if (raw.approval !== undefined) item.approval = raw.approval;
       if (paths.paths.length > 0) item.paths = paths.paths;
+      if (raw.recheck === true) item.recheck = true;
       state.items.push(item);
       continue;
     }
@@ -237,6 +268,7 @@ function walk(
     if (raw.parallel !== undefined) item.parallel = raw.parallel;
     if (raw.minChangedLines !== undefined) item.minChangedLines = raw.minChangedLines;
     if (paths.paths.length > 0) item.paths = paths.paths;
+    if (raw.recheck === true) item.recheck = true;
     state.items.push(item);
   }
   for (const raw of document.rules ?? []) {
@@ -281,6 +313,7 @@ function resolveRule(state: WalkState, raw: PolicyRule): ResolvedRule | string {
     onFail: raw.onFail ?? "fix",
   };
   if (paths.paths.length > 0) rule.paths = paths.paths;
+  if (raw.recheck === true) rule.recheck = true;
   return rule;
 }
 

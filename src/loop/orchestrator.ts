@@ -88,7 +88,7 @@ import {
   type ResolvedEvidence,
   type CandidateIdentity,
   type CiResult,
-  candidatePolicyDigest,
+  candidatePolicyDigests,
   ciMappings,
 } from "../closeout";
 import {
@@ -3782,9 +3782,9 @@ export class Orchestrator {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
         settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        policyDigest: (item, worktree) => {
+        policyDigests: (item, worktree) => {
           const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigest(worktree, home, policyRoot, this.runCheckout(item).checks);
+          return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
         },
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>

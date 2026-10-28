@@ -316,6 +316,7 @@ export {
   latestCloseoutIdentity,
   closeoutHeadsStarted,
   closeoutPolicyDigest,
+  closeoutPolicyDigests,
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,
