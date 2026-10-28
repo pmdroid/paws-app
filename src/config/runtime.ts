@@ -34,6 +34,7 @@ export type RuntimeConfig = {
   linearRefreshToken: string | null;
   linearClientId: string | null;
   linearClientSecret: string | null;
+  linearOrganizationId: string | null;
   githubAuth: GitHubConfigAuth;
   trackerKind: "linear";
   /** Repositories named in `config.toml`. Workspaces choose theirs in the dashboard. */
@@ -90,6 +91,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN") ?? secrets.refreshToken,
     linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
+    linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
     githubAuth,
     trackerKind: "linear",
     repos: [...new Set([file.repo, ...file.githubRepos].filter((repo) => repo !== null))],
