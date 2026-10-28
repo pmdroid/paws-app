@@ -30,7 +30,7 @@ import {
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
 } from "../runner-answers";
-import { createRunnerRepositories } from "../runner-repositories";
+import { CandidateRebaseConflict, createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
 import { openRunnerRuntimeInventory } from "./runtimes";
@@ -1123,17 +1123,29 @@ export async function openRunnerRuntime(options: {
       if (!credential.branch) throw new Error("Runner publication branch is missing");
       entry.publicationBranch = credential.branch;
       try {
-        await repositories.publish(
+        // A push refused because the branch moved is rebased onto it here, not sent back (PAS-886).
+        result.candidateSha = await repositories.publish(
           entry.execution.command,
           {
             bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
             sha: result.candidateSha,
             branch: credential.branch,
+            rebase: true,
           },
           entry.abort.signal,
           entry.checkpointSha,
         );
       } catch (error) {
+        if (error instanceof CandidateRebaseConflict) {
+          journalCaught(error, "runner-runtime.complete.rebase", entry.execution.command.itemId);
+          const reason = `${credential.branch} moved on GitHub, and rebasing the candidate onto it conflicted${error.files.length ? ` in ${error.files.join(", ")}` : ""}`;
+          await interrupt(entry, reason, true, {
+            branch: credential.branch,
+            error: reason.slice(0, 4096),
+            conflicts: error.files.slice(0, 100).map((file) => file.slice(0, 4096)),
+          });
+          return;
+        }
         if (!(error instanceof GitHubFailure)) throw error;
         journalCaught(error, "runner-runtime.complete.publish", entry.execution.command.itemId);
         // A push outage keeps the finished turn's candidate here and retries the push until
