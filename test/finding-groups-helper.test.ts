@@ -304,7 +304,33 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       purpose: "helper",
     });
     expect(candidates.map((row) => row.id)).toContain("runner");
-    expect(() => f.helpers.current(maintenance.command.id)).toThrow("unavailable");
+    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    // Invalid dispatch must not fence maintenance either.
+    expect(() =>
+      f.helpers.dispatch({
+        runnerId: "runner",
+        sessionId: "interactive",
+        purpose: "classify",
+        profile,
+        prompt: "x".repeat(65537),
+      }),
+    ).toThrow();
+    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    // A failure after fencing must roll back the fence and usage changes as well.
+    f.db.exec(
+      "CREATE TEMP TRIGGER refuse_helper BEFORE INSERT ON runner_helper BEGIN SELECT RAISE(ABORT, 'Admission failed'); END",
+    );
+    expect(() =>
+      f.helpers.dispatch({
+        runnerId: "runner",
+        sessionId: "interactive",
+        purpose: "classify",
+        profile,
+        prompt: "Classify",
+      }),
+    ).toThrow("Admission failed");
+    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    f.db.exec("DROP TRIGGER refuse_helper");
     const foreground = f.helpers.dispatch({
       runnerId: "runner",
       sessionId: "interactive",
@@ -313,6 +339,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       prompt: "Classify",
     });
     expect(foreground.command.purpose).toBe("classify");
+    expect(() => f.helpers.current(maintenance.command.id)).toThrow("unavailable");
     expect(
       f.db
         .query<{ outcome: string }, [string]>(
@@ -374,6 +401,106 @@ test("cleanup accounting cannot replace a local abort and reports cancellation i
     expect(
       f.db.query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM runner_helper").get()
         ?.ended,
+    ).not.toBeNull();
+  } finally {
+    f.db.close();
+  }
+});
+
+test("ranking idle and excluded runners never fences maintenance on another runner", async () => {
+  const { createRunnerPlacement } = await import("../src/runner-placement");
+  const f = seed();
+  try {
+    f.db.run(
+      "UPDATE linear_session SET stopped_at=NULL,creator_id='linear-admin',issue_id='issue'",
+    );
+    f.db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'idle',workspace_id,owner_user_id,'Idle','active',created_at,last_seen_at FROM runner WHERE id='runner'",
+    );
+    f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('idle','codex',1)");
+    const profile = { agent: "codex" as const, model: null };
+    const maintenance = f.helpers.dispatch({
+      runnerId: "runner",
+      sessionId: "reporting-session",
+      purpose: "finding_groups",
+      profile,
+      prompt: "Group",
+    });
+    const placement = createRunnerPlacement({ db: f.db, now: () => f.now });
+    const request = {
+      sessionId: "reporting-session",
+      profile,
+      role: "implementer" as const,
+      purpose: "helper" as const,
+    };
+    const candidates = await placement.candidates(request);
+    expect(candidates[0]!.id).toBe("idle");
+    f.helpers.dispatch({
+      runnerId: candidates[0]!.id,
+      sessionId: "reporting-session",
+      purpose: "classify",
+      profile,
+      prompt: "Classify",
+    });
+    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    expect(
+      await placement.candidates({ ...request, excludeRunnerIds: ["runner", "idle"] }),
+    ).toEqual([]);
+    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a failed receipt completion is retried by cleanup before the original error propagates", async () => {
+  const { createRunnerPlacement } = await import("../src/runner-placement");
+  const f = seed();
+  try {
+    const placement = createRunnerPlacement({ db: f.db });
+    const original = new Error("Transient receipt failure");
+    let attempts = 0;
+    const helper = createFindingGroupHelper({
+      db: f.db,
+      profile: () => ({ agent: "codex", model: null }),
+      placement: {
+        ...placement,
+        finished(input) {
+          if (++attempts === 1) throw original;
+          return placement.finished(input);
+        },
+      },
+      helpers: async () => ({
+        ...f.helpers,
+        dispatch(input) {
+          const issued = f.helpers.dispatch(input);
+          f.helpers.submit("runner", {
+            commandId: issued.command.id,
+            executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            role: "implementer",
+            stopReason: "end_turn",
+            timedOut: false,
+            cancelled: false,
+            authRequired: false,
+            agentExited: true,
+            text: '{"groups":[]}',
+          });
+          return issued;
+        },
+      }),
+    });
+    await expect(
+      helper({
+        workspaceId: "ws",
+        sessionId: "reporting-session",
+        prompt: "Group",
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toBe(original);
+    expect(attempts).toBe(2);
+    expect(
+      f.db
+        .query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM runner_execution_usage")
+        .get()?.ended,
     ).not.toBeNull();
   } finally {
     f.db.close();

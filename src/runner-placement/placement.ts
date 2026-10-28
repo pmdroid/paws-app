@@ -7,7 +7,7 @@ import {
   getWorkItemRepository,
   immediate,
   runnerHasCapacity,
-  yieldFindingGroupHelpers,
+  runnerHelperAvailability,
   runnerOccupancy,
   runnerSlotsHeldBetweenCommands,
   delegatedLinearUserId,
@@ -309,23 +309,16 @@ export function createRunnerPlacement(options: {
             .get(input.itemId)
         : null;
       const ranked = rows.flatMap((runner) => {
-        if (input.purpose === "helper" && !input.findingGroups)
-          yieldFindingGroupHelpers(db, runner.id, at);
         const reject = (reason: string) => {
           input.onRejected?.(runner.id, reason);
           return [];
         };
-        if (input.purpose === "helper" && !runnerHasCapacity(db, runner.id, at))
-          return reject("no free capacity");
-        if (
-          input.purpose === "helper" &&
-          db
-            .query(
-              "SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
-            )
-            .get(runner.id, at)
-        )
-          return reject("helper already running");
+        const helper =
+          input.purpose === "helper"
+            ? runnerHelperAvailability(db, runner.id, at, !input.findingGroups)
+            : null;
+        if (helper && !helper.available)
+          return reject("helper already running or no free capacity");
         if (runner.id === input.handedOverFrom) return reject("handed the session over");
         // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
         // session on its pinned host instead of moving its checkout and held slot.
@@ -346,7 +339,7 @@ export function createRunnerPlacement(options: {
           return reject("reviewer model matches implementation model");
         const reviewRank =
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
-        return [{ runner, rank: reviewRank * 10 + (own ? 0 : 1) }];
+        return [{ runner, rank: (helper?.preempts ? 1000 : 0) + reviewRank * 10 + (own ? 0 : 1) }];
       });
       // A run leaving its pinned runner goes first to a free runner that can restore its saved
       // agent session, the agent version that wrote it ahead of other versions. It never waits

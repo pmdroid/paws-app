@@ -6,7 +6,7 @@ import {
   getLinearSession,
   immediate,
   runnerCancelPending,
-  runnerHasCapacity,
+  runnerHelperAvailability,
   yieldFindingGroupHelpers,
   workspaceSessionIds,
   workspaceMember,
@@ -125,14 +125,9 @@ export function createRunnerHelpers(options: {
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
         if (runnerCancelPending(db, input.runnerId, now()))
           throw new Error("Runner cancellation teardown is still pending");
-        if (input.purpose !== "finding_groups") yieldFindingGroupHelpers(db, input.runnerId, now());
         if (
-          db
-            .query(
-              "SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>? LIMIT 1",
-            )
-            .get(input.runnerId, now()) ||
-          !runnerHasCapacity(db, input.runnerId, now())
+          !runnerHelperAvailability(db, input.runnerId, now(), input.purpose !== "finding_groups")
+            .available
         )
           throw new Error("Runner is busy");
         const at = now();
@@ -150,6 +145,8 @@ export function createRunnerHelpers(options: {
           privateKey: options.privateKey,
           command,
         });
+        // Validate and sign first. Fencing and admission commit together, only on this runner.
+        if (input.purpose !== "finding_groups") yieldFindingGroupHelpers(db, input.runnerId, at);
         db.run(
           "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES(?,?,?,?,?,?,?,?)",
           [

@@ -122,7 +122,6 @@ export function createRemoteSessionAgentRunner(options: {
             input.signal?.throwIfAborted();
             const result = options.helpers.result(command.id);
             if (result) {
-              accounted = true;
               const disposition = immediate(options.db, () =>
                 options.placement?.finished({
                   commandId: command!.id,
