@@ -42,6 +42,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/github`                                             | GitHub App API, repository access, pull requests and Git operations   |
 | `src/host`                                               | Sleep, wake and process supervision                                   |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
+| `src/installer`                                          | `paws install`: prompts, env file and the secrets step                |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
 | `src/linear`                                             | Tracker adapter, webhooks, polling, sessions and workspace access     |
 | `src/loop`                                               | Agent turns, `restart()` and `ask()`, Closeout, publication, recovery |
