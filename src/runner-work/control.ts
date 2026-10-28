@@ -71,6 +71,27 @@ export class RunnerWorkFencedError extends Error {
   override readonly name = "RunnerWorkFencedError";
 }
 
+export const RUN_GRANT_GRACE_MS = 2 * 60_000;
+
+export function runGrantValid(
+  db: Database,
+  input: { token: string; runId: string; generation: number },
+  at: number,
+): boolean {
+  return (
+    db
+      .query(
+        "SELECT 1 FROM runner_work_grant WHERE token_hash=? AND run_id=? AND generation=? AND expires_at>?",
+      )
+      .get(
+        workspaceTokenHash(input.token),
+        input.runId,
+        input.generation,
+        at - RUN_GRANT_GRACE_MS,
+      ) !== null
+  );
+}
+
 export function createRunnerWork(options: {
   db: Database;
   keyId: string;
@@ -303,12 +324,7 @@ export function createRunnerWork(options: {
   ): Assignment {
     const at = now();
     const work = live(input.runnerId, input.runId, input.generation, at, allowPendingQuestion);
-    const grant = db
-      .query(
-        "SELECT 1 FROM runner_work_grant WHERE token_hash=? AND run_id=? AND generation=? AND expires_at>?",
-      )
-      .get(workspaceTokenHash(input.token), input.runId, input.generation, at);
-    if (!grant) throw new Error("Run grant is invalid or expired.");
+    if (!runGrantValid(db, input, at)) throw new Error("Run grant is invalid or expired.");
     return work;
   }
   function queue(command: RunnerCommand) {
