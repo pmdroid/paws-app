@@ -22,13 +22,16 @@ import {
   beginWorkspaceOAuth,
   completeWorkspaceOAuth,
   cookieValue,
+  createRateLimiter,
   issueWorkspaceBootstrap,
   issueWorkspaceSession,
+  ONBOARDING_RATE_LIMITS,
   workspaceId,
   workspaceSecret,
   workspaceSessionCookie,
   workspaceTokenHash,
   type LinearBrowserIdentity,
+  type WorkspaceClient,
 } from "../workspace";
 import { handleStatusRequest } from "../web";
 import { createLinearReconnect, type LinearReconnectSnapshot } from "./reconnect";
@@ -50,10 +53,11 @@ export function createBrowserOnboarding(options: {
 }) {
   const { db, origin, home } = options;
   const now = options.now ?? Date.now;
+  const startsPerIp = createRateLimiter(ONBOARDING_RATE_LIMITS.startsPerIp, now);
   const fetchImpl = options.fetch ?? fetch;
   const tokenPath = join(home, "secrets", "linear-oauth.json");
   let installing = false;
-  return async (request: Request): Promise<Response> => {
+  return async (request: Request, peer: WorkspaceClient = {}): Promise<Response> => {
     const url = new URL(request.url);
     if (
       url.origin !== origin ||
@@ -79,13 +83,26 @@ export function createBrowserOnboarding(options: {
         { error: "Configure the Linear app credentials on the Paws server." },
         { status: 503 },
       );
-    if (url.pathname === "/auth/linear")
+    if (url.pathname === "/auth/linear") {
+      const limit = startsPerIp.take(peer.ip || "unknown");
+      if (!limit.allowed)
+        return Response.json(
+          { error: "Too many sign-in attempts. Try again later." },
+          {
+            status: 429,
+            headers: {
+              "cache-control": "no-store",
+              "retry-after": String(limit.retryAfterSeconds),
+            },
+          },
+        );
       return beginWorkspaceOAuth(db, {
         clientId: options.clientId!,
         origin,
         now: now(),
         bootstrap: null,
       });
+    }
     if (url.pathname === "/auth/linear/callback") {
       try {
         const { identity } = await completeWorkspaceOAuth(db, request, {

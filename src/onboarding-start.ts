@@ -60,14 +60,14 @@ export function startBrowserOnboarding(
     hostname: runtime.env.host,
     port: runtime.env.port,
     tls,
-    onboarding(request) {
+    onboarding(request, client) {
       const path = new URL(request.url).pathname;
       const page = path === "/" || path === "/status" || path.startsWith("/status/");
       if (stopping || ((switching || failed) && !page))
         return Promise.resolve(
           Response.json({ error: "Paws is starting. Retry shortly." }, { status: 503 }),
         );
-      const operation = handle(request);
+      const operation = handle(request, client);
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
     },
