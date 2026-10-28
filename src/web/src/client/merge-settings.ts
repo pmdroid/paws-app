@@ -140,8 +140,7 @@ function riskSection(repositories: readonly HighRiskRepository[]): string {
 }
 
 export function renderMergeSettings(view: View): string {
-  if (view.denied)
-    return '<p class="sub">Only workspace admins can change merging settings.</p>';
+  if (view.denied) return '<p class="sub">Only workspace admins can change merging settings.</p>';
   const intro = '<p class="sub">An item keeps the settings it had when it started.</p>';
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading merging settings…")}</div>${view.error ? '<button class="btn" type="button" data-merge="reload">Try again</button>' : ""}`;

@@ -254,8 +254,7 @@ function requireOwner(db: Database, member: MemberRef): void {
       "SELECT role,active FROM workspace_member WHERE workspace_id=? AND user_id=?",
     )
     .get(member.workspaceId, member.userId);
-  if (!row?.active)
-    throw new Error("Active workspace membership is required to own a runner.");
+  if (!row?.active) throw new Error("Active workspace membership is required to own a runner.");
 }
 
 function freeVmName(db: Database, member: MemberRef): string {
