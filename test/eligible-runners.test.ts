@@ -262,3 +262,22 @@ test("eligibleRunners reads only SQLite", () => {
     ws.close();
   }
 });
+
+test("a runner with an unacknowledged cancel is offline until that cancel expires", () => {
+  const space = workspace({ box: { owner: "me" } });
+  const now = Date.now();
+  const cancel = (id: string, expiresAt: number) =>
+    space.db.run(
+      "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES(?,?,'cancel','{}',?)",
+      [id, "box", expiresAt],
+    );
+  try {
+    cancel("live-cancel", now + 60_000);
+    expect(space.check({ now }).map((runner) => runner.reason)).toEqual(["offline"]);
+    space.db.run("DELETE FROM runner_command");
+    cancel("expired-cancel", now - 60_000);
+    expect(space.check({ now }).map((runner) => runner.reason)).toEqual(["own"]);
+  } finally {
+    space.close();
+  }
+});
