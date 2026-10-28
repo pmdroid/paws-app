@@ -19,6 +19,7 @@ import {
   type RunnerProfile,
   type SignedRunnerCommand,
 } from "../runner-protocol";
+import { runnerRequestUnavailable } from "../runner-work";
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 type Row = {
@@ -225,9 +226,11 @@ export function createRunnerHelpers(options: {
         return json({ expiresAt: current(id, runnerId).command.expiresAt });
       } catch (error) {
         journalCaught(error, "runner-helpers.fetch.json", null);
-        return error instanceof HelperFencedError
-          ? json({ error: "Runner helper is fenced.", code: "fenced" }, 409)
-          : json({ error: "Runner helper request is denied or invalid." }, 403);
+        if (error instanceof HelperFencedError)
+          return json({ error: "Runner helper is fenced.", code: "fenced" }, 409);
+        if (runnerRequestUnavailable(error))
+          return json({ error: "Paws is busy. Retry the request." }, 503);
+        return json({ error: "Runner helper request is denied or invalid." }, 403);
       }
     },
   };

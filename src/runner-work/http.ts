@@ -8,7 +8,8 @@ import {
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
 } from "../runner-protocol";
-import { RunnerEventSchema, RunnerWorkFencedError, type RunnerWork } from "./control";
+import { RunnerEventSchema, type RunnerWork } from "./control";
+import { runnerFailureStatus } from "./failure";
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -88,8 +89,9 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       return null;
     } catch (error) {
       journalCaught(error, "http.createRunnerWorkHttp.json", null);
-      if (error instanceof RunnerWorkFencedError)
-        return json({ error: "Runner work is fenced.", code: "fenced" }, 409);
+      const status = runnerFailureStatus(error);
+      if (status === 409) return json({ error: "Runner work is fenced.", code: "fenced" }, 409);
+      if (status === 503) return json({ error: "Paws is busy. Retry the request." }, 503);
       return json({ error: "Runner work request is denied or invalid." }, 403);
     }
   };
