@@ -2640,6 +2640,16 @@ export class Orchestrator {
         await this.askCloseoutHelp(item, undefined, summary);
         return;
       }
+      if (returned !== null)
+        await this.fetchUpstreamMain(item).catch((caughtError) =>
+          journalCaught(
+            caughtError,
+            "orchestrator.runItem.fetchUpstreamMain",
+            live.itemId,
+            undefined,
+            this.options.journal,
+          ),
+        );
       const launched = this.launchAgent({
         role: "implementer",
         profile: profiles.implementer,
