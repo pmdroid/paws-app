@@ -37,6 +37,7 @@ import {
   handleMergeSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
+  MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
   type HighRiskFile,
   type MergeChoices,
