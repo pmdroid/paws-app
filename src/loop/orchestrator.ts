@@ -164,6 +164,10 @@ import {
   clearQueueWait,
   queueWaitSince,
   getRun,
+  CLEANUP_BLOCKED_NOTICE,
+  blockConversation as blockStoredConversation,
+  clearConversationBlock,
+  listBlockedConversations,
   getConversation,
   saveConversation,
   listLinearTurnsForItem,
@@ -490,6 +494,11 @@ export type OrchestratorOptions = {
     slotFree?(): boolean;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
+    /**
+     * Whether the runners the item ran on report all of its commands gone since `since`, so a
+     * conversation blocked on their cleanup can continue. SQLite only.
+     */
+    commandsGone?(itemId: string, since: number): boolean;
   };
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
   /** How often Closeout rechecks an unavailable runner, and when it asks the team. */
@@ -567,6 +576,7 @@ export class Orchestrator {
   /** Temporary errors thrown while the agent was being prepared, before it started. */
   private readonly preparationFailures = new WeakSet<object>();
   private readonly pullRequestReads = new Set<string>();
+  private releasingBlocks: Promise<void> | null = null;
   private readonly live = new Map<
     string,
     {
@@ -783,7 +793,12 @@ export class Orchestrator {
         .filter((item) => item.state !== "merged" && item.state !== "completed")
         .map((item) => this.options.remoteExecution?.cancelItem?.(item.id)),
     ]);
-    if (items.some((item) => getConversation(this.db, item.id).blocked))
+    // A previous session's agent the runner reports gone no longer holds up a new delegation.
+    if (
+      items.some(
+        (item) => getConversation(this.db, item.id).blocked && !this.releaseCleanupBlock(item.id),
+      )
+    )
       throw new Error("ACP process cleanup could not be verified");
     const failure = joined.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
@@ -2078,17 +2093,7 @@ export class Orchestrator {
         signal: controller.signal,
         launch: (input) => this.launchAgent(input),
         agentRunner: this.helperRunner(item.sessionKey, "classify"),
-        onCleanupFailure: () => {
-          const stored = getConversation(this.db, item.id);
-          saveConversation(
-            this.db,
-            item.id,
-            stored.entries,
-            stored.transcript,
-            true,
-            stored.transcriptOffset,
-          );
-        },
+        onCleanupFailure: () => this.blockConversation(item.id),
       });
       controller.signal.throwIfAborted();
       if (
@@ -3622,10 +3627,7 @@ export class Orchestrator {
       github: configuredGitHub,
       repository,
       signal: live.controller.signal,
-      onCleanupFailure: () => {
-        const stored = getConversation(this.db, item.id);
-        saveConversation(this.db, item.id, stored.entries, stored.transcript, true);
-      },
+      onCleanupFailure: () => this.blockConversation(item.id),
       isCurrent: () =>
         !this.stopped(item.id) &&
         (live.sessionId === null ||
@@ -5369,10 +5371,11 @@ export class Orchestrator {
       if (item) activateLinearItem(this.db, sessionId, item.id);
     }
     if (!item) throw new Error("Linear user update has no routed task");
-    if (getConversation(this.db, item.id).blocked)
-      throw new Error(
-        "Prior ACP process cleanup could not be verified; user update remains pending",
-      );
+    // The reply waits as a pending turn until the old agent is known to be gone.
+    if (getConversation(this.db, item.id).blocked && !this.releaseCleanupBlock(item.id)) {
+      await this.tellCleanupBlocked(item.id, sessionId);
+      return;
+    }
     // Linear's "Fix merge conflicts" on the open pull request is a rebase-conflict return.
     const upstream =
       item.id === routed?.id &&
@@ -5465,6 +5468,102 @@ export class Orchestrator {
     });
     await this.flush();
     return true;
+  }
+
+  /**
+   * Clears conversation blocks whose old agent is gone, as the runner it ran on reports, and
+   * delivers the replies that waited on them.
+   */
+  releaseCleanupBlocks(): Promise<void> {
+    if (this.releasingBlocks) return this.releasingBlocks;
+    const releasing = (async () => {
+      for (const { itemId } of listBlockedConversations(this.db))
+        if (this.releaseCleanupBlock(itemId)) await this.deliverHeldReplies(itemId);
+    })().finally(() => {
+      if (this.releasingBlocks === releasing) this.releasingBlocks = null;
+    });
+    this.releasingBlocks = releasing;
+    return releasing;
+  }
+
+  /**
+   * A person vouches that the item's old agent is gone. Refused while Paws itself runs the item.
+   * `onCommitted` runs inside the transaction that clears the block.
+   */
+  async clearStuckAgent(
+    itemId: string,
+    canAct: () => boolean = () => true,
+    onCommitted?: () => void,
+  ): Promise<boolean> {
+    if (this.isLive(itemId)) return false;
+    const cleared = immediate(this.db, () => {
+      if (!canAct() || !getConversation(this.db, itemId).blocked) return false;
+      onCommitted?.();
+      return clearConversationBlock(this.db, itemId);
+    });
+    if (!cleared) return false;
+    this.options.journal?.(`item ${itemId} conversation block cleared by a person`);
+    await this.deliverHeldReplies(itemId);
+    return true;
+  }
+
+  private releaseCleanupBlock(itemId: string): boolean {
+    const gone = this.options.remoteExecution?.commandsGone;
+    if (!gone || this.isLive(itemId)) return false;
+    const cleared = immediate(this.db, () => {
+      const { blockedAt } = getConversation(this.db, itemId);
+      return (
+        blockedAt !== null &&
+        gone(itemId, blockedAt) &&
+        clearConversationBlock(this.db, itemId, blockedAt)
+      );
+    });
+    if (cleared)
+      this.options.journal?.(
+        `item ${itemId} conversation block cleared: its runner no longer runs its commands`,
+      );
+    return cleared;
+  }
+
+  private async deliverHeldReplies(itemId: string): Promise<void> {
+    const sessionId = getWorkItem(this.db, itemId)?.sessionKey;
+    if (!sessionId || this.shuttingDown || !listPendingLinearTurns(this.db, sessionId).length)
+      return;
+    // In line with the session's Linear events, so a reply arriving now is delivered once.
+    const done = (this.sessionEvents.get(sessionId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.resumeLinearSession(sessionId));
+    this.sessionEvents.set(sessionId, done);
+    try {
+      await done;
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.deliverHeldReplies.resumeLinearSession",
+        itemId,
+        undefined,
+        this.options.journal,
+      );
+    } finally {
+      if (this.sessionEvents.get(sessionId) === done) this.sessionEvents.delete(sessionId);
+    }
+  }
+
+  private async tellCleanupBlocked(itemId: string, sessionId: string): Promise<void> {
+    const { blockedAt } = getConversation(this.db, itemId);
+    enqueueOutboxOnce(this.db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      idempotencyKey: `cleanup-blocked:${itemId}:${blockedAt ?? 0}`,
+      payload: { sessionId, kind: "thought", body: CLEANUP_BLOCKED_NOTICE, id: randomUUID() },
+      now: this.now(),
+    });
+    await this.flush();
+  }
+
+  private isLive(itemId: string): boolean {
+    return [...this.live.values()].some((live) => live.itemId === itemId);
   }
 
   private abortItem(itemId: string): void {
@@ -6138,15 +6237,7 @@ export class Orchestrator {
   }
 
   private blockConversation(itemId: string): void {
-    const stored = getConversation(this.db, itemId);
-    saveConversation(
-      this.db,
-      itemId,
-      stored.entries,
-      stored.transcript,
-      true,
-      stored.transcriptOffset,
-    );
+    blockStoredConversation(this.db, itemId, this.now());
   }
 
   private async prepareConversation(item: WorkItemRecord) {
@@ -6218,10 +6309,7 @@ export class Orchestrator {
       onCandidate: (identity) => {
         if (!this.signalForItem(item.id)?.aborted) this.saveCandidate(runId, identity);
       },
-      onCleanupFailure: () => {
-        const stored = getConversation(this.db, item.id);
-        saveConversation(this.db, item.id, stored.entries, stored.transcript, true);
-      },
+      onCleanupFailure: () => this.blockConversation(item.id),
       signal: this.signalForItem(item.id),
       promptRunner: async (input) => {
         const runner =

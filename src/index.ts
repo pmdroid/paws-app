@@ -239,6 +239,7 @@ import {
   createRemoteAgentRunner,
   createRemoteSessionAgentRunner,
   fetchRunnerCandidate,
+  remoteCommandsGone,
 } from "./runner-backend";
 
 const ACCEPTED: IntakeDecision = { outcome: "accepted" };
@@ -817,6 +818,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           const backend = await remote;
           await backend.agents.cancelItem(itemId);
         },
+        commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
         slotFree: () =>
           db
             .query<{ id: string }, []>(
@@ -1392,6 +1394,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
       }
       registerScheduler(created.jobs, () => attached.reconcileExecution());
+      // A conversation blocked on an unverified cleanup continues once its runner reports the
+      // old command gone.
+      created.jobs.register("conversation.block.release", () => attached.releaseCleanupBlocks());
+      enqueueJobOnce(db, {
+        queue: "conversation.block.release",
+        jobKey: "conversation.block.release",
+        recurringEveryMs: 30_000,
+        now: Date.now(),
+      });
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );
