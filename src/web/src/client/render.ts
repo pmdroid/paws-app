@@ -77,6 +77,9 @@ export interface Rendered {
   title: string;
 }
 
+/** The Findings page loads its own data into this root. */
+const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
+
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
 export function render(model: RenderModel): Rendered {
@@ -93,18 +96,20 @@ export function render(model: RenderModel): Rendered {
     content:
       model.route.view === "runners"
         ? '<div id="runner-settings"></div>'
-        : model.route.view === "settings"
-          ? renderSettingsPage(model.route.page)
-          : model.phase !== "loading" && openDetail(model)
-            ? issuePage(
-                model.detail!,
-                model.detail!.id,
-                model.closeout ?? emptyCloseoutView(),
-                model.engineUrl,
-              )
-            : snapshot && model.phase !== "loading"
-              ? renderView(snapshot, model)
-              : renderPending(model),
+        : model.route.view === "findings"
+          ? FINDINGS_ROOT
+          : model.route.view === "settings"
+            ? renderSettingsPage(model.route.page)
+            : model.phase !== "loading" && openDetail(model)
+              ? issuePage(
+                  model.detail!,
+                  model.detail!.id,
+                  model.closeout ?? emptyCloseoutView(),
+                  model.engineUrl,
+                )
+              : snapshot && model.phase !== "loading"
+                ? renderView(snapshot, model)
+                : renderPending(model),
     title,
   };
 }
@@ -155,6 +160,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       );
     case "runners":
       return '<div id="runner-settings"></div>';
+    case "findings":
+      return FINDINGS_ROOT;
     case "settings":
       return renderSettingsPage(model.route.page);
   }
