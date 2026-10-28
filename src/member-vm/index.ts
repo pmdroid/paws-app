@@ -43,6 +43,7 @@ export { createMemberVmHttp, MEMBER_VM_PROGRESS_STEPS, memberVmView } from "./ht
 export type {
   MemberVmDeleteStepView,
   MemberVmDeleteView,
+  MemberVmPoolsResponse,
   MemberVmProgressStep,
   MemberVmResponse,
   MemberVmStepView,

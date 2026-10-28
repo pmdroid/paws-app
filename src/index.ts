@@ -794,6 +794,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db,
     available: createVmAvailable,
     size: memberVmSize,
+    exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {

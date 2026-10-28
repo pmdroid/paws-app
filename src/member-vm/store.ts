@@ -20,6 +20,8 @@ export type MemberVm = {
   workspaceId: string;
   userId: string;
   vmName: string;
+  /** The exe.dev pool chosen in Create VM, or the one it was moved to. Null: `[member_vm] pool`. */
+  pool: string | null;
   step: MemberVmStep;
   failure: string | null;
   runnerId: string | null;
@@ -55,7 +57,7 @@ export const STEP_AT = {
   ready: "ready_at",
 } as const satisfies Record<Exclude<MemberVmStep, "create">, string>;
 
-const COLUMNS = `id,workspace_id AS workspaceId,user_id AS userId,vm_name AS vmName,step,failure,
+const COLUMNS = `id,workspace_id AS workspaceId,user_id AS userId,vm_name AS vmName,pool,step,failure,
   runner_id AS runnerId,step_started_at AS stepStartedAt,create_requested_at AS createRequestedAt,
   install_started_at AS installStartedAt,token_expires_at AS tokenExpiresAt,
   install_at AS installAt,enroll_at AS enrollAt,health_at AS healthAt,ready_at AS readyAt,
@@ -77,7 +79,11 @@ export function findMemberVm(db: Database, member: MemberRef): MemberVm | null {
     .get(member.workspaceId, member.userId);
 }
 
-export function startMemberVm(db: Database, input: MemberRef & { now?: number }): MemberVm {
+/** `pool` applies to a new VM only; an existing one keeps where it is. */
+export function startMemberVm(
+  db: Database,
+  input: MemberRef & { now?: number; pool?: string | null },
+): MemberVm {
   const now = input.now ?? Date.now();
   return immediate(db, () => {
     const existing = current(db, input, now);
@@ -102,9 +108,18 @@ export function startMemberVm(db: Database, input: MemberRef & { now?: number })
     requireOwner(db, input);
     const id = mintId(now);
     db.run(
-      `INSERT INTO member_vm(id,workspace_id,user_id,vm_name,step,step_started_at,created_at,updated_at)
-      VALUES(?,?,?,?,'create',?,?,?)`,
-      [id, input.workspaceId, input.userId, freeVmName(db, input), now, now, now],
+      `INSERT INTO member_vm(id,workspace_id,user_id,vm_name,pool,step,step_started_at,created_at,
+      updated_at) VALUES(?,?,?,?,?,'create',?,?,?)`,
+      [
+        id,
+        input.workspaceId,
+        input.userId,
+        freeVmName(db, input),
+        input.pool ?? null,
+        now,
+        now,
+        now,
+      ],
     );
     ensureJob(db, id, now);
     return getMemberVm(db, id)!;

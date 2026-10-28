@@ -7,6 +7,8 @@ import {
   livePoll,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
+  memberVmMoveMarkup,
+  memberVmPoolMarkup,
   memberVmSizeMarkup,
   memberVmsMarkup,
   runnerVmMarkup,
@@ -1004,13 +1006,49 @@ describe("hostEnrollmentCommand", () => {
 
 test("Create VM names the size it asks exe.dev for", () => {
   expect(memberVmSizeMarkup(undefined)).toBe("");
-  expect(memberVmSizeMarkup({})).toContain("Create VM uses exe.dev&#39;s default size.");
+  expect(memberVmSizeMarkup({})).toContain(
+    "Create VM uses exe.dev&#39;s default size, in the exe.dev team&#39;s default placement.",
+  );
   expect(
     memberVmSizeMarkup({ cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" }),
-  ).toContain("Create VM uses 8 CPUs · 16 GB memory · 100 GB disk · image ubuntu:24.04.");
+  ).toContain("Create VM uses 8 CPUs · 16 GB memory · 100 GB disk · image ubuntu:24.04, in");
   expect(memberVmSizeMarkup({ cpu: 1 })).toContain(
-    "Create VM uses 1 CPU · default memory · default disk.",
+    "Create VM uses 1 CPU · default memory · default disk, in the exe.dev team&#39;s default placement.",
   );
+  expect(memberVmSizeMarkup({ pool: "build" })).toContain(
+    'Create VM uses exe.dev&#39;s default size, in exe.dev pool <b class="mono">build</b>.',
+  );
+});
+
+test("Create VM offers the other exe.dev pools for one VM", () => {
+  const pools = {
+    state: "listed" as const,
+    pools: [
+      { name: "build", region: "lon", status: "active" },
+      { name: "gpu", region: "nyc", status: "pending" },
+    ],
+  };
+  const html = memberVmPoolMarkup("build", pools, { choice: "", busy: false });
+  expect(html).toContain('<option value="" selected>build ([member_vm] pool)</option>');
+  expect(html).toContain('<option value="gpu">gpu · nyc · pending</option>');
+  expect(html).not.toContain('value="build"');
+  expect(memberVmPoolMarkup(undefined, pools, { choice: "gpu", busy: false })).toContain(
+    '<option value="">Team default placement</option>',
+  );
+  expect(
+    memberVmPoolMarkup(
+      "build",
+      { state: "listed", pools: [pools.pools[0]!] },
+      { choice: "", busy: false },
+    ),
+  ).toBe("");
+  expect(
+    memberVmPoolMarkup(
+      undefined,
+      { state: "failed", error: "exe.dev refused the token." },
+      { choice: "", busy: false },
+    ),
+  ).toContain("exe.dev pools could not be listed: exe.dev refused the token.");
 });
 
 describe("member VM", () => {
@@ -1189,6 +1227,33 @@ describe("member VM", () => {
     expect(html).toContain("exe.dev VM");
     expect(html).toContain('data-vm-delete="vm"');
     expect(runnerVmMarkup(deleting(), { busy: false })).toContain("data-vm-delete-step");
+  });
+
+  test("Move to pool offers the other pools with exe.dev's warning, or exe.dev's refusal", () => {
+    const pools = {
+      state: "listed" as const,
+      pools: [
+        { name: "build", region: null, status: null },
+        { name: "gpu", region: null, status: null },
+      ],
+    };
+    const html = runnerVmMarkup(vm({ step: "ready", pool: "build" }), {
+      busy: false,
+      pools,
+      denied: null,
+    });
+    expect(html).toContain('It is in exe.dev pool <b class="mono">build</b>.');
+    expect(html).toContain('data-vm-move="vm"');
+    expect(html).toContain('<option value="gpu">gpu</option>');
+    expect(html).not.toContain('<option value="build">');
+    expect(html).toContain("can take several minutes and needs an exe.dev team admin token");
+    const denied = memberVmMoveMarkup(vm(), pools, {
+      busy: false,
+      denied: "exe.dev refused moving ada-paws to pool gpu: only team admins can adopt VMs.",
+    });
+    expect(denied).not.toContain("data-vm-move=");
+    expect(denied).toContain("only team admins can adopt VMs.");
+    expect(memberVmMoveMarkup(vm(), { state: "loading" }, { busy: false, denied: null })).toBe("");
   });
 
   test("the runner row names its owner", () => {

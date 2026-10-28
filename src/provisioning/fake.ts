@@ -1,10 +1,12 @@
 import { journalCaught } from "../journal";
-import { assertCommand, assertVmName, newVmCommand } from "./names";
+import { sizeRefused } from "./client";
+import { adoptVmCommand, assertCommand, assertVmName, newVmCommand } from "./names";
 import {
   ProvisioningError,
   type ExeDev,
   type ExeDevCreatedVm,
   type ExeDevExecResult,
+  type ExeDevPool,
   type ExeDevVm,
   type ProvisioningErrorCode,
   type ProvisioningOperation,
@@ -15,6 +17,8 @@ export type FakeExeDevCall =
   | { operation: "createVm"; vm: string; command: string | null }
   | { operation: "deleteVm"; vm: string }
   | { operation: "getVm"; vm: string }
+  | { operation: "listPools" }
+  | { operation: "adoptVm"; vm: string; command: string }
   | { operation: "execVm"; vm: string; command: string; timeoutMs: number | null };
 
 export type FakeExecScript =
@@ -31,6 +35,11 @@ export type FakeFailure = {
 export type FakeExeDev = ExeDev & {
   readonly calls: FakeExeDevCall[];
   readonly vms: Map<string, ExeDevVm>;
+  /** What `pool list` answers. `new --pool` and `pool adopt` refuse a pool not listed here. */
+  readonly pools: Map<string, ExeDevPool>;
+  /** The pool each VM was created in or moved to. */
+  readonly placement: Map<string, string>;
+  addPool(name: string, pool?: Partial<Omit<ExeDevPool, "name">>): ExeDevPool;
   addVm(name: string, vm?: Partial<Omit<ExeDevVm, "name">>): ExeDevVm;
   setStatus(name: string, status: string): void;
   scriptExec(vm: string, command: string | RegExp, result: FakeExecScript | FakeExecScript[]): void;
@@ -46,6 +55,8 @@ export const FAKE_UNSCRIPTED_EXIT = 127;
 export function createFakeExeDev(): FakeExeDev {
   const calls: FakeExeDevCall[] = [];
   const vms = new Map<string, ExeDevVm>();
+  const pools = new Map<string, ExeDevPool>();
+  const placement = new Map<string, string>();
   const scripts: Script[] = [];
   const rules: Rule[] = [];
 
@@ -91,10 +102,33 @@ export function createFakeExeDev(): FakeExeDev {
     );
   }
 
+  /** exe.dev's refusal of a pool it does not know, as the real client reports it. */
+  function unknownPool(operation: "createVm" | "adoptVm", pool: string): ProvisioningError {
+    return new ProvisioningError(
+      operation,
+      "unknown",
+      `fake exe.dev ${operation}: no pool ${pool}.`,
+      422,
+      `pool "${pool}" does not exist`,
+    );
+  }
+
   return {
     calls,
     vms,
+    pools,
+    placement,
     addVm,
+
+    addPool(name, pool = {}) {
+      const value: ExeDevPool = {
+        name,
+        region: pool.region ?? null,
+        status: pool.status ?? "active",
+      };
+      pools.set(name, value);
+      return value;
+    },
 
     setStatus(name, status) {
       const vm = vms.get(name);
@@ -120,12 +154,22 @@ export function createFakeExeDev(): FakeExeDev {
       };
       calls.push(call);
       const vm = assertVmName("createVm", name);
-      call.command = newVmCommand(vm, size);
+      const command = newVmCommand(vm, size);
+      call.command = command;
       failIfScripted("createVm", vm);
       if (vms.has(vm)) {
         throw new ProvisioningError("createVm", "conflict", `fake exe.dev createVm: ${vm} exists.`);
       }
+      const pool = size?.pool;
+      if (pool !== undefined && !pools.has(pool))
+        throw sizeRefused(
+          unknownPool("createVm", pool) as ProvisioningError & { detail: string },
+          vm,
+          command,
+          null,
+        );
       const created = addVm(vm);
+      if (pool !== undefined) placement.set(vm, pool);
       return { name: created.name, sshDest: created.sshDest, httpsUrl: created.httpsUrl };
     },
 
@@ -142,6 +186,35 @@ export function createFakeExeDev(): FakeExeDev {
         throw error;
       }
       return vms.delete(vm) ? "deleted" : "missing";
+    },
+
+    async listPools() {
+      calls.push({ operation: "listPools" });
+      failIfScripted("listPools", "");
+      return [...pools.values()].map((pool) => ({ ...pool }));
+    },
+
+    async adoptVm(name, pool) {
+      const call: Extract<FakeExeDevCall, { operation: "adoptVm" }> = {
+        operation: "adoptVm",
+        vm: String(name),
+        command: "",
+      };
+      calls.push(call);
+      call.command = adoptVmCommand(name, pool);
+      failIfScripted("adoptVm", name);
+      existing("adoptVm", name);
+      if (!pools.has(pool)) {
+        const refused = unknownPool("adoptVm", pool);
+        throw new ProvisioningError(
+          "adoptVm",
+          refused.code,
+          `exe.dev refused moving ${name} to pool ${pool}: ${refused.detail}.`,
+          refused.status,
+          refused.detail,
+        );
+      }
+      placement.set(name, pool);
     },
 
     async getVm(name) {

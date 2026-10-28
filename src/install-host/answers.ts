@@ -38,6 +38,7 @@ export const ANSWER_KEYS = [
   "member_vm_memory_gb",
   "member_vm_disk_gb",
   "member_vm_image",
+  "member_vm_pool",
 ] as const;
 
 export type AnswerKey = (typeof ANSWER_KEYS)[number];
@@ -93,6 +94,10 @@ export const FIELDS: Record<AnswerKey, Field> = {
   member_vm_memory_gb: memberVmField("exe.dev runner VM memory in GB (--memory)", "memory_gb"),
   member_vm_disk_gb: memberVmField("exe.dev runner VM disk in GB (--disk)", "disk_gb"),
   member_vm_image: memberVmField("exe.dev runner VM image (--image)", "image"),
+  member_vm_pool: memberVmField(
+    "exe.dev pool for runner VMs (--pool; `ssh exe.dev pool list` names them)",
+    "pool",
+  ),
 };
 
 /** An optional `[member_vm]` key, checked as config.toml checks it. Empty keeps exe.dev's default. */
@@ -103,7 +108,8 @@ function memberVmField(question: string, key: MemberVmKey): Field {
     check: (value) => {
       const trimmed = value.trim();
       if (trimmed === "") return "";
-      const typed = key !== "image" && /^-?\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
+      const typed =
+        key !== "image" && key !== "pool" && /^-?\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
       return String(checkMemberVmValue(key, typed));
     },
   };
@@ -126,6 +132,7 @@ export function toAnswers(raw: Required<RawAnswers>): InstallAnswers {
       ...(raw.member_vm_memory_gb ? { memoryGb: Number(raw.member_vm_memory_gb) } : {}),
       ...(raw.member_vm_disk_gb ? { diskGb: Number(raw.member_vm_disk_gb) } : {}),
       ...(raw.member_vm_image ? { image: raw.member_vm_image } : {}),
+      ...(raw.member_vm_pool ? { pool: raw.member_vm_pool } : {}),
     },
   };
 }
