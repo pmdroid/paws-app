@@ -21,6 +21,8 @@ Before the pull request, activities tell the story and the title names the phase
 1. **The final response.** Merged (`merged:<item>:<generation>`), closed without merge (`closed:`), or stopped (`command:stop:`). It is delivered `ordered`, keeps the session complete, and ends it for good. A comment-only GitHub review's threads (`pull-review:`) are also a response, posted once per review id.
 2. **Elicitations from `ask()`.** A question is the only thing that reopens a session after the pull request, because a person must see it.
 
+The pull request response and the final response end with what is still open at the published head, when anything is: "2 findings still open (1 P1 pre-existing, 1 P2 below failOn) and risk high (`a.ts`). Check them: <Paws issue page>". The findings are the review findings Closeout accepted the head with, pre-existing or below the review's `failOn`. Without a public dashboard URL the line says "Check them on the Paws dashboard." The pull request body has the same line and one line per finding under `## Open findings`, and every later publication rewrites it. The line goes in the same response; it never adds an activity.
+
 Evidence published after the pull request response is attached to the issue (`linear.attachment`), not posted. See [Evidence checks](closeout.md#evidence-checks).
 
 The host plan is monotonic. A completed host step (Wait, Implement, Verify, Fix findings, Open pull request, Merge) never returns to pending. Re-verification and fix rounds append a step, and the title never reads `implementing`, `verifying` or `fixing` again after the pull request.

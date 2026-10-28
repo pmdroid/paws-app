@@ -200,6 +200,7 @@ import {
   saveCheckpoint,
   recordItemBranchState,
   recordItemPullRequest,
+  saveOpenFindings,
   getItemPullRequest,
   saveVisualReviewMarks,
   type VisualReviewMark,
@@ -421,6 +422,13 @@ import {
 } from "./runner-wait";
 import { createRepositoryGit } from "./repository-git";
 import { readFixDiff, settleReviewEscapes } from "./review-escapes";
+import {
+  openFindings,
+  openFindingsLine,
+  openFindingsSection,
+  pawsIssueUrl,
+  type OpenItems,
+} from "./open-findings";
 import { RUNTIME_FILES, runtimeList, type RuntimeList } from "../runtimes";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
@@ -3675,6 +3683,28 @@ export class Orchestrator {
       live.controller.signal,
     );
     if (this.stopped(item.id)) return { kind: "obsolete" };
+    const publicUrl = this.options.evidence?.publicUrl ?? this.options.publicUrl ?? null;
+    const open: OpenItems = {
+      findings: await openFindings(
+        this.db,
+        item,
+        run.publicationCandidate?.sha ?? null,
+        this.options.pawsRoot,
+      ).catch((error: unknown) => {
+        journalCaught(
+          error,
+          "orchestrator.publishForMerge.openFindings",
+          item.id,
+          undefined,
+          this.options.journal,
+        );
+        return [];
+      }),
+      risk,
+      link: pawsIssueUrl(publicUrl, item),
+    };
+    const openLine = openFindingsLine(open);
+    if (this.stopped(item.id)) return { kind: "obsolete" };
     this.sessionProgress(item)?.phase("publishing");
     const draft = getPullRequestDraft(this.db, item.id);
     const published = await publishAccepted({
@@ -3689,6 +3719,7 @@ export class Orchestrator {
           this.now(),
         ),
         policy ? policyPullRequestCredit(policy) : "",
+        openFindingsSection(open),
       ]
         .filter(Boolean)
         .join("\n\n"),
@@ -3720,10 +3751,16 @@ export class Orchestrator {
       pullUrl: published.pull.url ?? null,
       openedAt: this.now(),
     });
+    saveOpenFindings(this.db, {
+      itemId: item.id,
+      head: published.head,
+      line: openLine,
+      now: this.now(),
+    });
     this.post(
       item,
       "response",
-      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}`,
+      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}${openLine ? `\n\n${openLine}` : ""}`,
       `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
       {},
       "ordered",

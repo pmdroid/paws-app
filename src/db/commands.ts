@@ -18,6 +18,7 @@ import {
   noteJobError,
 } from "./jobs";
 import { enqueueOutboxOnce, stopOutboxSession, advanceOutboxSession } from "./outbox";
+import { withOpenFindings } from "./open-findings";
 import { markRun } from "./runs";
 import { halt } from "./halt";
 import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
@@ -95,10 +96,14 @@ export function applyLinearCommand(
         : command.source === "dashboard"
           ? "Stopped from Paws."
           : "Stopped.");
-    const text = stoppedResponse(db, item, lead, {
-      reason: response !== undefined,
-      pullClosing: closing,
-    });
+    const text = withOpenFindings(
+      db,
+      item.id,
+      stoppedResponse(db, item, lead, {
+        reason: response !== undefined,
+        pullClosing: closing,
+      }),
+    );
     enqueueOutboxOnce(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
