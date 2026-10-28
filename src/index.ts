@@ -354,6 +354,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         origin: runtime.publicUrl!,
         clientId: runtime.linearClientId,
         clientSecret: runtime.linearClientSecret,
+        expectedOrganizationId: runtime.linearOrganizationId,
         reconnect: true,
         installed() {},
       })
