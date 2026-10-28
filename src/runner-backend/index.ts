@@ -541,7 +541,7 @@ export function createRemoteAgentRunner(options: {
     }
     return null;
   }
-  function attachedWork(itemId: string, role: RunAgentOptions["role"]) {
+  function attachedWork(itemId: string, type: WorkCommand["type"]) {
     const runId = getWorkItem(db, itemId)?.currentRunId;
     if (!runId) return undefined;
     const row = db
@@ -563,7 +563,7 @@ export function createRemoteAgentRunner(options: {
         "utf8",
       ),
     ) as WorkCommand;
-    if (command.type !== (role === "reviewer" ? "review" : "run")) return undefined;
+    if (command.type !== type) return undefined;
     return {
       selected: {
         id: row.runnerId,
@@ -571,8 +571,9 @@ export function createRemoteAgentRunner(options: {
         runId,
       },
       assigned: command,
-      baseSha: command.repository!.baseSha,
-      mainSha: command.repository!.mainSha,
+      // A response task without a repository has no commit.
+      baseSha: command.repository?.baseSha,
+      mainSha: command.type === "task" ? undefined : command.repository.mainSha,
       deadline: command.expiresAt,
       cursor: row.cursor,
     };
@@ -706,8 +707,14 @@ export function createRemoteAgentRunner(options: {
             : {}),
           signal: input.signal,
         };
-        const attached =
-          !input.prepareOnly && !responseTask ? attachedWork(itemId, input.role) : undefined;
+        // Work a runner kept through a Paws restart is read from where it stopped. A response
+        // task binds its Linear session again below, before any event is read.
+        const attached = input.prepareOnly
+          ? undefined
+          : attachedWork(
+              itemId,
+              responseTask ? "task" : input.role === "reviewer" ? "review" : "run",
+            );
         const chosen = attached
           ? undefined
           : move.from
@@ -1924,11 +1931,12 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
+          // A Paws restart leaves implementer work and response tasks running on the runner; the
+          // startup resume reattaches to them.
           const detached =
             signal.reason instanceof PawsShutdown &&
-            command?.type === "run" &&
-            command.checkpoint !== false &&
-            !responseTask &&
+            ((command?.type === "run" && command.checkpoint !== false) ||
+              command?.type === "task") &&
             getWorkItem(db, itemId)?.state === "running";
           // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
           // first, and the next turn starts from it.
