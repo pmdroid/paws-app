@@ -123,6 +123,26 @@ describe("status HTTP stub", () => {
     expect((await get("/api/status?slices=items")).pushOutages).toBeUndefined();
   });
 
+  test("the items slice carries the last 24 hours of merge times, which Overview shows", async () => {
+    const mergedTimes = {
+      since: "2026-10-26T10:00:00.000Z",
+      merged: 2,
+      medianMs: 3_600_000,
+      p90Ms: 7_200_000,
+      states: [{ state: "running", ms: 1_800_000 }],
+    };
+    const provider = {
+      ...fakeStatusProvider(),
+      snapshot: () => ({ ...statusList(fullStatusFixture()), mergedTimes }),
+    };
+    const get = async (path: string) =>
+      (await (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
+        provider,
+      }))!.json()) as Record<string, unknown>;
+    expect((await get("/api/status?slices=items")).mergedTimes).toEqual(mergedTimes);
+    expect((await get("/api/status?slices=evidence")).mergedTimes).toBeUndefined();
+  });
+
   test("a check log is the last 64 KB of each stream unless the full log is asked for", async () => {
     const requests: unknown[] = [];
     // Two-byte characters, so the cut has to land on a character boundary.
