@@ -3,7 +3,8 @@ import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
   enqueueJobOnce,
-  listReviewFindings,
+  reviewFindingsByIds,
+  getFindingGroup,
   immediate,
   lastFindingGroupRun,
   listFindingGroups,
@@ -50,7 +51,8 @@ function members(
     items: ReturnType<typeof reviewFindingItems>;
   },
 ): { rows: ReviewFindingRecord[]; items: ReturnType<typeof reviewFindingItems> } | null {
-  const available = snapshot?.rows ?? new Map(listReviewFindings(db).map((f) => [f.id, f]));
+  const available =
+    snapshot?.rows ?? new Map(reviewFindingsByIds(db, group.memberIds).map((f) => [f.id, f]));
   const rows = group.memberIds.map((id) => available.get(id));
   if (rows.some((r) => r === undefined)) return null;
   const items = snapshot?.items ?? reviewFindingItems(db, group.memberIds);
@@ -87,7 +89,12 @@ export async function handleFindingGroupsRequest(
     if (workspaceId && (!principal || member?.active)) {
       const groups = listFindingGroups(db, workspaceId, 200);
       const snapshot = {
-        rows: new Map(listReviewFindings(db).map((f) => [f.id, f])),
+        rows: new Map(
+          reviewFindingsByIds(
+            db,
+            groups.flatMap((g) => g.memberIds),
+          ).map((f) => [f.id, f]),
+        ),
         items: reviewFindingItems(
           db,
           groups.flatMap((g) => g.memberIds),
@@ -96,10 +103,16 @@ export async function handleFindingGroupsRequest(
       data.groups = groups.flatMap((group) => {
         const accessible = members(db, group, options.sessionIds, snapshot);
         if (!accessible) return [];
-        const { rows, items } = accessible;
+        const { items } = accessible;
+        const rows =
+          group.status === "open" && !group.action
+            ? accessible.rows.filter((f) => f.status === "open")
+            : accessible.rows;
+        if (!rows.length) return [];
         return [
           {
             ...group,
+            memberIds: rows.map((f) => f.id),
             findings: rows.map((f) =>
               findingView(
                 f,
@@ -157,7 +170,7 @@ export async function handleFindingGroupsRequest(
     });
     return Response.json({ queued: true }, { status: 202 });
   }
-  const group = listFindingGroups(db, principal.workspaceId).find((g) => g.id === action.id);
+  const group = getFindingGroup(db, principal.workspaceId, action.id);
   if (!group) return Response.json({ error: "Group not found." }, { status: 404 });
   const accessible = members(db, group, options.sessionIds);
   if (!accessible)
@@ -165,15 +178,15 @@ export async function handleFindingGroupsRequest(
       { error: "You cannot access every finding in this group." },
       { status: 403 },
     );
-  const { rows } = accessible;
+  const rows = group.action ? accessible.rows : accessible.rows.filter((f) => f.status === "open");
   if (group.status !== "open" || (group.action && group.action !== action.action))
     return Response.json(
       { error: "This group has already been acted on. Refresh the page." },
       { status: 409 },
     );
-  if (rows.some((f) => f.status !== "open"))
+  if (!rows.length)
     return Response.json(
-      { error: "A finding has changed. Run grouping again before filing this group." },
+      { error: "No open findings remain in this group. Refresh the page." },
       { status: 409 },
     );
   if (action.action === "add" && !group.suggestedIssue)
@@ -184,8 +197,8 @@ export async function handleFindingGroupsRequest(
     return Response.json({ error: "This group action is still running." }, { status: 409 });
   // Store the chosen action before the network write. Stable Linear ids make retries safe.
   const claimed = db.run(
-    "UPDATE finding_group SET action=? WHERE id=? AND status='open' AND (action IS NULL OR action=?)",
-    [action.action, group.id, action.action],
+    "UPDATE finding_group SET action=?,member_ids=? WHERE id=? AND status='open' AND (action IS NULL OR action=?)",
+    [action.action, JSON.stringify(rows.map((f) => f.id)), group.id, action.action],
   ).changes;
   if (!claimed)
     return Response.json({ error: "The group changed. Refresh the page." }, { status: 409 });

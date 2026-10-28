@@ -1,11 +1,19 @@
 import { expect, test } from "bun:test";
-import { createFindingIssueAdapter } from "../src/linear";
+import {
+  LinearEntityNotFoundError,
+  LinearGraphQLError,
+  LinearHttpError,
+  createFindingIssueAdapter,
+} from "../src/linear";
 
 function fakeLinear() {
   const calls: { query: string; variables: Record<string, unknown> }[] = [];
   const issues = new Map<string, string>();
   const comments = new Set<string>();
   let triage = true;
+  let targetError: unknown;
+  let mutationError: unknown;
+  let refused = false;
   let stateType = "started";
   let teamId = "team";
   const adapter = createFindingIssueAdapter({
@@ -35,9 +43,12 @@ function fakeLinear() {
         };
       const input = variables.input as Record<string, unknown>;
       if (query.includes("FindingGroupIssue")) {
+        if (mutationError) throw mutationError;
+        if (refused) return { issueCreate: { success: false, issue: null } };
         issues.set(String(input.id), "PAS-21");
         return { issueCreate: { success: true, issue: { id: input.id, identifier: "PAS-21" } } };
       }
+      if (query.includes("FindingGroupTarget") && targetError) throw targetError;
       if (query.includes("FindingGroupTarget"))
         return {
           issue: {
@@ -60,6 +71,15 @@ function fakeLinear() {
   return {
     adapter,
     calls,
+    failTarget: (error: unknown) => {
+      targetError = error;
+    },
+    failMutation: (error: unknown) => {
+      mutationError = error;
+    },
+    refuse: () => {
+      refused = true;
+    },
     setTriage: (enabled: boolean) => {
       triage = enabled;
     },
@@ -135,4 +155,40 @@ test("missing Triage is a definitive no-write refusal that routes can safely unl
   }
   expect(error).toMatchObject({ noFindingWrite: true });
   expect(f.calls.filter((c) => c.query.includes("FindingGroupIssue"))).toHaveLength(0);
+});
+
+test("missing or unreadable suggested targets release actions, while transport errors stay uncertain", async () => {
+  for (const error of [
+    new LinearEntityNotFoundError("Entity not found: Issue"),
+    new LinearHttpError(403, "", new Headers()),
+  ]) {
+    const f = fakeLinear();
+    f.failTarget(error);
+    await expect(
+      f.adapter.add({ key: "group", teamId: "team", identifier: "PAS-20", body: "Findings" }),
+    ).rejects.toMatchObject({ noFindingWrite: true });
+    expect(f.calls.some((c) => c.query.includes("FindingGroupComment"))).toBe(false);
+  }
+  const f = fakeLinear();
+  const offline = new Error("Connection reset");
+  f.failTarget(offline);
+  await expect(
+    f.adapter.add({ key: "group", teamId: "team", identifier: "PAS-20", body: "Findings" }),
+  ).rejects.toBe(offline);
+});
+
+test("deterministically rejected issue mutations release actions without treating timeouts as refusals", async () => {
+  const input = { key: "group", teamId: "team", title: "Fix findings", description: "Shared fix" };
+  const f = fakeLinear();
+  f.refuse();
+  await expect(f.adapter.file(input)).rejects.toMatchObject({ noFindingWrite: true });
+  const validation = fakeLinear();
+  validation.failMutation(
+    new LinearGraphQLError("Invalid input", [{ extensions: { code: "BAD_USER_INPUT" } }]),
+  );
+  await expect(validation.adapter.file(input)).rejects.toMatchObject({ noFindingWrite: true });
+  const transport = fakeLinear();
+  const timeout = new Error("Timeout after write");
+  transport.failMutation(timeout);
+  await expect(transport.adapter.file(input)).rejects.toBe(timeout);
 });

@@ -25,6 +25,7 @@ export type FindingGroupRun = {
   tokens: number | null;
   groupCount: number;
   error: string | null;
+  skipReason?: string | null;
 };
 export function listFindingGroups(db: Database, workspaceId: string, limit = -1): FindingGroup[] {
   return db
@@ -37,11 +38,42 @@ export function listFindingGroups(db: Database, workspaceId: string, limit = -1)
     .all(workspaceId, limit)
     .map(({ members, ...row }) => ({ ...row, memberIds: JSON.parse(members) as number[] }));
 }
+export function getFindingGroup(
+  db: Database,
+  workspaceId: string,
+  id: string,
+): FindingGroup | null {
+  const row = db
+    .query<
+      Omit<FindingGroup, "memberIds"> & { members: string },
+      [string, string]
+    >(`SELECT id,workspace_id AS workspaceId,repository,team_id AS teamId,title,summary,scope,
+    suggested_issue AS suggestedIssue,member_ids AS members,created_at AS createdAt,run_id AS runId,status,status_reason AS statusReason,filed_issue AS filedIssue,action
+    FROM finding_group WHERE workspace_id=? AND id=?`)
+    .get(workspaceId, id);
+  if (!row) return null;
+  const { members, ...group } = row;
+  return { ...group, memberIds: JSON.parse(members) as number[] };
+}
+
+/** Untouched groups follow individual finding decisions immediately. Claimed writes reconcile first. */
+export function removeFindingFromOpenGroups(db: Database, workspaceId: string, id: number): void {
+  db.run(
+    `UPDATE finding_group SET member_ids=(SELECT json_group_array(value) FROM json_each(member_ids) WHERE value<>?)
+    WHERE workspace_id=? AND status='open' AND action IS NULL AND EXISTS(SELECT 1 FROM json_each(member_ids) WHERE value=?)`,
+    [id, workspaceId, id],
+  );
+  db.run(
+    "DELETE FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NULL AND json_array_length(member_ids)=0",
+    [workspaceId],
+  );
+}
+
 export function lastFindingGroupRun(db: Database, workspaceId: string): FindingGroupRun | null {
   return db
     .query<FindingGroupRun, [string]>(`
     SELECT id,started_at AS startedAt,finished_at AS finishedAt,status,tokens,
-      group_count AS groupCount,error FROM finding_group_run WHERE workspace_id=?
+      group_count AS groupCount,error,skip_reason AS skipReason FROM finding_group_run WHERE workspace_id=?
     ORDER BY started_at DESC,rowid DESC LIMIT 1
   `)
     .get(workspaceId);

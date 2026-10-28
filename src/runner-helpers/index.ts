@@ -7,6 +7,7 @@ import {
   immediate,
   runnerCancelPending,
   runnerHasCapacity,
+  yieldFindingGroupHelpers,
   workspaceSessionIds,
   workspaceMember,
 } from "../db";
@@ -124,6 +125,7 @@ export function createRunnerHelpers(options: {
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
         if (runnerCancelPending(db, input.runnerId, now()))
           throw new Error("Runner cancellation teardown is still pending");
+        if (input.purpose !== "finding_groups") yieldFindingGroupHelpers(db, input.runnerId, now());
         if (
           db
             .query(

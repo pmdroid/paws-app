@@ -86,3 +86,5 @@ retry:
 Rebase returns are not configurable: three in a row on a known main commit and six in any rolling hour, then Paws asks. Only a person's reply in the session refills a budget. [Fix rounds](closeout.md#fix-rounds) and [When Paws asks the team](closeout.md#when-paws-asks-the-team) describe both.
 
 Grouping bounds each helper prompt to 65,000 characters. Large snapshots rotate a batch of findings and issue titles daily; finding text is capped at 4,000 characters and titles at 500. Partial snapshots are revisited without requiring another finding change. Grouping helpers have a ten-minute command lifetime.
+
+Grouping is maintenance work. An interactive classification or repository-selection helper fences an unfinished grouping helper on the same eligible runner and takes priority; the interrupted grouping turn still counts against its daily allowance. Overflow processing saves a cursor and advances by a full batch on subsequent days. It preserves groups outside the processed batch, finishes a pass through the snapshot, then records an explicit skip reason while the findings stay unchanged.

@@ -229,3 +229,31 @@ export function runnerCancelPending(db: Database, runnerId: string, now: number)
       .get(runnerId, now) !== null
   );
 }
+
+/** Foreground session helpers fence unfinished maintenance work before taking its slot.
+ * The runner renews helper authority before continuing, so the old turn is stopped before the next helper starts. */
+export function yieldFindingGroupHelpers(db: Database, runnerId: string, now: number): void {
+  immediate(db, () => {
+    const rows = db
+      .query<{ id: string; envelope: string }, [string, number]>(
+        "SELECT id,envelope FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
+      )
+      .all(runnerId, now);
+    for (const row of rows) {
+      const envelope = JSON.parse(row.envelope) as { payload: string };
+      const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
+        type: string;
+        purpose?: string;
+      };
+      if (command.type !== "helper" || command.purpose !== "finding_groups") continue;
+      db.run(
+        "UPDATE runner_helper SET ended_at=? WHERE id=? AND ended_at IS NULL AND result IS NULL",
+        [now, row.id],
+      );
+      db.run(
+        "UPDATE runner_execution_usage SET ended_at=?,outcome='preempted' WHERE command_id=? AND ended_at IS NULL AND EXISTS(SELECT 1 FROM runner_helper WHERE id=? AND ended_at IS NOT NULL)",
+        [now, row.id, row.id],
+      );
+    }
+  });
+}

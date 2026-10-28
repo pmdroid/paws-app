@@ -7,6 +7,7 @@ import {
   getWorkItemRepository,
   immediate,
   runnerHasCapacity,
+  yieldFindingGroupHelpers,
   runnerOccupancy,
   runnerSlotsHeldBetweenCommands,
   delegatedLinearUserId,
@@ -308,6 +309,8 @@ export function createRunnerPlacement(options: {
             .get(input.itemId)
         : null;
       const ranked = rows.flatMap((runner) => {
+        if (input.purpose === "helper" && !input.findingGroups)
+          yieldFindingGroupHelpers(db, runner.id, at);
         const reject = (reason: string) => {
           input.onRejected?.(runner.id, reason);
           return [];
@@ -524,6 +527,7 @@ export function createRunnerPlacement(options: {
           result?.authRequired === true ||
           quota?.state === "exhausted";
         const success =
+          !input.failure &&
           !retryable &&
           (!result ||
             (result.stopReason === "end_turn" &&

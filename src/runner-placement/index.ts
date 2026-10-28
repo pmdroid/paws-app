@@ -115,7 +115,7 @@ export type RunnerPlacement = {
     runnerId: string;
     profile?: PlacementProfile;
     result?: RunnerResult | RunnerHelperResult;
-    failure?: "heartbeat_lost";
+    failure?: "heartbeat_lost" | "cancelled" | "timeout" | "error";
     finishedAt: number;
   }): { retryable: boolean; usageLimit?: { resetsAt: number | null } };
 };

@@ -95,3 +95,18 @@ test("run now is admin-only, remote views are read-only and actions disable whil
     "No groups yet",
   );
 });
+
+test("the run status explains an unchanged snapshot without implying a helper ran", () => {
+  const html = renderFindingGroups(
+    {
+      ...data,
+      lastRun: {
+        ...data.lastRun!,
+        skipReason: "No findings changed since the last completed grouping.",
+      },
+    },
+    true,
+    false,
+  );
+  expect(html).toContain("Skipped: No findings changed");
+});

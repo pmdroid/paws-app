@@ -549,3 +549,253 @@ test("reopened findings can join new groups while acted-on group history survive
     f.db.close();
   }
 });
+
+test("claimed Linear actions reconcile even after a review marks members gone", async () => {
+  for (const action of ["file", "add"] as const) {
+    const f = seed();
+    try {
+      await f.grouping.run("ws", new AbortController().signal);
+      const group = listFindingGroups(f.db, "ws").find((g) => g.suggestedIssue)!;
+      let first = true;
+      if (action === "file") {
+        const file = f.issues.file;
+        f.issues.file = async (input) => {
+          const id = await file(input);
+          if (first) {
+            first = false;
+            throw new Error("Reply lost");
+          }
+          return id;
+        };
+      } else {
+        const add = f.issues.add;
+        f.issues.add = async (input) => {
+          await add(input);
+          if (first) {
+            first = false;
+            throw new Error("Reply lost");
+          }
+        };
+      }
+      expect((await post(f, { action, id: group.id })).status).toBe(502);
+      f.db.run("UPDATE review_finding SET status='gone'");
+      expect((await post(f, { action, id: group.id })).status).toBe(200);
+      expect(f.issues.files.length + f.issues.comments.length).toBe(1);
+      expect(
+        f
+          .sources()
+          .filter((row) => group.memberIds.includes(row.id))
+          .every((row) => row.status === "filed"),
+      ).toBe(true);
+    } finally {
+      f.db.close();
+    }
+  }
+});
+
+test("untouched groups follow individual dismissals immediately and locks are workspace-scoped", async () => {
+  const { handleFindingsRequest } = await import("../src/web");
+  const f = seed();
+  try {
+    await f.grouping.run("ws", new AbortController().signal);
+    const group = listFindingGroups(f.db, "ws")[0]!;
+    f.db.run("DELETE FROM finding_group WHERE id<>?", [group.id]);
+    f.db.run("UPDATE finding_group SET member_ids=?", [JSON.stringify(f.ids)]);
+    const dismiss = (id: number, workspaceId = "ws") =>
+      handleFindingsRequest(
+        new Request("http://localhost/api/findings", {
+          method: "POST",
+          body: JSON.stringify({ action: "dismiss", id, reason: "Handle individually" }),
+        }),
+        { db: f.db, principal: { workspaceId, userId: "ada" } },
+      );
+    expect((await dismiss(f.ids[0]!))!.status).toBe(200);
+    expect(listFindingGroups(f.db, "ws")[0]!.memberIds).toEqual([f.ids[1]!]);
+    expect((await post(f, { action: "file", id: group.id })).status).toBe(200);
+    f.db.run("UPDATE finding_group SET status='open',action='file'");
+    f.db.run("UPDATE review_finding SET status='open'");
+    f.db.run("INSERT INTO workspace VALUES('other','other-org','Other',1)");
+    syncWorkspaceMember(f.db, {
+      workspaceId: "other",
+      userId: "ada",
+      role: "admin",
+      active: true,
+      teamIds: [],
+      now: Date.now(),
+    });
+    expect((await dismiss(f.ids[1]!, "other"))!.status).toBe(200);
+    expect((await dismiss(f.ids[1]!))!.status).toBe(409);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("schema accepts harmless additional keys, omitted issue suggestions and JSON prose", () => {
+  const f = seed();
+  try {
+    const groups = validateGroups(
+      `Here are the groups:\n${JSON.stringify({ groups: [{ title: "Fix", summary: "Shared fix", scope: "src", findingIds: f.ids, reason: "Related comparisons" }] })}\nDone.`,
+      f.sources(),
+      [],
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.suggestedIssue).toBeNull();
+  } finally {
+    f.db.close();
+  }
+});
+
+test("overflow advances by a full batch and keeps groups outside the current batch", async () => {
+  const f = seed();
+  try {
+    const source = f.sources()[0]!;
+    const rows = Array.from({ length: 80 }, (_, i) => ({
+      ...source,
+      id: i + 1,
+      text: "Detail ".repeat(800),
+    }));
+    const batches: number[][] = [];
+    let now = epoch;
+    const grouping = createFindingGrouping({
+      db: f.db,
+      sources: () => rows,
+      issues: f.issues,
+      now: () => now,
+      helper: async (input) => {
+        const json = JSON.parse(input.prompt.split("\n\n").at(-1)!) as {
+          findings: { id: number }[];
+        };
+        const ids = json.findings.map((row) => row.id);
+        batches.push(ids);
+        return {
+          text: JSON.stringify({
+            groups: [
+              { title: "Shared fix", summary: "Fix this batch", scope: "src", findingIds: ids },
+            ],
+          }),
+        };
+      },
+    });
+    await grouping.run("ws", new AbortController().signal);
+    const before = listFindingGroups(f.db, "ws")[0]!;
+    now += 86400000;
+    await grouping.run("ws", new AbortController().signal);
+    expect(batches[1]![0]).toBe(batches[0]!.at(-1)! + 1);
+    expect(batches[0]!.some((id) => batches[1]!.includes(id))).toBe(false);
+    expect(listFindingGroups(f.db, "ws").find((g) => g.id === before.id)?.memberIds).toEqual(
+      before.memberIds,
+    );
+  } finally {
+    f.db.close();
+  }
+});
+
+test("unchanged runs record why they skipped without reading Linear or spending a turn", async () => {
+  const f = seed();
+  try {
+    await f.grouping.run("ws", new AbortController().signal);
+    f.nextDay();
+    await f.grouping.run("ws", new AbortController().signal);
+    expect(lastFindingGroupRun(f.db, "ws")?.skipReason).toContain("No findings changed");
+    expect(f.helper.calls).toHaveLength(1);
+    expect(f.issues.reads).toHaveLength(1);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("admin grouping covers findings reported by teams outside that admin's membership list", async () => {
+  const { recordLinearInstallation } = await import("../src/db");
+  const { workspaceGroupingSources } = await import("../src/finding-groups");
+  const f = seed();
+  try {
+    syncWorkspaceMember(f.db, {
+      workspaceId: "ws",
+      userId: "ada",
+      role: "admin",
+      active: true,
+      teamIds: ["team-x"],
+      now: 2,
+    });
+    for (const [sessionId, teamId] of [
+      ["session", "team-x"],
+      ["session-y", "team-y"],
+    ])
+      recordLinearInstallation(f.db, {
+        sessionId: sessionId!,
+        organizationId: "org",
+        oauthClientId: "client",
+        appUserId: "app",
+        teamId: teamId!,
+        observedAtMs: 3,
+      });
+    insertQueuedItem(f.db, {
+      id: "team-y-item",
+      sessionKey: "session-y",
+      title: "Other team finding",
+      now: 3,
+    });
+    recordReviewFindings(f.db, {
+      itemId: "team-y-item",
+      repository: "acme/app",
+      head: "a".repeat(40),
+      seenAt: 4,
+      reviewed: [],
+      findings: [
+        {
+          review: "independent",
+          severity: "P2",
+          location: "src/team-y.ts:10",
+          text: "Handle error",
+          bugClass: "error",
+          why: "pre-existing",
+        },
+      ],
+    });
+    const rows = workspaceGroupingSources(f.db, "ws", "client");
+    expect(rows.some((row) => row.teamId === "team-x")).toBe(true);
+    expect(rows.some((row) => row.teamId === "team-y")).toBe(true);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a partial grouping cycle processes each finding and then skips unchanged snapshots", async () => {
+  const f = seed();
+  try {
+    const source = f.sources()[0]!;
+    const rows = Array.from({ length: 25 }, (_, i) => ({
+      ...source,
+      id: i + 1,
+      text: "Detail ".repeat(800),
+    }));
+    const covered = new Set<number>();
+    let calls = 0;
+    let now = epoch;
+    const grouping = createFindingGrouping({
+      db: f.db,
+      sources: () => rows,
+      issues: f.issues,
+      now: () => now,
+      helper: async (input) => {
+        const json = JSON.parse(input.prompt.split("\n\n").at(-1)!) as {
+          findings: { id: number }[];
+        };
+        for (const row of json.findings) covered.add(row.id);
+        calls++;
+        return { text: '{"groups":[]}' };
+      },
+    });
+    while (covered.size < rows.length) {
+      await grouping.run("ws", new AbortController().signal);
+      now += 86400000;
+      if (calls > 10) throw new Error("Batch did not advance");
+    }
+    const completedCalls = calls;
+    await grouping.run("ws", new AbortController().signal);
+    expect(calls).toBe(completedCalls);
+    expect(lastFindingGroupRun(f.db, "ws")?.skipReason).toContain("No findings changed");
+  } finally {
+    f.db.close();
+  }
+});

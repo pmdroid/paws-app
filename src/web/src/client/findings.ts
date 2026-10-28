@@ -279,6 +279,7 @@ export function createFindings(): {
       view.busy = false;
     }
     await load();
+    await loadGroups();
   };
   const groupAct = async (action: FindingGroupAction) => {
     if (!engine || view.busy) return;

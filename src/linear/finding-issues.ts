@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { LinearClient } from "./graphql";
+import {
+  LinearEntityNotFoundError,
+  LinearHttpError,
+  LinearGraphQLError,
+  type LinearClient,
+} from "./graphql";
 import { stableUuid } from "./sub-issues";
 
 export type FindingIssueTitle = { identifier: string; title: string; teamId: string };
@@ -11,6 +16,48 @@ export interface FindingIssueAdapter {
 /** A deterministic refusal before any issue/comment mutation. Safe to release a new action claim. */
 class FindingWriteRefused extends Error {
   readonly noFindingWrite = true;
+}
+function definiteRefusal(error: unknown): boolean {
+  return (
+    error instanceof LinearEntityNotFoundError ||
+    (error instanceof LinearHttpError && [400, 401, 403, 404, 422].includes(error.status)) ||
+    (error instanceof LinearGraphQLError &&
+      error.codes.length > 0 &&
+      error.codes.length === error.errorsCount &&
+      error.codes.every((code) =>
+        [
+          "BAD_USER_INPUT",
+          "INPUT_ERROR",
+          "VALIDATION_ERROR",
+          "GRAPHQL_VALIDATION_FAILED",
+          "FORBIDDEN",
+          "UNAUTHENTICATED",
+          "NOT_FOUND",
+          "ENTITY_NOT_FOUND",
+          "PERMISSION_DENIED",
+        ].includes(code),
+      ))
+  );
+}
+async function findingWrite(
+  client: LinearClient,
+  query: string,
+  variables: Record<string, unknown>,
+  operation: "issueCreate" | "commentCreate",
+) {
+  let data: unknown;
+  try {
+    data = await client.query(query, variables);
+  } catch (error) {
+    if (definiteRefusal(error))
+      throw new FindingWriteRefused(
+        "Linear refused this finding write. Check the issue and team access.",
+      );
+    throw error;
+  }
+  if (z.object({ [operation]: z.object({ success: z.literal(false) }) }).safeParse(data).success)
+    throw new FindingWriteRefused("Linear did not accept this finding write.");
+  return data;
 }
 const node = z.object({ id: z.string() });
 const page = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() });
@@ -110,7 +157,8 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
       const created = z
         .object({ issueCreate: z.object({ success: z.literal(true), issue }) })
         .parse(
-          await client.query(
+          await findingWrite(
+            client,
             `mutation FindingGroupIssue($input: IssueCreateInput!) { issueCreate(input:$input) { success issue { id identifier } } }`,
             {
               input: {
@@ -123,6 +171,7 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
                 delegateId: null,
               },
             },
+            "issueCreate",
           ),
         );
       return created.issueCreate.issue.identifier;
@@ -134,26 +183,41 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
             team: node,
             state: z.object({ type: z.string() }),
             comments: z.object({ nodes: z.array(node) }),
+            archivedAt: z.string().nullable().optional(),
           }),
         })
         .parse(
-          await client.query(
-            `query FindingGroupTarget($id: String!, $comment: ID!) { issue(id:$id) {
-          id identifier team { id } state { type } comments(first:1,filter:{id:{eq:$comment}}) { nodes { id } }
+          await client
+            .query(
+              `query FindingGroupTarget($id: String!, $comment: ID!) { issue(id:$id) {
+          id identifier archivedAt team { id } state { type } comments(first:1,filter:{id:{eq:$comment}}) { nodes { id } }
         } }`,
-            {
-              id: input.identifier,
-              comment: stableUuid(`paws:finding-group-comment:${input.key}`),
-            },
-          ),
+              {
+                id: input.identifier,
+                comment: stableUuid(`paws:finding-group-comment:${input.key}`),
+              },
+            )
+            .then((data) => {
+              if (z.object({ issue: z.null() }).safeParse(data).success)
+                throw new FindingWriteRefused("The suggested issue is unavailable.");
+              return data;
+            })
+            .catch((error) => {
+              if (definiteRefusal(error))
+                throw new FindingWriteRefused(
+                  "The suggested issue is unavailable. Check its access or choose another action.",
+                );
+              throw error;
+            }),
         ).issue;
       if (target.team.id !== input.teamId)
         throw new FindingWriteRefused("The suggested issue is outside this group's team.");
       if (target.comments.nodes.length) return;
-      if (["completed", "canceled"].includes(target.state.type))
+      if (target.archivedAt || ["completed", "canceled"].includes(target.state.type))
         throw new FindingWriteRefused("The suggested issue is no longer open.");
       z.object({ commentCreate: z.object({ success: z.literal(true) }) }).parse(
-        await client.query(
+        await findingWrite(
+          client,
           `mutation FindingGroupComment($input: CommentCreateInput!) { commentCreate(input:$input) { success } }`,
           {
             input: {
@@ -162,6 +226,7 @@ export function createFindingIssueAdapter(client: LinearClient): FindingIssueAda
               body: input.body,
             },
           },
+          "commentCreate",
         ),
       );
     },

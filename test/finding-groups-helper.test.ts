@@ -256,3 +256,126 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
     f.db.close();
   }
 });
+
+test("one-runner foreground placement preempts grouping and fences its old lease", async () => {
+  const { createRunnerPlacement } = await import("../src/runner-placement");
+  const f = seed();
+  try {
+    const profile = { agent: "codex" as const, model: null };
+    const placement = createRunnerPlacement({ db: f.db, now: () => f.now });
+    await placement.candidates({
+      sessionId: "reporting-session",
+      findingGroups: true,
+      profile,
+      role: "implementer",
+      purpose: "helper",
+    });
+    const maintenance = f.helpers.dispatch({
+      runnerId: "runner",
+      sessionId: "reporting-session",
+      purpose: "finding_groups",
+      profile,
+      prompt: "Group findings",
+    });
+    placement.started({
+      commandId: maintenance.command.id,
+      runnerId: "runner",
+      sessionId: "reporting-session",
+      profile,
+      role: "implementer",
+      purpose: "helper",
+      startedAt: f.now,
+    });
+    recordLinearInstallation(f.db, {
+      sessionId: "interactive",
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      teamId: "team",
+      observedAtMs: f.now,
+    });
+    f.db.run(
+      "UPDATE linear_session SET creator_id='linear-admin',issue_id='issue' WHERE session_id='interactive'",
+    );
+    const candidates = await placement.candidates({
+      sessionId: "interactive",
+      profile,
+      role: "implementer",
+      purpose: "helper",
+    });
+    expect(candidates.map((row) => row.id)).toContain("runner");
+    expect(() => f.helpers.current(maintenance.command.id)).toThrow("unavailable");
+    const foreground = f.helpers.dispatch({
+      runnerId: "runner",
+      sessionId: "interactive",
+      purpose: "classify",
+      profile,
+      prompt: "Classify",
+    });
+    expect(foreground.command.purpose).toBe("classify");
+    expect(
+      f.db
+        .query<{ outcome: string }, [string]>(
+          "SELECT outcome FROM runner_execution_usage WHERE command_id=?",
+        )
+        .get(maintenance.command.id)?.outcome,
+    ).toBe("preempted");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("cleanup accounting cannot replace a local abort and reports cancellation instead of heartbeat loss", async () => {
+  const { createRemoteSessionAgentRunner } = await import("../src/runner-backend");
+  const f = seed();
+  try {
+    f.db.run("UPDATE linear_session SET stopped_at=NULL");
+    const abort = new AbortController();
+    const original = new Error("Original stop");
+    const outcomes: string[] = [];
+    const runner = createRemoteSessionAgentRunner({
+      db: f.db,
+      helpers: {
+        ...f.helpers,
+        dispatch(input) {
+          const issued = f.helpers.dispatch(input);
+          abort.abort(original);
+          return issued;
+        },
+      },
+      placement: {
+        async candidates() {
+          return [{ id: "runner", workspaceId: "ws" }];
+        },
+        started() {},
+        finished(input) {
+          outcomes.push(input.failure ?? "result");
+          throw new Error("Receipt cleanup failed");
+        },
+      },
+    });
+    await expect(
+      runner.forSession(
+        "reporting-session",
+        "classify",
+      )({
+        role: "implementer",
+        profile: { agent: "codex", model: null },
+        itemId: "",
+        runId: "",
+        worktreePath: "",
+        pawsRoot: "",
+        readOnly: true,
+        prompt: "Classify",
+        signal: abort.signal,
+      }),
+    ).rejects.toBe(original);
+    expect(outcomes).toEqual(["cancelled"]);
+    expect(
+      f.db.query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM runner_helper").get()
+        ?.ended,
+    ).not.toBeNull();
+  } finally {
+    f.db.close();
+  }
+});

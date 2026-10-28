@@ -57,11 +57,10 @@ export function createRemoteSessionAgentRunner(options: {
                 signal: input.signal,
               })
             : options.db
-                .query<{ id: string }, [number, number]>(
-                  "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
+                .query<{ id: string }, [number]>(
+                  "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? ORDER BY r.last_seen_at DESC,r.id",
                 )
-                .all(now() - 60_000, now())
-                .filter((runner) => runnerHasCapacity(options.db, runner.id, now()));
+                .all(now() - 60_000);
           for (const runner of runners) {
             if (excluded.includes(runner.id)) continue;
             if (purpose === "finding_groups") {
@@ -117,12 +116,13 @@ export function createRemoteSessionAgentRunner(options: {
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
         let accounted = false;
+        const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
         try {
-          const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
           while (now() < deadline) {
             input.signal?.throwIfAborted();
             const result = options.helpers.result(command.id);
             if (result) {
+              accounted = true;
               const disposition = immediate(options.db, () =>
                 options.placement?.finished({
                   commandId: command!.id,
@@ -199,17 +199,33 @@ export function createRemoteSessionAgentRunner(options: {
           }
           throw new Error("Remote session helper timed out");
         } finally {
+          // A locally aborted or expired helper is not evidence of a lost runner heartbeat.
+          // Cleanup failures must not replace the original timeout, fence or cancellation error.
           try {
             if (!accounted)
-              options.placement?.finished({
-                commandId: command.id,
-                runnerId: command.runnerId,
-                profile,
-                failure: "heartbeat_lost",
-                finishedAt: now(),
-              });
-          } finally {
+              immediate(options.db, () =>
+                options.placement?.finished({
+                  commandId: command.id,
+                  runnerId: command.runnerId,
+                  profile,
+                  failure: input.signal?.aborted
+                    ? input.signal.reason instanceof Error &&
+                      input.signal.reason.name === "TimeoutError"
+                      ? "timeout"
+                      : "cancelled"
+                    : now() >= deadline
+                      ? "timeout"
+                      : "error",
+                  finishedAt: now(),
+                }),
+              );
+          } catch (error) {
+            journalCaught(error, "helpers.forSession.accountingCleanup", null);
+          }
+          try {
             options.helpers.finish(command.id);
+          } catch (error) {
+            journalCaught(error, "helpers.forSession.finishCleanup", null);
           }
         }
       };

@@ -102,3 +102,5 @@ The Findings page also loads `GET /api/finding-groups`. Its Groups view lists th
 Run `bun scripts/verify-finding-groups-ui.ts /tmp/finding-groups-evidence` after `bun run build:status` for light and dark desktop and 390 px captures, linked-row navigation, and group action checks using a local fixture server.
 
 Groups load independently of the Findings list and do not reload on finding filter changes. The API returns up to 200 groups, with open groups first, and batches member reads. A confirmed refusal before an issue or comment write releases the action so members can choose another action. Uncertain writes keep their stable identifier and must be retried to reconcile the result safely. Interrupted grouping runs are marked failed after their ten-minute execution window and one minute of grace.
+
+Untouched groups shrink when a member finding is dismissed individually. A claimed Linear action can still reconcile its stable identifier if a review later marks members gone. Missing targets and deterministic mutation refusals release the claim; transport errors retain it for safe retries. The Groups run status explains when an unchanged snapshot was skipped.

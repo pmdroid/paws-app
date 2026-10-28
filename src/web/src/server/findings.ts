@@ -5,6 +5,7 @@ import {
   listReviewFindings,
   reviewFindingItems,
   setReviewFindingStatus,
+  removeFindingFromOpenGroups,
   workspaceMember,
   type ReviewFindingItem,
   type ReviewFindingRecord,
@@ -117,9 +118,9 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
   if (
     db
       .query(`SELECT 1 FROM finding_group
-      WHERE status='open' AND action IS NOT NULL
+      WHERE workspace_id=? AND status='open' AND action IS NOT NULL
       AND EXISTS(SELECT 1 FROM json_each(member_ids) WHERE value=?)`)
-      .get(action.id)
+      .get(principal.workspaceId, action.id)
   )
     return Response.json(
       { error: "This finding has a group action in progress. Finish that action first." },
@@ -147,6 +148,7 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
       },
       { status: 409 },
     );
+  removeFindingFromOpenGroups(db, principal.workspaceId, action.id);
   auditWorkspaceAccess(db, {
     workspaceId: principal.workspaceId,
     userId: principal.userId,

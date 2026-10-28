@@ -183,6 +183,29 @@ try {
     page.getByRole("heading", { name: "Use constant-time comparisons for secrets" }),
   ).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
+  groups.lastRun = {
+    ...groups.lastRun!,
+    tokens: 0,
+    finishedAt: groups.lastRun!.startedAt,
+    skipReason: "No findings changed since the last completed grouping.",
+  };
+  for (const theme of ["light", "dark"])
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await page.emulateMedia({ colorScheme: theme as "light" | "dark", reducedMotion: "reduce" });
+      await page.goto(`http://127.0.0.1:${server.port}/status/findings`);
+      await page.getByRole("button", { name: "Groups", exact: true }).click();
+      await expect(
+        page.getByRole("status").filter({ hasText: "Skipped: No findings changed" }),
+      ).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+        true,
+      );
+      await page.screenshot({
+        path: join(output, `groups-skipped-${theme}-${width}.png`),
+        fullPage: true,
+      });
+    }
   expect(errors).toEqual([]);
   await Bun.write(
     join(output, "observations.json"),
@@ -195,6 +218,7 @@ try {
         groupsFailureIsolated: true,
         filtersDoNotFetchGroups: true,
         groupsRetryRecovers: true,
+        skippedRunVisible: true,
         actions,
         pageErrors: errors,
       },

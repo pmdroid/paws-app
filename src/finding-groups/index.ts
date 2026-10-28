@@ -21,15 +21,15 @@ export type GroupingHelper = (input: {
   prompt: string;
   signal: AbortSignal;
 }) => Promise<{ text: string; tokens?: number }>;
-const outputSchema = z.strictObject({
+const outputSchema = z.object({
   groups: z
     .array(
-      z.strictObject({
+      z.object({
         title: z.string().trim().min(1).max(200),
         summary: z.string().trim().min(1).max(5000),
         scope: z.string().trim().min(1).max(1000),
         findingIds: z.array(z.number().int().positive()).max(10000),
-        suggestedIssue: z.string().max(100).nullable(),
+        suggestedIssue: z.string().max(100).nullable().default(null),
       }),
     )
     .max(1000),
@@ -67,13 +67,14 @@ export function groupingPrompt(
 export function groupingBatch(
   findings: readonly GroupingInput[],
   issues: readonly FindingIssueTitle[],
-  day: number,
+  cursor: number,
+  issueCursor = cursor,
 ) {
   const open: GroupingInput[] = [];
   const titles: FindingIssueTitle[] = [];
   const ordered = [...findings].sort((a, b) => a.id - b.id);
-  const start = ordered.length ? day % ordered.length : 0;
-  for (let offset = 0; offset < ordered.length; offset++) {
+  const start = ordered.length ? cursor % ordered.length : 0;
+  for (let offset = 0; offset < ordered.length - start; offset++) {
     const row = ordered[(start + offset) % ordered.length]!;
     const candidate = {
       ...row,
@@ -86,7 +87,7 @@ export function groupingBatch(
   }
   const teams = new Set(open.map((f) => f.teamId));
   const candidates = issues.filter((i) => teams.has(i.teamId));
-  const first = candidates.length ? day % candidates.length : 0;
+  const first = candidates.length ? issueCursor % candidates.length : 0;
   for (let offset = 0; offset < candidates.length; offset++) {
     const candidate = {
       ...candidates[(first + offset) % candidates.length]!,
@@ -95,7 +96,13 @@ export function groupingBatch(
     if (groupingPrompt(open, [...titles, candidate]).length > 65000) break;
     titles.push(candidate);
   }
-  return { open, issues: titles, partial: open.length < findings.length };
+  return {
+    open,
+    issues: titles,
+    partial: open.length < findings.length,
+    nextFindingCursor: ordered.length ? (start + open.length) % ordered.length : 0,
+    nextIssueCursor: candidates.length ? (first + titles.length) % candidates.length : 0,
+  };
 }
 
 export function validateGroups(
@@ -103,14 +110,13 @@ export function validateGroups(
   findings: readonly GroupingInput[],
   issues: readonly FindingIssueTitle[],
 ) {
-  const parsed = outputSchema.parse(
-    JSON.parse(
-      text
-        .trim()
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/\s*```$/, ""),
-    ),
-  );
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1];
+  const payload = fenced ?? text.trim();
+  const json =
+    payload.startsWith("{") && payload.endsWith("}")
+      ? payload
+      : payload.slice(payload.indexOf("{"), payload.lastIndexOf("}") + 1);
+  const parsed = outputSchema.parse(JSON.parse(json));
   const available = new Map(findings.map((f) => [f.id, f]));
   const used = new Set<number>();
   return parsed.groups.flatMap((group) => {
@@ -192,6 +198,14 @@ export function createFindingGrouping(options: {
         )
         .digest("hex");
       const runId = randomUUID();
+      const last = db
+        .query<
+          { fingerprint: string; findingCursor: number; issueCursor: number; groupCount: number },
+          [string]
+        >(
+          "SELECT fingerprint,finding_cursor AS findingCursor,issue_cursor AS issueCursor,group_count AS groupCount FROM finding_group_run WHERE workspace_id=? AND status='completed' ORDER BY started_at DESC,rowid DESC LIMIT 1",
+        )
+        .get(workspaceId);
       const claimed = immediate(db, () => {
         if (
           db
@@ -199,12 +213,23 @@ export function createFindingGrouping(options: {
             .get(workspaceId, day)
         )
           return false;
-        const last = db
-          .query<{ fingerprint: string }, [string]>(
-            "SELECT fingerprint FROM finding_group_run WHERE workspace_id=? AND status='completed' ORDER BY started_at DESC LIMIT 1",
-          )
-          .get(workspaceId);
-        if (last?.fingerprint === fingerprint) return false;
+        if (last?.fingerprint === fingerprint) {
+          db.run(
+            "INSERT INTO finding_group_run(id,workspace_id,day,started_at,finished_at,fingerprint,status,tokens,group_count,finding_cursor,issue_cursor,skip_reason) VALUES(?,?,?,?,?,?,'completed',0,?,?,?,'No findings changed since the last completed grouping.')",
+            [
+              runId,
+              workspaceId,
+              day,
+              at,
+              at,
+              fingerprint,
+              last.groupCount,
+              last.findingCursor,
+              last.issueCursor,
+            ],
+          );
+          return false;
+        }
         db.run(
           "INSERT INTO finding_group_run(id,workspace_id,day,started_at,fingerprint,status) VALUES(?,?,?,?,?,'running')",
           [runId, workspaceId, day, at, fingerprint],
@@ -215,16 +240,27 @@ export function createFindingGrouping(options: {
       try {
         let groups: ReturnType<typeof validateGroups> = [];
         let tokens: number | null = null;
+        let selectedIds: number[] | null = null;
+        let nextFindingCursor = 0;
+        let nextIssueCursor = 0;
         const open = findings.filter((f) => f.status === "open");
         if (open.length) {
           const allIssues = await options.issues.openTitles(
             [...new Set(open.map((f) => f.teamId))],
             signal,
           );
-          const batch = groupingBatch(open, allIssues, Math.floor(at / 86400000));
+          const batch = groupingBatch(
+            open,
+            allIssues,
+            last?.fingerprint === `${fingerprint}:partial` ? last.findingCursor : 0,
+            last?.issueCursor ?? 0,
+          );
+          nextFindingCursor = batch.nextFindingCursor;
+          nextIssueCursor = batch.nextIssueCursor;
+          if (batch.partial) selectedIds = batch.open.map((f) => f.id);
           const issues = batch.issues;
           // A partial snapshot must be revisited even if no finding changes tomorrow.
-          if (batch.partial)
+          if (batch.nextFindingCursor !== 0)
             db.run("UPDATE finding_group_run SET fingerprint=? WHERE id=?", [
               `${fingerprint}:partial`,
               runId,
@@ -248,14 +284,26 @@ export function createFindingGrouping(options: {
             .map((f) => f.id),
         );
         immediate(db, () => {
-          db.run(
-            "DELETE FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NULL",
-            [workspaceId],
-          );
+          if (selectedIds !== null) {
+            // Preserve the unprocessed members of earlier groups during a partial snapshot.
+            db.run(
+              `UPDATE finding_group SET member_ids=(SELECT json_group_array(value) FROM json_each(member_ids) WHERE value NOT IN (SELECT value FROM json_each(?)) AND value IN (SELECT value FROM json_each(?)))
+              WHERE workspace_id=? AND status='open' AND action IS NULL`,
+              [JSON.stringify(selectedIds), JSON.stringify([...current]), workspaceId],
+            );
+            db.run(
+              "DELETE FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NULL AND json_array_length(member_ids)=0",
+              [workspaceId],
+            );
+          } else
+            db.run(
+              "DELETE FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NULL",
+              [workspaceId],
+            );
           const held = new Set(
             db
               .query<{ ids: string }, [string]>(
-                "SELECT member_ids AS ids FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NOT NULL",
+                "SELECT member_ids AS ids FROM finding_group WHERE workspace_id=? AND status='open'",
               )
               .all(workspaceId)
               .flatMap((r) => JSON.parse(r.ids) as number[]),
@@ -284,8 +332,8 @@ export function createFindingGrouping(options: {
             count++;
           }
           db.run(
-            "UPDATE finding_group_run SET status='completed',finished_at=?,tokens=?,group_count=? WHERE id=?",
-            [now(), tokens, count, runId],
+            "UPDATE finding_group_run SET status='completed',finished_at=?,tokens=?,group_count=?,finding_cursor=?,issue_cursor=? WHERE id=?",
+            [now(), tokens, count, nextFindingCursor, nextIssueCursor, runId],
           );
         });
       } catch (error) {
