@@ -103,6 +103,26 @@ describe("status HTTP stub", () => {
     expect((await get("/api/status?slices=items,everything")).status).toBe(400);
   });
 
+  test("the merge queue slice carries push outages, which Overview and Merge queue show", async () => {
+    const outage = {
+      repository: "acme/app",
+      since: "2026-10-27T09:00:00.000Z",
+      lastError: "Resource not accessible by integration",
+      nextProbeAt: "2026-10-27T10:05:00.000Z",
+      installationUrl: null,
+    };
+    const provider = {
+      ...fakeStatusProvider(),
+      snapshot: () => ({ ...statusList(fullStatusFixture()), pushOutages: [outage] }),
+    };
+    const get = async (path: string) =>
+      (await (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
+        provider,
+      }))!.json()) as Record<string, unknown>;
+    expect((await get("/api/status?slices=mergeQueue")).pushOutages).toEqual([outage]);
+    expect((await get("/api/status?slices=items")).pushOutages).toBeUndefined();
+  });
+
   test("a check log is the last 64 KB of each stream unless the full log is asked for", async () => {
     const requests: unknown[] = [];
     // Two-byte characters, so the cut has to land on a character boundary.
