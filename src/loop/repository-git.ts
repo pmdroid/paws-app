@@ -9,7 +9,7 @@ export function createRepositoryGit(input: {
   onCleanupFailure: () => void;
   env?: NodeJS.ProcessEnv;
   /** Allows a fast-forward push of one commit to a branch, for a token with write access. */
-  push?: boolean;
+  pushBranch?: string;
 }) {
   const local = isAbsolute(input.remoteUrl);
   if (!local) {
@@ -19,7 +19,8 @@ export function createRepositoryGit(input: {
   }
   return async (args: string[]): Promise<string> => {
     const operation = args.findIndex(
-      (arg) => arg === "clone" || arg === "fetch" || (input.push === true && arg === "push"),
+      (arg) =>
+        arg === "clone" || arg === "fetch" || (input.pushBranch !== undefined && arg === "push"),
     );
     if (operation < 0 || !args.slice(operation + 1).includes(input.remoteUrl))
       throw new Error("Repository reads require the bound clone or fetch destination.");
@@ -30,10 +31,16 @@ export function createRepositoryGit(input: {
         remote !== input.remoteUrl ||
         rest.length ||
         !refspec ||
-        !/^[a-f0-9]{40}:refs\/heads\/[^:+\s]+$/.test(refspec)
+        !/^(?:[a-f0-9]{40}|[a-f0-9]{64}):/.test(refspec) ||
+        refspec?.split(":")[1] !== `refs/heads/${input.pushBranch}` ||
+        refspec?.split(":").length !== 2 ||
+        operation !== 2 ||
+        args[0] !== "-C"
       )
         throw new Error("Repository pushes take one commit to one branch without force.");
     }
+    if (args[operation] === "push")
+      await git(["check-ref-format", `refs/heads/${input.pushBranch}`], { signal: input.signal });
     input.signal.throwIfAborted();
     await input.assert();
     input.signal.throwIfAborted();

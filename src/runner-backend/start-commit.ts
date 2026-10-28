@@ -42,7 +42,16 @@ export async function ensureStartOnRemote(input: {
 }): Promise<StartCommit> {
   const run = (args: string[]) =>
     git(["-C", input.worktree, ...args], { signal: input.signal }).then((out) => out.trim());
+  await run(["check-ref-format", `refs/heads/${input.branch}`]);
+  if (!input.remoteUrl) throw new Error("Runner start requires a repository URL.");
   const head = await run(["rev-parse", "HEAD"]);
+  const unchanged = async () => {
+    if (
+      (await run(["rev-parse", "HEAD"])) !== head ||
+      (await run(["status", "--porcelain", "--untracked-files=no"]))
+    )
+      throw new RemoteStartUnverified(head, "the worktree changed during remote verification");
+  };
   const prefix = `refs/paws/remote-start/${randomUUID()}`;
   const fetched = new Map<"branch" | "default", string>();
   const errors: string[] = [];
@@ -83,21 +92,30 @@ export async function ensureStartOnRemote(input: {
       return false;
     };
     if (await onRemote(head)) return { status: "remote", head };
-    let pushError: string;
-    try {
-      // A fast-forward only: a branch that moved on GitHub keeps its commits.
-      await input.networkGit([
-        "-C",
-        input.worktree,
-        "push",
-        "--",
-        input.remoteUrl,
-        `${head}:refs/heads/${input.branch}`,
-      ]);
-      return { status: "pushed", head };
-    } catch (error) {
-      input.signal.throwIfAborted();
-      pushError = message(error);
+    let pushError = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await input.networkGit([
+          "-C",
+          input.worktree,
+          "push",
+          "--",
+          input.remoteUrl,
+          `${head}:refs/heads/${input.branch}`,
+        ]);
+        return { status: "pushed", head };
+      } catch (error) {
+        input.signal.throwIfAborted();
+        pushError = message(error);
+        // Pascal's product decision: persistent permission refusals also allow fallback.
+        // A fresh authenticated attempt distinguishes them from token-refresh failures.
+        if (permissionRefusal(pushError)) {
+          if (attempt === 0) continue;
+          break;
+        }
+        if (/\[rejected\].*\((?:non-fast-forward|fetch first)\)/i.test(pushError)) break;
+        throw new RemoteStartUnverified(head, pushError);
+      }
     }
     if (!fetched.size) throw new RemoteStartUnverified(head, [...errors, pushError].join("; "));
     const branchHead = fetched.get("branch");
@@ -113,11 +131,16 @@ export async function ensureStartOnRemote(input: {
       }
     if (!start)
       throw new RemoteStartUnverified(head, `no earlier commit is on GitHub; ${pushError}`);
-    const lost = (await run(["log", "--format=%s", `${start}..${head}`]))
+    const lost = (await run(["log", "--format=%s", head, "--not", start, ...fetched.values()]))
       .split("\n")
       .filter(Boolean);
+    await unchanged();
+    // Retain the original commits even after HEAD moves to the remote fallback.
+    await run(["update-ref", `refs/paws/unpublished/${head}`, head]);
     input.persistFallback({ head, start, lost });
-    await run(["reset", "--hard", start]);
+    await unchanged();
+    // --keep refuses to overwrite tracked edits introduced after the last check.
+    await run(["reset", "--keep", start]);
     return { status: "fallback", head, start, lost, error: pushError };
   } finally {
     for (const name of ["branch", "default"])
@@ -136,4 +159,12 @@ export function lostCommitsNote(start: string, lost: readonly string[]): string 
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function permissionRefusal(error: string): boolean {
+  if (/rate.limit|secondary.limit|abuse|retry.after|expired|bad credentials|token/i.test(error))
+    return false;
+  return /(?:returned error: 403|Permission denied|write access.*not granted|Permission to .* denied|\(403\))/i.test(
+    error,
+  );
 }

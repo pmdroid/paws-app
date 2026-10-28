@@ -53,7 +53,7 @@ test("a head missing on GitHub is pushed before the run when the push works", as
 
 test("a head whose push keeps failing starts from the PR branch head and names the lost commits", async () => {
   const result = await startScenario({ local: ["Lost one", "Lost two"], push: "fails" });
-  expect(result.pushes, result.detail).toBe(1);
+  expect(result.pushes, result.detail).toBe(2);
   expect(result.baseSha, result.detail).toBe(result.prHead);
   expect(result.remoteBranch, result.detail).toBe(result.prHead);
   expect(result.prompt, result.detail).toBe(
@@ -97,7 +97,7 @@ test("a start Paws cannot establish on GitHub dispatches nothing and retries lat
   const result = await startScenario({ local: ["Lost one"], push: "fails", fetch: "fails" });
   expect(result.error, result.detail).toBeInstanceOf(RemoteStartUnverified);
   expect(isTransient(result.error), result.detail).toBe(true);
-  expect(result.pushes, result.detail).toBe(1);
+  expect(result.pushes, result.detail).toBe(2);
   expect(result.baseSha, result.detail).toBeUndefined();
   expect(result.head, result.detail).toBe(result.localHead);
 });
@@ -192,9 +192,77 @@ test("the fallback and its handoff are saved before the worktree moves", async (
   }
 });
 
+for (const pushError of [
+  "fatal: The requested URL returned error: 502",
+  "fatal: connection reset by peer",
+  "TimeoutError: request timed out",
+  "GitHub token refresh failed",
+  "fatal: The requested URL returned error: 401",
+  "remote: secondary rate limit (403)",
+])
+  test(`a transient push error preserves local work: ${pushError}`, async () => {
+    const result = await startScenario({ local: ["Lost one"], push: "fails", pushError });
+    expect(result.error, result.detail).toBeInstanceOf(RemoteStartUnverified);
+    expect(result.head).toBe(result.localHead);
+    expect(result.wipCommit).toBe(result.localHead);
+    expect(result.baseSha).toBeUndefined();
+    expect(result.thoughts).toEqual([]);
+    expect(result.pendingAfter).toBeUndefined();
+  });
+
+test("fallback reports only commits absent from all fetched GitHub tips", async () => {
+  const result = await startScenario({
+    local: ["Lost one"],
+    push: "fails",
+    mergeMain: true,
+    pushError: "! [rejected] head -> paws/item (non-fast-forward)",
+  });
+  expect(result.baseSha, result.detail).toBe(result.prHead);
+  expect(result.prompt).toContain("Lost one");
+  expect(result.prompt).not.toContain("Already on GitHub");
+  expect(result.pushes).toBe(1);
+});
+
+for (const mutation of ["dirtyDuringPush", "moveDuringPush"] as const)
+  test(`fallback preserves a concurrent worktree change: ${mutation}`, async () => {
+    const result = await startScenario({ local: ["Lost one"], push: "fails", [mutation]: true });
+    expect(result.error, result.detail).toBeInstanceOf(RemoteStartUnverified);
+    expect(result.baseSha).toBeUndefined();
+    if (mutation === "dirtyDuringPush") {
+      expect(result.head).toBe(result.localHead);
+      expect(result.fileAfter).toBe("Uncommitted work");
+    } else expect(result.head).not.toBe(result.prHead);
+    expect(result.pendingAfter).toBeUndefined();
+  });
+
+test("fallback replaces an unpublished intermediate WIP checkpoint", async () => {
+  const result = await startScenario({
+    local: ["Lost one", "Lost two"],
+    push: "fails",
+    earlierWip: true,
+  });
+  expect(result.wipCommit, result.detail).toBe(result.prHead);
+});
+
+test("a cancelled assignment keeps the handoff for the next command", async () => {
+  const result = await startScenario({ local: ["Lost one"], push: "fails", cancelFirstRun: true });
+  expect(result.error, result.detail).toBeUndefined();
+  expect(result.pendingBetween).toContain("Lost one");
+  expect(result.pendingAtAssignment).toBe(result.pendingBetween);
+  expect(result.prompt).toContain(result.pendingBetween!);
+  expect(result.pendingAfter).toBeUndefined();
+  expect(result.thoughts).toHaveLength(1);
+});
+
 async function startScenario(input: {
   local: string[];
   push: "works" | "fails";
+  pushError?: string;
+  mergeMain?: true;
+  dirtyDuringPush?: true;
+  moveDuringPush?: true;
+  earlierWip?: true;
+  cancelFirstRun?: true;
   fetch?: "fails";
   defaultBranch?: string;
   prBranch?: false;
@@ -244,6 +312,13 @@ async function startScenario(input: {
   const prHead = await git(["-C", worktree, "rev-parse", "HEAD"]);
   // Commits Paws fetched from the runner whose push to GitHub was refused.
   for (const message of input.local) await commit(worktree, message);
+  const earlierWip = await git(["-C", worktree, "rev-parse", "HEAD~1"]);
+  if (input.mergeMain) {
+    await commit(source, "Already on GitHub");
+    await git(["-C", source, "push", origin, "HEAD:refs/heads/main"]);
+    await git(["-C", worktree, "fetch", origin, "main"]);
+    await git(["-C", worktree, "merge", "--no-edit", "FETCH_HEAD"]);
+  }
   const localHead = await git(["-C", worktree, "rev-parse", "HEAD"]);
 
   // GitHub, served from the bare repository; a refused push fails like the 403s did.
@@ -253,7 +328,11 @@ async function startScenario(input: {
       throw new Error("fatal: unable to access GitHub: The requested URL returned error: 502");
     if (args.includes("push")) {
       pushes++;
-      if (input.push === "fails") throw new Error("remote: Permission denied (403)");
+      if (pushes === 1 && input.dirtyDuringPush)
+        writeFileSync(join(worktree, "Lost-one.txt"), "Uncommitted work");
+      if (pushes === 1 && input.moveDuringPush) await commit(worktree, "Concurrent commit");
+      if (input.push === "fails")
+        throw new Error(input.pushError ?? "remote: Permission denied (403)");
     }
     return git(args.map((arg) => (arg === GITHUB_URL ? origin : arg)));
   };
@@ -310,7 +389,7 @@ async function startScenario(input: {
   saveCheckpoint(db, item.id, {
     phase: "running",
     baseSha: base,
-    wipCommit: input.stoppedBeforeReset ? prHead : localHead,
+    wipCommit: input.stoppedBeforeReset ? prHead : input.earlierWip ? earlierWip : localHead,
     ...(input.stoppedBeforeReset
       ? {
           lostCommits: `Your commits after ${prHead.slice(0, 8)} didn't reach GitHub: ${[...input.local].reverse().join("; ")}. Redo them.`,
@@ -339,6 +418,8 @@ async function startScenario(input: {
   });
 
   let assigned: Extract<RunnerCommand, { type: "run" }> | undefined;
+  let pendingAtAssignment: string | undefined;
+  let executions = 0;
   const sim = { stopped: false };
   const runner = (async () => {
     while (!sim.stopped) {
@@ -349,6 +430,9 @@ async function startScenario(input: {
         ) as RunnerCommand;
         if (command.type !== "run" || assigned) continue;
         assigned = command;
+        pendingAtAssignment = getWorkItem(db, item.id)?.checkpoint?.lostCommits;
+        executions++;
+        const cancelled = input.cancelFirstRun === true && executions === 1;
         work.acknowledge(runnerId, command.id);
         const grant = work.issueGrant({
           runnerId,
@@ -365,13 +449,13 @@ async function startScenario(input: {
             executionId: workspaceId(),
             commandId: command.id,
             role: "implementer",
-            stopReason: "end_turn",
+            stopReason: cancelled ? "cancelled" : "end_turn",
             timedOut: false,
-            cancelled: false,
+            cancelled,
             authRequired: false,
             agentExited: true,
             // The runner starts from the assigned commit and finishes there.
-            candidateSha: command.repository.baseSha,
+            ...(cancelled ? {} : { candidateSha: command.repository.baseSha }),
             identity: { session: `session-${command.id}`, model: "fixture", provider: "fixture" },
           },
         });
@@ -385,8 +469,15 @@ async function startScenario(input: {
   let retried = false;
   let pendingBetween: string | undefined;
   try {
-    for (let attempt = 0; attempt < (input.failFirstDispatch ? 2 : 1); attempt++) {
-      if (attempt) pendingBetween = getWorkItem(db, item.id)?.checkpoint?.lostCommits;
+    for (
+      let attempt = 0;
+      attempt < (input.failFirstDispatch || input.cancelFirstRun ? 2 : 1);
+      attempt++
+    ) {
+      if (attempt) {
+        pendingBetween = getWorkItem(db, item.id)?.checkpoint?.lostCommits;
+        assigned = undefined;
+      }
       error = undefined;
       await backend
         .forItem(item.id)({
@@ -433,6 +524,10 @@ async function startScenario(input: {
       state: stored?.state,
       wipCommit: stored?.checkpoint?.wipCommit,
       pendingBetween,
+      pendingAtAssignment,
+      fileAfter: await Bun.file(join(worktree, "Lost-one.txt"))
+        .text()
+        .catch(() => undefined),
       pendingAfter: stored?.checkpoint?.lostCommits,
       detail: JSON.stringify({
         prHead,
