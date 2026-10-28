@@ -1,4 +1,4 @@
-import { canAct } from "./eligibility";
+import { canAct, LINEAR_GUEST_REFUSAL } from "./eligibility";
 import { journalCaught, journalRejection } from "../journal";
 import { randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -436,6 +436,8 @@ export function createWorkspaceAssignments(options: {
         teamIds: identity.teamIds,
         now: before,
       });
+    // A guest's delegation is ignored; the one line is the session's answer.
+    if (identity.guest) return { ...refused(LINEAR_GUEST_REFUSAL), response: true };
     const member = workspaceLinearMember(db, verified.workspaceId, verified.actorId);
     const eligibility = canAct(
       {
