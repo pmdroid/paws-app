@@ -204,7 +204,20 @@ test.each(["pending", "rejected"] as const)(
       await shutting;
       await running;
       const pid = Number(readFileSync(pidFile, "utf8"));
-      expect(() => process.kill(pid, 0)).toThrow();
+      // Teardown confirms that no writer is live. Linux can retain the dead child as a
+      // zombie briefly before reaping it; signal 0 still succeeds during that interval.
+      await until(() => {
+        try {
+          process.kill(pid, 0);
+          if (process.platform !== "linux") return false;
+          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+          return /^[ZX] /.test(stat.slice(stat.lastIndexOf(")") + 2));
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ESRCH" || code === "ENOENT") return true;
+          throw error;
+        }
+      });
       expect(getWorkItem(f.db, writer.id)?.state).toBe("running");
     } finally {
       if (!released) linked.resolve(true);
