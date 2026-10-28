@@ -32,6 +32,8 @@ import {
   createUpdateLimiter,
   validateCandidateAttribution,
   assertDescendsFromAny,
+  candidateBases,
+  CHECKPOINT_COMMIT_MESSAGE,
   ArtifactRejectedError,
   commitCheckpoint,
   commitPolicyMessage,
@@ -183,7 +185,7 @@ export interface RunnerWorkerOptions {
 /** A turn that runs this long loses at most this much work to a runner crash or upgrade. */
 export const CHECKPOINT_INTERVAL_MS = 20 * 60_000;
 
-export const CHECKPOINT_COMMIT_MESSAGE = "Save work in progress so far";
+export { CHECKPOINT_COMMIT_MESSAGE };
 
 /**
  * Each step after a handover stopped the agent, the WIP commit, the session snapshot and the
@@ -1571,7 +1573,10 @@ export async function executeRunnerCommand(
       if (command.type !== "run" && command.type !== "review") return;
       const sha = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
       if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Invalid runner candidate commit");
-      const bases = [command.repository.baseSha];
+      const bases = await candidateBases(
+        (args) => invokeGit(["-C", worktree, ...args]),
+        command.repository.baseSha,
+      );
       if (command.repository.mainSha) bases.push(command.repository.mainSha);
       await assertDescendsFromAny((args) => invokeGit(["-C", worktree, ...args]), bases, sha);
       if (command.type === "run") {
