@@ -96,6 +96,14 @@ export {
 } from "./link-ask";
 export { VISUAL_REVIEW_NEEDS_LINK, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
 export {
+  inertMarkdown,
+  openFindingsLine,
+  openFindingsSection,
+  pawsIssueUrl,
+  type OpenFinding,
+  type OpenItems,
+} from "./open-findings";
+export {
   askRiskApproval,
   riskApprovalFor,
   riskGateOn,

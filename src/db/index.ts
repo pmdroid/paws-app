@@ -178,6 +178,7 @@ export {
   saveCandidateRisk,
   type CandidateRisk,
 } from "./candidate-risk";
+export { getOpenFindingsLine, saveOpenFindings, withOpenFindings } from "./open-findings";
 export { deleteRiskFix, getRiskFix, latestRiskFix, saveRiskFix, type RiskFix } from "./risk-fix";
 export { frozenMigrations } from "./migrations";
 export {
@@ -298,6 +299,7 @@ export {
 } from "./runners";
 export {
   appendCloseoutOutput,
+  acceptedCloseoutReviews,
   ensureCloseoutProgress,
   finishCloseoutProgress,
   latestCloseoutIdentity,
@@ -306,6 +308,7 @@ export {
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,
+  type AcceptedCloseoutReviews,
   type CloseoutProgressIdentity,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
