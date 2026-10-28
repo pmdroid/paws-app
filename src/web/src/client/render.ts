@@ -37,7 +37,13 @@ import {
 } from "./format";
 import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "./format";
-import { emptyCloseoutView, renderCloseoutChecks, type CloseoutView } from "./closeout";
+import {
+  emptyCloseoutView,
+  renderCloseoutChecks,
+  sectionOpen,
+  sectionToggle,
+  type CloseoutView,
+} from "./closeout";
 import { renderRuleResults } from "./rules";
 import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-closeout";
 import { reviewFindingsSection } from "./review-findings";
@@ -348,7 +354,6 @@ function issueBucket(item: StatusItem): "needs" | "done" | "active" {
 }
 
 function relatedIssues(ids: readonly string[]): string {
-  if (!ids.length) return `<p class="muted">None.</p>`;
   return `<div class="row wrap">${ids.map((id) => `<a href="${routeHref({ view: "issues", id })}">${esc(id)}</a>`).join("")}</div>`;
 }
 
@@ -395,7 +400,7 @@ function issuePage(
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
     <header class="run-heading"><div class="row wrap">${run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
       <h1><span class="lin-id">${esc(item.id)}</span> ${esc(item.title)}</h1>
-      ${issueFacts(snapshot, item, run)}
+      ${issueFacts(snapshot, item, run, blocked)}
       ${item.links.length ? `<div class="row wrap">${linkButtons(item.links)}</div>` : ""}
     </header>
     ${run ? phaseStrip(item, run, verdict, agent) : ""}
@@ -424,17 +429,18 @@ function issuePage(
     ${run ? evidenceSlot(snapshot, run.id) : ""}
     ${fixRounds(snapshot, item, run)}
     ${pullRequestSection(snapshot, item)}
-    ${itemTimeline(item)}
-    ${run?.setup ? runSetupSection(run.setup) : ""}
     ${
       run
         ? `<section class="run-activity" aria-labelledby="activity-heading"><h2 id="activity-heading">Timeline</h2>
-      ${activityActions(transcriptHref, run.links)}
+      ${activityActions(
+        transcriptHref,
+        run.links.filter((link) => !item.links.some((shown) => shown.href === link.href)),
+      )}
       ${activityLog(`activity-${run.id}`, run)}
     </section>`
         : `<p class="muted">No agent activity yet.</p>`
     }
-    <section class="issue-relations" aria-label="Related issues"><h2>Blocked by</h2>${relatedIssues(item.blockers)}<h2>Blocks</h2>${relatedIssues(blocked)}</section>
+    ${runDetails(item, run, closeout)}
     ${earlier.map((entry, index) => earlierAttempt(snapshot, entry, index, attempts)).join("")}
   </article>`;
 }
@@ -453,17 +459,22 @@ function issueFacts(
   snapshot: StatusItemDetail,
   item: StatusItem,
   run: StatusRun | undefined,
+  blocked: readonly string[],
 ): string {
   const facts: Array<[string, string]> = [
-    ["State", esc(itemLabel(item.state))],
     ["Project", esc(item.project?.name ?? "No project")],
     ["Runner", esc(run?.runner ?? "Not placed yet")],
     ["Agent", esc(run?.agent ?? item.agent)],
   ];
   if (item.owner) facts.push(["Delegated by", esc(item.owner)]);
   if (run) facts.push(["Started", esc(ago(run.startedAt, snapshot.generatedAt))]);
-  if (item.linearRequests !== undefined)
-    facts.push(["Linear requests", String(item.linearRequests)]);
+  if (item.pr)
+    facts.push([
+      "Pull request",
+      `<a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">#${item.pr.number}</a>${item.state === "merged" ? " · merged" : ""}`,
+    ]);
+  if (item.blockers.length) facts.push(["Blocked by", relatedIssues(item.blockers)]);
+  if (blocked.length) facts.push(["Blocks", relatedIssues(blocked)]);
   if (item.session) {
     const link = `<a href="${esc(item.session.url)}" target="_blank" rel="noopener noreferrer">Linear session</a>`;
     facts.push([
@@ -473,7 +484,32 @@ function issueFacts(
         : link,
     ]);
   }
+  return factList(facts);
+}
+
+function factList(facts: ReadonlyArray<[string, string]>): string {
   return `<dl class="issue-facts-grid">${facts.map(([term, value]) => `<div><dt>${term}</dt><dd>${value}</dd></div>`).join("")}</dl>`;
+}
+
+function runDetails(item: StatusItem, run: StatusRun | undefined, view: CloseoutView): string {
+  const facts: Array<[string, string]> =
+    item.linearRequests === undefined ? [] : [["Linear requests", String(item.linearRequests)]];
+  const parts = [
+    facts.length ? factList(facts) : "",
+    itemTimeline(item),
+    run?.setup ? runSetupSection(run.setup) : "",
+  ].filter(Boolean);
+  if (!parts.length) return "";
+  const key = `details:${item.id}`;
+  const open = sectionOpen(view, key, false);
+  const summary = [
+    item.timeline?.length ? `${item.timeline.length} state changes` : "",
+    run?.setup ? "skills and hooks" : "",
+    facts.length ? "Linear requests" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return `<section class="run-details" aria-label="Run details">${sectionToggle(key, open, "<h2>Run details</h2>", summary)}${open ? parts.join("") : ""}</section>`;
 }
 
 const RESTART_REASON_LABELS: Record<string, string> = {
@@ -488,8 +524,42 @@ const RESTART_REASON_LABELS: Record<string, string> = {
 /** Every committed state change of the item, oldest first, from `work_item_event`. */
 function itemTimeline(item: StatusItem): string {
   if (!item.timeline?.length) return "";
-  return `<section class="item-timeline" aria-labelledby="item-timeline-heading"><h2 id="item-timeline-heading">Item timeline</h2>
-    <ol role="list">${item.timeline.map(itemTimelineEntry).join("")}</ol></section>`;
+  return `<section class="item-timeline" aria-labelledby="item-timeline-heading"><h3 id="item-timeline-heading">State changes</h3>
+    <ol role="list">${timelineGroups(item.timeline)
+      .map((group) => (group.length === 1 ? itemTimelineEntry(group[0]!) : timelineLoop(group)))
+      .join("")}</ol></section>`;
+}
+
+export function timelineGroups(entries: readonly StatusItemEvent[]): StatusItemEvent[][] {
+  const same = (left: StatusItemEvent | undefined, right: StatusItemEvent | undefined) =>
+    left !== undefined &&
+    right !== undefined &&
+    left.kind === right.kind &&
+    left.from === right.from &&
+    left.to === right.to &&
+    left.event === right.event;
+  const groups: StatusItemEvent[][] = [];
+  let at = 0;
+  while (at < entries.length) {
+    let end = at;
+    while (same(entries[end], entries[end + 2]) && same(entries[end + 1], entries[end + 3]))
+      end += 2;
+    if (end > at && entries[at]!.to !== entries[at + 1]!.to) {
+      groups.push(entries.slice(at, end + 2));
+      at = end + 2;
+    } else {
+      groups.push([entries[at]!]);
+      at += 1;
+    }
+  }
+  return groups;
+}
+
+function timelineLoop(group: readonly StatusItemEvent[]): string {
+  const [first, second] = group as [StatusItemEvent, StatusItemEvent];
+  const last = group.at(-1)!;
+  const state = (value: string) => esc(value.replaceAll("_", " "));
+  return `<li data-kind="loop"><time datetime="${esc(first.at)}" title="${esc(first.at)}">${esc(clock24(first.at))}</time>–<time datetime="${esc(last.at)}" title="${esc(last.at)}">${esc(clock24(last.at))}</time> <strong>${state(first.to)}</strong> and back to ${state(second.to)}, ${group.length / 2} times <span class="muted">${esc(first.event)} · ${esc(second.event)}</span></li>`;
 }
 
 function itemTimelineEntry(entry: StatusItemEvent): string {
@@ -532,9 +602,11 @@ function pullRequestSection(snapshot: StatusItemDetail, item: StatusItem): strin
   const steps = entry?.steps.length
     ? `<ol class="merge-steps" role="list">${entry.steps.map((step) => `<li>${statePill(step.state, step.name)}${step.detail ? `<span class="muted">${esc(step.detail)}</span>` : ""}</li>`).join("")}</ol>`
     : "";
+  const notices = mergeQueueNotice(item) + githubQueueNotice(item) + steps;
+  if (!notices && (item.state === "merged" || !item.pr)) return "";
   return `<section class="issue-merge" aria-labelledby="merge-heading"><h2 id="merge-heading">Pull request and merge</h2>
-    ${pr || state ? `<p>${pr}${pr && state ? " · " : ""}${esc(state)}</p>` : '<p class="muted">No pull request yet.</p>'}
-    ${mergeQueueNotice(item)}${githubQueueNotice(item)}${steps}</section>`;
+    ${pr || state ? `<p>${pr}${pr && state ? " · " : ""}${esc(state)}</p>` : ""}
+    ${notices}</section>`;
 }
 
 /** CI reads that failed on the pull request, and what Paws did next. */
@@ -660,7 +732,7 @@ export function runSetupSection(setup: StatusRunSetup): string {
         )
         .join("")}</ul>`
     : '<p class="muted">No hooks.</p>';
-  return `<section class="run-setup" aria-labelledby="setup-heading"><h2 id="setup-heading">Skills and hooks</h2><h3>Skills</h3>${skills}<h3>Hooks</h3>${hooks}</section>`;
+  return `<section class="run-setup" aria-labelledby="setup-heading"><h3 id="setup-heading">Skills and hooks</h3><h4>Skills</h4>${skills}<h4>Hooks</h4>${hooks}</section>`;
 }
 
 function executionControls(run: StatusRun): string {

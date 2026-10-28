@@ -17,7 +17,9 @@ export function earlierRoundsKey(itemId: string, reviewId: string): string {
  * Every finding text is model output, so all of it is escaped.
  */
 export function reviewFindingsSection(verdict: StatusVerdict, view: CloseoutView): string {
-  const reviews = (verdict.reviews ?? []).filter((review) => review.rounds.length > 0);
+  const reviews = (verdict.reviews ?? []).filter(
+    (review) => (review.rounds.at(-1)?.findings.length ?? 0) > 0,
+  );
   if (reviews.length === 0) return "";
   const id = `review-findings-${esc(verdict.itemId)}`;
   return `<section class="closeout-section review-findings" aria-labelledby="${id}"><h2 id="${id}">Review findings</h2>${reviews.map((review) => reviewBlock(verdict.itemId, review, view)).join("")}</section>`;
