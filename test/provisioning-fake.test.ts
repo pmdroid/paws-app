@@ -70,6 +70,23 @@ test("configured sizes become `new` flags, and no size is a bare `new`", async (
   expect(exe.vms.has("eve-paws")).toBe(false);
 });
 
+test("the fake places VMs in listed pools and refuses an unknown pool as exe.dev does", async () => {
+  const exe = createFakeExeDev();
+  exe.addPool("build", { region: "lon" });
+  await exe.createVm("ada-paws", { pool: "build" });
+  expect(exe.placement.get("ada-paws")).toBe("build");
+  await expect(exe.createVm("bob-paws", { pool: "gpu" })).rejects.toThrow(
+    'exe.dev refused Create VM for bob-paws with --pool=gpu: pool "gpu" does not exist. Change [member_vm] in config.toml or choose another pool.',
+  );
+  expect(exe.vms.has("bob-paws")).toBe(false);
+  expect(await exe.listPools()).toEqual([{ name: "build", region: "lon", status: "active" }]);
+  await exe.createVm("cy-paws");
+  await exe.adoptVm("cy-paws", "build");
+  expect(exe.placement.get("cy-paws")).toBe("build");
+  expect(await code(exe.adoptVm("dee-paws", "build"))).toBe("missing");
+  expect(await code(exe.adoptVm("cy-paws", "gpu"))).toBe("unknown");
+});
+
 test("the fake deletes a VM, answers missing for an unknown one, and fails when told to", async () => {
   const exe = createFakeExeDev();
   exe.addVm("ada-paws");
