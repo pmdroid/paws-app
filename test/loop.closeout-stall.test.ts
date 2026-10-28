@@ -212,6 +212,62 @@ test("a reverify steps aside while the turn's own Closeout is live", async () =>
   }
 }, 90_000);
 
+for (const hold of ["sibling", "live-decide"] as const)
+  test(`a ${hold} hold preserves a decide request without spending attempts`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true });
+    try {
+      if (hold === "sibling") {
+        f.release();
+        await f.turn;
+        await f.restart();
+      }
+      const item = listWorkItems(f.db)[0]!;
+      // Reproduce the sibling context installed by the merge lane's hold().
+      const contexts = (
+        f.orchestrator as unknown as {
+          jobContexts: Map<string, unknown>;
+        }
+      ).jobContexts;
+      if (hold === "sibling") contexts.set(item.id, { isCurrent: () => true });
+      const jobId = enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id, decide: true },
+        maxAttempts: 1,
+        now: Date.now(),
+      });
+      f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
+      await f.tickReverify();
+      expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        payload: { itemId: item.id, decide: true },
+      });
+      expect(f.gate.runs).toHaveLength(1);
+      expect(f.gate.decisions).toHaveLength(0);
+      expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+      if (hold === "sibling") contexts.delete(item.id);
+      else {
+        f.release();
+        await f.turn;
+      }
+      f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+      await f.tickReverify();
+      expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+        status: "done",
+        attempts: 1,
+        lastError: null,
+      });
+      // The live turn's accepted verdict can make the queued decision obsolete.
+      expect(f.gate.decisions).toHaveLength(hold === "sibling" ? 1 : 0);
+      expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
+
 for (const state of ["verifying", "merge_queue"] as const)
   for (const lease of ["missing", "expired", "live", "grace"] as const)
     test(`a reverify after restart handles an active ${state} run with ${lease} runner work`, async () => {
@@ -244,18 +300,35 @@ for (const state of ["verifying", "merge_queue"] as const)
         });
         await f.tickReverify();
 
+        const waiting = lease === "live" || lease === "grace";
         expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
-          status: "done",
-          attempts: 1,
+          status: waiting ? "pending" : "done",
+          attempts: waiting ? 0 : 1,
           lastError: null,
         });
-        if (lease === "live" || lease === "grace") {
+        if (waiting) {
           expect(f.gate.runs).toHaveLength(1);
           expect(getRun(f.db, runId)?.status).toBe("active");
           expect(getWorkItem(f.db, item.id)).toMatchObject({ state, currentRunId: runId });
-        } else {
+          // The same durable request must take over promptly once the lease expires.
+          f.db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
+            Date.now() - RUNNER_LEASE_GRACE_MS - 1_000,
+            runId,
+          ]);
+          f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+          await f.tickReverify();
+          expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+            status: "done",
+            attempts: 1,
+            lastError: null,
+          });
+        }
+        {
           expect(f.gate.runs).toHaveLength(2);
           expect(getRun(f.db, runId)?.status).toBe("ended");
+          expect(
+            f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").all(runId),
+          ).toEqual([]);
           const current = getWorkItem(f.db, item.id)!;
           expect(current.state).toBe("merge_queue");
           expect(current.currentRunId).not.toBe(runId);
@@ -560,7 +633,9 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
     },
     turn,
     tracker,
-    orchestrator,
+    get orchestrator() {
+      return orchestrator;
+    },
     flush,
     stalls: () => lines.filter((line) => line.includes("in verifying:")),
     async restart() {
