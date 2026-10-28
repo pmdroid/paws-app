@@ -138,6 +138,8 @@ export function createExecutionControlsFixture(root: string) {
         if (joining) await joining;
         await orchestrator.interruptItem(id);
       },
+      clearStuckAgent: (id, canAct, onCommitted) =>
+        orchestrator.clearStuckAgent(id, canAct, onCommitted),
     }),
   });
   const ready = Promise.withResolvers<WorkspaceAccess>();
