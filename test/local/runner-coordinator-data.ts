@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -165,7 +165,7 @@ export async function probeRunnerCoordinatorData(
         return installation;
       },
     },
-    transcriptObjects: objects,
+    transcripts: { objects, key: randomBytes(32) },
   };
   let coordinator = await openRunnerCoordinator({ ...coordinatorOptions, db, port: 0 });
   now = Date.now();
@@ -309,7 +309,13 @@ export async function probeRunnerCoordinatorData(
       sha256: hash(transcriptBytes),
     };
     const receipt = await daemon.finishTranscript(run.id, finish, grant.token);
-    assert(receipt.uri.startsWith("s3://fixture-transcripts/"));
+    assert(receipt.uri.startsWith("paws-run-file:transcript/paws/transcripts/"));
+    // S3 holds only sealed chunks; the transcript's plaintext never reaches the bucket.
+    assert(
+      ![...objectBytes.values()].some((stored) =>
+        Buffer.from(stored).includes(transcriptBytes.subarray(0, 64)),
+      ),
+    );
     assert.deepEqual(
       await coordinator.transcripts!.download(run.id, 1, executionId),
       transcriptBytes,

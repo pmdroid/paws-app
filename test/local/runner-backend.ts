@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createAcpActivityReporter } from "../../src/loop";
-import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -964,7 +964,12 @@ export async function probeRunnerBackend(
       { reviewCommand: commandReview.reviewCommand, commandText, tooOld, refusedReviews },
     );
     const transcriptObjects = createFakeRunnerTranscriptObjects();
-    const transcripts = createRunnerTranscripts({ db, work, objects: transcriptObjects });
+    const transcripts = createRunnerTranscripts({
+      db,
+      work,
+      objects: transcriptObjects,
+      key: randomBytes(32),
+    });
     let cancelDuringDownload = false;
     const sealedBackend = createRemoteAgentRunner({
       ...backendOptions,

@@ -1,10 +1,9 @@
 import { z } from "zod";
+import { RUN_FILE_CHUNK_BYTES } from "../run-files";
 
-export const AGENT_SESSION_CHUNK_BYTES = 524_288;
+export const AGENT_SESSION_CHUNK_BYTES = RUN_FILE_CHUNK_BYTES;
 /** The largest sealed (gzipped) snapshot Paws accepts: 1 GiB. */
 export const AGENT_SESSION_MAX_BYTES = 1_073_741_824;
-/** AES-256-GCM adds a 12-byte nonce and a 16-byte tag to each stored chunk. */
-export const AGENT_SESSION_OBJECT_MAX_BYTES = AGENT_SESSION_CHUNK_BYTES + 28;
 
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);

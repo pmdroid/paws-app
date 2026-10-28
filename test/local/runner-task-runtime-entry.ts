@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   beginImplementRun,
   bindLinearSessionTask,
@@ -14,6 +14,7 @@ import {
   saveTaskMode,
 } from "../../src/db";
 import { createFakeGitHub } from "../../src/github";
+import { createLocalRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
 import { createDirectWorkerSupervisor, readRunnerJob } from "../../src/runner-execution";
@@ -50,16 +51,7 @@ const daemonOptions = (configuration: Configuration) => ({
   serverCa: readFileSync(join(root, "server.pem"), "utf8"),
   allowedRepositories: ["fixture/repository"],
 });
-const objects = {
-  async write(key: string, value: Blob | ReadableStream<Uint8Array>) {
-    const path = join(server, "objects", key);
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    await Bun.write(path, await new Response(value).arrayBuffer());
-    chmodSync(path, 0o600);
-  },
-  read: (key: string) => Bun.file(join(server, "objects", key)).stream(),
-  uri: (key: string) => "s3://task-fixture/" + key,
-};
+const objects = createLocalRunnerTranscriptObjects(join(server, "objects"));
 function git(input: string[], cwd = root) {
   const child = Bun.spawnSync(["/usr/bin/git", "-c", "safe.directory=*", ...input], {
     cwd,
@@ -84,7 +76,7 @@ async function coordinator(port: number) {
     tls: tls(),
     hostname: "127.0.0.1",
     port,
-    transcriptObjects: objects,
+    transcripts: { objects, key: Buffer.alloc(32, 7) },
     repositoryAccess: { github: createFakeGitHub(), installationForRepository: () => "fixture" },
     onError: () => {},
   });
