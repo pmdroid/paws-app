@@ -1,3 +1,4 @@
+export { replaceLeasedJobPayload } from "./job-payload";
 export {
   drainCommands,
   enqueueCommand,

@@ -25,7 +25,11 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
 } from "../src/db";
-import { createFakeCloseoutGate, type CloseoutVerdict } from "../src/closeout";
+import {
+  createFakeCloseoutGate,
+  type CloseoutVerdict,
+  type CandidateIdentity,
+} from "../src/closeout";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
@@ -310,8 +314,9 @@ test("a deferred duplicate survives an aborted live Closeout with its flags", as
   }
 }, 90_000);
 
-for (const importResult of [true, false])
-  test(`a delivered runner result survives lease grace with import success: ${importResult}`, async () => {
+for (const scenario of ["imported", "retry", "terminal", "mismatch"] as const)
+  test(`a delivered runner result survives lease grace: ${scenario}`, async () => {
+    const importResult = scenario === "imported";
     const f = await verifyingWithHeldGate({ remote: true });
     try {
       f.release();
@@ -333,6 +338,17 @@ for (const importResult of [true, false])
         "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) SELECT run_id,generation,command_id,'{}',? FROM runner_work WHERE run_id=?",
         [Date.now(), runId],
       );
+      if (scenario === "mismatch") {
+        f.db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [item.id]);
+        const port = f.orchestrator as unknown as {
+          candidateForItem: (input: typeof item) => Promise<CandidateIdentity | null>;
+        };
+        const original = port.candidateForItem.bind(f.orchestrator);
+        port.candidateForItem = async () => ({
+          ...(await original(item))!,
+          model: "different-model",
+        });
+      }
       let imported = false;
       const verify = f.gate.run;
       f.gate.run = async (input) => {
@@ -351,22 +367,28 @@ for (const importResult of [true, false])
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
         now: Date.now(),
-        maxAttempts: 2,
+        maxAttempts: scenario === "terminal" ? 1 : 2,
       });
       await f.tickReverify();
       expect(imported).toBe(importResult);
-      expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe(
-        importResult ? "done" : "pending",
-      );
-      expect(getWorkItem(f.db, item.id)).toMatchObject({
-        state: importResult ? "merge_queue" : "verifying",
-        currentRunId: runId,
-      });
-      expect(getRun(f.db, runId)?.status).toBe(importResult ? "ended" : "active");
+      const current = getWorkItem(f.db, item.id)!;
+      if (scenario === "terminal") {
+        expect(current.state).toBe("failed");
+        expect(getRun(f.db, runId)?.status).toBe("lost");
+      } else {
+        expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe(
+          importResult ? "done" : "pending",
+        );
+        expect(current).toMatchObject({
+          state: importResult || scenario === "mismatch" ? "merge_queue" : "verifying",
+          currentRunId: runId,
+        });
+        expect(getRun(f.db, runId)?.status).toBe(importResult ? "ended" : "active");
+      }
       expect(
         f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId) !==
           null,
-      ).toBe(!importResult);
+      ).toBe(!importResult && scenario !== "terminal");
     } finally {
       f.release();
       await f.turn;
@@ -405,6 +427,134 @@ test("a prolonged sibling ownership hold asks for help instead of polling foreve
     await f.close();
   }
 }, 90_000);
+
+for (const state of [
+  "running",
+  "queued",
+  "paused",
+  "recovering",
+  "awaiting_input",
+  "failed",
+  "cancelled",
+  "completed",
+  "merged",
+  "cancel-requested",
+] as const)
+  test(`a stale reverify cannot park or ask on ${state}`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true });
+    try {
+      f.release();
+      await f.turn;
+      await f.restart();
+      const item = listWorkItems(f.db)[0]!;
+      f.db.run("UPDATE work_item SET state=?,cancel_requested=? WHERE id=?", [
+        state === "cancel-requested" ? "verifying" : state,
+        state === "cancel-requested" ? 1 : 0,
+        item.id,
+      ]);
+      const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
+        .jobContexts;
+      contexts.set(item.id, { isCurrent: () => true });
+      const jobId = enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id, verificationWaitSince: Date.now() - 30 * 60_000 },
+        now: Date.now(),
+      });
+      await f.tickReverify();
+      contexts.delete(item.id);
+      expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe("done");
+      expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+      expect(getWorkItem(f.db, item.id)?.state).toBe(
+        state === "cancel-requested" ? "verifying" : state,
+      );
+      expect(f.gate.runs).toHaveLength(1);
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
+
+test("an ownership timer is cleared before work and a later hold starts a fresh timer", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    f.release();
+    await f.turn;
+    await f.restart();
+    const item = listWorkItems(f.db)[0]!;
+    const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
+      .jobContexts;
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: item.id, verificationWaitSince: Date.now() - 19 * 60_000 },
+      now: Date.now(),
+    });
+    let entered = false;
+    f.gate.run = async () => {
+      entered = true;
+      expect(listJobs(f.db).find((job) => job.id === jobId)?.payload).not.toHaveProperty(
+        "verificationWaitSince",
+      );
+      throw new Error("fixture transport pause");
+    };
+    await f.tickReverify();
+    expect(entered).toBe(true);
+    expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe("pending");
+    contexts.set(item.id, { isCurrent: () => true });
+    f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+    await f.tickReverify();
+    contexts.delete(item.id);
+    const waiting = listJobs(f.db).find((job) => job.id === jobId)!;
+    expect(waiting.status).toBe("pending");
+    expect(
+      (waiting.payload as { verificationWaitSince: number }).verificationWaitSince,
+    ).toBeGreaterThan(Date.now() - 10_000);
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+for (const problem of ["no-session", "notification-error"] as const)
+  test(`an ownership timeout with ${problem} has a terminal outcome`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true });
+    try {
+      f.release();
+      await f.turn;
+      await f.restart();
+      const item = listWorkItems(f.db)[0]!;
+      const internals = f.orchestrator as unknown as {
+        jobContexts: Map<string, unknown>;
+        activitySession: () => string | null;
+        askCloseoutHelp: () => Promise<void>;
+      };
+      internals.jobContexts.set(item.id, { isCurrent: () => true });
+      if (problem === "no-session") internals.activitySession = () => null;
+      else
+        internals.askCloseoutHelp = async () => {
+          throw new Error("fixture notification unavailable");
+        };
+      const jobId = enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        maxAttempts: 1,
+        payload: { itemId: item.id, verificationWaitSince: Date.now() - 30 * 60_000 },
+        now: Date.now(),
+      });
+      await f.tickReverify();
+      internals.jobContexts.delete(item.id);
+      expect(getWorkItem(f.db, item.id)?.state).toBe("failed");
+      expect(["done", "cancelled"]).toContain(
+        listJobs(f.db).find((job) => job.id === jobId)?.status ?? "",
+      );
+      expect(f.gate.runs).toHaveLength(1);
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
 
 for (const state of ["verifying", "merge_queue"] as const)
   for (const lease of ["missing", "expired", "live", "grace"] as const)

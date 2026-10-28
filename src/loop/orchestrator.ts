@@ -13,6 +13,7 @@ import {
   runnerHoldsRunWork,
   runnerWorkHasResult,
   parkLeasedJob,
+  replaceLeasedJobPayload,
 } from "../db";
 import { journalCaught } from "../journal";
 import { confirmDecision, suggestDecisions } from "../decisions";
@@ -370,13 +371,7 @@ import {
   reverifyBypassed,
   type LinkAskEffects,
 } from "./link-ask";
-import {
-  acceptCloseout,
-  retryMergeLater,
-  waitForMergeTurn,
-  waitForRunnerSlot,
-  type VerificationOwner,
-} from "./merge-jobs";
+import { acceptCloseout, retryMergeLater, waitForMergeTurn, waitForRunnerSlot } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
 import { ciForRecheck, type CiRecheck } from "./ci-recheck";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
@@ -1487,14 +1482,27 @@ export class Orchestrator {
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
-      if (this.waitingForRunnerSlot(job)) return;
       const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
-      if (item && this.reverifyHeld(item)) {
-        await this.waitForVerification(job, context, item);
+      if (
+        !item ||
+        !this.reverifyEligible(item) ||
+        !context.isCurrent() ||
+        !jobVersionCurrent(this.db, job)
+      )
         return;
-      }
       await this.failOnLastAttempt(job, context, "reverify", async () => {
+        if (this.reverifyHeld(item)) {
+          await this.waitForVerification(job, context, item);
+          return;
+        }
+        const { verificationWaitSince: _since, ...payload } = job.payload as Record<
+          string,
+          unknown
+        >;
+        if (!replaceLeasedJobPayload(this.db, job, payload, this.now())) return;
+        job = { ...job, payload };
+        if (this.waitingForRunnerSlot(job)) return;
         try {
           await this.runLeasedJob(job.payload, context, () =>
             this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
@@ -2910,6 +2918,39 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     options: { decide?: boolean; reverifyJobId?: number } = {},
   ): Promise<void> {
+    await this.withVerificationRun(
+      item,
+      candidate,
+      options.reverifyJobId !== undefined,
+      (owned, assertCurrent, assertOwned) =>
+        this.evaluateOwnedHead(
+          owned,
+          worktree,
+          base,
+          head,
+          candidate,
+          options,
+          assertCurrent,
+          assertOwned,
+        ),
+    );
+  }
+
+  private async evaluateOwnedHead(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+    candidate: CandidateIdentity,
+    options: { decide?: boolean; reverifyJobId?: number },
+    assertCurrent: () => void,
+    assertOwned: () => void,
+  ): Promise<void> {
+    if (
+      options.reverifyJobId !== undefined &&
+      (item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue")
+    )
+      await this.startCloseoutRound(item, head);
     if (
       closeLinkAsksOnHead(
         this.db,
@@ -2930,16 +2971,21 @@ export class Orchestrator {
     const fromCi = ci?.kind === "check" ? ci.fromCi : [];
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
-      const verdict = await this.runVerification(
+      const before = getWorkItem(this.db, item.id) ?? item;
+      const result = await this.verifyCandidate(
         item,
         worktree,
         base,
         head,
         candidate,
+        assertCurrent,
         decide,
         fromCi,
-        options.reverifyJobId !== undefined,
       );
+      // A finished verdict may decide an aborted but still-owned run (PAS-771).
+      assertOwned();
+      const owner = this.options.remoteExecution ? getWorkItem(this.db, item.id)! : before;
+      const verdict = { ...result, owner: { version: owner.version, runId: owner.currentRunId } };
       await this.recordReviewRounds(item, verdict.owner.runId);
       if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
@@ -3030,31 +3076,21 @@ export class Orchestrator {
     });
   }
 
-  private async runVerification(
+  private async withVerificationRun(
     item: WorkItemRecord,
-    worktree: string,
-    base: string,
-    head: string,
     candidate: CandidateIdentity,
-    decide = false,
-    fromCi: readonly CiResult[] = [],
-    recheck = false,
-  ): Promise<CloseoutVerdict & { owner: VerificationOwner }> {
+    recheck: boolean,
+    operation: (
+      owned: WorkItemRecord,
+      assertCurrent: () => void,
+      assertOwned: () => void,
+    ) => Promise<void>,
+  ): Promise<void> {
     if (!this.options.remoteExecution) {
-      this.assertJobCurrent(item.id);
-      const owner = getWorkItem(this.db, item.id) ?? item;
-      const verdict = await this.verifyCandidate(
-        item,
-        worktree,
-        base,
-        head,
-        candidate,
-        () => this.assertJobCurrent(item.id),
-        decide,
-        fromCi,
-      );
-      this.assertJobCurrent(item.id);
-      return { ...verdict, owner: { version: owner.version, runId: owner.currentRunId } };
+      const assertCurrent = () => this.assertJobCurrent(item.id);
+      assertCurrent();
+      await operation(item, assertCurrent, assertCurrent);
+      return;
     }
     const priorRunId = item.currentRunId;
     let ownedRunId: string | null = null;
@@ -3070,6 +3106,12 @@ export class Orchestrator {
           throw new Error("Verification belongs to an obsolete task");
         const prior = current.currentRunId ? getRun(this.db, current.currentRunId) : null;
         if (!prior || prior.itemId !== current.id) throw new Error("Verification run is missing");
+        const snapshot = this.readProfileSnapshot(prior.id);
+        if (
+          !snapshot?.candidate ||
+          JSON.stringify(snapshot.candidate) !== JSON.stringify(candidate)
+        )
+          throw new Error("Verification candidate identity changed");
         if (prior.status === "active") {
           if (this.live.get(prior.id)?.itemId === current.id) {
             if (recheck || current.state !== "verifying") throw new VerificationHeld();
@@ -3088,12 +3130,6 @@ export class Orchestrator {
           releaseRunCapacity(this.db, prior.id, this.now());
         } else if (prior.status !== "ended" && prior.status !== "lost")
           throw new Error("Prior verification run is still provisioning");
-        const snapshot = this.readProfileSnapshot(prior.id);
-        if (
-          !snapshot?.candidate ||
-          JSON.stringify(snapshot.candidate) !== JSON.stringify(candidate)
-        )
-          throw new Error("Verification candidate identity changed");
         if (current.state === "merge_queue")
           applyWorkItemEvent(this.db, current.id, "reverify_requested");
         const run = insertRun(this.db, {
@@ -3116,6 +3152,8 @@ export class Orchestrator {
           { mode: 0o600 },
         );
       }
+      const operationLive = this.live.get(`operation:${item.id}`);
+      if (ownedRunId && operationLive) this.live.set(ownedRunId, operationLive);
       const runId = item.currentRunId!;
       const assertOwned = () => {
         const current = getWorkItem(this.db, item.id);
@@ -3140,22 +3178,18 @@ export class Orchestrator {
         assertOwned();
       };
       assertCurrent();
-      const verdict = await this.verifyCandidate(
-        item,
-        worktree,
-        base,
-        head,
-        candidate,
-        assertCurrent,
-        decide,
-        fromCi,
-      );
-      // A finished verdict still decides an item this run owns, even after an abort (PAS-771).
-      assertOwned();
-      return { ...verdict, owner: { version: getWorkItem(this.db, item.id)!.version, runId } };
+      await operation(item, assertCurrent, assertOwned);
     } finally {
-      if (ownedRunId && (ownedRunId !== priorRunId || !runnerWorkHasResult(this.db, ownedRunId)))
-        closeActiveRun(this.db, ownedRunId, this.now());
+      if (ownedRunId) {
+        const live = this.live.get(ownedRunId);
+        if (live === this.live.get(`operation:${item.id}`)) this.live.delete(ownedRunId);
+        const current = getWorkItem(this.db, item.id);
+        if (!current || current.currentRunId !== ownedRunId || !this.reverifyEligible(current)) {
+          releaseRunCapacity(this.db, ownedRunId, this.now());
+        } else if (ownedRunId !== priorRunId || !runnerWorkHasResult(this.db, ownedRunId)) {
+          closeActiveRun(this.db, ownedRunId, this.now());
+        }
+      }
     }
   }
 
@@ -3798,7 +3832,15 @@ export class Orchestrator {
     context: JobContext,
     item: WorkItemRecord,
   ): Promise<void> {
-    if (!context.isCurrent()) return;
+    const current = getWorkItem(this.db, item.id);
+    if (
+      !context.isCurrent() ||
+      !jobVersionCurrent(this.db, job) ||
+      !current ||
+      current.version !== item.version ||
+      !this.reverifyEligible(current)
+    )
+      return;
     const payload = job.payload as Record<string, unknown>;
     const since =
       typeof payload.verificationWaitSince === "number"
@@ -3808,11 +3850,37 @@ export class Orchestrator {
       this.options.journal?.(
         `reverify job ${job.id} stalled for item ${item.id}: ownership held for 20 minutes`,
       );
-      await this.askCloseoutHelp(
-        item,
-        undefined,
-        "Closeout: blocked\nVerification has waited 20 minutes for another operation or runner. Check the runner and retry once it is ready.",
-      );
+      if (this.activitySession(current) === null) {
+        this.fail(
+          current,
+          "no_tracker_session",
+          "Cannot request verification help because this item has no tracker session.",
+        );
+        return;
+      }
+      try {
+        await this.askCloseoutHelp(
+          current,
+          undefined,
+          "Closeout: blocked\nVerification has waited 20 minutes for another operation or runner. Check the runner and retry once it is ready.",
+        );
+      } catch (error) {
+        const after = getWorkItem(this.db, item.id);
+        if (
+          !context.isCurrent() ||
+          !jobVersionCurrent(this.db, job) ||
+          !after ||
+          !this.reverifyEligible(after)
+        )
+          return;
+        if (job.attempts < job.maxAttempts) throw error;
+        this.fail(
+          after,
+          "closeout_help_failed",
+          `Could not request verification help: ${error instanceof Error ? error.message : String(error)}`,
+          error,
+        );
+      }
       return;
     }
     if (payload.verificationWaitSince === undefined)
@@ -3825,9 +3893,13 @@ export class Orchestrator {
     });
   }
 
-  private reverifyHeld(item: WorkItemRecord, ownJob = false): boolean {
+  private reverifyEligible(item: WorkItemRecord): boolean {
+    return !item.cancelRequested && (item.state === "verifying" || item.state === "merge_queue");
+  }
+
+  private reverifyHeld(item: WorkItemRecord): boolean {
     return (
-      (!ownJob && this.jobContexts.has(item.id)) ||
+      this.jobContexts.has(item.id) ||
       (item.currentRunId !== null &&
         (this.live.has(item.currentRunId) ||
           (getRun(this.db, item.currentRunId)?.status === "active" &&
@@ -3840,7 +3912,7 @@ export class Orchestrator {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
-    if (item === null) return;
+    if (item === null || !this.reverifyEligible(item)) return;
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
       this.fail(item, "no_repository", "No repository is selected for this item.");
@@ -3883,10 +3955,6 @@ export class Orchestrator {
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
     const candidate = await this.candidateForItem(item);
     if (!candidate) return;
-    if (this.reverifyHeld(item, true)) throw new VerificationHeld();
-    // The merge lane moves a rebased item to verifying; its checkpoint is still the merge queue's.
-    if (item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue")
-      await this.startCloseoutRound(item, head);
     await this.evaluateHead(item, worktree, base, head, candidate, {
       decide: readBoolean(payload, "decide") === true,
       reverifyJobId: jobId,
@@ -5509,7 +5577,9 @@ export class Orchestrator {
       current.state === "recovering" ||
       current.state === "merge_queue"
     ) {
-      failWorkItem(this.db, current, reason, text, this.now());
+      const failed = failWorkItem(this.db, current, reason, text, this.now());
+      if (failed && current.currentRunId && runnerWorkHasResult(this.db, current.currentRunId))
+        releaseRunCapacity(this.db, current.currentRunId, this.now());
     } else {
       this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
     }
