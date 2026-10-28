@@ -14,6 +14,8 @@ export type ProvisioningErrorCode =
   | "invalid_response"
   | "unauthorized"
   | "conflict"
+  /** exe.dev keeps the VM name for someone else, so another name may still work. */
+  | "name_unavailable"
   | "missing"
   | "rate_limited"
   | "unknown";
