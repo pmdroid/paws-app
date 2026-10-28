@@ -72,6 +72,33 @@ const PLAN_TOOL = {
   },
 };
 
+const PREVIEW_TOOL = {
+  name: "show_preview",
+  description:
+    "Run the product with fixtures for a live human review in Paws. Commit your work and finish other checks first. The tool waits for Accept or changes; the app stops after one hour. A new commit needs a new preview.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["command", "port", "checklist"],
+    properties: {
+      command: {
+        type: "array",
+        minItems: 1,
+        maxItems: 32,
+        items: { type: "string" },
+        description: "Argv to start the app with fixture data, without a shell.",
+      },
+      port: { type: "integer", minimum: 1024, maximum: 65535 },
+      startPath: { type: "string", description: "Path to try, default /." },
+      checklist: { type: "array", minItems: 1, maxItems: 12, items: { type: "string" } },
+      checkId: {
+        type: "string",
+        description: "Preview check id from get_closeout, default live-preview.",
+      },
+    },
+  },
+};
+
 const ARTIFACT_TOOL = {
   name: "publish_artifact",
   description: "Publish a file from the workspace and return a link to share with the user.",
@@ -246,6 +273,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           TOOL,
           PLAN_TOOL,
           ARTIFACT_TOOL,
+          PREVIEW_TOOL,
           PULL_REQUEST_TOOL,
           POST_UPDATE_TOOL,
           GET_CLOSEOUT_TOOL,

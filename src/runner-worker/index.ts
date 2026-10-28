@@ -1,3 +1,4 @@
+import { runPreview, type PreviewReady } from "../live-preview";
 import { journalCaught } from "../journal";
 import { runProviderLogin } from "../runner-login-worker";
 import type { RunnerLoginUpdate } from "../runner-protocol";
@@ -256,6 +257,7 @@ export type RunnerWorkerEvent =
       type: "question";
       requestId: string;
       question: string;
+      preview?: PreviewReady;
       context?: string;
       options: readonly unknown[];
     }
@@ -264,6 +266,7 @@ export type RunnerWorkerEvent =
       RunnerEvent,
       {
         type:
+          | "preview_stopped"
           | "plan"
           | "pull_request"
           | "progress"
@@ -1123,6 +1126,58 @@ export async function executeRunnerCommand(
                 const allowed = updates.take(job.executionId);
                 if (allowed.posted) emit(parsed.data);
                 return allowed;
+              },
+            }
+          : undefined,
+      showPreview:
+        command.type === "run" && command.livePreview && options.answer
+          ? {
+              async show(request, context) {
+                const dirty = await invokeGit([
+                  "-C",
+                  worktree,
+                  "status",
+                  "--porcelain",
+                  "--untracked-files=normal",
+                ]);
+                if (dirty.trim())
+                  throw new Error(
+                    "Commit your work before show_preview. The preview must match a clean commit.",
+                  );
+                const head = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
+                // Services are assigned once per host, outside the agent's writable home.
+                const services = JSON.parse(
+                  readFileSync("/etc/paws/preview-services.json", "utf8"),
+                ) as string[];
+                waitingForAnswer++;
+                try {
+                  return await runPreview({
+                    request,
+                    worktree,
+                    head,
+                    services,
+                    path: agent.env?.PATH ?? process.env.PATH ?? "/usr/bin:/bin",
+                    lockRoot: "/tmp/paws-preview-services",
+                    signal: context.signal,
+                    stopped(id) {
+                      emit({ type: "preview_stopped", id });
+                    },
+                    async ready(preview, signal) {
+                      const requestId = randomUUID();
+                      emit({
+                        type: "question",
+                        requestId,
+                        question: "Review the live preview in Paws.",
+                        options: [],
+                        preview,
+                      });
+                      const answer = await options.answer!(requestId, signal);
+                      return answer.answer;
+                    },
+                  });
+                } finally {
+                  waitingForAnswer--;
+                }
               },
             }
           : undefined,

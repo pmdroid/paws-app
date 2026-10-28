@@ -1,3 +1,4 @@
+import { clickLivePreview } from "./live-preview-controls";
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
@@ -517,6 +518,7 @@ function findHeld(root: Element, held: HeldFocus): Element | null {
 function onClick(event: MouseEvent): void {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  if (clickLivePreview(event)) return;
   if (clickVisualReviewAsk(event, drawsLocally(), reload)) return;
   followLink(event, target);
   if (stopFromLinkAsk(event, reload)) return;

@@ -171,6 +171,7 @@ export const RunnerCommandSchema = z
     z.strictObject({
       ...common,
       type: z.literal("run"),
+      livePreview: z.literal(true).optional(),
       ...work,
       skillsInputId: z.number().int().min(0).max(20).optional(),
       hooks: z.array(RunnerHookSchema).max(20).optional(),

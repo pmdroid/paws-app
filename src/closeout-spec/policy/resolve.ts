@@ -198,6 +198,18 @@ function walk(
       state.items.push(item);
       continue;
     }
+    if (raw.kind === "preview") {
+      const paths = checkPathPatterns(raw.paths ?? []);
+      if (!paths.ok) return paths.message;
+      state.items.push({
+        id,
+        kind: "preview",
+        gate: "beforePR",
+        approval: "human",
+        ...(paths.paths.length ? { paths: paths.paths } : {}),
+      });
+      continue;
+    }
     if (raw.kind === "evidence") {
       const paths = checkPathPatterns(raw.paths ?? []);
       if (!paths.ok) return paths.message;

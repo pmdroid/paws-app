@@ -1,3 +1,14 @@
+import { setTimeout as previewDelay } from "node:timers/promises";
+import { PreviewReadySchema, type ReviewPreviewHook } from "../live-preview";
+import { askWithLink } from "./link-ask";
+import {
+  livePreviewForQuestion,
+  getLivePreview,
+  saveLivePreview,
+  endLivePreview,
+  livePreviewApprovals,
+  unacceptedLivePreview,
+} from "../db";
 import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
@@ -2734,6 +2745,7 @@ export class Orchestrator {
         pullRequest: this.pullRequestHook(item),
         postUpdate: this.updateHook(item),
         publishArtifact: this.artifactPublisher(item),
+        reviewPreview: this.previewHook(item, run.id),
         closeoutProgress: this.agentCloseoutHook(item, run.id),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
@@ -2927,6 +2939,35 @@ export class Orchestrator {
       if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
       if (after === null) return;
+      const outstanding =
+        verdict.result?.decision?.items.filter(
+          (check) => check.state !== "passed" && check.state !== "skipped",
+        ) ?? [];
+      const needsPreview =
+        outstanding.length > 0 && outstanding.every((check) => check.kind === "preview");
+      if (
+        !verdict.exhausted &&
+        fixRounds(this.db, item.id) < this.fixRoundLimit(item) &&
+        (needsPreview ||
+          (verdict.decision === "accepted" && unacceptedLivePreview(this.db, item.id, head)))
+      ) {
+        restart(this.db, after, {
+          reason: "review",
+          body: "Commit the changes, finish other checks, then call show_preview with the preview check id and fixture start command. A person must try the product and Accept in Paws. Approval is tied to the exact commit; do not change it afterward.",
+          now: this.now(),
+          jobKey: `preview-required:${item.id}:${head}:${after.version}`,
+        });
+        await this.flush();
+        return;
+      }
+      if (verdict.decision === "accepted" && unacceptedLivePreview(this.db, item.id, head)) {
+        await this.askCloseoutHelp(
+          after,
+          verdict.result,
+          "The live preview needs acceptance for this commit. Reply to restart the preview.",
+        );
+        return;
+      }
       if (verdict.decision === "accepted" && !verdict.exhausted) {
         const acceptedHead = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
         const mergeJob = acceptCloseout(this.db, {
@@ -3245,7 +3286,10 @@ export class Orchestrator {
       checkoutExclusions,
       candidate,
       published: () => publishedEvidence(this.db, item.id),
-      approvals: () => visualReviewApprovals(this.db, item.id, itemPathId(item)),
+      approvals: () => [
+        ...visualReviewApprovals(this.db, item.id, itemPathId(item)),
+        ...livePreviewApprovals(this.db, item.id, itemPathId(item)),
+      ],
       ...(fromCi.length > 0 ? { fromCi } : {}),
       ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
@@ -4391,6 +4435,78 @@ export class Orchestrator {
     };
     if (context !== null) keepTaskMergeSettings(this.db, item.id, settings, this.now());
     return settings;
+  }
+
+  private previewHook(item: WorkItemRecord, runId: string): ReviewPreviewHook {
+    return {
+      stopped: (id) => {
+        const record = getLivePreview(this.db, id);
+        if (record?.itemId === item.id) endLivePreview(this.db, id, this.now());
+      },
+      review: async (ready, context) => {
+        const preview = PreviewReadySchema.parse(ready);
+        this.assertJobCurrent(item.id);
+        context.signal.throwIfAborted();
+        const current = getWorkItem(this.db, item.id);
+        const existing = getLivePreview(this.db, preview.id);
+        if (existing && existing.itemId !== item.id) throw new Error("Preview owner is stale");
+        if (
+          !current ||
+          (!existing && current.state !== "running") ||
+          current.currentRunId !== runId ||
+          (!existing && preview.expiresAt <= this.now())
+        )
+          throw new Error("Preview owner is stale");
+        const opened = existing
+          ? { question: getQuestion(this.db, existing.questionId)! }
+          : immediate(this.db, () => {
+              saveCheckpoint(this.db, item.id, {
+                ...current.checkpoint,
+                phase: "running",
+                wipCommit: preview.head,
+              });
+              const asked = askWithLink(this.db, {
+                item: current,
+                runId,
+                kind: "preview",
+                head: preview.head,
+                title: "Try the product before the pull request opens",
+                detail: `[Open preview](${preview.url})\n\n${preview.checklist.map((line) => `- ${line}`).join("\n")}`,
+                publicUrl: this.options.publicUrl ?? null,
+                now: this.now(),
+              });
+              saveLivePreview(this.db, item.id, asked.question.id, preview);
+              return asked;
+            });
+        await this.flush();
+        try {
+          while (true) {
+            context.signal.throwIfAborted();
+            const previewAsk = getLinkAsk(this.db, opened.question.id);
+            if (previewAsk?.decision === "approve")
+              return `Live preview accepted for ${preview.head}. End your turn without further changes. Any new commit requires another preview.`;
+            if (
+              preview.expiresAt <= this.now() ||
+              livePreviewForQuestion(this.db, opened.question.id) === null
+            ) {
+              this.askedRuns.add(runId);
+              return "Preview stopped or expired. End your turn now. A reply in Linear or Request changes in Paws restarts it.";
+            }
+            const latest = getWorkItem(this.db, item.id);
+            if (
+              previewAsk?.closedAt !== null ||
+              !latest ||
+              latest.cancelRequested ||
+              latest.state !== "awaiting_input"
+            )
+              return "Preview review ended. End your turn now; Paws resumes you with any requested changes.";
+            await previewDelay(250, undefined, { signal: context.signal });
+          }
+        } finally {
+          endLivePreview(this.db, preview.id, this.now());
+        }
+      },
+    };
   }
 
   private askHook(item: WorkItemRecord, runId: string): AskTeamHook {

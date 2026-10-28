@@ -43,7 +43,7 @@ export function renderMarkup(root: globalThis.Element, html: string): void {
         content
       ) : (
         <div
-          key={++revision}
+          key={html.includes("data-live-preview") ? "live-preview" : ++revision}
           className={
             root.classList.contains("settings-section")
               ? SETTINGS_SECTION_LAYOUT

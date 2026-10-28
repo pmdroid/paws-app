@@ -39,6 +39,8 @@ export type {
   PolicyCommand,
   PolicyDocument,
   PolicyEvidence,
+  PolicyPreview,
+  ResolvedPreview,
   PolicyFile,
   PolicyIdentity,
   PolicyImport,

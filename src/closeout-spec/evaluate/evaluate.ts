@@ -264,6 +264,23 @@ function judgeItem(
   if (isUnsupported(item)) {
     return row(item, "unsupported", `kind ${item.kind} is not supported`);
   }
+  if (item.kind === "preview") {
+    const accepted = request.approvals?.some(
+      (approval) =>
+        approval.task === taskOf(request) &&
+        approval.checkId === item.id &&
+        approval.commit === request.head &&
+        approval.approvedBy.trim() !== "" &&
+        approval.evidenceIds.includes(`preview:${request.head}`),
+    );
+    return row(
+      item,
+      accepted ? "passed" : "missing",
+      accepted
+        ? "live preview accepted at this commit"
+        : `Call show_preview with checkId "${item.id}". Accept in Paws before opening the pull request.`,
+    );
+  }
   if (item.kind === "evidence") {
     return judgeEvidence(item, request.published ?? [], request.approvals ?? [], taskOf(request));
   }

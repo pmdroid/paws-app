@@ -1128,3 +1128,30 @@ a.visual-review-frame:focus-visible {
 .risk-lists textarea {
   font-family: var(--font-mono, ui-monospace, monospace);
 }
+
+.live-preview-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+}
+.live-preview-stage {
+  overflow-x: auto;
+  min-width: 0;
+  border: 2px solid var(--border);
+  background: var(--background);
+}
+.live-preview-frame {
+  display: block;
+  width: 100%;
+  height: min(65vh, 720px);
+  min-height: 24rem;
+  margin-inline: auto;
+  border: 0;
+  background: white;
+}
+@media (min-width: 1100px) {
+  .live-preview-layout {
+    grid-template-columns: minmax(0, 1fr) 16rem;
+  }
+}

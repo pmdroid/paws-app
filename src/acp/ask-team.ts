@@ -1,3 +1,5 @@
+import { PreviewRequestSchema } from "../live-preview";
+import type { ShowPreviewHook } from "../live-preview";
 import { journalCaught } from "../journal";
 import { createServer, type Server, type Socket } from "node:net";
 import { chmod, mkdir, unlink } from "node:fs/promises";
@@ -161,6 +163,7 @@ interface HostToolBridgeOptions {
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
   publishArtifact?: PublishArtifactHook;
+  showPreview?: ShowPreviewHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
@@ -257,6 +260,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.hook ? "ask_team" : "",
             options.updatePlan ? "update_plan" : "",
             options.publishArtifact ? "publish_artifact" : "",
+            options.showPreview ? "show_preview" : "",
             options.pullRequest ? "open_pull_request" : "",
             options.postUpdate ? "post_update" : "",
             closeout ? "get_closeout" : "",
@@ -395,6 +399,18 @@ async function handleConnection(
       socket.end(
         `${JSON.stringify({ id, answer: result.posted ? "Posted." : `Too soon. The next update is allowed in ${result.waitSeconds} seconds.` })}\n`,
       );
+      return;
+    }
+    if (parsed.tool === "show_preview") {
+      if (!options.showPreview) throw new Error("show_preview is unavailable on this runner");
+      const request = PreviewRequestSchema.parse(parsed.arguments ?? {});
+      options.onHookStart?.();
+      try {
+        const answer = await options.showPreview.show(request, { signal: options.signal });
+        if (!socket.destroyed) socket.end(`${JSON.stringify({ id, answer })}\n`);
+      } finally {
+        options.onHookEnd?.();
+      }
       return;
     }
     if (parsed.tool === "publish_artifact") {

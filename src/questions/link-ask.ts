@@ -15,6 +15,7 @@ import type { StoredQuestion } from "./store";
 export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
   bypass: "Review bypass",
   screenshots: "Review screenshots",
+  preview: "Review in Paws",
   risk: "Review risk",
   question: "Answer question",
   rounds: "Answer question",
@@ -25,6 +26,7 @@ export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
 export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
   bypass: "closeout",
   screenshots: "visual-review",
+  preview: "live-preview",
   risk: "risk",
   question: "question",
   rounds: "review-rounds",
@@ -33,6 +35,7 @@ export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
 
 /** The last line of the Linear message: what a reply does, and what it never does. */
 export const LINK_ASK_REPLY: Record<LinkAskKind, string> = {
+  preview: "Reply here to request changes. A Linear reply cannot accept a live preview.",
   bypass: "Reply here to send the agent guidance instead. A reply here cannot bypass a check.",
   screenshots:
     "Reply here to send the agent the changes you want instead. A reply here cannot approve the screens.",
@@ -52,6 +55,8 @@ export function linkAskTitle(kind: LinkAskKind, head: string): string {
   switch (kind) {
     case "bypass":
       return `Closeout needs your decision on ${commit}.`;
+    case "preview":
+      return `Try the live preview of ${commit} and accept it in Paws.`;
     case "screenshots":
       return `The screens of ${commit} need your visual review.`;
     case "risk":
@@ -74,7 +79,7 @@ export function linkAskBody(input: {
 }): string {
   return [
     `**${input.title}**${input.detail.trim() ? `\n${input.detail.trim()}` : ""}`,
-    `Decide in Paws: ${input.link}`,
+    input.kind === "preview" ? `[Review in Paws](${input.link})` : `Decide in Paws: ${input.link}`,
     LINK_ASK_REPLY[input.kind],
   ].join("\n\n");
 }
@@ -101,6 +106,7 @@ function decided(ask: LinkAsk, decision: LinkAskDecision): string {
   return {
     bypass: `bypassed the failed checks on ${commit} in Paws`,
     screenshots: `accepted the screens of ${commit} in Paws`,
+    preview: `accepted the live preview of ${commit} in Paws`,
     risk: `approved the high-risk changes in ${commit} in Paws`,
     question: "answered in Paws",
     rounds: "answered in Paws",

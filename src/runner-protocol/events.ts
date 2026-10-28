@@ -1,3 +1,4 @@
+import { PreviewReadySchema } from "./preview";
 import { z } from "zod";
 import { RUNNER_HANDOVER_FAILURES } from "./commands";
 import { RunnerArtifactSchema } from "./artifacts";
@@ -63,6 +64,7 @@ export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
 ]);
 
 export const RunnerEventSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("preview_stopped"), id: z.string().uuid() }),
   z.strictObject({
     type: z.literal("artifact"),
     artifact: RunnerArtifactSchema,
@@ -123,6 +125,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("question"),
     text: z.string().min(1).max(16384),
+    preview: PreviewReadySchema.optional(),
     context: z.string().min(1).max(16384).optional(),
     options: z
       .array(

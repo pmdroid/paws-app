@@ -1,3 +1,4 @@
+import { livePreviewForQuestion } from "../../../db";
 import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
@@ -1281,6 +1282,18 @@ function withRiskDetail(
   };
 }
 
+function previewDetail(db: Database, previewQuestionId: string) {
+  const preview = livePreviewForQuestion(db, previewQuestionId);
+  return preview && preview.expiresAt > Date.now()
+    ? {
+        url: preview.url,
+        checklist: preview.checklist,
+        frameable: preview.frameable,
+        expiresAt: preview.expiresAt,
+      }
+    : undefined;
+}
+
 function questionsFor(
   db: Database,
   records: readonly WorkItemRecord[],
@@ -1308,6 +1321,7 @@ function questionsFor(
       ...(linkAsk && linkAsk.closedAt === null
         ? {
             linkAsk: {
+              ...(linkAsk.kind === "preview" ? { preview: previewDetail(db, question.id) } : {}),
               kind: linkAsk.kind,
               head: linkAsk.headCommit,
               title: linkAsk.title,

@@ -316,9 +316,11 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   const max = prepared.policy.retry?.maxFailedAttemptsPerItem ?? 3;
   const scope = prepared.policy.retry?.scope ?? null;
   const status = (item: Listed) =>
-    item.evidence
-      ? evidenceStatus(item.evidence, prepared.published)
-      : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
+    item.kind === "preview"
+      ? "pending"
+      : item.evidence
+        ? evidenceStatus(item.evidence, prepared.published)
+        : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
   const required = prepared.required.map((item) => {
     const state = memory.get(item.id);
     const failures = state?.failures ?? 0;
@@ -352,6 +354,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
     .filter(
       (item) =>
         item.kind !== "review" &&
+        item.kind !== "preview" &&
         (item.evidence
           ? status(item) === "missing"
           : runnable(memory.get(item.id), item.kind === "setup" ? 2 : max)),
@@ -484,6 +487,8 @@ async function runId(
   if (known === undefined) return `No closeout check ${id}. Call get_closeout.`;
   const item = required.find((entry) => entry.id === id);
   if (item === undefined) return `Check ${id} is not required for the current changes.`;
+  if (item.kind === "preview")
+    return `Call show_preview with checkId "${id}". A person accepts the running product in Paws.`;
   if (item.kind === "review") {
     return `Review ${id} requires a different model. An independent reviewer runs it after this turn.`;
   }
@@ -650,6 +655,16 @@ function describeItem(item: ResolvedSetup | ResolvedRequirement, paths: readonly
       hint: item.id,
       differentModel: false,
       ...(item.paths !== undefined ? { paths: item.paths } : {}),
+      matched,
+    };
+  }
+  if (item.kind === "preview") {
+    return {
+      id: item.id,
+      kind: item.kind,
+      hint: `Call show_preview with checkId "${item.id}". A person must accept in Paws.`,
+      differentModel: false,
+      ...(item.paths ? { paths: item.paths } : {}),
       matched,
     };
   }

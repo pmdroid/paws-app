@@ -1,3 +1,4 @@
+import { livePreviewPanel } from "./live-preview";
 import type {
   LinkAskKind,
   StatusBypassAsk,
@@ -12,6 +13,7 @@ import { esc } from "./format";
 export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
   bypass: "Review bypass",
   screenshots: "Review screenshots",
+  preview: "Review in Paws",
   risk: "Review risk",
   question: "Answer question",
   rounds: "Answer question",
@@ -22,6 +24,7 @@ export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
 export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
   bypass: "closeout",
   screenshots: "visual-review",
+  preview: "live-preview",
   risk: "risk",
   question: "question",
   rounds: "review-rounds",
@@ -31,6 +34,7 @@ export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
 const HEADINGS: Record<LinkAskKind, string> = {
   bypass: "Closeout bypass",
   screenshots: "Visual review",
+  preview: "Live preview",
   risk: "Risk",
   question: "Question",
   rounds: "Review rounds",
@@ -40,6 +44,7 @@ const HEADINGS: Record<LinkAskKind, string> = {
 const NOTE_LABELS: Record<LinkAskKind, string> = {
   bypass: "Reason for the bypass, or guidance for the agent",
   screenshots: "What to change",
+  preview: "What to change",
   risk: "Note, or what to change",
   question: "Your answer",
   rounds: "Note for the agent (optional)",
@@ -50,6 +55,7 @@ const NOTE_LABELS: Record<LinkAskKind, string> = {
 const LINEAR_REPLY: Record<LinkAskKind, string> = {
   bypass: "A reply in Linear only sends the agent guidance.",
   screenshots: "A reply in Linear only sends the agent guidance.",
+  preview: "A reply in Linear requests changes. Accept the preview here in Paws.",
   risk: "A reply in Linear only requests changes and never approves.",
   question: "A reply in Linear only sends the agent guidance.",
   rounds: "A reply in Linear counts as Rethink the approach, with the reply as the note.",
@@ -59,6 +65,7 @@ const LINEAR_REPLY: Record<LinkAskKind, string> = {
 const APPROVE: Record<Exclude<LinkAskKind, "question" | "rounds">, string> = {
   bypass: "Bypass",
   screenshots: "Accept screens",
+  preview: "Accept",
   risk: "Approve",
   rule: "Approve",
 };
@@ -91,8 +98,8 @@ export function linkAskCard(question: StatusQuestion): string {
       ? `<button class="btn primary" type="submit" name="decision" value="answer"${disabled}>Send answer</button>`
       : ask.kind === "rounds"
         ? `<button class="btn primary" type="submit" name="decision" value="rethink"${disabled}>Rethink the approach</button><button class="btn" type="submit" name="decision" value="continue"${disabled}>Keep going</button><button class="btn" type="submit" name="decision" value="stop"${disabled}>Stop</button>`
-        : `<button class="btn primary" type="submit" name="decision" value="approve"${disabled}>${APPROVE[ask.kind]}</button><button class="btn" type="submit" name="decision" value="changes"${disabled}>${ask.kind === "bypass" ? "Send guidance" : ask.kind === "rule" ? "Send back" : "Request changes"}</button>`;
-  return `<section id="${LINK_ASK_ANCHORS[ask.kind]}" class="closeout-result blocked link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><h2 id="link-ask-${esc(id)}">${HEADINGS[ask.kind]}</h2><p><b>${esc(ask.title)}</b></p>${ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}${ask.rounds ? reviewRounds(ask.rounds) : ""}<p class="muted">Commit <span class="mono">${esc(ask.head.slice(0, 7))}</span>. ${LINK_ASK_ANSWERERS} ${LINEAR_REPLY[ask.kind]}</p><form class="link-ask-form" data-link-ask="${esc(id)}"><label class="field"><span>${NOTE_LABELS[ask.kind]}</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><div class="row wrap">${buttons}</div><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
+        : `<button class="btn primary" type="submit" name="decision" value="approve"${ask.kind === "preview" && !ask.preview ? ' disabled=""' : disabled}>${APPROVE[ask.kind]}</button><button class="btn" type="submit" name="decision" value="changes"${disabled}>${ask.kind === "bypass" ? "Send guidance" : ask.kind === "rule" ? "Send back" : "Request changes"}</button>`;
+  return `<section id="${LINK_ASK_ANCHORS[ask.kind]}" class="closeout-result blocked link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><h2 id="link-ask-${esc(id)}">${HEADINGS[ask.kind]}</h2><p><b>${esc(ask.title)}</b></p>${ask.kind === "preview" ? livePreviewPanel(ask.preview) : ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}${ask.rounds ? reviewRounds(ask.rounds) : ""}<p class="muted">Commit <span class="mono">${esc(ask.head.slice(0, 7))}</span>. ${LINK_ASK_ANSWERERS} ${LINEAR_REPLY[ask.kind]}</p><form class="link-ask-form" data-link-ask="${esc(id)}"><label class="field"><span>${NOTE_LABELS[ask.kind]}</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><div class="row wrap">${buttons}</div><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
 }
 
 /**
@@ -110,7 +117,7 @@ function ruleCard(question: StatusQuestion, rules: StatusBypassAsk): string {
         `<div class="bypass-check"><p><b>${esc(rule.id)}</b> <span class="tag failed">Failed</span></p>${rule.finding ? `<div class="bypass-finding">${esc(rule.finding)}</div>` : ""}</div>`,
     )
     .join("");
-  return `<section id="${LINK_ASK_ANCHORS.rule}" class="card link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><div class="row wrap"><span class="tag now">Needs you</span><h2 id="link-ask-${esc(id)}">${HEADINGS.rule}</h2></div><p><b>${esc(ask.title)}</b></p>${ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}<form class="link-ask-form" data-link-ask="${esc(id)}">${list}<label class="field"><span>${NOTE_LABELS.rule}</span><span class="muted">Required. Saved with your name in Audit history and, on Approve, in the pull request body.</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><p class="muted">${LINK_ASK_ANSWERERS} ${LINEAR_REPLY.rule}</p><div class="row wrap"><button class="btn primary" type="submit" name="decision" value="approve"${busy}>${APPROVE.rule}</button><button class="btn" type="submit" name="decision" value="changes"${busy}>Send back</button></div><p class="muted"><b>Approve</b> accepts the break for commit <span class="mono">${esc(head)}</span> and policy <span class="mono">${esc(shortDigest(rules.policyDigest))}</span> only; the next commit checks the rule again. <b>Send back</b> hands the finding to the agent.</p><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
+  return `<section id="${LINK_ASK_ANCHORS.rule}" class="card link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><div class="row wrap"><span class="tag now">Needs you</span><h2 id="link-ask-${esc(id)}">${HEADINGS.rule}</h2></div><p><b>${esc(ask.title)}</b></p>${ask.kind === "preview" ? livePreviewPanel(ask.preview) : ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}<form class="link-ask-form" data-link-ask="${esc(id)}">${list}<label class="field"><span>${NOTE_LABELS.rule}</span><span class="muted">Required. Saved with your name in Audit history and, on Approve, in the pull request body.</span><textarea name="note" rows="3" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><p class="muted">${LINK_ASK_ANSWERERS} ${LINEAR_REPLY.rule}</p><div class="row wrap"><button class="btn primary" type="submit" name="decision" value="approve"${busy}>${APPROVE.rule}</button><button class="btn" type="submit" name="decision" value="changes"${busy}>Send back</button></div><p class="muted"><b>Approve</b> accepts the break for commit <span class="mono">${esc(head)}</span> and policy <span class="mono">${esc(shortDigest(rules.policyDigest))}</span> only; the next commit checks the rule again. <b>Send back</b> hands the finding to the agent.</p><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
 }
 
 /** Each round with its commit and finding count, the findings still open, and what each choice does. */
@@ -164,7 +171,7 @@ function bypassCard(question: StatusQuestion, bypass: StatusBypassAsk): string {
   const passed = bypass.passed.length
     ? `<p class="row wrap"><span class="tag passed">Passed</span> <span>${esc(bypass.passed.join(", "))}</span></p>`
     : "";
-  return `<section id="closeout" class="card link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><div class="row wrap"><span class="tag now">Needs you</span><h2 id="link-ask-${esc(id)}">Closeout needs your help</h2></div>${ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}<form class="link-ask-form" data-link-ask="${esc(id)}" data-bypass="${esc(ask.head)}">${checks}${passed}<label class="field"><span>Guidance for the agent instead</span><textarea name="note" rows="2" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><p class="muted">${LINK_ASK_ANSWERERS} A reply in Linear never bypasses a check.</p><div class="row wrap"><button class="btn primary" type="submit" name="decision" value="approve" data-bypass-submit=""${busy || (chosen.size === 0 ? ' disabled=""' : "")}>${esc(bypassLabel(chosen.size, ask.head))}</button><button class="btn" type="submit" name="decision" value="changes"${busy}>Send guidance instead</button><details><summary class="btn">Stop</summary><p>Stop this item and keep its branch?</p><button class="btn" type="button" data-link-ask-stop="${esc(question.itemId)}"${busy}>Confirm stop</button></details></div><p class="muted">The bypass covers commit <span class="mono">${esc(head)}</span> and policy <span class="mono">${esc(shortDigest(bypass.policyDigest))}</span> only. A new commit runs every check again.</p><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
+  return `<section id="closeout" class="card link-ask" aria-labelledby="link-ask-${esc(id)}"><div class="min-w-0"><div class="row wrap"><span class="tag now">Needs you</span><h2 id="link-ask-${esc(id)}">Closeout needs your help</h2></div>${ask.kind === "preview" ? livePreviewPanel(ask.preview) : ask.detail ? `<p>${esc(ask.detail)}</p>` : ""}<form class="link-ask-form" data-link-ask="${esc(id)}" data-bypass="${esc(ask.head)}">${checks}${passed}<label class="field"><span>Guidance for the agent instead</span><textarea name="note" rows="2" maxlength="10000">${esc(drafts.get(id) ?? "")}</textarea></label><p class="muted">${LINK_ASK_ANSWERERS} A reply in Linear never bypasses a check.</p><div class="row wrap"><button class="btn primary" type="submit" name="decision" value="approve" data-bypass-submit=""${busy || (chosen.size === 0 ? ' disabled=""' : "")}>${esc(bypassLabel(chosen.size, ask.head))}</button><button class="btn" type="submit" name="decision" value="changes"${busy}>Send guidance instead</button><details><summary class="btn">Stop</summary><p>Stop this item and keep its branch?</p><button class="btn" type="button" data-link-ask-stop="${esc(question.itemId)}"${busy}>Confirm stop</button></details></div><p class="muted">The bypass covers commit <span class="mono">${esc(head)}</span> and policy <span class="mono">${esc(shortDigest(bypass.policyDigest))}</span> only. A new commit runs every check again.</p><p class="muted" role="status">${esc(messages.get(id) ?? "")}</p></form></div></section>`;
 }
 
 /** "Approve 7f65200". */

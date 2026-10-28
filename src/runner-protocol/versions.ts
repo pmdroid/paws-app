@@ -27,3 +27,6 @@ export const CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 export const REVIEW_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 47];
 /** First runner release that rebases a candidate onto its moved branch and pushes it again. */
 export const CANDIDATE_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 48];
+
+/** First runner release with isolated live product previews. */
+export const LIVE_PREVIEW_RUNNER_VERSION: RunnerVersion = [0, 1, 49];

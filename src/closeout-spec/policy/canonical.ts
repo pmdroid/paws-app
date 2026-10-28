@@ -104,6 +104,12 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
       item.paths,
     );
   }
+  if (item.kind === "preview") {
+    return withPaths(
+      { id: item.id, kind: item.kind, gate: item.gate, approval: "human" },
+      item.paths,
+    );
+  }
   if (item.kind === "evidence") {
     return withPaths(
       {

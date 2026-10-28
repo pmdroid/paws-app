@@ -60,6 +60,7 @@ import {
   REVIEW_COMMAND_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNTIMES_RUNNER_VERSION,
+  LIVE_PREVIEW_RUNNER_VERSION,
   SESSION_RESUME_RUNNER_VERSION,
   type RunnerCommand,
   type RunnerResult,
@@ -1255,6 +1256,18 @@ export function createRemoteAgentRunner(options: {
                       ...(input.role !== "reviewer" && input.checkpoint === false
                         ? { checkpoint: false as const }
                         : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.reviewPreview &&
+                      versionAtLeast(
+                        db
+                          .query<{ version: string | null }, [string]>(
+                            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                          )
+                          .get(selected.id)?.version,
+                        LIVE_PREVIEW_RUNNER_VERSION,
+                      )
+                        ? { livePreview: true as const }
+                        : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
                       ...(restorePlan?.eligible
                         ? { restoreSession: restorePlan.restoreSession }
@@ -1362,6 +1375,7 @@ export function createRemoteAgentRunner(options: {
           let cursor = attached?.cursor ?? 0;
           let complete: RunnerResult | null = null;
           let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
+          let unansweredPreview: number | null = null;
           let heardAt = now();
           const liveness = () =>
             db
@@ -1635,6 +1649,7 @@ export function createRemoteAgentRunner(options: {
                 });
                 signal.throwIfAborted();
               }
+              if (event.type === "preview_stopped") input.reviewPreview?.stopped?.(event.id);
               if (event.type === "pull_request")
                 await input.pullRequest?.update({ title: event.title, body: event.body });
               if (event.type === "closeout") await input.closeoutProgress?.record(event.progress);
@@ -1657,18 +1672,28 @@ export function createRemoteAgentRunner(options: {
                   },
                   origin,
                 );
-              if (event.type === "question") {
+              if (
+                event.type === "question" &&
+                !(
+                  event.preview &&
+                  results.answered(assigned.runId, assigned.generation, row.sequence) !== null
+                )
+              ) {
+                if (event.preview) unansweredPreview = row.sequence;
                 if (question) throw new Error("Remote runner sent overlapping questions");
-                if (!input.askTeam) throw new Error("Remote question channel is unavailable");
+                if (event.preview ? !input.reviewPreview : !input.askTeam)
+                  throw new Error("Remote question channel is unavailable");
                 publishedEffects = true;
                 asked = true;
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
                 const currentCommand = assigned;
                 question = (async () => {
-                  const answer = await input.askTeam!.ask(
-                    { question: event.text, options: event.options, context: event.context },
-                    { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
-                  );
+                  const answer = event.preview
+                    ? { answer: await input.reviewPreview!.review(event.preview, { signal }) }
+                    : await input.askTeam!.ask(
+                        { question: event.text, options: event.options, context: event.context },
+                        { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
+                      );
                   signal.throwIfAborted();
                   results.answer({
                     runId: currentCommand.runId,
@@ -1676,6 +1701,13 @@ export function createRemoteAgentRunner(options: {
                     sequence: row.sequence,
                     answer: answer.answer,
                   });
+                  if (event.preview) {
+                    unansweredPreview = null;
+                    db.run(
+                      "UPDATE runner_work SET consumed_sequence=? WHERE run_id=? AND generation=?",
+                      [cursor, assigned.runId, assigned.generation],
+                    );
+                  }
                   await emit({
                     type: "ask_team",
                     question: event.text,
@@ -1693,7 +1725,7 @@ export function createRemoteAgentRunner(options: {
               }
               cursor = row.sequence;
               db.run("UPDATE runner_work SET consumed_sequence=? WHERE run_id=? AND generation=?", [
-                cursor,
+                unansweredPreview === null ? cursor : Math.min(cursor, unansweredPreview - 1),
                 assigned.runId,
                 assigned.generation,
               ]);
@@ -1768,7 +1800,11 @@ export function createRemoteAgentRunner(options: {
           if (!complete) throw new Error("Remote run timed out");
           // A handover can stop the agent while Paws still posts its question, whether the
           // handover then succeeds or fails after the interrupt; the question stays either way.
-          if (question && (complete.handedOver || complete.handoverFailure)) await question;
+          if (
+            question &&
+            (complete.handedOver || complete.handoverFailure || unansweredPreview !== null)
+          )
+            await question;
           if (questionError) throw questionError;
           if (question) throw new Error("Remote run completed with an unanswered question");
           if (assigned.type === "task" && (complete.candidateSha || complete.reviewText))

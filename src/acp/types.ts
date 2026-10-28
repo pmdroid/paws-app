@@ -1,3 +1,4 @@
+import type { ShowPreviewHook, ReviewPreviewHook } from "../live-preview";
 import type { GitCommitIdentity, GitCommitPolicy, HookEvent, WorkspaceHook } from "../core";
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
@@ -148,6 +149,8 @@ export interface RunAgentOptions {
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
   publishArtifact?: PublishArtifactHook;
+  showPreview?: ShowPreviewHook;
+  reviewPreview?: ReviewPreviewHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;
   /** When false, a dirty worktree is left uncommitted. Defaults to committing. */

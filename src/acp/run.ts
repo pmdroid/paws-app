@@ -202,7 +202,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       options.updatePlan ||
       options.pullRequest ||
       options.postUpdate ||
-      options.publishArtifact) &&
+      options.publishArtifact ||
+      options.showPreview) &&
     options.readOnly !== true
       ? await installCloseoutStopHook({
           agent: profile.agent,
@@ -374,7 +375,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       options.updatePlan ||
       options.pullRequest ||
       options.postUpdate ||
-      options.publishArtifact
+      options.publishArtifact ||
+      options.showPreview
     ) {
       bridge = await startHostToolBridge({
         socketPath,
@@ -383,6 +385,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         pullRequest: options.pullRequest,
         postUpdate: options.postUpdate,
         publishArtifact: options.publishArtifact,
+        showPreview: options.showPreview,
         ...(options.closeoutProgress ? { closeoutProgress: options.closeoutProgress } : {}),
         artifactLimits: options.artifactLimits,
         context: {

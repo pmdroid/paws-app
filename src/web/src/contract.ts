@@ -330,6 +330,7 @@ export interface StatusQuestion {
 export const LINK_ASK_KINDS = [
   "bypass",
   "screenshots",
+  "preview",
   "risk",
   "question",
   "rounds",
@@ -338,7 +339,14 @@ export const LINK_ASK_KINDS = [
 export type LinkAskKind = (typeof LINK_ASK_KINDS)[number];
 
 /** A decision a signed-in person makes on the item page. Linear carries its `link`. */
+export interface StatusLivePreview {
+  url: string;
+  checklist: string[];
+  frameable: boolean;
+  expiresAt: number;
+}
 export interface StatusLinkAsk {
+  preview?: StatusLivePreview;
   kind: LinkAskKind;
   /** The head commit the decision is bound to. A new head closes the ask. */
   head: string;
@@ -1713,6 +1721,22 @@ function readLinkAsk(input: unknown, path: string): StatusLinkAsk {
       ? {}
       : { rounds: readReviewRounds(body.rounds, `${path}.rounds`) }),
     ...(body.risk === undefined ? {} : { risk: readRiskAsk(body.risk, `${path}.risk`) }),
+    ...(body.preview === undefined
+      ? {}
+      : { preview: readLivePreview(body.preview, `${path}.preview`) }),
+  };
+}
+
+function readLivePreview(input: unknown, path: string): StatusLivePreview {
+  const body = object(input, path);
+  const url = text(body, "url", path);
+  if (!/^https:\/\/paws-preview-[1-9][0-9]*\.[a-z0-9-]+\.ts\.net\//.test(url))
+    throw new Error("Invalid preview URL");
+  return {
+    url,
+    checklist: stringArray(body, "checklist", path),
+    frameable: boolean(body, "frameable", path),
+    expiresAt: positiveInteger(body, "expiresAt", path),
   };
 }
 

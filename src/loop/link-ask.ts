@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyLinearTurns,
+  livePreviewForQuestion,
   applyWorkItemEvent,
   approveCloseoutBypassChecks,
   auditWorkspaceAccess,
@@ -225,6 +226,11 @@ export function decideLinkAsk(
     if (LINK_ASK_NOTE_REQUIRED.has(input.decision) && !input.note) return "rejected";
     if (input.decision === "stop" && linkAsk.kind === "risk")
       return stopRiskAsk(db, linkAsk, item, input);
+    if (linkAsk.kind === "preview" && input.decision === "approve") {
+      const preview = livePreviewForQuestion(db, question.id);
+      if (!preview || preview.expiresAt <= now || preview.head !== item.checkpoint?.wipCommit)
+        return "rejected";
+    }
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
     // Approving a rule break needs a reason; it covers every rule the ask holds.
     const approvingRule = linkAsk.kind === "rule" && input.decision === "approve";
@@ -313,6 +319,11 @@ export function decideLinkAsk(
     // The approval binds to the ask's head; it never goes to the agent.
     if (input.decision === "approve" && linkAsk.kind === "risk") {
       approveRisk(db, linkAsk, current, now);
+      return "answered";
+    }
+    if (input.decision === "approve" && linkAsk.kind === "preview") {
+      // The implementer is still waiting in show_preview. Resume that same call.
+      if (current.state === "awaiting_input") applyWorkItemEvent(db, current.id, "answer_received");
       return "answered";
     }
     if (input.decision === "approve" && effects[linkAsk.kind]?.(linkAsk, current, now))

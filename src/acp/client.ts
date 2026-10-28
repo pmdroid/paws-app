@@ -1,3 +1,4 @@
+import type { ShowPreviewHook } from "../live-preview";
 import type { AgentProfile } from "../config";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -20,6 +21,7 @@ export type AcpRunnerOptions = {
   env?: NodeJS.ProcessEnv;
   askTeam?: AskTeamHook;
   publishArtifact?: PublishArtifactHook;
+  showPreview?: ShowPreviewHook;
   artifactLimits?: ArtifactLimits;
 };
 
@@ -60,6 +62,7 @@ export function createAcpRunner(defaults: AcpRunnerOptions = {}): AcpRunner {
           signal: controller.signal,
           askTeam: input.askTeam ?? defaults.askTeam,
           publishArtifact: input.publishArtifact ?? defaults.publishArtifact,
+          showPreview: input.showPreview ?? defaults.showPreview,
           artifactLimits: input.artifactLimits ?? defaults.artifactLimits,
           onEvent: async (event) => {
             if (event.type === "session_started") {

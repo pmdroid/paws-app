@@ -1,7 +1,14 @@
 import type { Database } from "bun:sqlite";
 
 /** What a link ask wants a signed-in person to decide on the item page. */
-export type LinkAskKind = "bypass" | "screenshots" | "risk" | "question" | "rounds" | "rule";
+export type LinkAskKind =
+  | "bypass"
+  | "screenshots"
+  | "risk"
+  | "question"
+  | "rounds"
+  | "rule"
+  | "preview";
 
 export const LINK_ASK_KINDS: readonly LinkAskKind[] = [
   "bypass",
@@ -10,6 +17,7 @@ export const LINK_ASK_KINDS: readonly LinkAskKind[] = [
   "question",
   "rounds",
   "rule",
+  "preview",
 ];
 
 /**
@@ -26,6 +34,7 @@ export type LinkAskDecision = "approve" | "changes" | "answer" | "rethink" | "co
 export const LINK_ASK_DECISIONS: Record<LinkAskKind, readonly LinkAskDecision[]> = {
   bypass: ["approve", "changes"],
   screenshots: ["approve", "changes"],
+  preview: ["approve", "changes"],
   risk: ["approve", "changes", "stop"],
   question: ["answer"],
   rounds: ["rethink", "continue", "stop"],

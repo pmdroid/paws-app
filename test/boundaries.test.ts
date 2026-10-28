@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "live-preview",
   "webhook-body",
   "journal",
   "onboarding",
@@ -90,12 +91,21 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   credentials: ["journal", "db"],
   slack: ["journal", "config", "credentials", "webhook-body"],
   core: [],
+  "live-preview": ["process", "runner-protocol"],
   db: ["journal", "core", "runner-protocol"],
   linear: ["journal", "core", "credentials", "webhook-body"],
   intake: ["journal", "core", "db", "linear"],
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
-  acp: ["journal", "core", "config", "process", "worktree-checkout", "closeout-spec"],
+  acp: [
+    "live-preview",
+    "journal",
+    "core",
+    "config",
+    "process",
+    "worktree-checkout",
+    "closeout-spec",
+  ],
   closeout: ["journal", "core", "closeout-spec"],
   "closeout-spec": ["journal", "core", "worktree-checkout"],
   github: ["journal", "core", "process", "webhook-body"],
@@ -127,6 +137,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "agent-catalog": ["journal", "db"],
   host: ["journal", "core", "db"],
   loop: [
+    "live-preview",
     "journal",
     "workspace",
     "decisions",
@@ -186,6 +197,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-health-runtime",
   ],
   "runner-worker": [
+    "live-preview",
     "journal",
     "closeout-spec",
     "runner-login-worker",

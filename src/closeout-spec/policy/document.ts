@@ -45,6 +45,14 @@ export function parsePolicy(text: string): ParsedPolicy {
     }
     return { ok: false, message: "invalid YAML" };
   }
+  // The preview shorthand in closeout.yaml uses `type` and defaults the gate.
+  if (isRecord(value) && Array.isArray(value.items)) {
+    value.items = value.items.map((item) => {
+      if (!isRecord(item) || item.type !== "preview" || item.kind !== undefined) return item;
+      const { type: _type, ...fields } = item;
+      return { ...fields, kind: "preview", gate: fields.gate ?? "beforePR" };
+    });
+  }
   const schemaError = schemaMessage(value);
   if (schemaError !== undefined) return { ok: false, message: schemaError };
   try {
@@ -246,6 +254,15 @@ function decodeItem(value: unknown): PolicyItem {
       item.minChangedLines = expectInt(value.minChangedLines);
     if (paths !== undefined) item.paths = paths;
     return item;
+  }
+  if (value.kind === "preview") {
+    return {
+      id: value.id,
+      kind: "preview",
+      gate: "beforePR",
+      approval: "human",
+      ...(paths ? { paths } : {}),
+    };
   }
   if (value.kind === "evidence") {
     const item: PolicyEvidence = { id: value.id, kind: "evidence", gate: "beforePR" };

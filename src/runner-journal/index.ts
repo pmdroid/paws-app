@@ -1,3 +1,4 @@
+import { PreviewReadySchema } from "../runner-protocol";
 import { randomBytes, createHash } from "node:crypto";
 import { chmodSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -23,6 +24,7 @@ const question = z.strictObject({
   type: z.literal("question"),
   requestId: z.uuid(),
   question: z.string().min(1).max(16_384),
+  preview: PreviewReadySchema.optional(),
   context: z.string().min(1).max(16_384).optional(),
   options: z
     .array(
@@ -184,12 +186,15 @@ export function openExecutionJournal(root: string) {
             event = {
               type: "question",
               text: q.data.question,
+              ...(q.data.preview ? { preview: q.data.preview } : {}),
               ...(q.data.context === undefined ? {} : { context: q.data.context }),
               options: q.data.options,
             };
             requestId = q.data.requestId;
           } else {
-            if (raw && typeof raw === "object" && "type" in raw && raw.type === "plan") {
+            if (raw && typeof raw === "object" && "type" in raw && raw.type === "preview_stopped") {
+              event = RunnerEventSchema.parse(raw);
+            } else if (raw && typeof raw === "object" && "type" in raw && raw.type === "plan") {
               const parsed = RunnerEventSchema.safeParse(raw);
               if (!parsed.success || parsed.data.type !== "plan")
                 throw new Error("Invalid runner plan");

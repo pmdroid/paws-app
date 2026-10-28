@@ -140,6 +140,16 @@ export type PolicyEvidence = {
   paths?: PolicyPaths;
 };
 
+/** Human acceptance of a running product, bound to the exact candidate commit. */
+export type PolicyPreview = {
+  id: string;
+  kind: "preview";
+  gate: Gate;
+  approval: "human";
+  paths?: PolicyPaths;
+};
+export type ResolvedPreview = PolicyPreview;
+
 /** Paws extension to draft 0.1. What happens when a rule's probe fails. */
 export type RuleOnFail = "fix" | "approve";
 
@@ -163,7 +173,7 @@ export type PolicyRule = {
 };
 
 /** Unknown kinds are not in `policy.schema.json`. See `ResolvedUnsupported`. */
-export type PolicyItem = PolicyCommand | PolicyReview | PolicyEvidence;
+export type PolicyItem = PolicyCommand | PolicyReview | PolicyEvidence | PolicyPreview;
 
 /**
  * Entry document only. An imported file that contains `setup` does not load.
@@ -344,6 +354,7 @@ export type ResolvedItem =
   | ResolvedCommand
   | ResolvedReview
   | ResolvedEvidence
+  | ResolvedPreview
   | ResolvedSetup
   | ResolvedUnsupported;
 
