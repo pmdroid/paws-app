@@ -737,7 +737,7 @@ export type StatusSlice = (typeof STATUS_SLICES)[number];
 export const STATUS_SLICE_FIELDS = {
   items: ["items", "runs", "verdicts", "agentCloseout", "mergedTimes"],
   questions: ["questions"],
-  mergeQueue: ["mergeQueue", "pushOutages"],
+  mergeQueue: ["mergeQueue", "pushOutages", "policyRunnerWarnings"],
   mergeHistory: ["mergeHistory"],
   evidence: ["evidence"],
   intake: ["intake", "linearBudget", "linearWebhook"],
