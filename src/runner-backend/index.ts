@@ -46,6 +46,7 @@ import {
   snapshotImplementationSkills,
   runDir,
   type AcpEvent,
+  type AcpEventOrigin,
   type RunAgentOptions,
   type RunAgentResult,
   encodePolicyFiles,
@@ -722,12 +723,12 @@ export function createRemoteAgentRunner(options: {
         let transcriptBytes = 0;
         let previousTranscript = Buffer.alloc(0);
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
-        const emit = async (event: AcpEvent) => {
+        const emit = async (event: AcpEvent, origin?: AcpEventOrigin) => {
           const line = `${JSON.stringify({ t: new Date(now()).toISOString(), event })}\n`;
           transcriptBytes += Buffer.byteLength(line);
           if (transcriptBytes > 16_777_216) throw new Error("Remote transcript exceeds limit");
           appendFileSync(transcript, line, { mode: 0o600 });
-          await input.onEvent?.(event);
+          await input.onEvent?.(event, origin);
         };
         try {
           const taskScope = responseTask
@@ -1385,55 +1386,72 @@ export function createRemoteAgentRunner(options: {
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
               const event = row.event;
+              const origin = {
+                runId: assigned.runId,
+                generation: assigned.generation,
+                sequence: row.sequence,
+              };
               if (event.type === "activity") {
                 if (event.update.sessionUpdate === "agent_message_chunk" && taskScope)
-                  await emit({
-                    type: "progress",
-                    text: event.update.content.text,
-                    messageChunk: true,
-                  });
-                else if (event.update.sessionUpdate === "agent_message_chunk")
-                  await emit({
-                    type: "session_update",
-                    sessionId: assigned.id,
-                    update: {
-                      ...event.update,
-                      sessionUpdate:
-                        input.role === "reviewer" ? "agent_thought_chunk" : "agent_message_chunk",
+                  await emit(
+                    {
+                      type: "progress",
+                      text: event.update.content.text,
+                      messageChunk: true,
                     },
-                  });
+                    origin,
+                  );
+                else if (event.update.sessionUpdate === "agent_message_chunk")
+                  await emit(
+                    {
+                      type: "session_update",
+                      sessionId: assigned.id,
+                      update: {
+                        ...event.update,
+                        sessionUpdate:
+                          input.role === "reviewer" ? "agent_thought_chunk" : "agent_message_chunk",
+                      },
+                    },
+                    origin,
+                  );
                 else
-                  await emit({
-                    type: "session_update",
-                    sessionId: assigned.id,
-                    update: event.update,
-                  });
+                  await emit(
+                    {
+                      type: "session_update",
+                      sessionId: assigned.id,
+                      update: event.update,
+                    },
+                    origin,
+                  );
               }
               if (event.type === "permission")
-                await emit({ type: "permission", ...event.permission });
+                await emit({ type: "permission", ...event.permission }, origin);
               if (event.type === "session_restore" && restore) {
                 const { notice, plan } = restore;
                 restore = undefined;
-                await emit({
-                  type: "progress",
-                  text: sessionMoveNotice({
-                    db,
-                    ...notice,
-                    outcome: event.restored
-                      ? { restored: true, turn: plan.turn }
-                      : {
-                          restored: false,
-                          failure: event.reason ?? "load",
-                          versions: {
-                            saved: plan.restoreSession.agentVersion,
-                            savedOn: plan.sourceRunnerId,
-                            target: plan.targetVersion,
+                await emit(
+                  {
+                    type: "progress",
+                    text: sessionMoveNotice({
+                      db,
+                      ...notice,
+                      outcome: event.restored
+                        ? { restored: true, turn: plan.turn }
+                        : {
+                            restored: false,
+                            failure: event.reason ?? "load",
+                            versions: {
+                              saved: plan.restoreSession.agentVersion,
+                              savedOn: plan.sourceRunnerId,
+                              target: plan.targetVersion,
+                            },
                           },
-                        },
-                  }),
-                });
+                    }),
+                  },
+                  origin,
+                );
               }
-              if (event.type === "hook_failed") await emit(event);
+              if (event.type === "hook_failed") await emit(event, origin);
               if (event.type === "checkpoint" && assigned.type === "run")
                 recordRunnerCheckpoint(db, {
                   itemId,
@@ -1447,13 +1465,16 @@ export function createRemoteAgentRunner(options: {
                   db
                     .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
                     .get(selected.id)?.name ?? selected.id;
-                await emit({
-                  type: "progress",
-                  text:
-                    event.reason === "timeout"
-                      ? `${runner} found no safe point to hand this session over within 2 minutes, so it keeps running there.\n`
-                      : `${runner} stopped this session for a move but couldn't ${HANDOVER_FAILURE_STEP[event.reason ?? "publication"]}, so it stays there and goes on with its next turn.\n`,
-                });
+                await emit(
+                  {
+                    type: "progress",
+                    text:
+                      event.reason === "timeout"
+                        ? `${runner} found no safe point to hand this session over within 2 minutes, so it keeps running there.\n`
+                        : `${runner} stopped this session for a move but couldn't ${HANDOVER_FAILURE_STEP[event.reason ?? "publication"]}, so it stays there and goes on with its next turn.\n`,
+                  },
+                  origin,
+                );
               }
               // Runners from before the start line named the runtimes still report the install.
               if (
@@ -1461,13 +1482,19 @@ export function createRemoteAgentRunner(options: {
                 !(event.notice && /^Installed runtimes /.test(event.text))
               ) {
                 if (input.postUpdate && !event.notice)
-                  await input.postUpdate.post(event.text).catch((caughtError3) => {
+                  await input.postUpdate.post(event.text, origin).catch((caughtError3) => {
                     journalCaught(caughtError3, "runner-backend.forItem.post", itemId);
                     return undefined;
                   });
-                else await emit({ type: "progress", text: event.text });
+                else await emit({ type: "progress", text: event.text }, origin);
               }
-              if (event.type === "closeout_policy") {
+              // A replay after a restart keeps the stored answer instead of publishing again.
+              const answered =
+                (event.type === "artifact" || event.type === "closeout_policy") &&
+                results.answered(assigned.runId, assigned.generation, row.sequence) !== null;
+              if (answered && event.type === "artifact" && event.dropped === undefined)
+                publishedEffects = true;
+              if (event.type === "closeout_policy" && !answered) {
                 const policy = input.closeoutPolicy
                   ? await input.closeoutPolicy().catch((error: unknown) => {
                       journalCaught(error, "runner-backend.forItem.closeoutPolicy", itemId);
@@ -1488,7 +1515,7 @@ export function createRemoteAgentRunner(options: {
                   answer: encodePolicyFiles(policy),
                 });
               }
-              if (event.type === "artifact" && event.dropped !== undefined) {
+              if (event.type === "artifact" && !answered && event.dropped !== undefined) {
                 journal(
                   `item ${itemId} runner dropped artifact ${JSON.stringify(event.artifact.path)}: ${event.dropped}`,
                 );
@@ -1501,7 +1528,7 @@ export function createRemoteAgentRunner(options: {
                     error: `${event.artifact.path} was not published: ${event.dropped}.`,
                   }),
                 });
-              } else if (event.type === "artifact") {
+              } else if (event.type === "artifact" && !answered) {
                 if (!input.publishArtifact || !options.artifacts)
                   throw new Error("Remote artifact publication is unavailable");
                 const snapshot = options.artifacts.snapshot(
@@ -1534,33 +1561,37 @@ export function createRemoteAgentRunner(options: {
                     throw error;
                   });
                 publishedEffects = true;
-                signal.throwIfAborted();
+                // Store the outcome before a shutdown stops the read, so a replay does not publish again.
                 results.answer({
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify(publication),
                 });
+                signal.throwIfAborted();
               }
               if (event.type === "pull_request")
                 await input.pullRequest?.update({ title: event.title, body: event.body });
               if (event.type === "closeout") await input.closeoutProgress?.record(event.progress);
               if (event.type === "plan")
-                await emit({
-                  type: "session_update",
-                  sessionId: assigned.id,
-                  update: {
-                    sessionUpdate: "plan",
-                    entries: event.steps.map((step) => ({
-                      content: step.content,
-                      priority: "medium" as const,
-                      status: (step.status === "inProgress" ? "in_progress" : step.status) as
-                        | "pending"
-                        | "in_progress"
-                        | "completed",
-                    })),
+                await emit(
+                  {
+                    type: "session_update",
+                    sessionId: assigned.id,
+                    update: {
+                      sessionUpdate: "plan",
+                      entries: event.steps.map((step) => ({
+                        content: step.content,
+                        priority: "medium" as const,
+                        status: (step.status === "inProgress" ? "in_progress" : step.status) as
+                          | "pending"
+                          | "in_progress"
+                          | "completed",
+                      })),
+                    },
                   },
-                });
+                  origin,
+                );
               if (event.type === "question") {
                 if (question) throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
