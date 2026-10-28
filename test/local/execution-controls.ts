@@ -43,33 +43,36 @@ export function createExecutionControlsFixture(root: string) {
   const now = Date.now();
   const workspaceId = "workspace";
   putWorkspaceUser(db, {
-    id: "owner",
-    linearUserId: "owner",
-    name: "Owner",
-    email: "owner@example.invalid",
+    id: "admin",
+    linearUserId: "admin",
+    name: "Admin",
+    email: "admin@example.invalid",
   });
   consumeWorkspaceBootstrap(db, {
     id: workspaceId,
     organizationId: "org",
     name: "Controls verification",
-    userId: "owner",
+    userId: "admin",
     tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const [id, role, teamIds] of [
     ["member", "member", ["team"]],
-    ["observer", "observer", ["team"]],
+    ["inactive", "member", ["team"]],
     ["outside", "member", ["outside"]],
   ] as const) {
     putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.invalid` });
     syncWorkspaceMember(db, { workspaceId, userId: id, role, active: true, teamIds, now });
   }
   const sessions = Object.fromEntries(
-    ["owner", "member", "observer", "outside"].map((userId) => [
+    ["admin", "member", "inactive", "outside"].map((userId) => [
       userId,
       issueWorkspaceSession(db, { workspaceId, userId, now }),
     ]),
   );
+  db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='inactive'", [
+    workspaceId,
+  ]);
   for (const [id, organizationId] of [
     ["controlled", "org"],
     ["foreign", "foreign"],
@@ -104,7 +107,7 @@ export function createExecutionControlsFixture(root: string) {
   });
   replaceWorkspaceRepositories(db, {
     workspaceId,
-    actorId: "owner",
+    actorId: "admin",
     repositories: [{ repository: "fixture/allowed", teamId: "team" }],
     now,
   });
@@ -224,16 +227,17 @@ export async function probeExecutionControls(root: string) {
       assert.equal(response.status, 200);
       assert.deepEqual(((await response.json()) as { actions: string[] }).actions, []);
     };
-    for (const identity of ["observer", "outside"]) await none(await call(undefined, identity));
-    for (const item of ["foreign", "unmapped"]) await none(await call(undefined, "owner", item));
-    assert.equal((await call(undefined, "owner")).status, 200);
+    assert.equal((await call(undefined, "inactive")).status, 401);
+    await none(await call(undefined, "outside"));
+    for (const item of ["foreign", "unmapped"]) await none(await call(undefined, "admin", item));
+    assert.equal((await call(undefined, "admin")).status, 200);
     assert.deepEqual(((await (await call()).json()) as { actions: string[] }).actions, [
       "stop",
       "pause",
     ]);
     observe(
-      "Production workspace HTTP authorization permits active teammates and owner team bypass while rejecting anonymous, observer, other-team, organization and repository scopes",
-      { owner: 200, member: 200, denied: 5 },
+      "Production workspace HTTP authorization permits active teammates and admin team bypass while rejecting anonymous, inactive, other-team, organization and repository scopes",
+      { admin: 200, member: 200, denied: 5 },
     );
     const resetsAt = Date.now() + 3_600_000;
     startUsagePause(db, {
@@ -249,7 +253,7 @@ export async function probeExecutionControls(root: string) {
       "stop",
       "resume_now",
     ]);
-    assert.equal((await call("resume_now", "observer")).status, 403);
+    assert.equal((await call("resume_now", "inactive")).status, 401);
     assert.equal((await call("resume_now")).status, 200);
     assert(usagePause(db, fixture.runId)!.resumeAt <= Date.now());
     assert.equal(getWorkItem(db, "controlled")!.state, "running");

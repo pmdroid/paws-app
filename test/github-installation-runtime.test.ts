@@ -89,7 +89,7 @@ test("a missing installation holds the item before Git and a reply cannot releas
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
     expect(question.kind).toBe("github-auth");
-    expect(question.body).toContain("Waiting for a workspace owner or administrator");
+    expect(question.body).toContain("Waiting for a workspace admin");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
     expect(existsSync(join(f.home, "worktrees"))).toBe(false);
     expect(f.tracker.statuses).toEqual([]);

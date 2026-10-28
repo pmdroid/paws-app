@@ -101,7 +101,7 @@ describe("repository checkout section", () => {
     expect(failed).toContain('role="alert">Engine is down.');
     expect(failed).toContain('data-checkout="reload"');
     expect(renderCheckoutSettings({ ...emptyCheckoutView(), denied: true })).toContain(
-      "Only workspace owners and admins",
+      "Only workspace admins can change the repository checkout.",
     );
   });
 

@@ -84,7 +84,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     authenticatedAt: clock.now(),
     teamIds: [],
   });
-  const person = (name: string, email: string, role: "member" | "observer") => {
+  const person = (name: string, email: string, active = true) => {
     const userId = putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `vm-${email}`,
@@ -94,15 +94,15 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId,
-      role,
-      active: true,
+      role: "member",
+      active,
       teamIds: [],
       now: clock.now(),
     });
-    return principal(userId, role);
+    return principal(userId, "member");
   };
-  const member = person("Ada Lovelace", "ada@example.invalid", "member");
-  const owner = principal(ownerUserId, "owner");
+  const member = person("Ada Lovelace", "ada@example.invalid");
+  const admin = principal(ownerUserId, "admin");
   const control = createRunnerControl({
     db,
     authority,
@@ -133,7 +133,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     });
     return loop;
   };
-  return { db, clock, workspace, member, owner, control, exeDev, bootstrap, person, jobs };
+  return { db, clock, workspace, member, admin, control, exeDev, bootstrap, person, jobs };
 }
 
 async function drive(f: Fixture, loop: JobLoop, until: (row: MemberVm) => boolean, limit = 2_000) {
@@ -168,9 +168,9 @@ describe("member VM", () => {
     const again = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(again.id).toBe(first.id);
     expect(openJobs(f.db)).toHaveLength(1);
-    const observer = f.person("Watcher", "watch@example.invalid", "observer");
-    expect(() => startMemberVm(f.db, observer)).toThrow(/Active workspace membership/);
-    const namesake = f.person("Ada Lovelace", "ada2@example.invalid", "member");
+    const inactive = f.person("Watcher", "watch@example.invalid", false);
+    expect(() => startMemberVm(f.db, inactive)).toThrow(/Active workspace membership/);
+    const namesake = f.person("Ada Lovelace", "ada2@example.invalid");
     expect(startMemberVm(f.db, namesake).vmName).toBe("ada-lovelace-paws-2");
   });
 
@@ -436,7 +436,7 @@ describe("member VM", () => {
     const ready = await drive(f, loop, settled);
     expect(ready.step).toBe("ready");
 
-    f.control.setStatus(f.owner, ready.runnerId!, "revoked");
+    f.control.setStatus(f.admin, ready.runnerId!, "revoked");
     expect(findMemberVm(f.db, f.member)!.runnerId).toBeNull();
 
     const stale = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
@@ -466,7 +466,7 @@ describe("member VM", () => {
     const health = await drive(f, loop, (row) => row.step === "health");
     heartbeat(f.db, health.runnerId!, f.clock.now());
     await drive(f, loop, settled);
-    f.control.setStatus(f.owner, health.runnerId!, "revoked");
+    f.control.setStatus(f.admin, health.runnerId!, "revoked");
     f.bootstrap.resetIdentity = async () => {};
     startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const failed = await drive(f, loop, settled);

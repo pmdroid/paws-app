@@ -220,7 +220,7 @@ test("browser sign-in and app authorization create an owner without a setup code
     expect(response.headers.get("set-cookie")).toContain("__Host-paws-session=");
     expect(scene.state.installed).toBe(1);
     const workspace = workspaceForOrganization(scene.db, "org")!;
-    expect(listWorkspaceMembers(scene.db, workspace.id)[0]?.role).toBe("owner");
+    expect(listWorkspaceMembers(scene.db, workspace.id)[0]?.role).toBe("admin");
     expect(readStoredToken(join(scene.home, "secrets/linear-oauth.json"))?.accessToken).toBe(
       "fixture-app",
     );
@@ -334,7 +334,7 @@ for (const concurrentRevocation of [false, true]) {
       );
       expect(workspaceForOrganization(scene.db, "org")?.id).toBe(workspace.id);
       expect(
-        listWorkspaceMembers(scene.db, workspace.id).filter((member) => member.role === "owner"),
+        listWorkspaceMembers(scene.db, workspace.id).filter((member) => member.role === "admin"),
       ).toHaveLength(1);
     } finally {
       scene.close();
@@ -373,7 +373,7 @@ for (const admin of [false, true]) {
       );
       expect(response?.status).toBe(admin ? 303 : 403);
       const workspace = workspaceForOrganization(scene.db, "org");
-      if (admin) expect(listWorkspaceMembers(scene.db, workspace!.id)[0]?.role).toBe("owner");
+      if (admin) expect(listWorkspaceMembers(scene.db, workspace!.id)[0]?.role).toBe("admin");
       else expect(workspace).toBeNull();
       await access.stop();
     } finally {

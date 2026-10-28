@@ -83,13 +83,6 @@ const assert = require("node:assert/strict");
       name: "Live member controls disclose Stop confirmation and retain its exact DOM node across polling",
       passed: true,
     });
-    const observer = await pageFor("observer");
-    await observer.locator("#execution-controls").waitFor({ state: "attached" });
-    assert.equal(
-      await observer.getByRole("button", { name: "Pause item", exact: true }).count(),
-      0,
-    );
-    assert.equal(await observer.locator("#execution-controls").isVisible(), false);
     let failed = false;
     await page.route("**/api/execution-controls", (route) => {
       if (!failed && route.request().method() === "POST") {

@@ -57,7 +57,7 @@ async function fixture() {
   const principal: WorkspacePrincipal = {
     workspaceId: workspace.id,
     userId,
-    role: "owner",
+    role: "admin",
     authenticatedAt: now,
     teamIds: [],
   };
