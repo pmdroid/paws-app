@@ -16,6 +16,8 @@ import {
 } from "../linear";
 import {
   fakeStatusProvider,
+  FINDINGS_API_PATH,
+  handleFindingsRequest,
   handleStatusRequest,
   statusSnapshots,
   type ReadLinearArtifact,
@@ -403,6 +405,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       principal,
       sessionIds,
       submit: secrets.visualReviewChanges,
+    }))!;
+  }
+  if (path === FINDINGS_API_PATH) {
+    if (secrets.db === undefined) return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleFindingsRequest(request, {
+      db: secrets.db,
+      ...(principal === undefined ? {} : { principal }),
+      ...(sessionIds === undefined ? {} : { sessionIds }),
     }))!;
   }
   if (path.startsWith(EVIDENCE_API_PATH)) {
