@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { themedMarkup } from "./theme";
 import { render } from "./render";
+import { checkListKey, emptyCloseoutView } from "./closeout";
 import { identityLinkMarkup } from "./workspace-identities";
 import { linearConnectionMarkup } from "./workspace";
 import { runnerDetailMarkup, type Runner } from "./runners";
@@ -12,11 +13,16 @@ function markup(html: string) {
   return renderToStaticMarkup(<>{themedMarkup(html)}</>);
 }
 
-function ready(view: "overview" | "questions" | "runs", id: string | null = null) {
+function ready(
+  view: "overview" | "questions" | "runs",
+  id: string | null = null,
+  closeout = emptyCloseoutView(),
+) {
   return render({
     phase: "ready",
     error: null,
     engineUrl: null,
+    closeout,
     ...pageData(fullStatusFixture(), { view, id }),
   });
 }
@@ -85,8 +91,10 @@ test("overview keeps action rows responsive without delivery columns", () => {
 });
 
 test("run checks, transcripts, and stop controls keep their columns aligned", () => {
-  const html = markup(ready("runs", "r-101").content);
-  const checks = classNames(html, "chk");
+  const closeout = emptyCloseoutView();
+  closeout.open[`section\n${checkListKey("ENG-101", 1)}`] = true;
+  const html = markup(ready("runs", "r-101", closeout).content);
+  const checks = classNames(html, "chk").filter((value) => !value.includes("section-toggle"));
   expect(checks.length).toBeGreaterThan(1);
   for (const value of checks) {
     expect(value).toContain("focus-visible:outline-2");

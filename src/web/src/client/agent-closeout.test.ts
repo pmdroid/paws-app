@@ -107,7 +107,7 @@ describe("Agent Closeout", () => {
     const agent = html.indexOf('aria-label="Agent Closeout"');
     expect(paws).toBeGreaterThan(-1);
     expect(agent).toBeGreaterThan(paws);
-    expect(html).toContain('data-action="agent-closeout-toggle"');
+    expect(html).toContain('data-action="section-toggle"');
     expect(html).toContain('aria-expanded="false"><h2>Agent Closeout</h2>');
     expect(html).not.toContain('id="agent-check-2-test"');
 
