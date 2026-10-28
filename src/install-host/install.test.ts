@@ -229,9 +229,9 @@ describe("paws install", () => {
     expect(prompt.questions.filter((q) => q.startsWith("exe.dev runner VM image"))).toHaveLength(2);
     expect(prompt.questions.filter((q) => q.startsWith("exe.dev pool"))).toHaveLength(2);
     expect(run.out).toContain("  member_vm.cpu must be a whole number from 1 to 512");
-    expect(run.out.some((line) => line.startsWith("  member_vm.pool must be an exe.dev pool"))).toBe(
-      true,
-    );
+    expect(
+      run.out.some((line) => line.startsWith("  member_vm.pool must be an exe.dev pool")),
+    ).toBe(true);
     const written = parseConfigToml(files(home).config).memberVm;
     expect(written).toEqual({
       cpu: 8,

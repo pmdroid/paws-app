@@ -108,7 +108,8 @@ function memberVmField(question: string, key: MemberVmKey): Field {
     check: (value) => {
       const trimmed = value.trim();
       if (trimmed === "") return "";
-      const typed = key !== "image" && key !== "pool" && /^-?\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
+      const typed =
+        key !== "image" && key !== "pool" && /^-?\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
       return String(checkMemberVmValue(key, typed));
     },
   };
