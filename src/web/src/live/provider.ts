@@ -37,6 +37,7 @@ import type {
   OutboxRow,
   MergeQueuePosition,
   QueuePosition,
+  WorkItemEventRow,
   WorkItemFact,
   WorkItemRecord,
 } from "../../../db";
@@ -95,6 +96,7 @@ import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
 import { reviewsOf } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
+import { mergedTimes, stateTotals, toStateTimes, type StateTotals } from "./state-times";
 import {
   STATUS_API_VERSION,
   agentCloseoutSummary,
@@ -118,6 +120,8 @@ import {
   type StatusItemDetail,
   type StatusItemRisk,
   type StatusItemEvent,
+  type StatusMergedTimes,
+  type StatusStateTimes,
   type StatusMergeQueue,
   type StatusMergeEntry,
   type StatusMergeOutcome,
@@ -588,7 +592,7 @@ function readScopedSnapshot(
     linearRequests: linearRequests.get(record.id) ?? 0,
     ...heldOf(record, holds),
     ...sessionAttempt(db, record, visible, itemsByIssue, storedRuns, facts),
-    ...timelineOf(db, record),
+    ...historyOf(db, record, facts, now.getTime()),
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -634,6 +638,7 @@ function readScopedSnapshot(
     agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
     ciRounds: ciRoundsFor(db, records, env),
     dead: deadFor(db, records),
+    ...(only === undefined ? mergedTimesFor(db, visible, facts, now.getTime()) : {}),
   };
   snapshot.questions = questionsFor(db, records, rows, runs, openQuestions).map((question) =>
     withRiskDetail(db, withBypassChecks(db, question, snapshot.verdicts, env), snapshot.verdicts),
@@ -902,12 +907,28 @@ function riskCarryOverOf(
   };
 }
 
-/** The item's state changes from `work_item_event`, oldest first. Omitted while it has none. */
-function timelineOf(db: Database, record: WorkItemRecord): { timeline?: StatusItemEvent[] } {
-  const rows = listWorkItemEventRows(db, record.id);
-  if (rows.length === 0) return {};
+/** The newest state changes the timeline shows. `stateTimes` reads every one. */
+const TIMELINE_LIMIT = 200;
+/** Enough rows for any item's whole history, so its state times start at its creation. */
+const HISTORY_LIMIT = 100_000;
+
+/**
+ * The item's state changes from `work_item_event`, oldest first, omitted while it has none,
+ * and the time it spent in each state since it was created, up to `now` while it is open.
+ */
+function historyOf(
+  db: Database,
+  record: WorkItemRecord,
+  facts: ReadonlyMap<string, WorkItemFact>,
+  now: number,
+): { timeline?: StatusItemEvent[]; stateTimes?: StatusStateTimes } {
+  const rows = listWorkItemEventRows(db, record.id, HISTORY_LIMIT);
+  const created = facts.get(record.id)?.createdAt;
+  const stateTimes =
+    created === undefined ? {} : { stateTimes: toStateTimes(totalsOf(record, created, rows, now)) };
+  if (rows.length === 0) return stateTimes;
   return {
-    timeline: rows.map((row) => ({
+    timeline: rows.slice(-TIMELINE_LIMIT).map((row) => ({
       at: iso(row.at),
       kind: row.kind,
       from: row.fromState,
@@ -916,7 +937,40 @@ function timelineOf(db: Database, record: WorkItemRecord): { timeline?: StatusIt
       reason: row.reason,
       actor: row.actor,
     })),
+    ...stateTimes,
   };
+}
+
+function totalsOf(
+  record: WorkItemRecord,
+  created: number,
+  rows: readonly WorkItemEventRow[],
+  now: number,
+): StateTotals {
+  return stateTotals(Math.min(created, rows[0]?.at ?? created), rows, record.state, now);
+}
+
+/**
+ * The visible items that merged in the last `STATUS_RECENT_MS`: their median and p90 time from
+ * creation to merge and their average time in each state. Omitted when none merged.
+ */
+function mergedTimesFor(
+  db: Database,
+  visible: readonly WorkItemRecord[],
+  facts: ReadonlyMap<string, WorkItemFact>,
+  now: number,
+): { mergedTimes?: StatusMergedTimes } {
+  const since = now - STATUS_RECENT_MS;
+  const changed = listLastWorkItemEventTimes(db);
+  const merged = visible.flatMap((record) => {
+    const created = facts.get(record.id)?.createdAt;
+    const last = changed.get(record.id);
+    if (record.state !== "merged" || created === undefined || last === undefined || last < since)
+      return [];
+    return [totalsOf(record, created, listWorkItemEventRows(db, record.id, HISTORY_LIMIT), now)];
+  });
+  const times = mergedTimes(merged, since);
+  return times === null ? {} : { mergedTimes: times };
 }
 
 function heldOf(

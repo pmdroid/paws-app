@@ -138,6 +138,40 @@ export interface StatusItem {
   endedAt?: string;
   /** Every state change of the item, oldest first, from `work_item_event`. */
   timeline?: StatusItemEvent[];
+  /** How long the item spent in each state since it was delegated. */
+  stateTimes?: StatusStateTimes;
+}
+
+/**
+ * The time an item spent in each engine state, from its creation and `work_item_event`.
+ * `states` add up to `until - since`. An open item's `current` state counts up to `until`, the
+ * time the body was built; a finished item stops when it finished and has `current: null`.
+ */
+export interface StatusStateTimes {
+  since: string;
+  until: string;
+  current: string | null;
+  /** Milliseconds in each engine state, in the order the item first entered it. */
+  states: StatusStateTime[];
+}
+
+export interface StatusStateTime {
+  /** An engine work-item state, such as `recovering` or `merge_queue`. */
+  state: string;
+  ms: number;
+}
+
+/**
+ * The items that merged in the last 24 hours: how long each took from delegation to merge, and
+ * how long an item spent in each state on average. `p90Ms` is the nearest-rank 90th percentile.
+ */
+export interface StatusMergedTimes {
+  since: string;
+  merged: number;
+  medianMs: number;
+  p90Ms: number;
+  /** The average milliseconds per merged item in each state, largest first. */
+  states: StatusStateTime[];
 }
 
 /**
@@ -671,6 +705,8 @@ export interface StatusSnapshotBase {
   linearWebhook?: StatusLinearWebhook;
   /** Repositories GitHub refuses pushes from the Paws App for, the oldest outage first. */
   pushOutages?: StatusPushOutage[];
+  /** Only in the list, while an item merged in the last 24 hours. */
+  mergedTimes?: StatusMergedTimes;
 }
 
 /**
@@ -1117,7 +1153,41 @@ function readBase(body: Record<string, unknown>): StatusSnapshotBase {
             readPushOutage(entry, `pushOutages[${index}]`),
           ),
         }),
+    ...(body.mergedTimes === undefined
+      ? {}
+      : { mergedTimes: readMergedTimes(body.mergedTimes, "mergedTimes") }),
   };
+}
+
+function readMergedTimes(input: unknown, path: string): StatusMergedTimes {
+  const body = object(input, path);
+  return {
+    since: dateString(body, "since", path),
+    merged: count(body, "merged", path),
+    medianMs: count(body, "medianMs", path),
+    p90Ms: count(body, "p90Ms", path),
+    states: readStateTimeList(body, path),
+  };
+}
+
+function readStateTimes(input: unknown, path: string): StatusStateTimes {
+  const body = object(input, path);
+  return {
+    since: dateString(body, "since", path),
+    until: dateString(body, "until", path),
+    current: nullableText(body, "current", path),
+    states: readStateTimeList(body, path),
+  };
+}
+
+function readStateTimeList(body: Record<string, unknown>, path: string): StatusStateTime[] {
+  return array(body, "states", path).map((entry, at) => {
+    const state = object(entry, `${path}.states[${at}]`);
+    return {
+      state: text(state, "state", `${path}.states[${at}]`),
+      ms: count(state, "ms", `${path}.states[${at}]`),
+    };
+  });
 }
 
 function readPushOutage(input: unknown, path: string): StatusPushOutage {
@@ -1350,6 +1420,9 @@ function readItem(input: unknown, index: number): StatusItem {
             readItemEvent(entry, `${path}.timeline[${at}]`),
           ),
         }),
+    ...(body.stateTimes === undefined
+      ? {}
+      : { stateTimes: readStateTimes(body.stateTimes, `${path}.stateTimes`) }),
   };
 }
 
