@@ -187,6 +187,63 @@ test("an item the queued item depends on still holds it", () => {
   }
 });
 
+/** A place in the repository's merge queue, kept while the item is back with the agent. */
+function place(db: Database, id: string, readyAt: number): void {
+  db.run("INSERT INTO merge_queue_entry(item_id,repository,ready_at,kept) VALUES(?,?,?,1)", [
+    id,
+    "owner/repo",
+    readyAt,
+  ]);
+}
+
+test("a merge-queue item behind the returned front does not hold it", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "follower", [PROVIDER]);
+    setState(db, "follower", "merge_queue");
+    place(db, "follower", 20);
+    item(db, "front", [PROVIDER], 2);
+    place(db, "front", 10);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["front"]);
+    expect(listItemHolds(db)).toEqual([]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a running item does not hold a returned item that keeps its merge-queue place", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "running", [PROVIDER]);
+    setState(db, "running", "running");
+    item(db, "front", [PROVIDER], 2);
+    place(db, "front", 10);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual(["front"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a merge-queue item ahead of a returned item still holds it", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "ahead", [PROVIDER]);
+    setState(db, "ahead", "merge_queue");
+    place(db, "ahead", 10);
+    item(db, "returned", [PROVIDER], 2);
+    place(db, "returned", 20);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(listItemHolds(db)).toEqual([
+      { itemId: "returned", reason: "overlap", blockers: ["ahead"], files: [PROVIDER] },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
 test("hot files come from conflict restarts in the last 7 days", () => {
   const db = tempDb();
   try {
@@ -230,6 +287,48 @@ test("a conflict restart without files counts the files a merge before it shared
     expect(hotFiles(db, NOW)).toEqual([
       { repository: "owner/repo", path: PROVIDER, conflicts: 1, items: ["returned"] },
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a later candidate does not change the files of an earlier conflict", () => {
+  const db = tempDb();
+  try {
+    item(db, "merged", [PROVIDER, "src/a.ts", "src/c.ts"], NOW - 200_000);
+    recordConfirmedRemoteMerge(db, {
+      itemId: "merged",
+      repositoryOwner: "owner",
+      repositoryName: "repo",
+      pullNumber: 1,
+      pullUrl: null,
+      mergeSha: "merge",
+      confirmedAt: NOW - 120_000,
+    });
+    item(db, "returned", [PROVIDER, "src/b.ts"], NOW - 100_000);
+    recordRebaseReturn(db, {
+      itemId: "returned",
+      jobId: 1,
+      candidate: "head-returned",
+      reason: "github_queue",
+      files: null,
+      recordedAt: NOW - 60_000,
+    });
+    // The fix drops provider.ts and adds c.ts, which the merge also changed.
+    saveCandidatePaths(db, {
+      itemId: "returned",
+      head: "head-fixed",
+      paths: ["src/b.ts", "src/c.ts"],
+      recordedAt: NOW - 30_000,
+    });
+    // A later candidate of the merged item does not change what it merged.
+    saveCandidatePaths(db, {
+      itemId: "merged",
+      head: "head-later",
+      paths: ["src/b.ts"],
+      recordedAt: NOW - 10_000,
+    });
+    expect(hotFiles(db, NOW).map((file) => file.path)).toEqual([PROVIDER]);
   } finally {
     db.close();
   }
