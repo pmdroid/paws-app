@@ -379,6 +379,14 @@ export {
   type RebaseReturnRecord,
 } from "./rebase-returns";
 export {
+  HOT_FILE_WINDOW_MS,
+  hotFiles,
+  latestCandidatePaths,
+  repositoryKey,
+  saveCandidatePaths,
+  type HotFile,
+} from "./hot-files";
+export {
   recordGitHubDelivery,
   latestGitHubDelivery,
   listGitHubDeliveries,
