@@ -109,9 +109,12 @@ export function implementPrompt(input: {
   brief?: string;
   /** Paths this run's checkout leaves out. */
   hiddenPaths?: readonly string[];
+  /** The earlier attempt's branch this run continues. */
+  continuesBranch?: string;
 }): string {
   const brief = [
     `Implement ${input.identifier}: ${input.title}.`,
+    ...(input.continuesBranch ? [continuationPrompt(input.continuesBranch)] : []),
     ...(input.brief ? [input.brief] : []),
     "Work only in this repository.",
     ...(input.hiddenPaths?.length ? [hiddenPathsPrompt(input.hiddenPaths)] : []),
@@ -124,6 +127,10 @@ export function implementPrompt(input: {
   ].join("\n");
   if (input.handoff === undefined || input.handoff.trim() === "") return brief;
   return `${input.handoff.trim()}\n\n${brief}`;
+}
+
+function continuationPrompt(branch: string): string {
+  return `This continues earlier work on this issue. The checkout starts at the tip of \`${branch}\`, which holds the earlier attempt's commits, and its pull request stays the same. Review what is already there with git log and git diff origin/main before changing anything, and build on it rather than starting over.`;
 }
 
 export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
