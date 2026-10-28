@@ -73,6 +73,7 @@ import {
   listOpenQuestions,
   listOutbox,
   listMergeQueues,
+  runnerCapacityWait,
   listQueuePositions,
   listRuns,
   runAgentSetup,
@@ -149,6 +150,9 @@ const WORK_ITEM_STATES = [
 
 const MERGE_QUEUE = "github.merge";
 const RESUME_QUEUE = "run.resume";
+const REVERIFY_QUEUE = "run.reverify";
+/** Merge-queue work goes to the next free runner slot ahead of any other task. */
+const SLOT_WAIT_DETAIL = "Waiting for a runner slot (next in line).";
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** A task that went back to the agent after CI or a conflict is still on its way back. */
 const BACK_WITH_AGENT_STATES = new Set<string>([
@@ -1596,8 +1600,9 @@ function mergeQueueFor(
           : enqueuedAt(record.id, jobs, generatedAt),
         acceptedAt: acceptedAt(record.id, jobs, generatedAt),
         waitingFor: reason,
-        detail:
-          reason === "ahead"
+        detail: waitsForRunnerSlot(record.id, jobs)
+          ? SLOT_WAIT_DETAIL
+          : reason === "ahead"
             ? ahead
               ? `Starts when ${aheadLabel(ahead, items)} merges`
               : null
@@ -1735,6 +1740,17 @@ function acceptedAt(itemId: string, jobs: readonly Job[], generatedAt: string): 
   return first === undefined
     ? enqueuedAt(itemId, jobs, generatedAt)
     : iso(first.createdAt, generatedAt);
+}
+
+/** Whether the item's re-verify or resume waits for a busy runner to free a slot. */
+function waitsForRunnerSlot(itemId: string, jobs: readonly Job[]): boolean {
+  return jobs.some(
+    (job) =>
+      job.status === "pending" &&
+      (job.queue === RESUME_QUEUE || job.queue === REVERIFY_QUEUE) &&
+      readString(job.payload, "itemId") === itemId &&
+      (runnerCapacityWait(job.payload)?.runnerIds.length ?? 0) > 0,
+  );
 }
 
 function mergeJob(itemId: string, jobs: readonly Job[]): Job | undefined {

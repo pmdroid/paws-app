@@ -273,3 +273,35 @@ test("an empty live snapshot asks the operator to delegate a Linear issue", asyn
     db.close();
   }
 });
+
+test("a merge-queue item whose re-verify waits for a runner slot says it is next in line", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const merging = insertQueuedItem(db, { id: "01MERGINGITEM", sessionKey: "ses_1", now: NOW });
+    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-3", merging.id]);
+    beginImplementRun(db, merging.id, NOW);
+    enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
+    joinMergeQueue(db, { itemId: merging.id, repository: "pmdroid/paws-demo", now: 1 });
+    applyWorkItemEvent(db, merging.id, "reverify_requested");
+    enqueueJob(db, {
+      queue: "run.reverify",
+      payload: {
+        itemId: merging.id,
+        capacityWait: { since: NOW, attempt: 1, runnerIds: ["agentbox"] },
+      },
+      now: NOW,
+    });
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    const parsed = parseStatusSnapshot(await response?.json());
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.snapshot.mergeQueue.map((entry) => [entry.itemId, entry.detail])).toEqual([
+      ["ENG-3", "Waiting for a runner slot (next in line)."],
+    ]);
+  } finally {
+    db.close();
+  }
+});
