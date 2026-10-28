@@ -451,7 +451,7 @@ test("a missing installation or push access fails with the App fix", () => {
 
 test("a GitHub App without the comment and review events is reported", () => {
   const facts = appEventsFact(200, {
-    events: ["check_run", "check_suite", "status", "pull_request", "merge_group"],
+    events: ["check_run", "check_suite", "status", "pull_request", "merge_group", "push"],
   });
   expect(facts).toEqual({
     ok: false,

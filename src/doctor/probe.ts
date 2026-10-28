@@ -36,6 +36,7 @@ export const GITHUB_APP_EVENTS = [
   "pull_request_review_comment",
   "issue_comment",
   "merge_group",
+  "push",
 ] as const;
 
 /** GitHub App checks against the configured repository. */

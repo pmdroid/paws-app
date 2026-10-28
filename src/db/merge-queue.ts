@@ -67,6 +67,25 @@ export function restartedFromMergeQueue(db: Database, itemId: string): boolean {
   );
 }
 
+/**
+ * Keep the task's place while it goes back to the agent for a rebase. A halt leaves the kept
+ * place alone, and the next Closeout acceptance returns the task to it.
+ */
+export function keepMergeQueuePlace(db: Database, itemId: string): void {
+  db.run("UPDATE merge_queue_entry SET kept=1 WHERE item_id=?", [itemId]);
+}
+
+/** Leave the queue unless the place is kept. */
+export function releaseMergeQueuePlace(db: Database, itemId: string): void {
+  db.run("DELETE FROM merge_queue_entry WHERE item_id=? AND kept=0", [itemId]);
+}
+
+/** Closeout accepted a new head: back to a kept place, or out of the queue to join at the end. */
+export function returnToMergeQueue(db: Database, itemId: string): void {
+  releaseMergeQueuePlace(db, itemId);
+  db.run("UPDATE merge_queue_entry SET kept=0 WHERE item_id=?", [itemId]);
+}
+
 export function markMergeQueueNotified(db: Database, itemId: string, position: number): void {
   db.run("UPDATE merge_queue_entry SET notified_position=? WHERE item_id=?", [position, itemId]);
 }

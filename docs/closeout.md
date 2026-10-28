@@ -198,6 +198,8 @@ When `mergeable(S)` is false, the first failing condition decides:
 
 A rebase that conflicts is a rebase return: `restart(item, conflict)` with the conflicting files, after the lane is released. Returns are limited to three in a row on a known main commit and six in any rolling hour. A conflict on an unknown main counts only toward the hour. A newer main does not refill the budget; only a person's reply does. When either limit is reached, Paws asks with the main commits and files involved.
 
+The lane judges only the front of the queue, but a conflict behind it does not wait for its turn. Whenever main moves (the lane merges, or a `push` to the default branch or a merged `pull_request` webhook arrives), Paws reads GitHub's `mergeable` for every other pull request in that repository's `merge_queue`, retrying briefly while GitHub computes it. One that conflicts goes back at once as the same rebase return, under the same budget, and keeps its place in the queue for when Closeout accepts its rebased head. Each head goes back once. A pull request that is only behind main is left for the lane to update when it reaches the front.
+
 The entry policy sets the two budget integers, both defaulting to 3:
 
 ```yaml
