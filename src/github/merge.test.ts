@@ -10,6 +10,7 @@ import { fakeMergeReadiness, fakeRequiredChecks } from "./fake";
 import { defaultGitExec } from "./git";
 import { readPullFacts, rebaseOntoMain, squashPull, type SerialMergeInput } from "./merge";
 import { openPullRequest, publishAccepted, pushBranch } from "./pulls";
+import { pushDenial } from "./push";
 import {
   GitCommandError,
   INSTALLATION_PERMISSIONS,
@@ -651,6 +652,58 @@ describe("Git transport failures and rejected pushes", () => {
     } finally {
       await repo.cleanup();
     }
+  });
+
+  test("a push denied with HTTP 403 names the token and the permission it lacked", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      const result = await rebaseOntoMain({
+        ...lane(repo, mergingClient(repo.bare, []), 8),
+        sleep: async () => {},
+        gitExec: networkExec(repo.bare, async (command, args) => {
+          if (command !== "push") return;
+          throw new GitCommandError(
+            args,
+            "remote: Permission to pmdroid/paws-demo.git denied to paws-helper[bot].\nfatal: unable to access 'https://x-access-token:ghs_abcdefghijklmnopqrstuvwxyz@github.com/pmdroid/paws-demo.git/': The requested URL returned error: 403\n",
+          );
+        }),
+      });
+      expect(result.rebased).toBe(false);
+      if (result.rebased) return;
+      expect(result.result.outcome).toBe("push_rejected");
+      expect(result.result.message).toBe(
+        'push rejected: GitHub denied the GitHub App push token for pmdroid/paws-demo (installation 22) acting as paws-helper[bot] with HTTP 403: it lacks "contents: write" on pmdroid/paws-demo',
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("pushDenial tells a missing permission from a token for another repository", () => {
+    const token = { owner: "pmdroid", repo: "paws-demo", installationId: "22" };
+    expect(
+      pushDenial(
+        "remote: Permission to pmdroid/other.git denied to paws-helper[bot].\nfatal: unable to access 'https://github.com/pmdroid/other.git/': The requested URL returned error: 403\n",
+        token,
+      ),
+    ).toBe(
+      "GitHub denied the GitHub App push token for pmdroid/paws-demo (installation 22) acting as paws-helper[bot] with HTTP 403: the token is scoped to pmdroid/paws-demo, not pmdroid/other",
+    );
+    expect(
+      pushDenial(
+        " ! [remote rejected] HEAD -> paws/ENG-8 (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)\n",
+        token,
+      ),
+    ).toBe(
+      'GitHub denied the GitHub App push token for pmdroid/paws-demo (installation 22): it lacks the "workflows" permission needed to push a change to .github/workflows/ci.yml',
+    );
+    expect(
+      pushDenial("fatal: The requested URL returned error: 403\n", { owner: "o", repo: "r" }),
+    ).toBe(
+      'GitHub denied the GitHub App push token for o/r with HTTP 403: it lacks "contents: write" on o/r',
+    );
+    expect(pushDenial("remote: error: GH006: Protected branch update failed\n", token)).toBeNull();
   });
 
   test("a push refused before Git ran reports that reason", async () => {
