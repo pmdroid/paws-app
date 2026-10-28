@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { getWorkItem, immediate } from "../db";
 import {
+  HANDOVER_RUNNER_VERSION,
   RUNNER_HANDOVER_LIMIT_MS,
   RunnerResultSchema,
   type RunnerHandoverFailure,
@@ -10,8 +11,6 @@ import {
 import type { RunnerWork } from "../runner-work";
 import { versionAtLeast } from "./session-restore";
 
-/** First runner release that hands a running session over. */
-export const HANDOVER_RUNNER_VERSION = [0, 1, 44];
 /** Past the runner's deadline: polling and delivery of its decision. */
 const DELIVERY_GRACE_MS = 30_000;
 /**

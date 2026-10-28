@@ -55,7 +55,17 @@ import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
-import { RUNNER_LEASE_GRACE_MS, type RunnerCommand, type RunnerResult } from "../runner-protocol";
+import {
+  MAIN_COMMIT_RUNNER_VERSION,
+  REBASE_RUNNER_VERSION,
+  REVIEW_COMMAND_RUNNER_VERSION,
+  RUNNER_LEASE_GRACE_MS,
+  RUNTIMES_RUNNER_VERSION,
+  SESSION_RESUME_RUNNER_VERSION,
+  type RunnerCommand,
+  type RunnerResult,
+  type RunnerVersion,
+} from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { fastForwardToBranchTip } from "./candidate";
@@ -118,16 +128,6 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
   `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
-const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
-const REBASE_RUNNER_VERSION = [0, 1, 23];
-const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
-/** First runner release whose command schema accepts `runtimes`. Older runners reject the field. */
-export const RUNTIMES_RUNNER_VERSION = [0, 1, 26];
-/** First runner release that runs the agent's own review command for a `review` command. */
-export const REVIEW_COMMAND_RUNNER_VERSION = [0, 1, 47];
-/** First runner release that snapshots a run's Claude session when a turn ends. */
-export const CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION = [0, 1, 42];
-
 type SessionHolder = { runnerId: string; agent: string; sessionId: string };
 
 function earlierSession(
@@ -183,7 +183,7 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
   return undefined;
 }
 
-function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
+function versionAtLeast(version: string | null | undefined, minimum: RunnerVersion): boolean {
   const parts = version
     ?.match(/^(\d+)\.(\d+)\.(\d+)/)
     ?.slice(1)
@@ -1985,13 +1985,9 @@ export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
 
 export { remoteCommandsGone } from "./released";
 
-export { CHECKPOINT_RUNNER_VERSION, createRemoteCheckpoint } from "./checkpoint";
+export { createRemoteCheckpoint } from "./checkpoint";
 
-export {
-  createRemoteHandover,
-  HANDOVER_RUNNER_VERSION,
-  type RunnerHandoverOutcome,
-} from "./handover";
+export { createRemoteHandover, type RunnerHandoverOutcome } from "./handover";
 
 const HANDOVER_FAILURE_STEP = {
   commit: "commit its work in progress",
