@@ -1765,6 +1765,7 @@ export function createRemoteAgentRunner(options: {
             await input.askTeam.ask(
               {
                 question: `Paws could not push the candidate to \`${complete.pushFailure.branch}\` on GitHub:\n\n\`\`\`\n${complete.pushFailure.error}\n\`\`\`\n\nFix the cause if it needs one, then reply to run the task again.`,
+                pushRejected: { branch: complete.pushFailure.branch },
               },
               { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
             );
