@@ -431,8 +431,8 @@ export function createWorkspaceAssignments(options: {
       syncWorkspaceMember(db, {
         workspaceId: verified.workspaceId,
         userId: linked.userId,
-        active: identity.active,
-        role: identity.guest ? "observer" : "member",
+        active: identity.active && !identity.guest,
+        role: "member",
         teamIds: identity.teamIds,
         now: before,
       });
@@ -443,7 +443,6 @@ export function createWorkspaceAssignments(options: {
         identity,
         member,
         teamId: verified.teamId,
-        teamName: verified.teamName,
       },
       "delegate",
     );

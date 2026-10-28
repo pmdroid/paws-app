@@ -194,8 +194,8 @@ const MAX_BODY = 4096;
  * `GET /api/runners/vm`, `POST /api/runners/vm` (with an optional `{ pool }`), `POST
  * /api/runners/vm/retry`, `/delete`, `GET /api/runners/vm/pools` (exe.dev's `pool list`) and
  * `POST /api/runners/vm/pool` (`pool adopt`). The server checks the workspace session and CSRF
- * before this runs; this refuses observers and inactive members. Without an exe.dev token every
- * route answers `{ available: false }`.
+ * before this runs; this refuses inactive members. Without an exe.dev token every route answers
+ * `{ available: false }`.
  */
 export function createMemberVmHttp(options: {
   db: Database;
@@ -225,7 +225,7 @@ export function createMemberVmHttp(options: {
     const pools = options.exeDev;
     if (pools === undefined && path.startsWith("/api/runners/vm/pool")) return null;
     const current = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!current?.active || current.role === "observer")
+    if (!current?.active)
       return json(
         {
           error:

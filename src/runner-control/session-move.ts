@@ -141,7 +141,7 @@ export function createRunnerSessionMoves(options: {
       );
     });
     if (decision === "denied")
-      return json({ error: "Only workspace owners and admins can move running work." }, 403);
+      return json({ error: "Only workspace admins can move running work." }, 403);
     if (decision === "not_draining")
       return json({ error: "Drain this runner before moving all of its running work." }, 409);
     for (const session of decision) start(session.runId, runnerId, session.itemId);
@@ -165,7 +165,7 @@ export function createRunnerSessionMoves(options: {
         return session;
       });
       if (decision === "denied")
-        return json({ error: "Only workspace owners and admins can move running work." }, 403);
+        return json({ error: "Only workspace admins can move running work." }, 403);
       if (decision === "gone")
         return json(
           {

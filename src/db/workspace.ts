@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 
-export type WorkspaceRole = "owner" | "admin" | "member" | "observer";
+export type WorkspaceRole = "admin" | "member";
 export type WorkspaceRecord = {
   id: string;
   organizationId: string;
@@ -113,15 +113,13 @@ export function syncWorkspaceMember(
     if (
       previous !== null &&
       (previous.checkedAt > input.now ||
-        (previous.checkedAt === input.now &&
-          input.active &&
-          (!previous.active || (previous.role === "observer" && input.role !== "observer"))))
+        (previous.checkedAt === input.now && input.active && !previous.active))
     )
       return false;
     db.run(
       `INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at)
       VALUES(?,?,?,'linear',?,?) ON CONFLICT(workspace_id,user_id) DO UPDATE SET
-      role=CASE WHEN excluded.role='observer' THEN excluded.role WHEN workspace_member.source='manual' THEN COALESCE(workspace_member.manual_role,workspace_member.role) ELSE excluded.role END,
+      role=CASE WHEN workspace_member.source='manual' THEN COALESCE(workspace_member.manual_role,workspace_member.role) ELSE excluded.role END,
       manual_role=CASE WHEN workspace_member.source='manual' THEN COALESCE(workspace_member.manual_role,workspace_member.role) ELSE workspace_member.manual_role END,
       active=excluded.active,checked_at=excluded.checked_at`,
       [input.workspaceId, input.userId, input.role, input.active ? 1 : 0, input.now],
@@ -173,12 +171,13 @@ export function applyLinearUserChange(
   const workspace = workspaceForOrganization(db, input.organizationId);
   const member = workspace && workspaceLinearMember(db, workspace.id, input.userId);
   if (!member) return false;
+  // A Linear guest has no access to Paws, the same as a deactivated account.
   if (input.active === false || input.guest === true)
     return syncWorkspaceMember(db, {
       workspaceId: member.workspaceId,
       userId: member.userId,
-      active: input.active !== false && member.active,
-      role: (input.guest ?? member.role === "observer") ? "observer" : "member",
+      active: false,
+      role: "member",
       teamIds: member.teamIds,
       now: Math.max(input.now, member.checkedAt),
     });
@@ -212,7 +211,7 @@ export function consumeWorkspaceBootstrap(
     ).changes;
     if (claimed !== 1) throw new Error("Workspace bootstrap is invalid or expired.");
     if (workspaceForOrganization(db, input.organizationId) !== null)
-      throw new Error("This workspace already has an owner.");
+      throw new Error("This workspace already has an admin.");
     db.run("INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES(?,?,?,?)", [
       input.id,
       input.organizationId,
@@ -220,7 +219,7 @@ export function consumeWorkspaceBootstrap(
       input.now,
     ]);
     db.run(
-      "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES(?,?,'owner','manual',1,?)",
+      "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES(?,?,'admin','manual',1,?)",
       [input.id, input.userId, input.now],
     );
     auditWorkspaceAccess(db, {

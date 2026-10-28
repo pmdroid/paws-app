@@ -40,7 +40,7 @@ export async function handleHookSettingsRequest(
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Hook settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
-    return json({ error: "Only workspace owners and admins can change hooks." }, 403);
+    return json({ error: "Only workspace admins can change hooks." }, 403);
   const skills = () =>
     listSkills(options.db)
       .filter((skill) => skill.removedAt === null)

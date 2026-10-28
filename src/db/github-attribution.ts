@@ -29,7 +29,6 @@ export function requireAttributionSession(db: Database, binding: AttributionBind
   if (
     !session ||
     !member?.active ||
-    member.role === "observer" ||
     now < session.authenticated_at ||
     now >= session.expires_at
   )
@@ -171,7 +170,7 @@ export function githubAttribution(
   userId: string,
 ): VerifiedGitHubAttribution | null {
   const member = workspaceMember(db, workspaceId, userId);
-  if (!member?.active || member.role === "observer") return null;
+  if (!member?.active) return null;
   const row = db
     .query<Omit<VerifiedGitHubAttribution, "email">, [string, string]>(
       "SELECT github_id AS id,login,name FROM verified_github_attribution WHERE workspace_id=? AND user_id=? AND consented_at IS NOT NULL AND revoked_at IS NULL",

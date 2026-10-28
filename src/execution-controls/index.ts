@@ -57,7 +57,6 @@ export function createExecutionControls(input: {
           .get(session.sessionId)
       : null;
     return member?.active &&
-      member.role !== "observer" &&
       item &&
       session &&
       workspace &&

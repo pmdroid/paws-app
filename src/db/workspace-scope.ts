@@ -22,7 +22,7 @@ export function workspaceSessionIds(
         WHERE i.session_key=s.session_id AND NOT ${teamRepositoryAllowedSql("w.id", "s.team_id", "lower(r.owner || '/' || r.repo)")}
       ) ORDER BY s.session_id`,
     )
-    .all(workspaceId, clientId, member.role === "owner" || member.role === "admin" ? 1 : 0, userId)
+    .all(workspaceId, clientId, member.role === "admin" ? 1 : 0, userId)
     .map((row) => row.session_id)
     .filter((id) => getLinearSessionAccess(db, id) === "allowed");
 }

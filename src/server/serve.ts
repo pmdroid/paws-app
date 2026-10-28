@@ -37,7 +37,6 @@ import {
   handleMergeSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
-  MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
   type HighRiskFile,
   type MergeChoices,
@@ -53,6 +52,7 @@ import {
 } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
+  isWorkspaceAdmin,
   requestWorkspaceSession,
   validWorkspaceCsrf,
   type WorkspaceAccess,
@@ -332,12 +332,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         path.startsWith("/api/settings/") ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
-      // Admins manage skills and merging next to owners; every other setting stays with owners.
-      const roles = [SKILL_SETTINGS_PATH, MERGE_SETTINGS_PATH, HOOK_SETTINGS_PATH].includes(path)
-        ? ["owner", "admin"]
-        : ["owner"];
       if (
-        (privileged && !roles.includes(access.principal.role)) ||
+        (privileged && !isWorkspaceAdmin(access.principal.role)) ||
         (unsafe &&
           (request.headers.get("origin") !== workspace.origin ||
             !validWorkspaceCsrf(request, access.session)))
@@ -350,7 +346,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           now: Date.now(),
         });
         return Response.json(
-          { error: "Workspace ownership and a valid CSRF token are required." },
+          { error: "Workspace administration and a valid CSRF token are required." },
           { status: 403 },
         );
       }

@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
+import { LINEAR_GUEST_REFUSAL } from "./eligibility";
 import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
 import {
@@ -141,8 +142,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           const applied = syncWorkspaceMember(options.db, {
             workspaceId: workspaceKey,
             userId,
-            active: identity.active,
-            role: identity.guest ? "observer" : "member",
+            active: identity.active && !identity.guest,
+            role: "member",
             teamIds: identity.teamIds,
             now: observedAt,
           });
@@ -252,8 +253,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           issueUrl: done.issueUrl,
           teamName: done.teamName,
           member: { name: owner.name, email: owner.email },
-          memberOfTeam: owner.role !== "observer" && owner.teamIds.includes(done.teamId),
-          observer: owner.role === "observer",
+          memberOfTeam: owner.teamIds.includes(done.teamId),
           csrfToken: signedIn.session.csrfToken,
           readiness: options.onboardingReadiness?.({
             workspaceId: done.workspaceId,
@@ -268,9 +268,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           },
           github: credit,
           createVm: await createVmAvailable(),
-          // Observers cannot link; without App client metadata there is nothing to start.
+          // Without App client metadata there is nothing to start.
           githubLink:
-            credit === null && attribution.configured && owner.role !== "observer"
+            credit === null && attribution.configured
               ? {
                   action: `/onboard/${done.linkId}${GITHUB_STEP}`,
                   csrf: signedIn.session.csrfToken,
@@ -364,6 +364,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         identity.organizationId !== result.identity.organizationId
       )
         return json({ error: "Current Linear membership is required." }, 403);
+      if (identity.guest) return json({ error: LINEAR_GUEST_REFUSAL }, 403);
       const userId = putWorkspaceUser(options.db, {
         id: workspaceId(now()),
         linearUserId: result.identity.userId,
@@ -373,7 +374,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       let workspace = workspaceForOrganization(options.db, result.identity.organizationId);
       let syncAt = observedAt;
       if (result.bootstrapHash !== null) {
-        if (identity.guest) return json({ error: "Guests cannot bootstrap a workspace." }, 403);
         syncAt = now();
         workspace = consumeWorkspaceBootstrap(options.db, {
           id: workspaceId(now()),
@@ -385,7 +385,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         });
       }
       if (workspace === null) {
-        if (!identity.admin || identity.guest)
+        if (!identity.admin)
           return json(
             { error: "A Linear workspace admin must connect this workspace first." },
             403,
@@ -404,7 +404,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         workspaceId: workspace.id,
         userId,
         active: true,
-        role: identity.guest ? "observer" : "member",
+        role: "member",
         teamIds: identity.teamIds,
         now: syncAt,
       });
@@ -556,7 +556,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     repositoryTeams: (request: Request, signal: AbortSignal) =>
       track(async () => {
         const access = await authenticate(request);
-        if (access?.principal.role !== "owner" || !options.readTeams)
+        if (access?.principal.role !== "admin" || !options.readTeams)
           throw new Error("Workspace team access is unavailable.");
         return options.readTeams(signal);
       }),
