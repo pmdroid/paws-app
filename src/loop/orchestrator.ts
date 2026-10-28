@@ -397,6 +397,7 @@ import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
+import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
   closeoutChecksPrompt,
@@ -7021,7 +7022,8 @@ export class Orchestrator {
     item: WorkItemRecord,
     input: RunAgentOptions,
   ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes"> {
-    if (input.prepareOnly || !this.repositoryForItem(item)) return {};
+    const repository = this.repositoryForItem(item);
+    if (input.prepareOnly || !repository) return {};
     const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
     if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
@@ -7029,6 +7031,14 @@ export class Orchestrator {
       ...runtimes,
       closeoutPolicy: async () => {
         const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
+        // The runner parses the policy with its own release: say which keys it would leave out.
+        if (load.ok && !load.absent)
+          checkPolicyRunners(this.db, {
+            repository: `${repository.owner}/${repository.repo}`,
+            digest: load.digest,
+            files: load.files,
+            now: this.now(),
+          });
         return load.ok && !load.absent
           ? { ...load, published: publishedEvidence(this.db, item.id) }
           : load;

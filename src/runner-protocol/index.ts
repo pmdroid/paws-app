@@ -126,4 +126,12 @@ export {
   CHECKPOINT_RUNNER_VERSION,
   REVIEW_COMMAND_RUNNER_VERSION,
   CANDIDATE_REBASE_RUNNER_VERSION,
+  CLOSEOUT_CI_KEY_RUNNER_VERSION,
+  CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
 } from "./versions";
+export {
+  POLICY_KEY_RUNNER_VERSIONS,
+  policyKeysAbove,
+  runnerVersionAtLeast,
+  type PolicyKeyNeed,
+} from "./policy-keys";

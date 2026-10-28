@@ -81,6 +81,7 @@ import {
   runAgentSetup,
   runRunnerName,
   usagePause,
+  listPolicyRunnerWarnings,
   listPushOutages,
   listTaskBlockers,
   listWorkItemFacts,
@@ -211,6 +212,7 @@ export function createLiveStatusProvider(
         ...readLiveSnapshot(db, options),
         ...readIntake(db, options),
         ...readPushOutages(db),
+        ...readPolicyRunnerWarnings(db),
       };
     },
     item(id) {
@@ -446,6 +448,21 @@ function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages"> {
       lastError: outage.lastError,
       nextProbeAt: iso(outage.nextProbeAt),
       installationUrl: outage.installationUrl,
+    })),
+  };
+}
+
+/** Repositories whose Closeout policy uses keys the lowest online runner does not know (PAS-888). */
+function readPolicyRunnerWarnings(db: Database): Pick<StatusSnapshot, "policyRunnerWarnings"> {
+  const warnings = listPolicyRunnerWarnings(db);
+  if (!warnings.length) return {};
+  return {
+    policyRunnerWarnings: warnings.map((warning) => ({
+      repository: warning.repository,
+      policyDigest: warning.policyDigest,
+      runnerVersion: warning.runnerVersion,
+      keys: warning.keys,
+      checkedAt: iso(warning.checkedAt),
     })),
   };
 }

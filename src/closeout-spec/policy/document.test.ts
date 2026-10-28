@@ -20,12 +20,16 @@ items:
 
 /** The parser of a runner from before `ci` and `recheck`: the 0.1.48 schema. */
 function olderParser() {
-  const schema = structuredClone(policySchema) as {
-    $defs: Record<string, { properties: Record<string, unknown> }>;
-  };
-  for (const name of ["command", "review", "evidence", "rule"]) {
-    delete schema.$defs[name]!.properties.recheck;
-    delete schema.$defs[name]!.properties.ci;
+  const schema = structuredClone(policySchema);
+  const defs = schema.$defs;
+  for (const properties of [
+    defs.command.properties,
+    defs.review.properties,
+    defs.evidence.properties,
+    defs.rule.properties,
+  ] as Array<Record<string, unknown>>) {
+    delete properties.recheck;
+    delete properties.ci;
   }
   return createPolicyParser(schema);
 }

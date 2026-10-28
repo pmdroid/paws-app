@@ -39,8 +39,8 @@ export type PolicyParser = (text: string) => ParsedPolicy;
  * and named in `unknownKeys`, so a policy written for a newer parser still runs here; the keys it
  * knows are validated strictly. Tests pass an older schema to stand in for an older runner.
  */
-export function createPolicyParser(policySchema: AnySchema): PolicyParser {
-  const schema = readSchema(policySchema);
+export function createPolicyParser(schemaDocument: AnySchema): PolicyParser {
+  const schema = readSchema(schemaDocument);
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   ajv.addSchema(schema);
   const validators: Validators = {

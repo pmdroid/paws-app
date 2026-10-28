@@ -27,3 +27,10 @@ export const CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 export const REVIEW_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 47];
 /** First runner release that rebases a candidate onto its moved branch and pushes it again. */
 export const CANDIDATE_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 48];
+/** First runner release whose Closeout policy parser knows a check's `ci` key. */
+export const CLOSEOUT_CI_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 50];
+/**
+ * First runner release whose Closeout policy parser leaves out a key it does not know, with a
+ * warning, instead of blocking the run, and knows a check's `recheck` key.
+ */
+export const CLOSEOUT_POLICY_KEYS_RUNNER_VERSION: RunnerVersion = [0, 1, 51];

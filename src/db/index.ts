@@ -191,6 +191,13 @@ export {
   takePushOutageProbe,
   type PushOutage,
 } from "./push-outage";
+export {
+  clearPolicyRunnerWarning,
+  listPolicyRunnerWarnings,
+  onlineRunnerVersions,
+  savePolicyRunnerWarning,
+  type PolicyRunnerWarning,
+} from "./policy-runner-warning";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,
