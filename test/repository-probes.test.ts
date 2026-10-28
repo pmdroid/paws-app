@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-const PROBES = join(import.meta.dir, "..", ".agents", "probes");
+const ROOT = join(import.meta.dir, "..");
+const PROBES = join(ROOT, ".agents", "probes");
 
 const roots: string[] = [];
 afterEach(() => {
@@ -270,4 +271,216 @@ test("moving a file out of src/loop with an ejected line fails", () => {
   );
   expect(ran.exitCode).toBe(1);
   expect(ran.output).toContain("src/merge/merge.ts:1 names the ejected event");
+});
+
+const EVENTS = [
+  'import { z } from "zod";',
+  "",
+  'export const RunnerEventSchema = z.discriminatedUnion("type", [',
+  '  z.strictObject({ type: z.literal("progress"), runId: z.string(), message: z.string() }),',
+  '  z.strictObject({ type: z.literal("done"), runId: z.string(), exitCode: z.number().int() }),',
+  "]);",
+  "export const RunnerCommandSchema = z.strictObject({",
+  '  kind: z.literal("run"),',
+  "  runId: z.string(),",
+  "  resumeSessionId: z.string().optional(),",
+  "});",
+  "",
+].join("\n");
+const STATUS = [
+  'export const STATUS_API_PATH = "/api/status";',
+  'export const ITEM_STATES = ["queued", "running", "needs_human"] as const;',
+  "export type ItemState = (typeof ITEM_STATES)[number];",
+  "export interface StatusItem {",
+  "  id: string;",
+  "  title: string;",
+  "  state: ItemState;",
+  "  pullRequest?: { url: string; number: number } | null;",
+  "}",
+  "export interface StatusSnapshot {",
+  "  items: StatusItem[];",
+  "}",
+  "",
+].join("\n");
+const SERVE = [
+  'import { STATUS_API_PATH } from "../web/src/contract";',
+  "",
+  "export function serve(request: Request): Response {",
+  "  const path = new URL(request.url).pathname;",
+  '  if (request.method === "GET" && path === "/health") return new Response("ok");',
+  "  if (path === STATUS_API_PATH) {",
+  '    if (request.method === "GET") return Response.json({ items: [] });',
+  "  }",
+  '  if (path.startsWith("/webhooks/")) return new Response(null, { status: 401 });',
+  "  return new Response(null, { status: 404 });",
+  "}",
+  "",
+].join("\n");
+const API = {
+  ".gitignore": "node_modules\n",
+  "src/runner-protocol/index.ts": EVENTS,
+  "src/web/src/contract.ts": STATUS,
+  "src/server/serve.ts": SERVE,
+};
+
+/** Like `candidate`, with this checkout's dependencies installed for the probe to import zod. */
+function apiCandidate(change: Record<string, string | null>) {
+  const at = candidate(API, change);
+  symlinkSync(join(ROOT, "node_modules"), join(at.repo, "node_modules"));
+  return at;
+}
+
+function edit(path: keyof typeof API, from: string, to: string): Record<string, string> {
+  const body = API[path];
+  if (!body.includes(from)) throw new Error(`${path} does not contain ${from}`);
+  return { [path]: body.replace(from, to) };
+}
+
+test("an unchanged contract passes api-contract", () => {
+  const ran = probe("api-contract", apiCandidate({ "README.md": "# Fixture\n" }));
+  expect(ran.output).toContain(
+    "0 breaking changes · 0 additive · 3 routes, 2 runner schemas, 3 status types",
+  );
+  expect(ran.exitCode).toBe(0);
+});
+
+test("removing a field from the status snapshot fails api-contract and names the field", () => {
+  const ran = probe(
+    "api-contract",
+    apiCandidate(edit("src/web/src/contract.ts", "  title: string;\n", "")),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("status\tStatusItem.title\tremoved");
+  expect(ran.output).toContain("1 breaking changes");
+});
+
+test.each([
+  [
+    "a nested status field",
+    "{ url: string; number: number }",
+    "{ url: string }",
+    "StatusItem.pullRequest.number\tremoved",
+  ],
+  ["a status type", "| null;", ";", "StatusItem.pullRequest\tnarrowed: null no longer accepted"],
+  ["a required status field", "  id: string;", "  id?: string;", "StatusItem.id\tbecame optional"],
+  ["a status state", ', "needs_human"]', "]", 'ITEM_STATES\tvalue "needs_human" removed'],
+  ["a status path", '"/api/status"', '"/api/v2/status"', "STATUS_API_PATH\tchanged from"],
+])("narrowing %s fails api-contract", (_, from, to, message) => {
+  const ran = probe("api-contract", apiCandidate(edit("src/web/src/contract.ts", from, to)));
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain(message);
+});
+
+test("adding an optional field to a runner event passes api-contract", () => {
+  const ran = probe(
+    "api-contract",
+    apiCandidate(
+      edit(
+        "src/runner-protocol/index.ts",
+        "runId: z.string(), message: z.string() }",
+        "runId: z.string(), message: z.string(), detail: z.string().optional() }",
+      ),
+    ),
+  );
+  expect(ran.output).toContain("runner-protocol\tRunnerEventSchema<type=progress>.detail\tadded");
+  expect(ran.exitCode).toBe(0);
+});
+
+test("a matched union variant is compared field by field by its type literal", () => {
+  const reordered = API["src/runner-protocol/index.ts"]
+    .replace(
+      '  z.strictObject({ type: z.literal("progress"), runId: z.string(), message: z.string() }),\n',
+      "",
+    )
+    .replace(
+      "exitCode: z.number().int() }),\n",
+      'code: z.number().int() }),\n  z.strictObject({ type: z.literal("progress"), runId: z.string(), message: z.string(), step: z.number() }),\n  z.strictObject({ type: z.literal("log"), line: z.string() }),\n',
+    );
+  const ran = probe("api-contract", apiCandidate({ "src/runner-protocol/index.ts": reordered }));
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("RunnerEventSchema<type=done>.exitCode\tremoved");
+  expect(ran.output).toContain("RunnerEventSchema<type=done>.code\trequired field added");
+  expect(ran.output).toContain("RunnerEventSchema<type=progress>.step\trequired field added");
+  expect(ran.output).toContain("runner-protocol\tRunnerEventSchema<type=log>\tadded");
+  expect(ran.output).toContain("3 breaking changes");
+});
+
+test.each([
+  [
+    "a removed command field",
+    "  resumeSessionId: z.string().optional(),\n",
+    "",
+    "RunnerCommandSchema.resumeSessionId\tremoved",
+  ],
+  [
+    "a removed event variant",
+    '  z.strictObject({ type: z.literal("progress"), runId: z.string(), message: z.string() }),\n',
+    "",
+    "variant type=progress removed",
+  ],
+  [
+    "a narrowed field",
+    "exitCode: z.number().int()",
+    "exitCode: z.literal(0)",
+    "RunnerEventSchema<type=done>.exitCode\tnarrowed",
+  ],
+  [
+    "a removed schema",
+    "export const RunnerCommandSchema",
+    "const RunnerCommandSchema",
+    "RunnerCommandSchema\tschema removed",
+  ],
+])("%s in the runner protocol fails api-contract", (_, from, to, message) => {
+  const ran = probe("api-contract", apiCandidate(edit("src/runner-protocol/index.ts", from, to)));
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain(message);
+});
+
+test("removing a route fails api-contract", () => {
+  const ran = probe(
+    "api-contract",
+    apiCandidate(
+      edit(
+        "src/server/serve.ts",
+        '  if (path.startsWith("/webhooks/")) return new Response(null, { status: 401 });\n',
+        "",
+      ),
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("route\t* /webhooks/*\tremoved");
+});
+
+test("dropping a method from a route fails api-contract", () => {
+  const ran = probe(
+    "api-contract",
+    apiCandidate(
+      edit(
+        "src/server/serve.ts",
+        'if (request.method === "GET") return Response.json',
+        'if (request.method === "POST") return Response.json',
+      ),
+    ),
+  );
+  expect(ran.exitCode).toBe(1);
+  expect(ran.output).toContain("route\tGET /api/status\tGET no longer served; now POST");
+});
+
+test("adding a route, or serving a route for any method, passes api-contract", () => {
+  const ran = probe(
+    "api-contract",
+    apiCandidate({
+      ...edit("src/server/serve.ts", '  if (request.method === "GET") return', "  return"),
+      "src/runner-work/http.ts": [
+        "export function handle(request: Request, path: string): Response | null {",
+        '  if (path === "/v1/events" && request.method === "POST") return new Response(null);',
+        "  return null;",
+        "}",
+        "",
+      ].join("\n"),
+    }),
+  );
+  expect(ran.output).toContain("route\tPOST /v1/events\tadded");
+  expect(ran.output).toContain("route\t* /api/status\tadded");
+  expect(ran.exitCode).toBe(0);
 });
