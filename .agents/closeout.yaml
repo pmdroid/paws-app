@@ -111,3 +111,9 @@ rules:
     probe: .agents/probes/restart-and-ask-from-loop.ts
     failOn: P1
     onFail: fix
+  - id: api-contract
+    summary: No removed runner schema, status field or route, new required runner input, or narrowed type.
+    probe: .agents/probes/api-contract.ts
+    paths: ["src/web/src/contract.ts", "src/runner-protocol/**", "src/server/**"]
+    failOn: P1
+    onFail: approve
