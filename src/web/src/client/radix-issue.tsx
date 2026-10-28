@@ -21,25 +21,22 @@ import {
   Theme,
 } from "@radix-ui/themes";
 
-type Color = "green" | "red" | "amber" | "orange" | "blue" | "gray";
+type Color = "green" | "red" | "amber" | "blue" | "gray";
 
 const options: HTMLReactParserOptions = { replace };
 
 export function RadixIssuePage({ node }: { node: Element }) {
   return (
     <Theme
-      accentColor="orange"
-      grayColor="mauve"
+      accentColor="indigo"
+      grayColor="gray"
       radius="medium"
       appearance="inherit"
-      hasBackground
-      style={{ borderRadius: "var(--radius-5)", minWidth: 0 }}
+      hasBackground={false}
     >
-      <Box p={{ initial: "4", sm: "6" }}>
-        <Flex asChild direction="column" gap="6" minWidth="0">
-          <article {...attributesToProps(unclassed(node.attribs))}>{children(node)}</article>
-        </Flex>
-      </Box>
+      <Flex asChild direction="column" gap="6" minWidth="0">
+        <article {...attributesToProps(unclassed(node.attribs))}>{children(node)}</article>
+      </Flex>
     </Theme>
   );
 }
@@ -54,7 +51,7 @@ function stateColor(classes: Set<string>): Color {
     return "red";
   if (has("merged", "completed", "accepted", "passed", "done", "ok")) return "green";
   if (has("awaiting_input", "warn", "paused", "usage-pause-card")) return "amber";
-  if (has("running", "verifying", "now", "merge_queue")) return "orange";
+  if (has("running", "verifying", "now", "merge_queue")) return "blue";
   return "gray";
 }
 
@@ -122,7 +119,7 @@ function replace(node: DOMNode): ReactElement | undefined {
         asChild
         size="3"
         variant={has("now") ? "solid" : "soft"}
-        color={has("done") ? "green" : has("failed") ? "red" : has("now") ? "orange" : "gray"}
+        color={has("done") ? "green" : has("failed") ? "red" : has("now") ? undefined : "gray"}
       >
         <li {...props}>{kids()}</li>
       </Badge>
@@ -168,6 +165,7 @@ function replace(node: DOMNode): ReactElement | undefined {
         <button
           {...props}
           type="button"
+          className="[&>:first-child]:shrink-0 [&>:first-child]:whitespace-nowrap"
           style={{
             display: "flex",
             alignItems: "center",

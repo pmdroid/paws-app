@@ -7,7 +7,7 @@ export function Sidebar({ className, ...props }: ComponentProps<"aside">) {
     <aside
       data-slot="sidebar"
       className={cn(
-        "w-sidebar min-w-0 self-stretch border-r-2 border-border bg-secondary-background text-foreground",
+        "w-sidebar min-w-0 self-stretch border-r border-border bg-secondary-background text-foreground",
         className,
       )}
       {...props}
@@ -20,7 +20,7 @@ export function SidebarHeader({ className, ...props }: ComponentProps<"div">) {
     <div
       data-slot="sidebar-header"
       className={cn(
-        "flex min-h-20 shrink-0 flex-col justify-center gap-3 border-b-2 border-border px-6 py-4",
+        "flex min-h-16 shrink-0 flex-col justify-center gap-3 border-b border-border px-6 py-3",
         className,
       )}
       {...props}
@@ -65,8 +65,9 @@ export function SidebarMenuLink({
       data-active={active || undefined}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex min-h-control w-full items-center gap-3 rounded-base border-2 border-transparent px-3 py-2 text-sm font-semibold hover:border-border hover:bg-main hover:text-main-foreground focus-visible:outline-ring",
-        active && "border-border bg-main text-main-foreground",
+        "flex min-h-control w-full items-center gap-3 rounded-base px-3 py-2 text-sm font-medium text-[var(--gray-11)] hover:bg-[var(--gray-a3)] hover:text-[var(--gray-12)] focus-visible:outline-ring",
+        active &&
+          "bg-[var(--indigo-a3)] text-[var(--indigo-11)] hover:bg-[var(--indigo-a4)] hover:text-[var(--indigo-11)]",
         className,
       )}
       {...props}

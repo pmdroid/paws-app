@@ -14,26 +14,19 @@
 
 :root {
   color-scheme: light;
-  --background: #c0b4f1;
-  --secondary-background: #fdfdfb;
-  --main: #ff793e;
-  --foreground: #101317;
-  --main-foreground: #101317;
-  --border: #101317;
-  --ring: #5b3198;
-  --overlay: rgb(16 19 23 / 72%);
-  --shadow: 4px 4px 0 0 var(--border);
+  --background: var(--gray-2);
+  --secondary-background: var(--gray-1);
+  --main: var(--indigo-9);
+  --foreground: var(--gray-12);
+  --main-foreground: white;
+  --border: var(--gray-6);
+  --ring: var(--indigo-8);
+  --overlay: var(--black-a8);
+  --shadow: none;
 }
 
 .dark {
   color-scheme: dark;
-  --background: #241c38;
-  --secondary-background: #312848;
-  --main: #ff793e;
-  --foreground: #f8f6f2;
-  --main-foreground: #101317;
-  --border: #101317;
-  --ring: #c0b4f1;
 }
 
 @theme inline {
@@ -45,7 +38,7 @@
   --color-border: var(--border);
   --color-ring: var(--ring);
   --color-overlay: var(--overlay);
-  --color-gauge: #c0b4f1;
+  --color-gauge: var(--indigo-8);
   --spacing-control: 2.75rem;
   --spacing-sidebar: 16rem;
   --spacing-boxShadowX: 4px;
@@ -55,7 +48,7 @@
   --radius-base: 5px;
   --font-weight-base: 500;
   --font-weight-heading: 700;
-  --font-sans: "Bricolage", sans-serif;
+  --font-sans: var(--default-font-family);
   --shadow-shadow: var(--shadow);
 }
 
