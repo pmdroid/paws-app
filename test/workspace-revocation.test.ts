@@ -156,6 +156,15 @@ test("revoke and restore require admin, origin and CSRF; self and last admin sta
       expect((await send("admin", { origin: "https://elsewhere.invalid" })).status).toBe(403);
       expect((await send("admin", { "x-paws-csrf": "wrong" })).status).toBe(403);
     }
+    const invalid = await fetch(`${f.origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: f.headers("admin"),
+      body: JSON.stringify({ userId: "outside", revoked: "true" }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({
+      error: "Choose a workspace member and set revoked to true or false.",
+    });
     expect(() =>
       changeWorkspaceRevocation(f.db, {
         workspaceId: "workspace",

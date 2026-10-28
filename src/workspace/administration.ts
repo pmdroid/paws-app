@@ -105,7 +105,11 @@ export async function handleWorkspaceAdministration(
           (typeof body["role"] === "string" && ["admin", "member"].includes(body["role"]))
         )
       )
-        throw new Error("Choose a workspace member and a role, or set revoked to true or false.");
+        throw new Error(
+          "revoked" in body
+            ? "Choose a workspace member and set revoked to true or false."
+            : "Choose a workspace member and role.",
+        );
       const member = workspaceMember(options.db, principal.workspaceId, body["userId"]);
       const workspace = getWorkspace(options.db, principal.workspaceId);
       if (member === null || workspace === null) throw new Error("Choose a workspace member.");
