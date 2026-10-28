@@ -55,6 +55,8 @@ Example:
 }
 ```
 
+`GET /api/findings` feeds the Findings page at `/status/findings`, `FindingsResponse` in [`src/findings.ts`](src/findings.ts). It reads `review_finding`: one row per distinct review finding that did not block a merge (pre-existing, or below the review's `failOn`), keyed by `reviewFindingKey` in `src/core` (repository, path, line range and normalized text). Paws records them when Closeout accepts a head, from the stored review evidence, and a one-time job backfilled the runs accepted before. The query filters by `repository`, `severity`, `review`, `status` (`open` by default, `all` for any) and `path` prefix; the list is newest last seen first, at most 500, with `counts` per severity over the other filters, and shows a finding only when the reader can open an item that reported it. `POST /api/findings` with the CSRF token lets an active member send `{ id, action: "dismiss", reason }` or `{ id, action: "reopen" }` on a dismissed one. `filed`, with the Linear issue, is written through `markReviewFindingFiled`; `gone` is set by Paws when a later accepted review of the same path no longer reports it.
+
 `createLiveStatusProvider(db)` is exported from [`index.ts`](index.ts) and reads the engine database (`source: "live"`). `fakeStatusProvider()` returns an empty live snapshot. The server mounts the live reader like this:
 
 ```ts
