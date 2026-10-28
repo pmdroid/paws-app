@@ -63,6 +63,44 @@ test("bare mirror and worktree stay off the developer checkout", async () => {
   expect(stillThere).toBe(checkpoint.sha);
 }, 20_000);
 
+test("a worktree starts from a continued branch's tip and never falls back to main", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-wt-"));
+  roots.push(root);
+  const source = join(root, "checkout");
+  const pawsRoot = join(root, "home", ".paws");
+  await initRepo(source);
+  await git(["checkout", "-qb", "paws/eng-7"], { cwd: source });
+  await writeFile(join(source, "earlier.txt"), "earlier work\n");
+  await git(["add", "earlier.txt"], { cwd: source });
+  await git(
+    ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "earlier"],
+    { cwd: source },
+  );
+  const tip = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+  await git(["checkout", "-q", "main"], { cwd: source });
+  await ensureBareMirror({ remoteUrl: source, owner: "acme", repo: "demo", pawsRoot });
+
+  const continued = await createWorktree({
+    owner: "acme",
+    repo: "demo",
+    itemId: "ENG-7-NEXT",
+    pawsRoot,
+    startRef: "origin/paws/eng-7",
+  });
+  expect((await git(["-C", continued.path, "rev-parse", "HEAD"])).trim()).toBe(tip);
+
+  // Starting from main would push over the earlier branch's commits.
+  await expect(
+    createWorktree({
+      owner: "acme",
+      repo: "demo",
+      itemId: "ENG-7-GONE",
+      pawsRoot,
+      startRef: "origin/paws/eng-7-missing",
+    }),
+  ).rejects.toThrow("origin/paws/eng-7-missing");
+}, 20_000);
+
 async function initRepo(dir: string): Promise<void> {
   const { mkdir } = await import("node:fs/promises");
   await mkdir(dir, { recursive: true });

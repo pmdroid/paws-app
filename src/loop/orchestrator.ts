@@ -1199,7 +1199,10 @@ export class Orchestrator {
       acknowledged: options.acknowledged,
       isCurrent: intakeCurrent,
       reconcileSessions: sessionId
-        ? (issueIds) => this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent)
+        ? (issueIds) =>
+            this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent, {
+              keepPullRequest: options.startFresh !== true,
+            })
         : undefined,
       startFresh: options.startFresh === true,
       inspectBranch: (earlier) => this.inspectEarlierBranch(earlier),
@@ -1297,6 +1300,8 @@ export class Orchestrator {
     issueIds: readonly string[],
     incomingSessionId: string,
     isCurrent: () => boolean,
+    /** The new delegation may continue the stopped session's branch, so its pull request stays. */
+    stop: { keepPullRequest: boolean },
   ): Promise<void> {
     if (!this.tracker?.getSession) return;
     const candidates = (issueId: string) =>
@@ -1345,12 +1350,11 @@ export class Orchestrator {
               !["complete", "error", "stopping"].includes(snapshot.status)
             )
               continue;
-            // The new delegation continues this session's branch, so its pull request stays open.
             await this.stopSession(
               sessionId,
               `reconcile:${sessionId}:${previous.generation}`,
               this.now(),
-              { keepPullRequest: true },
+              stop,
             );
           } else {
             await this.interruptLinearSession(sessionId);
