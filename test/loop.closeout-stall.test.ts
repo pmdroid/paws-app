@@ -7,6 +7,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { runAgent } from "../src/acp";
+import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { JOB_KIND, type Clock } from "../src/core";
 import {
   JobLoop,
@@ -172,6 +174,111 @@ test("a resume job claimed for an item in verifying journals and asks instead of
     await f.close();
   }
 }, 90_000);
+
+test("a reverify steps aside while the turn's own Closeout is live", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    const runId = item.currentRunId!;
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: item.id },
+      maxAttempts: 1,
+      now: Date.now(),
+    });
+    // Reproduce a duplicate dispatched outside the ordinary same-item claim exclusion.
+    f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
+    await f.tickReverify();
+    f.db.run("UPDATE job SET queue=? WHERE id=?", [JOB_KIND.start, f.jobId]);
+
+    expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+      status: "done",
+      attempts: 1,
+      lastError: null,
+    });
+    expect(f.gate.runs).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)).toMatchObject({ state: "verifying", currentRunId: runId });
+    expect(f.stalls()).toEqual([]);
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+
+    f.release();
+    await f.turn;
+    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect(f.gate.runs).toHaveLength(1);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+for (const state of ["verifying", "merge_queue"] as const)
+  for (const lease of ["missing", "expired", "live", "grace"] as const)
+    test(`a reverify after restart handles an active ${state} run with ${lease} runner work`, async () => {
+      const f = await verifyingWithHeldGate({ remote: true });
+      try {
+        f.release();
+        await f.turn;
+        await f.restart();
+        const item = listWorkItems(f.db)[0]!;
+        const runId = item.currentRunId!;
+        // Restore the rows a process restart can leave behind, with no in-memory owner.
+        f.db.run("UPDATE run SET status='active' WHERE id=?", [runId]);
+        f.db.run("UPDATE work_item SET state=? WHERE id=?", [state, item.id]);
+        if (lease === "missing") f.db.run("DELETE FROM runner_work WHERE run_id=?", [runId]);
+        else
+          f.db.run("UPDATE runner_work SET ended_at=NULL, lease_until=? WHERE run_id=?", [
+            Date.now() +
+              (lease === "live"
+                ? 60_000
+                : lease === "grace"
+                  ? -1_000
+                  : -RUNNER_LEASE_GRACE_MS - 1_000),
+            runId,
+          ]);
+        const jobId = enqueueJob(f.db, {
+          queue: JOB_KIND.reverify,
+          payload: { itemId: item.id },
+          maxAttempts: 1,
+          now: Date.now(),
+        });
+        await f.tickReverify();
+
+        expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+          status: "done",
+          attempts: 1,
+          lastError: null,
+        });
+        if (lease === "live" || lease === "grace") {
+          expect(f.gate.runs).toHaveLength(1);
+          expect(getRun(f.db, runId)?.status).toBe("active");
+          expect(getWorkItem(f.db, item.id)).toMatchObject({ state, currentRunId: runId });
+        } else {
+          expect(f.gate.runs).toHaveLength(2);
+          expect(getRun(f.db, runId)?.status).toBe("ended");
+          const current = getWorkItem(f.db, item.id)!;
+          expect(current.state).toBe("merge_queue");
+          expect(current.currentRunId).not.toBe(runId);
+          expect(getRun(f.db, current.currentRunId!)).toMatchObject({
+            kind: "recheck",
+            status: "ended",
+          });
+        }
+        expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+        expect(f.stalls()).toEqual([]);
+        expect(
+          f.db
+            .query(
+              "SELECT 1 FROM work_item_event WHERE item_id=? AND event='closeout_infra_failed'",
+            )
+            .all(item.id),
+        ).toEqual([]);
+      } finally {
+        f.release();
+        await f.turn;
+        await f.close();
+      }
+    }, 90_000);
 
 /** Review attempts ran out at `head`: the independent review is exhausted, the rest passed. */
 function reviewExhausted(head: string): CloseoutVerdict {
@@ -348,7 +455,7 @@ function restartReasons(db: Database, itemId: string): string[] {
 }
 
 /** One item whose turn ended and whose Closeout run is held open by the fake gate. */
-async function verifyingWithHeldGate(options: { publicUrl?: string } = {}) {
+async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boolean } = {}) {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
     {
@@ -396,27 +503,32 @@ async function verifyingWithHeldGate(options: { publicUrl?: string } = {}) {
     };
   };
   const github = createFakeGitHub();
-  const orchestrator = attachOrchestrator({
-    db,
-    admission: workspaceAdmission(db),
-    jobs,
-    outbox,
-    clock,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker,
-    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
-    githubForRepository: () => ({
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: privateKey as string,
-      client: githubClient(layout.bare, github),
-    }),
-    launch,
-    closeoutGate: () => gate,
-    journal: (line) => lines.push(line),
-    ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
-  });
+  const attach = () =>
+    attachOrchestrator({
+      db,
+      admission: workspaceAdmission(db),
+      jobs,
+      outbox,
+      clock,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: privateKey as string,
+        client: githubClient(layout.bare, github),
+      }),
+      launch,
+      ...(options.remote
+        ? { remoteExecution: { agentForItem: () => runAgent, agentForSession: () => runAgent } }
+        : {}),
+      closeoutGate: () => gate,
+      journal: (line) => lines.push(line),
+      ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
+    });
+  let orchestrator = attach();
   await orchestrator.onLinearEvent(created());
   db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
   const turn = jobs.tick();
@@ -451,6 +563,11 @@ async function verifyingWithHeldGate(options: { publicUrl?: string } = {}) {
     orchestrator,
     flush,
     stalls: () => lines.filter((line) => line.includes("in verifying:")),
+    async restart() {
+      await orchestrator.shutdown();
+      orchestrator = attach();
+    },
+    tickReverify: () => jobs.tick([JOB_KIND.reverify]),
     async tickAll() {
       while ((await jobs.tick()) !== null);
       await flush();
