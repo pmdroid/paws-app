@@ -1,3 +1,5 @@
+import { renderFindingGroups, findingGroupsRequest } from "./finding-groups";
+import type { FindingGroupAction, FindingGroupsResponse } from "../finding-groups";
 import { journalCaught } from "../journal";
 import {
   DEFAULT_FINDING_FILTER,
@@ -20,6 +22,8 @@ import { renderMarkup } from "./theme";
 
 export type FindingsView = {
   data: FindingsResponse | null;
+  groups?: FindingGroupsResponse | null;
+  mode?: "findings" | "groups";
   filter: FindingFilter;
   busy: boolean;
   error: string | null;
@@ -38,11 +42,14 @@ const STATUS_LABEL: Record<FindingStatus, string> = {
 
 /** The Findings page: counts per severity, the filters, then one row per finding. */
 export function renderFindings(view: FindingsView): string {
+  const tabs = `<div class="row" role="group" aria-label="Findings view"><button class="btn${view.mode !== "groups" ? " on" : ""}" type="button" data-findings-mode="findings" aria-pressed="${view.mode !== "groups"}">Findings</button><button class="btn${view.mode === "groups" ? " on" : ""}" type="button" data-findings-mode="groups" aria-pressed="${view.mode === "groups"}">Groups</button></div>`;
+  if (view.mode === "groups")
+    return `${tabs}${view.error ? `<p role="alert" class="checkout-error">${esc(view.error)} <button class="btn" data-findings-action="reload">Retry</button></p>` : ""}<p role="status">${esc(view.message)}</p>${renderFindingGroups(view.groups ?? null, view.local, view.busy)}`;
   const intro = `<p>Review findings that did not block a merge: in code the change did not touch, or below the review's <code>failOn</code>. Each is listed once, however many issues reported it.</p>`;
   const message = `<p class="muted" role="status" data-findings-message="">${esc(view.message)}</p>`;
   if (view.error && !view.data)
-    return `${intro}<div class="empty" role="status"><div>Findings unavailable</div>${esc(view.error)}<div><button class="btn primary" type="button" data-findings-action="reload">Retry</button></div></div>`;
-  if (!view.data) return `${intro}<div class="empty" role="status">Loading findings…</div>`;
+    return `${tabs}${intro}<div class="empty" role="status"><div>Findings unavailable</div>${esc(view.error)}<div><button class="btn primary" type="button" data-findings-action="reload">Retry</button></div></div>`;
+  if (!view.data) return `${tabs}${intro}<div class="empty" role="status">Loading findings…</div>`;
   const data = view.data;
   const error = view.error ? `<p class="checkout-error" role="alert">${esc(view.error)}</p>` : "";
   const list = data.findings.length
@@ -52,7 +59,7 @@ export function renderFindings(view: FindingsView): string {
     data.total > data.findings.length
       ? `<p class="muted">Showing the ${data.findings.length} seen last of ${data.total}. Narrow the filters to see the rest.</p>`
       : "";
-  return `${intro}${counts(data, view.filter)}${filters(data, view.filter)}${error}${message}${list}${cut}`;
+  return `${tabs}${intro}${counts(data, view.filter)}${filters(data, view.filter)}${error}${message}${list}${cut}`;
 }
 
 function counts(data: FindingsResponse, filter: FindingFilter): string {
@@ -123,7 +130,7 @@ function row(finding: FindingView, local: boolean): string {
     finding.firstSeenAt === finding.lastSeenAt
       ? `Seen ${esc(utcDate(finding.firstSeenAt))} UTC`
       : `First seen ${esc(utcDate(finding.firstSeenAt))} UTC, last seen ${esc(utcDate(finding.lastSeenAt))} UTC`;
-  return `<li class="finding" data-finding="${finding.id}" data-finding-status="${finding.status}">
+  return `<li class="finding" id="finding-${finding.id}" data-finding="${finding.id}" data-finding-status="${finding.status}">
     <div class="issue-row"><div class="min-w-0"><div class="row">${severity}<code>${esc(place)}</code>${status}</div><p class="finding-text">${esc(finding.text)}</p></div>${actions(finding, local)}
     <div class="issue-facts finding-facts"><span>${esc(finding.repository)}</span><span>${esc(finding.review)}</span><span>${esc(finding.bugClass)}</span><span>${esc(finding.why)}</span><span>${reported}</span><span>${seen}</span></div></div>
     ${statusLine(finding)}
@@ -217,9 +224,13 @@ export function createFindings(): {
     const started = ++generation;
     view.busy = true;
     try {
-      const data = (await findingsRequest(engine, { filter: view.filter })) as FindingsResponse;
+      const [data, groups] = await Promise.all([
+        findingsRequest(engine, { filter: view.filter }) as Promise<FindingsResponse>,
+        findingGroupsRequest(engine) as Promise<FindingGroupsResponse>,
+      ]);
       if (started !== generation) return;
       view.data = data;
+      view.groups = groups;
       view.error = null;
     } catch (error) {
       journalCaught(error, "findings.createFindings.load", null);
@@ -255,6 +266,24 @@ export function createFindings(): {
     }
     await load();
   };
+  const groupAct = async (action: FindingGroupAction) => {
+    if (!engine || view.busy) return;
+    view.busy = true;
+    paint();
+    try {
+      await findingGroupsRequest(engine, action, readCsrfToken(document));
+      view.message =
+        action.action === "run" ? "Grouping queued. Refresh to see the result." : "Group updated.";
+      view.error = null;
+    } catch (error) {
+      journalCaught(error, "findings.groupAct", null);
+      view.error = error instanceof Error ? error.message : "The group action failed.";
+    } finally {
+      view.busy = false;
+      paint();
+    }
+    if (!view.error) await load();
+  };
   const formFilter = (form: HTMLFormElement): FindingFilter =>
     parseFindingQuery(
       new URLSearchParams(
@@ -263,6 +292,28 @@ export function createFindings(): {
     );
   const click = (event: Event) => {
     const target = event.target as Element;
+    const mode = target.closest<HTMLButtonElement>("[data-findings-mode]");
+    if (mode) {
+      view.mode = mode.dataset.findingsMode as "findings" | "groups";
+      paint();
+      return;
+    }
+    const finding = target.closest<HTMLAnchorElement>("[data-group-finding]");
+    if (finding) {
+      event.preventDefault();
+      view.mode = "findings";
+      view.filter = { ...DEFAULT_FINDING_FILTER, status: "all" };
+      void load().then(() =>
+        root?.querySelector(`#finding-${finding.dataset.groupFinding}`)?.scrollIntoView(),
+      );
+      return;
+    }
+    const group = target.closest<HTMLButtonElement>("[data-group-action]");
+    if (group) {
+      const action = group.dataset.groupAction as "run" | "file" | "add";
+      void groupAct(action === "run" ? { action } : { action, id: group.dataset.groupId! });
+      return;
+    }
     const severity = target.closest<HTMLButtonElement>("[data-findings-severity]");
     if (severity) {
       const value = severity.dataset.findingsSeverity as FindingFilter["severity"];
@@ -287,6 +338,15 @@ export function createFindings(): {
     if (form.dataset.findingsFilters !== undefined) {
       event.preventDefault();
       filterTo(formFilter(form));
+      return;
+    }
+    if (form.dataset.groupDismiss !== undefined) {
+      event.preventDefault();
+      void groupAct({
+        action: "dismiss",
+        id: form.dataset.groupDismiss,
+        reason: String(new FormData(form).get("reason") ?? "").trim(),
+      });
       return;
     }
     const id = form.dataset.findingDismiss;

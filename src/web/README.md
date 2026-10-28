@@ -96,3 +96,7 @@ bun run check
 ```
 
 That runs oxlint, oxfmt, `tsc` (engine plus the browser client), the tests, and the static build.
+
+The Findings page also loads `GET /api/finding-groups`. Its Groups view lists the shared fix, scope, member severities and links to individual rows, alongside the last grouping run's time, duration, tokens when reported, and group count. `POST /api/finding-groups` accepts `run` for admins, or `file`, `add`, and `dismiss` with a group `id`; dismissal includes `reason`. Workspace access and CSRF apply to every mutation. Each member must have access to every finding in a group to act on it. Filing and commenting use stable Linear ids for safe retries. The daily job never writes to Linear.
+
+Run `bun scripts/verify-finding-groups-ui.ts /tmp/finding-groups-evidence` after `bun run build:status` for light and dark desktop and 390 px captures, linked-row navigation, and group action checks using a local fixture server.

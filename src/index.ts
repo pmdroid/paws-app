@@ -1,3 +1,9 @@
+import { workspaceSessionIds } from "./db";
+import {
+  createFindingGrouping,
+  registerFindingGrouping,
+  scopedGroupingSources,
+} from "./finding-groups";
 import { shutdownPaws, stopPawsComponents } from "./shutdown";
 import { journalCaught } from "./journal";
 import { startBrowserOnboarding } from "./onboarding-start";
@@ -48,6 +54,7 @@ import {
   ignoredCommentBots,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
+  resolveAgentProfiles,
   loadEnv,
   loadConfigFile,
   loadRunnerControl,
@@ -243,6 +250,7 @@ import {
 import {
   createRemoteAgentRunner,
   createRemoteSessionAgentRunner,
+  createFindingGroupHelper,
   fetchRunnerCandidate,
   remoteCommandsGone,
 } from "./runner-backend";
@@ -824,6 +832,37 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   void remote?.catch((caughtError4) => {
     journalCaught(caughtError4, "index.startPaws", null);
   });
+  const findingGrouping = linear?.findingIssues
+    ? createFindingGrouping({
+        db,
+        issues: linear.findingIssues,
+        helper: createFindingGroupHelper({
+          db,
+          helpers: async () => {
+            const coordinator = await runnerReady;
+            if (!coordinator) throw new Error("A paired runner is required for finding grouping.");
+            return coordinator.helpers;
+          },
+          profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+        }),
+        sources: (workspaceId) => {
+          if (!runtime.linearClientId) return [];
+          const admins = db
+            .query<{ userId: string }, [string]>(
+              "SELECT user_id AS userId FROM workspace_member WHERE workspace_id=? AND active=1 AND role IN ('owner','admin')",
+            )
+            .all(workspaceId);
+          const sessions = [
+            ...new Set(
+              admins.flatMap((a) =>
+                workspaceSessionIds(db, workspaceId, a.userId, runtime.linearClientId!),
+              ),
+            ),
+          ];
+          return scopedGroupingSources(db, workspaceId, sessions);
+        },
+      })
+    : null;
   const remoteExecution: OrchestratorOptions["remoteExecution"] = remote
     ? {
         cancelItem: async (itemId) => {
@@ -898,6 +937,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearRevoked()
           ? reconnectLinear(request, client)
           : null,
+      ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),
       hostname: env.host,
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
@@ -1396,6 +1436,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           now: Date.now(),
         });
       }
+      if (findingGrouping)
+        registerFindingGrouping(created.jobs, {
+          groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
+          workspaces: () =>
+            db
+              .query<{ id: string }, []>("SELECT id FROM workspace")
+              .all()
+              .map((w) => w.id),
+          run: (workspaceId, signal) =>
+            findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
+        });
       registerScheduler(created.jobs, () => attached.reconcileExecution());
       // A conversation blocked on an unverified cleanup continues once its runner reports the
       // old command gone.
