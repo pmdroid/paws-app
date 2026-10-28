@@ -74,7 +74,7 @@ test("a refusal for the workflows permission is no push outage and fails the ite
     expect(getPushOutage(run.db, "pmdroid/paws-demo")).toBeNull();
     expect(run.progress("elicitation"), run.detail()).toEqual([]);
     expect(run.progress("error").join("\n"), run.detail()).toContain(
-      "without `workflows` permission",
+      'it lacks the "workflows" permission needed to push a change to .github/workflows/ci.yml',
     );
   } finally {
     await run.cleanup();
