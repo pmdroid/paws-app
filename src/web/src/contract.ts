@@ -117,6 +117,10 @@ export interface StatusItem {
   runId: string | null;
   pr: StatusPullRequest | null;
   links: StatusLink[];
+  /** `work_item.version`, which changes with every change of the item. */
+  version?: number;
+  /** Completed, merged, cancelled or failed with no stuck agent: no execution controls to ask for. */
+  noControls?: boolean;
   /** A queued item's place among the items waiting for a runner slot. */
   queue?: StatusQueuePosition;
   held?: StatusHeld;
@@ -1215,6 +1219,8 @@ function readItem(input: unknown, index: number): StatusItem {
     runId,
     pr: readPr(body.pr, `${path}.pr`),
     links: readLinks(body.links, `${path}.links`),
+    ...(body.version === undefined ? {} : { version: count(body, "version", path) }),
+    ...(body.noControls === undefined ? {} : { noControls: boolean(body, "noControls", path) }),
     ...(body.queue === undefined ? {} : { queue: readQueue(body.queue, `${path}.queue`) }),
     ...(body.held === undefined ? {} : { held: readHeld(body.held, `${path}.held`) }),
     ...(body.mergeQueue === undefined
