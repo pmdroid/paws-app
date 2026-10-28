@@ -137,3 +137,46 @@ test("Clear stuck agent clears a blocked conversation for an owner, refuses a me
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Asking which controls an item has is not a denial; a refused action still is", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-controls-audit-"));
+  const fixture = createExecutionControlsFixture(root);
+  try {
+    const { db, call } = fixture;
+    const denials = () =>
+      db
+        .query<{ userId: string; subject: string }, []>(
+          "SELECT user_id AS userId,subject FROM workspace_access_audit WHERE action='access.denied' ORDER BY id",
+        )
+        .all();
+    // Not their session, another organization, and an item with no session at all.
+    db.run(
+      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
+      VALUES('sessionless','sessionless','sessionless','sessionless','No session','queued','paws/sessionless',2,?)`,
+      [Date.now()],
+    );
+    for (const [identity, itemId] of [
+      ["outside", "controlled"],
+      ["observer", "controlled"],
+      ["owner", "foreign"],
+      ["owner", "sessionless"],
+      ["owner", "missing"],
+    ] as const) {
+      const response = await call(undefined, identity, itemId);
+      assert.equal(response.status, 200);
+      assert.deepEqual(((await response.json()) as { actions: string[] }).actions, []);
+    }
+    assert.deepEqual(denials(), []);
+
+    for (const action of ["pause", "stop"])
+      assert.equal((await call(action, "outside")).status, 403);
+    assert.equal(getWorkItem(db, "controlled")!.state, "running");
+    assert.deepEqual(denials(), [
+      { userId: "outside", subject: "execution-controls" },
+      { userId: "outside", subject: "execution-controls" },
+    ]);
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
