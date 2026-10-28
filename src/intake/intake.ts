@@ -7,9 +7,10 @@ import {
   findAcceptedIntake,
   insertRunningQueue,
   readAdoptedParent,
+  readEarlierAttempt,
   retireEmptyFailedAttempt,
 } from "./store";
-import type { StoredDelegation, StoredWorkItem } from "./store";
+import type { EarlierAttempt, StoredDelegation, StoredWorkItem } from "./store";
 import { ulid } from "./ulid";
 import { snapshotProject } from "./project";
 
@@ -27,6 +28,21 @@ export type IntakeResult =
       identifiers: readonly string[];
       alreadyExisted: boolean;
     };
+
+/** What GitHub holds for an earlier item's branch. */
+export type EarlierBranch = {
+  /** The state of the branch's latest pull request, or null when it never had one. */
+  pull: "open" | "closed" | "merged" | null;
+  /** Commits on the branch that main does not have. 0 when the branch is gone. */
+  commits: number;
+};
+
+const FRESH_START = /\b(start(ing)?\s+(over\s+)?fresh|fresh\s+start)\b/i;
+
+/** A delegation that asks for a fresh start gets a new branch even when earlier work exists. */
+export function asksForFreshStart(text: string | null | undefined): boolean {
+  return typeof text === "string" && FRESH_START.test(text);
+}
 
 export function queueMessage(identifiers: readonly string[], delegatedAlone: boolean): string {
   if (delegatedAlone) {
@@ -59,6 +75,10 @@ export async function intakeDelegatedIssue(
     onAccepted?: (result: IntakeResult) => void;
     beforeAdmit?: () => void;
     reconcileSessions?: (issueIds: readonly string[]) => Promise<void>;
+    /** The delegation asked to start fresh: no earlier branch is continued. */
+    startFresh?: boolean;
+    /** Reads an earlier item's branch on GitHub. Without it every delegation starts fresh. */
+    inspectBranch?: (earlier: EarlierAttempt) => Promise<EarlierBranch>;
     adoptParent?: (
       sessionId: string,
       snapshot: EpicSnapshot,
@@ -97,6 +117,11 @@ export async function intakeDelegatedIssue(
     input.onAccepted?.(result);
     return result;
   }
+  const continuations =
+    ordered.ok && !input.startFresh && input.inspectBranch
+      ? await continuedBranches(db, ordered.ordered, input.inspectBranch)
+      : new Map<string, EarlierAttempt>();
+  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
   if (!ordered.ok) {
     const identifiers = ordered.remaining.map((node) => node.identifier);
     const result = {
@@ -166,6 +191,7 @@ export async function intakeDelegatedIssue(
           edges,
           now,
           sessionKey: sessionId.length > 0 ? sessionId : null,
+          continuations,
         });
         const admitted = {
           ok: true,
@@ -218,6 +244,29 @@ function activeElsewhere(db: Database, nodes: readonly OrderNode[]): OrderNode |
     if (active) return node;
   }
   return undefined;
+}
+
+/**
+ * The earlier item each issue continues: one with an open pull request, or whose unmerged branch
+ * holds commits main does not have. An issue with unfinished work elsewhere is refused at admission,
+ * so its branch is not read.
+ */
+async function continuedBranches(
+  db: Database,
+  nodes: readonly OrderNode[],
+  inspect: (earlier: EarlierAttempt) => Promise<EarlierBranch>,
+): Promise<Map<string, EarlierAttempt>> {
+  const continued = new Map<string, EarlierAttempt>();
+  if (activeElsewhere(db, nodes)) return continued;
+  for (const node of nodes) {
+    const earlier = readEarlierAttempt(db, node.linearIssueId);
+    if (earlier === null) continue;
+    const branch = await inspect(earlier);
+    // A squash merge leaves the branch's own commits outside main; merged work is not continued.
+    if (branch.pull === "open" || (branch.pull !== "merged" && branch.commits > 0))
+      continued.set(node.linearIssueId, earlier);
+  }
+  return continued;
 }
 
 function issueBrief(issue: {
