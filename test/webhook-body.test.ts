@@ -44,7 +44,10 @@ function endpoints(store: InboxStore): Endpoint[] {
       limit: 1024 * 1024,
       payload: JSON.stringify({ type: "url_verification", challenge: "京都 🐕" }),
       headers: (body) => ({
-        "x-slack-signature": `v0=${createHmac("sha256", secret).update(`v0:${now / 1000}:`).update(body).digest("hex")}`,
+        "x-slack-signature": `v0=${createHmac("sha256", secret)
+          .update(`v0:${now / 1000}:`)
+          .update(body)
+          .digest("hex")}`,
         "x-slack-request-timestamp": String(now / 1000),
       }),
       handle: (request, key) => handleSlackWebhook(request, key, now),

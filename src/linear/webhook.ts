@@ -1,4 +1,5 @@
 import { journalCaught } from "../journal";
+import { readWebhookBody } from "../webhook-body";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   activityKey,
@@ -30,7 +31,7 @@ export type SignatureCheck =
 export type SignatureInput = {
   signature: string | null;
   secret: string | null;
-  rawBody: string;
+  rawBody: string | Uint8Array;
   timestampMs: number | null;
   nowMs?: number;
 };
@@ -64,6 +65,15 @@ export function webhookVerificationFailures(store: InboxStore): number {
  * `webhookTimestamp` must be within 60 seconds.
  */
 export function checkLinearSignature(input: SignatureInput): SignatureCheck {
+  const signature = checkLinearHmac(input);
+  return signature.ok
+    ? checkLinearTimestamp(input.timestampMs, input.nowMs ?? Date.now())
+    : signature;
+}
+
+function checkLinearHmac(
+  input: Pick<SignatureInput, "signature" | "secret" | "rawBody">,
+): SignatureCheck {
   if (input.signature === null || input.signature.length === 0) {
     return { ok: false, reason: "missing_signature" };
   }
@@ -78,9 +88,12 @@ export function checkLinearSignature(input: SignatureInput): SignatureCheck {
   if (computed.length !== provided.length || !timingSafeEqual(computed, provided)) {
     return { ok: false, reason: "bad_signature" };
   }
-  if (input.timestampMs === null) return { ok: false, reason: "missing_timestamp" };
-  const now = input.nowMs ?? Date.now();
-  if (Math.abs(now - input.timestampMs) > TIMESTAMP_WINDOW_MS) {
+  return { ok: true };
+}
+
+function checkLinearTimestamp(timestampMs: number | null, now: number): SignatureCheck {
+  if (timestampMs === null) return { ok: false, reason: "missing_timestamp" };
+  if (Math.abs(now - timestampMs) > TIMESTAMP_WINDOW_MS) {
     return { ok: false, reason: "stale_timestamp" };
   }
   return { ok: true };
@@ -104,16 +117,21 @@ export async function handleLinearWebhook(
     noteFailure(deps?.store);
     return reject("missing_secret");
   }
+  if (!/^[0-9a-f]{64}$/i.test(signature)) {
+    noteFailure(deps?.store);
+    return reject("bad_signature");
+  }
+  const bytes = await readWebhookBody(request, 1024 * 1024);
+  if (bytes instanceof Response) return bytes;
+  const verified = checkLinearHmac({ signature, secret, rawBody: bytes });
+  if (!verified.ok) {
+    noteFailure(deps?.store);
+    return reject(verified.reason);
+  }
   const deliveryId = request.headers.get("linear-delivery");
-  const rawBody = await request.text();
+  const rawBody = bytes.toString("utf8");
   const timestampMs = readTimestamp(rawBody, request.headers.get("linear-timestamp"));
-  const check = checkLinearSignature({
-    signature,
-    secret,
-    rawBody,
-    timestampMs,
-    nowMs: deps?.now?.(),
-  });
+  const check = checkLinearTimestamp(timestampMs, deps?.now?.() ?? Date.now());
   if (!check.ok) {
     noteFailure(deps?.store);
     return reject(check.reason);
