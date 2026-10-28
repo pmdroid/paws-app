@@ -1,8 +1,5 @@
-import { workspaceMemberUsable } from "../db";
-import { isWorkspaceAdmin } from "./eligibility";
-import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   listWorkspaceMembers,
   saveWorkspaceIdentityLink,
@@ -11,6 +8,9 @@ import {
   workspaceMember,
   type WorkspaceSession,
 } from "../db";
+import { isWorkspaceAdmin } from "./eligibility";
+import { journalCaught } from "../journal";
+import type { Database } from "bun:sqlite";
 import type { SlackIdentityReads } from "../slack";
 import { readWorkspaceJson } from "./administration";
 import { validWorkspaceCsrf, type WorkspacePrincipal } from "./session";

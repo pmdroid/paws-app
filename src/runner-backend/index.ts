@@ -1,4 +1,23 @@
-import { workspaceMemberUsableSql } from "../db";
+import {
+  workspaceMemberUsableSql,
+  endUsagePause,
+  getTaskMode,
+  getWorkItem,
+  immediate,
+  inMergeQueue,
+  listHooks,
+  pinnedSlotsReserved,
+  releasePinnedSlot,
+  restartedFromMergeQueue,
+  runnerHasCapacity,
+  runnerSlotsHeldBetweenCommands,
+  saveCheckpoint,
+  startUsagePause,
+  usagePause,
+  runnerLeaseCutoff,
+  clearRunnerSessionMove,
+  noteRunnerSessionMove,
+} from "../db";
 import { journal, journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import {
@@ -18,25 +37,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
-import {
-  endUsagePause,
-  getTaskMode,
-  getWorkItem,
-  immediate,
-  inMergeQueue,
-  listHooks,
-  pinnedSlotsReserved,
-  releasePinnedSlot,
-  restartedFromMergeQueue,
-  runnerHasCapacity,
-  runnerSlotsHeldBetweenCommands,
-  saveCheckpoint,
-  startUsagePause,
-  usagePause,
-  runnerLeaseCutoff,
-  clearRunnerSessionMove,
-  noteRunnerSessionMove,
-} from "../db";
 import {
   ArtifactRejectedError,
   assertDescendsFromAny,

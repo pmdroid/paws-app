@@ -1,7 +1,6 @@
-import { workspaceMemberUsable } from "./workspace";
+import { workspaceMemberUsable, workspaceMember } from "./workspace";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
 import type { Database } from "bun:sqlite";
-import { workspaceMember } from "./workspace";
 import { getLinearSessionAccess } from "./linear-access";
 
 export function workspaceSessionIds(

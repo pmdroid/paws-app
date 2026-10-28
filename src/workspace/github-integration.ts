@@ -1,8 +1,5 @@
-import { workspaceMemberUsable } from "../db";
-import { isWorkspaceAdmin } from "./eligibility";
-import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   enqueueJob,
   immediate,
@@ -10,6 +7,9 @@ import {
   workspaceMember,
   type WorkspaceSession,
 } from "../db";
+import { isWorkspaceAdmin } from "./eligibility";
+import { journalCaught } from "../journal";
+import type { Database } from "bun:sqlite";
 import { validWorkspaceCsrf, type WorkspacePrincipal } from "./session";
 
 export async function handleWorkspaceGitHubIntegration(

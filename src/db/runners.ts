@@ -1,8 +1,7 @@
-import { workspaceMemberUsableSql } from "./workspace";
+import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
-import { auditWorkspaceAccess } from "./workspace";
 import type { RunnerSessionMove } from "./runner-session-moves";
 import { listSkills, runnerSkillStates, type RunnerSkillView } from "./skills";
 import { listRunnerRuntimes, type RunnerRuntimeStatus } from "./runner-runtimes";

@@ -1,7 +1,6 @@
-import { workspaceMemberUsable } from "./workspace";
+import { workspaceMemberUsable, auditWorkspaceAccess, workspaceMember } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
-import { auditWorkspaceAccess, workspaceMember } from "./workspace";
 
 export type VerifiedGitHubAttribution = { id: number; login: string; name: string; email: string };
 export type AttributionBinding = { workspaceId: string; userId: string; sessionHash: string };

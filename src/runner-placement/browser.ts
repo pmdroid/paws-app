@@ -1,9 +1,8 @@
-import { workspaceMemberUsable } from "../db";
+import { workspaceMemberUsable, auditWorkspaceAccess, immediate, workspaceMember } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { auditWorkspaceAccess, immediate, workspaceMember } from "../db";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 import type { WorkspacePrincipal } from "../workspace";
 

@@ -1,7 +1,11 @@
-import { workspaceMemberUsable } from "../db";
+import {
+  workspaceMemberUsable,
+  CANCEL_STILL_PENDING,
+  delegatedLinearUserId,
+  workspaceMember,
+} from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
-import { CANCEL_STILL_PENDING, delegatedLinearUserId, workspaceMember } from "../db";
 import type {
   EligibleRunner,
   EligibleRunnerReason,

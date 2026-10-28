@@ -1,7 +1,5 @@
-import { workspaceMemberUsable } from "../../../db";
-import type { Database } from "bun:sqlite";
-import { journalCaught } from "../journal";
 import {
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   listReviewFindings,
   reviewFindingItems,
@@ -10,6 +8,8 @@ import {
   type ReviewFindingItem,
   type ReviewFindingRecord,
 } from "../../../db";
+import type { Database } from "bun:sqlite";
+import { journalCaught } from "../journal";
 import {
   DISMISS_REASON_LIMIT,
   FINDING_SEVERITIES,

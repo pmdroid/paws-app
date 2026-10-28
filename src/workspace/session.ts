@@ -1,7 +1,5 @@
-import { workspaceMemberUsable } from "../db";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   WORKSPACE_REVOKED_SIGN_IN,
   createWorkspaceBootstrap,
@@ -12,6 +10,8 @@ import {
   type WorkspaceRole,
   type WorkspaceSession,
 } from "../db";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import type { Database } from "bun:sqlite";
 
 export type WorkspacePrincipal = {
   workspaceId: string;

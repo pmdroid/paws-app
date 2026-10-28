@@ -1,6 +1,5 @@
-import { workspaceMemberUsableSql } from "../db";
-import { journalCaught } from "../journal";
 import {
+  workspaceMemberUsableSql,
   listSkills,
   recordRunAgentSetup,
   recordRunnerCapacity,
@@ -10,10 +9,6 @@ import {
   runnerAgentTargets,
   teamRepositoryAllowedSql,
   runnerLeaseCutoff,
-} from "../db";
-import type { KeyObject } from "node:crypto";
-import type { Database } from "bun:sqlite";
-import {
   getLinearSessionAccess,
   getLinearSession,
   getTaskMode,
@@ -28,6 +23,9 @@ import {
   workspaceSessionIds,
   runnerCancelPending,
 } from "../db";
+import { journalCaught } from "../journal";
+import type { KeyObject } from "node:crypto";
+import type { Database } from "bun:sqlite";
 import {
   RUNNER_LEASE_GRACE_MS,
   RunnerCommandSchema,

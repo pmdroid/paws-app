@@ -1,8 +1,5 @@
-import { workspaceMemberUsable } from "../db";
-import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
-import { isBlockerSatisfied, type TaskMode, type WorkItemState } from "../core";
 import {
+  workspaceMemberUsable,
   applyWorkItemEvent,
   auditWorkspaceAccess,
   deliveredLinearIssueState,
@@ -17,6 +14,9 @@ import {
   workspaceMember,
   type JobLoop,
 } from "../db";
+import { journalCaught } from "../journal";
+import type { Database } from "bun:sqlite";
+import { isBlockerSatisfied, type TaskMode, type WorkItemState } from "../core";
 import type {
   AcceptedLinearEvent,
   DependencyEdge,

@@ -1,10 +1,6 @@
-import { workspaceMemberUsableSql } from "../db";
-import { workspaceMemberUsable } from "../db";
-import { isWorkspaceAdmin } from "../workspace";
-import { journalCaught } from "../journal";
-import { realpathSync } from "node:fs";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsableSql,
+  workspaceMemberUsable,
   agentCatalogSummary,
   auditWorkspaceAccess,
   createRunnerEnrollment,
@@ -23,15 +19,19 @@ import {
   workspaceMember,
   type RunnerRecord,
 } from "../db";
-import { agentCatalogPackages } from "../agent-catalog";
-import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
-import { releaseVersionFromPath } from "../runner-protocol";
 import {
+  isWorkspaceAdmin,
   workspaceId,
   workspaceSecret,
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../workspace";
+import { journalCaught } from "../journal";
+import { realpathSync } from "node:fs";
+import type { Database } from "bun:sqlite";
+import { agentCatalogPackages } from "../agent-catalog";
+import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
+import { releaseVersionFromPath } from "../runner-protocol";
 
 export function createRunnerControl(options: {
   db: Database;

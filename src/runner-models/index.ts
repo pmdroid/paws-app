@@ -1,9 +1,13 @@
-import { workspaceMemberUsableSql } from "../db";
-import { workspaceMemberUsable } from "../db";
+import {
+  workspaceMemberUsableSql,
+  workspaceMemberUsable,
+  immediate,
+  runnerLeaseCutoff,
+  workspaceMember,
+} from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { immediate, runnerLeaseCutoff, workspaceMember } from "../db";
 import type { RunnerWork } from "../runner-work";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 

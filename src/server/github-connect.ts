@@ -1,5 +1,13 @@
-import { workspaceMemberUsable } from "../db";
-import { isWorkspaceAdmin } from "../workspace";
+import {
+  workspaceMemberUsable,
+  auditWorkspaceAccess,
+  enqueueJob,
+  immediate,
+  latestGitHubDelivery,
+  listWorkspaceRepositories,
+  workspaceMember,
+} from "../db";
+import { isWorkspaceAdmin, requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
 import { journalCaught } from "../journal";
 import { discoverGitHubInstallation } from "./github-connect-status";
 import type { Database } from "bun:sqlite";
@@ -13,15 +21,6 @@ import {
   verifyHostedGitHubApp,
   type ActiveGitHubApp,
 } from "../auth";
-import {
-  auditWorkspaceAccess,
-  enqueueJob,
-  immediate,
-  latestGitHubDelivery,
-  listWorkspaceRepositories,
-  workspaceMember,
-} from "../db";
-import { requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
 
 const START = "/api/workspaces/github-connect";
 const CALLBACK = "/auth/github-app/callback";

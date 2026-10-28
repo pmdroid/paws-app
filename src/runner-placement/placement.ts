@@ -1,7 +1,6 @@
-import { workspaceMemberUsable } from "../db";
-import { teamRepositoryAllowedSql } from "../db";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
+  teamRepositoryAllowedSql,
   getLinearSession,
   getLinearSessionAccess,
   getWorkItem,
@@ -13,6 +12,7 @@ import {
   delegatedLinearUserId,
   workspaceMember,
 } from "../db";
+import type { Database } from "bun:sqlite";
 import type { PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
 import { eligibleRunners, runnerSetupNeed, RUNNER_ONLINE_MS } from "./eligible";
 import { quotaSignal } from "./quota";

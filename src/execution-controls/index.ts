@@ -1,8 +1,5 @@
-import { workspaceMemberUsable } from "../db";
-import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
-import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import {
+  workspaceMemberUsable,
   CLEANUP_BLOCKED_NOTICE,
   auditWorkspaceAccess,
   deadDeliveryIsFinalStop,
@@ -19,6 +16,9 @@ import {
   workspaceMember,
   workspaceSessionIds,
 } from "../db";
+import { journalCaught } from "../journal";
+import type { Database } from "bun:sqlite";
+import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import type { WorkspacePrincipal } from "../workspace";
 
 export type ExecutionControlPort = {

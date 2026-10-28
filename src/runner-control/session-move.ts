@@ -1,7 +1,5 @@
-import { workspaceMemberUsable } from "../db";
-import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   clearRunnerSessionMove,
   immediate,
@@ -10,6 +8,8 @@ import {
   runnerSessionMove,
   workspaceMember,
 } from "../db";
+import { journalCaught } from "../journal";
+import type { Database } from "bun:sqlite";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
 
 /** What the runner backend's `handOverItem` answers, as far as the runner card tells it. */

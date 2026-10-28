@@ -1,7 +1,6 @@
-import { workspaceMemberUsable } from "../db";
+import { workspaceMemberUsable, workspaceMember } from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { workspaceMember } from "../db";
 import {
   isExeDevPoolName,
   isProvisioningError,

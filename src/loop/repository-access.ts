@@ -1,12 +1,12 @@
-import { workspaceMemberUsable } from "../db";
-import { isWorkspaceAdmin } from "../workspace";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   listWorkspaceMembers,
   listWorkspaceRepositories,
   teamRepositoryAllowedSql,
   type WorkItemRecord,
 } from "../db";
+import { isWorkspaceAdmin } from "../workspace";
+import type { Database } from "bun:sqlite";
 import {
   noRepositoryDenial,
   notTeamMemberDenial,

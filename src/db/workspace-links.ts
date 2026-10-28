@@ -1,8 +1,11 @@
-import { workspaceMemberUsableSql } from "./workspace";
-import { workspaceMemberUsable } from "./workspace";
+import {
+  workspaceMemberUsableSql,
+  workspaceMemberUsable,
+  auditWorkspaceAccess,
+  workspaceMember,
+} from "./workspace";
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
-import { auditWorkspaceAccess, workspaceMember } from "./workspace";
 
 export type WorkspaceIdentityLink = {
   userId: string;
