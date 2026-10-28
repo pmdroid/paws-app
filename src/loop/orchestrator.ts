@@ -269,13 +269,21 @@ import {
   readPullMerge,
   branchContains,
   readOpenPullHead,
+  readBranchWork,
   UPSTREAM_MAIN_REF,
   pushOutageCause,
   type GitExec,
   type GitHubBinding,
   type GitHubTokenProvider,
 } from "../github";
-import { intakeDelegatedIssue, stopAdoptedParent, type IntakeResult } from "../intake";
+import {
+  asksForFreshStart,
+  intakeDelegatedIssue,
+  stopAdoptedParent,
+  type EarlierAttempt,
+  type EarlierBranch,
+  type IntakeResult,
+} from "../intake";
 import {
   createAdmission,
   dispatch,
@@ -396,7 +404,7 @@ import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
-import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
+import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
   closeoutChecksPrompt,
   createReviewCommandReviewer,
@@ -924,8 +932,11 @@ export class Orchestrator {
       return;
     }
     if (event.action !== "created" || event.issueId === null) return;
+    let startFresh = asksForFreshStart(event.body);
     if (event.sessionId !== null) {
       const context = parseLinearSessionContext(event.payload);
+      const comment = context.comment as { body?: unknown } | null;
+      if (typeof comment?.body === "string" && asksForFreshStart(comment.body)) startFresh = true;
       saveLinearSessionContext(
         this.db,
         event.sessionId,
@@ -942,6 +953,7 @@ export class Orchestrator {
     try {
       result = await this.intakeLinearTask(event.issueId, event.sessionId, taskKey ?? undefined, {
         acknowledged: session !== null,
+        startFresh,
       });
     } catch (error) {
       const current = session ? getLinearSession(this.db, session.sessionId) : null;
@@ -1072,6 +1084,7 @@ export class Orchestrator {
       followupBodies?: readonly string[];
       conversation?: string;
       acknowledged?: boolean;
+      startFresh?: boolean;
     } = {},
   ) {
     const tracker = this.tracker;
@@ -1186,8 +1199,13 @@ export class Orchestrator {
       acknowledged: options.acknowledged,
       isCurrent: intakeCurrent,
       reconcileSessions: sessionId
-        ? (issueIds) => this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent)
+        ? (issueIds) =>
+            this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent, {
+              keepPullRequest: options.startFresh !== true,
+            })
         : undefined,
+      startFresh: options.startFresh === true,
+      inspectBranch: (earlier) => this.inspectEarlierBranch(earlier),
       beforeAdmit: retireRedirectedItem,
       onAccepted: (accepted) => {
         immediate(this.db, () => {
@@ -1259,10 +1277,31 @@ export class Orchestrator {
     ].join("\n\n");
   }
 
+  /**
+   * What GitHub holds for an earlier item's branch. Without a repository or GitHub binding the
+   * branch reads as empty, so the new item starts fresh.
+   */
+  private async inspectEarlierBranch(earlier: EarlierAttempt): Promise<EarlierBranch> {
+    const previous = getWorkItem(this.db, earlier.itemId);
+    const repository = previous ? this.repositoryForItem(previous) : null;
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github) return { pull: null, commits: 0 };
+    return readBranchWork({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      branch: earlier.branchName,
+      ...this.gitHubCredentials(github),
+      signal: AbortSignal.any([this.authRecoveryController.signal, AbortSignal.timeout(10_000)]),
+    });
+  }
+
   private async reconcilePreviousSessions(
     issueIds: readonly string[],
     incomingSessionId: string,
     isCurrent: () => boolean,
+    /** The new delegation may continue the stopped session's branch, so its pull request stays. */
+    stop: { keepPullRequest: boolean },
   ): Promise<void> {
     if (!this.tracker?.getSession) return;
     const candidates = (issueId: string) =>
@@ -1315,6 +1354,7 @@ export class Orchestrator {
               sessionId,
               `reconcile:${sessionId}:${previous.generation}`,
               this.now(),
+              stop,
             );
           } else {
             await this.interruptLinearSession(sessionId);
@@ -1530,6 +1570,16 @@ export class Orchestrator {
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
       if (!item || item.state !== "cancelled" || getConfirmedRemoteMerge(this.db, item.id)) return;
+      // A re-delegation that took over the branch owns its pull request now.
+      if (
+        this.db
+          .query(
+            `SELECT 1 FROM item_continuation c JOIN work_item i ON i.id = c.item_id
+             WHERE c.previous_item_id = ? AND i.state != 'cancelled'`,
+          )
+          .get(item.id)
+      )
+        return;
       await this.joinChangedItems([item.id]);
       const repository = this.repositoryForItem(item);
       const github = repository ? this.githubForRepository(repository) : null;
@@ -2612,6 +2662,7 @@ export class Orchestrator {
         brief: this.workContext(item),
         hiddenPaths: checkout.agent,
         ...(handoff ? { handoff } : {}),
+        ...(item.continuesBranch ? { continuesBranch: item.continuesBranch } : {}),
       });
       await this.flush();
       if (this.stopped(item.id)) return;
@@ -2672,6 +2723,7 @@ export class Orchestrator {
         pawsRoot: this.options.pawsRoot,
         home: this.options.home ?? homedir(),
         checkoutExclusions: checkout.agent,
+        ...(worktreeStartRef(item) ? { startRef: worktreeStartRef(item) } : {}),
         signal: controller.signal,
         promptRunner,
         askTeam,
@@ -4780,7 +4832,12 @@ export class Orchestrator {
     return outcome;
   }
 
-  private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
+  private async stopSession(
+    sessionId: string | null,
+    eventKey: string,
+    at: number,
+    options: { keepPullRequest?: boolean } = {},
+  ): Promise<void> {
     if (sessionId === null) return;
     this.taskAccess()?.invalidate({ sessionId });
     this.githubAuth?.invalidate({ sessionId });
@@ -4814,7 +4871,7 @@ export class Orchestrator {
           source: "linear",
           requestedAt,
         };
-        if (!applyLinearCommand(this.db, command).applied)
+        if (!applyLinearCommand(this.db, command, undefined, undefined, options).applied)
           throw new Error(`Could not stop Linear task ${item.id}`);
         commands.push(command);
       }
@@ -6926,11 +6983,13 @@ export class Orchestrator {
       pawsRoot: this.options.pawsRoot,
       networkGit: this.repositoryGit(item, repository, signal, "write"),
     });
+    const startRef = worktreeStartRef(item);
     const worktree = await createWorktree({
       ...repository,
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
       checkoutExclusions: this.runCheckout(item).agent,
+      ...(startRef ? { startRef } : {}),
     });
     const required = (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.path,
